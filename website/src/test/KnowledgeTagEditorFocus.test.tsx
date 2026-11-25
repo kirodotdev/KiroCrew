@@ -3,7 +3,7 @@
 // buttons all unmount the control that had focus, so each returns focus to the
 // Edit button that opened the editor.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -68,6 +68,18 @@ describe('knowledge tag editor focus', () => {
     await waitFor(() => expect(tagField()).toBeNull())
     await waitFor(() => expect(trigger()).toHaveFocus())
     expect(patches()).toHaveLength(1)
+  })
+
+  // A save closes from its PATCH callback, outside any event, so React commits
+  // that close on its own schedule; here the frame runs before that schedule.
+  it('Enter saves and returns focus even when the next frame runs first', async () => {
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { queueMicrotask(() => cb(0)); return 0 })
+    onTestFinished(() => raf.mockRestore())
+    const input = await openEditor()
+    fireEvent.change(input, { target: { value: 'ops, ledger' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(tagField()).toBeNull())
+    await waitFor(() => expect(trigger()).toHaveFocus())
   })
 
   it('Escape closes and returns focus to the Edit button', async () => {

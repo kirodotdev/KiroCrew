@@ -111,7 +111,7 @@ class _StubService(KasLoginService):
             "expires_at": "2026-01-01T00:00:00+00:00",
         }
 
-    async def poll_device(self, login_id):
+    async def poll_device(self, login_id, profile_arn=None):
         self.calls.append(("poll", login_id))
         if login_id == "gone":
             raise UnknownLoginError(login_id)
@@ -285,7 +285,7 @@ async def test_poll_answers_a_sign_out_during_the_login_as_the_begin_409():
     terminal answer -- that path restarts the provider on the device flow."""
 
     class _SignedOut(_StubService):
-        async def poll_device(self, login_id):
+        async def poll_device(self, login_id, profile_arn=None):
             return {"status": "error", "code": "signed_out_during_login"}
 
     resp = await api_kas_login_poll(_FakeRequest(_SignedOut(), {"login_id": "lid-1"}))
@@ -297,7 +297,7 @@ async def test_poll_answers_a_sign_out_during_the_login_as_the_begin_409():
 @pytest.mark.asyncio
 async def test_poll_passes_a_profile_failure_code_through_to_the_card(code):
     class _NoProfile(_StubService):
-        async def poll_device(self, login_id):
+        async def poll_device(self, login_id, profile_arn=None):
             return {"status": "error", "code": code}
 
     resp = await api_kas_login_poll(_FakeRequest(_NoProfile(), {"login_id": "lid-1"}))
@@ -391,11 +391,14 @@ async def test_logout_store_failure_returns_coded_500():
 
 
 @pytest.mark.asyncio
-async def test_status_open_to_non_owner():
-    # status is a read (no credential mutation), so it stays available to any
-    # allowed dashboard user.
-    resp = await api_kas_login_status(_FakeRequest(_StubService(), owner=False))
-    assert resp.status == 200
+async def test_status_refuses_non_owner():
+    # Same owner gate as the sign-in routes: a non-owner dashboard caller gets an
+    # audited 403 and the stored sign-in is never read.
+    svc = _StubService()
+    resp = await api_kas_login_status(_FakeRequest(svc, owner=False))
+    assert resp.status == 403
+    assert _body(resp)["code"] == "owner_only"
+    assert svc.calls == []
 
 
 @pytest.mark.asyncio
@@ -406,7 +409,7 @@ async def test_begin_and_poll_return_502_on_transport_error():
         async def begin_device(self, provider_str, *, start_url="", region="", replaces=""):
             raise aiohttp.ClientError("connection refused")
 
-        async def poll_device(self, login_id):
+        async def poll_device(self, login_id, profile_arn=None):
             raise aiohttp.ClientError("connection refused")
 
     resp = await api_kas_login_begin_device(_FakeRequest(_OfflineService(), {"provider": "google"}))
@@ -558,12 +561,12 @@ async def test_wait_for_callback_accepts_signin_path():
 
 
 @pytest.mark.asyncio
-async def test_wait_for_callback_state_mismatch_raises():
+async def test_wait_for_callback_without_state_raises():
     sock, port = _bound_loopback()
     task = asyncio.create_task(wait_for_callback(sock, port, "expected", _echo, timeout_secs=10))
     await asyncio.sleep(0.05)
-    await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c", "state": "evil"})
-    with pytest.raises(PortalAuthError, match="state mismatch"):
+    await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c"})
+    with pytest.raises(PortalAuthError, match="carried no state"):
         await await_until(task, timeout=5)
 
 

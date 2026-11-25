@@ -399,6 +399,21 @@ Every `decompose_yaml` audit event carries the run's provenance — `source` and
 `spec_name` in its metadata, and the source as its caller identity (`dashboard` for
 unsourced runs), so a denial is attributed to the surface that started the run.
 
+An LLM decomposition that fails returns an empty plan (`run()`: `Failed to decompose spec
+into tasks`; `plan()`: `Could not generate a plan. Try rephrasing.`; a replan: `Re-plan
+failed after task N`). A sandbox refusal (`SandboxUnavailableError` or
+`SandboxCeilingUnsealable` from a run's decompose) gives the same failure, through
+`run_reporting.decompose_recording_refusal`, so `run.error`, its notices, `runs.json`,
+`TASK_PROGRESS.md`, the workflow run record and the task-queue record carry exactly that
+text, and the stack trace is logged at DEBUG only. The refusal's own text names the host's
+remedy and is stored nowhere. It reaches two live readers alone: `kirocrew run`'s stderr
+line, through `run_reporting.live_error` (a `ContextVar` of the task that awaited the run,
+read only while `run.error` is still the failure it stands behind), and `POST
+/api/taskrunner/plan`'s answer to the machine owner (`plan()` raises
+`PlanSandboxRefused`, a `ValueError` whose text is the ordinary one and whose `refusal`
+is the host text). The run list and the task review sent to chat show `run.error` to every
+reader.
+
 A YAML plan with no workflow name, no `# ` line and no path is named after its first
 step's title (`auto_name`'s `first_step`), not after its first line, a YAML key such as
 `agents:`.
@@ -466,8 +481,12 @@ class Project:
 When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
 complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
 acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
-answer. The snapshot taken while the turn runs stays raw, so a step whose stream
-raises (a dead process, a context overflow) keeps that snapshot as it is.
+answer. Each line that only quotes a directive tool's marker is dropped the same way
+(`session_directive.strip_quoted_markers`). The snapshot taken while the turn runs stays raw, so a step whose stream
+raises (a dead process, a context overflow) keeps that snapshot as it is. Neither
+carries the alternation placeholder the model repeats at the start of a turn after
+one that ended on a tool result: each prompt of the step streams through
+`alternation_echo.drop_echo` ([messaging](messaging.md)).
 
 ## Concurrent Tasks
 
@@ -824,6 +843,8 @@ workspace is never removed.
 
 ## API Endpoints
 
+The `/api/projects` alias (list, get, rename, delete) answers only the owner and an admitted Shared Crew teammate; any other dashboard session gets 403 `owner_only`.
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/taskrunner` | Status with all runs, each with its `task_details` |
@@ -848,7 +869,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/refine/answer` | Legacy answer hook; current refine never enters a question wait, so ordinary calls return 409 |
 | POST | `/api/reveal` | Reveal a path in the host file manager for a direct-local caller; remote or launcher-less cases return a clipboard-copy fallback |
 
-The mutating task-runner routes pass `_require_taskrunner_owner`: a dashboard-user
+The mutating task-runner routes pass `require_owner_for_dashboard_caller`: a dashboard-user
 request (`app == ""`) must be the dashboard owner (`require_owner_dashboard_request`,
 403 `owner_only`); an internal-secret loopback caller (the `task_run` MCP tool) and an
 app token keep the controls that already govern them (the app is confined to its
@@ -1392,7 +1413,9 @@ and an error that names the stop reason, with the partial text still sent beside
 cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
 status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
 (`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
-not the spec.
+not the spec. A line that only quotes a directive tool's marker is dropped the same way
+(`session_directive.strip_quoted_markers`): the refine turn runs the default spec, which
+pre-grants the directive tools, so they run without a permission request.
 
 ## Dashboard UI (Projects Page)
 

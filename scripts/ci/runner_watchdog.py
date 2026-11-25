@@ -260,6 +260,8 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "release-lts.yml",
     "release.yml",
     "sensitive-change-review.yml",
+    # Calls build-wheel.yml, whose fleet job runs in this caller's run.
+    "verify-cli-publish.yml",
 )
 # Put the workflows that carry routine pull-request traffic ahead of release
 # and audit workflows when looking for recent fleet starts.
@@ -392,6 +394,18 @@ WATCHDOG_WORKFLOW = "ci-runner-watchdog.yml"
 # PR and `main` alike -- and a kicked tick is identical to a scheduled one except
 # for the debounce in `kick_is_redundant`, which keeps the schedule's quota shape.
 KICK_EVENT = "workflow_run"
+# How many of this workflow's newest rows the debounce reads, in its one call.
+# Every completed Fast Gate adds a row ahead of the tick that RAN: a kick that
+# stood down, or one the concurrency group evicted while it was queued. A page
+# that ends before the tick's row hides it, the kick reads "no tick inside the
+# interval", and a full tick runs minutes after the one before it. Measured on
+# 2026-11-23 with ten rows read: 17 of 19 kicked full ticks started inside the
+# ten-minute interval, each behind nine or more such rows, at about 73 kicks an
+# hour. The API's largest page costs the same single call and holds over an hour
+# of rows at that rate; it is outrun again only when this many rows land inside
+# one schedule interval, about 600 an hour at ten minutes. `kick_is_redundant`
+# says so in the log when that happens, and runs the tick.
+KICK_DEBOUNCE_ROWS = 100
 # A rate-limited call whose window resets within this many seconds, and inside
 # the tick's remaining budget, is waited out and retried once; a further-off
 # reset aborts the gather instead of burning budget on a sleep.
@@ -1428,14 +1442,25 @@ def kick_is_redundant(
     that arrived behind this one and is held by the concurrency group -- counting
     it would make the two stand down for each other and nobody run.
 
+    The read is one page of ``KICK_DEBOUNCE_ROWS`` rows. A page that holds no tick
+    and does not reach back one interval cannot answer the question; the tick
+    runs, and a ``debounce blind`` warning in the log counts how often.
+
     Returns the reason to skip, or None to run the full tick. A failed read runs
     the tick (None): the schedule runs it unconditionally, and starving on a
     transient error would re-create the gap the kick exists to fill. The caller
     decides what a rate limit here means for the tick.
     """
-    page = api.get(f"{_runs_path(repo, WATCHDOG_WORKFLOW)}?per_page=10")
+    page = api.get(f"{_runs_path(repo, WATCHDOG_WORKFLOW)}?per_page={KICK_DEBOUNCE_ROWS}")
+    rows = page.get("workflow_runs", []) if isinstance(page, dict) else []
     newest: datetime | None = None
-    for run in page.get("workflow_runs", []) if isinstance(page, dict) else []:
+    reach: datetime | None = None
+    for run in rows:
+        try:
+            created = parse_timestamp(run["created_at"])
+            reach = created if reach is None or created < reach else reach
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
         try:
             if int(run.get("id", 0)) == self_run_id:
                 continue
@@ -1455,6 +1480,18 @@ def kick_is_redundant(
         if newest is None or started > newest:
             newest = started
     if newest is None:
+        if len(rows) >= KICK_DEBOUNCE_ROWS and reach is not None and now - reach < interval:
+            # A full page whose oldest row is younger than the interval ends
+            # before a tick that started inside it would be listed: "cannot
+            # tell", not "no tick". Running costs one tick's reads; standing
+            # down on a guess could leave an orphan unseen for as long as the
+            # kicks keep outrunning the page, so the tick runs and says why.
+            log(
+                f"::warning::kicked tick: debounce blind -- the {len(rows)} newest rows of "
+                f"this workflow reach back {int((now - reach).total_seconds())}s, short of "
+                f"the {_fmt_delta(interval)} schedule interval, and hold no tick that ran; "
+                "running the full tick"
+            )
         return None
     age = now - newest
     if timedelta(0) <= age < interval:

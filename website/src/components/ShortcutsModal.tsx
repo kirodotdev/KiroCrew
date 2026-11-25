@@ -1,11 +1,11 @@
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { Fragment, useEffect, useRef, useState, useMemo } from 'react'
 import { X, Keyboard } from 'lucide-react'
-import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, isMacPlatform, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
 import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../hooks/usePanelToggleShortcuts'
 import { useGlobalHotkey } from '../hooks/useGlobalHotkey'
-import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
+import { chordReachable, formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
 import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
@@ -14,6 +14,7 @@ import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle, SearchInput, FilteredEmpty } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { useKeyboardLayout } from '../hooks/useNavShortcutHint'
 import { shortcutPlatform, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { matchShortcutEvent } from '../lib/shortcutRegistry'
 
@@ -123,8 +124,16 @@ export interface SecondaryChord {
 }
 
 export function displayChords(def: ShortcutDef): { primary: string[]; secondary: SecondaryChord[]; reservedInBrowser: boolean } {
+  const mac = isMacPlatform()
+  const aliases = (def.aliases ?? [])
+    .filter(a => chordReachable(a, mac))
+    .map(a => ({ caps: formatChordCaps(a, def.id) }))
+  // A chord no key of the user's layout can type is not advertised, so its alias
+  // leads: on Dvorak no key is `/`, and the shortcuts reference is Option/Alt+K.
+  if (!chordReachable(def, mac)) {
+    return { primary: aliases[0]?.caps ?? [], secondary: aliases.slice(1), reservedInBrowser: false }
+  }
   const primary = formatShortcut(def).split(' + ')
-  const aliases = (def.aliases ?? []).map(a => ({ caps: formatChordCaps(a, def.id) }))
   const reservedInBrowser = !!def.browserReserved && !isElectron
   if (reservedInBrowser && aliases.length > 0) {
     // No tooltip: the explainer renders inline directly under the last demoted
@@ -326,7 +335,7 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
                 catalog units; a block label ends the inline text run so the i18n
                 render gate never sees them joined into one string. */}
             <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
-            {chord
+            {chord && chordReachable(chord)
               ? <span className="flex items-center gap-1"><KeyCapSequence caps={formatChordKeys(chord)} plus /></span>
               : <div className="text-muted text-[11px]">{i18nT('components.shortcutsModal.unset')}</div>}
           </div>
@@ -374,6 +383,7 @@ function matchesQuery(text: string, query: string, queryWithoutPlus: string): bo
 }
 
 export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
+  const layout = useKeyboardLayout()
   const { enabled, macCtrl, toggle, toggleMacCtrl, saveError } = useShortcutPrefs()
   const { config: quickSearchConfig } = useQuickSearchShortcut()
   const { bindings: panelBindings } = usePanelToggleShortcuts()
@@ -420,6 +430,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
   }
 
   const filteredGroups = useMemo(() => {
+    void layout // chord glyphs follow the keyboard layout
     return SHORTCUT_GROUPS.map(group => {
       const entries = groupShortcuts(group, macCtrl)
       const groupName = shortcutGroupLabel(group).toLowerCase()
@@ -438,9 +449,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
       })
       return { group, entries: matchingEntries }
     }).filter(g => g.entries.length > 0)
-  }, [macCtrl, normalizedQuery, queryWithoutPlus])
+  }, [layout, macCtrl, normalizedQuery, queryWithoutPlus])
 
   const showSearchEverywhere = useMemo(() => {
+    void layout
     if (!normalizedQuery) return true
     const label = i18nT('components.shortcutsModal.search_everywhere').toLowerCase()
     const sectionName = i18nT('components.shortcutsModal.search').toLowerCase()
@@ -450,9 +462,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
       matchesQuery(sectionName, normalizedQuery, queryWithoutPlus) ||
       matchesQuery(capsStr, normalizedQuery, queryWithoutPlus)
     )
-  }, [normalizedQuery, queryWithoutPlus, quickSearchConfig])
+  }, [layout, normalizedQuery, queryWithoutPlus, quickSearchConfig])
 
   const matchingPanelToggleIds = useMemo(() => {
+    void layout
     const activeIds = PANEL_TOGGLE_IDS.filter(id => !TERMINAL_PANEL_TOGGLE_IDS.has(id) || terminalEnabled)
     if (!normalizedQuery) return activeIds
     const sectionName = i18nT('components.shortcutsModal.panel_toggles').toLowerCase()
@@ -460,13 +473,13 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     return activeIds.filter(id => {
       const label = i18nT(PANEL_TOGGLE_LABEL_KEY[id]).toLowerCase()
       const chord = panelBindings[id]
-      const chordStr = chord ? formatChordKeys(chord).join(' ').toLowerCase() : ''
+      const chordStr = chord && chordReachable(chord) ? formatChordKeys(chord).join(' ').toLowerCase() : ''
       return (
         matchesQuery(label, normalizedQuery, queryWithoutPlus) ||
         matchesQuery(chordStr, normalizedQuery, queryWithoutPlus)
       )
     })
-  }, [normalizedQuery, panelBindings, queryWithoutPlus, terminalEnabled])
+  }, [layout, normalizedQuery, panelBindings, queryWithoutPlus, terminalEnabled])
 
   const showGlobalHotkey = useMemo(() => {
     if (!globalHotkey) return false

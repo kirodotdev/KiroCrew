@@ -238,7 +238,7 @@
       "missing_code": 7
     },
     "dashboard/handlers/mcp_custom.py": {
-      "missing_code": 14
+      "missing_code": 12
     },
     "dashboard/handlers/mcp_discover.py": {
       "missing_code": 12
@@ -257,7 +257,7 @@
       "missing_code": 6
     },
     "dashboard/handlers/messaging.py": {
-      "missing_code": 3
+      "missing_code": 2
     },
     "dashboard/handlers/prompts_authoring.py": {
       "missing_code": 4
@@ -361,7 +361,7 @@
       "dynamic_status": 1
     },
     "dashboard/messaging_api/slack_workspace.py": {
-      "missing_code": 24
+      "missing_code": 22
     },
     "dashboard/messaging_api/spawn.py": {
       "missing_code": 6

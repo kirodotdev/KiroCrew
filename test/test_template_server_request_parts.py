@@ -68,26 +68,26 @@ def test_the_caller_template_comes_from_the_session_record(monkeypatch):
     _not_crewmate(monkeypatch)
     _execution(monkeypatch, {"s1": "kirocrew-conductor"})
     state = _State({"s1": _slot("s1")})
-    assert tsr._caller_template(state, "s1", "sk") == ("kirocrew-conductor", "", "")
+    assert tsr._caller_template(state, "s1", "sk", "") == ("kirocrew-conductor", "", "")
 
 
 def test_a_crewmate_thread_or_worker_is_sent_elsewhere(monkeypatch):
     _execution(monkeypatch, {"s1": "kirocrew-conductor"})
     state = _State({"s1": _slot("s1")})
     _not_crewmate(monkeypatch, thread=True)
-    assert tsr._caller_template(state, "s1", "sk")[1] == "crewmate_caller"
+    assert tsr._caller_template(state, "s1", "sk", "")[1] == "crewmate_caller"
     _not_crewmate(monkeypatch, worker=True)
-    assert tsr._caller_template(state, "s1", "sk")[1] == "crewmate_caller"
+    assert tsr._caller_template(state, "s1", "sk", "")[1] == "crewmate_caller"
     _not_crewmate(monkeypatch, mate_owned=True)
-    assert tsr._caller_template(state, "s1", "sk")[1] == "crewmate_caller"
+    assert tsr._caller_template(state, "s1", "sk", "")[1] == "crewmate_caller"
 
 
 def test_a_session_with_no_readable_template_names_none(monkeypatch):
     _not_crewmate(monkeypatch)
     _execution(monkeypatch, {"s1": OSError("unreadable"), "s2": ""})
     state = _State({"s1": _slot("s1"), "s2": _slot("s2")})
-    assert tsr._caller_template(state, "s1", "sk")[1] == "no_template"
-    assert tsr._caller_template(state, "s2", "sk")[1] == "no_template"
+    assert tsr._caller_template(state, "s1", "sk", "")[1] == "no_template"
+    assert tsr._caller_template(state, "s2", "sk", "")[1] == "no_template"
 
 
 # ── _caller_backend ──

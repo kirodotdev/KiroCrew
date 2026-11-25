@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { appPathname } from '@/lib/basePath'
 import { runLayoutFormChange } from '@/lib/layoutFormTransition'
-import { touchFirstForm } from '@/lib/touchLayoutForm'
+import { TOUCH_LAYOUT_CHANGED_EVENT, touchFirstForm } from '@/lib/touchLayoutForm'
 
 /* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
    index.css needs the desktop readouts to be unreachable below the pill's
@@ -25,8 +25,9 @@ function currentMql(): MediaQueryList | null {
 }
 
 // A single missed or deferred `change` delivery used to strand the breakpoint;
-// these only notify — a no-op wake bails.
-const WINDOW_RECHECK_EVENTS = ['orientationchange', 'resize', 'pageshow'] as const
+// these only notify — a no-op wake bails. The last one is Settings changing the
+// touch-screen layout choice, which applies without a reload.
+const WINDOW_RECHECK_EVENTS = ['orientationchange', 'resize', 'pageshow', TOUCH_LAYOUT_CHANGED_EVENT] as const
 // visibilitychange fires at the document, not the window.
 const DOCUMENT_RECHECK_EVENTS = ['visibilitychange'] as const
 

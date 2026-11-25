@@ -15,7 +15,11 @@ Kiro Crew data home:
 * **revoked**, channel id to :class:`Revoked` (unbind time and the old
   anchor): channels unbound because Slack does not list us as their agent, so a button answer clicked there later is
   refused (bounded to the newest :data:`MAX_REVOKED`; a rebind clears it).
-  A file without it reads as none revoked.
+  A file without it reads as none revoked. An ended Conductor thread moves here
+  too, under its :func:`thread_key`, once :data:`THREAD_ENDED_TTL_SECS` passed.
+* **thread_bindings**, keyed by :func:`thread_key`: Conductor threads, one
+  thread of an ordinary channel or DM bound to a dashboard session (see
+  :class:`Binding`). A channel can hold many. A file without it reads as none.
 
 Reads are lock-free snapshots that never touch the disk once loaded (load it off
 the event loop at start); every write rewrites the file atomically under a lock
@@ -43,7 +47,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.atomic_write import atomic_write
 
@@ -63,6 +67,21 @@ ROUTE_TTL_SECS = 24 * 3600
 MAX_ROUTES = 2048
 #: Channels unbound because Slack does not list us as their agent, newest kept.
 MAX_REVOKED = 2048
+
+#: What a Conductor thread's conversation was when it started: the owner's DM
+#: with the app, a private channel, or a public channel (admitted only by opt-in).
+ROOM_IM = "im"
+ROOM_PRIVATE = "private"
+ROOM_PUBLIC = "public"
+THREAD_ROOMS = frozenset({ROOM_IM, ROOM_PRIVATE, ROOM_PUBLIC})
+#: How long an ended Conductor thread keeps its binding before it moves to
+#: ``revoked`` (whose anchor fence keeps the thread closed).
+THREAD_ENDED_TTL_SECS = 30 * 24 * 3600
+
+
+def thread_key(channel_id: str, anchor_ts: str) -> str:
+    """The ``thread_bindings`` (and ``revoked``) key of one Conductor thread."""
+    return f"{channel_id}:{anchor_ts}"
 
 
 def _bounded_routes(routes: dict[str, "Route"], now: float) -> dict[str, "Route"]:
@@ -100,6 +119,9 @@ class Route:
     seeded_at: float = 0.0
     #: The origin thread the message was in (its own ts when it opened one).
     origin_thread_ts: str = ""
+    #: The shared user (``slack.shared_access``) whose message asked for the
+    #: channel; ``""`` when the owner asked. Copied onto the binding it opens.
+    opener: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,8 +144,21 @@ class Binding:
     git checkout the channel's worktree was first cut from, written by the
     gateway when it cut it: a workspace record rebuilt later (lost, evicted)
     while the session already runs in that worktree uses it instead of the
-    worktree's own top level. ``""`` / ``0`` mean unset, so a record written
-    before these fields existed loads unchanged.
+    worktree's own top level. ``opener`` is the shared user
+    (``slack.shared_access``) who asked for the channel, the one person besides
+    the owner it admits (:func:`.shared_refusal.opener_admitted`); ``""`` is the
+    owner's channel, so a row written before openers were recorded stays the
+    owner's alone. ``""`` / ``0`` mean unset, so a record written before these
+    fields existed loads unchanged.
+
+    **A Conductor thread** (``thread=True``, kept in the ``thread_bindings``
+    table, never in ``bindings``) is the same record for one thread of an
+    ordinary channel or DM: ``anchor_ts`` is the thread's parent ts, and the
+    session's replies go INTO that thread. ``room`` is what the start saw the
+    conversation as (:data:`ROOM_IM`, :data:`ROOM_PRIVATE` or
+    :data:`ROOM_PUBLIC`), and ``ended_at`` is stamped when the thread ends; an
+    ended thread admits no more dispatch and never becomes a plain thread again.
+    It records no ``opener``: a Conductor thread admits no shared user.
     """
 
     channel_id: str
@@ -141,6 +176,10 @@ class Binding:
     wrapped_up_at: float = 0.0
     origin_thread_ts: str = ""
     repo_root: str = ""
+    thread: bool = False
+    room: str = ""
+    ended_at: float = 0.0
+    opener: str = ""
 
     @property
     def origin_link(self) -> tuple[str, str] | None:
@@ -239,6 +278,8 @@ class CodeChannelStore:
         self._loaded = False
         self._routes: dict[str, Route] = {}
         self._bindings: dict[str, Binding] = {}
+        #: Conductor threads, by :func:`thread_key` (see :class:`Binding`).
+        self._thread_bindings: dict[str, Binding] = {}
         self._revoked: dict[str, Revoked] = {}
         #: Session keys a binding named before it was replaced or dropped, oldest
         #: first: a worker such a session created stays a code-channel worker.
@@ -262,6 +303,9 @@ class CodeChannelStore:
         #: routed, never bound again) and is carried back into the revoked table
         #: unchanged on every write until a person repairs it.
         self._quarantined_revoked: dict[str, Any] = {}
+        #: Conductor-thread rows that did not read back whole, by thread key,
+        #: exactly as read. Each fences its own thread and is carried back.
+        self._quarantined_threads: dict[str, Any] = {}
         #: The file existed and could not be read or parsed, so the tables started
         #: empty. Sticky for the process: every reader that must not mistake
         #: "unreadable" for "empty" (:meth:`session_keys`) refuses on it.
@@ -295,6 +339,7 @@ class CodeChannelStore:
             routes, bindings, revoked, retired, workers, resume, quarantined, bad_revoked = (
                 self._parse(data)
             )
+            threads, bad_threads = self._parse_threads(data)
             # Normalised inside the guard too: a stored value that breaks a later
             # step must mark the store unavailable, never leave it unloaded (a
             # lineage reader would then fall back to a transcript ``created_by``).
@@ -318,15 +363,18 @@ class CodeChannelStore:
                 {},
                 {},
             )
+            threads, bad_threads = {}, {}
             self._load_failed = True
         self._routes, self._bindings = routes, bindings
+        self._thread_bindings = threads
+        self._quarantined_threads = bad_threads
         self._revoked = revoked
         self._retired = retired
         self._workers = workers
         self._resume = resume
         self._quarantined = quarantined
         self._quarantined_revoked = bad_revoked
-        for channel_id in (*quarantined, *bad_revoked):
+        for channel_id in (*quarantined, *bad_revoked, *bad_threads):
             logger.warning(
                 "code channel %s: its binding or revoked row does not read back whole; "
                 "that channel is fenced until slack-code-channels.json is repaired",
@@ -457,6 +505,35 @@ class CodeChannelStore:
             bad_revoked,
         )
 
+    @staticmethod
+    def _parse_threads(data: Any) -> tuple[dict[str, Binding], dict[str, Any]]:
+        """The ``thread_bindings`` table, and its rows that do not read back whole.
+
+        Absent or ``null`` reads as none; any other non-object is malformed. A row
+        is whole only when it is a well-typed thread binding filed under its own
+        :func:`thread_key`; any other row fences its own thread (quarantined).
+        """
+        raw = data.get("thread_bindings") if isinstance(data, dict) else None
+        if raw is None:
+            return {}, {}
+        if not isinstance(raw, dict):
+            raise ValueError("thread_bindings is not an object")
+        threads: dict[str, Binding] = {}
+        bad: dict[str, Any] = {}
+        for key, row in raw.items():
+            binding = _from_dict(Binding, row)
+            if (
+                binding is None
+                or not _well_typed(binding)
+                or binding.thread is not True
+                or not binding.anchor_ts
+                or thread_key(binding.channel_id, binding.anchor_ts) != key
+            ):
+                bad[key] = row
+                continue
+            threads[key] = binding
+        return threads, bad
+
     def _read(self) -> None:
         """Make sure a snapshot exists before a lock-free read."""
         if not self._loaded:
@@ -470,6 +547,7 @@ class CodeChannelStore:
         revoked: dict[str, Revoked] | None = None,
         workers: dict[str, str] | None = None,
         resume: dict[str, dict[str, str]] | None = None,
+        thread_bindings: dict[str, Binding] | None = None,
     ) -> None:
         """Write the new tables, then publish them. Callers hold the lock.
 
@@ -498,12 +576,21 @@ class CodeChannelStore:
                 if self._routes.get(session_id) is not route and not _well_typed(route):
                     # Read back, it would make the whole store unavailable.
                     raise StoreWriteError(f"route {session_id}: a field is mistyped")
+        new_threads = self._thread_bindings if thread_bindings is None else thread_bindings
+        if thread_bindings is not None:
+            for key, written in new_threads.items():
+                if self._thread_bindings.get(key) is not written and not _well_typed(written):
+                    raise StoreWriteError(f"conductor thread {key}: a binding field is mistyped")
         retired = list(self._retired)
-        for channel_id, old in self._bindings.items():
-            new = new_bindings.get(channel_id)
-            if old.session_key and (new is None or new.session_key != old.session_key):
-                if old.session_key not in retired:
-                    retired.append(old.session_key)
+        for table, new_table in (
+            (self._bindings, new_bindings),
+            (self._thread_bindings, new_threads),
+        ):
+            for key, old in table.items():
+                new = new_table.get(key)
+                if old.session_key and (new is None or new.session_key != old.session_key):
+                    if old.session_key not in retired:
+                        retired.append(old.session_key)
         # Never evicted: a retired key marks every worker its session created as a
         # code-channel worker for good, and dropping one would let such a worker
         # dispatch. It grows by one key per replaced or dropped binding -- a
@@ -522,6 +609,10 @@ class CodeChannelStore:
                 **{k: asdict(v) for k, v in new_revoked.items()},
                 **self._quarantined_revoked,
             },
+            "thread_bindings": {
+                **{k: asdict(v) for k, v in new_threads.items()},
+                **self._quarantined_threads,
+            },
             "retired_session_keys": list(new_retired),
             "workers": dict(new_workers),
             "resume": {k: dict(v) for k, v in new_resume.items()},
@@ -539,12 +630,19 @@ class CodeChannelStore:
         self._retired, self._workers = new_retired, new_workers
         self._resume = new_resume
         self._routes, self._bindings = new_routes, new_bindings
+        self._thread_bindings = new_threads
 
     # ── Routes ───────────────────────────────────────────────────────────
 
     def get_route(self, session_id: str) -> Route | None:
         self._read()
         return self._routes.get(session_id)
+
+    def route_to(self, channel_id: str) -> Route | None:
+        """The newest route whose recorded destination is *channel_id*, or None."""
+        self._read()
+        found = [r for r in self._routes.values() if channel_id and r.channel_id == channel_id]
+        return max(found, key=lambda r: r.created_at) if found else None
 
     def record_decision(self, route: Route) -> Route:
         """Store *route*'s decision unless one is already recorded.
@@ -683,10 +781,14 @@ class CodeChannelStore:
             raise StoreUnavailable("the code-channel store is not loaded")
         if self._load_failed:
             raise StoreUnavailable("the code-channel store could not be read")
-        current = {b.session_key for b in self._bindings.values() if b.session_key}
+        current = {
+            b.session_key
+            for b in (*self._bindings.values(), *self._thread_bindings.values())
+            if b.session_key
+        }
         named = {
             str(raw["session_key"])
-            for raw in self._quarantined.values()
+            for raw in (*self._quarantined.values(), *self._quarantined_threads.values())
             if isinstance(raw, dict)
             and isinstance(raw.get("session_key"), str)
             and raw["session_key"]
@@ -708,7 +810,7 @@ class CodeChannelStore:
 
         bad_bindings = [
             (_field(raw, "session_key"), _field(raw, "anchor_ts"))
-            for raw in self._quarantined.values()
+            for raw in (*self._quarantined.values(), *self._quarantined_threads.values())
         ]
         bad_revoked = [
             (None, _field(raw, "anchor_ts")) for raw in self._quarantined_revoked.values()
@@ -811,14 +913,29 @@ class CodeChannelStore:
                 self._commit(resume={**self._resume, key: dict(record)})
             return True
 
-    def put_binding(self, binding: Binding) -> Binding:
-        """Store *binding* unless the channel is already bound; returns the stored one."""
+    def put_binding(
+        self,
+        binding: Binding,
+        *,
+        admit: Callable[[], bool] | None = None,
+        keep_revoked: bool = False,
+    ) -> Binding | None:
+        """Store *binding* unless the channel is already bound; returns the stored one.
+
+        *admit*, asked under the lock right before the write, refuses it: None, and
+        nothing written, when it answers False. *keep_revoked* refuses it the same way
+        when the channel is revoked, so the write can never clear a revocation.
+        """
         with self._lock:
             self._ensure_loaded()
             self._refuse_quarantined(binding.channel_id)
             existing = self._bindings.get(binding.channel_id)
             if existing is not None:
                 return existing
+            if keep_revoked and binding.channel_id in self._revoked:
+                return None
+            if admit is not None and not admit():
+                return None
             stored = Binding(**{**asdict(binding), "created_at": binding.created_at or time.time()})
             self._commit(
                 bindings={**self._bindings, binding.channel_id: stored},
@@ -866,11 +983,29 @@ class CodeChannelStore:
             return None
         return {k: v for k, v in self._revoked.items() if k != channel_id}
 
-    def replace_binding(self, binding: Binding) -> Binding:
-        """Overwrite the channel's binding (its session was closed and remade)."""
+    def replace_binding(
+        self,
+        binding: Binding,
+        *,
+        expected_session: str = "",
+        admit: Callable[[], bool] | None = None,
+    ) -> Binding | None:
+        """Overwrite the channel's binding (its session was closed and remade).
+
+        With *expected_session*, only while the stored binding still names that
+        session; with *admit*, only while it answers True. Both are asked under the
+        lock with the write: None, and nothing written, when the channel was unbound,
+        revoked or rebound meanwhile, or *admit* refuses.
+        """
         with self._lock:
             self._ensure_loaded()
             self._refuse_quarantined(binding.channel_id)
+            if expected_session:
+                current = self._bindings.get(binding.channel_id)
+                if current is None or current.session_key != expected_session:
+                    return None
+            if admit is not None and not admit():
+                return None
             stored = Binding(**{**asdict(binding), "created_at": binding.created_at or time.time()})
             self._commit(
                 bindings={**self._bindings, binding.channel_id: stored},
@@ -897,6 +1032,117 @@ class CodeChannelStore:
             stored = Binding(**{**asdict(existing), **fields})
             self._commit(bindings={**self._bindings, channel_id: stored})
             return stored
+
+    # ── Conductor threads ────────────────────────────────────────────────
+
+    def thread_bindings(self) -> list[Binding]:
+        """Every Conductor thread's binding, ended ones included."""
+        self._read()
+        return list(self._thread_bindings.values())
+
+    def loaded_thread_bindings(self) -> list[Binding] | None:
+        """:meth:`thread_bindings` WITHOUT loading: ``None`` before :meth:`load`
+        (the synchronous gates read that as "not a Conductor thread")."""
+        if not self._loaded:
+            return None
+        return list(self._thread_bindings.values())
+
+    def get_thread_binding(self, channel_id: str, anchor_ts: str) -> Binding | None:
+        """The binding of the Conductor thread *anchor_ts* in *channel_id*, or None."""
+        self._read()
+        return self._thread_bindings.get(thread_key(channel_id, anchor_ts))
+
+    def is_thread_quarantined(self, channel_id: str, anchor_ts: str) -> bool:
+        """Whether that thread's row could not be read back (the thread is fenced)."""
+        self._read()
+        return thread_key(channel_id, anchor_ts) in self._quarantined_threads
+
+    def put_thread_binding(self, binding: Binding) -> Binding:
+        """Bind a Conductor thread, once; returns the stored binding.
+
+        One way: a thread already bound keeps its first binding, ended or not,
+        and this returns it unchanged. Refused (``ValueError``) for a record that
+        is not a whole thread binding -- ``thread`` set, channel, workspace,
+        anchor and session named, a known ``room`` -- and (:class:`StoreWriteError`)
+        for a thread whose row is quarantined, an anchor that is a code channel's
+        or a revoked one, or a store that could not be read.
+        """
+        if not (
+            binding.thread is True
+            and binding.channel_id
+            and binding.team_id
+            and binding.anchor_ts
+            and binding.session_key
+            and binding.room in THREAD_ROOMS
+            and not binding.ended_at
+        ):
+            raise ValueError(
+                "a Conductor thread binding needs its channel, team, anchor, session and room"
+            )
+        key = thread_key(binding.channel_id, binding.anchor_ts)
+        with self._lock:
+            self._ensure_loaded()
+            if key in self._quarantined_threads:
+                raise StoreWriteError(
+                    f"conductor thread {key}: its row could not be read; refusing to bind it again"
+                )
+            existing = self._thread_bindings.get(key)
+            if existing is not None:
+                return existing
+            if binding.channel_id in self._bindings or any(
+                b.anchor_ts == binding.anchor_ts for b in self._bindings.values()
+            ):
+                raise StoreWriteError(f"conductor thread {key}: the channel is a code channel")
+            if any(r.anchor_ts == binding.anchor_ts for r in self._revoked.values()):
+                raise StoreWriteError(f"conductor thread {key}: the thread has ended")
+            stored = Binding(**{**asdict(binding), "created_at": binding.created_at or time.time()})
+            self._commit(thread_bindings={**self._thread_bindings, key: stored})
+            return stored
+
+    def end_thread_binding(
+        self, channel_id: str, anchor_ts: str, *, at: float | None = None
+    ) -> Binding | None:
+        """Stamp the Conductor thread ended (idempotent); None when it is not bound."""
+        key = thread_key(channel_id, anchor_ts)
+        with self._lock:
+            self._ensure_loaded()
+            existing = self._thread_bindings.get(key)
+            if existing is None or existing.ended_at:
+                return existing
+            stored = Binding(**{**asdict(existing), "ended_at": at or time.time()})
+            self._commit(thread_bindings={**self._thread_bindings, key: stored})
+            return stored
+
+    def prune_ended_threads(self, *, now: float | None = None) -> int:
+        """Move threads ended over :data:`THREAD_ENDED_TTL_SECS` ago into ``revoked``.
+
+        Their anchor stays fenced through ``revoked``'s anchor (:meth:`revoked_anchor`)
+        and their session key is retired, so a worker the thread's session created
+        stays a code-channel worker for good. A live thread is never pruned.
+        Returns how many moved. shortcut: ``revoked`` keeps the newest
+        :data:`MAX_REVOKED` entries, so a thread pushed out by that many newer
+        endings answers as a plain thread again; give ended anchors their own
+        unbounded set if an install ever ends that many.
+        """
+        moment = time.time() if now is None else now
+        with self._lock:
+            self._ensure_loaded()
+            due = {
+                key: b
+                for key, b in self._thread_bindings.items()
+                if b.ended_at and moment - b.ended_at >= THREAD_ENDED_TTL_SECS
+            }
+            if not due:
+                return 0
+            revoked = {
+                **self._revoked,
+                **{key: Revoked(b.ended_at, b.anchor_ts) for key, b in due.items()},
+            }
+            self._commit(
+                thread_bindings={k: v for k, v in self._thread_bindings.items() if k not in due},
+                revoked=_bounded_revoked(revoked),
+            )
+            return len(due)
 
 
 _STORE: CodeChannelStore | None = None

@@ -14,6 +14,9 @@
 
 const successors = new Map<string, string>()
 
+/** Replaced slots whose replacement is not yet committed (`commitSlotSuccession`). */
+const uncommitted = new Set<string>()
+
 /** Oldest UNREFERENCED entries are evicted first; a `Map` iterates in insertion order. */
 const MAX_TRACKED = 64
 
@@ -60,7 +63,11 @@ export function releaseSlotSuccession(slot: string | null | undefined): void {
   else pinned.set(slot, held - 1)
 }
 
-export function recordSlotSuccession(from: string, to: string): void {
+/**
+ * Record that `to` replaces `from`. A `pending` record is followed by every resolve except a
+ * `committedOnly` one, until `commitSlotSuccession(from)` commits it.
+ */
+export function recordSlotSuccession(from: string, to: string, opts?: { pending?: boolean }): void {
   if (!from || !to || from === to) return
   if (successors.size >= MAX_TRACKED) {
     // Reclaims the oldest entry no operation needs. A fully-referenced table may exceed the cap,
@@ -69,19 +76,30 @@ export function recordSlotSuccession(from: string, to: string): void {
     for (const key of successors.keys()) {
       if (!referenced.has(key)) {
         successors.delete(key)
+        uncommitted.delete(key)
         break
       }
     }
   }
   successors.set(from, to)
+  if (opts?.pending) uncommitted.add(from)
+  else uncommitted.delete(from)
+}
+
+/** Commit a replacement recorded as pending. */
+export function commitSlotSuccession(from: string): void {
+  uncommitted.delete(from)
 }
 
 /**
  * The live slot for `slot`, following any recorded replacements. Absence passes through
  * unchanged so callers can preserve the contract that work without an initiating slot
- * has no destination.
+ * has no destination. `committedOnly` stops at a replacement that is still pending.
  */
-export function resolveSlotSuccession(slot: string | null | undefined): string | null | undefined {
+export function resolveSlotSuccession(
+  slot: string | null | undefined,
+  opts?: { committedOnly?: boolean },
+): string | null | undefined {
   if (!slot) return slot
   let current = slot
   const seen = new Set<string>([current])
@@ -89,7 +107,7 @@ export function resolveSlotSuccession(slot: string | null | undefined): string |
   // is referenced may exceed the cap; that many hops still exhausts any acyclic chain in it.
   for (let hop = 0; hop < successors.size; hop++) {
     const next = successors.get(current)
-    if (!next || seen.has(next)) return current
+    if (!next || seen.has(next) || (opts?.committedOnly && uncommitted.has(current))) return current
     seen.add(next)
     current = next
   }
@@ -100,6 +118,7 @@ export function resolveSlotSuccession(slot: string | null | undefined): string |
 
 export function clearSlotSuccession(): void {
   successors.clear()
+  uncommitted.clear()
   pinned.clear()
 }
 
@@ -114,4 +133,5 @@ export function clearSlotSuccession(): void {
 export function forgetSlotSuccession(from: string): void {
   if (!from) return
   successors.delete(from)
+  uncommitted.delete(from)
 }

@@ -70,6 +70,50 @@ class TestRecordLessonSaved:
         assert rows[0]["slot"] == SLOT
         assert rows[0]["id"]
 
+    def test_the_row_carries_the_saved_lesson_key(self) -> None:
+        slot = _Slot()
+        chat_cards.record_lesson_saved(
+            _State(slot), SLOT, "always use pnpm", "inserted", key="lesson.0123456789ab"
+        )
+        assert _lesson_rows(slot)[0]["key"] == "lesson.0123456789ab"
+
+    @pytest.mark.parametrize("store", ["member-reviewer-abc", "shared-notes", "a" * 80])
+    def test_the_row_carries_a_valid_named_store(self, store: str) -> None:
+        slot = _Slot()
+        chat_cards.record_lesson_saved(
+            _State(slot), SLOT, "always use pnpm", "inserted", store=store
+        )
+        assert _lesson_rows(slot)[0]["store"] == store
+
+    @pytest.mark.parametrize(
+        "store",
+        [
+            None,
+            "",
+            7,
+            "../other",
+            "two/stores",
+            "Uppercase",
+            "-leading",
+            "trailing-",
+            "a" * 81,
+            "con",
+            "lpt1",
+        ],
+    )
+    def test_global_or_invalid_store_is_left_off(self, store: Any) -> None:
+        slot = _Slot()
+        chat_cards.record_lesson_saved(
+            _State(slot), SLOT, "always use pnpm", "inserted", store=store
+        )
+        assert "store" not in _lesson_rows(slot)[0]
+
+    @pytest.mark.parametrize("key", [None, "", "pref.theme", "lesson.XYZ", "lesson.01/../x", 7])
+    def test_a_key_that_is_not_a_lesson_key_is_left_off(self, key: Any) -> None:
+        slot = _Slot()
+        chat_cards.record_lesson_saved(_State(slot), SLOT, "always use pnpm", "inserted", key=key)
+        assert "key" not in _lesson_rows(slot)[0]
+
     @pytest.mark.parametrize("outcome", ["unchanged", "deduped", "refused", "", None])
     def test_a_write_that_changed_nothing_draws_nothing(self, outcome: Any) -> None:
         slot = _Slot()
@@ -122,6 +166,8 @@ class TestLessonsRouteDrawsTheRow:
         slot_key: str = SLOT,
         record: MagicMock | None = None,
         slot: Any = None,
+        key: str | None = None,
+        store: str = "",
     ) -> tuple[Any, MagicMock]:
         """With ``slot``, the real ``record_lesson_saved`` draws into that slot."""
         from kiro_crew.dashboard.handlers import cron
@@ -140,16 +186,19 @@ class TestLessonsRouteDrawsTheRow:
         attach_body(request, {"rule": "always use pnpm", "category": "knowledge"})
         vs = MagicMock()
         vs.embed_lesson.return_value = None
-        vs.write_lesson.return_value = LessonWriteResult(outcome)
+        vs.write_lesson.return_value = LessonWriteResult(outcome, key=key)
         record = record or MagicMock()
         with (
             patch.object(cron, "_recognize_session", new=AsyncMock(return_value=None)),
             patch.object(cron, "_is_restricted_session", return_value=False),
             patch.object(
-                cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=("", None))
+                cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(store, None))
             ),
             patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
             patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)),
+            patch.object(
+                cron.ContextBuilder, "get_memory_for", return_value=MagicMock(vector_store=vs)
+            ),
             patch.object(cron, "_embed_lesson_bounded", return_value=None),
             patch.object(cron, "_sel"),
             patch(
@@ -168,6 +217,28 @@ class TestLessonsRouteDrawsTheRow:
         record.assert_called_once()
         _state, slot_key, rule, outcome = record.call_args.args
         assert (slot_key, rule, outcome) == (SLOT, "always use pnpm", "inserted")
+
+    async def test_the_route_draws_the_written_key_on_the_row(self) -> None:
+        slot = _ChatSlot(SLOT)
+        resp, _ = await self._post(
+            LessonWriteOutcome.INSERTED, slot=slot, key="lesson.0123456789ab"
+        )
+        assert resp.status == 200
+        assert [r.get("key") for r in _lesson_rows(slot)] == ["lesson.0123456789ab"]
+
+    @pytest.mark.parametrize("store", ["member-reviewer-abc", ""])
+    async def test_the_route_draws_the_resolved_store_on_the_row(self, store: str) -> None:
+        slot = _ChatSlot(SLOT)
+        resp, _ = await self._post(
+            LessonWriteOutcome.INSERTED, slot=slot, key="lesson.0123456789ab", store=store
+        )
+        assert resp.status == 200
+        (row,) = _lesson_rows(slot)
+        assert row["key"] == "lesson.0123456789ab"
+        if store:
+            assert row["store"] == store
+        else:
+            assert "store" not in row
 
     async def test_the_memory_tab_add_draws_nothing(self) -> None:
         slot = _ChatSlot(SLOT)

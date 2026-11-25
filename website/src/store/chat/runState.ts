@@ -441,8 +441,8 @@ export const runStateReducers = {
    *  it (the active mirror or a background slot's `slotRun`), so the
    *  composer stops offering a Stop button that can never do anything and
    *  the press has a visible result (#9547). */
-  settleStopNotRunning(state: ChatState, action: PayloadAction<{ slot: string; epoch?: number }>) {
-    const { slot, epoch } = action.payload
+  settleStopNotRunning(state: ChatState, action: PayloadAction<{ slot: string; epoch?: number; sendCancelled?: boolean }>) {
+    const { slot, epoch, sendCancelled } = action.payload
     if (isUnsafeKey(slot)) return
     // A turn that STARTED after the press was made is not the one the
     // backend answered about: a delayed reply must not idle it.
@@ -454,8 +454,13 @@ export const runStateReducers = {
       // the composer mid-send and invite a duplicate turn; the same guard
       // syncSlotRunningFromServer applies to a stale snapshot applies to this
       // answer. startLocalTurn/endLocalTurn and the first live frame own the
-      // mark's lifecycle.
-      if (state.pendingTurnSlot === slot) return
+      // mark's lifecycle. A Stop that cancelled that send settles it too: a
+      // POST that still reached the gateway turns the pane busy again with its
+      // first live frame.
+      if (state.pendingTurnSlot === slot) {
+        if (!sendCancelled) return
+        state.pendingTurnSlot = null
+      }
       state.slotRunning = false
       state.slotStopping = false
       state.slotState = 'idle'
@@ -464,6 +469,9 @@ export const runStateReducers = {
       return
     }
     const run = state.slotRun?.[safeKey(slot)]
+    // A send this Stop cancelled leaves no pending mark behind, even when the
+    // slot was switched away from while the stop was in flight.
+    if (run && sendCancelled) delete run.pendingTurn
     if (!run || run.state === 'idle') return
     setRunState(run, 'idle')
     run.lastChunkSeq = undefined

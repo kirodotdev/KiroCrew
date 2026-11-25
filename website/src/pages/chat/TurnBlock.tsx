@@ -7,6 +7,7 @@ import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { MESSAGE_BODY_ATTR } from '../../messageActions/messageText'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
@@ -302,7 +303,10 @@ function substantiveLength(text: string): number {
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
  * any length, else -1. System notice rows (a watchdog recycle, a compaction)
- * never qualify: they trail the answer and must not displace it. Shared by the
+ * never qualify: they trail the answer and must not displace it. Nor does any
+ * row after the turn's last stamped reply (`isTurnEnd`, the reply the runner
+ * recorded): a workflow result or another writer's row landing after it would
+ * otherwise fold the turn's final answer. Shared by the
  * auto-expand decision and the render split so the "what's the always-visible
  * conclusion vs collapsed reasoning" answer can't drift between them (a
  * mismatch wrongly expands reasoning above a visible match and pushes it down).
@@ -310,7 +314,8 @@ function substantiveLength(text: string): number {
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
+  const lastReply = items.findLastIndex(it => it.kind === 'single' && isTurnEnd(it.msg))
+  for (let i = lastReply >= 0 ? lastReply : items.length - 1; i >= 0; i--) {
     const it = items[i]
     if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i
@@ -673,9 +678,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   useEffect(() => {
     if (!jumpInTurn || !revealTs) return
     const t = setTimeout(() => {
-      // The transcript's own row, not the measuring farm's off-screen copy.
-      const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
-      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]'))
+      // The transcript's own row: not the measuring farm's copy, nor one authored in a message.
+      // Searched in this pane's own transcript: split panes can show the same
+      // transcript, so the same timestamp can mark a row in another pane.
+      const rows = (scrollerEl() ?? document).querySelectorAll<HTMLElement>('[data-jump-target]')
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]') && !el.closest(`[${MESSAGE_BODY_ATTR}]`))
       if (!row) return
       // The jump's settle poll centres the whole turn each frame; end it first.
       claimScroll()

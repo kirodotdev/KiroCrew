@@ -154,7 +154,7 @@ async def test_an_inheriting_agent_keeps_the_default_trees_and_gets_no_rule(home
 
     entry = await _entry("plain", checkout)
 
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
     assert _kas_offers(kiro, entry) == _v2_skills("plain", checkout)
     assert len(_kas_offers(kiro, entry)) == 5
 
@@ -170,6 +170,13 @@ async def test_an_agent_that_may_not_inherit_loads_no_skill(home):
     assert _kas_offers(kiro, entry) == set()
 
 
+def _skill_rules(entry: dict) -> list[dict]:
+    """*entry*'s rules other than the deny on Kiro Crew's own agents every
+    sub-agent tool carries (``kas_subagent_targets.deny_own_agents``)."""
+    rules = (entry.get("permissions") or {}).get("rules") or []
+    return [r for r in rules if r.get("capability") != "subagent"]
+
+
 @pytest.mark.asyncio
 async def test_the_whole_catalog_worker_is_not_narrowed(home):
     kiro, checkout, _package = home
@@ -178,7 +185,7 @@ async def test_the_whole_catalog_worker_is_not_narrowed(home):
     entry = await _entry("kirocrew-worker", checkout)
 
     assert _v2_skills("kirocrew-worker", checkout) is None
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
 
 
 @pytest.mark.asyncio
@@ -198,21 +205,56 @@ async def test_a_scope_past_the_exclude_bound_denies_by_name_and_keeps_parity(ho
     assert len(_kas_offers(kiro, entry)) == count
 
 
+_SCOPE_FAILED = "could not work out which skills"
+
+
+def _boom(*_a, **_k):
+    raise RuntimeError("scope read failed")
+
+
 @pytest.mark.asyncio
-async def test_a_failed_scope_costs_the_narrowing_not_the_session(home, monkeypatch):
+async def test_a_failed_scope_denies_every_skill_but_starts_the_session(home, monkeypatch):
+    kiro, checkout, package = home
+    path = _skill(package, "alpha")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+    monkeypatch.setattr(kas_skill_scope, "scope_globs", _boom)
+
+    extras = await KasHarness().session_extras("mapped", work_dir=str(checkout))
+    [entry] = extras.custom_agents
+
+    assert entry["id"] == "mapped"
+    assert _kas_offers(kiro, entry) == set()
+    assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_scope_rules_keep_only_the_copies_already_made(home, monkeypatch):
+    kiro, checkout, package = home
+    path = _raw_skill(package, "nodesc", "---\nname: nodesc\n---\nUse me well\n")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+    monkeypatch.setattr(kas_skill_scope, "skill_scope_rules", _boom)
+
+    extras = await KasHarness().session_extras("mapped", work_dir=str(checkout))
+    [entry] = extras.custom_agents
+
+    assert set(_copies(entry)) == {"nodesc"}
+    rules = entry["permissions"]["rules"]
+    assert not _denied(rules, "nodesc")
+    assert all(_denied(rules, f"global-{i}") for i in range(5))
+    assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_scope_that_works_adds_no_failure_notice(home):
     kiro, checkout, package = home
     path = _skill(package, "alpha")
     _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
 
-    def _boom(*_a, **_k):
-        raise RuntimeError("scope read failed")
+    extras = await KasHarness().session_extras("mapped", work_dir=str(checkout))
+    [entry] = extras.custom_agents
 
-    monkeypatch.setattr(kas_skill_scope, "scope_globs", _boom)
-
-    entry = await _entry("mapped", checkout)
-
-    assert entry["id"] == "mapped"
-    assert "permissions" not in entry
+    assert _kas_offers(kiro, entry) == {"alpha"}
+    assert _SCOPE_FAILED not in (extras.withheld_credentials_notice or "")
 
 
 @pytest.mark.asyncio
@@ -406,7 +448,7 @@ async def test_a_default_tree_skill_kas_refuses_loads_as_a_fixed_copy(home):
     assert str(kiro / "skills" / "No_Front") in copies["no-front"]["body"]
     assert copies["my-skill"]["description"] == "d"
     assert copies["colon"]["description"] == "body"
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
 
 
 @pytest.mark.asyncio

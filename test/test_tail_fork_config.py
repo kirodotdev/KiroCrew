@@ -1,4 +1,4 @@
-"""Tests for tail_fork dashboard config fields (GET/PUT round-trip)."""
+"""Tests for fork dashboard config fields (GET/PUT round-trip)."""
 
 from __future__ import annotations
 
@@ -126,3 +126,32 @@ async def test_handler_put_ignores_deprecated_head_handling_key(handler_app, cfg
         cfg = KiroCrewConfig.load()
         assert cfg.dashboard.tail_fork_enabled is True
         assert not hasattr(cfg.dashboard, "tail_fork_head_handling")
+
+
+@pytest.mark.asyncio
+async def test_handler_put_fork_inherits_pin_persists(handler_app, cfg_file):
+    async with TestClient(TestServer(handler_app)) as client:
+        resp = await client.put("/api/dashboard/config", json={"fork_inherits_pin": False})
+        assert resp.status == 200
+        cfg = KiroCrewConfig.load()
+        assert cfg.dashboard.fork_inherits_pin is False
+
+
+@pytest.mark.asyncio
+async def test_handler_put_fork_inherits_pin_invalid(handler_app, cfg_file):
+    async with TestClient(TestServer(handler_app)) as client:
+        resp = await client.put("/api/dashboard/config", json={"fork_inherits_pin": "no"})
+        assert resp.status == 400
+        body = await resp.json()
+        assert "boolean" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_handler_get_returns_fork_inherits_pin(handler_app, cfg_file):
+    async with TestClient(TestServer(handler_app)) as client:
+        body = await (await client.get("/api/dashboard/config")).json()
+        assert body["fork_inherits_pin"] is True
+    cfg_file.write_text(json.dumps({"dashboard": {"fork_inherits_pin": False}}), encoding="utf-8")
+    async with TestClient(TestServer(handler_app)) as client:
+        body = await (await client.get("/api/dashboard/config")).json()
+        assert body["fork_inherits_pin"] is False

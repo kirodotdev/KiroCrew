@@ -360,6 +360,17 @@ class TestNativeTurnHonorsChannelCrew:
         assert "cwd" not in kw
 
     @pytest.mark.asyncio
+    async def test_thread_bot_runs_the_record_with_or_without_a_channel_pin(self, crew_cfg):
+        # ``!bot web-frontend`` stores the record's name as the thread's agent.
+        _cfg, tree = crew_cfg
+        for channel_agent in (None, "siads-etl-test"):
+            kw, ctx = await self._run(channel_agent, thread_agent="web-frontend")
+            assert kw["agent"] == "kirocrew"
+            assert kw["crew_agent"] == "web-frontend"
+            assert kw["cwd"] == str(tree)
+            assert ctx.build_message.call_args.kwargs.get("agent") == "kirocrew"
+
+    @pytest.mark.asyncio
     async def test_plain_mode_channel_is_unchanged(self, crew_cfg):
         kw, _ctx = await self._run("siads-etl-test")
         assert kw["agent"] == "siads-etl-test"

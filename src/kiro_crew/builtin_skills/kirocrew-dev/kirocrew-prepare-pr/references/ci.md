@@ -1,7 +1,7 @@
 # CI lanes, issue tiers and GitHub fallbacks
 
-Read from SKILL.md's *Lanes* when a lane other than `Fast Gate` is red, from
-*Issue first* for the tier table, and from Phase 3 step 2 when `gh` cannot update
+Read from `references/ci-glance.md`'s *Lanes* when a lane other than `Fast Gate` is
+red, from its *Issue first* for the tier table, and from Phase 3 step 2 when `gh` cannot update
 a PR body. Full detail: `docs/ci/ci-and-reviews.md` and `CONTRIBUTING.md`. CI wins
 over prose.
 
@@ -16,7 +16,7 @@ over prose.
 | `CI`, `Build` | yes | tests, lint, coverage, e2e, artifacts — Phase 3 (a) |
 | `Code Review` | yes | grep rules, Semgrep, woke |
 | `PR Hygiene` | yes | a Conventional-Commits title, the template's headings with a filled `**Goal:**`, `## Pattern harvest` on a `fix`/`revert` PR (plus a `## Sibling sweep` and, on a `fix:` PR, a `Proof:` line inside `## Tests`, both warnings for now), and a `Reader:` line when the diff takes something away; a description edit re-runs it, no push needed |
-| `Issue Gate` | once enabled | the issue line or its tier (SKILL.md's *Issue first*) |
+| `Issue Gate` | once enabled | the issue line or its tier (`references/ci-glance.md`'s *Issue first*) |
 | `Opus 5.5 Review`, `GPT 6.1 Review` | Critical/High | line-level findings — Phase 3 (b) |
 | `Security Scope Review` | yes | each row is a legitimate operation your tightening newly refuses; narrow the rule, or override `scope` |
 | `Design Review`, `First Principles Review`, `UX Review` | BLOCK only | PASS needs no reply; every BLOCK item is fixed or answered |
@@ -81,7 +81,7 @@ python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' |
 
 ## Issue tiers
 
-Read from SKILL.md's *Issue first*. The Captain — the maintainers' triage crew — scans
+Read from `references/ci-glance.md`'s *Issue first*. The Captain — the maintainers' triage crew — scans
 issues with no tier, writes one tier label and marks the issue `pending-triage`.
 The tier says how big the work is:
 

@@ -158,6 +158,35 @@ the cold start, the warm-pool re-apply and a live switch already use. A
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
+The select stays the account's whole served list because Crew declares the
+sharedModelPicker client capability (`acp/kas_shared_model_picker.py`, added to
+`clientCapabilities._meta.kiro` in `runtime_spawn_launch._handshake_client_capabilities`).
+A Kiro user hides models from the model picker and orders it on Kiro Web or in the
+Kiro CLI, the choice is stored per account, and the engine applies it to the `model`
+select it sends a client that does not declare the capability; a client that
+declares it is sent every served model, in the account's order, and the hidden
+models as the `modelPickerHidden` row of its connection-level configuration view.
+Crew reads that row once after `initialize` (`_kiro/configuration/getState`,
+`observer: connection`; `_read_shared_model_picker`) and on each pushed
+`_kiro/configuration/state` of the connection view (the reader loop's
+`_follow_shared_model_picker`), only from an engine whose `agentCapabilities` carry
+the flag and the method (`serves_shared_picker`), and records it beside the catalog
+under the vault identity (`kas_model_catalog.record_hidden_models`). The bundle-route
+picker marks each such model's row `hidden_by_account: true`
+(`models_kas_bundle._picker_row`); the chat picker leaves those models out on top of
+Crew's own hidden list (`filterInteractiveModels`), the Selectable Models editor
+lists them locked and unticked, the row's description line starting "Hidden
+through your app.kiro.dev settings" with a link to app.kiro.dev/settings/model
+(`MultiSelectOption.lockedReason`), and writes none of them, and the Bot and role pickers keep
+every served model, since hiding is a view preference and a hidden model stays
+usable. The account's order arrives as the select's order, which the picker keeps
+(`withAutoFirst` moves only Auto); the `modelPickerOrder` row is not read, nothing
+is written back, and an engine
+that states no row (an older one, or a view without it) hides nothing from the
+account. On the kiro-cli relay route the picker is `--list-models` narrowed to
+what a live session advertises; the same flags go out there, so the account's
+hidden models stay in that list, and nothing on that route marks them.
+
 A reopened chat's select is not the account's list. From kiro-cli 3.4 (measured on
 3.4.1) `session/load` answers with a select naming one model, the one the session
 runs, while `session/new` on the same account lists every served model, and KAS
@@ -276,11 +305,24 @@ keeps reading `--list-models` exactly as below, except on a relay that starts on
 Crew's sign-in alone (entered through `kiro-cli-chat`,
 `acp.kas_route.crew_sign_in_starts_spawn`) once kiro-cli's gate refuses:
 there `/api/models` serves the same recording and starts no cold probe, so a
-model-list read spawns nothing, and a cold read answers `auto` until the first
-chat spawns. One cold read there keeps the gate's 503 instead: the one whose
-kiro-cli check only timed out (`kiro_probe_timed_out`). A timeout passes on a
-later read, and on a 503 the dashboard keeps the list it holds and reads again,
-where it would save `auto` over that list and stop reading. The bundle route runs no
+model-list read starts no session, and a cold read answers `auto` until the first
+chat spawns. No probe means no `models_changed` frame, so that cold `auto` row
+carries `"cold": true` (`models_kas_bundle._serve_recording`, for a route that
+never starts a probe): the dashboard shows `auto` alone, as the next account
+must see, but never saves it as its last-good list, and reads again every 8
+seconds with no failure notice. That is `modelListHealth`'s cold flag, kept
+apart from `degraded`: the failure notices read only `degraded`, and the
+composer chip and the split-pane picker read either before they call a pinned
+model unavailable, so a pin keeps its name while the list is cold. A failed read
+while cold still falls back to the held list, as every failed read does, and
+each re-read still goes through kiro-cli's readiness gate, which probes kiro-cli
+again at most every 30 seconds. One cold read there keeps the gate's 503
+instead: the one whose kiro-cli check only timed out (`kiro_probe_timed_out`), a
+failed read the page reports, not a cold list; it passes on a later read. A
+workload-identity host's list (kas-auth.md) never starts a probe either, so its
+cold answer is marked the same way. The bundle route's cold answer, like other
+harnesses', is unmarked: its probe's `models_changed` frame, when one runs,
+refills the picker. The bundle route runs no
 entitlement narrowing on the recording: the select already lists what the
 signed-in account is served, and `_entitled_kiro_models` reads the newest live
 `acp`-namespace provider, which can be a retained kiro-cli session after a
@@ -754,7 +796,11 @@ its own once the cache refreshes with a list that carries it.
   (`_inherited_default_model`) only to know which default the slot inherits. Neither
   `slot.model` backfill site writes the provider's served model into such a slot,
   whatever that default is, Auto included (every tier deferring to the backend); the
-  composer chip reads it from `served_model`. A Bot's thread with no pick of its own
+  composer chip reads it from `served_model` when what the slot inherits resolves to
+  Auto, and names the inherited model otherwise, except after an engine promotion: the
+  promotion records the served id as the slot's `engine_promoted_model`, and while
+  `served_model` still equals it the chip names that model, the one the session runs
+  on until its next fresh start. A Bot's thread with no pick of its own
   is the same: it asks for the Bot's model on every turn and `slot.model` stays empty,
   so `slot.model` holds only a person's pick. A settings change to the default or to
   the Bot's model
@@ -830,8 +876,11 @@ its own once the cache refreshes with a list that carries it.
   current catalog. Enabling the configured effort default moves the slider thumb to
   that level before the setting write completes.
 - **Pin a cheaper model** for the worker roles only through
-  `agent.role_models.<role>` (`background`, `subagent`), read by
-  `AgentConfig.resolve_model(role)` in `config/sections_agent.py`. Roles default to
+  `agent.role_models.<role>` (`background`, `subagent`, `subagent_light`,
+  `optimizer`), read by `AgentConfig.resolve_model(role)` in
+  `config/sections_agent.py`; the prompt optimizer reads its `optimizer` pin
+  directly, and unset leaves it on the model the `kirocrew-lite` spec
+  resolves. Roles default to
   `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat model
   does not silently become the price of every background task. The sessions a
   Bot dispatches with `session_create` are the one decided exception

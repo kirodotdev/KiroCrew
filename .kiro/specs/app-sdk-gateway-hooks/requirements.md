@@ -1,6 +1,6 @@
 # Requirements Document
 
-Status: implemented in `src/kiro_crew/apps/hooks_integration.py` and the related `apps` modules.
+Status: implemented in `src/kiro_crew/apps/hooks_integration.py` and the related `apps` modules. No Mimir app ships on main, so Requirement 7.2 (migrating the Mimir app off hardcoded registration) describes work with no app to apply it to.
 
 ## Introduction
 

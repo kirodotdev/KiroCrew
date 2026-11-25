@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider, useSelector } from 'react-redux'
@@ -6,7 +6,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { setActiveSlot, sseChatMessage, sseSubagentPending, resolveApprovalRow } from '../store/chatSlice'
 import type { RootState } from '../store'
 import { permissionRowTarget } from '../types/approvalTarget'
-import { useTipTrigger } from '../components/TipCard'
+import { loadCuratedTips, useTipTrigger } from '../components/TipCard'
 import { selectTipYieldsToComposerSurface } from '../pages/chat/page/activeSlotState'
 
 // The approval bar fuses to the top of the composer, right under the tip's
@@ -50,6 +50,10 @@ function Harness() {
   const { tip } = useTipTrigger(true, suppressed, 'slot-a')
   return <div data-testid="tip-out">{tip ? tip.title : 'none'}</div>
 }
+
+// The hook's tip fetch also loads the curated-tip copy. That real module load
+// does not reliably settle within fake-timer flushes, so it is loaded once first.
+beforeAll(async () => { await loadCuratedTips() })
 
 describe('the tip yields to a pending tool approval', () => {
   beforeEach(() => {

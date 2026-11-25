@@ -1148,12 +1148,7 @@ class TestIsUntrackedManagedAgentOrphan:
         from kiro_crew.session_pid import _is_untracked_managed_agent_orphan
 
         with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
-            assert (
-                _is_untracked_managed_agent_orphan(
-                    902, _agent_cmdline("/usr/local/bin/claude"), set()
-                )
-                is True
-            )
+            assert _is_untracked_managed_agent_orphan(902, _CLAUDE_RUNTIME, set()) is True
 
     def test_peer_gateway_is_not_detected(self) -> None:
         """A gateway/CLI entrypoint is not an agent runtime."""
@@ -1187,6 +1182,65 @@ class TestIsUntrackedManagedAgentOrphan:
                 _is_untracked_managed_agent_orphan(906, b"/venv/bin/pytest\x00-x", set()) is False
             )
         mock_env.assert_not_called()
+
+
+#: The argv the agent SDK under the Claude ACP adapter starts the Claude CLI with.
+_CLAUDE_RUNTIME = b"\x00".join(
+    [b"/usr/local/bin/claude", b"--output-format", b"stream-json", b"--verbose"]
+)
+
+
+class TestClaudeHelperIsNotARuntime:
+    """The Claude CLI's own detached helper is not a leaked runtime.
+
+    Same binary, different arguments: only a runtime shape is reported by the scan
+    and re-detected for the reclaim.
+    """
+
+    @pytest.mark.parametrize(
+        ("cmdline", "expected"),
+        [
+            pytest.param(b"/opt/claude/bin/claude\x00__otel-server", False, id="claude-helper"),
+            pytest.param(
+                b"/opt/claude/bin/claude\x00--print\x00--output-format=stream-json",
+                True,
+                id="claude-print-runtime",
+            ),
+            pytest.param(
+                b"/opt/claude/bin/claude\x00--settings\x00{}\x00--input-format\x00stream-json",
+                True,
+                id="claude-wrapper-reexec-runtime",
+            ),
+            pytest.param(b"/opt/bin/helperd\x00__otel-server", False, id="non-managed-control"),
+        ],
+    )
+    def test_reported_and_reclaimable_only_for_a_runtime_shape(
+        self,
+        pid_file: Path,
+        session_pid_file: Path,
+        reset_untracked_report_dedup: None,
+        cmdline: bytes,
+        expected: bool,
+    ) -> None:
+        from kiro_crew.session_pid import (
+            confirm_untracked_agent_runtimes,
+            find_orphan_mcp_candidates,
+            reported_untracked_agent_pids,
+        )
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[4343]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=cmdline),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=3600.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._read_tracked_agent_pids", return_value=(set(), True)),
+        ):
+            mock_sys.platform = "linux"
+            assert find_orphan_mcp_candidates(active_pids=set()) == []
+            assert (4343 in reported_untracked_agent_pids()) is expected
+            assert (4343 in confirm_untracked_agent_runtimes()) is expected
 
 
 class TestUntrackedRuntimeReportIntegration:

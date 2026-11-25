@@ -547,3 +547,78 @@ class TestInterruptedTurnPreamble:
             assert "the user's most recent request" not in out, row
             assert "not something the user typed" in out and kind in out, row
             assert "Interrupted automated delivery:" in out, row
+
+
+class TestCancelledTurnPreambleReplay:
+    """A replay the same prompt carries makes the restore a second copy of the stopped turn.
+
+    The replay text comes from the real ``build_session_replay``, so the punctuation fold
+    and the image-reference strip it applies are the ones the match has to survive.
+    """
+
+    STOP = json.dumps(
+        {"kind": "stop_event", "id": "stop-abc", "state": "stopped", "outcome": "soft"}
+    )
+
+    def _log(self, tmp_path, request="please refactor the parser"):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("sess1", "user", request)
+        log.append("sess1", "assistant", "Starting on the parser")
+        log.append("sess1", "system", self.STOP)
+        return log
+
+    @staticmethod
+    def _restore(log, replay):
+        from kiro_crew.context import build_cancelled_turn_preamble
+
+        return build_cancelled_turn_preamble(log, "sess1", replay=replay)
+
+    def test_a_replay_that_holds_the_request_leaves_the_restore_out(self, tmp_path):
+        from kiro_crew.context import build_session_replay
+
+        log = self._log(tmp_path)
+        replay = build_session_replay(log, "sess1")
+
+        assert "\nUser: please refactor the parser\n" in f"\n{replay}\n"
+        assert self._restore(log, replay) == ""
+        # The same transcript without a replay in the prompt is restored as before.
+        assert "Cancelled user request:\nplease refactor the parser\n" in self._restore(log, None)
+
+    def test_a_replay_cut_short_of_the_request_keeps_the_restore(self, tmp_path):
+        log = self._log(tmp_path)
+
+        result = self._restore(log, "Assistant: Starting on the parser")
+
+        assert "Cancelled user request:\nplease refactor the parser\n" in result
+
+    def test_a_longer_row_that_opens_with_the_request_is_not_the_request(self, tmp_path):
+        log = self._log(tmp_path, request="ok")
+        replay = "User: okay, now do the other thing\n\nAssistant: Starting on the parser"
+
+        assert "Cancelled user request:\nok\n" in self._restore(log, replay)
+
+    def test_an_assistant_row_that_quotes_the_request_is_not_the_request(self, tmp_path):
+        log = self._log(tmp_path)
+        replay = "Assistant: you asked for User: please refactor the parser"
+
+        assert "Cancelled user request:\nplease refactor the parser\n" in self._restore(log, replay)
+
+    def test_punctuation_the_replay_folds_still_matches(self, tmp_path):
+        from kiro_crew.context import build_session_replay
+
+        log = self._log(
+            tmp_path, request="refactor the parser \u2014 keep \u201cthe API\u201d stable"
+        )
+        replay = build_session_replay(log, "sess1")
+
+        assert "\u2014" not in replay
+        assert self._restore(log, replay) == ""
+
+    def test_an_image_reference_the_replay_strips_still_matches(self, tmp_path):
+        from kiro_crew.context import build_session_replay
+
+        log = self._log(tmp_path, request="describe ![chart](/tmp/zzshot.png) for me")
+        replay = build_session_replay(log, "sess1")
+
+        assert "zzshot.png" not in replay
+        assert self._restore(log, replay) == ""

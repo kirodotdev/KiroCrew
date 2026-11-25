@@ -639,12 +639,6 @@ class KnowledgeWatcher:
         stale = await asyncio.to_thread(count_stale_items, self.store, sig)
         if not stale:
             return
-        if stale >= _LARGE_REBUILD_WARN_THRESHOLD:
-            logger.warning(
-                "Watcher self-heal: %d items have a stale embedding sig (likely an "
-                "embedder signature change) — starting a full background re-embed. "
-                "This may take a while on a large knowledge base.", stale,
-            )
         # Atomically claim the single-flight slot (sweeps crashed leftovers, guards
         # against racing the dashboard trigger). None -> a rebuild is already running.
         # Offloaded: the BEGIN IMMEDIATE write-lock acquisition (busy_timeout up to
@@ -652,9 +646,22 @@ class KnowledgeWatcher:
         job_id = await asyncio.to_thread(start_rebuild_job, self.store)
         if job_id is None:
             return
-        logger.info(
-            "Watcher self-heal: %d items with stale embedding sig, rebuild job %s", stale, job_id
-        )
+        # Logged only once the slot is claimed: a pass that finds a rebuild still
+        # in flight (one a restart cut off, whose row is inside the staleness
+        # window) starts nothing, and a warning there reads as a second rebuild.
+        # The count is items with no vector at all as well as items from another
+        # embedding setup, so the line names both.
+        if stale >= _LARGE_REBUILD_WARN_THRESHOLD:
+            logger.warning(
+                "Watcher self-heal: re-embedding %d items whose vector is missing or "
+                "from another embedding setup (rebuild job %s). This may take a while "
+                "on a large knowledge base.", stale, job_id,
+            )
+        else:
+            logger.info(
+                "Watcher self-heal: %d items with stale embedding sig, rebuild job %s",
+                stale, job_id,
+            )
         self._reembed_task = asyncio.create_task(self._run_reembed_job(embedder, job_id))
 
     async def _run_reembed_job(self, embedder, job_id: str) -> None:

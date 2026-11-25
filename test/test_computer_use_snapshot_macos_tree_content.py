@@ -369,6 +369,16 @@ class TestFocusAndSelection:
         text = render.render_tree(snap, text_limit=500)
         assert "\n  99 button" not in text
 
+    def test_a_selection_longer_than_text_limit_is_clipped_at_capture(self, fakes: _Fakes):
+        """The snapshot itself carries the clipped selection, not only its rendering.
+
+        A consumer that reads ``Snapshot.selected_text`` without going through
+        ``render`` must still get at most ``text_limit`` characters of it.
+        """
+        self._stage_focus(fakes, selection="x" * 30_000)
+        snap = snapshot_macos.build_snapshot(_APP, _req(text_limit=40))
+        assert snap.selected_text == "x" * 40 + "…"
+
 
 class TestAlternateChildCollections:
     """``AXChildren`` alone renders a table, list or outline as EMPTY.

@@ -30,8 +30,11 @@ rung                                    channel leg                    Slack leg
 destination source                      session-map mirror link only    request-named ``channel``, else the
                                                                         session-map Slack link, else the owner DM
 recipient authorization                 ``transport.may_send_to``       ``is_tracked_channel``; a session-map
-                                        (fail-closed)                   channel passes on a ``D`` prefix OR
-                                                                        tracking (both fail-closed)
+                                        (fail-closed)                   channel passes on a ``D`` prefix, on
+                                                                        tracking, OR as the live code channel
+                                                                        bound to the caller, whose upload must
+                                                                        then come from the session's own work
+                                                                        dir (all fail-closed)
 ``channels``-scope governance           yes, inside                     yes, direct call keyed on ``slack``
 (``vet_and_audit``, fail-closed, SEL)   ``_resolve_channel_target``     (``_slack_egress_permitted``)
 restricted-session ceiling              yes                             yes, same shared predicate
@@ -50,7 +53,7 @@ resolution off the event loop           yes (``asyncio.to_thread``)     partly -
 ======================================  =============================  ===========================================
 
 Ambient lookups are PARAMETERS, not imports (``tracked_probe``,
-``persisted_probe``) -- the same contract
+``code_channel_probe``, ``persisted_probe``) -- the same contract
 :func:`kiro_crew.messaging.upload_gate.uploads_restricted` uses for its probe.
 The caller keeps one place to bind (and one place for a test to patch), and this
 module stays free of both the Slack handler's tracked-channel config dependency
@@ -61,8 +64,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig
@@ -78,6 +83,12 @@ logger = logging.getLogger(__name__)
 #: config), and a raising probe DENIES: an authorization check that errored has
 #: not authorized anybody.
 TrackedProbe = Callable[[str], bool]
+
+#: ``(state, channel_id, anchor_ts, session_key) -> work dir``: the uploading
+#: session's working directory when *channel_id* is the live, unarchived code
+#: channel bound to exactly that session through *anchor_ts*, else ``""``. A
+#: raising probe DENIES, as :data:`TrackedProbe` does.
+CodeChannelProbe = Callable[[Any, str, str, str], str]
 
 #: Channels whose transport carries the name-preserving ``send_document`` verb,
 #: as distinct from the extraction upload whose filename sanitizer maps any
@@ -123,10 +134,19 @@ class Skip:
 
 @dataclass(frozen=True)
 class SlackTarget:
-    """A resolved, authorized Slack destination."""
+    """A resolved, authorized Slack destination.
+
+    *workdir* is set only for the caller's own code channel: the upload is
+    authorized there only once :func:`code_channel_source_refusal` has found
+    the file's bytes inside that directory.
+    """
 
     channel: str
     thread_ts: str
+    workdir: str = ""
+    #: The code channel's anchor, so the caller can ask the probe again right
+    #: before it uploads.
+    anchor_ts: str = ""
 
 
 @dataclass(frozen=True)
@@ -197,6 +217,7 @@ async def resolve_slack(
     requested_channel: str,
     thread_ts: str | None,
     tracked_probe: TrackedProbe,
+    code_channel_probe: CodeChannelProbe,
     persisted_probe: upload_gate.PersistedProbe,
 ) -> SlackTarget | Refusal | Skip:
     """Resolve the Slack leg's destination and authorize the caller for it.
@@ -205,8 +226,14 @@ async def resolve_slack(
     wins; otherwise a linkable session's own Slack link supplies both channel
     and thread; otherwise the owner DM. A named channel must be tracked; a
     channel that came from the session map is accepted on a ``D`` prefix (the
-    system created that link, and a DM is not a broadcast) or on tracking.
-    Both tracking checks fail closed on a raising probe.
+    system created that link, and a DM is not a broadcast), on tracking, or as
+    the live code channel bound to this very session (*code_channel_probe*).
+    That last one posts top-level, as the channel's mirrored replies do, and
+    carries the session's work dir so the caller can hold the file to it
+    (:func:`code_channel_source_refusal`): a code channel may be Slack Connect,
+    so it gets the session's own files, not the whole workspace. A request-named
+    channel never takes the code-channel rung. Every probe fails closed on a
+    raise.
 
     The session map is consulted only for a ``dashboard:`` or channel-native
     key, and only when the request supplied no ``thread_ts`` -- an explicit
@@ -251,6 +278,7 @@ async def resolve_slack(
         )
     target_channel = requested_channel
     channel_from_session_map = False
+    session_map_ts = ""
     # A dashboard session carries its Slack link in the session map; a
     # channel-born one is linked under that same channel key by the Slack
     # handler, so both resolve their thread from the one lookup. Skipping the
@@ -264,6 +292,7 @@ async def resolve_slack(
             if not target_channel and link_ch:
                 target_channel = link_ch
                 channel_from_session_map = True
+                session_map_ts = link_ts
         elif (
             not link_ts
             and link_ch
@@ -295,7 +324,8 @@ async def resolve_slack(
             )
         # Session-map-sourced channels are trusted (the system created the
         # link), so only a user-supplied channel must clear the tracking check.
-        # Defense-in-depth: a session-map channel must still be a DM or tracked.
+        # Defense-in-depth: a session-map channel must still be a DM, tracked,
+        # or the caller's own live code channel.
         if not channel_from_session_map:
             try:
                 tracked = tracked_probe(target_channel)
@@ -315,6 +345,20 @@ async def resolve_slack(
             except Exception:
                 allowed = False  # deny-by-default extends to uncertainty
             if not allowed:
+                # The caller's own code channel: its session link names the
+                # channel's anchor, and the probe answers with the session's work
+                # dir only while the binding is live and names this session.
+                try:
+                    workdir = code_channel_probe(state, target_channel, session_map_ts, session_key)
+                except Exception:
+                    workdir = ""  # deny-by-default extends to uncertainty
+                if workdir:
+                    return SlackTarget(
+                        channel=target_channel,
+                        thread_ts="",
+                        workdir=workdir,
+                        anchor_ts=session_map_ts,
+                    )
                 return Refusal(
                     error="channel not authorized",
                     code="channel_not_authorized",
@@ -337,6 +381,152 @@ async def resolve_slack(
     if not channel:
         return Skip("no_channel")
     return SlackTarget(channel=channel, thread_ts=thread_ts or "")
+
+
+def code_channel_caller_attested(request: Any, session_key: str) -> bool:
+    """Whether the transport attests *session_key* as the caller's own.
+
+    The code-channel rung authorizes by the caller's session, so the declared
+    ``X-Session-Key`` must be bound to the request (the Unix-socket peer check or
+    the signed per-session token ``file_send`` already sends), as the other
+    endpoints that act for a named session require
+    (:func:`kiro_crew.member_memory_auth.session_key_is_attested`). The internal
+    secret alone lets any local holder name another session. Fails closed.
+
+    Blocking (the token branch reads a key file): run it through ``asyncio.to_thread``.
+    """
+    from kiro_crew.member_memory_auth import session_key_is_attested
+
+    try:
+        return bool(session_key) and session_key_is_attested(request, session_key)
+    except Exception:
+        logger.debug("code channel upload: attestation check failed; denying", exc_info=True)
+        return False
+
+
+def code_channel_source_refusal(
+    workdir: str,
+    source_path: object,
+    uploaded: Path,
+    uploaded_bytes: bytes,
+    scratch: str = "",
+) -> Refusal | None:
+    """``None`` when a file bound for the caller's own code channel is the session's own.
+
+    ``file_send`` copies the file into the shared outbox and uploads that copy, so
+    the uploaded path says nothing about where the bytes came from. The tool also
+    sends the original path as *source_path*; a direct caller that uploads a
+    work-dir file itself may leave it out, and the uploaded file is then the
+    source. *workdir* and *scratch* are the session's cwd and ``$KIROCREW_SCRATCH``.
+    The source must:
+
+    * lie under one of the roots the channel's mirrored replies may carry pictures
+      from (``outbound_files.containing_root``: the cwd, the browser screenshot
+      directory, the session's own scratch allocation), so ``file_send`` and the
+      mirror leg share one boundary for the channel; with links followed it must
+      stay in that root's canonical tree. The cwd itself is not a broad root (the
+      filesystem root, the home folder, the data home) or a sensitive path;
+    * not be in the outbox: a copy there may have come from anywhere;
+    * have no dot-named component below its root (dotfiles, ``.git``, ``.kiro``,
+      a ``.scratch`` tree) and not be under the crew's memory directory, since a
+      session in the base workspace folder shares it with the crew's own state.
+      ``file_send`` ships text and documents, where the mirror leg ships raster
+      images only, so these hold under every root;
+    * pass the shared file-path screen (``hooks.validate_file_path``: ``~``, UNC
+      shares and linked ancestors, the credential and trust-root list) before
+      anything resolves it, and not be a sensitive path
+      (:func:`kiro_crew.security.is_sensitive_canonical_path`);
+    * be read through ``hooks.safe_read_file_bytes_nolink`` pinned to that root's
+      read pin, so a directory swapped for a link after these checks cannot carry
+      the read out of it (that reader also refuses a hardlinked file), and hold
+      exactly the bytes being uploaded, which the admission gate scanned.
+
+    This bounds which file a caller may name. An agent that can write its work
+    dir can still copy bytes into it; the admission gate's content scans are the
+    floor for those.
+
+    shortcut: Crew-internal dirs are dot-named entries plus ``memory/``; no shared
+    list of the workspace's internal dirs exists yet. Use one here when it does.
+
+    Blocking (``realpath`` and a bounded read): run it through ``asyncio.to_thread``.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.config.loader_locations import _is_broad_root
+    from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
+    from kiro_crew.memory import memory_dir
+    from kiro_crew.messaging.outbound_files import containing_root
+    from kiro_crew.security import is_sensitive_canonical_path
+
+    def refuse(reason: str) -> Refusal:
+        return Refusal(
+            error="file is not in this code channel session's working directory",
+            code="outside_session_workdir",
+            status=403,
+            audit_error=f"code_channel_source_refused: {reason}",
+            downstream=SLACK_NAMESPACE,
+        )
+
+    if source_path in (None, ""):
+        source = str(uploaded)
+    elif isinstance(source_path, str):
+        source = source_path
+    else:
+        return refuse("invalid_source_path")
+    if not workdir:
+        return refuse("no_workdir")
+
+    def real(path: Any) -> Path:
+        return Path(platform_compat.strip_extended_length_prefix(os.path.realpath(path)))
+
+    # The shared screen first: it refuses a UNC share before any resolution could
+    # reach it, expands ``~`` and returns the canonical (link-free) spelling.
+    screened = validate_file_path(source, canonical_gate=True)
+    if screened is None:
+        return refuse("path_screen_refused")
+    try:
+        cwd = real(workdir)
+        src = real(screened)
+        outbox = real(config_loader.outbox_dir())
+        memory = real(memory_dir())
+    except (OSError, ValueError):
+        return refuse("unresolvable_path")
+    if _is_broad_root(str(cwd)) or is_sensitive_canonical_path(str(cwd)):
+        return refuse("workdir_not_usable")
+    # The same roots the channel's mirrored replies may carry pictures from: the
+    # cwd, the browser screenshot directory and the session's own scratch
+    # allocation (``outbound_files.approved_roots``), matched lexically there and
+    # held to the canonical tree of the root that admitted it here.
+    approved = containing_root(Path(os.path.abspath(os.path.expanduser(source))), workdir, scratch)
+    if approved is None:
+        return refuse("outside_workdir")
+    try:
+        root = real(approved.read_root)
+    except (OSError, ValueError):
+        return refuse("unresolvable_path")
+    if src == root or not src.is_relative_to(root):
+        return refuse("outside_workdir")
+    if src.is_relative_to(outbox):
+        return refuse("outbox_copy")
+    if src.is_relative_to(memory):
+        return refuse("crew_memory")
+    if any(part.startswith(".") for part in src.relative_to(root).parts):
+        return refuse("dot_path")
+    if is_sensitive_canonical_path(str(src)):
+        return refuse("sensitive_path")
+    try:
+        # The descriptor actually opened must still lie in the work dir.
+        data = safe_read_file_bytes_nolink(
+            str(src),
+            within_root=approved.read_root,
+            within_root_is_canonical=approved.read_root_is_canonical,
+            canonical_gate=True,
+        )
+    except Exception:
+        data = None  # too large or unreadable: nothing proves the bytes came from here
+    if data is None or data != uploaded_bytes:
+        return refuse("content_mismatch")
+    return None
 
 
 async def resolve_channel(

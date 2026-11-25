@@ -1000,6 +1000,11 @@ describe('SessionGridView — picker controls', () => {
     await waitFor(() => expect(pickers()).toHaveLength(3))
   })
 
+  it('names the split chord the keyboard has in the split-right hover text', () => {
+    renderGrid('a')
+    expect(within(onlyPicker()).getByRole('button', { name: 'Split right' }).getAttribute('title')).toBe('Split right (Ctrl+D)')
+  })
+
   it('focuses the picker cell it is pressed in', async () => {
     renderGrid('a')
     await screen.findByTestId('pane-a')

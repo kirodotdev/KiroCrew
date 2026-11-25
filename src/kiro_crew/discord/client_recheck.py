@@ -25,6 +25,8 @@ from kiro_crew.messaging.identity import channel_outbound_permitted
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.discord.client import DiscordClient
 
 logger = logging.getLogger("kiro_crew.discord.client")
@@ -123,7 +125,10 @@ def _guarded_destination(path: str) -> str:
 
 
 async def _destination_still_permitted(
-    self: DiscordClient, path: str, destination_hint: str = ""
+    self: DiscordClient,
+    path: str,
+    destination_hint: str = "",
+    caller_permitted: Callable[[], bool] | None = None,
 ) -> SendPermission:
     """May this route still reach its destination RIGHT NOW? Fails closed.
 
@@ -168,6 +173,13 @@ async def _destination_still_permitted(
         return SendPermission.allow()
     if not await channel_outbound_permitted("discord"):
         self._audit_mid_send_decision(destination, "channels_ceiling", "denied")
+        return SendPermission.revoked()
+    # A private interaction reply is seen by its caller alone, so the caller is
+    # a second recipient the destination roster cannot vouch for: a user taken
+    # off the user roster keeps an allowed thread allowed. Read after the await,
+    # like the roster, and synchronously.
+    if caller_permitted is not None and not caller_permitted():
+        self._audit_mid_send_decision(destination, "caller_roster", "denied")
         return SendPermission.revoked()
     if self.still_permitted is None:
         # The ceiling is the whole decision when no roster is installed, so it
@@ -243,7 +255,11 @@ def _audit_mid_send_decision(
 
 
 async def _wait_then_revalidate(
-    self: DiscordClient, path: str, delay: float, destination_hint: str = ""
+    self: DiscordClient,
+    path: str,
+    delay: float,
+    destination_hint: str = "",
+    caller_permitted: Callable[[], bool] | None = None,
 ) -> SendPermission:
     """Serve one of the ladder's back-offs, then re-ask authorization.
 
@@ -252,4 +268,4 @@ async def _wait_then_revalidate(
     new wait site from being added with only half of the pair.
     """
     await asyncio.sleep(delay)
-    return await self._destination_still_permitted(path, destination_hint)
+    return await self._destination_still_permitted(path, destination_hint, caller_permitted)

@@ -32,6 +32,7 @@ export const CARD_KINDS = [
   'mcp.install',
   'mcp.add_custom',
   'mcp.toggle',
+  'mcp.server',
   'connection.connect',
   'secret.save',
   'trust.app',

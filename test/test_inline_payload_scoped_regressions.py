@@ -7,6 +7,7 @@ import base64
 import inspect
 import re
 import shlex
+import threading
 
 import pytest
 from named_cases_helpers import named_cases
@@ -71,10 +72,13 @@ class TestAnEncodedLiteralIsDataUntilSomethingDecodesIt:
     def test_many_data_literals_do_not_spend_decode_work(self, monkeypatch):
         calls = 0
         real = inline_payload.base64.b64decode
+        # The patch is process-wide; a decode on another thread of this worker is not ours.
+        own_thread = threading.get_ident()
 
         def count(*args, **kwargs):
             nonlocal calls
-            calls += 1
+            if threading.get_ident() == own_thread:
+                calls += 1
             return real(*args, **kwargs)
 
         monkeypatch.setattr(inline_payload.base64, "b64decode", count)

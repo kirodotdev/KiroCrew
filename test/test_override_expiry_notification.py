@@ -20,6 +20,8 @@ from kiro_crew.dashboard.server import (
 def _make_state() -> MagicMock:
     state = MagicMock()
     state._background_tasks = set()
+    # No Slack reconnect runs, as on a gateway the reconnect hook never wired.
+    state.slack_reconnect_wait = None
     return state
 
 

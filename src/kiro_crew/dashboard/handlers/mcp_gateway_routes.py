@@ -271,7 +271,8 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     live: the broker is started/stopped and all agent sessions are dropped +
     relinked to the new stub set — without restarting the gateway process,
     so the dashboard session stays authenticated.  Returns the verified state
-    ``{ok, enabled, running, ping_ok}``.
+    ``{ok, enabled, running, ping_ok, restart_required}``; ``restart_required``
+    says a marked server is served only from the next gateway start.
     """
     # Body-scope import, like the sibling gates in this package
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
@@ -735,8 +736,8 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
-                # The operator's answer to "does it work on the project's
-                # files?" (null when unanswered), and whether it is never asked.
+                # The operator's answer to "share this server across chats?"
+                # (null when unanswered), and whether it is never asked.
                 # A ``not_used`` answer given for a different launch than the one
                 # this name declares now reads as unanswered, so the page asks.
                 "cwd_use": effective_cwd_answer(
@@ -763,6 +764,49 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
             }
         )
     return web.json_response({"servers": result})
+
+
+def mcp_sharing_can_turn_on() -> bool:
+    """Whether the MCP Servers page's sharing switch can be turned on now. BLOCKING.
+
+    The backend half of the page's own rule (``canEnableSharing`` in
+    ``McpManagement.tsx``, over ``autoShareCandidates`` in ``mcpManagementModel.ts``),
+    computed from the same reads the status and rows endpoints serve: this host runs
+    the broker, and either a server is already marked to share or at least one server
+    turning sharing on would mark. Keep the two in step; a pointer at a switch that
+    stays disabled is a dead end. Never raises: an unreadable reading answers False.
+    """
+    from kiro_crew.config.integration_sections import effective_cwd_answer
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+    from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS
+
+    try:
+        if not is_gateway_supported():
+            return False
+        gw_cfg = KiroCrewConfig.load().mcp_gateway
+        stub_set = set(gw_cfg.stub_servers)
+        if stub_set:
+            return True
+        overrides = getattr(gw_cfg, "stub_overrides", None) or {}
+        cwd_use = getattr(gw_cfg, "cwd_use", None) or {}
+        cwd_launch = getattr(gw_cfg, "cwd_use_launch", None) or {}
+        refused = refused_servers()
+        for name, row in _collect_server_rows().items():
+            if row["transport"] != "stdio" or name in UNPOOLABLE_SERVERS:
+                continue
+            if overrides.get(name) is False or name in refused:
+                continue
+            answer = effective_cwd_answer(
+                cwd_use.get(name), cwd_launch.get(name), declared_launch(row)
+            )
+            # ``needsCwdAnswer``: only Kiro Crew's own servers, or an explicit
+            # ``not_used``, share without asking about the project's files.
+            if name in KIROCREW_BIN_MCP_SERVERS or answer == "not_used":
+                return True
+        return False
+    except Exception:  # noqa: BLE001 - a reading that fails offers no pointer
+        logger.debug("could not read whether MCP sharing can be turned on", exc_info=True)
+        return False
 
 
 def _measure_due(verdict: ShareVerdict, preflight_stored: bool, single_launch: bool) -> bool:

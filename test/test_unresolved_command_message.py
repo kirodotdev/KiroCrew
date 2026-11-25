@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from kiro_crew import env as env_mod
 from kiro_crew.env import describe_search_path
 
@@ -75,6 +77,34 @@ def test_probe_error_without_a_search_path_is_unchanged():
     from kiro_crew.mcp_discovery import _unresolved_error
 
     assert _unresolved_error("vendor-mcp") == "command not found: vendor-mcp"
+
+
+# ── a Node.js program names what to install ───────────────────────────────────
+
+
+@pytest.mark.parametrize("command", ["npx", "node", "npm", "npx.cmd", "NPM.EXE"])
+@pytest.mark.parametrize("search_path", [BASE_PATH, ""])
+def test_a_missing_node_program_says_to_install_node(command, search_path):
+    """``npx`` is not something a reader knows to install; Node.js is."""
+    from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
+    from kiro_crew.mcp_discovery import _unresolved_error
+
+    msg = _unresolved_error(command, search_path)
+    assert msg.startswith(f"command not found: {command}")
+    assert "is part of Node.js" in msg
+    assert f"Install Node.js {format_node_version(MIN_NODE_VERSION)} or later" in msg
+    assert msg.endswith("then restart the gateway.")
+
+
+@pytest.mark.parametrize("command", ["uvx", "nodemon", "npx-helper", _abs("opt", "node", "npx")])
+def test_any_other_missing_command_keeps_the_plain_text(command):
+    """Only the bare Node.js program names get the hint; a path names its own location."""
+    from kiro_crew.mcp_discovery import _unresolved_error
+
+    assert _unresolved_error(command, BASE_PATH) == (
+        f"command not found: {command} — not in any of the 2 directories searched "
+        "(see the gateway log for the list)"
+    )
 
 
 # ── the operator-facing log line ──────────────────────────────────────────────

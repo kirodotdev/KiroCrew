@@ -6,6 +6,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { flatten } from '../../scripts/lib/qa-checks.mjs'
 import { i18next } from './all'
 import { joinSentences } from './format'
 import { i18nT } from './t'
@@ -75,9 +76,11 @@ describe('messages built from two translated sentences', () => {
   })
 })
 
-describe('the Atlassian card tip', () => {
-  it('has no space after its first 。 in Japanese and Chinese', () => {
-    expect(ja.pages.connectionsPage.prerequisite_atlassian).not.toContain('。 ')
-    expect(zhCN.pages.connectionsPage.prerequisite_atlassian).not.toContain('。 ')
+describe('Japanese and Chinese catalog values', () => {
+  it('have no space after a 。', () => {
+    const spaced = (catalog: object) => Object.entries(flatten(catalog))
+      .filter(([, value]) => value.includes('。 '))
+      .map(([key]) => key)
+    expect({ ja: spaced(ja), 'zh-CN': spaced(zhCN) }).toEqual({ ja: [], 'zh-CN': [] })
   })
 })

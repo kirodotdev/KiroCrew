@@ -306,6 +306,35 @@ def test_file_write_replaces_and_preserves_mode(tmp_path):
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
+@pytest.mark.parametrize(
+    "original",
+    [b"a,b\r\nc,d\r\n", b'{\n  "k": 1\n}\n', b"one\r\ntwo\nthree\rfour\r\n"],
+    ids=["crlf", "lf", "mixed"],
+)
+def test_file_write_keeps_the_files_line_endings(tmp_path, monkeypatch, original):
+    """A read-then-save round trip leaves the bytes unchanged on every platform.
+
+    The wrapper applies Windows' ``newline=None`` translation (``\\n`` to
+    ``\\r\\n``) wherever the save leaves ``newline`` unset, so this fails on
+    POSIX too if the save stops passing ``newline=""``.
+    """
+    _needs_openat()
+    real_atomic_write = files_mod.atomic_write
+
+    def windows_like_atomic_write(path, content, *args, newline=None, **kwargs):
+        if newline is None and isinstance(content, str):
+            content = content.replace("\n", "\r\n")
+        return real_atomic_write(path, content, *args, newline="", **kwargs)
+
+    monkeypatch.setattr(files_mod, "atomic_write", windows_like_atomic_write)
+    target = tmp_path / "doc.csv"
+    target.write_bytes(original)
+    for _ in range(2):
+        text = target.read_bytes().decode("utf-8")
+        assert _file_write_blocking(str(target), text) is None
+        assert target.read_bytes() == original
+
+
 def test_file_write_carries_acl(tmp_path, monkeypatch):
     _needs_openat()
     if not all(hasattr(os, a) for a in ("listxattr", "getxattr", "setxattr")):

@@ -17,9 +17,13 @@ files; a leading ``~/`` is the user's home. ``via`` says how the page takes them
 Neither of the last two delivers into a frame from another page: a chooser that
 opens in one, or a drop point over one, is ``frame_refused``.
 
-A folder goes only to a drop zone, where the page gets its files under their paths
-inside it; an input or a chooser refuses one (``_fits``). A glob gives its matching
-files, as if each were listed.
+A folder goes to a drop zone, where the page gets its files under their paths inside
+it, or to a folder field (``webkitdirectory``, the walker's ``directory``), where each
+file's ``webkitRelativePath`` is ``<folder>/<path inside>``; a plain field and a
+chooser refuse one (``_fits``). The browser lists the staged folder into the field
+itself, and a field whose own ``input`` event never fires is
+``folder_field_unsupported``, nothing reported sent. A glob gives its matching files,
+as if each were listed.
 
 The gateway and the browser run outside the agent's sandbox, so a file the browser
 reads is one the agent itself might not be allowed to read. The op therefore never
@@ -670,6 +674,11 @@ _DELIVERY_REFUSALS: dict[str, tuple[str, str]] = {
         "not_folder_input",
         "this file field takes files, not a folder; give a glob like <folder>/* for its files",
     ),
+    "folder_field_unsupported": (
+        "folder_field_unsupported",
+        "the browser left the folder field empty: give it one folder, or drop the files "
+        "on the page's drop zone (via: drop)",
+    ),
 }
 
 
@@ -709,25 +718,15 @@ def _fits(via: str, found: dict[str, Any], groups: list[_Group]) -> dict[str, An
         return _ops.refusal("not_multiple", "a file field takes one folder, on its own")
     if via == "chooser":
         if has_folder:
-            # A chooser is filled the way a field's own set is, which the browsers on
-            # some hosts leave empty for a folder; a drop fills it on all of them.
+            # The chooser's input is never read back, so a folder the browser left
+            # out of it would be reported sent; the field's own set reads it back.
             return _ops.refusal(
                 "not_folder_input",
                 "a file picker takes files here, not a folder: drop the folder on the "
                 "page's drop zone (via: drop), or give a glob like <folder>/*",
             )
         return None  # the chooser's own mode is known only once it opens
-    if has_folder and found.get("directory"):
-        # Neither ``DOM.setFileInputFiles`` nor a drop on the field fills a folder
-        # field on every build: both answered ok on some and left it empty, with no
-        # change event, on others. Refused rather than reported as sent.
-        return _ops.refusal(
-            "folder_field_unsupported",
-            "a folder field cannot be filled from a folder here: drop the folder on the "
-            "page's drop zone (via: drop), or give its files as a list or a glob like "
-            "<folder>/* to a field that takes several",
-        )
-    if has_folder:
+    if has_folder and not found.get("directory"):
         return _ops.refusal(*_DELIVERY_REFUSALS["not_folder_input"])
     if len(groups) > 1 and not found.get("multiple"):
         return _ops.refusal("not_multiple", "the file input takes one file")

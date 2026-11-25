@@ -10,7 +10,7 @@ import stat
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 from kiro_crew.config import loader
 from kiro_crew.config.paths import CONFIG_DIR_NAME
@@ -138,6 +138,100 @@ def kirocrew_bin() -> str:
     if found:
         return through_stable_link(found)
     return through_stable_link(os.path.realpath(sys.argv[0]))
+
+
+def service_exec_path(bin_path: str) -> str:
+    """The program a service definition runs for *bin_path* (a
+    :func:`kirocrew_bin` result): the unit's ``ExecStart``, the launchd
+    launcher's ``exec`` target.
+
+    *bin_path* itself, except that a path in a Toolbox tool-version dir is named
+    through the Toolbox launcher (:func:`toolbox_launcher_for`), which runs
+    whatever version is current: Toolbox removes old version dirs on later
+    updates, and the service would then fail to start. ``KIROCREW_SERVICE_BIN``
+    is used as given at install. The service does not keep that variable, so a
+    later heal at gateway start (``macos._repoint_versioned_launcher``) still
+    replaces a target inside a managed-update version folder: the next update
+    removes that folder.
+
+    Only the program the manager starts moves. The launcher itself is a
+    dispatcher every Toolbox tool shares, so the AppArmor profile is never
+    attached to it: :func:`service_attach_path` names the file to attach to.
+
+    The launcher is used only when the version's own ``bin/<name>`` script, the
+    file it execs and the profile attaches to, is there too; otherwise
+    *bin_path* is kept, so the program started and the attach point never part.
+    """
+    if os.environ.get("KIROCREW_SERVICE_BIN", "").strip():
+        return bin_path
+    launcher = toolbox_launcher_for(bin_path)
+    if launcher is None or _toolbox_version_script(bin_path) is None:
+        return bin_path
+    return launcher
+
+
+def service_attach_path(bin_path: str) -> str:
+    """The file the service's path-attached AppArmor profile is attached to.
+
+    *bin_path* (a :func:`kirocrew_bin` result) when the service runs it
+    directly. When :func:`service_exec_path` starts the Toolbox launcher
+    instead, the launcher never execs *bin_path*: it execs the version's own
+    ``<version>/bin/<name>`` script, which then runs the interpreter. So that
+    script is the attach point; the kernel applies the profile at its
+    ``execve()``, and every exec under it inherits the profile while no other
+    profile attaches. :func:`kiro_crew.service.apparmor.service_attachment`
+    widens it to every version of this tool.
+    """
+    if service_exec_path(bin_path) == bin_path:
+        return bin_path
+    return _toolbox_version_script(bin_path) or bin_path
+
+
+def _toolbox_version_script(path: str) -> str | None:
+    """The version's own ``bin/<name>`` script for a *path* inside a Toolbox
+    tool-version dir, when it is an executable file, else ``None``."""
+    found = _toolbox_version_parts(path)
+    if found is None:
+        return None
+    version_root, name = found
+    script = PurePath(version_root, "bin", name)
+    try:
+        if os.path.isfile(script) and os.access(script, os.X_OK):
+            return str(script)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _toolbox_version_parts(path: str) -> "tuple[PurePath, str] | None":
+    """``(<home>/.toolbox/tools/<tool>/<version>, <name>)`` for a *path* inside
+    a Toolbox tool-version dir, else ``None``. *path* is read as given."""
+    parts = PurePath(path).parts
+    for i in range(len(parts) - 4):
+        if parts[i : i + 2] == (".toolbox", "tools"):
+            return PurePath(*parts[: i + 4]), parts[-1]
+    return None
+
+
+def toolbox_launcher_for(path: str) -> str | None:
+    """The Toolbox launcher for *path* when it lies in a tool-version dir, else ``None``.
+
+    Toolbox installs each version under ``<home>/.toolbox/tools/<tool>/<version>/``
+    and puts one launcher per command in ``<home>/.toolbox/bin``. *path* is read
+    as given, not resolved, so the home spelling is kept. ``None`` also when that
+    launcher is not an executable file, so the caller keeps *path*.
+    """
+    found = _toolbox_version_parts(path)
+    if found is None:
+        return None
+    version_root, name = found
+    launcher = PurePath(*version_root.parts[:-3], "bin", name)
+    try:
+        if os.path.isfile(launcher) and os.access(launcher, os.X_OK):
+            return str(launcher)
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _running_install_bin() -> str | None:
@@ -400,35 +494,47 @@ def service_path(home: str) -> str:
     as they did in the installing shell, with ``~/.local/bin`` and the POSIX
     defaults prepended and duplicates removed in order.
 
-    On Linux the mise shims dir (:func:`_mise_shims_dir`) follows
-    ``~/.local/bin``, ahead of the system dirs: the unit keeps this PATH until
-    the next install, so a Node mise installs later is found only through the
-    shims; without them ``#!/usr/bin/env node`` runs the system Node. That is
-    also the order ``mise activate`` gives a shell. launchd's PATH is unchanged.
+    On Linux and macOS the mise shims dir (:func:`_mise_shims_dir`) follows
+    ``~/.local/bin``, ahead of the system dirs: the unit or plist keeps this
+    PATH until the next install, so a Node mise installs later is found only
+    through the shims; without them ``#!/usr/bin/env node`` runs the system
+    Node. That is also the order ``mise activate`` gives a shell.
 
     nvm bin dirs on the installer's ``$PATH`` (:func:`_nvm_bin_dirs`) follow the
     shims for the same reason: nvm has no shims, so the versioned bin dir the
     installing shell resolved ``node`` from is the only way the service finds
-    that Node instead of an older system one in ``/usr/bin``.
+    that Node instead of an older one in ``/usr/local/bin`` or ``/usr/bin``. On
+    macOS ``/opt/homebrew/bin`` follows them: the MCP search path
+    (:func:`kiro_crew.env.augmented_path`) puts a fixed guess this PATH lacks
+    right after the nearest higher-ranked one it lists, here the shims, which is
+    ahead of the nvm dir, so without that entry a Homebrew ``node`` still wins.
 
     Under ``sudo`` the installer's PATH is sudo's ``secure_path``: it names no
     nvm dir, and it may name root's own dirs. On Linux, entries under root's home
     are dropped when *home* is another account's (:func:`_without_root_home`),
     and when no nvm dir is left :func:`_sudo_user_nvm_bin_dirs` reads the
-    ``SUDO_USER`` account's nvm install from *home*.
+    ``SUDO_USER`` account's nvm install from *home*. A LaunchAgent belongs to the
+    account that installs it, so macOS has no such case.
 
     No entry names a versioned install tree, the rule ``ExecStart`` follows
     (:func:`_persistable_path_entry`): the next update replaces that tree.
+
+    The installer's ``$PATH`` is split on the host's ``os.pathsep``: on Windows
+    a ``:`` split cuts ``C:\\x;C:\\y`` into ``\\x;C``, a UNC-looking piece.
     """
     env_path = [
-        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(":") if p
+        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(os.pathsep) if p
     ]
     required = [f"{home}/.local/bin"]
-    if sys.platform.startswith("linux"):
+    linux, darwin = sys.platform.startswith("linux"), sys.platform == "darwin"
+    if linux:
         env_path = _without_root_home(env_path, home)
-        if shims := _mise_shims_dir(home):
-            required.append(shims)
+    if (linux or darwin) and (shims := _mise_shims_dir(home)):
+        required.append(shims)
+    if linux:
         required += _nvm_bin_dirs(env_path) or _sudo_user_nvm_bin_dirs(home)
+    elif darwin and (nvm_dirs := _nvm_bin_dirs(env_path)):
+        required += [*nvm_dirs, "/opt/homebrew/bin"]
     required += [
         "/usr/local/bin",
         "/usr/bin",

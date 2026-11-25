@@ -2,12 +2,14 @@
 
 kiro-cli on Windows writes ``kiro-chat.log``, ``mcp.log`` and ``lsp.log`` under
 ``<TEMP>/kiro-log/logs/``, one level below the flat ``kiro-log/`` layout Linux
-and macOS use, and Windows sets ``TEMP``/``TMP`` rather than ``TMPDIR``. The
+and macOS use, and Windows sets ``TEMP``/``TMP`` rather than ``TMPDIR``. kiro-cli
+3.x also writes each process's logs to ``<kiro home>/logs/<stamp>-<pid>/``. The
 pickers are pure path logic, so every case runs on every OS.
 """
 
 from __future__ import annotations
 
+import os
 import zipfile
 from pathlib import Path
 
@@ -15,8 +17,10 @@ import pytest
 
 from conftest import make_dir_link
 from kiro_crew import agent_scratch, diagnostics, platform_compat, release_channel
+from kiro_crew.config.paths import kiro_home
 
 _NESTED = ("kiro-log", "logs")
+_FOLDER = "20261114T000000000-1234"
 
 
 def _write(path: Path, body: str = "kiro-cli trace line\n") -> Path:
@@ -26,11 +30,16 @@ def _write(path: Path, body: str = "kiro-cli trace line\n") -> Path:
 
 
 def _windows_env(monkeypatch, temp: Path) -> None:
-    """A Windows-shaped environment: ``TEMP``/``TMP`` set, ``TMPDIR`` unset."""
+    """A Windows-shaped environment: ``TEMP``/``TMP`` set, ``TMPDIR`` unset.
+
+    The Kiro home is a path beside ``temp`` that holds nothing until a case writes
+    there, so the host's own kiro-cli 3.x logs under ``~/.kiro/logs`` never feed a case.
+    """
     for key in ("XDG_RUNTIME_DIR", "TMPDIR", "KIRO_CHAT_LOG_FILE"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TEMP", str(temp))
     monkeypatch.setenv("TMP", str(temp))
+    monkeypatch.setenv("KIRO_HOME", str(temp.parent / "kiro-home"))
     # Keep the env-driven candidates real, but drop the fixed /tmp/kiro-log one so
     # a kiro-cli running on the test host never feeds its own logs into a case.
     host_tmp = Path("/tmp") / "kiro-log"
@@ -50,6 +59,13 @@ def _isolate_bundle(monkeypatch, home: Path) -> None:
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.37.1")
     monkeypatch.setattr(release_channel, "distribution_version", lambda: None, raising=False)
     monkeypatch.setattr(release_channel, "recorded_channel", lambda: None, raising=False)
+
+
+def _home_log(folder: str, name: str, body: str, mtime: int = 1_700_000_000) -> Path:
+    """A log in kiro-cli 3.x's per-process folder under the pinned Kiro home."""
+    log = _write(kiro_home() / "logs" / folder / name, body)
+    os.utime(log, (mtime, mtime))
+    return log
 
 
 def test_host_chat_log_is_found_under_temp_logs(tmp_path, monkeypatch):
@@ -179,3 +195,49 @@ def test_scratch_member_name_is_the_scratch_dir_for_both_layouts(tmp_path):
     assert diagnostics._scratch_log_dir_name(flat) == "agent-a"
     assert diagnostics._scratch_log_dir_name(nested) == "agent-b"
     assert diagnostics._scratch_log_dir_name(named_logs) == "logs"
+
+
+def test_kiro_home_mcp_log_reaches_the_reader_and_the_bundle(tmp_path, monkeypatch):
+    """The report's harness: marker A in the ``kiro-log`` copy, marker B in the home one."""
+    temp = tmp_path / "temp"
+    _windows_env(monkeypatch, temp)
+    _isolate_bundle(monkeypatch, tmp_path / "home")
+    _write(temp.joinpath(*_NESTED, "mcp.log"), "marker A\n")
+    _home_log(_FOLDER, "mcp.log", "marker B\n")
+    _home_log(_FOLDER, "kiro.log", "PRIVATEagentlog\n")
+
+    out = diagnostics.read_kiro_cli_logs()
+    assert "=== mcp.log" in out and "marker A" in out
+    assert f"=== {_FOLDER}/mcp.log" in out and "marker B" in out
+    assert "PRIVATEagentlog" not in out
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert "marker A" in z.read("kiro-cli-mcp.log").decode()
+        assert "marker B" in z.read(f"kiro-cli-mcp/{_FOLDER}.log").decode()
+        assert b"PRIVATEagentlog" not in b"".join(z.read(n) for n in z.namelist())
+
+
+def test_only_the_three_newest_kiro_home_folders_are_read(tmp_path, monkeypatch):
+    _windows_env(monkeypatch, tmp_path / "temp")
+    logs = [_home_log(f"f{i}", "mcp.log", f"run {i}\n", 1_700_000_000 + i) for i in range(4)]
+    _home_log("f9-empty", "mcp.log", "")
+    off_tree = tmp_path / "off-tree"
+    _write(off_tree / "mcp.log", "OFFTREE\n")
+    make_dir_link(kiro_home() / "logs" / "f9-linked", off_tree)
+
+    assert diagnostics._kiro_cli_extra_logs() == [logs[3], logs[2], logs[1]]
+    assert "OFFTREE" not in diagnostics.read_kiro_cli_logs()
+
+
+def test_a_linked_kiro_home_logs_root_is_never_walked(tmp_path, monkeypatch):
+    _windows_env(monkeypatch, tmp_path / "temp")
+    off_tree = tmp_path / "off-tree"
+    _write(off_tree / _FOLDER / "mcp.log", "OFFTREE\n")
+    kiro_home().mkdir(parents=True)
+    make_dir_link(kiro_home() / "logs", off_tree)
+
+    assert diagnostics._kiro_cli_extra_logs() == []
+    out = diagnostics.read_kiro_cli_logs()
+    assert "OFFTREE" not in out
+    assert "No kiro-cli protocol logs found" in out and "~/.kiro/logs/" in out

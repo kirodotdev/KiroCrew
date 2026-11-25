@@ -95,7 +95,6 @@ thread_history_1
 apiKeyHelper
 initialPermissionMode
 permissionMode
-rate_limit_error
 supportsFastMode
 wslInheritsWindowsSettings
 
@@ -297,3 +296,20 @@ ascii_serialization
 
 # Primer design system (website/docs/narrow-viewport.md)
 ActionBar
+
+# Playwright test runner file loader (ci/e2e-gate.md)
+collectFiles
+
+# Kiro CLI (Node) model methods (agent-host-contract.md)
+listModels
+restartModel
+
+# mimocode ACP `_meta` field, seen only in captured frames under
+# test/fixtures/acp_frames/ (agent-host-contract.md)
+terminal_exit
+
+# @anthropic-ai/claude-agent-sdk (claude-code-provider.md)
+supportedModels
+
+# mimo fork permission routing (harness-onboarding.md)
+decideAskRouting

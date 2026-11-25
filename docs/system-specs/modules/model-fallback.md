@@ -55,7 +55,10 @@ spent on a transient error with no qualifying prior activity. Each surface
 tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
 requires no result text or tool activity, `dashboard/chat_runner.py` requires
 no emitted or thought activity, and `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry`
-requires no activity.
+requires no activity. On all three, Kiro's per-user rate limit
+(`AcpError.user_rate_limit`) never starts the walk: every model spends the same
+allowance, so a swap cannot clear it and the error surfaces as its own, with no
+line saying the model was throttled.
 
 After activity, the dashboard and the sub-agent first spend their one continue
 on the same model. When the error after that continue is a capacity or throttle
@@ -441,7 +444,11 @@ State follows the engine, through `EngineFallbackTracker` on the handle and on
   only as long as the live session and the thread's next fresh start asks for the
   Bot's model again. A promotion stored in such a thread would outlive every later
   change to the Bot's setting, and the Bot's composer offers no model control to
-  clear it. A person's own pick in the thread (on KAS, `/model <id>` typed there)
+  clear it. An unpinned slot records the promoted id as `engine_promoted_model`
+  instead, display only: the dashboard's teardown of the session drops it, an armed
+  reset hides it, and the composer chip names the promoted model while
+  `served_model` still equals it.
+  A person's own pick in the thread (on KAS, `/model <id>` typed there)
   still wins and still takes the promotion.
   `test_bot_thread_follows_bot_model.py` pins both.
 - A promotion while Crew's own throttle or refusal fallback serves the slot

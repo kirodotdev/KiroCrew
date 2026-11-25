@@ -15,8 +15,9 @@ Instance fields written: ``_claude_settings_authored``,
 ``_claude_settings_written``, ``_claude_worker_builtin_tools``,
 ``_permission_surface_share_validated``.
 
-Instance fields read: ``_agent``, ``_seed_owner``, ``_session_key``,
-``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``, ``_work_dir``.
+Instance fields read: ``_agent``, ``_claude_tools_withheld_reason``, ``_seed_owner``,
+``_session_key``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
+``_work_dir``.
 """
 
 from __future__ import annotations
@@ -480,6 +481,44 @@ def settings_withheld_cause(self: ClaudeAcpClient) -> str:
     return SETTINGS_WITHHELD_BY_PROJECT
 
 
+#: What :meth:`settings_withheld_reason` says per :meth:`settings_withheld_cause` answer
+#: when the decline recorded no words of its own: why, then what the person can do.
+_SETTINGS_WITHHELD_DEFAULT_REASONS = {
+    SETTINGS_WITHHELD_BY_SESSION: (
+        "another open Crew session in the same folder uses a different model or "
+        "permission mode and holds the folder's .claude/settings.local.json",
+        "To get the tools back, close that session, then start a new session here.",
+    ),
+    SETTINGS_WITHHELD_BY_PROJECT: (
+        "the folder's own .claude/settings.local.json controls tool approvals there, "
+        "and Crew could not safely set it aside",
+        "To use Crew's tools here, work in another folder, then start a new session.",
+    ),
+}
+
+
+def settings_withheld_reason(self: ClaudeAcpClient, *, with_fix: bool = False) -> str:
+    """Why Crew's MCP tools are withheld from this session, as one clause, or ``""``.
+
+    ``""`` exactly when :meth:`settings_withheld_cause` is. Another open session's
+    seed is named as such; the project's own file by the words the seed recorded
+    where it declined (``_claude_tools_withheld_reason``), else a general clause.
+    The clause is a fact any reader may get, a parent model included. *with_fix*
+    appends the one thing the person can do, for a surface only a person reads:
+    a model told to strip a project's hooks could act on it. Reads a file as
+    :meth:`settings_withheld_cause` does: call it off the event loop.
+    """
+    cause = self.settings_withheld_cause()
+    if not cause:
+        return ""
+    recorded = getattr(self, "_claude_tools_withheld_reason", None)
+    if cause == SETTINGS_WITHHELD_BY_PROJECT and recorded:
+        why, fix = recorded
+    else:
+        why, fix = _SETTINGS_WITHHELD_DEFAULT_REASONS[cause]
+    return f"{why}. {fix}" if with_fix else why
+
+
 def _settle_claude_settings_seed_locked(
     self: ClaudeAcpClient,
     path: Path,
@@ -626,9 +665,10 @@ def _worker_settings_lag(self: ClaudeAcpClient, spec: dict[str, Any] | None) -> 
     Crew's durable seed record names (no link followed, bounded); a file that is
     not that seed counts as no rules. No spec, or any other session, is never held.
     """
-    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 
-    is_worker = self._agent == MATE_WORKER_AGENT and bool(self._session_key)
+    # A Bot's own chat is held too: its array carries per-session app servers.
+    is_worker = self._agent in (MATE_WORKER_AGENT, MATE_CONDUCTOR_AGENT) and bool(self._session_key)
     if not (self.backend == ACP_BACKEND_CLAUDE and is_worker) or not isinstance(spec, dict):
         return False
     in_force: Any = self._session_mcp_inline_settings

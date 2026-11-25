@@ -790,6 +790,8 @@ failure is operational except a positive permission-denied match, which is `sand
 neither can become `PodBackendAbsent`. Probe and unit operations
 resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
 the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
+On macOS `launchctl` resolves the same way, and a missing trusted `launchctl` raises
+`LaunchdError` instead of falling back to `PATH`.
 If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
 removal instead of treating the host as unable to contain a live pod. Spawned probes use
 `LC_ALL=C`, distinguish a reachable manager,
@@ -819,7 +821,10 @@ worktree removal never blocks the gateway event loop.
   `run/gateway-<port>.secret`, and falls back to the shared `.local_secret` only
   for a gateway predating the per-listener file — the shared slot is one per data
   home, so a live second gateway leaves it naming the other generation
-- `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded)
+- `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded);
+  `journalctl` resolves through `platform_compat.trusted_system_bin()`, and with
+  none there the tail is a one-line "could not read the pod journal" note, never a
+  `PATH` lookup
 - `provision.has_venv(path)` / `provision.has_dist(path)` — "present AND built
   from the artifact's current build input" checks (offloaded): a filesystem probe
   gated by a per-checkout provenance stamp (see *Build-state provenance* below);
@@ -931,6 +936,15 @@ pin names a different checkout, carries no verifiable `CHECKOUT`, or is absent
 while a unit under that name is active. A matching pin proceeds, and so does no
 pin with no live unit. Every refusal is about identity: acting on a basename
 collision would stop another repository's pod or delete its HOME.
+
+A pod name becomes the pod's home directory, its env file and the branch
+`feat/<name>`. The verbs that create a pod's state, `pod up` and `pod provision`,
+check it with `validate_new_name`: on every host it also refuses a name whose
+lower-cased part before the first dot is a Windows device stem
+(`constants.WINDOWS_DEVICE_STEMS`: `nul`, `con`, `com1`, ...), with the same
+`invalid pod name` error, before the user-bus check or the worktree lookup. The
+verbs on an existing pod keep `validate_name`, so a pod made under such a name
+earlier can still be stopped, restarted and pruned.
 
 A missing checkout is attributed only by git's retained worktree record for this
 repository. `repository._find_retained_worktree_path` includes a `prunable`

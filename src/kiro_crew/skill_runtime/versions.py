@@ -66,7 +66,9 @@ def read_auto_skill_body(loader: SkillsLoader, name: str) -> str | None:
     missing or unreadable. Used by the API to render an old-vs-new diff for
     update candidates.
 
-    Refuses to follow a symlink anywhere on the path. This body is fed to the
+    Refuses a symlink at the skill directory or at ``SKILL.md``; a link higher
+    up is followed only when the file it resolves to stays inside the skills
+    tree and off a sensitive path. This body is fed to the
     update-merge turn UNREDACTED (redaction runs on the merge OUTPUT), so a
     swapped ``SKILL.md`` symlink pointing at credential storage would put
     those bytes into an LLM prompt. Resolve, then verify the real path is
@@ -103,7 +105,7 @@ def read_auto_skill_body(loader: SkillsLoader, name: str) -> str | None:
         # safe_read_file re-checks is_sensitive_path and opens with
         # O_NOFOLLOW, closing a swap of the final component after our check.
         return sk.safe_read_file(real)
-    except (OSError, PermissionError):
+    except OSError:
         return None
 
 

@@ -84,9 +84,28 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
 * ``[[ERROR]]`` -> reply with a JSON-RPC error instead of a result.
 * ``[[MAXTOKENS]]`` / ``[[REFUSAL]]`` -> alternate terminal ``stopReason``.
 
+With ``KIROCREW_FAKE_ACP_REPUBLISH_SECS`` set to a positive number of seconds,
+the KAS relay re-sends, that often and to every open session, a
+``_kiro/mcp/status`` snapshot whose servers each list
+``KIROCREW_FAKE_ACP_CATALOG_TOOLS`` tools with full descriptions and input
+schemas, followed by a ``config_option_update`` carrying a large select. A
+real engine sends both whenever its servers or options change, idle sessions
+included; this is how a load test gets those frames at a realistic size.
+
 With ``KIROCREW_FAKE_ACP_SCRIPT`` naming a JSON file, a chat prompt the script
 answers gets the script's reply instead of any of the above
 (:mod:`kiro_crew.testing.scripted_replies` documents the file).
+
+With ``KIROCREW_FAKE_ACP_EXPECT_HOST_TOKEN`` set (off by default), the KAS relay
+spawn asks the host for its credential before it answers any ``session/prompt``,
+as the engine does on a relay started with ``--auth-method client`` (the fake
+asks whatever ``--auth-method`` says): it sends the connection-level
+``_kiro/auth/getAccessToken`` request (no ``sessionId``, empty params) and
+waits for the answer (bounded by ``PERMISSION_WAIT_SECS``). Unless the
+answer's ``result.accessToken`` equals the variable's value the prompt fails with a JSON-RPC error that names the outcome
+(no answer, an error, the wrong token) and never echoes a token. A plain kiro-cli
+spawn (no engine flag) never sends the request, and with the variable unset
+nothing changes.
 
 Observing a cancel mid-turn requires reading stdin while a prompt is streaming,
 so ``main()`` reads on a background thread into a queue rather than looping
@@ -334,6 +353,13 @@ _BROWSER_TOOL_CALL_ID = "fake-browser-1"
 _TOOL_PURPOSE = "Say hello from the fake backend"
 _PERMISSION_REQ_ID = 9001
 _ELICIT_REQ_ID = 9002
+_HOST_TOKEN_REQ_ID = 9003
+#: Opt-in host credential check (module docstring): the token the host must
+#: answer ``_kiro/auth/getAccessToken`` with before a prompt is served.
+HOST_TOKEN_ENV = "KIROCREW_FAKE_ACP_EXPECT_HOST_TOKEN"
+#: The engine's credential callback (``kas_transport.METHOD_KAS_AUTH_GET_ACCESS_TOKEN``,
+#: spelled here so this module stays stdlib-only).
+HOST_TOKEN_METHOD = "_kiro/auth/getAccessToken"
 _ELICIT_FORM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -356,9 +382,15 @@ def slow_hold_path(hold_dir: str, token: str) -> str:
     return os.path.join(hold_dir, token)
 
 
+#: Serializes stdout: the republish thread writes beside the main loop.
+_SEND_LOCK = threading.Lock()
+
+
 def _send(obj: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(obj) + "\n"
+    with _SEND_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _result(req_id: Any, result: dict[str, Any]) -> None:
@@ -436,6 +468,86 @@ def _report_mcp_ready(session_id: str, mode_id: str | None = None) -> None:
             "tags": [{"source": "mcp", "tag": f"@{name}/{MCP_CATALOG_TOOL}"} for name in names],
         },
     )
+
+
+REPUBLISH_ENV = "KIROCREW_FAKE_ACP_REPUBLISH_SECS"
+CATALOG_TOOLS_ENV = "KIROCREW_FAKE_ACP_CATALOG_TOOLS"
+
+
+def _catalog(server: str, count: int) -> list[dict[str, Any]]:
+    """*count* tools for *server*, each with a description and an input schema."""
+    tools = [{"name": MCP_CATALOG_TOOL, "description": "probe", "disabled": False}]
+    for i in range(1, count):
+        tools.append(
+            {
+                "name": f"{server}_tool_{i}",
+                "description": f"Tool {i} of {server}. " + "Reads and writes things. " * 40,
+                "disabled": False,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        f"arg_{j}": {"type": "string", "description": "An argument. " * 6}
+                        for j in range(6)
+                    },
+                    "required": ["arg_0"],
+                },
+            }
+        )
+    return tools
+
+
+def _republish(session_id: str, tools: int) -> None:
+    """One status snapshot and one config update for *session_id*."""
+    names = _managed_server_names(session_id, None)
+    _notify(
+        "_kiro/mcp/status",
+        {
+            "sessionId": session_id,
+            "servers": [
+                {
+                    "name": name,
+                    "status": "connected",
+                    "tools": _catalog(name, tools),
+                    "prompts": [],
+                    "resources": [],
+                    "resourceTemplates": [],
+                    "_meta": _MCP_CLIENT_ORIGIN,
+                }
+                for name in names
+            ],
+        },
+    )
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+                {
+                    "id": "fake_profile",
+                    "name": "Profile",
+                    "type": "select",
+                    "currentValue": "p0",
+                    "options": [
+                        {
+                            "value": f"p{i}",
+                            "name": f"Profile {i}",
+                            "description": "A profile. " * 30,
+                        }
+                        for i in range(60)
+                    ],
+                }
+            ],
+        },
+    )
+
+
+def _republish_loop(every: float, tools: int) -> None:
+    """Re-send every open session's status and options every *every* seconds."""
+    while True:
+        time.sleep(every)
+        for session_id in list(_SESSIONS):
+            if session_id in _SESSIONS:
+                _republish(session_id, tools)
 
 
 # Mid-turn inbox: main() reads stdin on a background thread into this queue, so a
@@ -684,6 +796,33 @@ def _emit_elicitation(session_id: str, mode: str) -> str:
     return ELICIT_ANSWER_PREFIX + json.dumps(echoed, sort_keys=True)
 
 
+def _host_token_refusal() -> str | None:
+    """Why the host's credential answer fails the opt-in check, or ``None`` to serve.
+
+    ``None`` without asking when ``HOST_TOKEN_ENV`` is unset or this is not the KAS
+    relay spawn. Otherwise sends the engine's credential request and compares the
+    answer's ``accessToken`` with the variable's value. The message never carries a
+    token, only which way the answer missed.
+    """
+    expected = os.environ.get(HOST_TOKEN_ENV, "")
+    if not expected or not _KAS_RELAY:
+        return None
+    _send({"jsonrpc": "2.0", "id": _HOST_TOKEN_REQ_ID, "method": HOST_TOKEN_METHOD, "params": {}})
+    answer = _await_inbox(
+        lambda m: m.get("method") is None and m.get("id") == _HOST_TOKEN_REQ_ID,
+        PERMISSION_WAIT_SECS,
+    )
+    if answer is None:
+        return f"fake ACP backend: the host did not answer {HOST_TOKEN_METHOD}"
+    if "error" in answer:
+        return f"fake ACP backend: the host refused {HOST_TOKEN_METHOD}"
+    result = answer.get("result")
+    token = result.get("accessToken") if isinstance(result, dict) else None
+    if token != expected:
+        return f"fake ACP backend: the host answered {HOST_TOKEN_METHOD} with another token"
+    return None
+
+
 class _SlowHoldExpired(Exception):
     """A held stream was not released within ``SLOW_HOLD_WAIT_SECS``."""
 
@@ -876,6 +1015,10 @@ def _handle(msg: dict[str, Any]) -> None:
         if session is None:
             _error(req_id, message="Unknown or terminated ACP session")
             return
+        refusal = _host_token_refusal()
+        if refusal is not None:
+            _error(req_id, message=refusal)
+            return
         servers, cwd = session
         text = _prompt_text(params)
         store = _native_store()
@@ -1037,6 +1180,12 @@ def main() -> None:
     # option: the backend suite also runs on Windows.
     reader = threading.Thread(target=_pump_stdin, name="fake-acp-stdin", daemon=True)
     reader.start()
+    every = float(os.environ.get(REPUBLISH_ENV, "0") or 0)
+    if _KAS_RELAY and every > 0:
+        tools = max(1, int(os.environ.get(CATALOG_TOOLS_ENV, "25") or 25))
+        threading.Thread(
+            target=_republish_loop, args=(every, tools), name="fake-acp-republish", daemon=True
+        ).start()
     while True:
         msg = _INBOX.get()
         if msg is None:

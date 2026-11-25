@@ -255,6 +255,20 @@ class TestRouteLinkedThread:
         assert await h.maybe_route_linked_thread("!yolo on", "t1", "U1", "C1", slack, "t1") is False
 
     @pytest.mark.asyncio
+    async def test_bot_command_falls_through_to_its_refusal(self, slack, owner, monkeypatch):
+        # ``!bot`` has no slash equivalent, but a linked thread must still answer it
+        # natively (it refuses there) instead of delivering it to the chat as a message.
+        slot = MagicMock(key="slot-1", running=True)
+        state = MagicMock()
+        state.get_linked_slot.return_value = slot
+        monkeypatch.setattr(h, "_dashboard_state", state)
+        for command in ("!bot x", "!BOT x"):
+            assert (
+                await h.maybe_route_linked_thread(command, "t1", "U1", "C1", slack, "t1") is False
+            )
+        slot.queue_append.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_running_slot_queues_message(self, slack, owner, monkeypatch):
         slot = MagicMock(key="slot-1", running=True)
         state = MagicMock()

@@ -122,6 +122,7 @@ from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_g
 from kiro_crew.slack.code_channels.routing import is_bound_code_channel
 from kiro_crew.slack.code_channels.shared_refusal import shared_message_dropped, shared_stop_refused
 from kiro_crew.slack.code_channels.store import store as code_channel_store
+from kiro_crew.slack.code_channels.thread_stop_gate import is_owner_stop
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
@@ -696,15 +697,15 @@ async def _route_message(
     # thread-follow does not admit in mention/review mode) run BEFORE the
     # interceptor: the bot ignores these messages with nothing recorded, so
     # there is nothing to gate, and an edition's interceptor must not answer a
-    # message the bot was never going to read (a challenge on every unaddressed
-    # owner message in a shared channel). They leave no trace besides their SEL
-    # denial row: no history push, no download, no Slack write. Everything that
-    # passes them still meets the interceptor before any content is recorded,
+    # message the bot was never going to read. They leave no trace besides their
+    # SEL denial row: no history push, no download, no Slack write. Everything
+    # that passes them still meets the interceptor before any content is recorded,
     # observe mode included (its history push stays after the interceptor).
     ch_cfg = slack_cfg(orch).channel_config(channel)
     activation = ch_cfg.activation
+    _owner_thread_stop = is_owner_stop(channel, event, text, sender_id)
 
-    if activation == ACTIVATION_OFF:
+    if activation == ACTIVATION_OFF and not _owner_thread_stop:
         # Allow !channel commands through so the owner can re-enable the channel.
         # Text may start with "<@BOTID> " when @mentioned, so strip that first.
         _stripped = text.lstrip()
@@ -724,10 +725,9 @@ async def _route_message(
             )
             return
 
-    # A bound code channel answers without a mention: the code-channel gate
-    # below decides it, and the mention drop is applied after the gate only
-    # when the gate leaves the message to the normal path.
-    _defer_mention_drop = is_bound_code_channel(orch, channel)
+    # A bound code channel answers without a mention: the code-channel gate below
+    # decides it, and the mention drop applies after it only if it leaves the normal path.
+    _defer_mention_drop = is_bound_code_channel(orch, channel) or _owner_thread_stop
 
     if (
         activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW)
@@ -904,9 +904,9 @@ async def _route_message(
     # and a message addressed only to other people are dropped, and the sender
     # is authorized against the channel's ORIGIN conversation (the gate audits
     # every decision). Everywhere else this is PASS and nothing below changes.
-    # Code channels stay the owner's: a shared user is refused in a bound one and
-    # cannot open one (the dispatch below is skipped for them).
-    if _shared_sender and await shared_message_dropped(sender_id, channel):
+    # Code channels stay the owner's: a shared user is refused (and told) in a bound
+    # one unless they opened it; the gate below judges the rest (shared_refusal).
+    if _shared_sender and await shared_message_dropped(sender_id, channel, _route_slack, thread_ts):
         return
 
     # A code channel has no held queue: a message read with no client waits for
@@ -966,7 +966,7 @@ async def _route_message(
         text=text,
         address_text=address_text if own_text is None else own_text,
         sender_id=sender_id,
-        authorized=_user_authorized and not _shared_sender,
+        authorized=_user_authorized,
         from_trusted_bot=from_trusted_bot,
         slack=_route_slack,
     )
@@ -1536,7 +1536,7 @@ async def _route_message(
     #    slack.code_channels off) continues the normal path. ──
     #    It posts, binds and routes with the client the route read the message
     #    with, not ``orch.slack``, which a reconnect clears for its window.
-    if not _shared_sender and await code_channel_dispatch(
+    if await code_channel_dispatch(
         orch,
         _code_channel,
         event=event,
@@ -1545,6 +1545,7 @@ async def _route_message(
         was_mention=_was_mention,
         attachment_paths=_attachment_temp_paths,
         slack=_ingest_slack if _ingest_slack is not None else _route_slack,
+        typed_text=_spool_text,
     ):
         return
     # A linked dashboard chat's turn reads these after this task deletes them;
@@ -1966,7 +1967,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_slash import _get_agent_names  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_agent  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_allowlist_cmd  # noqa: F401
+    from kiro_crew.slack.events_slash import _handle_bot  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_channel_cmd  # noqa: F401
+    from kiro_crew.slack.events_slash import _handle_conductor  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_config  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_dashboard  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_sessions  # noqa: F401

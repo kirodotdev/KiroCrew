@@ -1,5 +1,5 @@
 /** Real-browser evidence on capture/throttle-retry-notice.html:
- * a retry caused by a provider throttle reads as throttling while pending and
+ * a retry caused by a throttle reads as throttling while pending and
  * once settled (answered or gave up), including the give-up error card, never
  * as "Connection ...", and a plain
  * upstream 5xx retry still reads "Connection restored".
@@ -58,13 +58,13 @@ for (const theme of ['dark', 'light']) {
   const resuming = await notices('resuming')
   const plain = await notices('plain-5xx')
   console.log(theme, JSON.stringify({ pending, answered, resuming, gaveUp, plain }))
-  check(`[${theme}] pending reads throttling (warn)`, pending.length === 1 && /throttling requests — retrying…/.test(pending[0].text) && pending[0].tone === 'warn')
+  check(`[${theme}] pending reads throttling (warn)`, pending.length === 1 && /Requests are being throttled — retrying…/.test(pending[0].text) && pending[0].tone === 'warn')
   check(`[${theme}] answered rows read "Throttling cleared" (info)`, answered.length === 3 && answered.every(n => /Throttling cleared/.test(n.text) && n.tone === 'info'))
-  check(`[${theme}] resuming reads throttling (warn)`, resuming.length === 1 && /throttling requests — finishing this answer…/.test(resuming[0].text) && resuming[0].tone === 'warn')
-  check(`[${theme}] gave-up row reads kept throttling (info)`, gaveUp.length === 1 && /kept throttling/.test(gaveUp[0].text) && gaveUp[0].tone === 'info')
+  check(`[${theme}] resuming reads throttling (warn)`, resuming.length === 1 && /Requests are being throttled — finishing this answer…/.test(resuming[0].text) && resuming[0].tone === 'warn')
+  check(`[${theme}] gave-up row reads retry stopped (info)`, gaveUp.length === 1 && /Throttled — retry stopped/.test(gaveUp[0].text) && gaveUp[0].tone === 'info')
   const gaveUpCard = (await scene('gave-up').locator('[data-testid="error-card"]').innerText()).trim()
-  check(`[${theme}] throttle give-up card names the throttle`, /throttling requests — please try again\./.test(gaveUpCard))
-  check(`[${theme}] no throttle scene mentions a connection`, [...pending, ...answered, ...resuming, ...gaveUp, { text: gaveUpCard }].every(n => !/connection/i.test(n.text)))
+  check(`[${theme}] throttle give-up card names the throttle`, /Requests are being throttled — please try again\./.test(gaveUpCard))
+  check(`[${theme}] no throttle scene mentions a connection or a provider`, [...pending, ...answered, ...resuming, ...gaveUp, { text: gaveUpCard }].every(n => !/connection|provider/i.test(n.text)))
   check(`[${theme}] plain 5xx control unchanged`, plain.length === 1 && /Connection restored/.test(plain[0].text))
   check(`[${theme}] no page errors`, errors.length === 0)
   if (errors.length) console.log(errors.join('\n'))

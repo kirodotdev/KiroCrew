@@ -4,21 +4,17 @@ import { renderWithProviders, createTestStore } from './helpers'
 import type { RootState } from '../store'
 import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
+import ChatInputSource from '../components/ChatInput.tsx?raw'
+import VoiceControlsSource from '../components/chat-input/VoiceControls.tsx?raw'
 import { createAudioSample } from '../hooks/mic'
 
 /**
- * Dictation-mode surface swap + the Escape affordance.
+ * Dictation status surfaces, persistent editor, and the Escape affordance.
  *
- * The panel is gated on three independent conditions (setting on, WebGL2
- * present, motion not reduced) and deliberately yields to the status bar on a
+ * The panel is gated on two independent conditions (setting on, motion not
+ * reduced) and deliberately yields to the status bar on a
  * mic error, since only the bar can surface a dismissible error.
  */
-
-vi.mock('../components/Strands', () => ({
-  __esModule: true,
-  default: () => <div data-testid="strands-stub" />,
-  strandsSupported: () => true,
-}))
 
 const sampleRef = { current: createAudioSample() }
 
@@ -76,10 +72,7 @@ describe('ChatInput — dictation panel', () => {
     expect(screen.queryByText('Recording')).toBeNull()
   })
 
-  it('collapses the textarea so the transcript is not rendered twice', () => {
-    // The panel REPLACES the textarea (chosen design). The textarea stays
-    // mounted and focusable — Enter-to-send routes through its handler — but it
-    // must not also display the same text next to the panel.
+  it('keeps the text box visible above the strip, so dictation lands in it', () => {
     renderWithProviders(
       <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef }}>
         <ChatInput
@@ -88,9 +81,9 @@ describe('ChatInput — dictation panel', () => {
         />
       </ComposerVoiceSliceOverride>,
     )
+    expect(screen.getByTestId('voice-dictation-panel')).toBeInTheDocument()
     const ta = screen.getByLabelText('Message input')
-    expect(ta.parentElement?.className).toContain('sr-only')
-    // Still focusable: an unfocusable textarea would make "Enter to send" a lie.
+    expect(ta.parentElement?.className).not.toContain('sr-only')
     expect(document.activeElement).toBe(ta)
   })
 
@@ -100,16 +93,154 @@ describe('ChatInput — dictation panel', () => {
     expect(ta.parentElement?.className).not.toContain('sr-only')
   })
 
-  it('shows the composer text in the panel, so what is shown is what will be sent', () => {
-    renderWithProviders(
-      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef }}>
-        <ChatInput
-          {...base}
-          value="summarize the startup fix"
-        />
+  it('keeps the same visible text box when a live transcript wraps onto another line', () => {
+    const inputProps = { voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef, voiceTransport: 'stream' as const }
+    const { rerender } = renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={inputProps}>
+        <ChatInput {...base} value="first line" />
       </ComposerVoiceSliceOverride>,
     )
-    expect(screen.getByTestId('voice-dictation-transcript').textContent).toBe('summarize the startup fix')
+    const textBox = screen.getByLabelText('Message input')
+    rerender(
+      <ComposerVoiceSliceOverride inputProps={inputProps}>
+        <ChatInput {...base} value={'first line\nsecond line'} />
+      </ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByLabelText('Message input')).toBe(textBox)
+    expect(textBox).toHaveValue('first line\nsecond line')
+    expect(textBox.parentElement?.className).not.toContain('sr-only')
+  })
+
+  it('keeps the editor read-only only while streaming capture can overwrite partial text', () => {
+    const recording = {
+      voiceRecording: true,
+      voiceTransport: 'stream' as const,
+      voiceDictationPanel: true,
+      voiceSampleRef: sampleRef,
+    }
+    const { rerender } = renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={recording}>
+        <ChatInput {...base} value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    const textBox = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    expect(textBox.readOnly).toBe(true)
+    expect(textBox).toHaveAttribute('aria-readonly', 'true')
+
+    rerender(
+      <ComposerVoiceSliceOverride inputProps={{ ...recording, voiceTransport: 'batch' }}>
+        <ChatInput {...base} value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    expect(textBox.readOnly).toBe(false)
+
+    rerender(
+      <ComposerVoiceSliceOverride inputProps={{ ...recording, voiceRecording: false }}>
+        <ChatInput {...base} value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByLabelText('Message input')).toBe(textBox)
+    expect(textBox.readOnly).toBe(false)
+    expect(textBox).not.toHaveAttribute('aria-readonly')
+  })
+
+  it('hands focus back to the editor when a streaming capture ends without a drain', () => {
+    const recording = {
+      voiceRecording: true,
+      voiceTransport: 'stream' as const,
+      voiceDictationPanel: true,
+      voiceSampleRef: sampleRef,
+    }
+    const { rerender } = renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={recording}>
+        <ChatInput {...base} value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    const textBox = screen.getByLabelText('Message input')
+    textBox.blur()
+    expect(document.activeElement).not.toBe(textBox)
+
+    rerender(
+      <ComposerVoiceSliceOverride inputProps={{ ...recording, voiceRecording: false }}>
+        <ChatInput {...base} value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    expect(document.activeElement).toBe(textBox)
+  })
+
+  it('does not pull focus back when the session changed during the capture', () => {
+    const recording = {
+      voiceRecording: true,
+      voiceTransport: 'stream' as const,
+      voiceDictationPanel: true,
+      voiceSampleRef: sampleRef,
+    }
+    const { rerender } = renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={recording}>
+        <ChatInput {...base} autoFocusKey="a" value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    const textBox = screen.getByLabelText('Message input')
+    rerender(
+      <ComposerVoiceSliceOverride inputProps={recording}>
+        <ChatInput {...base} autoFocusKey="b" value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    textBox.blur()
+
+    rerender(
+      <ComposerVoiceSliceOverride inputProps={{ ...recording, voiceRecording: false }}>
+        <ChatInput {...base} autoFocusKey="b" value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    expect(document.activeElement).not.toBe(textBox)
+  })
+
+  it('keeps file-only clipboard attachments available during streaming capture', () => {
+    const onUploadFiles = vi.fn()
+    const file = new File(['image'], 'capture.png', { type: 'image/png' })
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{
+        voiceRecording: true,
+        voiceTransport: 'stream',
+        voiceDictationPanel: true,
+        voiceSampleRef: sampleRef,
+      }}>
+        <ChatInput {...base} onUploadFiles={onUploadFiles} value="live words" />
+      </ComposerVoiceSliceOverride>,
+    )
+    fireEvent.paste(screen.getByLabelText('Message input'), {
+      clipboardData: {
+        types: ['Files'],
+        items: [{ kind: 'file', getAsFile: () => file }],
+        getData: () => '',
+      },
+    })
+    expect(onUploadFiles).toHaveBeenCalledWith([file])
+  })
+
+  it('keeps composer and voice transitions free of overlapping size projection', () => {
+    expect(ChatInputSource).toContain("layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}")
+    expect(ChatInputSource).not.toContain('layout={!reduceMotion && manualHeight === null}')
+    expect(VoiceControlsSource).toContain('<AnimatePresence initial={false} mode="wait">')
+  })
+})
+
+describe('ChatInput — dictation panel reduced motion', () => {
+  it('falls back to the status bar under reduced motion', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: q === '(prefers-reduced-motion: reduce)',
+      media: q,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef }}>
+        <ChatInput {...base} />
+      </ComposerVoiceSliceOverride>,
+    )
+    expect(screen.queryByTestId('voice-dictation-panel')).toBeNull()
+    expect(screen.getByText('Recording')).toBeInTheDocument()
   })
 })
 

@@ -1068,6 +1068,47 @@ class TestCallerBudget:
         finally:
             executor.shutdown(wait=False)
 
+    def test_a_spawn_raising_a_non_oserror_is_a_failed_spawn_not_a_dead_reaper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A spawn that raised anything but ``OSError`` ended the reaper, the only spawn
+        # site, and every later caller waited out its budget on an empty queue.
+        prefix = "test-nonoserror-spawn"
+        real = executor_mod._Child._spawn
+        attempts: list[None] = []
+
+        # Gated on the thread name: the reaper's first tick runs inside ``__init__``,
+        # before the test holds the instance an instance gate would need.  Another
+        # pool's reaper (the patch is class-wide) gets the real spawn.
+        def _broken(self: executor_mod._Child) -> subprocess.Popen[bytes]:
+            if threading.current_thread().name == f"{prefix}-reaper":
+                attempts.append(None)
+                raise AttributeError("'int' object has no attribute 'write'")
+            return real(self)
+
+        monkeypatch.setattr(executor_mod._Child, "_spawn", _broken)
+        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0, thread_name_prefix=prefix)
+        try:
+            with pytest.raises(OSError) as caught:
+                executor.call_op(
+                    OP_REALPATH_SPELLINGS,
+                    b"/x",
+                    timeout=5.0,  # flake-ok: the red case waits out this budget
+                )
+            # Exactly OSError: not the TimeoutError of a drained budget, not the raw type.
+            assert type(caught.value) is OSError, repr(caught.value)
+            assert "AttributeError" in str(caught.value)
+            assert executor._reaper.is_alive(), "the spawn failure ended the reaper"
+            # And a later reaper tick tries the spawn again.
+            seen = len(attempts)
+            wait_until(
+                lambda: len(attempts) > seen,
+                timeout=FALLBACK_TIMEOUT_SECS,
+                describe=lambda: f"the reaper never retried the spawn after {seen} attempts",
+            )
+        finally:
+            executor.shutdown(wait=False)
+
 
 class TestExecutorContract:
     def test_zero_workers_is_refused(self) -> None:

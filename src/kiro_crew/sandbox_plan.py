@@ -120,6 +120,10 @@ class SandboxRequest:
     #: own working directory (an app agent's launch copy sets it,
     #: ``apps.agent_launch.launch_process_cwd``).
     exec_cwd: str = ""
+    #: The folder the spawn works in. Its project MCP files
+    #: (``project_mcp_files.project_mcp_targets``) join the kiro-cli seals, so a
+    #: server planted there cannot start in the next session. Empty: none sealed.
+    project_folder: str = ""
 
 
 @dataclass(frozen=True)
@@ -189,8 +193,19 @@ class PlanHost:
     voice_runtime_parents: tuple[str, ...] = ()
     #: Every rename-sensitive ancestor of those parents.
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
-    #: The resolved kiro agents tree, sealed read-only.
+    #: kiro-cli's own trusted files, sealed read-only: the resolved agents tree and its
+    #: user MCP registry (``settings/mcp.json``, both spellings).
     kiro_agents_targets: tuple[str, ...] = ()
+    #: The project MCP files of :attr:`SandboxRequest.project_folder`, sealed
+    #: read-only. Two FILES in the person's own folder, so unlike the other seals they
+    #: never refuse a writable exception, window or carve-out that holds the folder:
+    #: the seal is applied after those and lands on top of them.
+    project_mcp_targets: tuple[str, ...] = ()
+    #: The existing folders above :attr:`project_mcp_targets`, guarded against rename
+    #: like :attr:`readonly_ancestor_guards` (namespace: those this uid could rename).
+    #: Emitted only, never checked against an exception, window or carve-out, for the
+    #: same reason as the targets: the person's project folder must stay writable.
+    project_ancestor_guards: tuple[str, ...] = ()
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
@@ -1237,12 +1252,15 @@ def _namespace_plan(
         tier=tier,
         home=home,
         masks=masks,
-        readonly=tuple(dict.fromkeys(readonly)),
+        readonly=tuple(
+            dict.fromkeys((*readonly, *(p for p in host.project_mcp_targets if p not in kept)))
+        ),
         runtime_parents=tuple(runtime_parents),
         runtime_ancestor_guards=tuple(
             dict.fromkeys(
                 (
                     *host.readonly_ancestor_guards,
+                    *host.project_ancestor_guards,
                     *(
                         fold(guard)
                         for guard in host.caller_ancestor_guards
@@ -1452,9 +1470,11 @@ def _seatbelt_plan(
         tier=tier,
         home=home,
         masks=tuple(masks),
-        readonly=tuple(readonly),
+        readonly=tuple(dict.fromkeys((*readonly, *host.project_mcp_targets))),
         runtime_parents=tuple(runtime_parents),
-        runtime_ancestor_guards=tuple(ancestor_guards),
+        runtime_ancestor_guards=tuple(
+            dict.fromkeys((*ancestor_guards, *host.project_ancestor_guards))
+        ),
         files=tuple(home_files),
         expose=tuple((path, os.path.basename(path)) for path in sorted(expose_abs)),
         windows=tuple(dict.fromkeys([*windows_for, *caller_windows])),

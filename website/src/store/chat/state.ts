@@ -106,6 +106,9 @@ export interface SideMessage {
    *  restore read (`link_blocks`): the links its bubble draws as a Blocked link
    *  card. Validated where they are drawn. */
   link_blocks?: unknown
+  /** A stored answer's credential records, raw from its final frame or the read
+   *  (`redactions`): what its lock tags draw from. Validated where they are drawn. */
+  redactions?: unknown
   /** Shown before the server confirmed it, so it can be found again by identity.
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */

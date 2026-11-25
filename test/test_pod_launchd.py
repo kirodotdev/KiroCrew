@@ -14,6 +14,7 @@ import subprocess
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import launchd
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -710,3 +711,23 @@ def test_ls_translates_orphan_probe_failures_to_the_documented_error(cfg, monkey
     monkeypatch.setattr(launchd, "launchctl", lambda *a, **k: _cp(returncode=5, stderr="EIO"))
     with pytest.raises(rt.PodError):
         pod_cli._ls(cfg, argparse.Namespace(json=False))
+
+
+def test_launchctl_never_runs_a_path_launchctl(tmp_path, monkeypatch):
+    impostor_dir = tmp_path / "bin"
+    impostor_dir.mkdir()
+    marker = tmp_path / "impostor-ran"
+    impostor = impostor_dir / "launchctl"
+    impostor.write_text(f'#!/bin/sh\necho ran > "{marker}"\n', encoding="utf-8")
+    impostor.chmod(0o755)
+    monkeypatch.setenv("PATH", str(impostor_dir))
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda _name: None)
+
+    raised: launchd.LaunchdError | None = None
+    try:
+        launchd.launchctl("print", "gui/1/x")
+    except launchd.LaunchdError as exc:
+        raised = exc
+
+    assert not marker.exists(), "a launchctl found on PATH was run"
+    assert raised is not None and "trusted system directories" in str(raised)

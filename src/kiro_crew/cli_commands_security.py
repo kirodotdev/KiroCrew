@@ -82,14 +82,17 @@ def parse_time_selector(raw: str, *, now: datetime | None = None) -> datetime | 
     iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
     try:
         parsed = datetime.fromisoformat(iso)
-    except ValueError:
+        # An offset at the edge of the date range (year 1 or 9999) cannot convert to UTC.
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone.utc)
+        )
+    except (ValueError, OverflowError):
         raise ValueError(
             f"cannot read {raw!r} as a time. Use a relative age (30m, 2h, 7d, 1w) "
             "or an ISO 8601 instant (2026-08-21, 2026-08-21T04:00:00Z)."
         ) from None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _security(args: argparse.Namespace) -> None:
@@ -246,10 +249,10 @@ def _security(args: argparse.Namespace) -> None:
             since = parse_time_selector(getattr(args, "since", "") or "")
             until = parse_time_selector(getattr(args, "until", "") or "")
         except ValueError as exc:
-            print(f"❌ {exc}")
+            print(f"❌ {exc}", file=sys.stderr)
             sys.exit(2)
         if since and until and since >= until:
-            print("❌ --since must be earlier than --until")
+            print("❌ --since must be earlier than --until", file=sys.stderr)
             sys.exit(2)
         from contextlib import ExitStack, suppress
         from pathlib import Path

@@ -93,9 +93,9 @@ def post_compaction_parts(
         project=project or template_dir,
         mode=mode,
         session_key=session_key,
-        is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
+        provider_type=provider_type,
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
@@ -724,7 +724,7 @@ def interactive_guidance(
     Every built message carries them. Whether the engine is sent them again is
     the provider's call at the wire (``build_message`` binds the block as the
     turn's delivery envelope): once per engine conversation on a harness whose
-    compaction Kiro Crew sees, every message elsewhere and in a member's chat.
+    compaction Kiro Crew sees (a member's chat included), every message elsewhere.
 
     *producer_is_user_facing* says a person sent this turn on a dashboard
     slot. It defaults to False, the applier's own default, so a caller that
@@ -806,6 +806,19 @@ def interactive_guidance(
                     "an acted-on card, or for a clarifying question -- ask that inline.)"
                 )
     return _interactive_guidance
+
+
+def recall_query(text: str, user_text_range: tuple[int, int]) -> str:
+    """What session-start recall ranks: the user's own span of *text*.
+
+    The context a dispatcher put in front of that span (a sub-agent notice, a
+    drained pending-context block, a cancelled-turn restore) ranks nothing, as
+    on the per-message and post-compaction lesson paths. An ``@prompt`` turn
+    reports an empty span where the prompt body that replaced its text begins,
+    so that body, still without what was put in front of it, is what ranks.
+    """
+    start, end = user_text_range
+    return text[start:end] or text[start:]
 
 
 def user_turn(

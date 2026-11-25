@@ -527,6 +527,12 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
             request_id_for(request),
             headers,
         )
+    from kiro_crew.dashboard.headless import HEADLESS_KEY
+
+    if request.app.get(HEADLESS_KEY, False) is True:
+        return web.json_response(
+            {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
     return web.Response(
         text=_403_HTML.format(reason=reason),
         status=403,
@@ -547,3 +553,18 @@ def _log_auth(request: web.Request, user_id: str, outcome: str, error: str) -> N
         )
     except Exception:
         logger.warning("Failed to log auth event to SEL", exc_info=True)
+
+
+def _log_query_token_refused(request: web.Request, user_id: str, reason: str) -> None:
+    """Record why a ``?token=`` was refused when the session cookie beside it authenticated.
+
+    That request still succeeds on the cookie, so without this row a link that did
+    not work looks exactly like one that did: the page loads signed in, and a link
+    whose exchange opens something (a Slack challenge window) silently opens nothing.
+    *reason* is the fixed refusal string from token validation; the token itself is
+    never logged.
+    """
+    _log_auth(request, user_id, "query_token_rejected", reason)
+    logger.info(
+        "dashboard link refused (%s); trying the session cookie on %s", reason, request.path
+    )

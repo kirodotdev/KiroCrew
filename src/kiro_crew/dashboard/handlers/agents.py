@@ -1398,7 +1398,7 @@ async def api_models(request: web.Request) -> web.Response:
     if backend == ACP_BACKEND_KAS and workload_identity.active():
         return await api_models_kas_workload(request)
     # kiro-cli opens a browser login for ANY subcommand run signed out, and the
-    # frontend polls here every 8s while degraded, so no spawn below may run unless
+    # frontend polls here every 8s while degraded or cold, so no spawn below may run unless
     # reject_if_kiro_unverified passes (tight 30 s bound: the only server-side
     # cooldown is the short failure backoff). It runs inline on a cold miss, in the
     # background refresh right before it spawns, and while the latch says signed

@@ -35,6 +35,7 @@
  */
 import { crewModeEnabled } from '../../lib/crewMode'
 import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
+import { isTouchFirst } from '../../lib/touchLayoutForm'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
 import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
@@ -160,6 +161,8 @@ export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
 export const REOPEN_LAST_PAGE_SETTING_ID = 'display.reopen-where-i-left-off'
+/** Registry id of "Touch screen layout", which DisplayPanel draws only on a touch-first device. */
+export const TOUCH_LAYOUT_SETTING_ID = 'display.touch-screen-layout'
 /** Registry id of the terminal's Ctrl+C / Ctrl+V switch, which DisplayPanel draws only off macOS. */
 export const TERMINAL_CTRL_COPY_PASTE_SETTING_ID = 'display.ctrl-c-and-ctrl-v-copy-and-paste'
 
@@ -254,6 +257,7 @@ export function settingEntryOffered(
     return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   }
   if (entry.id === REOPEN_LAST_PAGE_SETTING_ID) return isStandaloneDisplay()
+  if (entry.id === TOUCH_LAYOUT_SETTING_ID) return isTouchFirst()
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app

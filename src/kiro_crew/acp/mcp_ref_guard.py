@@ -122,6 +122,21 @@ def drop_gate_withheld(refs: list[str]) -> list[str]:
     return [ref for ref in refs if ref.lstrip("@") not in withheld]
 
 
+def drop_opted_out(spec: Any, refs: list[str]) -> list[str]:
+    """*refs* without the ones whose server *spec* itself withholds whole.
+
+    The author's own exclusion (``default_crew_servers.opted_out``): a session-array
+    host leaves that server out of the array and kiro-cli and KAS do not add it, so
+    its absence is what the spec asked for, not a ref naming nothing.
+    """
+    if not refs:
+        return refs
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    withheld = withheld_whole(spec, (ref.lstrip("@") for ref in refs))
+    return [ref for ref in refs if ref.lstrip("@") not in withheld]
+
+
 def warn_unresolved_server_refs(
     spec: Any,
     wire_servers: Any,
@@ -157,8 +172,11 @@ def warn_unresolved_server_refs(
     channel is the projection. Reading the line without knowing which world it
     came from is what made this defect take three diagnoses.
     """
-    raw = drop_gate_withheld(
-        unresolved_server_refs(spec, wire_servers, backend=backend, mcp_json=mcp_json)
+    raw = drop_opted_out(
+        spec,
+        drop_gate_withheld(
+            unresolved_server_refs(spec, wire_servers, backend=backend, mcp_json=mcp_json)
+        ),
     )
     if not raw:
         return []

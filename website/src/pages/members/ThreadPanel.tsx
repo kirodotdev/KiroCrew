@@ -77,7 +77,7 @@ function AuthorLine({ name, ts, align }: { name: string; ts: string; align: 'lef
   )
 }
 
-function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply: ThreadReply; pos: CrewmateRunPosition; crewmateName: string; crewmateLabel?: string; youLabel: string }) {
+function ReplyRow({ slot, reply, pos, crewmateName, crewmateLabel, youLabel }: { slot: string; reply: ThreadReply; pos: CrewmateRunPosition; crewmateName: string; crewmateLabel?: string; youLabel: string }) {
   if (reply.role === 'user') {
     return (
       <li className="flex flex-col items-end mt-3" data-testid="thread-reply" data-reply-from="user">
@@ -93,7 +93,7 @@ function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply
       <div className="min-w-0 flex-1 flex flex-col items-start">
         {opens && <AuthorLine name={crewmateLabel || crewmateName} ts={reply.ts} align="left" />}
         <Bubble pos={pos} side="left">
-          <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks blockedLinks={reply.link_blocks} /></MessageErrorBoundary>
+          <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks blockedLinks={reply.link_blocks} redactions={reply.redactions} redactionSlot={slot} /></MessageErrorBoundary>
         </Bubble>
       </div>
     </li>
@@ -159,6 +159,17 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
       void qc.invalidateQueries({ queryKey: threadsQueryKey(slot) })
     },
   })
+
+  // The thread serves this gateway's own slot, so its bubbles draw lock tags and
+  // the Blocked link card's Allow on that slot. An Allow or Undo there changes
+  // how the gateway serves the thread's links, so read it again.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if ((e as CustomEvent).detail?.slot === slot) void qc.invalidateQueries({ queryKey: threadQueryKey(slot, mid) })
+    }
+    window.addEventListener('mc:redaction-hosts-changed', handler)
+    return () => window.removeEventListener('mc:redaction-hosts-changed', handler)
+  }, [qc, slot, mid])
 
   const storedReplies = detail.data?.replies
   const replies = useMemo(() => storedReplies ?? [], [storedReplies])
@@ -309,7 +320,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
               <div className="min-w-0 flex-1 flex flex-col items-start">
                 <AuthorLine name={crewmateLabel || crewmateName} ts={parent.ts} align="left" />
                 <Bubble side="left" testId="thread-parent-bubble">
-                  <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks blockedLinks={parent.link_blocks} /></MessageErrorBoundary>
+                  <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks blockedLinks={parent.link_blocks} redactions={parent.redactions} redactionSlot={slot} /></MessageErrorBoundary>
                 </Bubble>
               </div>
             </div>
@@ -327,7 +338,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
         )}
         <ul className="list-none m-0 p-0" data-testid="thread-replies">
           {replies.map((r, i) => (
-            <ReplyRow key={r.id} reply={r} pos={positions[i] ?? 'single'} crewmateName={crewmateName} crewmateLabel={crewmateLabel} youLabel={youLabel} />
+            <ReplyRow key={r.id} slot={slot} reply={r} pos={positions[i] ?? 'single'} crewmateName={crewmateName} crewmateLabel={crewmateLabel} youLabel={youLabel} />
           ))}
           {live && !live.error && (
             // The reply as it streams in: one crewmate bubble that grows, then

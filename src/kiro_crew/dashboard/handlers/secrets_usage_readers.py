@@ -5,7 +5,8 @@ Each scanner takes the names from its owner module's own rule, reads config only
 read it now. A scanner that cannot read its config raises, and the caller marks
 its kind incomplete.
 
-Owners covered: Bitbucket Server host tokens, the Linear API key, the Jev
+Owners covered: Bitbucket Server host tokens, the Linear API key, the
+ServiceNow API key and instance, the Jev
 decision provider key, the OTLP trace headers, Sprites profiles and the
 ``kirocrew secrets authorize`` approvals. A reader added to main later shows as
 no use found until it is added here.
@@ -54,6 +55,15 @@ def scan_linear(config: Any, stored: frozenset[str], add: Add) -> None:
 
     if API_KEY_NAME in stored:
         add(API_KEY_NAME, _place(KIND_INTEGRATION, "Linear"))
+
+
+def scan_servicenow(config: Any, stored: frozenset[str], add: Add) -> None:
+    """The ServiceNow key and its instance: read on every ServiceNow read, with no switch."""
+    from kiro_crew.dashboard.source_providers.servicenow import API_KEY_NAME, INSTANCE_NAME
+
+    for name in (API_KEY_NAME, INSTANCE_NAME):
+        if name in stored:
+            add(name, _place(KIND_INTEGRATION, "ServiceNow"))
 
 
 def scan_decisions(config: Any, stored: frozenset[str], add: Add) -> None:

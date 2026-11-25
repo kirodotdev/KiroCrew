@@ -612,6 +612,33 @@ class TestKiroPrerequisiteWorkflowReadinessLatch:
 
         assert service._initial_setup_complete is False
 
+    def test_what_a_first_gateway_start_writes_does_not_skip_first_run_setup(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A restart reads the home the first start left, which holds no message."""
+
+        data_home = tmp_path / "data-home"
+        sessions = data_home / "sessions"
+        (sessions / ".index").mkdir(parents=True)
+        (sessions / ".index" / "session_index.db").write_bytes(b"SQLite format 3\x00")
+        chat = sessions / "dashboard_chat-1-1795440046.jsonl"
+        chat.write_text('{"_type": "metadata", "last_consolidated": 0}\n', encoding="utf-8")
+        (sessions / ".msg-count").mkdir()
+        (sessions / ".msg-count" / f"{chat.name}.json").write_text(
+            '{"size": 46, "mtime_ns": 0, "count": 0}', encoding="utf-8"
+        )
+
+        restarted = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=data_home,
+            audit_writer=_no_audit,
+        )
+
+        assert restarted._initial_setup_complete is False
+
     def test_nonempty_persisted_session_marks_installation_established(
         self,
         tmp_path: Path,

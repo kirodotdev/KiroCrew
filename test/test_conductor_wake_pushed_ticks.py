@@ -153,6 +153,132 @@ def test_a_restart_holding_a_followup_allowance_still_observes_before_spending(
     assert fired == []
 
 
+# ── boot replays start one stagger gap apart ────────────────────────────────
+
+
+async def _restart_with_patrols(
+    tmp_path, monkeypatch, conductors: "list[str]", *, run_unheld: bool = False, posture="ample"
+):
+    """Persist one work-ledger patrol per conductor, then start a fresh service.
+
+    Every countdown blocks until the service stops, so the test reads only what
+    ``start()`` scheduled; with *run_unheld* a zero countdown returns at once, so a tick
+    armed at delay zero runs. The boot pacer reads *posture*. Returns the started
+    service and its arms.
+    """
+    from kiro_crew.autonudge_service import boot_pacer, firing
+
+    async def _posture() -> str:
+        return posture
+
+    monkeypatch.setattr(boot_pacer, "read_host_posture", _posture)
+
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+    base = tmp_path / "an"
+    first = _service(base)
+    for slot in conductors:
+        await first.add(slot, "patrol the fleet", idle_secs=3600, watch="work-ledger")
+    first.stop()
+
+    async def _blocked(_svc, _loop, secs: float) -> None:
+        if run_unheld and secs == 0:
+            return
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(firing, "sleep_until_cycle", _blocked)
+    svc = _service(base)
+    arms: list[tuple[str, float | None]] = []
+    real_arm = svc._arm_timer
+
+    def _spy_arm(armed, delay=None) -> None:
+        arms.append((armed.slot_key, delay))
+        real_arm(armed, delay)
+
+    svc._arm_timer = _spy_arm  # type: ignore[method-assign]
+    await svc.start()
+    return svc, arms
+
+
+def test_conductor_patrol_replays_queue_in_order_on_the_boot_pacer(tmp_path, monkeypatch):
+    """N conductors restored at boot are released one at a time, in order.
+
+    Each replay can wake a conductor that dispatches workers. All at once is how a
+    restart started some 30 sessions and their MCP servers together and stalled the
+    host. How fast the queue drains for each host posture is
+    ``test_autonudge_boot_pacer.py``.
+    """
+    conductors = [f"chat-conductor-{n}" for n in range(6)]
+
+    async def _drive():
+        svc, arms = await _restart_with_patrols(tmp_path, monkeypatch, conductors, posture="tight")
+        try:
+            queued = [svc._loops[i].slot_key for i in svc._boot_pacer._order]
+            return arms, queued, {svc._loops[i].slot_key for i in svc._pushed_ticks}
+        finally:
+            svc.stop()
+
+    arms, queued, pushed = asyncio.run(_drive())
+    assert arms == [(slot, 0.0) for slot in conductors], "every replay is armed, in order"
+    assert pushed == set(conductors), "every replay stays a pushed tick that reads the ledger"
+    assert queued == conductors, "every replay waits its turn, in boot order"
+
+
+def test_a_held_boot_replay_a_user_turn_cancels_replays_when_the_turn_ends(tmp_path, monkeypatch):
+    """A person typing to a conductor during its hold does not lose the replay.
+
+    The turn cancels the held timer. Its end re-arms at delay zero as a pushed tick,
+    not at the patrol's deadline an hour out. Once a tick has run, a turn's end goes
+    back to the deadline.
+    """
+    conductors = ["chat-conductor-0", "chat-conductor-1"]
+
+    async def _drive():
+        svc, arms = await _restart_with_patrols(
+            tmp_path, monkeypatch, conductors, run_unheld=True, posture="tight"
+        )
+        try:
+            held = svc._find_by_slot("chat-conductor-1")
+            svc.notify_user_input(held.slot_key)
+            assert held.id not in svc._timers, "precondition: the turn cancelled the hold"
+            svc.notify_turn_complete(held.slot_key)
+            replay = (arms[-1], held.id in svc._pushed_ticks)
+            assert replay == (("chat-conductor-1", 0.0), True), "the replay is re-armed now"
+            await await_until(asyncio.shield(svc._timers[held.id]), what="the replayed tick")
+            owed_after_tick = held.id in svc._boot_replays
+            svc.notify_user_input(held.slot_key)
+            svc.notify_turn_complete(held.slot_key)
+            return replay, owed_after_tick, arms[-1]
+        finally:
+            svc.stop()
+
+    _replay, owed_after_tick, after_tick = asyncio.run(_drive())
+    assert owed_after_tick is False, "the tick that ran settled the replay"
+    assert after_tick[0] == "chat-conductor-1" and after_tick[1] != 0.0
+
+
+def test_a_settings_update_to_a_waiting_boot_replay_replays_it_now(tmp_path, monkeypatch):
+    """An update that re-arms a conductor still owed its boot replay keeps the replay.
+
+    The update cancels the waiting timer and re-arms toward the deadline an hour out;
+    an owed replay re-arms at delay zero as a pushed tick instead.
+    """
+    conductors = ["chat-conductor-0", "chat-conductor-1"]
+
+    async def _drive():
+        svc, arms = await _restart_with_patrols(tmp_path, monkeypatch, conductors, posture="tight")
+        try:
+            held = svc._find_by_slot("chat-conductor-1")
+            await svc.update(held.id, banner="patrolling the fleet")
+            return arms[-1], held.id in svc._pushed_ticks, svc._boot_pacer.queued(held.id)
+        finally:
+            svc.stop()
+
+    last_arm, pushed, still_queued = asyncio.run(_drive())
+    assert last_arm == ("chat-conductor-1", 0.0)
+    assert pushed is True
+    assert still_queued is False, "a person's update wakes it without waiting its turn"
+
+
 # ── a pushed tick is extra: it keeps the deadline and observes ──────────────
 
 

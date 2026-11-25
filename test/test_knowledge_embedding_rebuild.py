@@ -795,10 +795,35 @@ class TestWatcherLargeRebuildWarning:
         warnings = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING and "full background re-embed" in r.getMessage()
+            if r.levelno == logging.WARNING and "Watcher self-heal: re-embedding" in r.getMessage()
         ]
         assert len(warnings) == 1
         assert "3 items" in warnings[0].getMessage()
+
+    async def test_no_warning_when_a_rebuild_is_already_in_flight(
+        self, store, monkeypatch, caplog, frozen_now
+    ):
+        # After a restart the cut-off rebuild's row stays 'processing' inside the
+        # staleness window, so this pass starts nothing. It must not log as if
+        # it started a second full re-embed.
+        import kiro_crew.knowledge.watcher as watcher_mod
+
+        monkeypatch.setattr(watcher_mod, "_LARGE_REBUILD_WARN_THRESHOLD", 3)
+        for i in range(3):
+            store.add_item(f"Item {i}", "body", "document")
+        now = frozen_now.isoformat()
+        store.db.execute(
+            "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
+            "VALUES ('inflight0002', NULL, 'processing', ?, ?)",
+            (now, now),
+        )
+        store.db.commit()
+        watcher = self._watcher(store)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.knowledge.watcher"):
+            await watcher._maybe_reembed_stale()
+        assert watcher._reembed_task is None
+        assert not [r for r in caplog.records if "Watcher self-heal" in r.getMessage()]
 
     async def test_small_stale_count_no_warning(self, store, monkeypatch, caplog):
         import kiro_crew.knowledge.watcher as watcher_mod
@@ -815,5 +840,5 @@ class TestWatcherLargeRebuildWarning:
         assert not [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING and "full background re-embed" in r.getMessage()
+            if r.levelno == logging.WARNING and "Watcher self-heal: re-embedding" in r.getMessage()
         ]

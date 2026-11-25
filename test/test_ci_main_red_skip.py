@@ -802,7 +802,7 @@ def _ci() -> dict[str, Any]:
 
 def test_the_changes_job_reads_the_issue_once_and_fails_open() -> None:
     changes = _ci()["jobs"]["changes"]
-    assert changes["permissions"] == {"contents": "read", "issues": "read"}
+    assert changes["permissions"] == {"contents": "read", "issues": "read", "actions": "read"}
     assert changes["outputs"]["main_red_skip"] == "${{ steps.main-red.outputs.main_red_skip }}"
     step = next(step for step in changes["steps"] if step.get("id") == "main-red")
     assert step["continue-on-error"] is True

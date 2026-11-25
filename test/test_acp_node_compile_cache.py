@@ -431,7 +431,7 @@ def test_ensure_starts_one_prewarm_per_build(monkeypatch, tmp_path, sandbox_pass
 
     class _InlineThread:
         def __init__(self, *, target, args, name, daemon):
-            self._run = lambda: (started.append(args[0]), target(*args))
+            self._run = lambda: (started.append(args[2]), target(*args))  # (home, fn, argv, cache)
 
         def start(self):
             self._run()
@@ -451,7 +451,9 @@ def test_ensure_starts_one_prewarm_per_build(monkeypatch, tmp_path, sandbox_pass
 def test_the_background_prewarm_fills_the_directory_its_caller_resolved(
     monkeypatch, tmp_path
 ) -> None:
-    """The worker thread never reads the data home: it gets the directory by value."""
+    """The worker thread never reads the data home: it gets the directory and home by value."""
+    from kiro_crew.config.paths import data_home
+
     handed: list[tuple] = []
 
     class _RecordingThread:
@@ -468,7 +470,9 @@ def test_the_background_prewarm_fills_the_directory_its_caller_resolved(
     ncc.ensure_engine_bundle_cache(argv)
 
     cache = ncc.node_compile_cache_dir(ncc.ROUTE_ENGINE_BUNDLE)
-    assert handed == [(ncc.PREWARM_THREAD_NAME, (argv, cache))]
+    assert handed == [
+        (ncc.PREWARM_THREAD_NAME, (data_home(), ncc.prewarm_engine_bundle_cache, argv, cache))
+    ]
 
 
 def test_a_prewarm_thread_that_cannot_start_does_not_fail_the_spawn(monkeypatch, tmp_path) -> None:

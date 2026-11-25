@@ -115,6 +115,13 @@ export interface ConnectionOAuthClient {
   configured: boolean
 }
 
+/** An OAuth app the gateway generates for a card, from GET /api/connections/app-manifests:
+ *  the vendor's create link and the manifest text that link carries. */
+export interface ConnectionAppManifest {
+  create_url: string
+  manifest: string
+}
+
 export interface ConnectionOAuthClientSave {
   client_id?: string
   client_secret?: string
@@ -186,6 +193,10 @@ export function createConnectionsEndpoints({ post, put, del, j, jfetch: fetch }:
     // carries no secret); save and delete are owner-only.
     connectionsOAuthClients: () =>
       fetch('/api/connections/oauth-clients').then(j) as Promise<{ schema_version: number; clients: ConnectionOAuthClient[] }>,
+    // The OAuth app the gateway can generate for a pre-registered card, keyed by
+    // card slug (owner-only; a public app template, no secret).
+    connectionsAppManifests: () =>
+      fetch('/api/connections/app-manifests').then(j) as Promise<{ schema_version: number; apps: Record<string, ConnectionAppManifest> }>,
     // Omitted fields are left as they are, so the id can be saved without re-entering
     // a secret the panel never displays; `client_secret_clear` removes the stored one.
     connectionsOAuthClientSave: (slug: string, body: ConnectionOAuthClientSave) =>

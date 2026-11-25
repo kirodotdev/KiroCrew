@@ -31,6 +31,7 @@ import ThreadPanel from './ThreadPanel'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import BotSessionsPanelTab from './BotSessionsPanelTab'
+import BotSessionListSwitches from './BotSessionListSwitches'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
 import { appendPaneDraftReply, suggestPaneDraft } from '../../utils/chatPaneDrafts'
@@ -628,9 +629,16 @@ export function MembersPageSidePanel({
           // Badge click opens the Profile tab, where the one-click-send switch is.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.
+          // As an overlay (a phone, a narrow window) this panel sits above the
+          // thread column the floating card opens in, so it steps aside first;
+          // left up, the tap opened a card nobody could see.
           onOpenProfileTab={() => {
-            if (!schedAtStakeRef.current()) { openProfile('profile'); return }
-            void schedGuardRef.current().then((ok) => { if (ok) openProfile('profile') })
+            const open = () => {
+              if (!beside) requestCloseOverlay()
+              openProfile('profile')
+            }
+            if (!schedAtStakeRef.current()) { open(); return }
+            void schedGuardRef.current().then((ok) => { if (ok) open() })
           }}
           preview={dashboardPreviewLink}
           onLeavePreview={leaveDashboardPreview}
@@ -663,6 +671,7 @@ export function MembersPageSidePanel({
           key={activeMemberKey}
           root={activeMemberKey}
           mateName={crewDisplayName(activeView ?? active)}
+          header={(activeView ?? active) && <BotSessionListSwitches member={(activeView ?? active)!} displayName={crewDisplayName(activeView ?? active)} />}
           liveSlots={drivingSessions}
           slotsLoaded={slotsLoaded}
           openKey={openPanelSession}

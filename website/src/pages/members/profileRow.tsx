@@ -20,10 +20,12 @@ export function RowIcon({ icon, tone = 'accent' }: { icon: ReactNode; tone?: key
   return <span className={cn('w-8 h-8 rounded-[9px] grid place-items-center shrink-0', TONE[tone])} aria-hidden="true">{icon}</span>
 }
 
-export function RowText({ label, sub, labelId, subId }: { label: string; sub?: string; labelId?: string; subId?: string }) {
+/** `wrap` lets the label run onto more lines instead of ending in an ellipsis:
+ *  for a row whose label is the only text it has, so none of it may be cut off. */
+export function RowText({ label, sub, labelId, subId, wrap = false }: { label: string; sub?: string; labelId?: string; subId?: string; wrap?: boolean }) {
   return (
     <span className="flex-1 min-w-0 leading-tight">
-      <span className="block text-[13px] font-semibold truncate" id={labelId}>{label}</span>
+      <span className={cn('block text-[13px] font-semibold', wrap ? 'break-words' : 'truncate')} id={labelId}>{label}</span>
       {sub && <span className="block text-[12px] text-muted truncate" id={subId}>{sub}</span>}
     </span>
   )
@@ -73,18 +75,20 @@ export const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, 
 
 /** A readout row: the same frame, not a button, with its own control at the
  *  trailing edge (a switch). The control carries its own accessible name. */
-export function RowStatic({ icon, tone = 'accent', label, sub, children, testId }: {
+export function RowStatic({ icon, tone = 'accent', label, sub, children, testId, wrap }: {
   icon: ReactNode
   tone?: keyof typeof TONE
   label: string
   sub?: string
   children?: ReactNode
   testId: string
+  /** The label wraps instead of truncating (`RowText`). */
+  wrap?: boolean
 }) {
   return (
     <div className={ROW_CLASS} data-testid={testId}>
       <RowIcon icon={icon} tone={tone} />
-      <RowText label={label} sub={sub} />
+      <RowText label={label} sub={sub} wrap={wrap} />
       {children}
     </div>
   )

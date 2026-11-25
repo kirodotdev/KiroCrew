@@ -411,8 +411,10 @@ async def _restart_changed_channels(
 
 async def channel_restarts_settled(self: GatewayOrchestrator) -> None:
     """Wait for every in-flight channel restart the applier scheduled."""
-    while self._channel_restart_tasks:
-        await asyncio.gather(*list(self._channel_restart_tasks), return_exceptions=True)
+    # Only the running tasks: a finished one leaves the set on a later loop pass,
+    # and gathering only finished tasks never yields (3.12+), so this would spin.
+    while pending := [task for task in self._channel_restart_tasks if not task.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def restart_channel(

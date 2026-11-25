@@ -151,6 +151,22 @@ export function isAppDetailPath(path: string): boolean {
 }
 
 /**
+ * Does a dashboard path name the Bots page (`/members`, with or without `?member=`)?
+ *
+ * The desktop app's `kirocrew://members` link resolves to this route. Its Bots
+ * are the local Crew's, so like an app detail link it brings the local Crew forward.
+ */
+export function isMembersPath(path: string): boolean {
+  let url: URL
+  try {
+    url = new URL(path, 'http://dashboard.invalid')
+  } catch {
+    return false
+  }
+  return url.pathname === '/members'
+}
+
+/**
  * Perform a navigation intent forwarded from a popout window, in THIS main
  * dashboard window. Order matters: the prefill must be in sessionStorage
  * before the slot switch + route change so ChatPage's slot-restore effect

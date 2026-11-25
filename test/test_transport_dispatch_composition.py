@@ -349,7 +349,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, user_id: 'str', channel_id: 'str', thread_id: 'str', resumed_key: 'str | "
-            "None') -> 'None'"
+            "None', *, reply: \"'ReplyFn | None'\" = None) -> 'None'"
         ),
     ),
     "_handle_link": (
@@ -357,13 +357,16 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, user_id: 'str', channel_id: 'str', thread_id: 'str', resumed_key: 'str | "
-            "None') -> 'None'"
+            "None', *, reply: \"'ReplyFn | None'\" = None) -> 'None'"
         ),
     ),
     "_handle_model": (
         "function",
         True,
-        ("(self, channel_id: 'str', scope_id: 'str', session_key: 'str', arg: 'str') -> " "'None'"),
+        (
+            "(self, channel_id: 'str', scope_id: 'str', session_key: 'str', arg: 'str', *, "
+            "reply: 'ReplyFn | None' = None) -> 'None'"
+        ),
     ),
     "_handle_resumed_busy": (
         "function",
@@ -383,13 +386,16 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, user_id: 'str', channel_id: 'str', thread_id: 'str', resumed_key: 'str | "
-            "None') -> 'None'"
+            "None', *, reply: 'ReplyFn | None' = None) -> 'None'"
         ),
     ),
     "_handle_unlink": (
         "function",
         True,
-        ("(self, user_id: 'str', channel_id: 'str', thread_id: 'str' = '') -> 'None'"),
+        (
+            "(self, user_id: 'str', channel_id: 'str', thread_id: 'str' = '', *, reply: "
+            "\"'ReplyFn | None'\" = None) -> 'None'"
+        ),
     ),
     "_inbound_session_key": (
         "function",
@@ -404,7 +410,10 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_interaction_reply": (
         "function",
         False,
-        ("(self, itx: \"'DiscordInteraction'\") -> \"'ReplyFn'\""),
+        (
+            "(self, itx: \"'DiscordInteraction'\") -> "
+            "\"'tuple[ReplyFn, Callable[[], Awaitable[None]]]'\""
+        ),
     ),
     "_live_cfg": ("function", False, "(self) -> \"'KiroCrewConfig'\""),
     "_maybe_notice": (
@@ -505,7 +514,8 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
             "(self, msg: 'InboundMessage', *, drain: 'bool' = True, interpret_commands: "
             "'bool' = True, origin_tag: 'str' = '', monitor_completion: "
             "'MonitorCompletionHook | None' = None, monitor_session_key: 'str | None' = "
-            "None, skill_trigger_text: 'str | None' = None) -> 'MonitorDispatchResult | None'"
+            "None, skill_trigger_text: 'str | None' = None, reply: 'ReplyFn | None' = None) -> "
+            "'MonitorDispatchResult | None'"
         ),
     ),
     "is_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,10 +16,12 @@ from ai_review_workflows_helpers import (
     DESIGN_EVIDENCE_LANES,
     DESIGN_EVIDENCE_STEP,
     DESIGN_LANES,
+    EVIDENCE_ERR_TRAP,
     FORK_ATTACHMENT_STEP,
     ROOT,
     UX_REVIEW_STEP,
     UxEvidenceGateHarness,
+    _bash,
     _flat,
     _step,
     _step_env,
@@ -780,3 +783,36 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
         # checkout problem, and it says "supplied" for the same reason.
         same_repo = _flat(_step("ux-review.yml", UX_REVIEW_STEP)["with"]["prompt"])
         assert "a control or state no supplied screenshot" in same_repo
+
+
+def test_the_harness_err_trap_names_only_the_command_that_stopped_the_step(
+    tmp_path: Path,
+) -> None:
+    """A red evidence step names the command `set -e` stopped on, even inside
+    a function, and a guarded failure before it adds nothing to stderr."""
+    bash = _bash()
+    if bash is None:
+        pytest.skip("the evidence step runs only under Bash")
+    stub = tmp_path / "trap.sh"
+    stub.write_text(EVIDENCE_ERR_TRAP, encoding="utf-8", newline="\n")
+    script = (
+        "set -euo pipefail\n"
+        "grep -q kept-marker <<< x || true\n"
+        "f() { grep -q stop-marker <<< x; echo after; }\n"
+        "f\n"
+        "echo unreachable\n"
+    )
+    out = subprocess.run(
+        [bash, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "BASH_ENV": stub.as_posix()},
+    )
+    assert out.returncode == 1, out.stderr
+    assert out.stdout == ""
+    lines = out.stderr.splitlines()
+    assert len(lines) == 1, out.stderr
+    assert lines[0].startswith("evidence step: exit 1 at "), out.stderr
+    assert lines[0].endswith(": grep -q stop-marker <<< x"), out.stderr

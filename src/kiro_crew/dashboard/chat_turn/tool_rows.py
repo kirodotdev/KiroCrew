@@ -14,10 +14,12 @@ from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
     open_construct_at_end,
     restore_replacement_if_handover_did_not_land,
+    slack_mirror_is_paused,
     slot_history_key,
     tighten_replacement_to_restricted_original,
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.tool_row_prefix import tool_row, tool_row_kind
@@ -572,10 +574,16 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # stream's destination is the thread cached at turn start, judged
     # as the room it is beside the live comparison. A Bot's Heartbeat wake
     # (``_mirror_reply_only``) opens no stream: the thread gets only its reply.
+    _mirror_paused_in_wait = False
+    if _mirror_chan and _mirror_thread and not state.slack_client and not turn._mirror_reply_only:
+        # A reconnect took the client: wait for it, then re-read the pause as turn start does.
+        await wait_for_slack_reconnect(state)
+        _mirror_paused_in_wait = slack_mirror_is_paused(state, session_key)
     if (
         _mirror_chan
         and _mirror_thread
         and state.slack_client
+        and not _mirror_paused_in_wait
         and not turn._mirror_reply_only
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)

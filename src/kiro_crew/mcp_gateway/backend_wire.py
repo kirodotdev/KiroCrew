@@ -117,6 +117,11 @@ class _PendingRequest:
     # lease transition the reply confirms or refuses. Empty for every other
     # method.
     resource_uri: str = ""
+    # The URIs a request's ``params.notifications.resourceSubscriptions`` names
+    # (only a ``subscriptions/listen`` carries one), so a resource update
+    # tagged with that listen reaches its stub only for a URI the stub itself
+    # asked about. Empty for every other request.
+    listen_uris: frozenset[str] = frozenset()
     # For a ``resources/subscribe``/``unsubscribe`` on an identity-capable
     # server: the caller whose block was injected into the forward. Recorded
     # into ``_grant_callers`` when the server GRANTS, so a later release can

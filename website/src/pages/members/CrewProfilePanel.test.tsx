@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { unregisteredMarkers } from '../../test/guideTargets'
-import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, within, act, waitFor } from '@testing-library/react'
 import type { MemberRosterRow } from '../../api/client'
 import type { CronJob } from '../../types'
 
@@ -25,8 +25,8 @@ vi.mock('../../components/crew/CrewMonitoredAvatar', () => ({
 }))
 
 vi.mock('./CrewExportView', () => ({
-  default: ({ slug, member, onDirtyChange }: { slug: string; member: string; onDirtyChange?: (d: boolean) => void }) => (
-    <div data-testid="export-view-stub">
+  default: ({ slug, member, name, mode, onDirtyChange }: { slug: string; member: string; name?: string; mode?: string; onDirtyChange?: (d: boolean) => void }) => (
+    <div data-testid="export-view-stub" data-mode={mode ?? 'export'} data-name={name ?? ''}>
       {slug}/{member}
       <button type="button" data-testid="export-stub-type" onClick={() => onDirtyChange?.(true)}>type</button>
     </div>
@@ -209,20 +209,22 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByTestId('crew-profile-model')).toBeNull()
   })
 
-  it('carries a guide marker on its Schedules, Goals and Profile tabs and nowhere else', () => {
+  it('carries a guide marker on its Sessions, Schedules, Goals and Profile tabs and nowhere else', () => {
     // Schedules and Goals are where a mate's welcome tour points; Profile is also
-    // the step a guide to the Settings row takes first. The permission picker the
+    // the step a guide to the Settings row takes first, and Sessions the step to
+    // the bot's own Sessions-list switch. The permission picker the
     // card holds is answered in words, not guided (it is a trust root); the
     // settings body is a slot here, so its row is absent.
     setup()
     const marked = Array.from(document.querySelectorAll('[data-ui-location]'))
     expect(marked.map(el => el.getAttribute('data-ui-location'))).toEqual([
+      'members.sessions-tab',
       'members.schedule-tab',
       'members.goals-tab',
       'members.profile-tab',
     ])
     for (const el of marked) expect(el).toHaveAttribute('role', 'tab')
-    expect(marked[2]).toBe(screen.getByRole('tab', { name: 'Profile' }))
+    expect(marked[3]).toBe(screen.getByRole('tab', { name: 'Profile' }))
   })
 
   it('says there is no description instead of rendering an empty card', () => {
@@ -308,6 +310,34 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(await screen.findByTestId('export-view-stub', {}, { timeout: EXPORT_VIEW_WAIT_MS })).toHaveTextContent('oncall/oncall')
     expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Export as file')
     expect(document.activeElement).toBe(screen.getByTestId('crew-profile-back'))
+  })
+
+  it('Make a copy sits directly under Export as file and pushes the view in its copy mode', async () => {
+    setup({ canCopy: true, member: member({ display_name: 'On-call desk' }) })
+    const exportRow = screen.getByTestId('crew-profile-export')
+    const copyRow = screen.getByTestId('crew-profile-copy')
+    expect(exportRow.nextElementSibling).toBe(copyRow)
+    expect(copyRow).toHaveTextContent('Make a copy')
+    expect(copyRow).toHaveTextContent('A new bot set up like this one')
+    fireEvent.click(copyRow)
+    expect(screen.getByTestId('crew-profile-page-copy')).toBeInTheDocument()
+    const stub = await screen.findByTestId('export-view-stub', {}, { timeout: EXPORT_VIEW_WAIT_MS })
+    expect(stub).toHaveAttribute('data-mode', 'copy')
+    expect(stub).toHaveTextContent('oncall/oncall')
+    // The name the file carries is the display name, for the too-long line.
+    expect(stub).toHaveAttribute('data-name', 'On-call desk')
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Make a copy')
+    expect(document.activeElement).toBe(screen.getByTestId('crew-profile-back'))
+  })
+
+  it('shows Make a copy only where the host passes the copy door', () => {
+    setup({ canCopy: true })
+    expect(screen.getByTestId('crew-profile-copy')).toBeInTheDocument()
+    cleanup()
+    // Held (a teammate, a failed owner check, a held create): Export stays, Make a copy goes.
+    setup({ canCopy: false })
+    expect(screen.getByTestId('crew-profile-export')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-profile-copy')).toBeNull()
   })
 
   it('hands the Export view\'s typed lessons to the host, whose guard asks on every exit', async () => {

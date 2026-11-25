@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -162,23 +163,62 @@ def test_conductor_agent_fallback_when_unusable(monkeypatch):
 
 
 # ---------- reading the run ----------
-def test_transcript_credits_sums_turn_stats(tmp_path):
-    p = tmp_path / "t.jsonl"
-    p.write_text(
-        "\n".join(
-            json.dumps(e)
-            for e in [
-                {"role": "assistant", "meta": {"turn_stats": {"credits": 1.5}}},
-                {"role": "assistant", "meta": {"turn_stats": {"credits": 2}}},
-                {"role": "assistant", "meta": {"turn_stats": {"credits": True}}},
-                {"role": "user"},
-            ]
-        )
-        + "\nnot json\n",
-        encoding="utf-8",
-    )
-    assert h.transcript_credits(p) == 3.5
-    assert h.transcript_credits(tmp_path / "missing.jsonl") == 0.0
+def _usage_rows(rows, age_days=0.0):
+    """Append per-turn usage rows, written *age_days* ago, to that day's shard."""
+    from datetime import datetime
+
+    from kiro_crew.dashboard.handlers.usage import _shard_path_for
+
+    now = datetime.fromtimestamp(time.time() - age_days * 86400).astimezone()
+    path = _shard_path_for(now)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for slot, credits in rows:
+            row = {"_type": "tokens", "ts": now.isoformat(), "slot": slot, "credits": credits}
+            f.write(json.dumps(row) + "\n")
+        f.write("not json\n")
+
+
+def test_run_spend_counts_a_turn_that_left_no_reply(monkeypatch, tmp_path):
+    # A conductor turn that ends on tool calls has no reply row, so no turn_stats
+    # footer in its transcript; its usage row is the only record of what it cost.
+    slot = "chat-6-1800000006"
+    monkeypatch.setattr(h, "transcript_path", lambda k: tmp_path / f"dashboard_{k}.jsonl")
+    rows = [
+        {"_type": "metadata"},
+        {"role": "user", "content": "go"},
+        {"role": "tool", "content": "autonudge_stop"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "done", "meta": {"turn_stats": {"credits": 0.25}}},
+    ]
+    h.transcript_path(slot).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    _usage_rows([(slot, 1.5), (slot, 0.25)])
+
+    class Gw:
+        def call(self, method, path, body=None, timeout=60):
+            return {"agents": []}
+
+    assert h.run_spend(Gw(), {slot}, time.time() - 60, h.Spawns()) == 1.75
+
+
+def test_usage_credits_sums_each_slots_rows():
+    since = time.time() - 60
+    _usage_rows([("chat-7-1800000007", 1.5), ("chat-7-1800000007", 0.25)])
+    _usage_rows([("chat-8-1800000008", 2.0), ("chat-7-1800000007", True)])
+    assert h.usage_credits({"chat-7-1800000007"}, since) == 1.75
+    assert h.usage_credits({"chat-7-1800000007", "chat-8-1800000008"}, since) == 3.75
+    assert h.usage_credits({"chat-9-1800000009"}, since) == 0.0
+
+
+def test_usage_credits_keeps_every_turn_of_a_long_run():
+    # A run past the Spend view's 7-day window still counts its first turns, so a
+    # --budget over a long run is not reset by old turns ageing out.
+    slot = "chat-5-1800000005"
+    _usage_rows([(slot, 4.0)], age_days=12)
+    _usage_rows([(slot, 1.0)], age_days=8)
+    _usage_rows([(slot, 0.5)])
+    assert h.usage_credits({slot}, time.time() - 10 * 86400) == 1.5
+    assert h.usage_credits({slot}, time.time() - 13 * 86400) == 5.5
 
 
 def test_classify_failure():
@@ -276,7 +316,7 @@ def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None):
         h, "ledger_items", lambda client, slot: items() if callable(items) else (items or [])
     )
     monkeypatch.setattr(
-        h, "transcript_credits", lambda p: credits() if callable(credits) else credits
+        h, "usage_credits", lambda slots, since: credits() if callable(credits) else credits
     )
     monkeypatch.setattr(
         h, "transcript_path", lambda slot: __import__("pathlib").Path(f"/x/dashboard_{slot}.jsonl")
@@ -737,6 +777,27 @@ def test_a_run_longer_than_the_sign_in_token_keeps_polling(monkeypatch):
     assert state["minted"] == 4
 
 
+def test_sign_in_waits_as_long_as_kirocrew_token(monkeypatch):
+    """A busy gateway can take 12-14 s to answer; a shorter wait reads it as down."""
+    from kiro_crew.cli_server_requests import _TOKEN_REQUEST_TIMEOUT
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.read_local_secret", lambda port, dial_host=None: "s3cret"
+    )
+    c = h.GatewayClient(4321)
+    answers = [_Resp(b'{"token":"tok"}'), _Resp(cookies=["mc_token_4321=sess; Path=/"])]
+    waits = {}
+
+    def fake_open(req, timeout, operation):
+        waits[operation] = timeout
+        return answers.pop(0)
+
+    c._open = fake_open
+    c.sign_in()
+    assert set(waits) == {"cli_headless_token", "cli_headless_session"}
+    assert min(waits.values()) >= _TOKEN_REQUEST_TIMEOUT
+
+
 def test_client_errors(monkeypatch):
     c, _ = _client(monkeypatch, [403])
     with pytest.raises(RuntimeError, match="refused sign-in: HTTP 403"):
@@ -819,10 +880,8 @@ def test_spend_counts_a_worker_closed_between_polls(monkeypatch, tmp_path):
 
     def write(key, creator, credits):
         meta = {"_type": "metadata", "created_by": creator}
-        turn = {"role": "assistant", "meta": {"turn_stats": {"credits": credits}}}
-        (sessions / f"dashboard_{key}.jsonl").write_text(
-            json.dumps(meta) + "\n" + json.dumps(turn) + "\n"
-        )
+        (sessions / f"dashboard_{key}.jsonl").write_text(json.dumps(meta) + "\n")
+        _usage_rows([(key, credits)])
 
     write(ROOT, "", 1.0)
     write("chat-3-1", f"dashboard:{ROOT}", 2.0)
@@ -830,7 +889,7 @@ def test_spend_counts_a_worker_closed_between_polls(monkeypatch, tmp_path):
     write("chat-9-9", "someone-else", 8.0)
     slots = h.spend_slots({ROOT}, since=0)
     assert slots == {ROOT, "chat-3-1", "chat-4-1"}
-    assert sum(h.transcript_credits(h.transcript_path(k)) for k in slots) == 7.0
+    assert h.usage_credits(slots, time.time() - 60) == 7.0
 
 
 def test_a_child_chat_option_list_is_an_ask(monkeypatch):
@@ -963,7 +1022,7 @@ def test_nested_and_closed_chat_background_agents_count_too(monkeypatch):
                 return {"agents": agents}
             return {"credits": 2.0}
 
-    monkeypatch.setattr(h, "transcript_credits", lambda p: 0.0)
+    monkeypatch.setattr(h, "usage_credits", lambda slots, since: 0.0)
     monkeypatch.setattr(h, "spend_slots", lambda roots, since: set(roots) | {WORKER})
     settled = h.Spawns()
     assert h.run_spend(Gw(), {ROOT}, 0.0, settled) == 6.0

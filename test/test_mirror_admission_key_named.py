@@ -41,9 +41,16 @@ class _Sessions:
         self.origins: dict[str, ChannelLink] = {}
         self.inbound: set[str] = set()
         self.writes: list[tuple[str, bool]] = []
+        # The legacy ``slack_channel_id`` field, where a channel-born session's
+        # namespaced origin (``feishu:<open_id>``) lives.
+        self.origin_ids: dict[str, str] = {}
+        self.opted_out: set[str] = set()
 
     def mirror_opt_out(self, key: str) -> bool:
-        return False
+        return key in self.opted_out
+
+    def get_slack_link(self, key: str) -> tuple[str, str]:
+        return "", self.origin_ids.get(key, "")
 
     def set_mirror_opt_out(self, key: str, value: bool) -> None:
         pass
@@ -399,7 +406,12 @@ class _Slot:
 
 
 def _deliver_and_collect_notices(
-    _floor_monkeypatch: pytest.MonkeyPatch, state: _State, slot: _Slot
+    _floor_monkeypatch: pytest.MonkeyPatch,
+    state: _State,
+    slot: _Slot,
+    *,
+    key: str = KEY,
+    origin_paused: bool = False,
 ) -> list[dict[str, Any]]:
     import asyncio
 
@@ -413,8 +425,10 @@ def _deliver_and_collect_notices(
             {"role": role, "content": content, **kw}
         ),
     )
-    _floor_monkeypatch.setattr(chat_runner, "mirror_is_paused", lambda *_a: False)
-    asyncio.run(chat_runner._deliver_cross_surface_reply(state, KEY, "an answer", slot=slot))
+    _floor_monkeypatch.setattr(
+        chat_runner, "mirror_is_paused", lambda *_a, origin=False: origin and origin_paused
+    )
+    asyncio.run(chat_runner._deliver_cross_surface_reply(state, key, "an answer", slot=slot))
     return notices
 
 
@@ -470,3 +484,80 @@ def test_an_unsigned_row_on_an_unregistered_channel_shows_no_notice(
     sessions.rows[KEY] = ChannelLink("discord", channel_id=OWN_DM)
     state = _State(None, sessions)
     assert _deliver_and_collect_notices(_floor_monkeypatch, state, _Slot()) == []
+
+
+FEISHU_KEY = "feishu:kirocrew:direct:ou_owner"
+
+
+def _feishu_state(sessions: _Sessions, *, registered: bool = True) -> _State:
+    from kiro_crew.feishu.transport import FeishuTransport
+
+    transport = FeishuTransport(_Client(), allowed_open_ids=["ou_owner"]) if registered else None
+    return _State(transport, sessions)
+
+
+def test_a_feishu_dm_with_no_mirror_row_tells_the_dashboard_chat_once(
+    _floor_monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Feishu DM row that never got a mirror row carries only its ``feishu:<open_id>``
+    origin, which the dashboard shows as linked, so a dashboard reply reaches no channel.
+    The chat says so once, the gateway log says so once at WARNING, and the next message
+    from the DM binds the row so the reply resolves a target."""
+    sessions = _Sessions()
+    sessions.origin_ids[FEISHU_KEY] = "feishu:ou_owner"
+    state = _feishu_state(sessions)
+    slot = _Slot()
+    with caplog.at_level(logging.WARNING):
+        notices = _deliver_and_collect_notices(_floor_monkeypatch, state, slot, key=FEISHU_KEY)
+    assert [n["role"] for n in notices] == ["notice"]
+    assert "not sent to the feishu conversation" in notices[0]["content"]
+    assert "One message from that conversation links it" in notices[0]["content"]
+    assert "ou_owner" not in notices[0]["content"]
+    assert [r.levelno for r in caplog.records if "no mirror binding" in r.getMessage()] == [
+        logging.WARNING
+    ]
+    assert _deliver_and_collect_notices(_floor_monkeypatch, state, slot, key=FEISHU_KEY) == []
+    location = ChannelLink("feishu", channel_id="ou_owner")
+    assert bind_origin_mirror(sessions, key=FEISHU_KEY, location=location)
+    assert _resolve(state, FEISHU_KEY) is not None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "dashboard-born",
+        "not running",
+        "muted origin",
+        "opted out",
+        "group chat",
+        "unified",
+        "another channel",
+    ],
+)
+def test_no_unlinked_origin_notice_where_one_message_would_not_link_it(
+    _floor_monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Silent where the session has no Feishu DM origin, or where a message from the
+    conversation would link nothing: the channel is not running, the origin is muted, the
+    conversation opted out, the key is a group chat (an un-mentioned message is ignored)
+    or a unified DM bucket, or the channel is not Feishu."""
+    key = {
+        "dashboard-born": "chat-1-abc",
+        "unified": "unified:kirocrew",
+        "another channel": "discord:kirocrew:direct:42",
+        "group chat": "feishu:kirocrew:forum:oc_team",
+    }.get(case, FEISHU_KEY)
+    sessions = _Sessions()
+    if case == "another channel":
+        sessions.origin_ids[key] = "discord:42"
+    elif case == "group chat":
+        sessions.origin_ids[key] = "feishu:oc_team"
+    elif case != "dashboard-born":
+        sessions.origin_ids[key] = "feishu:ou_owner"
+    if case == "opted out":
+        sessions.opted_out.add(key)
+    state = _feishu_state(sessions, registered=case != "not running")
+    notices = _deliver_and_collect_notices(
+        _floor_monkeypatch, state, _Slot(), key=key, origin_paused=case == "muted origin"
+    )
+    assert notices == []

@@ -106,13 +106,13 @@ describe('CrewModeMarks', () => {
     expect(label).not.toMatch(/\b(turn|click|tap|press|switch|is on|off)\b/i)
   })
 
-  it('the session title bolt sits out of the title line box, with a real 24px box', () => {
+  it('the session row bolt fits the 12px first line, in flow (#38200)', () => {
     render(<ConductorModeTitleMark />)
     const mark = screen.getByTestId('conductor-mode-title-mark')
-    // Out of flow, at its static position: the row's title reserves `indent-6`
-    // (24px) for it, so the 20px title line never grows to hold the box.
-    expect(mark).toHaveClass('absolute', 'h-6', 'w-6', '-mt-0.5')
-    expect(mark.className).not.toMatch(/\binline-(grid|flex|block)\b|\b-ml-/)
+    // It takes the agent-name slot, so its box is the first line's 12px and in flow.
+    expect(mark).toHaveClass('inline-grid', 'h-3', 'w-3')
+    expect(mark.className).not.toMatch(/\babsolute\b/)
+    expect(mark.querySelector('.lucide-zap')).toHaveAttribute('width', '12')
     expect(mark).toHaveAttribute('data-read-only-bolt')
   })
 
@@ -132,7 +132,7 @@ describe('CrewModeMarks', () => {
     // Empty, so the title's own native tooltip cannot stack on the bubble.
     expect(mark).toHaveAttribute('title', '')
     expect(mark.className).toContain('cursor-default')
-    expect(mark).toHaveClass('h-6', 'w-6')
+    expect(mark).toHaveClass('h-3', 'w-3')
     expect(mark).not.toHaveClass('mc-touch-hit')
     expect(mark.textContent).toBe('')
     expect(mark.querySelectorAll('.lucide-zap')).toHaveLength(1)

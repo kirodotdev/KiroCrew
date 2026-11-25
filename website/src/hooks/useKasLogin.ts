@@ -7,7 +7,7 @@ import {
   type KasLoginLoopbackSession,
   type KasLoginStatus,
 } from '../api/client'
-import { ApiError, apiErrorCode } from '../api/apiError'
+import { ApiError, apiErrorCode, isPermissionRefusal } from '../api/apiError'
 import { parseKiroUsagePayload } from '../api/kiroUsage'
 import { clearCachedModels } from '../providers/adapters/acp'
 import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from './useRelayViewerCrews'
@@ -90,11 +90,17 @@ export function openAuthTab(url: string): void {
  * that interval; leave it off to observe what another surface reads.
  */
 export function useKasLoginStatus({ enabled = true, poll }: { enabled?: boolean; poll?: number } = {}) {
-  return useQuery({
+  return useQuery<KasLoginStatus, Error>({
     queryKey: KAS_LOGIN_STATUS_KEY,
     queryFn: api.kasLoginStatus,
     enabled,
-    ...(poll ? { refetchInterval: poll } : {}),
+    // React Query re-reads a failed read with no data on EVERY mount, and the
+    // card swaps its spinner for the flow (a new reader) on each failure, so a
+    // failed read would loop mount -> read -> spinner -> failure -> mount.
+    retryOnMount: false,
+    // A refusal (not the owner) gives the same answer every time, and each ask
+    // writes another denial row to the security event log: it is not polled again.
+    ...(poll ? { refetchInterval: (query: { state: { error: unknown } }) => (isPermissionRefusal(query.state.error) ? false : poll) } : {}),
   })
 }
 
@@ -171,11 +177,16 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
       ? statusQuery.data.identity
       : undefined
 
+  // The profile picked on a company sign-in's `choose_profile` step. A ref, read by
+  // the poll at call time: a refetch in the same click as a state update would run
+  // the previous render's queryFn and send no pick.
+  const pickedProfile = useRef<string | undefined>(undefined)
   const beginDevice = useMutation({
     mutationFn: ({ provider, extra }: { provider: KasLoginProvider; extra?: KasLoginExtra }) =>
       api.kasLoginBeginDevice(provider, replaces ? { ...(extra ?? {}), replaces } : extra),
     onSuccess: (s, { provider, extra }) => {
       if (cancelIfAbandoned(s.login_id)) return
+      pickedProfile.current = undefined
       setSession({ kind: 'device', provider, extra, ...s })
     },
   })
@@ -203,7 +214,7 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
   const pollQuery = useQuery({
     queryKey: ['kas-login-poll', session?.login_id],
     // `session!` is safe: `enabled` gates this off until a session exists.
-    queryFn: () => api.kasLoginPoll(session!.login_id),
+    queryFn: () => api.kasLoginPoll(session!.login_id, pickedProfile.current),
     // Off while a cancel is settling: the id is about to become unknown, and an
     // error answer here must not read as a loopback failure to degrade from.
     enabled: !!session && !settling,
@@ -262,6 +273,8 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     })()
     // A switch can keep every status field unchanged while replacing the account.
     void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
+    // A hosted voice provider reports "needs a sign-in" through this query.
+    void queryClient.invalidateQueries({ queryKey: ['sttConfig'] })
     // Team Crews are listed for the account: the new one's list, not the old one's.
     void queryClient.resetQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
   }, [queryClient])
@@ -479,6 +492,12 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
       })
   }
 
+  /** Finish a `choose_profile` sign-in with *arn*; the poll's answer lands as usual. */
+  const chooseProfile = (arn: string) => {
+    pickedProfile.current = arn
+    void pollQuery.refetch()
+  }
+
   /** Back out of replacing a signed-in identity; the stored one was never touched. */
   const cancelReauth = () => {
     beginDevice.reset()
@@ -512,6 +531,7 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     /** The device begin's error, for the SSO form's refusal reason and report. */
     beginDeviceError: beginDevice.error,
     pick,
+    chooseProfile,
     reset,
     switchToCode,
     startOver,

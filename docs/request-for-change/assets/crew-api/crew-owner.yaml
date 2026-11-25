@@ -91,6 +91,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: bots:manage
       x-crew-phase: 1b
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-wraps: GET /api/members
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
@@ -133,6 +135,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GrantList'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
         '401':
           $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
         '403':
@@ -146,10 +150,15 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
-      description: revoked grants are not listed by default.
+      description: revoked grants are not listed by default. Served for grants made through local authorization
+        (amendment, 2026-11-24), oldest first. Such a grant is active or gone, so any other `status` lists
+        nothing; each row carries `kind`, `namespace`, `client_id`, `app`, `scopes`, `status`, `created_at`
+        and `expires_at`.
   /v1/crew/owner/grants/{grant_id}:
     patch:
       operationId: patch_v1_crew_owner_grants_grant_id
@@ -250,6 +259,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
@@ -397,7 +408,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -450,6 +462,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -494,7 +508,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/GrantRequest'
         '400':
-          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+          description: 'invalid_request: a malformed body or field, or bots of an approval that are not a subset of
+            the requested Bots or name a Bot this Kiro Crew does not have. invalid_scope: the scopes of an approval are
+            empty, repeat a scope, or name a scope the app did not ask for'
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Error
         '401':
           $ref: ./components.yaml#/components/responses/OwnerUnauthorized
         '403':
@@ -519,7 +544,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -595,7 +621,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/sessions_parts/live_turn.py (GET /api/approvals), state only
       x-crew-coverage: done
@@ -648,7 +675,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -717,7 +745,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - the resolvers behind POST /api/approvals/{id}/{action} and POST /api/chat/slots/{slot}/approve
       x-crew-coverage: done
@@ -1093,6 +1122,22 @@ components:
           type: array
           items:
             type: string
+        requested_bots:
+          type: array
+          items:
+            type: string
+          description: >-
+            The Bot names the app sends as the repeated bots query parameter of GET /oauth/authorize,
+            one Bot per occurrence, without splitting; empty when omitted. The app is expected to
+            send the exact model id from GET /v1/models. Names follow
+            kiro_crew.members.is_dispatchable_member_name with the MEMBER_NAME_MAX_CHARS length
+            limit; duplicates are refused. Asking checks format, never existence. Malformed bots
+            gives 400 invalid_request even with an invalid scope. Asking again requires the same
+            bots values in the same order. MAX_REQUESTED_BOTS is the chosen bound for one request
+            and one decision, set equal to crew_teams.TEAM_MEMBERS_MAX (500), the largest Bot list
+            the product keeps elsewhere. The request must fit aiohttp's 8190-byte request line.
+            The decision body must fit 4 KiB (_BODY_MAX); a bots list that does not fit gives
+            400 invalid_request, and the owner gives a shorter list.
         created_at:
           $ref: ./components.yaml#/components/schemas/Timestamp
         expires_at:
@@ -1119,6 +1164,20 @@ components:
           items:
             type: string
           description: Only when approved; what the owner gave, which may be fewer than requested (amendment, proposed)
+        granted_bots:
+          type: array
+          items:
+            type: string
+          description: >-
+            Only when approved; the Bot names the owner gave, which may be none. They become the
+            grant's bots with mode selected. Names follow kiro_crew.members.is_dispatchable_member_name
+            and MEMBER_NAME_MAX_CHARS, with no duplicates. MAX_REQUESTED_BOTS is the chosen bound
+            for one request and one decision, set equal to crew_teams.TEAM_MEMBERS_MAX (500), the
+            largest Bot list the product keeps elsewhere. The decision body must fit 4 KiB
+            (_BODY_MAX); a bots list that does not fit gives 400 invalid_request, and the owner
+            gives a shorter list. The decision checks expiry, pending status and the requested
+            subset before reading the roster. The grants list returns the owner's recorded
+            selection; no route enforces it yet.
         grant_id:
           type:
           - string
@@ -1150,6 +1209,28 @@ components:
             type: string
           description: 'Only with approve: the scopes to give. Must be a subset of requested_scopes. Left out: all requested
             scopes.'
+        bots:
+          type: array
+          items:
+            type: string
+          description: >-
+            Only with approve: a JSON array of exact Bot names from GET /v1/models, a subset of
+            requested_bots. Names follow kiro_crew.members.is_dispatchable_member_name and
+            MEMBER_NAME_MAX_CHARS, with no duplicates. MAX_REQUESTED_BOTS is the chosen bound for
+            one request and one decision, set equal to crew_teams.TEAM_MEMBERS_MAX (500), the largest
+            Bot list the product keeps elsewhere. The decision body must fit 4 KiB (_BODY_MAX);
+            a bots list that does not fit gives 400 invalid_request, and the owner gives a shorter
+            list. After the body's size, decision and scopes form (each 400 invalid_request), the
+            handler checks the request before any Bot check (404 not_found if unknown or expired, 409
+            grant_request_already_resolved if answered), then the requested subset, then the roster.
+            Each Bot must exist in that read. When an approval gives at least one Bot, unreadable
+            configuration or a degraded Bot roster gives 503 instance_unavailable without recording
+            a decision. An approval that gives none, and a deny, do not read the roster. Asking via GET
+            /oauth/authorize uses repeated bots query parameters, one Bot per occurrence, and
+            checks format only, never existence; asking again requires the same values in the
+            same order. Left out: no Bot, because a Bot is never given by default. Explicit null
+            gives 400 invalid_request (bots must be a list of strings). On a deny, the server
+            ignores bots whatever its value, even though the schema declares an array.
     OwnerApprovalState:
       enum:
       - pending
@@ -1397,11 +1478,17 @@ components:
           - local
           description: 'remote: issued by the Kiro authorization service; local: local authorization, issued by
             this gateway.'
+        namespace:
+          type: string
+          description: Stored on every record of local authorization; one fixed value, `default`, today.
+        expires_at:
+          type: integer
+          description: 'A local grant only: when the grant ends by itself, in Unix seconds.'
     GrantBots:
       type: object
       required:
       - mode
-      description: Which Bots this app may use. A Bot outside the range is always 404 to its credential.
+      description: The owner's recorded Bot selection, returned by the grants list; no route enforces it yet.
       properties:
         mode:
           enum:

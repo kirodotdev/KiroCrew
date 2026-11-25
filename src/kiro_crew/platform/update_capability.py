@@ -390,6 +390,25 @@ def _command_remediation(message: str, command: str) -> dict[str, str]:
     return {"kind": "command", "message": message, "command": command}
 
 
+#: Set to ``"1"`` by the test harness: its gateway imports the package from this
+#: checkout without being installed from it, so the checkout is no install root.
+NO_CHECKOUT_ROOT_ENV = "KIROCREW_UPDATE_NO_CHECKOUT_ROOT"
+
+
+def default_install_root() -> str:
+    """The root every update surface judges: the project dir, else the running checkout.
+
+    A gateway started outside its clone with no saved project dir has the
+    variable empty, and the checkout the package loads from is then the same
+    root ``kirocrew update`` resolves; a release install has none and stays ``""``.
+    :data:`NO_CHECKOUT_ROOT_ENV` withholds that fallback from a test-harness gateway.
+    """
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    if proj or os.environ.get(NO_CHECKOUT_ROOT_ENV) == "1":
+        return proj
+    return str(_source_checkout_root() or "")
+
+
 def derive_capability(
     *,
     install_root: str | None = None,
@@ -397,8 +416,8 @@ def derive_capability(
 ) -> UpdateCapability:
     """Derive the capability contract for this install.
 
-    *install_root* defaults to ``KIROCREW_PROJECT_DIR`` and *dist* to the value
-    stamped into the package tree at packaging time.
+    *install_root* defaults to :func:`default_install_root` and *dist* to the
+    value stamped into the package tree at packaging time.
 
     An externally managed stamp wins over a git working tree. A packaged app
     that happens to be pointed at a checkout is still updated by its own
@@ -412,7 +431,7 @@ def derive_capability(
     if dist is None:
         dist = distribution()
     if install_root is None:
-        install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
+        install_root = default_install_root()
 
     if dist in _ELECTRON_DISTRIBUTIONS:
         # ``can_apply`` answers for the process serving this contract, and that is
@@ -688,7 +707,7 @@ def auto_update_effect(
         return None
     else:
         if install_root is None:
-            install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
+            install_root = default_install_root()
         managed_by = derive_capability(install_root=install_root, dist=dist).managed_by
         if managed_by == MANAGED_BY_GIT:
             route, reason = _git_route(install_root)

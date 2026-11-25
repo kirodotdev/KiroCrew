@@ -41,7 +41,12 @@ from kiro_crew.agent_sdk.drivers.acp import (
 )
 from kiro_crew.agent_sdk.host_auth import signed_out_message
 from kiro_crew.config.loader import KiroCrewConfig, rescan_before_refusal, resolve_agent_bindings
-from kiro_crew.dashboard.chat_utils import blocked_links_for_workspace, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    blocked_links_for_workspace,
+    drop_records_without_placeholders,
+    slot_history_key,
+    with_bounded_redaction_records,
+)
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
@@ -66,6 +71,7 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.shared_crew.admission_gate import actor_budget
 from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
@@ -253,13 +259,23 @@ def _redacted_reply(reply: dict[str, Any]) -> dict[str, Any]:
     """The reply-schema fields of *reply* -- and only those -- with the prose
     re-redacted at the output boundary, as ``chat_pins._redacted_pin`` does: a
     sidecar written under an older redactor is re-run through the current one
-    on the way out, and a field the store did not write never leaves."""
-    return {
+    on the way out, and a field the store did not write never leaves. A Bot
+    reply's bounded credential records ride beside its text, so its lock tags draw."""
+    shown = {
         "id": str(reply.get("id", "")),
         "role": str(reply.get("role", "")),
         "content": redact(str(reply.get("content", ""))),
         "ts": str(reply.get("ts", "")),
     }
+    return _with_credential_records(shown, reply.get("redactions"))
+
+
+def _with_credential_records(shown: dict[str, Any], records: object) -> dict[str, Any]:
+    """*shown* with the credential records of the Bot's text, bounded, as a main
+    chat row carries them; a user's text and an empty set carry none."""
+    if shown.get("role") != ROLE_ASSISTANT:
+        return shown
+    return {**shown, **with_bounded_redaction_records({"redactions": records})}
 
 
 def summarize(threads: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
@@ -337,12 +353,16 @@ def _find_parent(
 
 @redaction_seams.in_seam(redaction_seams.CHAT)
 def _parent_payload(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    meta = row.get("meta")
+    shown = {
         "mid": _row_mid(row),
         "role": row.get("role", ""),
         "content": redact(str(row.get("content", "") or "")),
         "ts": row.get("ts", ""),
     }
+    return _with_credential_records(
+        shown, meta.get("redactions") if isinstance(meta, dict) else None
+    )
 
 
 def _with_link_blocks(shown: dict[str, Any], workspace: str | None) -> dict[str, Any]:
@@ -856,6 +876,40 @@ async def _append_user_reply(
         raise
 
 
+def _redact_answer(slot: _ChatSlot, raw: str) -> tuple[str, list[dict], dict[str, str]]:
+    """The main chat's credential pass over a Bot answer, as the side chat's:
+    ``redact(raw)``, the records its placeholders need, and their removed values,
+    which nothing keeps until :func:`_commit_answer_reveals` runs."""
+    # Deferred: chat_runner imports half the dashboard, as the side turn's import says.
+    from kiro_crew.dashboard.chat_runner import _redact_segment_text
+
+    pending: dict[str, str] = {}
+    text, records = _redact_segment_text(slot, raw, _reveal_pending=pending)
+    return text, records, pending
+
+
+def _answer_row(text: str, records: list[dict]) -> dict[str, Any]:
+    """A Bot answer's sidecar row: *text* and the credential records of the pass
+    that wrote it, dropped by the main chat's own rule when *text* (clipped, or the
+    "not answered" line) holds no credential placeholder."""
+    row = _new_reply(ROLE_ASSISTANT, text)
+    if records:
+        row["redactions"] = records
+        drop_records_without_placeholders(row, text)
+    return row
+
+
+def _commit_answer_reveals(slot: _ChatSlot, records: list[dict], pending: dict[str, str]) -> None:
+    """Keep the removed values of a STORED answer's records for the owner's reveal.
+
+    The sidecar already holds *records*, so the commit marks a refused value on a
+    copy: the row the final frame sends stays the row the sidecar holds, and a
+    reload and the live bubble name the same handle."""
+    from kiro_crew.dashboard.chat_runner import _commit_reveals
+
+    _commit_reveals(slot, [dict(r) for r in records], pending)
+
+
 async def _persist_interrupted(
     state: DashboardState,
     slot: _ChatSlot,
@@ -868,21 +922,25 @@ async def _persist_interrupted(
     log = state.conversation_log
     if log is None:
         return
-    partial = redact("".join(chunks)).strip()
+    redacted, redactions, reveals = _redact_answer(slot, "".join(chunks))
+    partial = redacted.strip()
     if partial:
         text = f"{partial[:_MAX_STORED_REPLY_CHARS]}\n\n{_INTERRUPTED_MARKER}"
     else:
         text = _UNANSWERED_FALLBACK
+    row = _answer_row(text, redactions)
     try:
-        await asyncio.to_thread(
+        outcome = await asyncio.to_thread(
             log.append_thread_reply,
             history_key,
             mid,
-            _new_reply(ROLE_ASSISTANT, text),
+            row,
             max_replies=_MAX_REPLIES_PER_THREAD,
             max_total=_MAX_REPLIES_PER_SIDECAR,
             expected_created_at=identity,
         )
+        if outcome == "ok":
+            _commit_answer_reveals(slot, row.get("redactions", []), reveals)
     except Exception:
         logger.warning(
             "Thread turn cancelled; interrupted answer not stored for slot=%s mid=%s",
@@ -1135,17 +1193,23 @@ async def _thread_turn_body(
             searches_available=not strands_thread,
         )
         try:
-            response_text = redact(
-                await stream_and_collect(
-                    provider,
-                    message,
-                    approval_policy=approval_policy,
-                    hooks=hooks,
-                    session_key=session_key,
-                    agent=slot_agent or "kirocrew",
-                    app=slot._app or "",
-                    on_chunk=_on_chunk,
-                )
+            # The main chat's credential pass: the text is ``redact(raw)`` byte for
+            # byte (both splice one plan), with the record each placeholder needs.
+            # A line that only quotes a directive tool's marker is protocol, not the answer.
+            response_text, redactions, reveals = _redact_answer(
+                slot,
+                strip_quoted_markers(
+                    await stream_and_collect(
+                        provider,
+                        message,
+                        approval_policy=approval_policy,
+                        hooks=hooks,
+                        session_key=session_key,
+                        agent=slot_agent or "kirocrew",
+                        app=slot._app or "",
+                        on_chunk=_on_chunk,
+                    )
+                ),
             )
         except PromptBusyExhaustedError:
             logger.warning("Thread turn aborted (prompt busy): slot=%s mid=%s", slot.key, mid)
@@ -1159,7 +1223,7 @@ async def _thread_turn_body(
             )
         if len(response_text) > _MAX_STORED_REPLY_CHARS:
             response_text = response_text[:_MAX_STORED_REPLY_CHARS] + _CLIPPED_MARKER
-        stored = _new_reply(ROLE_ASSISTANT, response_text)
+        stored = _answer_row(response_text, redactions)
         # The store write runs on a worker thread that a cancellation does not
         # stop: shielded and drained, so a cancel that lands while the full
         # answer is committing is known as such and the interruption row is
@@ -1182,8 +1246,12 @@ async def _thread_turn_body(
                 answer_committed = (await pending) == "ok"
             except Exception:
                 answer_committed = False
+            if answer_committed:
+                _commit_answer_reveals(slot, stored.get("redactions", []), reveals)
             raise
         if outcome == "ok":
+            # Kept for the owner's reveal only once the sidecar holds the row.
+            _commit_answer_reveals(slot, stored.get("redactions", []), reveals)
             _final(response_text, reply=stored)
         elif outcome == "full":
             _final(_FULL_FALLBACK, is_error=True)

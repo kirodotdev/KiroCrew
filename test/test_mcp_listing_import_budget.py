@@ -95,11 +95,26 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: floor), ``argv_floor_tar`` (the line-cap split of its tar grammar) and
 #: ``argv_floor_ssh_operand`` (the line-cap split of the ssh operand reader). The security
 #: package loads before the list, so the owners cannot move behind it; nothing else loads.
+#: Raised by 1 for ``mcp-core`` (496 to 497) and ``mcp-mate`` (359 to 360): the self-kill
+#: floor reads the Windows by-name kill programs through its own
+#: ``kiro_crew.security.self_kill_windows``, which ``argv_floor_self`` imports; the module
+#: count rose by that one file and nothing else loads (``mcp-cron`` and ``mcp-guide`` had room).
+#: Raised by 1 for all four: the credential redactor reads Unicode's default-ignorable
+#: table from the leaf ``kiro_crew.default_ignorable`` (moved there from the artifact
+#: store's tag rules, so both share one pinned table); that one file is the whole rise.
+#: Raised for the managed-environment lane: the default context the composition root
+#: builds wraps its provisioner provider and dashboard contributor in the lane's
+#: (``kiro_crew.managed_env`` and ``.provider``: 2 modules for ``mcp-core`` and ``mcp-mate``,
+#: 1 for the other two, which have no more room). The lane's client, engine and settings load only
+#: when it is used.
+#: Raised by 1 for all four: the git/tar self-target floor's GNU ``parallel`` replacement
+#: readings move to ``kiro_crew.security.argv_floor_git_tar_parallel``, which the deny-gate
+#: security path imports eagerly, so one more module loads before the listing on every server.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 496,
-    "mcp-cron": 364,
-    "mcp-guide": 358,
-    "mcp-mate": 359,
+    "mcp-core": 501,
+    "mcp-cron": 368,
+    "mcp-guide": 362,
+    "mcp-mate": 364,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

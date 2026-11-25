@@ -50,6 +50,8 @@ vi.mock('../api/client', () => ({
     untrustApp: (...a: unknown[]) => untrustApp(...a),
     getAppBotGrants: (...a: unknown[]) => getAppBotGrants(...a),
     members: (...a: unknown[]) => members(...a),
+    // The browsing sites card reads its own list; an empty one draws nothing.
+    getAppBrowserSites: () => Promise.resolve({ sites: [], active: [] }),
   },
 }))
 

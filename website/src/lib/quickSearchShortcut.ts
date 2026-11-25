@@ -1,6 +1,6 @@
 import { isMac } from '../utils/platform'
 import { safeGetItem } from '../utils/safeStorage'
-import { CODE_TOKENS } from './shortcutRegistry'
+import { chordLetter, CODE_TOKENS, keyCapGlyph, layoutReaches } from './shortcutRegistry'
 import { savePrefExplicitly } from './uiPrefs'
 
 /**
@@ -47,10 +47,12 @@ export type QuickSearchMode = 'double-shift' | 'mod-k' | 'custom'
  * `mod` is the platform's primary command modifier — Cmd (`metaKey`) on macOS,
  * Ctrl (`ctrlKey`) on Windows/Linux — so one stored chord means "⌘J" on a Mac
  * and "Ctrl+J" elsewhere, which is how cross-platform apps keep a binding
- * consistent. `key` is a stable physical token (a lowercased letter/digit from
- * `KeyboardEvent.code`, e.g. `KeyJ` → `j`, or a named key like `ArrowRight`),
- * NOT `KeyboardEvent.key` — the latter changes with Shift (`k` vs `K`) and with
- * the macOS Option layer (Alt+K emits `˚`), which would make a chord unmatchable.
+ * consistent. `key` is the token {@link eventKeyToken} reads: a lowercase letter
+ * as the layout types it, else a digit or punctuation by physical position, or a
+ * named key like `ArrowRight`. It is never the raw `KeyboardEvent.key`, which
+ * changes with Shift (`k` vs `K`) and with the macOS Option layer (Alt+K emits
+ * `˚`); an Option glyph reads as its position's letter, so the chord stays
+ * matchable.
  */
 export interface QuickSearchChord {
   key: string
@@ -148,17 +150,18 @@ export function saveQuickSearchConfig(config: QuickSearchConfig): boolean {
 }
 
 /**
- * The stable physical key token for a keydown, or `null` when the event carries
- * no usable key (a bare modifier press, or a dead key). Prefers
- * `KeyboardEvent.code` for letters, digits and punctuation so the token is
- * independent of Shift state and the macOS Option layer — Ctrl+Shift+` reads as
- * `` ` ``, not the `~` that `key` reports — and falls back to `KeyboardEvent.key`
- * for named keys (`ArrowUp`, `Enter`).
+ * The key token for a keydown, or `null` when the event carries no usable key (a
+ * bare modifier press, or a dead key). A letter is the one the layout types
+ * ({@link chordLetter}, so Shift and the macOS Option layer do not change it);
+ * digits and punctuation come from `KeyboardEvent.code`, so Ctrl+Shift+` reads as
+ * `` ` ``, not the `~` that `key` reports; named keys (`ArrowUp`, `Enter`) fall
+ * back to `KeyboardEvent.key`.
  */
 export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | null {
   const code = e.code
   if (code) {
-    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
+    const letter = chordLetter(e.key, code)
+    if (letter) return letter
     if (/^Digit\d$/.test(code)) return code.slice(5)
     if (/^Numpad\d$/.test(code)) return code.slice(6)
     const punct = CODE_TOKENS[code]
@@ -174,8 +177,8 @@ export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | 
  * while Shift is held — the same fold {@link normalizeChord} applies to the
  * stored side. Only a token read from `key` can carry a shifted glyph (an ISO
  * `IntlBackslash` reporting `|`, or `~` on a Mac ISO board), so the fold leaves
- * positional tokens alone. The typed glyph of a key that HAS a positional token
- * is never matched: on many layouts it is another key's glyph (Italian
+ * positional tokens alone. The typed punctuation of a key that HAS a positional
+ * token is never matched: on many layouts it is another key's glyph (Italian
  * Backquote types `\`), and matching it would hand one key's binding to another.
  */
 function eventToken(e: Pick<KeyboardEvent, 'code' | 'key' | 'shiftKey'>): string | null {
@@ -252,7 +255,7 @@ export function formatQuickSearchKeys(config: QuickSearchConfig, mac: boolean = 
     case 'mod-k':
       return mac ? ['⌘', 'K'] : ['Ctrl', 'K']
     case 'custom':
-      return config.custom ? formatChordKeys(config.custom, mac) : []
+      return config.custom && chordReachable(config.custom, mac) ? formatChordKeys(config.custom, mac) : []
     case 'double-shift':
     default:
       return mac ? ['⇧', '⇧'] : ['Shift', 'Shift']
@@ -267,11 +270,18 @@ export function formatChordKeys(chord: QuickSearchChord, mac: boolean = isMac): 
   if (chord.mod) caps.push(mac ? '⌘' : 'Ctrl')
   if (chord.alt) caps.push(mac ? '⌥' : 'Alt')
   if (chord.shift) caps.push(mac ? '⇧' : 'Shift')
-  caps.push(displayKeyCap(chord.key))
+  caps.push(displayKeyCap(chord.key, !!chord.alt && mac))
   return caps
 }
 
-/** Display form of a stored key token: single letters upper-cased, names as-is. */
-export function displayKeyCap(key: string): string {
-  return key.length === 1 ? key.toUpperCase() : key
+/** Whether some key of the user's layout fires `chord` ({@link layoutReaches}). A chord no key can type
+ *  (Turkish F types `x` at the US backslash position) is not advertised. */
+export function chordReachable(chord: Pick<QuickSearchChord, 'key' | 'alt'>, mac: boolean = isMac): boolean {
+  return layoutReaches(chord.key, !!chord.alt && mac)
+}
+
+/** Display form of a stored key token: a single character as the user's layout prints it, names as-is.
+ *  `positional` as in {@link keyCapGlyph}: a macOS Option chord. */
+export function displayKeyCap(key: string, positional = false): string {
+  return key.length === 1 ? keyCapGlyph(key, positional) : key
 }

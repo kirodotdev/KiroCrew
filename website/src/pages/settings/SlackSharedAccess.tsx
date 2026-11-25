@@ -24,10 +24,30 @@ function isSlackUserId(v: string): boolean {
   return true
 }
 
+/** An email address as the server takes it: one `@`, no spaces, a dotted domain. */
+const EMAIL = /^[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+$/
+
+/**
+ * What the owner typed, as the add route takes it: an email, a member ID, or the
+ * member ID in a Slack profile link (`https://<workspace>.slack.com/team/U0123ABC456`,
+ * from Copy link to profile). `null` when it is none of them.
+ */
+export function parseAddInput(raw: string): { user_id: string } | { email: string } | null {
+  const v = raw.trim()
+  if (EMAIL.test(v) && v.length <= 254) return { email: v }
+  if (isSlackUserId(v)) return { user_id: v }
+  let url: URL
+  try { url = new URL(v) } catch { return null }
+  const host = url.hostname.toLowerCase()
+  if (url.protocol !== 'https:' || !(host === 'slack.com' || host.endsWith('.slack.com'))) return null
+  const m = /^\/team\/([^/]+)\/?$/.exec(url.pathname)
+  return m && isSlackUserId(m[1]) ? { user_id: m[1] } : null
+}
+
 /** The refusal codes the shared-access routes answer with that name a reason. */
 const REASON_CODES = new Set([
   'user_not_found', 'bot_user', 'deactivated', 'other_workspace', 'owner', 'malformed_id',
-  'unverifiable', 'not_applied',
+  'unverifiable', 'not_applied', 'owner_unset', 'email_not_found', 'email_lookup_unavailable',
 ])
 
 /** The plain-words reason Slack did not confirm an id, from the server's code. */
@@ -40,6 +60,10 @@ function reasonText(code: string): string {
     case 'owner': return i18nT('pages.settings.slackSharedAccess.reason_owner')
     case 'malformed_id': return i18nT('pages.settings.slackSharedAccess.reason_malformed')
     case 'not_applied': return i18nT('pages.settings.slackSharedAccess.not_applied')
+    case 'owner_unset': return i18nT('pages.settings.slackSharedAccess.reason_owner_unset')
+    case 'email_not_found': return i18nT('pages.settings.slackSharedAccess.reason_email_not_found')
+    // The scope is a literal the owner pastes into the Slack app, so no catalog carries it.
+    case 'email_lookup_unavailable': return i18nT('pages.settings.slackSharedAccess.reason_email_unavailable', { scope: 'users:read.email' })
     default: return i18nT('pages.settings.slackSharedAccess.reason_unverifiable')
   }
 }
@@ -79,8 +103,11 @@ function unreadNames(e: unknown): string[] {
   }
 }
 
+/** The config key that turns Slack's check of each listed ID on. */
+const VERIFY_KEY = 'slack.shared_access.verify_with_slack'
+
 /** What the owner must read before sharing, shown on the page and in the confirm. */
-function SharedAccessWarning({ id }: { id?: string }) {
+function SharedAccessWarning({ id, unchecked }: { id?: string, unchecked: boolean }) {
   return (
     <div id={id} role="note" className="flex items-start gap-2 px-3 py-2 my-2 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
       <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
@@ -101,6 +128,9 @@ function SharedAccessWarning({ id }: { id?: string }) {
               ),
             )}
           </li>
+          {unchecked && (
+            <li>{i18nT('pages.settings.slackSharedAccess.warning_not_checked', { key: VERIFY_KEY, scope: 'users:read' })}</li>
+          )}
           <li>{i18nT('pages.settings.slackSharedAccess.warning_trust')}</li>
         </ul>
       </div>
@@ -127,6 +157,9 @@ function SharedUserRow({ user, readOnly, sharing, onRemove, removing }: {
       <span className="min-w-0 flex-1">
         {user.name && <span className="font-semibold text-text">{user.name}</span>}
         <span className="ml-2 font-mono text-[12px] text-muted break-all">{user.user_id}</span>
+        {user.confirmed && user.reason === 'listed' && (
+          <span className="block text-[12px] text-muted">{i18nT('pages.settings.slackSharedAccess.reason_listed')}</span>
+        )}
         {!user.confirmed && checkFailed(user.reason) && (
           /* No hand-off: the member-ID draft and the Slack settings form around it
              are unsaved; a hand-off to the chat unmounts this panel and loses them. */
@@ -223,10 +256,10 @@ export function SlackSharedAccess() {
       i18nT(enabled ? 'pages.settings.slackSharedAccess.not_applied_on' : 'pages.settings.slackSharedAccess.not_applied_off'))(e),
   })
   const addMut = useMutation({
-    mutationFn: (id: string) => api.addSlackSharedUser(id),
+    mutationFn: (target: { user_id: string } | { email: string }) => api.addSlackSharedUser(target),
     onSuccess: () => { setDraft(''); setSwitchHint(''); done() },
-    onError: (e, id) => fail(i18nT('pages.settings.slackSharedAccess.save_failed'),
-      i18nT('pages.settings.slackSharedAccess.not_applied_add', { name: id }))(e),
+    onError: (e, target) => fail(i18nT('pages.settings.slackSharedAccess.save_failed'),
+      i18nT('pages.settings.slackSharedAccess.not_applied_add', { name: 'email' in target ? target.email : target.user_id }))(e),
   })
   const removeMut = useMutation({
     mutationFn: (id: string) => api.removeSlackSharedUser(id),
@@ -256,6 +289,8 @@ export function SlackSharedAccess() {
   const granted = users.filter(u => u.confirmed)
   const refused = others.filter(u => !u.confirmed)
   const ro = data.read_only !== false
+  // An older gateway sends no flag and always checks with Slack.
+  const unchecked = data.verify_with_slack === false
   const busy = rechecking || switchMut.isPending || addMut.isPending || removeMut.isPending
   const switchHintText = {
     '': '',
@@ -293,7 +328,7 @@ export function SlackSharedAccess() {
             <ul className="list-disc pl-4 text-[13px]" aria-label={i18nT('pages.settings.slackSharedAccess.people_label')}>
               {granted.map(u => <li key={u.user_id}>{u.name || u.user_id}</li>)}
             </ul>
-            <SharedAccessWarning />
+            <SharedAccessWarning unchecked={unchecked} />
           </>
         ),
         confirmLabel: i18nT('pages.settings.slackSharedAccess.confirm_label', { count: granted.length }),
@@ -329,8 +364,9 @@ export function SlackSharedAccess() {
     const v = draft.trim()
     // Enter reaches here even while the buttons are disabled.
     if (!v || busy) return
-    if (!isSlackUserId(v)) { setHint(reasonText('malformed_id')); return }
-    addMut.mutate(v)
+    const target = parseAddInput(v)
+    if (!target) { setHint(reasonText('malformed_id')); return }
+    addMut.mutate(target)
   }
 
   return (
@@ -347,16 +383,18 @@ export function SlackSharedAccess() {
         describedBy="slack-shared-access-warning"
       />
       {/* Said at the switch in both states, so a list under the always-on warning never reads as a live grant. */}
-      <div className="text-[12px] text-text">{i18nT(data.enabled
-        ? 'pages.settings.slackSharedAccess.on_note'
-        : 'pages.settings.slackSharedAccess.off_note')}</div>
+      <div className="text-[12px] text-text">{i18nT(!data.enabled
+        ? 'pages.settings.slackSharedAccess.off_note'
+        : unchecked
+          ? 'pages.settings.slackSharedAccess.on_note_listed'
+          : 'pages.settings.slackSharedAccess.on_note')}</div>
       {switchHintText && <div role="status" className="text-[12px] text-warn-text">{switchHintText}</div>}
       {notApplied && (
         /* No hand-off: the member-ID draft and the Slack settings form around it
            are unsaved; a hand-off to the chat unmounts this panel and loses them. */
         <ErrorNotice variant="inline" messagePlacement="below" title={notApplied.stateNow} message={notApplied.detail} />
       )}
-      <SharedAccessWarning id="slack-shared-access-warning" />
+      <SharedAccessWarning id="slack-shared-access-warning" unchecked={unchecked} />
       {/* A remote session changes nothing here, so the owner-only line has nothing to say. */}
       {!ro && <div className="text-[12px] text-muted mb-2">{i18nT('pages.settings.slackSharedAccess.owner_only')}</div>}
       {/* The label changes with the switch; a `key:` highlight link finds this list by its config key. */}
@@ -373,7 +411,7 @@ export function SlackSharedAccess() {
           )}
         {!ro && (
           <div className="flex items-center gap-2">
-            <Input value={draft} placeholder={i18nT('pages.settings.slackPanel.u0123abc456')} className="min-w-0 flex-1 font-mono"
+            <Input value={draft} placeholder={i18nT('pages.settings.slackSharedAccess.add_placeholder')} className="min-w-0 flex-1"
               aria-label={i18nT('pages.settings.slackSharedAccess.add_label')}
               aria-describedby={hint ? 'slack-shared-access-hint' : undefined}
               onChange={e => { setDraft(e.target.value); setError(''); setHint('') }}

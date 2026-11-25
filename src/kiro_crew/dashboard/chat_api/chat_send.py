@@ -19,8 +19,8 @@ if TYPE_CHECKING:
         _CREW_PERSON_STEER,
         CHAT_BANNER_META_KEY,
         HUMAN_TURN_META_KEY,
+        PASTES_META_KEY,
         RESERVED_ROW_META_KEYS,
-        STEER_AUTO,
         STEER_REQUEUED,
         STEER_STEERED,
         TURN_ACTOR_META_KEY,
@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         crew_steer_discarded,
         cron_creator_admission,
         cron_slot_creator,
+        decided_message_handling,
         deny_app_session_control,
         drained_to_thread,
         effective_session_key,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
         message_required_error,
         normalize_send_id,
         normalize_theme_consent_sha,
+        paste_meta,
         pin_private_agent_store,
         queue_for_next_turn,
         queued_text_for_display,
@@ -93,6 +95,7 @@ if TYPE_CHECKING:
         spawn_guarded_turn,
         start_queue_persist,
         steer_into_running_turn,
+        steer_is_auto,
         string_field_error,
         subagents_hold_user_messages,
         teardown_hold_active,
@@ -160,69 +163,6 @@ async def _send_harness_command(message: str, state: DashboardState, slot: _Chat
     key = effective_session_key(slot)
     forwarded = await _forwards_harness_command(state, key, first_word, cc_provider=cc_provider)
     return first_word if forwarded else ""
-
-
-def steer_is_auto(value: object) -> bool:
-    """Whether a send's ``steer`` flag asks Jev to choose the path.
-
-    Only the exact string, case- and space-insensitively. A boolean ``True`` is a
-    MANUAL steer and must never read as auto: that flag is what every existing
-    client sends, and reading it as a request to decide would put an oracle on a
-    path the sender already answered.
-    """
-    return isinstance(value, str) and value.strip().lower() == STEER_AUTO
-
-
-async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict | None]:
-    """Ask ``message.steer`` whether *message* queues instead of steering.
-
-    Returns ``(queues, record)``: whether to take the QUEUE path, and the decision
-    row to stamp on the persisted user row (``None`` when nothing was decided, or
-    when the row itself was refused).
-
-    A BOOLEAN rather than the point's choice string, so the caller holds no copy of
-    that vocabulary and cannot drift from it: every refusal -- the seam off, the
-    session unsampled, a timeout, an answer outside the two options, a failed
-    import -- is ``False``, which is the steer path a manual Steer and the
-    composer's default have always taken.
-
-    Called for a send the dashboard's own human made while a turn is running, and
-    nowhere else (the busy branch's ``_person_send`` conjunct): an app token, an
-    integration or a cron has nobody watching the reply, and every such send
-    already falls through to the fail-closed queue; an agent-origin send takes the
-    manual steer path as a non-person steer. Consent and sampling are the
-    seam's own gates, re-checked inside ``decide``.
-
-    Never raises except cancellation. The seam may cost an observation and must
-    never cost a send.
-    """
-    try:
-        # Imported HERE, not at module scope: this module is on the gateway's boot
-        # path and the decisions package is optional, off by default, and pulls the
-        # config loader in behind it.
-        from kiro_crew.decisions.points import message_steer
-
-        session_key = effective_session_key(slot)
-        decided = await message_steer.steer_or_queue(
-            message,
-            session_key=session_key,
-            # The live list, sliced and read off the loop by the point; nothing is
-            # written back.
-            rows=getattr(slot, "messages", ()) or (),
-        )
-        if decided is None:
-            return False, None
-        # The row is written BEFORE the path is taken, and the receipt is stamped
-        # only when it landed: the strip's thumbs POST this turn id, so a receipt
-        # from a row `append` refused would invite a verdict about a decision the
-        # log does not hold. Off the loop -- the append locks a file.
-        record = await asyncio.to_thread(message_steer.record_outcome, session_key, decided)
-        return decided.get("choice") == message_steer.CHOICE_QUEUE, record
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.debug("message.steer: taking the shipped default", exc_info=True)
-        return False, None
 
 
 def _send_id_of(user_meta: dict | None) -> str:
@@ -1292,6 +1232,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             quote=quote_meta(user_meta).get("quote"),
             banner=banner,
             knowledge=knowledge_meta(user_meta),
+            pastes=paste_meta(user_meta, message),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1394,6 +1335,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_meta.update(quote_meta(user_meta))
         _hold_knowledge = knowledge_meta(user_meta)
         _hold_meta.update(_hold_knowledge)
+        if _hold_pastes := paste_meta(user_meta, message):
+            _hold_meta[PASTES_META_KEY] = _hold_pastes
         if banner:
             _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
@@ -1704,7 +1647,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _actor,
             prior_user_turns=sum(1 for m in slot.messages if m.get("role") == "user"),
         )
-        from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+        from kiro_crew.dashboard import slot_buffers
 
         # A hold a restart restored into this idle slot is owed to this turn.
         # Its rows reach an SSE reader through `_pending`, which the stale-frame
@@ -1712,7 +1655,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _restored_frames: list[dict[str, Any]] = []
         if slot._deferred_notes:
             slot.drain()
-            flush_restored_hold(slot, logger=logger)
+            slot_buffers.flush_restored_hold(slot, logger=logger)
             _restored_frames = slot.drain()
         _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
         _send_race.commit_request(
@@ -1749,10 +1692,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             request, slot, person=_person_send, card_origin=card_origin
         )
 
-        # Drain stale pending messages from previous turns that completed
-        # after their SSE reader disconnected. Must happen BEFORE _run_chat
-        # so we don't discard the new turn's output.
-        slot.drain()
+        # Drain what earlier turns left pending, BEFORE _run_chat so the new
+        # turn's output stays; a still-attached reader keeps its turn's end.
+        _stream_epoch = slot_buffers.drain_stale_pending(slot)
         # Only the slot's own reader gets them back: an app's turn-scoped stream
         # may send on this session but not read the note, which reached the
         # user's tabs through the flush's own broadcast.
@@ -1865,19 +1807,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # The turn task inherits its sender as initiator, so a turn running
         # outside admitted work is still found and stopped when the owner
         # removes that person (``access_set.stop_work``).
+        from kiro_crew.shared_crew import turn_gate as _turn_gate
         from kiro_crew.shared_crew.admission_gate import actor_budget as _turn_actor_budget
-        from kiro_crew.shared_crew.turn_gate import initiated_by as _turn_initiated_by
-        from kiro_crew.shared_crew.turn_gate import note_admission_ended
 
         def _admission_ended() -> None:
             # Expired or refused before it ran: end the cycle and hand off the queue.
-            note_admission_ended(slot, turn_admission)
+            _turn_gate.note_admission_ended(slot, turn_admission)
             state.push_slots_update()
 
         # Opened here so the turn task's copied context carries the record.
         turn_timing.begin(slot.key, "ws" if ws_mode else "sse", _timing_t0)
         turn_timing.mark("dispatched")
-        with _turn_initiated_by("" if request_app else _turn_actor_budget(request)):
+        with _turn_gate.initiated_by("" if request_app else _turn_actor_budget(request)):
             task = spawn_guarded_turn(
                 state,
                 slot,
@@ -1889,6 +1830,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     ),
                     still_live=lambda: slot_is_live(state, slot),
                     on_ended=_admission_ended,
+                    stop_count=_turn_gate.session_stop_count(state, slot),
                 ),
             )
         turn_dispatched = True
@@ -1954,7 +1896,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # release must not run while an SSE reader still has undelivered tokens
     # queued, and `_has_reader` alone cannot carry that: the `done` branch below
     # clears it before this scope ends, and a turn-scoped reader never sets it.
-    with slot.pending_consumer():
+    with slot_buffers.stream_reader(slot, _stream_epoch):
         try:
             await resp.prepare(request)
         except BaseException:
@@ -1965,7 +1907,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             raise
         try:
             while True:
-                pending = slot.drain()
+                pending = slot_buffers.stream_frames(slot, _stream_epoch)
                 for msg in pending:
                     # Fail closed even if a dispatch path misses turn_end: only
                     # this request's gateway-minted user row belongs to its SSE.
@@ -1989,12 +1931,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         await write_sse_or_abort(request, resp, f"data: {event}\n\n".encode())
                     turn_timing.sse_first_frame(slot.key)
                 try:
-                    await asyncio.wait_for(slot.event.wait(), timeout=30)
+                    await asyncio.wait_for(slot_buffers.stream_wait(slot, _stream_epoch), 30)
                 except asyncio.TimeoutError:
                     await write_sse_or_abort(request, resp, b": keepalive\n\n")
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
-            slot.drain()
             slot._has_reader = False
     return resp

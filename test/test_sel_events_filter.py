@@ -368,3 +368,46 @@ class TestCli:
         assert warning in captured.err
         assert "Last 1 security event(s)" in captured.out
         assert not target.exists()
+
+
+_EDGE_INSTANTS = ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"]
+
+
+class TestBoundaryYearInstant:
+    """An instant at the edge of the date range with an offset is unplaceable, not a crash."""
+
+    @pytest.mark.parametrize("text", _EDGE_INSTANTS)
+    def test_the_selector_refuses_it_with_the_usual_message(self, text: str) -> None:
+        with pytest.raises(ValueError, match="cannot read .* as a time"):
+            cc.parse_time_selector(text)
+
+    @pytest.mark.parametrize("text", _EDGE_INSTANTS)
+    def test_the_reader_treats_it_as_unplaceable(self, text: str) -> None:
+        from kiro_crew.sel_reader import _parse_timestamp
+
+        assert _parse_timestamp(text) is None
+
+    def test_instants_that_convert_cleanly_are_unchanged(self) -> None:
+        from kiro_crew.sel_reader import _parse_timestamp
+
+        edge = datetime(1, 1, 1, 5, tzinfo=timezone.utc)
+        assert cc.parse_time_selector("0001-01-01T05:00:00+00:00") == edge
+        assert _parse_timestamp("0001-01-01T05:00:00+00:00") == edge
+        assert _parse_timestamp("2026-08-21T10:00:00+02:00") == _BASE.replace(hour=8)
+
+    @pytest.mark.parametrize("flag", ["--since", "--until"])
+    def test_the_command_exits_2_with_one_line_on_stderr(self, log, capsys, flag: str) -> None:
+        _seed(log)
+        with pytest.raises(SystemExit) as stopped:
+            _run_cli(log, flag, _EDGE_INSTANTS[0])
+        assert stopped.value.code == 2
+        err = capsys.readouterr().err
+        assert err.startswith("❌ cannot read ") and err.count("\n") == 1
+
+    def test_one_such_line_does_not_stop_a_windowed_read(self, log) -> None:
+        log.log(_make_event(event_id="a", timestamp=_BASE.isoformat()))
+        forged = {"event_id": "forged", "timestamp": _EDGE_INSTANTS[0]}
+        with log._path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(forged) + "\n")
+        assert _ids(log.recent(limit=10)) == ["forged", "a"]
+        assert _ids(log.recent(limit=10, since=_BASE - timedelta(days=1))) == ["a"]

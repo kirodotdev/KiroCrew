@@ -180,13 +180,14 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend }: {
+  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend, onOpenProfileTab }: {
     target: { slug?: string; member?: string }
     displayName: string
     preview?: boolean
     onPreviewGone?: (gone: boolean) => void
     onAct?: (text: string) => void
     onSend?: (text: string) => Promise<unknown>
+    onOpenProfileTab?: () => void
   }) => (
     <div
       data-testid="crew-dashboard-stub"
@@ -205,6 +206,10 @@ vi.mock('./CrewDynamicDashboard', () => ({
         data-testid="crew-dashboard-stub-send"
         onClick={() => { if (onSend) void onSend('Approve the plan'); else onAct?.('Approve the plan') }}
       >send</button>
+      {/* The one-click-send badge's "change on Profile" press. */}
+      {onOpenProfileTab && (
+        <button type="button" data-testid="crew-dashboard-stub-profile" onClick={onOpenProfileTab}>profile</button>
+      )}
     </div>
   ),
 }))
@@ -770,6 +775,36 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(call[1]).toBe('member-oncall')
       expect(call[8]).toBe('dashboard_card')
       expect(readPaneDraft('member-oncall').text).not.toContain('Approve the plan')
+    })
+
+    it('on a phone, the badge press puts the overlay away so the Profile card it opens is on screen', async () => {
+      // The overlay is fixed above the thread column the floating card opens
+      // in; left up, the press opened a card behind it and looked dead.
+      const orig = window.matchMedia
+      try {
+        window.matchMedia = vi.fn().mockImplementation((q: string) => ({
+          matches: /max-width/.test(q),
+          media: q,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }))
+        setWindowWidth(390)
+        await renderPage([row({ bound: true, slot_key: 'member-oncall', dashboard_card_send: true })], 'kirocrew', { route: '/members?member=oncall' })
+        await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+        fireEvent.click(screen.getByTestId('member-panel-toggle'))
+        expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'overlay')
+        fireEvent.click(await screen.findByTestId('crew-dashboard-stub-profile', undefined, PANE_READY))
+        expect(await screen.findByTestId('crew-profile-modal')).toBeInTheDocument()
+        expect(await screen.findByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'profile')
+        await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      } finally {
+        window.matchMedia = orig
+        setWindowWidth(WIDE_WINDOW)
+      }
     })
   })
 

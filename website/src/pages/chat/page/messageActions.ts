@@ -92,6 +92,8 @@ interface MessageActionsOptions {
   /** The `/embed/chat` frame or the pop-out session window: its own document with no session sidebar (not a companion chat). */
   embedChatFrame: boolean
   setRegenerating: Dispatch<SetStateAction<boolean>>
+  /** Speaks the resent message, as the page's other send paths do (`useTranscriptAnnouncement`). */
+  announceSent?: (markdown: string) => void
 }
 
 /**
@@ -104,7 +106,7 @@ interface MessageActionsOptions {
  */
 export function useMessageActions({
   dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
-  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating,
+  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating, announceSent,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
   // frame, and this callback feeds the transcript renderers memo, so a
@@ -116,6 +118,7 @@ export function useMessageActions({
     const snapshot = [...messagesRef.current]
     dispatch(truncateAfterIndex(index))
     dispatch(appendMessage({ role: 'user', content: newContent, cls: '', ts: new Date().toISOString() }))
+    announceSent?.(newContent)
     setRegenerating(true)
     // Use /rewind (fork-and-swap) — discards the orphan kiro-cli session so
     // truncated forward turns can't resurface on resume. Mirrors kiro-cli's
@@ -125,7 +128,7 @@ export function useMessageActions({
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating])
+  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating, announceSent])
 
   // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
   // Edit & resend editor. The chord itself is claimed by the composer

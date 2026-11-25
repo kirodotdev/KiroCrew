@@ -374,6 +374,16 @@ ULTRACODE_CONFIG_OPTION_ID = "ultracode"
 # mode switch".
 ACP_BACKENDS_FAST_MODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose session offers the ``approveForMe`` option Crew sets: the engine
+# approves tool calls on its own (``acp/kas_approve_for_me.py``). Not kiro-cli's own
+# engine: it declares no such option to Crew, so Crew holds the switch off there.
+# KAS 0.66.111 (kiro-cli 3.4.0's relay): spawned with the classifier switch off,
+# session/new lists no option and a shell call asks
+# (acp_frames/kas/approve-for-me-off-live.jsonl); with it enforced the option is
+# listed, written on, and the call runs unasked with
+# ``_meta.kiro.trustClassifierApproved`` (acp_frames/kas/approve-for-me-on-live.jsonl).
+ACP_BACKENDS_APPROVE_FOR_ME = frozenset({ACP_BACKEND_KAS})
+
 #: The ``configId`` of that switch.
 FAST_MODE_CONFIG_OPTION_ID = "fast"
 

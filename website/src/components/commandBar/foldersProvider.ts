@@ -8,6 +8,7 @@ import {
   folderNameText,
   type FolderSortMode,
 } from '../../utils/folderTree'
+import { foldersForSessionList } from '../../utils/mateFolders'
 import { i18nT } from '../../i18n/t'
 import type { ChatFolder } from '../../types'
 import type { Result, ResourceProvider } from '../../components/commandPalette/types'
@@ -28,7 +29,8 @@ import type { Result, ResourceProvider } from '../../components/commandPalette/t
  * existed for SESSION rows (`requestSlotReveal`); this provider is what points it
  * at a folder.
  *
- * The corpus is the folder list the sidebar itself renders, read through the
+ * The corpus is the folder list the sidebar itself renders (`foldersForSessionList`
+ * over the sessions it lists), read through the
  * SHARED `['chat-folders']` React-Query key, so a search is normally a cache hit
  * with no request at all. Matching is therefore entirely client-side (unlike
  * session search, whose backend does the ranking): {@link fuzzyMatch} supplies both
@@ -104,6 +106,12 @@ export interface FoldersProviderDeps {
    * hook normalizes (`useCommandBarOverlayEngines`), so the two surfaces cannot disagree.
    */
   mode: FolderSortMode
+  /**
+   * The sessions the Sessions list shows (`useCommandBarOverlayEngines`). The view
+   * offers only the folders that list draws: a Bot's home it leaves out has no row,
+   * so revealing it would land on nothing.
+   */
+  listedSlots: readonly { folder_id?: string | null }[]
 }
 
 function folderIcon() {
@@ -115,7 +123,7 @@ function folderIcon() {
  * Pure (no hooks) so it can be exercised directly in tests.
  */
 export function createFoldersProvider(deps: FoldersProviderDeps): ResourceProvider {
-  const { fetchFolders, revealFolder, mode } = deps
+  const { fetchFolders, revealFolder, mode, listedSlots } = deps
 
   return {
     id: PROVIDER_ID,
@@ -129,7 +137,7 @@ export function createFoldersProvider(deps: FoldersProviderDeps): ResourceProvid
     // character costs no round trip and narrowing from one letter is useful.
     async search(query: string): Promise<Result[]> {
       const q = query.trim()
-      const folders = await fetchFolders()
+      const folders = foldersForSessionList(await fetchFolders(), listedSlots)
       // Pre-order (tree) sequence in the person's sort mode, with ancestors + full
       // path already derived, and orphans/cycles already handled. Its order is the
       // ORDER OF THE RESULT LIST for an empty query and the stable tiebreak for a

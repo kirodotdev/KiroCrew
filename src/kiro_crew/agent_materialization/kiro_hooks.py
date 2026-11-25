@@ -244,10 +244,10 @@ _HOOK_EVENT_CANONICAL = {
 #
 # Canonical KAS trigger for every spelling a spec may carry, transcribed from
 # kiro-agent's own alias table: ``packages/kiro-agent/src/hooks/trigger-names.ts``
-# at blob ``2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78``, which is the version this
-# table is verified against and the one to re-read when adding a name. It holds
-# twelve canonical triggers with their identity rows, the IDE's legacy camelCase
-# spellings, the CLI aliases, and one Open Plugins legacy alias.
+# at blob ``2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`` (twelve canonical triggers with
+# their identity rows, the IDE's legacy camelCase spellings, the CLI aliases and one
+# Open Plugins legacy alias), plus ``PreCompact`` and ``PostCompact`` from the same table
+# in the pinned engine 0.66.117's bundle: fourteen in all. Re-read both to add a name.
 #
 # One deliberate difference: kiro-agent matches the spelling exactly, while the
 # keys here are lowercased so a spec's casing does not matter — the same leniency
@@ -267,6 +267,8 @@ _KAS_TRIGGER_CANONICAL = {
     "postfilesave": "PostFileSave",
     "postfiledelete": "PostFileDelete",
     "manual": "Manual",
+    "precompact": "PreCompact",
+    "postcompact": "PostCompact",
     # IDE legacy camelCase, as a .kiro.hook ``when.type`` emits it
     "agentstop": "Stop",
     "promptsubmit": "UserPromptSubmit",
@@ -282,11 +284,11 @@ _KAS_TRIGGER_CANONICAL = {
     "afterfileedit": "PostFileSave",
 }
 
-# The KAS triggers a kiro-cli hook event can express. The other seven
+# The KAS triggers a kiro-cli hook event can express. The other nine
 # (``SessionEnd``, ``PreTaskExec``, ``PostTaskExec``, ``PostFileCreate``,
-# ``PostFileSave``, ``PostFileDelete``, ``Manual``) have no kiro-cli event name, so
-# a document carrying one stays in Crew's stored spec and is left out of the
-# kiro-cli emission.
+# ``PostFileSave``, ``PostFileDelete``, ``Manual``, ``PreCompact``,
+# ``PostCompact``) have no kiro-cli event name, so a document carrying one stays
+# in Crew's stored spec and is left out of the kiro-cli emission.
 #
 # plugin_import.AGENT_HOOK_EVENT_EQUIVALENT is the same map minus ``SessionStart``.
 # This map has it because ``agentSpawn`` is kiro-cli's name for that trigger. Plugin
@@ -815,7 +817,7 @@ def hook_documents_to_object_form(docs: Sequence[dict]) -> dict[str, list[dict]]
     """Derive the kiro-cli object form from normalized hook documents.
 
     Only a ``command`` action on one of the five triggers kiro-cli names is
-    expressible. An ``agent`` action, one of the seven triggers kiro-cli has no
+    expressible. An ``agent`` action, one of the nine triggers kiro-cli has no
     name for, and the per-document ``name``, ``description`` and ``timeout`` have
     no object-form slot, so they are dropped HERE, on the emission path, and kept
     in Crew's stored spec.

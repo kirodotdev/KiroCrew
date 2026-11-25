@@ -114,7 +114,6 @@ src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/scaffold.py
-src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
@@ -614,7 +613,6 @@ test/test_skill_providers.py
 test/test_skill_script_validator.py
 test/test_slack_dashboard_live_sync.py
 test/test_slack_linked_approval.py
-test/test_slack_mirror_unlink.py
 test/test_slack_pins_reactions.py
 test/test_slack_scope_probe.py
 test/test_slack_sessions_view.py

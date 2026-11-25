@@ -898,7 +898,11 @@ async def _git_clone_or_pull(
     )
 
     clone_env = anonymous_git_env() if index_originated else minimal_env()
-    sandbox_mode = "strict" if index_originated else _context_clone_sandbox_mode(git_url)
+    sandbox_mode = (
+        "strict"
+        if index_originated
+        else await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
+    )
     forward_sock = not index_originated  # an index entry never reaches the owner's ssh-agent
     # SSRF gate: refuse to clone/pull from a host the owner does not explicitly
     # trust (public forge or configured registry). The git_url may originate

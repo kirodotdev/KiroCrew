@@ -1,5 +1,6 @@
 """Tests for kiro_crew.metrics.provider — consent gate + recorder singleton."""
 
+import os
 import threading
 import time
 
@@ -1239,8 +1240,13 @@ class TestResetForTestingWaitsOutInFlightWorker:
 
             monkeypatch.setattr(provider_mod, "_RESET_WAIT_BOUND_SECS", 0.05)
             monkeypatch.setattr(provider_mod, "_RESET_WAIT_POLL_SECS", 0.01)
-            with pytest.raises(RuntimeError, match="in flight"):
+            with pytest.raises(RuntimeError, match="in flight") as raised:
                 provider_mod.reset_for_testing()
+            # The error names the step the worker is held in, not only the flag.
+            message = str(raised.value)
+            assert "'kirocrew-telemetry-consent'" in message
+            assert "in _consent_worker" in message
+            assert "in _stuck_build" in message
         finally:
             release.set()
             # Let the real worker actually finish (its own finally clears the
@@ -1346,3 +1352,139 @@ class TestConfigApplierDoesNotWaitOnTheFlush:
             release.set()
             assert provider_flush.join_all(10)
             reset_for_testing()
+
+
+def test_the_reset_timeout_says_when_no_worker_holds_the_flag(monkeypatch):
+    """A flag set with no live worker is named as such, not as a slow worker.
+
+    A ``Thread.start()`` that raises in ``_schedule_consent_check_locked`` leaves
+    that state; the flag is set here through ``monkeypatch`` (which restores it)
+    to model it. The class above covers the real worker, and forbids clearing the
+    flag from the reset itself.
+    """
+    import kiro_crew.metrics.provider as provider_mod
+
+    reset_for_testing()
+    monkeypatch.setattr(provider_mod, "_check_in_flight", True)
+    monkeypatch.setattr(provider_mod, "_RESET_WAIT_BOUND_SECS", 0)
+    with pytest.raises(RuntimeError, match="in flight") as raised:
+        provider_mod.reset_for_testing()
+    assert "no 'kirocrew-telemetry-consent' thread is alive" in str(raised.value)
+    monkeypatch.setattr(provider_mod, "_check_in_flight", False)
+    reset_for_testing()
+
+
+def test_a_consent_worker_that_cannot_start_leaves_no_flag_behind(monkeypatch):
+    """A ``Thread.start()`` that raises must not leave the in-flight flag set.
+
+    With no worker to clear it, every later due recheck would schedule nothing,
+    so consent is never re-read for the life of the process, and in the suite the
+    next ``reset_for_testing()`` on that worker fails. The refusing ``threading``
+    replaces the provider's own module binding, so no other thread sees it.
+    """
+    import types
+
+    import kiro_crew.metrics.provider as provider_mod
+
+    class _RefusedThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    reset_for_testing()
+    get_recorder()  # the first build is synchronous and starts no worker
+    monkeypatch.setattr(provider_mod, "_CONSENT_RECHECK_SECS", 0.0)
+    monkeypatch.setattr(provider_mod, "threading", types.SimpleNamespace(Thread=_RefusedThread))
+
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        get_recorder()
+    assert not provider_mod._check_in_flight
+
+
+@pytest.mark.parametrize("gap", ["unset", "empty"])
+def test_the_consent_worker_reads_the_home_its_scheduler_saw(monkeypatch, tmp_path, gap):
+    """A ``KIROCREW_HOME`` gone before the worker reads config cannot reach its read.
+
+    ``patch.dict(os.environ)`` restores by clearing the environment before it refills
+    it, and a test body can pin the variable empty. The
+    worker is held until the variable is gone, then must still read the home the
+    scheduling call saw. The default home is relocated under ``tmp_path``, so a
+    worker that falls through to it creates that stand-in, never the real one.
+    """
+    import kiro_crew.metrics.provider as provider_mod
+    from kiro_crew.config import paths
+
+    default = tmp_path / "default-home"
+    monkeypatch.setattr(paths, "_resolve_default_home", lambda: default)
+    reset_for_testing()
+    try:
+        get_recorder()  # the first build is synchronous and starts no worker
+        scheduled = paths.data_home()
+        released = threading.Event()
+        done = threading.Event()
+        seen = []
+        real_worker = provider_mod._consent_worker
+
+        def _held(generation):
+            try:
+                assert released.wait(10), "the test never released the worker"
+                seen.append(paths.peek_data_home())  # creates nothing either way
+                real_worker(generation)
+            finally:
+                done.set()
+
+        monkeypatch.setattr(provider_mod, "_consent_worker", _held)
+        provider_mod.recheck_consent()
+        pin = os.environ["KIROCREW_HOME"]
+        if gap == "unset":
+            monkeypatch.delenv("KIROCREW_HOME")
+        else:
+            monkeypatch.setenv("KIROCREW_HOME", "")
+        released.set()
+        assert done.wait(10), "the consent worker never finished"
+        monkeypatch.setenv("KIROCREW_HOME", pin)
+
+        assert seen == [scheduled]
+        assert not default.exists(), "the worker resolved the default data home"
+    finally:
+        reset_for_testing()
+
+
+def test_the_consent_worker_reads_the_telemetry_pin_its_scheduler_saw(monkeypatch, tmp_path):
+    """A ``KIROCREW_TELEMETRY`` gone before the worker reads it cannot reach its read.
+
+    The same gap as the home's: ``patch.dict(os.environ)``'s exit clears the pin that
+    held recording off. A worker that read the environment then would see no pin,
+    take the config's ``enabled: true`` and start an exporter the host refused.
+    """
+    import kiro_crew.metrics.provider as provider_mod
+
+    monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+    fake = KiroCrewConfig(telemetry=TelemetryConfig(enabled=True, local_dir=str(tmp_path)))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
+    reset_for_testing()
+    try:
+        assert get_recorder().enabled is False  # synchronous, starts no worker
+        released = threading.Event()
+        done = threading.Event()
+        real_worker = provider_mod._consent_worker
+
+        def _held(generation):
+            try:
+                assert released.wait(10), "the test never released the worker"
+                real_worker(generation)
+            finally:
+                done.set()
+
+        monkeypatch.setattr(provider_mod, "_consent_worker", _held)
+        provider_mod.recheck_consent()
+        monkeypatch.delenv("KIROCREW_TELEMETRY")
+        released.set()
+        assert done.wait(10), "the consent worker never finished"
+        monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+
+        assert provider_mod._built_consent is False, "the worker read the cleared pin"
+    finally:
+        reset_for_testing()

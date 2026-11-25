@@ -187,10 +187,49 @@ async def _remote_channel_reserved(request: web.Request) -> Callable[[str], bool
     )
 
 
+def _connected_computers_state_names() -> frozenset[str]:
+    """The vault entries connected computers keeps its own state in."""
+    from kiro_crew.connected_computers.devices import DEVICES_ENTRY
+    from kiro_crew.connected_computers.local_store import LOCAL_ENTRY
+
+    return frozenset({LOCAL_ENTRY, DEVICES_ENTRY})
+
+
+def _connected_computers_state_owned(name: str) -> web.Response | None:
+    """Refuse a generic vault write or delete of connected computers' own state.
+
+    ``CONNECTED_COMPUTERS_LOCAL`` holds this computer's grants, its install
+    identity and the queued remote revokes; ``CONNECTED_COMPUTERS_DEVICES`` holds
+    a gateway's enrolled computers. Each is one JSON document written by
+    compare-and-swap (``connected_computers.vault_doc``). Replacing it here would
+    destroy that state, and a value that is not the document makes Off fail
+    before it stops anything, so the routes neither edit nor list these entries.
+    Returns the 409 to send, or ``None`` when the name is not one of them.
+    """
+    if name not in _connected_computers_state_names():
+        return None
+    return web.json_response(
+        {
+            "error": "this entry is connected computers' own state; change it under "
+            "Settings → Connected computers",
+            "code": "managed_by_connected_computers",
+        },
+        status=409,
+    )
+
+
 def _managed_name_owned(name: str) -> web.Response | None:
-    """The 409 for a name a Connections client secret or the WakaTime OAuth tokens own."""
-    owned = _connections_client_secret_owned(name)
-    return owned if owned is not None else _wakatime_oauth_tokens_owned(name)
+    """The 409 for a name a Connections client secret, the WakaTime OAuth tokens or
+    connected computers' state owns."""
+    for owner in (
+        _connections_client_secret_owned,
+        _wakatime_oauth_tokens_owned,
+        _connected_computers_state_owned,
+    ):
+        owned = owner(name)
+        if owned is not None:
+            return owned
+    return None
 
 
 async def _channel_credential_owned(request: web.Request, name: str) -> web.Response | None:
@@ -491,6 +530,10 @@ async def api_secrets_list(request: web.Request) -> web.Response:
             },
             status=500,
         )
+    # Connected computers' own state is not a secret anyone edits here: it is
+    # neither listed nor writable (_connected_computers_state_owned).
+    hidden = _connected_computers_state_names()
+    listed = [item for item in listed if item["name"] not in hidden]
     names = [str(item["name"]) for item in listed]
     (
         jira_hosts,

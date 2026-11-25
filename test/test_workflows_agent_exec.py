@@ -256,6 +256,22 @@ async def test_step_backend_reaches_get_or_create_as_override() -> None:
     assert sessions.created[1][0] == "chain@kiro"
 
 
+async def test_step_backend_kiro_follows_a_kiro_cli_pick_onto_kas(monkeypatch) -> None:
+    """backend='kiro' runs where spawn_run(backend='kiro') runs: on KAS once this process
+    recorded that kiro-cli's help names its v3 engine."""
+    from kiro_crew.agent_sdk import backends
+
+    monkeypatch.setattr(backends, "kiro_cli_listed_backend", lambda: backends.ACP_BACKEND_KAS)
+    monkeypatch.setattr(
+        agent_exec,
+        "selectable_backends",
+        lambda: [backends.ACP_BACKEND_KIRO, backends.ACP_BACKEND_KAS],
+    )
+    assert agent_exec.step_backend_kwargs({"backend": "kiro"}) == {
+        "backend_override": backends.ACP_BACKEND_KAS
+    }
+
+
 async def test_unknown_backend_fails_the_step_before_allocating() -> None:
     sessions = FakeSessions()
     with pytest.raises(agent_exec.WorkflowSpawnRefused, match="nope"):

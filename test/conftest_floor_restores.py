@@ -491,12 +491,12 @@ def _restore_log_queue_listener():
     starts it once per process and never undoes it. The damage is to OTHER tests, so
     stopping it propagating is the whole job.
 
-    HANDLERS stay untouched, the boundary ``_restore_logger_levels`` below draws and for
-    its reasons. The ``_CliLogQueueHandler`` left on the ``kiro_crew`` logger therefore
-    outlives the listener it fed, holding an unattended queue; it is the same handler
-    accumulation that fixture already records as a separate defect, and
-    ``test_cli_logging.py``'s ``_pristine_logging`` is what absorbs it today by clearing
-    both handler lists at setup.
+    HANDLERS stay untouched here, the boundary ``_restore_logger_levels`` below draws and
+    for its reasons. The ``_CliLogQueueHandler`` left on the ``kiro_crew`` logger therefore
+    outlives the listener it fed, holding an unattended queue but no file, and
+    ``test_cli_logging.py``'s ``_pristine_logging`` is what absorbs it by clearing both
+    handler lists at setup. The file handler a SHORT-LIVED command attaches directly is
+    what ``_restore_cli_log_file_handlers`` below takes off.
 
     The restore target is what the test INHERITED, so a higher-scoped fixture that starts
     a listener for a whole class or module is not torn out from under its second test --
@@ -519,6 +519,37 @@ def _restore_log_queue_listener():
         with contextlib.suppress(Exception):
             cli._stop_log_queue_listener()
     cli._LOG_QUEUE_LISTENER = before
+
+
+# ── the CLI's gateway.log append handlers come off after every test ────
+
+
+@floor_guard
+def _restore_cli_log_file_handlers():
+    """Close and detach every ``_AppendOnlyLogFileHandler`` a test attached.
+
+    ``_setup_cli_logging`` (a short-lived command) and ``mcp_entry._setup_logging`` attach
+    one, once per process in production. A test driving the real ``cli.main()`` leaves one
+    writing a ``gateway.log`` under its deleted ``tmp_path``, so every later ``kiro_crew``
+    record on the worker prints ``--- Logging error ---`` to stderr. Only that class and
+    only what the test added: no list is written back (pytest's per-phase root handler)
+    and no module global records it, so neither reason ``_restore_logger_levels`` gives
+    for leaving handlers alone applies. ``cli_log_files`` is read through ``sys.modules``
+    after the test, which may be the first on the worker to import it.
+    """
+    loggers = (logging.getLogger(), logging.getLogger("kiro_crew"))
+    inherited = [logger.handlers[:] for logger in loggers]
+    yield
+    cli_log_files = sys.modules.get("kiro_crew.cli_log_files")
+    if cli_log_files is None:
+        return
+    append_only = cli_log_files._AppendOnlyLogFileHandler
+    for logger, before in zip(loggers, inherited):
+        for handler in logger.handlers[:]:
+            if isinstance(handler, append_only) and handler not in before:
+                logger.removeHandler(handler)
+                with contextlib.suppress(Exception):
+                    handler.close()
 
 
 # ── the hooks system's process-wide dispatcher goes back after every test ──
@@ -729,11 +760,11 @@ def _restore_logger_levels():
     back during teardown, re-attaching the setup phase's handler and dropping the one the
     teardown phase is capturing through.
 
-    The handlers ``_setup_cli_logging`` leaves on ``kiro_crew`` do accumulate -- each open
-    on a ``gateway.log`` under a ``tmp_path`` the next test deletes -- but that is a
-    separate defect from this one, and it is not what empties ``caplog``.
-    ``test_cli_logging.py``'s own ``_pristine_logging`` fixture is what absorbs it today,
-    by clearing both handler lists at setup rather than by trusting its inheritance.
+    The file handlers ``_setup_cli_logging`` leaves on ``kiro_crew`` -- each writing a
+    ``gateway.log`` under a ``tmp_path`` the next test deletes -- are a separate defect
+    from this one, and not what empties ``caplog``. ``_restore_cli_log_file_handlers``
+    above takes them off: by class, and only the ones the test added, which neither
+    reason here reaches.
 
     The levels are read through ``_logger_census``: the list of live ``Logger`` objects,
     kept while ``loggerDict`` holds the same entries, so a test that leaves every level

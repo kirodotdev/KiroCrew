@@ -332,22 +332,40 @@ class TestRunLaunch:
         # back (best-effort) so a transient post-deploy error can't orphan it.
         assert ("teardown", out.tag) in eng.calls
         assert "was removed" in out.error
+        # An engine that cannot say whether its stack existed keeps the guard.
+        assert s.get(out.id).to_dict().get("never_created") is False
 
     @pytest.mark.parametrize(
-        ("exists", "confirms", "says", "never_says"),
+        ("exists", "confirms", "says", "never_says", "never_created"),
         [
-            (False, True, "was never created, so it is not billing", "was removed"),
-            (True, True, "was removed so it stops billing", "never created"),
-            (False, False, "did NOT confirm", "not billing"),
-            (RuntimeError("Throttling"), True, "was removed so it stops billing", "never created"),
+            (False, True, "was never created, so it is not billing", "was removed", True),
+            (True, True, "was removed so it stops billing", "never created", False),
+            (False, False, "did NOT confirm", "not billing", False),
+            (
+                RuntimeError("Throttling"),
+                True,
+                "was removed so it stops billing",
+                "never created",
+                False,
+            ),
+            (
+                False,
+                RuntimeError("AccessDenied: cloudformation:DeleteStack"),
+                "could not be removed automatically",
+                "not billing",
+                False,
+            ),
         ],
     )
     def test_a_failed_provision_says_whether_a_stack_existed(
-        self, tmp_path, exists, confirms, says, never_says
+        self, tmp_path, exists, confirms, says, never_says, never_created
     ):
         """A refusal before CloudFormation (a denied CreateChangeSet, a subnet with no
         egress) created no stack, so the card must not report one removed. The delete
-        runs whatever the lookup said, so an unconfirmed one keeps its billing warning."""
+        runs whatever the lookup said, so an unconfirmed or failed one keeps its billing
+        warning.
+        Only a confirmed delete of an absent stack is saved as ``never_created``, the
+        field the dashboard reads to offer Launch as the retry."""
 
         class ProbingEngine(FakeEngine):
             def resource_exists(self, *, tag, profile, region):
@@ -361,6 +379,7 @@ class TestRunLaunch:
         eng = ProbingEngine(
             provision_exc=RuntimeError("AccessDenied: cloudformation:CreateChangeSet"),
             teardown_confirms=confirms,
+            teardown_exc=confirms if isinstance(confirms, Exception) else None,
         )
         out = lj.run_launch(job, s, eng)
 
@@ -371,6 +390,8 @@ class TestRunLaunch:
         ]
         assert says in out.error
         assert never_says not in out.error
+        # Read through to_dict(), the shape the dashboard receives.
+        assert s.get(out.id).to_dict().get("never_created") is never_created
 
     def test_the_ec2_engine_answers_existence_from_the_stack_lookup(self, monkeypatch):
         from kiro_crew.cloud import launch_engine as le

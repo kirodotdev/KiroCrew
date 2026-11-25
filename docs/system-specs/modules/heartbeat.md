@@ -56,6 +56,7 @@ Progress: 3/5 files processed. HEARTBEAT_KEEP
 - `None` return (legacy) treated as complete (removed)
 - Sentinel stripped from display text before posting
 - Deliver tags (`<!-- deliver:slack:<channel_id> -->`) preserved on retention
+- With `heartbeat.keep_backoff` on (default off), a retained task waits `_KEEP_LADDER_SECS` (1, 2, 4, 8, then 15 minutes), measured from when the cycle's turns end. `HeartbeatService._keep_table` holds, per `(text, deliver)`, the consecutive retains and the next due time, in memory only. A task not yet due stays in the file and is skipped; a pass with nothing due starts no session and runs no cycle-end recycle. A new or edited task has no entry and runs on the next tick; a task that completes or leaves the file is dropped from the table, and a pass that finds no file or no task empties it
 
 ## Concurrency
 
@@ -154,6 +155,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `_PRUNE_TICKS` | 1440 | `heartbeat.py` |
 | `_MEMORY_BACKUP_TICKS` / `_MEMORY_BACKUP_OFFSET` | 1440 / 30 | `heartbeat.py` |
 | `_KEEP_SENTINEL` | `HEARTBEAT_KEEP` | `heartbeat.py` |
+| `_KEEP_LADDER_SECS` | 60, 120, 240, 480, 900 | `heartbeat.py` |
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
 | `_STOP_DRAIN_SECS` | 10 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |

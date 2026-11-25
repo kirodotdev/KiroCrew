@@ -43,6 +43,7 @@ import math
 import re
 import threading
 import time
+from dataclasses import replace
 from hashlib import sha256
 from typing import Any, Mapping, Sequence
 
@@ -468,6 +469,13 @@ def _consented_for(
             "nothing is sent until the owner consents again in Settings"
         )
     return False
+
+
+#: (point, exception class) pairs whose provider failure was already logged at
+#: WARNING, so the cause shows on the shipped WARNING level once per pair rather
+#: than once per decision. Bounded: points are a fixed set and so, in practice,
+#: are the classes a provider raises.
+_provider_error_warned: set[tuple[str, str]] = set()
 
 
 #: Points already warned about for a missing scope, so a consented install that has
@@ -985,18 +993,26 @@ def capabilities(config: Any | None = None) -> _provider.Capabilities | None:
     A caller that adapts its pace or its inputs (the browser's ``reflex`` loop)
     reads this instead of a provider's name. Grants nothing: every request still
     goes through :func:`decide`, which re-checks support, consent and scopes.
+
+    One spec serves every local preset, so a preset's measured median
+    (``LocalModel.p50_secs``) replaces the spec's ``latency_ms`` when it is
+    slower; it never lowers it.
     """
     try:
+        from kiro_crew.decisions import local_models
+
         cfg = config if config is not None else _snapshot()
         provider = getattr(_decisions_config(cfg), "provider", None)
-        spec = _provider.select(
-            LANE_ENDPOINT,
-            endpoint=_consent.normalize_endpoint(getattr(provider, "endpoint", "")),
-            model=str(getattr(provider, "model", "") or ""),
-        )
+        endpoint = _consent.normalize_endpoint(getattr(provider, "endpoint", ""))
+        model = str(getattr(provider, "model", "") or "")
+        spec = _provider.select(LANE_ENDPOINT, endpoint=endpoint, model=model)
     except Exception:
         return None
-    return spec.capabilities()
+    caps = spec.capabilities()
+    preset = local_models.get(local_models.active_id(endpoint, model))
+    if preset is None:
+        return caps
+    return replace(caps, latency_ms=max(caps.latency_ms, round(preset.p50_secs * 1000)))
 
 
 async def warm(point: str, *, session_key: str | None = None) -> bool:
@@ -1348,9 +1364,14 @@ async def decide(
     except Exception as exc:
         # The class, and no traceback: a provider message -- and the locals a
         # traceback renders -- can quote the request back. The class still
-        # separates a transport failure from a protocol one. INFO, so the cause of
-        # a provider error is readable in the gateway log without DEBUG.
-        logger.info("decisions: %s provider call failed (%s)", point, type(exc).__name__)
+        # separates a transport failure from a protocol one. WARNING the first time
+        # a point fails with a class, so the cause is in the gateway log on the
+        # shipped WARNING level; INFO after that, so a failing provider is not one
+        # warning per decision.
+        cause = (point, type(exc).__name__)
+        level = logging.INFO if cause in _provider_error_warned else logging.WARNING
+        _provider_error_warned.add(cause)
+        logger.log(level, "decisions: %s provider call failed (%s)", *cause)
         await _write(latency_ms=_elapsed_ms(started), answers=None, error=ERROR_PROVIDER)
         return None
 

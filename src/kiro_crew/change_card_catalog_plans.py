@@ -46,6 +46,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_FOLDER_STEERING,
     KIND_MCP_ADD_CUSTOM,
     KIND_MCP_INSTALL,
+    KIND_MCP_SERVER,
     KIND_MCP_TOGGLE,
     KIND_SCHEDULE_CREATE,
     KIND_SCHEDULE_UPDATE,
@@ -203,6 +204,7 @@ DASHBOARD_SETTINGS: dict[str, tuple[str, tuple[Any, ...]]] = {
     "chat.auto-open-git-in-side-panel": ("auto_open_git_panel", _BOOL_VALUES),
     "chat.split-view-session-grid": ("session_grid", _BOOL_VALUES),
     "chat.tail-only-fork": ("tail_fork_enabled", _BOOL_VALUES),
+    "chat.pin-forks-of-pinned-sessions": ("fork_inherits_pin", _BOOL_VALUES),
     "chat.restore-sessions": ("restore_sessions", _BOOL_VALUES),
     "chat.restore-window": ("restore_window_minutes", (15, 30, 60, 120, 360, 720, 1440, 0)),
     "chat.pr-and-issue-chips-on-session-cards": ("session_card_source_links", _BOOL_VALUES),
@@ -913,6 +915,10 @@ def build_preview(
         out["apply"] = [
             step("POST", "/api/mcp/custom", {"servers": p["servers"], "enable": p["enable"]})
         ]
+    elif kind == KIND_MCP_SERVER:
+        from kiro_crew.change_card_mcp_server import build_preview as _mcp_server_preview
+
+        _mcp_server_preview(p, snapshot, out)
     elif kind == KIND_MCP_TOGGLE:
         if not snapshot.get("exists"):
             raise _fail("not_found", "that MCP server is not configured")
@@ -1270,6 +1276,7 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
     if kind in (
         KIND_MCP_INSTALL,
         KIND_MCP_ADD_CUSTOM,
+        KIND_MCP_SERVER,
         KIND_CONNECTION_CONNECT,
         KIND_TRUST_APP,
         KIND_SCHEDULE_UPDATE,

@@ -42,9 +42,9 @@ import threading
 import types
 import warnings
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor
 from kiro_crew.platform_compat_native import IS_WINDOWS
 
 logger = logging.getLogger(__name__)
@@ -55,17 +55,22 @@ logger = logging.getLogger(__name__)
 #: the rest here, apart from the pools teardown and maintenance use.
 _MAX_SPAWN_WORKERS = 8
 
-_pool: ThreadPoolExecutor | None = None
+_pool: EnqueueOnlyThreadPoolExecutor | None = None
 _pool_lock = threading.Lock()
 
 
-def spawn_executor() -> ThreadPoolExecutor:
-    """Return the process-wide pool that builds children off the loop."""
+def spawn_executor() -> EnqueueOnlyThreadPoolExecutor:
+    """Return the process-wide pool that builds children off the loop.
+
+    The loop thread submits every spawn here, so its ``submit`` only enqueues: a
+    stdlib pool's ``submit`` waits while any thread in the process starts a pool
+    worker.
+    """
     global _pool
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = ThreadPoolExecutor(
+                _pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_SPAWN_WORKERS, thread_name_prefix="mc-spawn"
                 )
                 atexit.register(_shutdown_spawn_executor)
@@ -145,7 +150,14 @@ async def _build_off_loop(
             if future.cancelled():
                 raise
             cancelled = True
-    ok, value = box.pop()
+        except Exception:  # noqa: BLE001 - only the pool fails it: settled below
+            break
+    # An empty box: the pool failed the call before it ran (no worker could start),
+    # so no child exists and the pool's error is the outcome.
+    if box:
+        ok, value = box.pop()
+    else:
+        ok, value = False, future.exception()
     if ok:
         return value, cancelled
     try:

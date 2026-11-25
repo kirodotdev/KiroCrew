@@ -65,6 +65,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.shared_crew.admission_gate import actor_budget
 from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
@@ -130,6 +131,10 @@ def _dispatch_side_turn(
             side.is_complete = True
             if side.task is task:
                 side.task = None
+        if slot._side is not side:
+            # Closed (and maybe reopened) while queued: every tab cleared this
+            # conversation, and a reopened one never started this run.
+            return
         broadcast_side_result(
             state,
             slot_key=slot.key,
@@ -140,18 +145,31 @@ def _dispatch_side_turn(
             final=True,
         )
 
+    async def _turn_on_this_sidecar() -> None:
+        # Admission can hold the turn; a close+reopen meanwhile leaves a NEW
+        # sidecar on the slot, and the turn reads ``slot._side`` at body start,
+        # so it would adopt that sidecar's session, binding and transcript.
+        if slot._side is not side:
+            logger.info(
+                "Side turn dropped: its sidecar closed before it started slot=%s run_id=%s",
+                slot.key,
+                run_id,
+            )
+            return
+        await _run_side_turn(
+            state,
+            slot,
+            run_id,
+            question,
+            is_first_turn=is_first_turn,
+            start_priority=start_priority,
+        )
+
     # Shared Crew fair admission, charged to the asker (``initiated_by`` at the
     # handler); a queued question drained later runs as the bounded Unknown.
     task = asyncio.create_task(
         run_admitted(
-            _run_side_turn(
-                state,
-                slot,
-                run_id,
-                question,
-                is_first_turn=is_first_turn,
-                start_priority=start_priority,
-            ),
+            _turn_on_this_sidecar(),
             session_key=_side_session_key(slot.key),
             text=question,
             refused=_refused,
@@ -392,7 +410,9 @@ async def _run_side_turn(
     # the ``except`` clause has to name the exception.
     from kiro_crew.dashboard.chat_runner import (
         _AppAgentNotLoaded,
+        _commit_reveals,
         _recover_app_agent_binding,
+        _redact_segment_text,
     )
 
     # The sidecar this turn belongs to. Every later mutation is gated on the slot
@@ -426,6 +446,12 @@ async def _run_side_turn(
         """
         if slot._side is side_at_start:
             broadcast_side_result(state, slot_key=slot.key, run_id=run_id, **frame)
+
+    def _redact_answer(raw: str) -> tuple[str, list[dict], dict[str, str]]:
+        """The main chat's credential pass: ``redact(raw)``, its records, their removed values."""
+        pending: dict[str, str] = {}
+        text, records = _redact_segment_text(slot, raw, _reveal_pending=pending)
+        return text, records, pending
 
     def _on_chunk(text: str) -> None:
         chunks.append(text)
@@ -780,17 +806,16 @@ async def _run_side_turn(
             )
             # Redact the assembled text before it is stored/broadcast as the
             # terminal frame (which replaces the streamed deltas). Never trust
-            # LLM output on an external surface. redact() applies BOTH passes —
-            # redact_exfiltration_urls() then redact_credentials() (security.py)
-            # — so exfil URLs and credentials are both scrubbed here.
-            response_text = redact(response_text)
+            # LLM output on an external surface. A line that only quotes a
+            # directive tool's marker is protocol, not the answer.
+            response_text, redactions, reveals = _redact_answer(strip_quoted_markers(response_text))
         except PromptBusyExhaustedError:
             logger.warning(
                 "Side turn aborted (prompt busy exhausted): slot=%s run_id=%s",
                 slot.key,
                 run_id,
             )
-            response_text = redact("".join(chunks))
+            response_text, redactions, reveals = _redact_answer("".join(chunks))
             notice = "(side conversation interrupted — please retry)"
             # The partial answer stays in the history the model is handed; the
             # notice is stored after it, so a panel restored from ``GET .../side``
@@ -801,7 +826,10 @@ async def _run_side_turn(
             message_id = ""
             if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
                 if response_text:
-                    partial_message_id = slot._side.append_assistant(response_text, run_id=run_id)
+                    _commit_reveals(slot, redactions, reveals)
+                    partial_message_id = slot._side.append_assistant(
+                        response_text, run_id=run_id, redactions=redactions
+                    )
                 message_id = slot._side.append_assistant(notice, run_id=run_id, is_error=True)
             if partial_message_id:
                 _broadcast(
@@ -809,6 +837,7 @@ async def _run_side_turn(
                     content=response_text,
                     final=True,
                     message_id=partial_message_id,
+                    redactions=redactions,
                 )
             _broadcast(
                 role="assistant",
@@ -846,7 +875,10 @@ async def _run_side_turn(
 
         message_id = ""
         if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
-            message_id = slot._side.append_assistant(response_text, run_id=run_id)
+            _commit_reveals(slot, redactions, reveals)
+            message_id = slot._side.append_assistant(
+                response_text, run_id=run_id, redactions=redactions
+            )
 
         _broadcast(
             role="assistant",
@@ -854,6 +886,8 @@ async def _run_side_turn(
             ts=time.time(),
             final=True,
             message_id=message_id,
+            # Unstored (a turn admitted after a close and reopen): no value kept, no records.
+            redactions=redactions if message_id else None,
         )
     except asyncio.CancelledError:
         # A stop request (``api_side_stop``) cancels this task. The terminal
@@ -1032,7 +1066,7 @@ def _wire_side_row(entry: dict[str, Any], workspace: str | None = None) -> dict[
     """One stored side row as ``GET .../side`` returns it, redacted like its frame.
 
     An answer carries the blocked-link records of its text under the hosts allowed
-    in *workspace*, as its final frame does.
+    in *workspace*, and its bounded credential records, as its final frame does.
     """
     row: dict[str, Any] = {
         "id": entry.get("id", ""),
@@ -1042,11 +1076,15 @@ def _wire_side_row(entry: dict[str, Any], workspace: str | None = None) -> dict[
     }
     if row["role"] == "assistant":
         # Body-scope import, for the cycle ``api_side_turn`` explains.
-        from kiro_crew.dashboard.chat_utils import blocked_links_for_workspace
+        from kiro_crew.dashboard.chat_utils import (
+            blocked_links_for_workspace,
+            with_bounded_redaction_records,
+        )
 
         records = blocked_links_for_workspace(row["content"], workspace)
         if records:
             row["link_blocks"] = records
+        row.update(with_bounded_redaction_records({"redactions": entry.get("redactions")}))
     if entry.get("run_id"):
         row["run_id"] = entry["run_id"]
     if entry.get("steer"):

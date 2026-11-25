@@ -753,8 +753,12 @@ async def start_dashboard(
     defer_channel_agent_resume: bool = False,
     schedule_memory_preparation: "Callable[[DashboardState], asyncio.Task[None] | None] | None" = None,
     approval_mode: str | None = None,
+    headless: bool = False,
 ) -> tuple[web.AppRunner, DashboardState]:
-    """Start the dashboard web server.  Returns ``(runner, state)``."""
+    """Start the dashboard web server.  Returns ``(runner, state)``.
+
+    *headless* serves the API alone (``dashboard/headless.py``).
+    """
     # Channels retain this same runner on the gateway, independently of state.
     # Close shared admission before the first startup await, not just the UI pointer.
     if task_runner is not None:
@@ -1028,7 +1032,11 @@ async def start_dashboard(
     # and an early child callback waits instead of being refused. Binding here
     # also makes --port auto (port == 0) real before the spawn: every
     # boot-spawned backend gets the true origin, fixed and auto alike.
-    _dashboard_sock = await _reserve_dashboard_port(bind_address_for(local_only), port)
+    from kiro_crew.dashboard.headless import bind_address
+
+    _dashboard_sock = await _reserve_dashboard_port(
+        bind_address(headless, bind_address_for(local_only)), port
+    )
     runner: web.AppRunner | None = None
     try:
         _bind_ip = _export_reserved_bind_evidence(_dashboard_sock)
@@ -1038,6 +1046,24 @@ async def start_dashboard(
         # has no port), and changing it would stop reading cookies set under it.
         _served_port = port or _dashboard_sock.getsockname()[1]
         app["served_port"] = _served_port
+
+        # Loaded before the app backends start, so a dashboard.entry_port value
+        # that can never be served stops the start before any backend is spawned
+        # and before the gateway's own port serves. The bind, and its refusal of a
+        # port in use, stay in entry_gate.start after the gateway's own site.
+        # Off the loop: the load reads and validates config.json from disk.
+        _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        from kiro_crew.dashboard import entry_gate
+
+        # The SSM port counts only when its listener is configured to run.
+        _entry_ssm_port = (
+            _cfg.dashboard.shared_crew.ssm_port
+            if _shared_crew_preview and _cfg.dashboard.shared_crew.ssm
+            else None
+        )
+        entry_gate.configured_port(
+            _cfg.dashboard.entry_port, _dashboard_sock.getsockname()[1], _entry_ssm_port
+        )
 
         await _start_app_backends(app, state)
 
@@ -1101,7 +1127,6 @@ async def start_dashboard(
         # Off by default; resolved in a thread so the daemon call cannot stall the
         # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
         # validated.
-        _cfg = KiroCrewConfig.load()
         _ts_cfg = _cfg.dashboard.tailscale
         _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
         _tailnet_trust = await _resolve_tailnet_trust(_cfg)
@@ -1111,17 +1136,24 @@ async def start_dashboard(
         _direct: GateRef | None = None
         _ssm_ref: SsmGateRef | None = None
         if _shared_crew_preview:
-            from kiro_crew.dashboard import tailnet_direct_listener
-
             if _cfg.dashboard.shared_crew.ssm:
                 # Only an SSM-enabled launch loads the SSM modules before the bind.
                 from kiro_crew.dashboard import ssm_gate
 
                 _ssm_ref = ssm_gate.GateRef()
 
-            _direct = tailnet_direct_listener.prepare_at_start(
-                _cfg, host=_tailnet_host, trust=_tailnet_trust, local_only=local_only
-            )
+            from kiro_crew.dashboard import tailnet_direct_listener
+
+            if not headless:
+                _direct = tailnet_direct_listener.prepare_at_start(
+                    _cfg, host=_tailnet_host, trust=_tailnet_trust, local_only=local_only
+                )
+            else:
+                # Headless: the same tailnet path and access set, and no direct
+                # tailnet site. Its bind is loopback whatever local_only says.
+                tailnet_direct_listener.prepare_tailnet_path(
+                    _cfg, host=_tailnet_host, trust=_tailnet_trust, local_only=True
+                )
         if _tailnet_host:
             logger.info(
                 "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
@@ -1194,6 +1226,15 @@ async def start_dashboard(
         # ``asyncio.to_thread`` hop. Best-effort inside the helper: a
         # failed warm never blocks readiness.
         await warm_sel_singleton()
+
+        if headless:
+            from kiro_crew.dashboard.headless import HEADLESS_KEY
+
+            app[HEADLESS_KEY] = True
+
+        # The entry port's gate holder, empty until the port is bound after the
+        # gateway's own (dashboard/entry_gate.py).
+        _entry_ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
 
         # The ordered chain and the dashboard_url token-auth invariant live with the
         # headless chain in one owner, so the two cannot drift apart unseen.
@@ -1288,6 +1329,16 @@ async def start_dashboard(
         # socket's own kernel-assigned name.
         site = web.SockSite(runner, _dashboard_sock)
         await site.start()
+        # The entry port, when the owner set one. Inside this guard: a port that
+        # cannot be bound stops the start, and the cleanup below closes what was
+        # opened.
+        await entry_gate.start(
+            _entry_ref,
+            runner,
+            _cfg.dashboard.entry_port,
+            _dashboard_sock.getsockname()[1],
+            ssm_port=_entry_ssm_port,
+        )
     except BaseException:
         # Every post-reservation failure must release both the app processes and
         # the socket before another process can claim this trusted origin.
@@ -1347,6 +1398,11 @@ async def start_dashboard(
         await tailnet_direct_listener.start_after_bind(
             app, runner, _bound_port, _cfg, _direct, local_only=local_only
         )
+    elif _shared_crew_preview:
+        # Headless: finish the access set the placeholder stands in for.
+        from kiro_crew.dashboard import tailnet_direct_listener
+
+        await tailnet_direct_listener.finish_access_set()
     # The SSM site, on its own loopback port; nothing when it is off.
     if _ssm_ref is not None:
         from kiro_crew.dashboard import ssm_gate
@@ -1488,7 +1544,7 @@ async def start_dashboard(
     await cautious_boot.pause_before("MCP server probe")
     # Held in state._background_tasks: the loop keeps only a weak reference to a
     # task, so a dropped one can be garbage-collected before the probe finishes.
-    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
+    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state))
     state._background_tasks.add(probe_task)
     probe_task.add_done_callback(state._background_tasks.discard)
 
@@ -1575,6 +1631,19 @@ async def start_dashboard(
     from kiro_crew.approval_mode_policy import register_deny_hook
 
     register_deny_hook("dashboard", functools.partial(_drop_policy_denied_trust, state))
+    # Which KAS sessions may keep approve-for-me on: the ones a person turned it on
+    # for here, while no Trust, Reads, YOLO or policy deny says otherwise.
+    from kiro_crew.dashboard import approve_for_me
+
+    approve_for_me.install(state)
+    # The account's hidden models can change on another Kiro client, or land after
+    # a picker's first read; an open picker then reads again.
+    from kiro_crew.agent_sdk import kas_model_catalog
+    from kiro_crew.dashboard.handlers.models_cold_probe import MODELS_CHANGED_EVENT
+
+    kas_model_catalog.on_hidden_models_changed(
+        functools.partial(state.broadcast_ws, MODELS_CHANGED_EVENT, {})
+    )
 
     await _notify_restart_dropped_grant(state)
 

@@ -181,7 +181,11 @@ class TestRelayArchivesHideNoPeerRow:
         data = await _body(await hi.api_instances_chat_slots(_request(state)))
 
         assert data == [
-            {"running": False, "pending_approval": False, "needs_input": False},
+            {
+                "running": False,
+                "pending_approval": False,
+                "needs_input": False,
+            },
             {
                 "key": "peer-chat-9",
                 "running": False,
@@ -281,6 +285,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "workspace": "/Users/someone/secret-project",
             "source_links": [{"url": "https://internal.example"}],
             "messages": 42,
+            "needs_full_chat": True,
             "unknown_future_field": "surprise",
             # A citation is forwarded, but only its two keys: a peer cannot ride
             # extra content in on the parent object either.
@@ -489,7 +494,14 @@ class TestPeerTextIsRedactedAndAllowlisted:
         _enable_instances(monkeypatch)
         mgr = _manager(
             body=json.dumps(
-                [{"key": "p1", "running": "no", "pending_approval": 1, "needs_input": "yes"}]
+                [
+                    {
+                        "key": "p1",
+                        "running": "no",
+                        "pending_approval": 1,
+                        "needs_input": "yes",
+                    }
+                ]
             ).encode()
         )
 

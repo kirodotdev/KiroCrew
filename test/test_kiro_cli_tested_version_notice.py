@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew.acp import chat_runtime_sharing
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import kas_bundle as kas_bundle_install
 from kiro_crew.acp.client_turn_control import KIRO_CLI_TESTED_RANGE, untested_version_issue
@@ -88,7 +89,7 @@ def test_a_kas_session_shows_its_relays_kiro_cli_notice(monkeypatch):
     assert len(rows) == 1 and "kiro-cli 2.21.4" in rows[0][3]
 
 
-def _relay(monkeypatch, tmp_path, version):
+def _relay(monkeypatch, tmp_path, version, engine=None):
     async def _bin(**_kw):
         return str(tmp_path / "kiro-cli")
 
@@ -98,6 +99,11 @@ def _relay(monkeypatch, tmp_path, version):
     monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: False)
     monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: version)
     monkeypatch.setattr(kas_harness, "resolved_kiro_cli_version", lambda _bin, **_kw: version)
+    monkeypatch.setattr(
+        chat_runtime_sharing,
+        "relay_engine_version",
+        lambda cli: engine if cli == version else "wrong-kiro-cli",
+    )
     monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", _bin)
     monkeypatch.setattr(kas_harness, "vault_holds_identity_off_loop", _no_vault)
 
@@ -131,15 +137,65 @@ async def test_the_relay_spawn_records_the_notice_for_its_kiro_cli(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("engine", "recorded"), [("0.66.91", "0.66.91"), (None, "")])
+async def test_the_relay_spawn_records_the_engine_kiro_cli_unpacked(
+    monkeypatch, tmp_path, engine, recorded
+):
+    harness = kas_harness.KasHarness()
+    _relay(monkeypatch, tmp_path, (3, 1, 0), engine=engine)
+    await harness.resolve_spawn(_ctx(tmp_path))
+    assert harness.relay_engine_version == recorded
+    handle = SimpleNamespace()
+    harness.record_session_projection(handle, None, "a")
+    assert handle.kas_relay_engine_version == recorded
+
+
+@pytest.mark.asyncio
+async def test_a_path_only_relay_records_the_engine_for_its_resolved_kiro_cli(
+    monkeypatch, tmp_path
+):
+    harness = kas_harness.KasHarness()
+    _relay(monkeypatch, tmp_path, (3, 1, 0))
+    monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: None)
+    seen = []
+
+    def _engine(cli):
+        seen.append(cli)
+        return "0.66.91"
+
+    monkeypatch.setattr(chat_runtime_sharing, "relay_engine_version", _engine)
+    await harness.resolve_spawn(_ctx(tmp_path))
+    assert seen == [(3, 1, 0)]
+    assert harness.relay_engine_version == "0.66.91"
+    handle = SimpleNamespace()
+    harness.record_session_projection(handle, None, "a")
+    assert handle.kas_relay_engine_version == "0.66.91"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_relay_engine_does_not_fail_the_spawn(monkeypatch, tmp_path):
+    def _boom(_cli):
+        raise OSError("extract unreadable")
+
+    harness = kas_harness.KasHarness()
+    _relay(monkeypatch, tmp_path, (3, 1, 0))
+    monkeypatch.setattr(chat_runtime_sharing, "relay_engine_version", _boom)
+    await harness.resolve_spawn(_ctx(tmp_path))
+    assert harness.relay_engine_version == ""
+
+
+@pytest.mark.asyncio
 async def test_a_bundle_respawn_clears_the_relays_notice(monkeypatch, tmp_path):
     """Crew's own engine is the pinned one, so kiro-cli's release says nothing about it."""
     harness = kas_harness.KasHarness()
-    _relay(monkeypatch, tmp_path, (2, 21, 4))
+    _relay(monkeypatch, tmp_path, (2, 21, 4), engine="0.66.91")
     await harness.resolve_spawn(_ctx(tmp_path))
     assert harness.untested_version_notice
+    assert harness.relay_engine_version == "0.66.91"
     _bundle(monkeypatch, tmp_path)
     await harness.resolve_spawn(_ctx(tmp_path))
     assert harness.untested_version_notice == ""
+    assert harness.relay_engine_version == ""
 
 
 @pytest.mark.asyncio

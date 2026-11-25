@@ -143,12 +143,31 @@ WORK_MAX_DEPTH_MIN: int = 2
 WORK_MAX_DEPTH_MAX: int = 10
 WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
 
-#: One crew tag (``work_ledger.remote_dispatch_tags``) or one remote-dispatch
-#: ``requires`` name: a short lower-case word with at least one letter and no
-#: dot, so a tag cannot carry a path, a URL, a dotted host name or a bare
-#: account number. Here because the config package needs it and may not import
-#: the remote-dispatch modules. Use ``fullmatch``: ``$`` would pass a newline.
-DISPATCH_TAG_RE = re.compile(r"(?=[a-z0-9_-]*[a-z])[a-z0-9][a-z0-9_-]{0,31}")
+#: The characters a dispatch tag may hold, and the ones it may start with. Fixed
+#: ASCII sets: ``str.isalnum`` and its kin accept non-ASCII letters and digits.
+_TAG_LETTERS = frozenset("abcdefghijklmnopqrstuvwxyz")
+_TAG_FIRST = _TAG_LETTERS | frozenset("0123456789")
+_TAG_CHARS = _TAG_FIRST | frozenset("_-")
+
+#: Longest dispatch tag, in characters.
+MAX_DISPATCH_TAG_LEN: int = 32
+
+
+def is_dispatch_tag(tag: str) -> bool:
+    """True when *tag* is one crew tag (``work_ledger.remote_dispatch_tags``) or one
+    remote-dispatch ``requires`` name.
+
+    The rule: 1-32 characters, each ASCII ``a-z``, ``0-9``, ``_`` or ``-``; the
+    first is not ``_`` or ``-``; at least one is ``a-z``. A short lower-case word
+    with no dot, so a tag cannot carry a path, a URL, a dotted host name or a bare
+    account number. The length is checked first, so a huge peer string is refused
+    without a scan. Here because the config package needs it and may not import the
+    remote-dispatch modules.
+    """
+    if not 1 <= len(tag) <= MAX_DISPATCH_TAG_LEN or tag[0] not in _TAG_FIRST:
+        return False
+    return all(c in _TAG_CHARS for c in tag) and any(c in _TAG_LETTERS for c in tag)
+
 
 #: Most tags a crew advertises, and most names one ``requires`` list holds.
 MAX_DISPATCH_TAGS: int = 16
@@ -160,7 +179,7 @@ def coerce_dispatch_tags(raw: object) -> tuple[str, ...]:
         return ()
     out: list[str] = []
     for tag in raw:
-        if isinstance(tag, str) and DISPATCH_TAG_RE.fullmatch(tag) and tag not in out:
+        if isinstance(tag, str) and is_dispatch_tag(tag) and tag not in out:
             out.append(tag)
             # A peer's headroom feeds this list too: stop at the cap so a long
             # one costs one pass, not a quadratic scan of the tail.
@@ -193,7 +212,8 @@ ACCEPTANCE_SHAPES: str = (
     'One of: {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}; {"kind": '
     '"pr_merged", "pr": 123, "repo": "owner/name"}; {"kind": "file", "path": '
     '"/absolute/path"} (add "exists": false for a path that must be gone); {"kind": '
-    '"human_approval"}; {"kind": "edition_check", "check": "<name>", "ref": "<id>"}.'
+    '"human_approval"}; {"kind": "edition_check", "check": "<name>", "ref": "<id>"}; '
+    '{"kind": "git_commit", "repo": "/abs/repo", "branch": "<name>", "base": "<sha>"}.'
 )
 
 

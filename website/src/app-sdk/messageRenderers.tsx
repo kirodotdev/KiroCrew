@@ -16,6 +16,7 @@
 import React, { lazy, memo, Suspense } from 'react'
 import { Clock, AppWindow, LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react'
 import { i18nT } from '../i18n/t'
+import type { MessageQuote } from '../chat-core/composer/messageQuote'
 import { isNoteRow } from '../lib/noteContract'
 import { parseOptions } from './protocol'
 import ErrorNotice from '../components/ErrorNotice'
@@ -125,6 +126,10 @@ export interface MessageRenderContext {
    *  bubble arms its context menu. Receives the row's own fields, so the
    *  renderer never has to know what the host stores. */
   onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
+  /** Jump to the message a sent quote card quotes, in the host's own
+   *  transcript. A host capability: absent, a sent quote card is a plain
+   *  card, not a control. */
+  onJumpToQuote?: (quote: MessageQuote) => void
   /** Drop mcp_oauth banners a Connections card already owns. */
   hideCardOwnedOAuth: boolean
   /** Whether a row's error notice may offer the "Ask the agent" hand-off.
@@ -584,6 +589,9 @@ export interface AssistantBubbleOptions {
   /** Draw link previews under the reply's links (Settings -> Chat -> Link
    *  Previews). Absent: off. */
   linkPreviews?: boolean
+  /** Who the reply's offscreen speaker heading names (a crewmate's chat: the
+   *  crewmate). Absent: the product name, as on the main chat. */
+  speakerName?: string
 }
 
 /**
@@ -658,6 +666,7 @@ export function renderAssistantBubble(
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      engineSubagents={(m.meta as Record<string, unknown> | undefined)?.engine_subagents}
       onRegenerate={opts.onRegenerate}
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
@@ -669,6 +678,7 @@ export function renderAssistantBubble(
       // it. Only the card's Allow needs a local slot (`redactionSlot`).
       blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
+      speakerName={opts.speakerName}
       suppressSteerAck={suppressSteerAck}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
@@ -754,6 +764,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           onReplyInThread={replyInThreadFor(m, ctx)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+          onJumpToQuote={ctx.onJumpToQuote}
         />
       )
       // The bubble alone on every surface without a thread footer to draw, so

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageSquare, MessageSquarePlus, X, Pencil, Check, Send } from 'lucide-react'
 import { SendBtn } from './ui'
+import TruncatedText from './TruncatedText'
 import { offlineProps } from '../utils/offline'
 import { useImeGuard } from '../hooks/useImeGuard'
 
@@ -110,9 +111,9 @@ function CommentRow({ comment, number, onEdit, onRemove, onEditingChange, draftK
       <span className="text-muted shrink-0"><MessageSquare className="lucide-inline" /></span>
       <div className="flex-1 min-w-0">
         {comment.image ? (
-          <div className="text-muted text-[11px] font-mono truncate" title={comment.image.src}>{i18nT('components.commentOverlay.image_anchor', { number: fmtNumber(number), label: shortImageLabel(comment.anchor) })}</div>
+          <TruncatedText full={comment.image.src} className="block text-muted text-[11px] font-mono">{i18nT('components.commentOverlay.image_anchor', { number: fmtNumber(number), label: shortImageLabel(comment.anchor) })}</TruncatedText>
         ) : (
-          <div className="text-muted text-[11px] font-mono truncate" title={comment.anchor}>"{comment.anchor.slice(0, 60)}{comment.anchor.length > 60 ? '…' : ''}"</div>
+          <TruncatedText full={`"${comment.anchor}"`} className="block text-muted text-[11px] font-mono" />
         )}
         {editing ? (
           <input ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)}

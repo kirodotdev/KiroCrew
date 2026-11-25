@@ -55,7 +55,7 @@ from typing import Any, Callable, Optional
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
+from kiro_crew.messaging.renderer import mcp_identity_line, new_approval_nonce, nonce_eq
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -412,17 +412,23 @@ def _redact_all(text: str) -> str:
     return out
 
 
-def build_approval_prompt(tool_title: str, tool_purpose: str = "") -> str:
+def build_approval_prompt(
+    tool_title: str, tool_purpose: str = "", mcp_identity: tuple[str, str] = ("", "")
+) -> str:
     """The numbered prompt text for one permission request.
 
-    Names the tool and its stated purpose only. ``OutputEvent`` carries no tool
-    INPUT (see ``renderer.py``), so the prompt cannot show the command line --
-    a real limit on how informed this consent is, and the reason
-    :data:`APPROVAL_CHOICE_LABELS` offers "Trust this session" rather than
-    anything broader.
+    Names the tool, the MCP server and tool it runs as when *mcp_identity* (the
+    renderer's trusted ``prompt_mcp_identity``) names a server, and its stated
+    purpose. ``OutputEvent`` does carry the tool's redacted INPUT, but this prompt
+    does not show it yet, so it cannot show the command line -- a real limit on how
+    informed this consent is, and the reason :data:`APPROVAL_CHOICE_LABELS` offers
+    "Trust this session" rather than anything broader.
     """
     lines = [PROMPT_HEADER, ""]
     lines.append(f"Tool: {_screened(tool_title) or 'unknown'}")
+    identity = mcp_identity_line(*mcp_identity)
+    if identity:
+        lines.append(identity)
     if tool_purpose:
         lines.append(f"Purpose: {_screened(tool_purpose)}")
     lines.append("")

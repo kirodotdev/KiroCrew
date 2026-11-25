@@ -942,8 +942,10 @@ def disposition_gate(argv, environ):
     Usage: --disposition-gate --repo OWNER/NAME --pr N --head SHA
     (--marker-bindings / --marker-authors and their env forms apply as usual.)
 
-    Prints ``{"ok", "violations", "unpublished", "comments", "records",
-    "unverified", "error"}``. ``ok`` is False when the record set could not be
+    Prints ``{"ok", "violations", "notices", "unpublished", "comments",
+    "records", "unverified", "error"}``; ``notices`` names the malformed markers
+    that do not block (they judged an older head or were replaced). ``ok`` is
+    False when the record set could not be
     established, which the caller must treat as UNKNOWN (pending) rather than as
     a red: a transient API failure red-lighting the required status is that class
     of bug. Exit status is 0 for both outcomes -- the JSON carries the verdict,
@@ -960,6 +962,7 @@ def disposition_gate(argv, environ):
     result = {
         "ok": False,
         "violations": [],
+        "notices": [],
         "comments": 0,
         "records": 0,
         "unverified": 0,
@@ -1000,10 +1003,14 @@ def disposition_gate(argv, environ):
                 # would forge an extra blocker line. Nothing in the strings can
                 # carry one today (logins, span ids and target= are all charset-
                 # limited), which is exactly why flattening here is free.
+                notices: list = []
                 result["violations"] = [
                     " ".join(sanitize(v).split())
-                    for v in disposition_violations(records, bot_comments, head_sha, bindings)
+                    for v in disposition_violations(
+                        records, bot_comments, head_sha, bindings, notices
+                    )
                 ]
+                result["notices"] = [" ".join(sanitize(n).split()) for n in notices]
                 # The whole-design lanes that owe this head a verdict and have
                 # none. Free here: the trusted comment set is already read, and
                 # ``evaluate_reviewer_markers`` is the definition both gates
@@ -1363,6 +1370,7 @@ def main(argv):
     disposition_comments = fetch_disposition_comments(repo, d.get("number"))
     disposition_records = writer_disposition_records(repo, disposition_comments)
     disposition_violation_list: list = []
+    disposition_notices: list = []
     # BOTH inputs must be readable: the records (the rulings) and the trusted
     # reviewer comments (the finding map the rulings are validated against).
     # An unreadable finding map is not "no findings" -- computing with an
@@ -1372,7 +1380,7 @@ def main(argv):
     disposition_ok = disposition_records is not None and bot_comments is not None
     if disposition_ok:
         disposition_violation_list = disposition_violations(
-            disposition_records, bot_comments, head_sha, marker_bindings
+            disposition_records, bot_comments, head_sha, marker_bindings, disposition_notices
         )
     disposition_eval = {"ok": disposition_ok, "violations": disposition_violation_list}
     # A second sample at ONE head replaces the first in the lane's slot, so the
@@ -1463,6 +1471,8 @@ def main(argv):
                 "  NOTICE: target lane(s) outside the marker bindings "
                 "(claim checks do not apply): " + ", ".join(sanitize(t) for t in unknown_targets)
             )
+        for n in disposition_notices:
+            print("  NOTICE: " + sanitize(n))
         for v in disposition_violation_list:
             print("  VIOLATION: " + sanitize(v))
         if not disposition_violation_list:

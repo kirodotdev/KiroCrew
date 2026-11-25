@@ -276,7 +276,7 @@ wake it relied on (see the status above). Its code PR
 
 This section reverses the pin in §5 item 7 and the "held boards stay held"
 limit in §7. It builds on this document (on main) and on its code PR
-[#36481](https://github.com/kirodotdev/KiroCrew/pull/36481) (open), whose
+[#36481](https://github.com/kirodotdev/KiroCrew/pull/36481) (merged 2026-11-14), whose
 First Principles review asked for the reversal to be decided here first
 ([comment](https://github.com/kirodotdev/KiroCrew/pull/36481#issuecomment-6847130133)).
 

@@ -184,8 +184,11 @@ async def test_a_shared_user_is_refused_in_a_bound_code_channel(env: Env) -> Non
     handle = await _route_shared(env, _plain("C0CODE"), is_mention=False)
     handle.assert_not_called()
     assert env.routed == []
-    # Quietly: a member's messages are mostly not for the bot.
-    assert env.slack.ephemerals == [] and env.slack.posts == []
+    # Told once, privately (a member's messages are mostly not for the bot).
+    from kiro_crew.slack.code_channels.shared_refusal import OWNER_ONLY_TEXT
+
+    assert env.slack.ephemerals == [("C0CODE", OWNER, OWNER_ONLY_TEXT)]
+    assert env.slack.posts == []
 
 
 async def test_a_shared_users_dropped_message_in_a_code_channel_is_audited(env: Env) -> None:
@@ -333,12 +336,537 @@ def test_an_unreadable_store_refuses_a_shared_user_in_any_channel_that_could_be_
     assert shared_user_refused_in("D0DM00001") is False
 
 
-async def test_a_shared_users_mention_never_opens_a_code_channel(env: Env) -> None:
+async def test_an_unconfirmed_shared_users_mention_never_opens_a_code_channel(env: Env) -> None:
+    # Listed, but Slack does not confirm them (removed, or the check failed):
+    # their request opens nothing, so no channel can record them as its opener.
     env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
     handle = await _route_shared(env, mention(), is_mention=True)
     # Answered in place on the normal path, as without code channels.
     handle.assert_called_once()
     assert env.store.get_binding("C0NEW") is None and env.routed == []
+    assert _calls_to(env, "agents.conversations.create") == []
+
+
+# ── A shared user's own code channel (slack.shared_access, its opener) ──────
+
+SHARED = "U0SHARED01"
+OTHER_SHARED = "U0SHARED02"
+
+
+def _confirmed(*users: str) -> Any:
+    """*users* listed and confirmed as shared users, now (never the owner)."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    for target in (
+        "kiro_crew.slack.events.is_shared_listed",
+        "kiro_crew.slack.handler.is_shared_listed",
+        "kiro_crew.slack.handler.is_shared_user",
+    ):
+        stack.enter_context(patch(target, lambda u: u in users))
+    stack.enter_context(
+        patch(
+            "kiro_crew.slack.shared_access.still_confirmed",
+            lambda _cfg, u, *, owner: not owner and u in users,
+        )
+    )
+    return stack
+
+
+def _calls_to(env: Env, method: str) -> list[Any]:
+    return [body for m, body in env.api.calls if m == method]
+
+
+def _bind_opened_by(env: Env, opener: str) -> None:
+    env.store.put_binding(
+        Binding(
+            channel_id="C0CODE",
+            team_id="T1",
+            session_key="chat-9-1",
+            anchor_ts="300.000001",
+            opener=opener,
+        )
+    )
+    env.info("C0CODE")
+
+
+async def test_a_shared_users_coding_mention_opens_their_own_code_channel(env: Env) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    with _confirmed(SHARED):
+        await _route(env, {**mention(), "user": SHARED}, is_mention=True)
+    assert env.classified, "the classifier decides for a shared user's request too"
+    binding = env.store.get_binding("C0NEW")
+    assert binding is not None and binding.opener == SHARED
+    assert [r.opener for r in env.store._routes.values()] == [SHARED]
+
+
+async def test_the_owners_code_channel_records_no_opener(env: Env) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    with _confirmed(SHARED):
+        await _route(env, mention(), is_mention=True)
+    binding = env.store.get_binding("C0NEW")
+    assert binding is not None and binding.opener == ""
+
+
+async def test_the_opener_drives_their_own_code_channel(env: Env) -> None:
+    _bind_opened_by(env, SHARED)
+    with _confirmed(SHARED):
+        handle = await _route(env, {**_plain("C0CODE"), "user": SHARED}, is_mention=False)
+    handle.assert_not_called()  # the channel's session answers, not a thread session
+    assert len(env.routed) == 1 and env.slack.ephemerals == []
+
+
+async def test_another_shared_user_stays_out_of_the_openers_channel(env: Env) -> None:
+    from kiro_crew.slack.code_channels.shared_refusal import OWNER_ONLY_TEXT
+
+    _bind_opened_by(env, SHARED)
+    with _confirmed(SHARED, OTHER_SHARED):
+        handle = await _route(env, {**_plain("C0CODE"), "user": OTHER_SHARED}, is_mention=False)
+    handle.assert_not_called()
+    assert env.routed == []
+    assert env.slack.ephemerals == [("C0CODE", OTHER_SHARED, OWNER_ONLY_TEXT)]
+
+
+async def test_an_opener_removed_while_their_message_routes_appends_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The route awaits (a window load, an image copy) before it appends: the gate it
+    # asks at that commit point judges the opener again, with nothing awaited after.
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.handler import LinkedRoute
+
+    _bind_opened_by(env, SHARED)
+    users = {SHARED}
+    gates: list[bool] = []
+
+    async def route_to_slot(_orch: Any, binding: Any, text: str, sender_id: str, **kw: Any) -> Any:
+        admit = kw.get("admit")
+        gates.append(admit is not None and await admit())
+        users.clear()  # the owner removes them during the route's awaits
+        gates.append(admit is not None and await admit())
+        return LinkedRoute.HELD
+
+    monkeypatch.setattr(routing, "_route_to_slot", route_to_slot)
+    with (
+        patch("kiro_crew.slack.events.is_shared_listed", lambda u: u == SHARED),
+        patch("kiro_crew.slack.handler.is_shared_listed", lambda u: u == SHARED),
+        patch("kiro_crew.slack.handler.is_shared_user", lambda u: u in users),
+        patch(
+            "kiro_crew.slack.shared_access.still_confirmed",
+            lambda _cfg, u, *, owner: not owner and u in users,
+        ),
+    ):
+        await _route(env, {**_plain("C0CODE"), "user": SHARED}, is_mention=False)
+    assert gates == [True, False]
+
+
+async def test_the_openers_first_turn_is_judged_at_its_commit_point(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.handler import LinkedRoute
+
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    users = {SHARED}
+    gates: list[bool] = []
+
+    async def route_to_slot(_orch: Any, binding: Any, text: str, sender_id: str, **kw: Any) -> Any:
+        admit = kw.get("admit")
+        gates.append(admit is not None and await admit())
+        users.clear()  # removed during the first turn's route
+        gates.append(admit is not None and await admit())
+        return LinkedRoute.HELD
+
+    monkeypatch.setattr(routing, "_route_to_slot", route_to_slot)
+    with _confirmed_live(users):
+        await _route(env, {**mention(), "user": SHARED}, is_mention=True)
+    assert gates == [True, False]
+
+
+async def test_an_opener_removed_while_classified_opens_no_channel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.code_channels import routing
+
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    users = {SHARED}
+    real = routing.classify
+
+    async def classify_then_remove(*a: Any, **k: Any) -> Any:
+        out = await real(*a, **k)
+        users.clear()
+        return out
+
+    monkeypatch.setattr(routing, "classify", classify_then_remove)
+    with _confirmed_live(users):
+        await _route(env, {**mention(), "user": SHARED}, is_mention=True)
+    assert _calls_to(env, "agents.conversations.create") == []
+    assert env.store.get_binding("C0NEW") is None
+
+
+async def test_an_opener_removed_while_their_channel_binds_gets_no_session(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Removed while the bind posts its kickoff: the binding write judges the opener
+    # again and takes the session back down, so nothing is bound to the channel.
+    from kiro_crew.slack.code_channels import routing
+
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    users = {SHARED}
+    real = routing._post_kickoff
+
+    async def kickoff_then_remove(*a: Any, **k: Any) -> Any:
+        out = await real(*a, **k)
+        users.clear()
+        return out
+
+    monkeypatch.setattr(routing, "_post_kickoff", kickoff_then_remove)
+    with _confirmed_live(users):
+        await _route(env, {**mention(), "user": SHARED}, is_mention=True)
+    assert env.store.get_binding("C0NEW") is None and env.routed == []
+
+
+async def test_an_openers_rebind_never_undoes_a_revocation_made_meanwhile(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The channel's dashboard session was closed, so the opener's message rebinds it.
+    # Slack revokes the channel while the rebind posts its kickoff: the replacement
+    # lands only over the binding it replaces, so the channel stays unbound.
+    from kiro_crew.slack.code_channels import routing
+
+    _bind_opened_by(env, SHARED)
+    env.state.linked.clear()  # no live slot: the session was closed
+    real = routing._post_kickoff
+
+    async def kickoff_then_revoke(*a: Any, **k: Any) -> Any:
+        out = await real(*a, **k)
+        env.store.drop_binding("C0CODE")
+        return out
+
+    monkeypatch.setattr(routing, "_post_kickoff", kickoff_then_revoke)
+    with _confirmed(SHARED):
+        await _route(env, {**_plain("C0CODE"), "user": SHARED}, is_mention=False)
+    assert env.store.get_binding("C0CODE") is None and env.store.was_revoked("C0CODE")
+    assert env.routed == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "opener",
+        "destination_unsaved",
+        "other",
+        "removed",
+        "bind_failed",
+        "bind_failed_no_destination",
+    ],
+)
+async def test_the_openers_message_before_the_binding_is_stored_waits_for_it(
+    env: Env, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    # Slack created the channel and invited the opener; the binding is not written
+    # yet (worktree cut, kickoff), or its first bind failed and they were told to
+    # retry. The opener's message passes the gate (to wait for, or adopt, the
+    # binding); nobody else's does, and no route of ours means no admission.
+    import asyncio as aio
+
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels.routing import DROP, Gate
+    from kiro_crew.slack.code_channels.store import ROUTE_CODE_CHANNEL, Route
+
+    origin, ts = "C0ORIGIN", "1700000000.000100"
+    sid = routing.session_id_for(routing._self_bot_id(), "T1", origin, ts)
+    env.store.record_decision(
+        Route(
+            session_id=sid,
+            origin_channel_id=origin,
+            origin_ts=ts,
+            team_id="T1",
+            decision=ROUTE_CODE_CHANNEL,
+            opener=SHARED,
+        )
+    )
+    if case not in ("destination_unsaved", "bind_failed_no_destination"):
+        env.store.record_destination(sid, "C0NEW")  # else its write never landed
+    env.info("C0NEW", origin=(origin, ts))
+    if not case.startswith("bind_failed"):  # still opening in this process
+        routing._creating[sid] = aio.Event()
+        monkeypatch.setitem(routing._opening, "C0NEW", sid)
+    sender = OTHER_SHARED if case == "other" else SHARED
+    event = {**_plain("C0NEW", f"<@{SELF_USER}> also fix the header"), "user": sender}
+    # Removed: still listed for the owner-only gates, not confirmed now.
+    people = _confirmed_live(set()) if case == "removed" else _confirmed(SHARED, OTHER_SHARED)
+    try:
+        with people:
+            result = await routing.inbound_gate(
+                env.orch,
+                event,
+                text=event["text"],
+                sender_id=sender,
+                authorized=True,
+                from_trusted_bot=False,
+            )
+    finally:
+        routing._creating.pop(sid, None)
+    if case in ("opener", "destination_unsaved", "bind_failed"):
+        assert result.gate is Gate.DIRECTED and env.slack.ephemerals == []
+    else:
+        assert result is DROP
+
+
+async def test_a_retry_after_a_failed_first_bind_keeps_the_channels_opener(env: Env) -> None:
+    # The first bind failed after Slack created the channel; the opener (or the owner)
+    # mentions the bot there to retry. The adopted binding keeps the route's opener.
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels.store import ROUTE_CODE_CHANNEL, Route
+
+    origin, ts = "C0ORIGIN", "1700000000.000100"
+    sid = routing.session_id_for(routing._self_bot_id(), "T1", origin, ts)
+    env.store.record_decision(
+        Route(
+            session_id=sid,
+            origin_channel_id=origin,
+            origin_ts=ts,
+            team_id="T1",
+            decision=ROUTE_CODE_CHANNEL,
+            opener=SHARED,
+        )
+    )
+    env.store.record_destination(sid, "C0NEW")
+    env.info("C0NEW", origin=(origin, ts))
+    event = {**_plain("C0NEW", f"<@{SELF_USER}> retry"), "user": SHARED}
+    with _confirmed(SHARED):
+        await _route(env, event, is_mention=True)
+    binding = env.store.get_binding("C0NEW")
+    assert binding is not None, (env.slack.posts, env.slack.ephemerals, env.sel.rows[-4:])
+    assert binding.opener == SHARED
+    assert env.routed and env.routed[-1][2] == SHARED
+
+
+@pytest.mark.parametrize("sender", [OWNER, SHARED])
+async def test_an_unmentioned_message_while_the_channel_opens_waits_for_its_binding(
+    env: Env, monkeypatch: pytest.MonkeyPatch, sender: str
+) -> None:
+    # The channel exists in Slack and its binding is being written: a plain message
+    # there (no mention, as a code channel needs none) reaches the gate instead of
+    # the mention-mode drop, for the owner and for the channel's opener alike.
+    import asyncio as aio
+
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels.store import ROUTE_CODE_CHANNEL, Route
+
+    origin, ts = "C0ORIGIN", "1700000000.000100"
+    sid = routing.session_id_for(routing._self_bot_id(), "T1", origin, ts)
+    opener = SHARED if sender == SHARED else ""
+    env.store.record_decision(
+        Route(
+            session_id=sid,
+            origin_channel_id=origin,
+            origin_ts=ts,
+            team_id="T1",
+            decision=ROUTE_CODE_CHANNEL,
+            opener=opener,
+        )
+    )
+    env.store.record_destination(sid, "C0NEW")
+    env.info("C0NEW", origin=(origin, ts))
+    # Still opening (the barrier and the channel are recorded); its event is already
+    # set, so the message's wait for the first turn returns at once.
+    routing._creating[sid] = aio.Event()
+    routing._creating[sid].set()
+    monkeypatch.setitem(routing._opening, "C0NEW", sid)
+    gated: list[str] = []
+    real = routing.inbound_gate
+
+    async def gate(*a: Any, **k: Any) -> Any:
+        gated.append(k.get("sender_id", ""))
+        return await real(*a, **k)
+
+    monkeypatch.setattr("kiro_crew.slack.events.code_channel_gate", gate)
+    event = {**_plain("C0NEW", "also fix the header"), "user": sender}
+    try:
+        with _confirmed(SHARED):
+            await _route(env, event, is_mention=False)
+    finally:
+        routing._creating.pop(sid, None)
+    assert gated == [sender]
+
+
+def _confirmed_live(users: set[str]) -> Any:
+    """Like :func:`_confirmed`, read from *users* at each call (a test can remove one)."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(patch("kiro_crew.slack.events.is_shared_listed", lambda u: u == SHARED))
+    stack.enter_context(patch("kiro_crew.slack.handler.is_shared_listed", lambda u: u == SHARED))
+    stack.enter_context(patch("kiro_crew.slack.handler.is_shared_user", lambda u: u in users))
+    stack.enter_context(
+        patch(
+            "kiro_crew.slack.shared_access.still_confirmed",
+            lambda _cfg, u, *, owner: not owner and u in users,
+        )
+    )
+    return stack
+
+
+@pytest.mark.parametrize("meanwhile", ["nothing", "revoked", "rebound"])
+async def test_the_openers_bang_stop_is_judged_on_the_binding_stored_when_it_stops(
+    env: Env, monkeypatch: pytest.MonkeyPatch, meanwhile: str
+) -> None:
+    from dataclasses import replace
+
+    from kiro_crew.slack.code_channels import routing
+
+    _bind_opened_by(env, SHARED)
+    stops: list[str] = []
+
+    async def stop_bound(_orch: Any, binding: Any, sender: str, channel: str, **_k: Any) -> str:
+        stops.append(binding.session_key)
+        return ""
+
+    real = routing.recognition.classify_channel
+
+    async def classify(*a: Any, **k: Any) -> Any:
+        out = await real(*a, **k)
+        if meanwhile == "revoked":
+            env.store.drop_binding("C0CODE")  # Slack revoked it during the lookup
+        elif meanwhile == "rebound":  # its closed session was remade meanwhile
+            env.store.replace_binding(
+                replace(env.store.get_binding("C0CODE"), session_key="chat-10-1")
+            )
+        return out
+
+    monkeypatch.setattr(routing, "_stop_bound", stop_bound)
+    monkeypatch.setattr(routing.recognition, "classify_channel", classify)
+    with _confirmed(SHARED):
+        await _route(env, {**_plain("C0CODE", "!stop"), "user": SHARED}, is_mention=False)
+    assert stops == {"nothing": ["chat-9-1"], "revoked": [], "rebound": ["chat-10-1"]}[meanwhile]
+
+
+@pytest.mark.parametrize("replace_it", [False, True])
+def test_a_binding_write_refused_in_the_stores_lock_writes_nothing(
+    env: Env, replace_it: bool
+) -> None:
+    from dataclasses import replace
+
+    if replace_it:
+        _bind_opened_by(env, SHARED)
+        old = env.store.get_binding("C0CODE")
+        new = replace(old, session_key="chat-10-1")
+        assert env.store.replace_binding(new, admit=lambda: False) is None
+        assert env.store.get_binding("C0CODE") == old
+        stale = replace(new, session_key="chat-11-1")
+        assert env.store.replace_binding(stale, expected_session="chat-10-1") is None
+        assert env.store.replace_binding(new, admit=lambda: True) is not None
+    else:
+        new = Binding(channel_id="C0NEW", team_id="T1", session_key="chat-1-1", anchor_ts="3.1")
+        assert env.store.put_binding(new, admit=lambda: False) is None
+        assert env.store.get_binding("C0NEW") is None
+
+
+async def test_an_openers_in_flight_retry_never_restores_a_revoked_channel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The opener's retry after a failed first bind passed the gate; Slack revokes the
+    # channel (another message unbinds it) while the bind posts its kickoff. The
+    # adopt's write refuses in the store's lock, so the revocation stands.
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels.store import ROUTE_CODE_CHANNEL, Route
+
+    origin, ts = "C0ORIGIN", "1700000000.000100"
+    sid = routing.session_id_for(routing._self_bot_id(), "T1", origin, ts)
+    env.store.record_decision(
+        Route(
+            session_id=sid,
+            origin_channel_id=origin,
+            origin_ts=ts,
+            team_id="T1",
+            decision=ROUTE_CODE_CHANNEL,
+            opener=SHARED,
+        )
+    )
+    env.store.record_destination(sid, "C0NEW")
+    env.info("C0NEW", origin=(origin, ts))
+    real = routing._post_kickoff
+
+    async def kickoff_then_revoke(*a: Any, **k: Any) -> Any:
+        out = await real(*a, **k)
+        # What drop_binding records for a channel Slack stopped listing us in.
+        env.store.put_binding(
+            Binding(channel_id="C0NEW", team_id="T1", session_key="chat-x", anchor_ts="9.9")
+        )
+        env.store.drop_binding("C0NEW")
+        return out
+
+    monkeypatch.setattr(routing, "_post_kickoff", kickoff_then_revoke)
+    event = {**_plain("C0NEW", f"<@{SELF_USER}> retry"), "user": SHARED}
+    with _confirmed(SHARED):
+        await _route(env, event, is_mention=True)
+    assert env.store.get_binding("C0NEW") is None and env.store.was_revoked("C0NEW")
+    assert env.routed == []
+
+
+async def test_a_shared_user_stays_out_of_the_owners_code_channel(env: Env) -> None:
+    _bind_opened_by(env, "")
+    with _confirmed(SHARED):
+        handle = await _route(env, {**_plain("C0CODE"), "user": SHARED}, is_mention=False)
+    handle.assert_not_called()
+    assert env.routed == []
+
+
+async def test_an_opener_removed_from_shared_access_is_cut_off(env: Env) -> None:
+    # Still "listed" for the owner-only gates (an admission earlier in this process),
+    # but not a confirmed shared user now: the channel does not admit them.
+    _bind_opened_by(env, SHARED)
+    with (
+        patch("kiro_crew.slack.events.is_shared_listed", lambda u: u == SHARED),
+        patch("kiro_crew.slack.handler.is_shared_listed", lambda u: u == SHARED),
+        patch("kiro_crew.slack.handler.is_shared_user", lambda u: False),
+        patch("kiro_crew.slack.shared_access.still_confirmed", lambda *_a, **_k: False),
+    ):
+        handle = await _route(env, {**_plain("C0CODE"), "user": SHARED}, is_mention=False)
+    handle.assert_not_called()
+    assert env.routed == []
+
+
+async def test_a_thread_elsewhere_linked_to_the_openers_channel_session_is_refused(
+    env: Env,
+) -> None:
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_for_slot
+
+    _bind_opened_by(env, SHARED)
+    env.store.record_worker("chat-worker1", "chat-9-1")
+    with _confirmed(SHARED):
+        # In the channel itself: its own session and anchor.
+        assert (
+            shared_user_refused_for_slot("chat-9-1", "", sender=SHARED, channel="C0CODE") is False
+        )
+        assert (
+            shared_user_refused_for_slot("", "300.000001", sender=SHARED, channel="C0CODE") is False
+        )
+        # Anywhere else (a DM thread linked or relinked to that session), or a
+        # helper agent its session started, or someone else: refused.
+        assert shared_user_refused_for_slot("chat-9-1", "", sender=SHARED, channel="D0DM00001")
+        assert shared_user_refused_for_slot("chat-worker1", "", sender=SHARED, channel="C0CODE")
+        assert shared_user_refused_for_slot("chat-9-1", "", sender=OTHER_SHARED, channel="C0CODE")
+        assert shared_user_refused_for_slot("chat-9-1", "")
+
+
+def test_a_binding_row_written_before_openers_reads_as_the_owners(env: Env) -> None:
+    import json
+
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_in
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    row = {"channel_id": "C0CODE", "team_id": "T1", "session_key": "chat-9-1", "anchor_ts": "3.1"}
+    env.store.path.write_text(json.dumps({"bindings": {"C0CODE": row}}), encoding="utf-8")
+    loaded = CodeChannelStore(env.store.path)
+    loaded.load()
+    set_store(loaded)
+    binding = loaded.get_binding("C0CODE")
+    assert binding is not None and binding.opener == ""
+    with _confirmed(SHARED):
+        assert shared_user_refused_in("C0CODE", sender=SHARED) is True
 
 
 async def test_one_line_question_is_answered_in_place(env: Env) -> None:

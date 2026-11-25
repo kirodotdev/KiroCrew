@@ -234,6 +234,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         KiroPrerequisiteService,
         _configured_backend_is_kas,
         _established_installation,
+        _holds_a_message,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,

@@ -104,6 +104,27 @@ class TestYolo:
         assert "YOLO OFF" in d.client.sent[-1][1]
 
     @pytest.mark.asyncio
+    async def test_yolo_off_is_confirmed_only_once_its_record_is_off_the_disk(self) -> None:
+        from kiro_crew import kept_grants
+
+        so = self._grant(active=True)
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient())
+        at_sync: list[tuple[bool, list]] = []
+
+        async def _settled() -> bool:
+            at_sync.append((so.deactivate.called, list(d.client.sent)))
+            return True
+
+        with mock.patch.object(webex_dispatch, "safety_override", return_value=so):
+            with mock.patch.object(kept_grants, "settle", _settled, create=True):
+                await d.handle_message(_inbound("/yolo off"))
+        assert len(at_sync) == 1, "the off was confirmed without waiting for the disk"
+        [(deactivated, sent_then)] = at_sync
+        assert deactivated is True
+        assert not any("YOLO OFF" in str(message) for message in sent_then)
+        assert "YOLO OFF" in d.client.sent[-1][1]
+
+    @pytest.mark.asyncio
     async def test_renewing_an_inactive_grant_says_so(self) -> None:
         so = self._grant()
         so.renew.return_value = SimpleNamespace(renewed=False)

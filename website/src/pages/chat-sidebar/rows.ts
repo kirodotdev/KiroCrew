@@ -23,7 +23,7 @@ import type { ChatTag } from '../../types'
 import type { GuideStepPlan } from '../../guide/guideActions'
 import type { PaletteBoost } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
-import { compareBySort, compareManual, comparePinnedThenSort, lastActivityEpoch, slotActivityTs, type SortKey } from '../chat/sessionOrder'
+import { compareBySort, compareManual, comparePinnedThenSort, lastActivityEpoch, slotActivityTs, staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
@@ -66,6 +66,10 @@ export interface LocalRowIndex {
   /** Each unpinned row's position in the order it is drawn in now, whatever the
    *  sort: where a manual drop's insertion line goes. */
   drawnIndex: ReadonlyMap<string, number>
+  /** The chat open in the main pane, or null. Opening a chat marks it read, so the
+   *  Unread chip lets it through while it is open instead of dropping the row the
+   *  person is working in. No other chip changes when a chat is opened. */
+  openKey: string | null
 }
 
 export interface SidebarRowFilters {
@@ -168,7 +172,10 @@ export interface RowPlacement {
   scope: string
   navScope: string
   holdContainer: string
-  showDivider: boolean
+  /** The row drawn below this one when a divider may separate the two, else null.
+   *  The row hides the divider while it or this next row is the open row, which it
+   *  reads from the row-status store (./rowStatus). */
+  dividerNext: Slot | null
   /** Paint-order stamp, clamped by the facade. The row never reads it: it exists so a
    *  row whose position moved compares unequal and re-renders for the layout spring. */
   orderStamp: number
@@ -234,20 +241,11 @@ export interface RowShell {
 
 /** The values one render shows rows with. */
 export interface RowScene {
-  /** The LOCAL slot the chat pane shows. */
-  activeSlot: string | null
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
-   *  null. While one is open it is the active row, and no local row is. */
+   *  null. Every row withholds "Reference in chat" while one is open. */
   crewWindow: { instanceId: string; key: string } | null
-  /** The LOCAL Crew Mode root whose worker the chat pane shows, or null. Workers
-   *  are not listed, so the root's row is marked as the shown worker's parent. */
-  crewParent: string | null
-  /** The chat page is in Split View (`ChatSidebarProps.splitMode`). */
-  splitMode: boolean
-  /** The last open of the active chat failed and has not loaded since
-   *  (`ChatState.slotOpenFailed`): a click on its row retries the open instead
-   *  of toggling. */
-  openFailed: boolean
+  // The open session, the crew-parent mark, Split View, a failed open and unread
+  // reach rows through the row-status store (./rowStatus).
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -283,7 +281,7 @@ export interface SessionRowView {
   scope: string
   navScope: string
   holdContainer: string
-  showDivider: boolean
+  dividerNext: Slot | null
   orderStamp: number
   rowAnimEnabled: boolean
   rowMotionHeld: boolean
@@ -292,24 +290,9 @@ export interface SessionRowView {
   folderConductor: boolean
   /** See `RowPlacement.crew`. */
   crew: CodeChannelCrewView | null
-  isActive: boolean
-  /** Whether this row's own slot IS the sidebar's active slot — the raw
-   *  `key === activeSlot` test, independent of the crew-window logic `isActive`
-   *  folds in (a crew window over the pane makes `isActive` false while the
-   *  session is still the active one). The row menu's "Reference in chat" reads
-   *  it to refuse a self-reference, matching what the drop handler refuses. A
-   *  per-row view field so a chat switch re-renders only the two rows whose
-   *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
-   *  would cause). */
-  isSidebarActiveSlot: boolean
-  /** A plain click on this row shows or hides the side panel: it is the active
-   *  LOCAL row, outside Split View (lib/reclickPanelToggle). The row's tooltip and
-   *  its click both read this one field, so the tooltip never promises a toggle
-   *  the click will not make. */
-  reclickPanel: boolean
-  /** This row is the Crew Mode root whose worker the chat pane shows: not the
-   *  active row, but the way the person found the worker, so it stays marked. */
-  isCrewParent: boolean
+  // Active, the open-row reclick, the crew-parent mark and unread are not view
+  // fields: the row reads them from the row-status store (./rowStatus), so a chat
+  // switch repaints only the rows whose answer flips.
   /** Whether a crew window is open over the chat pane. While it is, the active
    *  session's composer is hidden under an opaque cover (`ChatPaneChrome`), so a
    *  staged reference would land on a composer the user cannot see — the same
@@ -319,7 +302,6 @@ export interface SessionRowView {
   crewWindowCovers: boolean
   isOut: boolean
   isPinned: boolean
-  isUnread: boolean
   /** A peer row reports its own `running`; a local row the widened running set. */
   isRunning: boolean
   recent: number | undefined
@@ -358,9 +340,6 @@ export interface RowWindow {
 }
 
 export interface SidebarRowViews {
-  /** The active-row highlight: the peer row the open crew window names by its (crew,
-   *  key) pair, else the LOCAL row whose key is the active slot. */
-  isActive: (slot: Slot | null | undefined) => boolean
   view: (slot: Slot, placement: RowPlacement) => SessionRowView
   windowOf: (slot: Slot) => RowWindow
 }
@@ -536,6 +515,7 @@ function makeLaneOrder(
   pinnedRank: ReadonlyMap<string, number>,
   isPinned: SidebarRows['isPinned'],
   manualRank: ReadonlyMap<string, number>,
+  isRunning: SidebarRows['isRunning'],
 ): SidebarRows['laneOrder'] {
   // Search relevance, not the sort: pinning is a reachability promise for browsing,
   // not a ranking hint inside explicit search results. A peer row is never ranked,
@@ -567,7 +547,7 @@ function makeLaneOrder(
       if ((aLocal === null) !== (bLocal === null)) return aLocal === null ? 1 : -1
       return compareManual(a, b, slot => (localKeyOf(slot) === null ? undefined : manualRank.get(slot.key)))
     }
-    return compareBySort(a, b, sortKey)
+    return compareBySort(a, b, sortKey, isRunning)
   }
 }
 
@@ -624,6 +604,7 @@ function makeDimensions(
   searchRanks: ReadonlyMap<string, number> | null,
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
+  openKey: string | null,
 ): FilterDimension[] {
   const { tags, models, creators, search, status, folders: folderFilter } = filters
   // A paused filter keeps its chip but narrows nothing, so only the unpaused ones count.
@@ -649,6 +630,8 @@ function makeDimensions(
     return !!folderId && folderFilter.pinnedSubtree.has(folderId)
   }
   const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
+  const isOpen = (slot: Slot): boolean => openKey !== null && localKeyOf(slot) === openKey
+  const passesChip = (key: SessionFilterKey, slot: Slot): boolean => matches[key](slot) || (key === 'unread' && isOpen(slot))
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -696,15 +679,16 @@ function makeDimensions(
     },
     {
       // Status chips. Active chips OR together: a row passes when any active chip
-      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`).
+      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`),
+      // and the Unread chip passes the open chat (`LocalRowIndex.openKey`).
       // `hides` restates the exemption too: `excluded` is list membership, not this
       // dimension's verdict, so a pinned row the SEARCH dropped would otherwise read as
       // hidden by the chips and a reveal would clear them.
-      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
+      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => passesChip(key, slot)),
       narrows: () => activeStatus.length > 0,
       exemptsPinned: true,
       isSearch: false,
-      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
+      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && !(activeStatus.includes('unread') && isOpen(slot)) && excluded(slot),
       clear: () => clears.status(),
     },
     {
@@ -863,7 +847,7 @@ function makeFolderTree(filteredSlots: Slot[], allSlots: Slot[], folderOf: Sideb
 
 function makeStaleSplit(listNarrowed: boolean, sortKey: SortKey, clock: () => number): SidebarRows['staleSplit'] {
   return (list, stale) => {
-    const active = !listNarrowed && sortKey === 'date-desc'
+    const active = !listNarrowed && staleCollapseApplies(sortKey)
     return splitStaleSlots(list, active ? stale.collapseMs : 0, clock(), slot => lastActivityEpoch(slot) * 1000, stale.isExempt)
   }
 }
@@ -871,39 +855,25 @@ function makeStaleSplit(listNarrowed: boolean, sortKey: SortKey, clock: () => nu
 interface ViewModel {
   pinned: ReadonlySet<string>
   pinnedRank: ReadonlyMap<string, number>
-  unread: ReadonlySet<string>
   isRunning: (slot: Slot) => boolean
   searchRanks: ReadonlyMap<string, number> | null
   drawnIndex: ReadonlyMap<string, number>
 }
 
-/** The active row. A peer row is active only for the crew window open on its own
- *  (crew, key) PAIR -- its raw key alone can equal another crew's, or a local slot's.
- *  A local row is active only while no crew window is open, because the window then
- *  covers the pane its slot would show. */
-function isActiveIn(scene: RowScene, slot: Slot): boolean {
-  const key = localKeyOf(slot)
-  const win = scene.crewWindow
-  if (key === null) return !!win && win.instanceId === slot.peer_id && win.key === slot.key
-  return !win && scene.activeSlot === key
-}
-
 function makeViews(model: ViewModel): SidebarRows['views'] {
   return scene => {
-    const isActive = (slot: Slot | null | undefined) => !!slot && isActiveIn(scene, slot)
     return {
-      isActive,
       view: (slot, placement) => rowView(slot, placement, scene, model),
       windowOf: slot => {
         const key = localKeyOf(slot)
         const { renaming, revealFlash, nativeDragKey } = scene.local
         return {
           title: sessionDisplayTitle(slot),
-          // The active, renaming, dragged and revealed rows never stub: each holds state
-          // a remount would drop. The dnd-kit clause compares the raw key, as the drag id
-          // is one; no peer row can be dragged.
-          keepMounted: isActive(slot)
-            || (key !== null && revealFlash?.kind === 'session' && revealFlash.key === key)
+          // The renaming, dragged and revealed rows never stub: each holds state a
+          // remount would drop (the open row too, which laneRows reads from the
+          // row-status store). The dnd-kit clause compares the raw key, as the drag
+          // id is one; no peer row can be dragged.
+          keepMounted: (key !== null && revealFlash?.kind === 'session' && revealFlash.key === key)
             || (key !== null && renaming.key === key)
             || (scene.drag?.type === 'session' && scene.drag.id === slot.key)
             || (key !== null && nativeDragKey === key),
@@ -918,7 +888,7 @@ function makeViews(model: ViewModel): SidebarRows['views'] {
 export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRows | null): SidebarRows {
   const prev = previous ? memosOf.get(previous) : undefined
   const { rows, local, filters, clears, crewGroups, sortKey, clock, frozen } = inputs
-  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex } = local
+  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex, openKey } = local
   const { tags, search, status, folders: folderFilter } = filters
   // Read here, outside every compute: the drag freeze is the one place a build reads
   // the previous one's output.
@@ -931,8 +901,9 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const isPinned = isPinnedMemo.value
   const isRunning = isRunningMemo.value
 
-  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank], () =>
-    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank))
+  // The running set re-sorts only `active-then-date`, the one sort that reads it.
+  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank, sortKey === 'active-then-date' ? running : null], () =>
+    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank, isRunning))
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
   const isRowStatusHidden = reuse(prev?.isRowStatusHidden, [status.hidden, statusMatches.value], () =>
@@ -942,8 +913,8 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     filters.creators.passes, filters.creators.active,
     search.text, search.folderMatches, searchRanks,
     statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
-    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides,
-  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
+    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides, openKey,
+  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears, openKey))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a
   // peer row's recency, and this keeps the two reads in their order.
@@ -1008,7 +979,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     isPinned,
     isRunning,
     staleSplit: makeStaleSplit(listNarrowed, sortKey, clock),
-    views: makeViews({ pinned, pinnedRank, unread, isRunning, searchRanks, drawnIndex }),
+    views: makeViews({ pinned, pinnedRank, isRunning, searchRanks, drawnIndex }),
   }
   memosOf.set(result, {
     folderOf: folderOfMemo, isPinned: isPinnedMemo, isRunning: isRunningMemo,
@@ -1036,27 +1007,19 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     scope: placement.scope,
     navScope: placement.navScope,
     holdContainer: placement.holdContainer,
-    showDivider: placement.showDivider,
+    dividerNext: placement.dividerNext,
     orderStamp: placement.orderStamp,
     rowAnimEnabled: placement.rowAnimEnabled,
     rowMotionHeld: placement.rowMotionHeld ?? false,
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
     crew: placement.crew ?? null,
-    isActive: isActiveIn(scene, slot),
-    // Raw comparison, NOT isActiveIn: the self-reference refusal must hold even
-    // when a crew window covers the pane (where isActiveIn is false but the
-    // session is still active). Matches the key the drop handler refuses against.
-    isSidebarActiveSlot: local !== null && scene.activeSlot === local,
-    reclickPanel: local !== null && !scene.splitMode && !scene.openFailed && isActiveIn(scene, slot),
-    isCrewParent: local !== null && !scene.crewWindow && scene.crewParent === local,
     // A crew window covers the chat pane, so no composer is visible to stage a
     // reference into — withhold "Reference in chat" on every row, same reason as
     // the no-active-slot case.
     crewWindowCovers: scene.crewWindow !== null,
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
-    isUnread: local !== null && model.unread.has(local),
     isRunning: model.isRunning(slot),
     recent: local === null ? undefined : scene.local.recentRank.get(local),
     subagentCount: local === null ? 0 : (scene.local.subagentCounts[local] || 0),
@@ -1093,9 +1056,9 @@ export function opensElsewhereOf(slot: Slot): string | null {
  *  without a line here is a type error rather than a field equality never compares. */
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
-  holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
+  holdContainer: true, dividerNext: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true, crew: true,
-  isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  crewWindowCovers: true, isOut: true, isPinned: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,

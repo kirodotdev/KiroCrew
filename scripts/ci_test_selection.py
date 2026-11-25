@@ -14,7 +14,8 @@ Tiers, first match wins
     A  always run: the guard tier, a changed test file, or any `select` fall-back
        (which puts every test file in A and makes the verdict `full`)
     B  the map links it to a changed file reached by at most `narrow_reach_max`
-       test files
+       test files (for a file with a `functions` table, the test files that
+       ran the functions the diff touches: `ci_test_map.py`, "Function level")
     C  the map links it to a changed file reached by more
     D  it names a changed module (`git grep`: the dotted name, or
        `from <package> import <leaf>` with any spacing, a wrapped import
@@ -25,12 +26,14 @@ Tiers, first match wins
        folder)
     G  no signal
 
-The bundle is a schema-1 test map (`ci_test_map.py`); `tests`, `files` and
-`cochange` are the tables read. A missing table never makes a file skippable:
-the files that would be G are held in F instead. An optional `guard` table
-(`[test file]`, `leaf_test_scope.corpus_gates` run when the bundle was built)
-spares the live guard scan, which costs seconds; without it the scan runs. A
-test the diff adds or edits is tier A or a fall-back either way.
+The bundle is a schema-1 test map (`ci_test_map.py`), plain or gzip, as `build`
+or `bundle` writes it; `tests`, `files`, `functions` and `cochange` are the
+tables read. A missing table never makes a file skippable: the files that would
+be G are held in F instead, and without `functions` (or with `--name-status`)
+every link is file-level. An optional `guard` table (`[test file]`,
+`leaf_test_scope.corpus_gates` run when the bundle was built) spares the live
+guard scan, which costs seconds; without it the scan runs. A test the diff adds
+or edits is tier A or a fall-back either way.
 
 `scripts/ci_test_selection_rates.json` gives each tier an upper-95% bound on its
 diff-caused failure rate; a tier is skippable when that bound is below `y`.
@@ -40,7 +43,12 @@ The verdict (`--out`)
     {"schema": 1, "base": SHA, "head": SHA, "bundle_commit": SHA | null,
      "verdict": "select" | "full", "reason": str | null,
      "tiers": {"A": [test file, ...], ..., "G": [...]},
-     "would_skip": [test file, ...], "would_run_share": float}
+     "would_skip": [test file, ...], "would_run_share": float,
+     "windows": {"verdict", "reason", "run": [test file, ...], "would_run_share"}}
+
+The `windows` block is the Windows test set for the same diff, from the same
+tiers (`scripts/ci_test_selection_windows.py`); it is `full` whenever this
+verdict is.
 
 `would_run_share` weighs each test file by its node-id count in the map (1 for a
 file the map lacks). The test tree is read from the checkout, so a `--head` that
@@ -59,12 +67,15 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import ci_test_map as ctm  # noqa: E402  (path set immediately above)
+import ci_test_os_tables as ost  # noqa: E402
+import ci_test_selection_windows as windows  # noqa: E402
 
 SCHEMA = 1
 TIERS = ("A", "B", "C", "D", "E", "F", "G")
@@ -72,8 +83,10 @@ RATES = REPO_ROOT / "scripts" / "ci_test_selection_rates.json"
 TABLES = ("tests", "files", "cochange")
 TIMEOUT_SECS = 60.0
 GIT_TIMEOUT_SECS = 30.0
+NARROW_SEARCH_MAX = 200
 
-Grep = Callable[[list[str], Path], set[str]]
+# `(modules, root)`, and `(modules, root, within)` to search those files alone.
+Grep = Callable[..., set[str]]
 
 
 def load_rates(path: Path) -> tuple[set[str], int]:
@@ -85,7 +98,7 @@ def load_rates(path: Path) -> tuple[set[str], int]:
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc = ctm.read_json(path)
     if not isinstance(doc, dict) or doc.get("schema") != ctm.SCHEMA:
         raise ValueError(f"{path}: not a schema-{ctm.SCHEMA} bundle")
     check_tables(doc)
@@ -113,6 +126,21 @@ def check_tables(bundle: Mapping[str, Any]) -> None:
         for links in cochange.values()
     ):
         raise ValueError("bundle table `cochange` is not {file: [test file]}")
+    functions = bundle.get("functions", {})
+    if not isinstance(functions, dict) or not all(
+        isinstance(table, dict)
+        and all(
+            isinstance(row, list)
+            and len(row) == 3
+            and isinstance(row[2], list)
+            and all(is_int(i) and 0 <= i < len(tests) for i in row[2])
+            for row in table.values()
+        )
+        for table in functions.values()
+    ):
+        raise ValueError(
+            "bundle table `functions` is not {file: {qualname: [first, last, [index]]}}"
+        )
     guard = bundle.get("guard", [])
     if not isinstance(guard, list) or not all(isinstance(t, str) for t in guard):
         raise ValueError("bundle table `guard` is not [test file]")
@@ -165,11 +193,21 @@ def name_patterns(
     )
 
 
-def git_grep(modules: list[str], root: Path) -> set[str]:
-    """Tracked files under the test paths that name one of `modules`."""
+def git_grep(modules: list[str], root: Path, within: Iterable[str] | None = None) -> set[str]:
+    """Tracked files under the test paths that name one of `modules`.
+
+    `within` keeps only those files, for a caller that knows which files can
+    name them. Up to `NARROW_SEARCH_MAX` of them are searched alone; git matches
+    every file against every path it is given, so a longer list costs more than
+    the whole tree, which is then searched and filtered.
+    """
     fixed, confirm, wrapped = name_patterns(modules)
-    if not fixed:
+    wanted = None if within is None else set(within)
+    if not fixed or wanted == set():
         return set()
+    scope = list(ctm.TESTPATHS)
+    if wanted is not None and len(wanted) <= NARROW_SEARCH_MAX:
+        scope = sorted(wanted)
     # A module anywhere; its package only on a line that also names the leaf or
     # wraps, which keeps `kiro_crew` (every top-level module's package) from
     # matching every line of the tree.
@@ -186,7 +224,7 @@ def git_grep(modules: list[str], root: Path) -> set[str]:
     for term in terms[1:]:
         argv += ["--or", *term]
     done = subprocess.run(
-        [*argv, "--", *ctm.TESTPATHS],
+        [*argv, "--", *scope],
         cwd=root,
         capture_output=True,
         text=True,
@@ -199,7 +237,7 @@ def git_grep(modules: list[str], root: Path) -> set[str]:
     continued: set[str] = set()
     for row in done.stdout.splitlines():
         path, _, line = row.partition("\0")
-        if path in hits:
+        if path in hits or (wanted is not None and path not in wanted):
             continue
         if confirm.search(line):
             hits.add(path)
@@ -279,13 +317,21 @@ def score(
     skippable: set[str],
     narrow_reach_max: int,
     grep: Callable[[list[str]], set[str]],
+    functions: Mapping[str, set[str] | None] | None = None,
 ) -> dict[str, Any]:
-    """Tier every test file of `universe` for one diff; the verdict without base/head."""
+    """Tier every test file of `universe` for one diff; the verdict without base/head.
+
+    `functions` is `ci_test_map.changed_functions` of the diff, when it has a base
+    and a head."""
     tables = {t: bundle[t] for t in TABLES if isinstance(bundle.get(t), dict)}
     missing = [t for t in TABLES if t not in tables]
     counts: Mapping[str, int] = tables.get("tests", {})
     tests = sorted(set(universe) | set(guard))
-    test_map = {"tests": counts, "files": tables.get("files", {})}
+    test_map = {
+        "tests": counts,
+        "files": tables.get("files", {}),
+        "functions": bundle.get("functions", {}),
+    }
     fallback = ctm.select(changes, test_map, guard)
     if fallback.full:
         return _verdict(
@@ -300,7 +346,7 @@ def score(
     narrow: set[str] = set()
     broad: set[str] = set()
     for path in paths:
-        linked = {indexed[i] for i in tables.get("files", {}).get(path, ())}
+        linked = {indexed[i] for i in ctm.linked_tests(test_map, path, (functions or {}).get(path))}
         (narrow if len(linked) <= narrow_reach_max else broad).update(linked)
     named = grep(sorted({m for p in paths if (m := module_name(p))}))
     changed_tests = {p for p in paths if ctm.is_test_file(p)}
@@ -397,20 +443,77 @@ def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], d
     skippable, narrow_reach_max = load_rates(Path(args.rates))
     if meta["head"]:
         check_checkout(meta["head"], root)
+    functions = None
     if args.name_status:
-        text = Path(args.name_status).read_text(encoding="utf-8")
+        changes = ctm.parse_name_status(Path(args.name_status).read_text(encoding="utf-8"))
     else:
-        text = ctm.git_name_status(meta["base"], meta["head"], root)
-    body = score(
-        ctm.parse_name_status(text),
-        bundle,
-        git_test_files(root),
-        bundle["guard"] if "guard" in bundle else ctm.guard_tier(root),
-        skippable=skippable,
-        narrow_reach_max=narrow_reach_max,
-        grep=lambda modules: grep(modules, root),
-    )
+        changes = ctm.parse_name_status(ctm.git_name_status(meta["base"], meta["head"], root))
+        functions = ctm.changed_functions(meta["base"], meta["head"], changes, bundle, root)
+    universe = git_test_files(root)
+    guard = bundle["guard"] if "guard" in bundle else ctm.guard_tier(root)
+
+    def tiered(
+        diff: list[tuple[str, list[str]]],
+        touched: Mapping[str, set[str] | None] | None = None,
+        within: set[str] | None = None,
+    ) -> dict[str, Any]:
+        def named(modules: list[str]) -> set[str]:
+            return grep(modules, root) if within is None else grep(modules, root, within)
+
+        return score(
+            diff,
+            bundle,
+            universe,
+            guard,
+            skippable=skippable,
+            narrow_reach_max=narrow_reach_max,
+            grep=named,
+            functions=touched,
+        )
+
+    body = tiered(changes, functions)
+    try:
+        body["windows"] = _windows_block(
+            changes, body, bundle, (universe, guard), meta, root, tiered
+        )
+    except Exception as exc:  # noqa: BLE001  (its failure is a `full` Windows verdict)
+        body["windows"] = windows.full(f"error: {type(exc).__name__}: {exc}")
     return {**meta, "bundle_commit": bundle.get("commit") or None}, body
+
+
+def _windows_block(
+    changes: list[tuple[str, list[str]]],
+    body: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    tests: tuple[list[str], list[str]],
+    meta: Mapping[str, Any],
+    root: Path,
+    tiered: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    """The verdict's `windows` block; what it reads from the tree is read only for `select`.
+
+    `tests` is the test files of the checkout and the guard tier the diff was scored with.
+
+    A part of the diff is tiered without a second search of the test tree: a
+    test file that names one of its modules names a module of the whole diff,
+    so it is already in the diff's tiers A to D.
+    """
+    if body["verdict"] != "select":
+        return windows.full(f"linux_full: {body['reason']}")
+    base, head = meta["base"], meta["head"]
+    named = {test for tier in windows.RUN_TIERS for test in body["tiers"][tier]}
+    ignore = root / ost.COLLECT_IGNORE
+    return windows.block(
+        changes,
+        body,
+        bundle,
+        *tests,
+        added=windows.git_added_lines(base, head, root) if base and head else None,
+        bucket=windows.path_bucket(root),
+        ignored=ost.collect_ignored(root) if ignore.is_file() else set(),
+        at=windows.commit_time(head, root) if head else datetime.now(timezone.utc),
+        score=lambda part: tiered(part, within=named),
+    )
 
 
 def run(args: argparse.Namespace, grep: Grep = git_grep) -> dict[str, Any]:
@@ -424,8 +527,15 @@ def run(args: argparse.Namespace, grep: Grep = git_grep) -> dict[str, Any]:
         resolved, body = bounded(lambda: _score_args(args, grep), args.timeout)
         meta.update(resolved)
     except Exception as exc:  # noqa: BLE001  (the scorer never fails a job)
-        body = full_verdict(f"{type(exc).__name__}: {exc}")
+        return unscored(meta, f"{type(exc).__name__}: {exc}")
     return {"schema": SCHEMA, **meta, **body}
+
+
+def unscored(meta: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    """The whole verdict for a diff that was not scored: `full` on both systems, and why."""
+    body = full_verdict(reason)
+    body["windows"] = windows.full(f"linux_full: {reason}")
+    return {"schema": SCHEMA, "bundle_commit": None, **meta, **body}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -451,6 +561,11 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"verdict: {verdict['verdict']}, would skip {len(verdict['would_skip'])} test files, "
         f"run share {verdict['would_run_share']:.3f}, reason: {verdict['reason']}"
+    )
+    on_windows = verdict["windows"]
+    print(
+        f"windows: {on_windows['verdict']}, would run {len(on_windows['run'])} test files, "
+        f"run share {on_windows['would_run_share']:.3f}, reason: {on_windows['reason']}"
     )
     return 0
 

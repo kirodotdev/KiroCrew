@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import _sqlite_compat
+from packaging.requirements import Requirement
 
 SETUP_CFG = Path(__file__).resolve().parents[1] / "setup.cfg"
 
@@ -29,18 +30,48 @@ def test_the_bundled_sqlite_cannot_deadlock_a_wal_close_against_an_open():
     assert not (3, 51, 0) <= version < (3, 51, 2), _sqlite_compat.sqlite3.sqlite_version
 
 
-def test_the_pysqlite3_spec_is_the_one_setup_cfg_declares():
-    """The printed install commands name this constant, so a ``setup.cfg`` exclusion it
-    lacks is a hint that installs the excluded wheel."""
+def _declared_pysqlite3_entries() -> list[str]:
     parser = configparser.ConfigParser()
     parser.read(SETUP_CFG, encoding="utf-8")
-    declared = [
-        line.split(";")[0].strip()
+    return [
+        line.strip()
         for line in parser["options"]["install_requires"].splitlines()
         if line.strip().startswith("pysqlite3-binary")
     ]
 
+
+def test_the_pysqlite3_spec_is_the_one_setup_cfg_declares():
+    """The printed install commands name this constant, so a ``setup.cfg`` exclusion it
+    lacks is a hint that installs the excluded wheel."""
+    declared = [entry.split(";")[0].strip() for entry in _declared_pysqlite3_entries()]
+
     assert declared == [_sqlite_compat.PYSQLITE3_REQUIREMENT]
+
+
+@pytest.mark.parametrize(
+    ("python_version", "machine", "required"),
+    [
+        ("3.12", "x86_64", True),
+        ("3.13", "x86_64", True),
+        ("3.14", "x86_64", False),
+        ("3.12", "aarch64", False),
+    ],
+)
+def test_pysqlite3_is_required_only_where_an_allowed_wheel_exists(
+    python_version: str, machine: str, required: bool
+) -> None:
+    """0.5.4 has no cp314 wheel and 0.5.4.post2, the only one, is excluded: requiring
+    it on 3.14 makes the install unresolvable, so 3.14 takes the stdlib driver."""
+    (entry,) = _declared_pysqlite3_entries()
+    marker = Requirement(entry).marker
+    env = {
+        "sys_platform": "linux",
+        "platform_machine": machine,
+        "python_version": python_version,
+        "python_full_version": f"{python_version}.0",
+    }
+
+    assert marker is not None and marker.evaluate(env) is required
 
 
 def test_every_fts5_hint_command_installs_the_declared_spec():

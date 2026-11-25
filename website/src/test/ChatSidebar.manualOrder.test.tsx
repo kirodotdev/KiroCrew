@@ -243,6 +243,34 @@ describe('a drop between two rows, in any sort', () => {
     expect(order(['a', 'b', 'c'])).toEqual(['a', 'b', 'c'])
   })
 
+  it('under "In progress, then newest" seeds the order on screen, the running row first', async () => {
+    renderSidebar([ABC[0], ABC[1], { ...ABC[2], running: true }], 'active-then-date')
+    expect(order(['a', 'b', 'c'])).toEqual(['c', 'a', 'b'])
+    // b dropped onto a: it moved up, so it lands above a.
+    drop('b', onRow('a'))
+    await waitFor(() => expect(manualWrites()).toEqual([{ op: 'seed', keys: ['c', 'b', 'a'] }]))
+  })
+
+  it('a drop lands in the order drawn when the drag started, though a running row finished meanwhile', async () => {
+    const { rerender } = renderSidebar([{ ...ABC[0], running: true }, ABC[1], { ...ABC[2], running: true }], 'active-then-date')
+    expect(order(['a', 'b', 'c'])).toEqual(['a', 'c', 'b'])
+    const active = { id: 'session:b', data: { current: { type: 'session', key: 'b', pinned: false, container: 'root' } } }
+    act(() => {
+      dnd.active = { id: active.id }
+      dnd.handlers.onDragStart!({ active })
+    })
+    // a's turn ends mid-drag: the rows hold still under the pointer.
+    rerender([ABC[0], ABC[1], { ...ABC[2], running: true }])
+    expect(order(['a', 'b', 'c'])).toEqual(['a', 'c', 'b'])
+    // b dropped onto a: it moved up, so it lands above a, among the rows on screen.
+    const over = onRow('a')
+    act(() => {
+      dnd.active = null
+      dnd.handlers.onDragEnd!({ active, over: { id: over.id, data: { current: over.data } } })
+    })
+    await waitFor(() => expect(manualWrites()).toEqual([{ op: 'seed', keys: ['b', 'a', 'c'] }]))
+  })
+
   it('under Manual moves only the dragged row, seating the new sessions drawn beside it', async () => {
     gw.manual = { order: ['a', 'b'], stored: true, rev: 100 }
     // c is new since the order was saved, so it shows on top.

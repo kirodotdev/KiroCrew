@@ -74,6 +74,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   ...(REMOTE_GATEWAY ? {} : {
     clearPaneHttpCache: (origin) =>
       ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+    // Memory and CPU of the remote Crews loaded in this window (Settings -> Remote Crew).
+    remoteCrewUsage: (origins) =>
+      ipcRenderer.invoke("remote-crew:usage", Array.isArray(origins) ? origins.map(String) : []),
   }),
   // Copy the image drawn at a main-frame point (CSS pixels) to the OS clipboard.
   copyImageAt: (x, y) => ipcRenderer.invoke("image:copy-at", Number(x), Number(y)),

@@ -166,6 +166,53 @@ async def test_unentitled_model_swaps_to_first_advertised_and_requeues(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_kas_unentitled_pin_swaps_to_auto_with_no_served_list(tmp_path, monkeypatch):
+    """KAS advertises no served list, so the membership test cannot judge the pin;
+    the backend's own token, kept as ``exc.unentitled``, does: the runner swaps
+    once to ``auto`` (the routing choice every account is served), posts the
+    notice, and re-queues the turn instead of ending it on a terminal error."""
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    exc = AcpError(
+        "The model 'claude-nonexistent-9' is not available on your account. Retrying will not help.",
+        transient=False,
+    )
+    exc.rejected_model = "claude-nonexistent-9"
+    exc.advertised = []
+    exc.unentitled = True
+    client = _client_raising(exc)
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+    _inserts: list[dict] = []
+    _repo = slot._queue_repository
+    _real_insert = _repo.queue_insert
+
+    def _record_insert(owner, index, content, kind="", *args, **kw):
+        _inserts.append({"content": content, "kind": kind})
+        return _real_insert(owner, index, content, kind, *args, **kw)
+
+    monkeypatch.setattr(_repo, "queue_insert", _record_insert)
+
+    await _run_chat(state, slot, "first message")
+
+    client.set_model.assert_awaited_once_with("auto")
+    assert slot._model_access_fallback_used is True
+    notices = [m for m in slot.messages if m.get("role") == "notice"]
+    assert any(
+        "claude-nonexistent-9" in m["content"] and "auto" in m["content"] for m in notices
+    ), notices
+    assert [
+        i
+        for i in _inserts
+        if i["kind"] == SYNTHETIC_RECOVERY_KIND and i["content"] == "first message"
+    ]
+    errors = [m for m in slot.messages if m.get("role") == "error"]
+    assert not any(
+        (m.get("meta") or {}).get("kind") == MODEL_UNENTITLED_KIND for m in errors
+    ), errors
+
+
+@pytest.mark.asyncio
 async def test_no_accessible_model_surfaces_terminal_error_without_swap(tmp_path, monkeypatch):
     """An account advertising nothing but the refused id has no accessible
     candidate: fail fast and legibly with the terminal entitlement error, no

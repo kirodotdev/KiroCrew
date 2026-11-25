@@ -45,6 +45,7 @@ import {
   SLACK_TOOLS_SWITCH_KEY,
   settingEntryOffered,
   TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
+  TOUCH_LAYOUT_SETTING_ID,
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
 import { extractFromSource } from '../../../scripts/settingsExtract'
@@ -85,6 +86,7 @@ const GOVERNED_IDS = new Set([
   KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID, CHANNELS_SETTING_ID,
   REOPEN_LAST_PAGE_SETTING_ID,
   TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
+  TOUCH_LAYOUT_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -138,6 +140,18 @@ describe('settingEntryOffered', () => {
     standalone(false)
     expect(settingEntryOffered(entry, ON)).toBe(false)
     standalone(true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    vi.restoreAllMocks()
+  })
+
+  it('offers Touch screen layout only on a touch-first device, where DisplayPanel draws it', () => {
+    const entry = entryById(TOUCH_LAYOUT_SETTING_ID)
+    const touch = (on: boolean) => vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) => ({ matches: on && (query === '(pointer: coarse)' || query === '(hover: none)'), media: query } as unknown as MediaQueryList),
+    )
+    touch(false)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    touch(true)
     expect(settingEntryOffered(entry, ON)).toBe(true)
     vi.restoreAllMocks()
   })

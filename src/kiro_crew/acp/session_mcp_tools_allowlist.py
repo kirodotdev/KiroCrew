@@ -48,9 +48,10 @@ class ToolsAllowlist(NamedTuple):
     applies: bool
     grant_all: bool
     refs: frozenset[str]
-    #: Servers switched off WHOLE (:func:`session_mcp_disabled_servers`). Never
-    #: granted, whatever ``tools`` says, so a mirror's stub loop -- which asks this
-    #: allowlist -- withholds them exactly as the translated half does.
+    #: Servers switched off WHOLE (:func:`session_mcp_disabled_servers`), and those
+    #: the agent's own exclusions withhold whole (``default_crew_servers.withheld_whole``).
+    #: Never granted, whatever ``tools`` says, so a mirror's stub loop -- which asks
+    #: this allowlist -- withholds them exactly as the translated half does.
     muted: frozenset[str] = frozenset()
 
     def grants(self, name: str) -> bool:

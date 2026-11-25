@@ -30,6 +30,11 @@ function makeDeps(opts = {}) {
   const autoUpdater = {
     setFeedURL: (o) => calls.setFeedURL.push(o),
     checkForUpdates: async () => { calls.checkForUpdates += 1; },
+    // A check that resolves with no verdict, as the one above does, is what
+    // electron-updater gives for an updater it holds inactive, so the freshness
+    // gate's read of the feed (see readOffer in freshness-gate.js) is skipped
+    // the same way. A test that scripts the feed turns this on with the read.
+    isUpdaterActive: () => false,
     downloadUpdate: async () => { calls.downloadUpdate += 1; },
     quitAndInstall: (...args) => calls.quitAndInstall.push(args),
     on: (ev, fn) => { handlers[ev] = fn; },

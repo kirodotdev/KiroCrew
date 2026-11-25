@@ -3,7 +3,7 @@
 // value's own button instead of stranding it on document.body. A mouse click on
 // the cell keeps opening the editor. (#26667)
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import VectorMemoryCard from '../pages/overview/VectorMemoryCard'
@@ -48,6 +48,19 @@ describe('VectorMemoryCard semantic value editor, keyboard', () => {
     fireEvent.change(input, { target: { value: 'emacs' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(api.vectorSemanticWrite).toHaveBeenCalledWith('pref.editor', 'emacs'))
+    await waitFor(() => expect(valueButton()).toHaveFocus())
+  })
+
+  // A save closes after its awaited write, outside any event, so React commits
+  // that close on its own schedule; here the frame runs before that schedule.
+  it('Enter saves and returns focus even when the next frame runs first', async () => {
+    const { input } = await openFromKeyboard()
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { queueMicrotask(() => cb(0)); return 0 })
+    onTestFinished(() => raf.mockRestore())
+    fireEvent.change(input, { target: { value: 'emacs' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.vectorSemanticWrite).toHaveBeenCalledWith('pref.editor', 'emacs'))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: editName })).toBeNull())
     await waitFor(() => expect(valueButton()).toHaveFocus())
   })
 

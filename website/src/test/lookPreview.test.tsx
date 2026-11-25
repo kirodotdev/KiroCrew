@@ -83,6 +83,7 @@ describe('lookPreview fixtures', () => {
       expect(slots[0].key).toBe(LOOK_PREVIEW_SLOT_KEY)
       const detail = await api.chatSlotDetail('anything', 50)
       expect(detail.messages.length).toBeGreaterThan(0)
+      expect(await api.chatSlotEnvironment(LOOK_PREVIEW_SLOT_KEY)).toEqual({ profile: null, profiles: [] })
       expect(fetchSpy).not.toHaveBeenCalled()
     } finally {
       restore()

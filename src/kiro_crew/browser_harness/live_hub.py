@@ -539,8 +539,24 @@ class LiveHub:
         #: The turn-replay recorder (``browser_harness.recording``); ``None`` records
         #: nothing. The dashboard attaches the gateway's one at startup.
         self.recorder: LiveRecorder | None = None
+        #: Called with the session key whenever a quick ask is set, moved or ended,
+        #: so the slot list can re-read whether the session waits on one.
+        self._on_ask_changed: Callable[[str], None] | None = None
 
     # ── wiring ─────────────────────────────────────────────────────────────
+
+    def watch_asks(self, callback: Callable[[str], None] | None) -> None:
+        """Install the quick-ask change listener (``None`` removes it)."""
+        self._on_ask_changed = callback
+
+    def _ask_moved(self, session_key: str) -> None:
+        callback = self._on_ask_changed
+        if callback is None:
+            return
+        try:
+            callback(session_key)
+        except Exception:  # noqa: BLE001 - a listener never fails the ask it hears about
+            logger.debug("browser live: ask listener failed", exc_info=True)
 
     def bind(self, publish: Publish | None, send_frame: SendFrame | None) -> None:
         """Install the owner-only senders (JSON events, binary frames)."""
@@ -690,6 +706,7 @@ class LiveHub:
             # The turn is over: nobody is left to read the answer.
             sess.ask.settle("cancelled")
             sess.ask = None
+            self._ask_moved(sess.session_key)
         sess.input_rect = None
         sess.fold_on_release = False
         sess.parked = False
@@ -1359,6 +1376,7 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         if sess is not None:
             await self._emit_now(sess)
+        self._ask_moved(session_key)
 
     def _record_handback(self, sess: LiveSession, note: str, choice: str) -> None:
         rec = self.recorder

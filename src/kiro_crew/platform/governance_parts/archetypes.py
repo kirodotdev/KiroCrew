@@ -23,6 +23,8 @@ from kiro_crew.platform.governance_parts.matching import (
     _DENY_MATCHERS,
     _MATCHERS,
     _ORDINAL_SCALES,
+    _WINDOWS_PATHS,
+    _expand,
     _Marker,
     _url_host,
 )
@@ -161,6 +163,10 @@ class ScopedRuleset:
                 "(Rule 1: allow beats deny); put hard bounds in policy, not a profile deny",
                 len(deny),
             )
+        # Only the list the engine reads: ``permits`` never consults ``allow``
+        # in deny mode, and an allow-mode ``deny`` is already reported above.
+        listed, live = ("allow", allow) if mode == MODE_ALLOW else ("deny", deny)
+        effect = "refuses" if mode == MODE_ALLOW else "permits"
         # The ``host`` matcher tests an EXTRACTED host (``_url_host``), never the
         # URL an operator fetched, so an entry carrying a character no host can
         # contain never matches any item.  Warn rather than raise: a dead deny
@@ -169,10 +175,6 @@ class ScopedRuleset:
         # outright would instead turn one stale entry into a boot failure on
         # upgrade for a policy that loads today.
         if matcher == "host":
-            # Only the list the engine reads: ``permits`` never consults ``allow``
-            # in deny mode, and an allow-mode ``deny`` is already reported above.
-            listed, live = ("allow", allow) if mode == MODE_ALLOW else ("deny", deny)
-            effect = "refuses" if mode == MODE_ALLOW else "permits"
             for index, pattern in enumerate(live):
                 # Each reason is a character or shape a host cannot carry, read off the
                 # pattern itself.  Round-tripping ``_url_host`` is no test: it cuts a
@@ -209,6 +211,26 @@ class ScopedRuleset:
                 )
                 args: Tuple[object, ...] = (scope, listed, index, why, effect)
                 logger.warning(reason, *args)
+        # A Windows gateway gives every local item a drive (``_norm_item`` runs
+        # ``abspath``) and never normalizes a pattern, so an entry rooted by one
+        # separator (``/data/**``) meets no path on a drive letter.  It can still
+        # meet a share (``/**`` against ``\\server\share\x``) or a remote-workspace
+        # path, so the warning says what it misses, not that it is dead.
+        if matcher == "path" and _WINDOWS_PATHS:
+            for index, pattern in enumerate(live):
+                expanded = _expand(pattern)
+                if expanded[:1] not in ("/", "\\") or expanded[1:2] in ("/", "\\"):
+                    continue
+                logger.warning(
+                    "scope %r uses matcher=path and %s[%d] is rooted without a drive, so "
+                    "on this Windows gateway it meets no path on a drive letter (only a "
+                    "share or a remote-workspace path), and the scope %s the local path "
+                    "it names",
+                    scope,
+                    listed,
+                    index,
+                    effect,
+                )
         return ScopedRuleset(mode=mode, allow=allow, deny=deny, matcher=matcher)
 
     def permits(self, item: str) -> Decision:

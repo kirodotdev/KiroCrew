@@ -16,6 +16,7 @@ a matched-term set read from here equals the set intersection it replaces.
 from __future__ import annotations
 
 from array import array
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
@@ -46,34 +47,64 @@ class RowTermIndex:
         self._built_vocab = len(terms) if built_vocab is None else built_vocab
 
     @classmethod
-    def build(cls, texts: list[str], np: Any) -> RowTermIndex | None:
+    def build(
+        cls,
+        texts: list[str],
+        np: Any,
+        previous: tuple[RowTermIndex, Iterable[str]] | None = None,
+    ) -> RowTermIndex | None:
         """Index *texts* by position, or ``None`` past :data:`MAX_TERM_IDS` terms.
 
         The texts themselves are not kept: only their term ids are.
+
+        *previous* is an earlier index with the texts it indexed, in order. A text
+        it holds takes that index's term ids instead of being stemmed again: a
+        text's terms are a pure function of the text, so the result is the one a
+        build from scratch gives. The vocabulary starts as a copy of the earlier
+        one, so it also carries terms no text holds any more; once it has grown
+        past the bound :meth:`patched` applies, the build starts over without
+        *previous*.
         """
         vocab: dict[str, int] = {}
         terms: list[str] = []
+        known: dict[str, tuple[int, int]] = {}
+        old: RowTermIndex | None = None
+        if previous is not None:
+            old, old_texts = previous
+            vocab, terms = dict(old._vocab), list(old._terms)
+            bounds = old._offsets.tolist()
+            known = {text: (bounds[i], bounds[i + 1]) for i, text in enumerate(old_texts)}
         # Raw machine arrays while building: a list would hold a million int
         # objects until the end, and the heap they grow is not handed back.
         flat = array("I")
         offsets = array("q", [0])
         stems = _text_scoring._row_stem_tokens_uncached
         for text in texts:
-            for term in stems(text):
-                term_id = vocab.get(term)
-                if term_id is None:
-                    term_id = vocab[term] = len(terms)
-                    terms.append(term)
-                flat.append(term_id)
+            span = known.get(text)
+            if old is not None and span is not None:
+                flat.frombytes(old._flat[span[0] : span[1]].tobytes())
+            else:
+                for term in stems(text):
+                    term_id = vocab.get(term)
+                    if term_id is None:
+                        term_id = vocab[term] = len(terms)
+                        terms.append(term)
+                    flat.append(term_id)
             offsets.append(len(flat))
             if len(flat) > MAX_TERM_IDS:
                 return None
+        built_vocab = None
+        if old is not None:
+            built_vocab = old._built_vocab
+            if len(terms) > built_vocab + max(VOCAB_GROWTH_SLACK, built_vocab):
+                return cls.build(texts, np)
         return cls(
             vocab,
             terms,
             np.frombuffer(flat, dtype=np.uint32),
             np.frombuffer(offsets, dtype=np.int64),
             np,
+            built_vocab,
         )
 
     def patched(self, drop_row: int | None, new_texts: list[str]) -> RowTermIndex | None:
@@ -151,3 +182,21 @@ class QueryHits:
     def matched(self, text_index: int) -> frozenset[str] | set[str]:
         """``query_terms & terms_of(texts[text_index])``."""
         return self._hits.get(text_index, _NO_TERMS)
+
+
+def seed_from(scoring: Any) -> tuple[RowTermIndex, Iterator[str]] | None:
+    """A scoring set's term index with the texts it indexed, for a rebuild to reuse.
+
+    Another connection's commit makes the resident semantic set rebuild from the
+    table; :meth:`RowTermIndex.build` then copies the ids of every text this index
+    holds. Texts ``2r`` and ``2r + 1`` are row ``r``'s key text and lowercased
+    value, as ``semantic._scoring_term_index`` indexes them. ``None`` when the set
+    has no built index.
+    """
+    held = None if scoring is None else scoring.derived.get("term_index")
+    if held is None:
+        return None
+    index, key_texts = held
+    values = tuple(str(row["value_json"]) for row in scoring.rows)
+    # Lowercased only while the build reads them, so the seed holds no copies.
+    return index, (text for key, value in zip(key_texts, values) for text in (key, value.lower()))

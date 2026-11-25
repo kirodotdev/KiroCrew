@@ -90,7 +90,9 @@ _GATE_BUSY_MARKER = "kirocrew-restart-busy"
 #: (``token_mint._with_stdout_tail``).
 _STDOUT_TAIL_JOIN = " | stdout tail: "
 #: argparse's exit status for an unknown flag: a crew whose CLI predates
-#: ``--when-idle``. Nothing else ``kirocrew restart`` does exits 2.
+#: ``--when-idle``. Nothing else ``kirocrew restart`` does exits 2. It is also
+#: how the hub learns a crew's CLI predates ``update --release`` (nothing on
+#: ``kirocrew update``'s path exits 2).
 _ARGPARSE_USAGE_EXIT = 2
 
 
@@ -162,8 +164,9 @@ def read_force_flag(body: object) -> bool | None:
     """``force`` from an update or restart request body, or ``None`` if malformed.
 
     No body (``None``) and ``{}`` both mean ``False``. Only a JSON object with an
-    optional boolean ``force`` is accepted; nothing in it reaches the remote
-    command beyond choosing between two fixed literals.
+    optional boolean ``force`` is accepted; nothing in it reaches a remote
+    command: on an update it skips the update step and restarts without waiting
+    for idle, and on a restart it skips the idle wait.
     """
     if body is None:
         return False
@@ -187,6 +190,35 @@ def clean_version(value: object) -> str:
     if isinstance(value, str) and _VERSION_RE.fullmatch(value):
         return value
     return ""
+
+
+#: The update a crew whose CLI predates ``--release`` runs, and the one every
+#: non-release hub sends.
+UPDATE_SUBCOMMAND = "update"
+
+
+def update_subcommand(version: str | None = None) -> str:
+    """The ``kirocrew`` update subcommand this hub sends a crew.
+
+    A release build sends ``update --release <its own version>``, so a crew
+    cloned from a release tag (``kirocrew cloud launch``) moves to this hub's
+    release tag instead of origin's main branch. Any other build (a nightly, an
+    unparseable version) sends the bare ``update``. *version* is this hub's
+    ``__version__``, never request input, and :func:`clean_version` keeps it to
+    characters a remote shell reads literally.
+    """
+    from kiro_crew import __version__
+    from kiro_crew.release_channel import release_refs
+
+    v = __version__ if version is None else version
+    if clean_version(v) and release_refs(v):
+        return f"{UPDATE_SUBCOMMAND} --release {v}"
+    return UPDATE_SUBCOMMAND
+
+
+def predates_option(rc: int) -> bool:
+    """Whether *rc* is argparse refusing an option the crew's CLI does not have."""
+    return rc == _ARGPARSE_USAGE_EXIT
 
 
 @dataclass

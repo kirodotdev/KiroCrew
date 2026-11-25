@@ -30,6 +30,16 @@ _CAS_ATTEMPTS: Final[int] = 8
 MAX_DOC_BYTES: Final[int] = 256 * 1024
 
 
+def encode(doc: dict[str, Any]) -> str:
+    """The text a document is stored as."""
+    return json.dumps(doc, sort_keys=True, separators=(",", ":"))
+
+
+def fits(doc: dict[str, Any]) -> bool:
+    """Whether ``doc`` can be written (:data:`MAX_DOC_BYTES`)."""
+    return len(encode(doc)) <= MAX_DOC_BYTES
+
+
 class VaultDocError(RuntimeError):
     """The document cannot be read, is malformed, or could not be written."""
 
@@ -74,7 +84,7 @@ class VaultJsonDoc:
             doc, revision = self._load()
             result = mutate(doc)
             doc["version"] = DOC_VERSION
-            text = json.dumps(doc, sort_keys=True, separators=(",", ":"))
+            text = encode(doc)
             if len(text) > MAX_DOC_BYTES:
                 raise VaultDocError("connected computers state is too large")
             try:

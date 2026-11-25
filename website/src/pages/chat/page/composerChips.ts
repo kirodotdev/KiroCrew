@@ -3,13 +3,13 @@ import { useMutation, useQuery, type QueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort } from '../../../hooks/useInteractiveModels'
-import { useKirocrewConfigReader } from '../../../hooks/useKirocrewConfigReader'
+import { useDefaultEffort } from '../../../hooks/useDefaultEffort'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import { i18nT } from '../../../i18n/t'
 import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
-import { modelHealthKey, useModelsDegraded } from '../../../providers/modelListHealth'
+import { modelHealthKey, useModelsUnconfirmed } from '../../../providers/modelListHealth'
 import type { ModelInfo } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
 import { triggerRefresh } from '../../../store/dashboardSlice'
@@ -123,25 +123,29 @@ export function useComposerChips({
   // backend's verdict for exactly that (`model_withheld`), and it is pinned
   // server-side to the model it was computed for, so it always describes the
   // first operand below whenever that operand is the slot's own pin. The
-  // degraded flag gates the list-membership fallback used when there is no
-  // verdict — a cached list served while /api/models fails is stale, not
-  // authoritative — and is subscribed to rather than read, because it can flip
-  // without the list changing.
+  // unconfirmed flag gates the list-membership fallback used when there is no
+  // verdict — a cached list served while /api/models fails or answers cold is
+  // stale, not authoritative — and is subscribed to rather than read, because it
+  // can flip without the list changing.
   // The flag of the list the chip reads: a session on another harness reads that harness's own list.
-  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
+  const _modelsUnconfirmed = useModelsUnconfirmed(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
   const modelPin = currentSlot?.model || resolvedModel || ''
   const displayPin = codexPairModels ? modelWithoutEffort(modelPin) : modelPin
+  const servedModel = codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model || ''
+  // A slot with no pick names the model an engine promotion moved its session
+  // onto while the session still serves it, else the model it inherits.
+  const promoted = !!currentSlot?.served_model && currentSlot?.served_model === currentSlot?.engine_promoted_model
   const shownModel = displayModel(
-    displayPin,
+    (!currentSlot?.model && promoted && servedModel) || displayPin,
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     currentSlot?.model_withheld,
     // Names the backend's own choice when the slot inherits, so the chip is not
     // a bare `auto` for a session running one specific model.
-    codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
+    servedModel,
   )
   // An unknown effort verdict leaves the currently shown model to answer.
   const effortCaps = selectionCapabilities ?? selectionCapabilitiesQ.data
@@ -164,7 +168,7 @@ export function useComposerChips({
   const _pinShownModel = displayModel(
     displayPin,
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     currentSlot?.model_withheld,
   )
   // The chip says `default` only for the Settings default; a model picked for
@@ -191,13 +195,7 @@ export function useComposerChips({
   // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
   // — so the composer must show the inherited value rather than a bare
   // "Default", which read as "the model decides" and hid the real setting.
-  const readKirocrewConfig = useKirocrewConfigReader()
-  const { data: _defaultEffort } = useQuery({
-    queryKey: ['default-effort', provider.id],
-    queryFn: () => provider.resolveDefaultEffort(readKirocrewConfig),
-    enabled: provider.capabilities.reasoningEffort,
-  })
-  const defaultEffort = _defaultEffort || ''
+  const defaultEffort = useDefaultEffort(provider.capabilities.reasoningEffort)
   // Effort actually in force for the active slot: per-slot override, else the
   // configured default. Display only — the slot's raw value still drives the
   // picker so "no override" stays distinguishable from an explicit pick.

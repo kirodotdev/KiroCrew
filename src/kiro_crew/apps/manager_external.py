@@ -19,6 +19,7 @@ from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.host_exec_grants import grant_host_exec
+from kiro_crew.apps.manager_activation import _app_activation_denied
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
     _AWAITING_MANIFEST_TEXT,
@@ -80,12 +81,15 @@ def register_external_app(
     source_repository: str = "",
     start_disabled: bool = False,
     version_checked: bool = False,
+    activation_permitted: bool | None = None,
 ) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
 
     ``version_checked=True`` says the caller already asked the governance
     ``app_versions`` list off the loop (``admission.app_version_refusal``), so
-    admission skips that blocking read here.
+    admission skips that blocking read here. ``activation_permitted`` is the caller's
+    off-loop answer to the ``apps`` activation check (``_app_activation_denied``) that
+    a carried-over record's owner-enable marker waits on; ``None`` asks it here.
 
     Self-managed apps (``resources="app"``) handle their own agent/skill/MCP
     registration.  Kiro Crew only tracks metadata so the dashboard can display them.
@@ -464,6 +468,15 @@ def register_external_app(
                 name=name,
                 error=f"could not clear earlier memory consent for {name!r}: {exc}",
             )
+        # Browsing sites the owner added for an earlier install go too.
+        try:
+            protected_app_state.forget_owner_browser_sites(name)
+        except (OSError, ValueError) as exc:
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"could not clear earlier browsing sites for {name!r}: {exc}",
+            )
         dest.mkdir(parents=True, exist_ok=True)
         meta = InstalledApp(
             name=name,
@@ -510,15 +523,20 @@ def register_external_app(
     if is_new_secret:
         secret = generate_app_secret()
         write_app_secret(name, secret)
-        if not existing and meta.enabled:
-            # A first registration is an owner-authenticated install+enable (the
-            # route requires an owner dashboard request), so it records the owner-
-            # enable marker the token exchange reads (``validate_app_secret``). A
-            # re-registration never does: it would read ``enabled`` back from the
-            # agent-writable installed.json.
+        # A first registration is an owner-authenticated install+enable (the route
+        # requires an owner dashboard request), so it records the owner-enable marker
+        # the token exchange reads (``validate_app_secret``). A re-registration records
+        # it, governance permitting, only for a record a release that kept the secret in
+        # the app's folder left: no stored secret, and a grant set sealed by the upgrade's
+        # one-time import (``_import_app_tree_grants``). ``enabled`` is off while an owner
+        # disable stands (``_read_installed``). Spec: dashboard-token-auth, "Who can mint one".
+        carried_over = existing is not None and prior_grants_text is not None
+        if meta.enabled and carried_over and activation_permitted is None:
+            activation_permitted = _app_activation_denied(name) is None
+        if meta.enabled and (not existing or (carried_over and activation_permitted)):
             if not grant_host_exec(name):
                 # The record is written; enabling it (the "already enabled" path)
-                # retries the marker, which a re-registration would not.
+                # retries the marker.
                 return AppResult(
                     ok=False,
                     name=name,

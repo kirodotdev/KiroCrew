@@ -108,19 +108,22 @@ describe('chat-sidebar owners', () => {
 describe('the facade composition', () => {
   // The owner hooks in the order the facade calls them. Each sits where its block sat
   // before the owners were extracted, which is what keeps React's effect order.
+  // `useRowStatusSelect` and `useActiveRowAmong` are the body's narrow reads of the
+  // row-status store; the outer layer (`useStableKeySet`, `useRowStatusStore`) owns it.
   const CALL_ORDER = [
-    'useSessionSources', 'useDebouncedSessionSearchState', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
-    'useSessionFilterState', 'useSessionStatusFilters', 'useSharedCrewListView', 'useHistoryPane', 'useSessionCleanup', 'useBulkModelSwitch', 'useResumeAll', 'usePinnedSessionOrder',
+    'useRowStatusSelect', 'useSessionSources', 'useDebouncedSessionSearchState', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
+    'useSessionFilterState', 'useSessionStatusFilters', 'useSharedCrewListView', 'useHistoryPane', 'useRowStatusSelect', 'useSessionCleanup', 'useBulkModelSwitch', 'useResumeAll', 'usePinnedSessionOrder',
     'useManualSessionOrder',
     'useStaleCollapse', 'useFolderSort', 'useUnfiledAboveFolders', 'useFolderRename', 'useSidebarTags',
     'useSidebarModels', 'useSidebarCreators', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'useNeedsMeHoverCardSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useNativeSessionDrag', 'useSearchMatches',
-    'useCollapsedCrews', 'useCollapsedCrewSpaces', 'useCrewEnable', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
+    'useRowStatusSelect', 'useCollapsedCrews', 'useCollapsedCrewSpaces', 'useCrewEnable', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
     'useFolderFilterReveal', 'useConductorLane', 'useLaneCycle', 'useSidebarScrollPeek', 'useShortcutOrder',
     'useFolderFilterRows', 'useFolderMutations', 'useHoldPinnedHeaderOnCollapse', 'useRowAnimSettled', 'useBoardFolderCollapse',
     'useFolderDropOps',
-    'useFolderTree', 'useSidebarReveal', 'useSidebarMoveUndo', 'useSidebarDragHandlers',
-    'useFolderChatCreate', 'useSessionCreate', 'usePinnedKeyboardReorder', 'useManualKeyboardReorder', 'useRootFolderLanes',
+    'useFolderTree', 'useSidebarReveal', 'useSidebarMoveUndo', 'useRowStatusSelect', 'useSidebarDragHandlers',
+    'useFolderChatCreate', 'useSessionCreate', 'usePinnedKeyboardReorder', 'useManualKeyboardReorder', 'useActiveRowAmong',
+    'useRootFolderLanes', 'useStableKeySet', 'useRowStatusStore',
   ]
 
   it('calls every owner hook once, in the pinned order', () => {

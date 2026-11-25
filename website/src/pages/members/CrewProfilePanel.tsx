@@ -1,6 +1,6 @@
 import { createContext, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlarmClock, Brain, ChevronLeft, ChevronRight, Download, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
+import { AlarmClock, Brain, ChevronLeft, ChevronRight, Copy, Download, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -28,8 +28,9 @@ export const PROFILE_FACE_PX = 84
 
 /** A page the card pushes OVER its tabs (iOS push: one back control pointing at
  *  the card), for the things a tab opens in place: the full description, the
- *  crewmate's notes, the Export confirm view, and the schedule create form. */
-type Pushed = 'about' | 'notes' | 'export' | 'new-schedule' | 'tab-page'
+ *  crewmate's notes, the Export confirm view (in its export or copy mode), and
+ *  the schedule create form. */
+type Pushed = 'about' | 'notes' | 'export' | 'copy' | 'new-schedule' | 'tab-page'
 
 /** A tab's own pages pushed over the card (the Goals tab's milestone, goal and
  *  check-in pages; the Profile tab's Settings page and the picker pages over
@@ -134,6 +135,9 @@ export interface CrewProfilePanelProps {
   /** The Export view's lessons text is typed: the host's exit guards then ask
    *  before any exit (back, close, backdrop, pill, switch, route) drops it. */
   onExportDraftChange?: (dirty: boolean) => void
+  /** Make a copy is open: the host passes it exactly where Import from file is
+   *  offered, since the copy lands through the same import card. */
+  canCopy?: boolean
   onEdit: () => void
   onOpenFiles: () => void
   /** Fresh start: stop any turn and start a clean conversation on the same
@@ -190,6 +194,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   // The guide's reveal scope for the Profile tab: a `ui.show` step that
   // selects it completes the moment the tab is current.
   useGuideRevealScope('members.profile-tab', tab === 'profile')
+  // And for the Sessions tab, where the bot's "show in my Sessions" switch sits.
+  useGuideRevealScope('members.sessions-tab', tab === 'sessions')
   const [pushed, setPushed] = useState<Pushed | null>(null)
   // The tab-page stack and one host per level. `tabPagesRef` mirrors the stack
   // for the push callbacks, which decide "new level or retitle" synchronously.
@@ -270,7 +276,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   useEffect(() => {
     const deeper = depth > prevDepth.current
     prevDepth.current = depth
-    if (pushed === 'about' || pushed === 'notes' || pushed === 'export' || (pushed === 'tab-page' && deeper)) {
+    if (pushed === 'about' || pushed === 'notes' || pushed === 'export' || pushed === 'copy' || (pushed === 'tab-page' && deeper)) {
       backRef.current?.focus({ preventScroll: true })
     } else if (!pushed || pushed === 'tab-page') {
       const opener = openerRef.current
@@ -345,7 +351,9 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
       ? t('pages.membersPage.notes_tab')
       : pushed === 'export'
         ? t('pages.membersPage.export_title')
-        : t('pages.membersPage.schedule_new')
+        : pushed === 'copy'
+          ? t('pages.membersPage.copy_title')
+          : t('pages.membersPage.schedule_new')
 
   const slide = reduce
     ? { initial: { opacity: 1 }, animate: { opacity: 1 }, exit: { opacity: 1 } }
@@ -486,8 +494,10 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               // find_ui locations: Schedules and Goals are where a mate shows
               // the user what wakes it and what it is after; the Profile tab
               // is also the step a guide to the Settings row (which lives on
-              // it) selects first.
+              // it) selects first, and the Sessions tab the step to the
+              // switch that lists this bot's sessions in the user's own list.
               segments={[
+                { key: 'sessions', label: t('pages.membersPage.profile_sessions_tab'), ...uiLocation('members.sessions-tab') },
                 { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
                 { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
                 { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
@@ -546,6 +556,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
                   <Row icon={<Download size={16} />} tone="info" label={t('pages.membersPage.export_row')} sub={t('pages.membersPage.export_row_sub')} onClick={() => push('export')} testId="crew-profile-export" />
+                  {p.canCopy && <Row icon={<Copy size={16} />} tone="info" label={t('pages.membersPage.copy_row')} sub={t('pages.membersPage.copy_row_sub')} onClick={() => push('copy')} testId="crew-profile-copy" />}
                   <ProfilePagePushContext.Provider value={pagePush}>{p.settingsBody}</ProfilePagePushContext.Provider>
                 </div>
               </div>
@@ -599,6 +610,10 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               ) : pushed === 'export' ? (
                 <Suspense fallback={<div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t('pages.membersPage.export_loading')}</div>}>
                   <CrewExportView slug={p.member.slug} member={p.member.name} onDirtyChange={p.onExportDraftChange} />
+                </Suspense>
+              ) : pushed === 'copy' ? (
+                <Suspense fallback={<div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t('pages.membersPage.copy_loading')}</div>}>
+                  <CrewExportView mode="copy" slug={p.member.slug} member={p.member.name} name={p.member.display_name?.trim() || p.member.name} />
                 </Suspense>
               ) : (
                 p.newScheduleBody

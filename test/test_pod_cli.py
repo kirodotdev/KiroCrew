@@ -23,6 +23,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
     requires_posix_pod_lifecycle,
 )
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -160,6 +161,20 @@ class TestCliVerbs:
     def test_dispatch_unknown_verb_exits(self) -> None:
         with pytest.raises(SystemExit):
             pod_cli.dispatch(argparse.Namespace(pod_action=None))
+
+
+class TestNewPodName:
+    @pytest.mark.parametrize("verb", ["_up", "_provision"])
+    def test_a_creating_verb_refuses_a_windows_device_stem_first(
+        self, verb: str, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _reached(*_a: object, **_k: object) -> None:
+            raise AssertionError("got past the name check")
+
+        monkeypatch.setattr(rt, "require_backend", _reached)
+        monkeypatch.setattr(rt, "resolve_checkout", _reached)
+        with pytest.raises(rt.PodError, match="invalid pod name 'nul'"):
+            getattr(pod_cli, verb)(cfg, argparse.Namespace(name="nul"))
 
 
 @requires_posix_pod_lifecycle
@@ -670,10 +685,17 @@ class TestUpVerb:
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
         monkeypatch.setattr(pod_cli, "_wait_healthy", lambda *_a, **_kw: -1)
         monkeypatch.setattr(rt, "require_systemd", lambda: None)
+        trusted_journalctl = "/usr/bin/journalctl"
+        real_trusted = platform_compat.trusted_system_bin
+        monkeypatch.setattr(
+            platform_compat,
+            "trusted_system_bin",
+            lambda name: trusted_journalctl if name == "journalctl" else real_trusted(name),
+        )
         real_run = rt.subprocess.run
 
         def _run(argv, *a, **kw):
-            if argv and argv[0] == "journalctl":
+            if argv and argv[0] == trusted_journalctl:
                 raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
             return real_run(argv, *a, **kw)
 

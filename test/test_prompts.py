@@ -172,7 +172,7 @@ class TestListAimPrompts:
         pkg.mkdir(parents=True)
         (pkg / "evil.sop.md").symlink_to(secret)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.is_sensitive_path",
+            "kiro_crew.dashboard.handlers.is_sensitive_canonical_path",
             lambda p: "secrets" in p,
         )
         assert _list_aim_prompts() == []

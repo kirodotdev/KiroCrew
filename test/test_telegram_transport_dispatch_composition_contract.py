@@ -165,6 +165,7 @@ BASE_NAMES = frozenset(
         "channel_inbound_permitted",
         "channel_namespace_of",
         "charge_turn_failure",
+        "clean_compact_focus",
         "cleanup_attachments",
         "compact_unsupported_backend",
         "compact_unsupported_reply",
@@ -390,7 +391,7 @@ BASE_MEMBERS = {
     "_handle_compact": (
         "function",
         "(self, route: 'tuple[str, str]', chat_id: 'int', *, "
-        "session_key: 'str | None' = None) -> 'None'",
+        "session_key: 'str | None' = None, focus: 'str' = '') -> 'None'",
     ),
     "_handle_cron": (
         "function",

@@ -201,8 +201,7 @@ describe('UpdateFoundModal — desktop source', () => {
     }
     const { container } = await mount(found)
     // Their consent prompt is the staged-build modal at `downloaded`; a popup
-    // here would claim "nothing downloads until you choose" while the main
-    // process is already downloading.
+    // here would ask about a download the main process has already started.
     expect(container.firstChild).toBeNull()
     expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
   })
@@ -268,7 +267,6 @@ describe('UpdateFoundModal — desktop source', () => {
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     expect(screen.getByTestId('update-found-preference-error')).toHaveTextContent(
       i18nT('pages.settings.aboutPanel.auto_download_unreadable'))
-    expect(screen.queryByText(i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to'))).toBeNull()
   })
 
   it('still asks when a later re-read fails, rather than trusting the older answer', async () => {

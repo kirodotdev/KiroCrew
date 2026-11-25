@@ -60,10 +60,10 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
 export type ShortcutPlatform = 'mac' | 'other'
 
 /**
- * One key combination. POSITIONAL: `key` is derived from `KeyboardEvent.code`
- * (see {@link eventKeyToken}), so a chord keeps working on layouts where the
- * glyph sits elsewhere — the same rule every handler in `useKeyboardShortcuts`
- * has always used.
+ * One key combination. `key` is the token {@link eventKeyToken} reads from a
+ * keydown: a letter is the one the layout types ({@link chordLetter}), every
+ * other key is its physical position, so a punctuation chord keeps working on
+ * layouts where the glyph sits elsewhere.
  */
 export interface Chord {
   /**
@@ -401,12 +401,12 @@ export function resolveShortcuts(overrides: ShortcutOverrides, platform: Shortcu
 /**
  * `KeyboardEvent.code` → chord key token, for the punctuation the chords use.
  * Positional by design: on layouts where the glyph sits elsewhere (or needs
- * AltGr) the physical US-QWERTY key still works, matching how every chord in
- * `useKeyboardShortcuts` has always been matched. Not mapped: `NumpadEnter`
- * (the handler has always compared `code === 'Enter'`, so the numpad key is not
- * the same chord) and the numpad digits. Shared with the panel-toggle /
- * quick-search recorder (`quickSearchShortcut.eventKeyToken`) so both chord
- * families read punctuation the same way.
+ * AltGr) the physical US-QWERTY key still works. A key that types a Latin
+ * letter is that letter instead ({@link chordLetter}). Not mapped: `NumpadEnter`
+ * (the handler compares `code === 'Enter'`, so the numpad key is not the same
+ * chord) and the numpad digits. Shared with the panel-toggle / quick-search
+ * recorder (`quickSearchShortcut.eventKeyToken`) so both chord families read
+ * punctuation the same way.
  */
 export const CODE_TOKENS: Readonly<Record<string, string>> = {
   Comma: ',', Period: '.', Slash: '/', Backslash: '\\', BracketLeft: '[', BracketRight: ']',
@@ -414,16 +414,39 @@ export const CODE_TOKENS: Readonly<Record<string, string>> = {
 }
 
 /**
- * The chord key token a keydown carries, or `null` for a bare modifier. Letters
- * and digits come from `code` (`KeyN` → `n`, `Digit1` → `1`), punctuation from
- * {@link CODE_TOKENS}, and named keys (`Enter`, `Escape`, `ArrowLeft`) are their
- * own code. Falls back to `key` only for an event with no usable code (a
- * synthetic event in a test).
+ * The letter a keydown is for a chord: the Latin letter the layout types
+ * (`key`), so on Dvorak the key that types `r` is R wherever it sits. Only
+ * when the key types no Latin letter (a Cyrillic or Greek layout, a macOS
+ * Option glyph, a dead key, punctuation on a letter position) is it the letter
+ * of its physical position (`KeyO` → `o`). `null` for any other key. The
+ * browser, the OS and the dashboard's terminal read letters the same way.
+ */
+export function chordLetter(key: string, code: string): string | null {
+  const k = key.toLowerCase()
+  if (k.length === 1 && k >= 'a' && k <= 'z') return k
+  return /^Key[A-Z]$/.test(code) ? code.slice(3).toLowerCase() : null
+}
+
+/** The `KeyboardEvent.code` a code-keyed chord reads a keydown as: the position code of {@link chordLetter}'s
+ *  letter (on Dvorak the key that types `c` is `KeyC`), else the event's own code. */
+export function chordCode(key: string, code: string): string {
+  const letter = chordLetter(key, code)
+  // `concat`, not a template literal: the i18n lint reads a template's text as copy.
+  return letter ? 'Key'.concat(letter.toUpperCase()) : code
+}
+
+/**
+ * The chord key token a keydown carries, or `null` for a bare modifier. A
+ * letter is {@link chordLetter}'s, digits come from `code` (`Digit1` → `1`),
+ * punctuation from {@link CODE_TOKENS}, and named keys (`Enter`, `Escape`,
+ * `ArrowLeft`) are their own code. Falls back to `key` only for an event with
+ * no usable code (a synthetic event in a test).
  */
 export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | null {
   const code = e.code
   if (code) {
-    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
+    const letter = chordLetter(e.key, code)
+    if (letter) return letter
     if (/^Digit\d$/.test(code)) return code.slice(5)
     const punct = CODE_TOKENS[code]
     if (punct) return punct
@@ -432,6 +455,78 @@ export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | 
   const key = e.key
   if (!key || key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta') return null
   return key.length === 1 ? key.toLowerCase() : key
+}
+
+// ---- Labels -----------------------------------------------------------------
+
+export type LayoutMap = ReadonlyMap<string, string>
+
+/**
+ * The user's keyboard layout (`navigator.keyboard.getLayoutMap()`, Chromium and
+ * Electron), so a chord is labelled with the character its key prints:
+ * AZERTY's `BracketLeft` is `^`. `null` until it loads and wherever the
+ * API is missing or refuses, which keeps the US glyph. Read once per page load.
+ */
+let layoutMap: LayoutMap | null = null
+const layoutListeners = new Set<() => void>()
+
+export async function loadKeyboardLayout(): Promise<void> {
+  const keyboard = (globalThis.navigator as { keyboard?: { getLayoutMap?: () => Promise<LayoutMap> } } | undefined)?.keyboard
+  try {
+    layoutMap = (await keyboard?.getLayoutMap?.()) ?? null
+  } catch {
+    layoutMap = null
+  }
+  for (const listener of layoutListeners) listener()
+}
+void loadKeyboardLayout()
+
+export function subscribeKeyboardLayout(listener: () => void): () => void {
+  layoutListeners.add(listener)
+  return () => { layoutListeners.delete(listener) }
+}
+
+export function keyboardLayoutSnapshot(): LayoutMap | null {
+  return layoutMap
+}
+
+/** What the layout prints on the key that fires `token`, or undefined when no key of `layout` does. */
+function layoutGlyph(token: string, positional: boolean, layout: LayoutMap | null): string | undefined {
+  const keys = [...(layout ?? [])]
+  if (!positional && /^[a-z]$/.test(token) && keys.some(([, typed]) => typed === token)) return token
+  return keys.find(([code, typed]) => eventKeyToken({ code, key: positional ? code : typed }) === token)?.[1]
+}
+
+/**
+ * Whether some key of the user's layout fires the chord key `token`. False only
+ * when the layout map says a {@link CODE_TOKENS} token's own position types a
+ * Latin letter and no other key reaches it (Dvorak types `z` at the US `/`
+ * position, so no key is `/`). Any other token, a chord matched by position, and
+ * a position the map does not report are reachable.
+ */
+export function layoutReaches(token: string, positional = false, layout: LayoutMap | null = layoutMap): boolean {
+  const code = Object.keys(CODE_TOKENS).find(c => CODE_TOKENS[c] === token)
+  const typed = code ? layout?.get(code) : undefined
+  if (positional || !typed || chordLetter(typed, '') === null) return true
+  return layoutGlyph(token, false, layout) !== undefined
+}
+
+/**
+ * The keycap for a chord key token: what the layout prints on the key that
+ * fires it (the key {@link eventKeyToken} reads as `token` when it types that
+ * glyph), else `token.toUpperCase()` (the US glyph). A letter some key types is
+ * shown as itself; a letter no key types (Cyrillic, Greek) as the glyph on its
+ * position. `positional` is for a chord whose modifier changes what a key types
+ * (a macOS Option chord), so {@link chordLetter} matches it by position: its
+ * keycap is the glyph on that physical key. Letter positions render upper-case
+ * where that is reversible (Greek `ς` and Turkish `ı` would read as another
+ * key's letter), other positions verbatim (AZERTY `Digit2` is `é`).
+ */
+export function keyCapGlyph(token: string, positional = false, layout: LayoutMap | null = layoutMap): string {
+  const glyph = layoutGlyph(token, positional, layout)
+  if (!glyph) return token.toUpperCase()
+  const upper = glyph.toUpperCase()
+  return /^[a-z]$/i.test(token) && upper.toLowerCase() === glyph ? upper : glyph
 }
 
 /**

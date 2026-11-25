@@ -475,6 +475,32 @@ class TestSessionLifecycle:
 
         assert HEADER in rendered and ROLLBACK in rendered
 
+    # An @prompt turn reports an empty span where the prompt body that replaced
+    # its text begins; that body is what ranks.
+    @pytest.mark.parametrize("empty_span", [False, True], ids=["user-span", "empty-span"])
+    def test_session_start_ranks_the_text_behind_a_runtime_prefix(
+        self, builder, store, home, monkeypatch: pytest.MonkeyPatch, empty_span
+    ) -> None:
+        # As on the per-message path above: a prefixed notice ranks neither the
+        # session-start memory nor its lessons.
+        prefix = "[Subagent failed] the flywheel telemetry canary job died\n\n"
+        ranked = "please list the open files"
+        message = prefix + ranked
+        span = (len(prefix), len(prefix) if empty_span else len(message))
+        lesson_queries: list[str] = []
+        real = store.get_lessons_context
+
+        def recording(*args, **kwargs):
+            lesson_queries.append(kwargs["query_text"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(store, "get_lessons_context", recording)
+        startup, _ = builder.build_message(message, True, "session-1", user_text_range=span)
+
+        assert "[Learned corrections" in startup
+        assert lesson_queries == [ranked]
+        assert builder.get_memory_for().get_context.call_args.kwargs["query"] == ranked
+
     def test_a_transform_hook_output_is_what_is_matched(self, builder, home) -> None:
         enable(home, inject_lessons_per_turn=True)
 

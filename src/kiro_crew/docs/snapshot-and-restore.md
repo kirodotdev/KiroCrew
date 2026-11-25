@@ -52,7 +52,7 @@ declares more than the free space where it extracts.
 |-----------|-------|
 | memory | `memory.db`, `memory_index.db`, `workspace/memory/`, `workspace/knowledge/`, `memory_stores/` |
 | crons | `crons.json` |
-| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
+| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `mcp.json` (the servers added on the MCP Servers page), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
 | crew-teams | `crew-teams/teams.json` (the Bot team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
@@ -87,14 +87,19 @@ either, by `kirocrew snapshot` or by the dashboard export. The dashboard names
 the templates your crews use that the export leaves out, and on import names the
 ones this machine is missing.
 
+The servers you add on the MCP Servers page are kept in `mcp.json` in the data
+home, which rides in `config`. The dashboard export does not carry that file, and
+neither tool carries `~/.kiro/settings/mcp.json`, the MCP list Kiro CLI also reads.
+
 `memory` is self-contained: it names the markdown half of memory (preferences,
 projects, history) and the knowledge base explicitly, so `--components memory`
 restores your recall without also restoring every unrelated working file in
 `workspace/`. Selections may overlap — asking for both `memory` and `workspace`
 stages the shared paths once.
 
-Restoring `workspace` never installs the bundle's agent config found anywhere under
-`workspace/`, in Replace or Merge: `.claude/`, `.mcp.json`, `.kiro/`, `.codex/`, `.goose/`,
+Restoring `workspace`, or `memory` (which installs `workspace/memory/` and
+`workspace/knowledge/`), never installs the bundle's agent config found anywhere in
+the `workspace/` trees it installs, in Replace or Merge: `.claude/`, `.mcp.json`, `.kiro/`, `.codex/`, `.goose/`,
 `.goosehints`, `.opencode/`, `opencode.json(c)`, `.pi/` and `.mimocode/`, `mimocode.json(c)`.
 An agent session started in `workspace/` or one of its project folders reads them, and a
 bundle can come from someone else. Your own copies are kept, and the result names what was
@@ -325,7 +330,7 @@ component was being replaced.
   `ui-prefs.json` or `notification_settings.json` that its own store would read
   as empty, or refuse, stops the restore before anything is installed. A replace
   always checks it; a merge checks it only where the destination lacks that file,
-  because only then would the merge install it. A restored `config.json`, `config.local.json` or `ui-prefs.json` is
+  because only then would the merge install it. A restored `config.json`, `config.local.json`, `ui-prefs.json` or `mcp.json` is
   installed owner-only, as its own writer creates it. A bundle's `config.local.json` is never installed by a merge, even
   where the receiving install has none: that overlay outranks `config.json`, so
   it is reported (`↩️  config.local.json: not applied ...`) instead. To take the
@@ -383,6 +388,15 @@ yourself, so you can install it again or turn it back on on the other machine;
 an app's data stays on this one. A built-in app that is off is not named,
 because every install starts with it switched off, and its data, if it has
 any, is not carried either. A memory-only export names none.
+
+The archive lists the apps the export named. On the other machine, the import
+names each one that machine does not have, or has off though it was on where
+you exported, and installs none of them. An app that was off there and is
+installed here is not named. No app's data is in the archive, so an app that
+is already on here keeps only the data this machine has. The list holds at
+most 200 apps; the import says how many more the other machine had, which it
+could not check. An archive from an older version lists no apps, and its import
+names none.
 
 The dashboard export leaves out folders that tools rebuild inside your
 workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as

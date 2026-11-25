@@ -60,6 +60,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from kiro_crew.browser_harness.budgets import CREDENTIAL_FINGERPRINT_S
 from kiro_crew.browser_harness.credential_files import CredentialSourceError
@@ -214,6 +215,13 @@ def domain_allowed(domain: str, declared: Sequence[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in declared)
 
 
+def _covers_any(domain: str, hosts: Sequence[str]) -> bool:
+    """Would a cookie on *domain* be sent to one of *hosts*? A cookie set with an
+    explicit ``domain`` (dot or not) is a domain cookie, sent to every subdomain."""
+    host = cookie_host(domain)
+    return any(h == host or h.endswith("." + host) for h in hosts)
+
+
 def provider_name(provider: Any) -> str | None:
     """The provider's display name, or ``None`` (the Default, or a broken provider)."""
     try:
@@ -309,7 +317,11 @@ _CookieKey = tuple[str, str, str]
 
 
 def _key(cookie: Mapping[str, Any]) -> _CookieKey:
-    return cookie["name"], cookie["domain"], cookie["path"]
+    # A host-only cookie names its host by ``url`` alone (``sign_in_guard``).
+    domain = cookie.get("domain") or cookie_host(
+        urlsplit(str(cookie.get("url", ""))).hostname or ""
+    )
+    return cookie["name"], domain, cookie["path"]
 
 
 class PlacedCookies:
@@ -403,6 +415,10 @@ async def _provider_cookies(
         return [], "provider_failed"
     if not isinstance(raw, (list, tuple)):
         return [], "provider_bad_shape"
+    from kiro_crew.browser_harness.sign_in_guard import declared_hosts
+
+    # A provider that signs per origin never puts a sign-in host's cookie here.
+    sign_in_hosts = declared_hosts(provider)
     now = time.time()
     kept = [
         (c, _expires(item))
@@ -411,6 +427,7 @@ async def _provider_cookies(
         if c is not None
         and domain_allowed(c["domain"], declared)
         and domain_allowed(c["domain"], settings.domains)
+        and not _covers_any(c["domain"], sign_in_hosts)
     ]
     return kept, ("source_expired" if raw and not kept else None)
 

@@ -420,7 +420,7 @@ def tailnet_origin() -> str | None:
 #: not-signed-in half is listed because that is the one an operator fixes by
 #: signing in, and treating an unknown future value as "signed in" would send
 #: them to the wrong remedy.
-_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState", "NeedsMachineAuth"})
+_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState"})
 
 
 @dataclass(frozen=True)
@@ -440,6 +440,9 @@ class DaemonProbe:
     * ``stopped=True`` — the daemon answers but Tailscale is stopped
       (``BackendState "Stopped"``, e.g. after ``tailscale down``); bring it up.
     * ``logged_in=False`` — signed out; sign in.
+    * ``needs_approval=True`` — signed in, but the tailnet requires device
+      approval and an admin has not approved this machine; another sign-in
+      cannot help. ``logged_in`` stays ``False``: nothing on the tailnet works yet.
     * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
     * ``https_enabled=False`` — the tailnet has not granted certificate
       provisioning for this machine's MagicDNS name yet.
@@ -482,6 +485,8 @@ class DaemonProbe:
     #: report any unmet requirement. ``False`` is reserved for an explicit
     #: ``CertDomains`` (``null`` or a list) that does not contain this host.
     https_enabled: bool | None = None
+    #: ``BackendState "NeedsMachineAuth"``.
+    needs_approval: bool = False
 
 
 def _count_peers(status: dict) -> tuple[int, int]:
@@ -547,6 +552,18 @@ def probe_daemon() -> DaemonProbe:
             logged_in=True,
             detail="Tailscale is stopped, so this machine is not connected to its tailnet.",
             stopped=True,
+        )
+    if backend_state == "NeedsMachineAuth":
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=False,
+            detail=(
+                "This machine is signed in to Tailscale and is waiting for an admin "
+                "to approve it."
+            ),
+            needs_approval=True,
         )
     logged_in = not (
         isinstance(backend_state, str) and backend_state in _BACKEND_STATES_NEEDING_LOGIN
@@ -1225,8 +1242,14 @@ def _forwarded_peer_candidate(request: web.Request, trust: TailnetTrust) -> str 
     """The cheap, synchronous gate: RFC §2 conditions (a)–(d), fail-closed.
 
     Returns the single forwarded tailnet address worth asking the daemon
-    about, or ``None``. No I/O — safe to run inline on the event loop.
+    about, or ``None``. No I/O — safe to run inline on the event loop. A
+    request that arrived on the entry port (``origin.is_entry_request``) is
+    ``None`` whatever headers it carries: the socket decides, not a header.
     """
+    from kiro_crew.dashboard.origin import is_entry_request
+
+    if is_entry_request(request):
+        return None
     # (b) explicit opt-in AND a non-empty allowlist. Identity trust is never
     # inferred, and an empty allowlist means trust was refused at config load.
     # An UNREADABLE policy also enforces: the allowlist is unknown, and
@@ -1283,7 +1306,14 @@ def is_forwarded_tailnet_request(request: web.Request, trust: TailnetTrust) -> b
 
     Synchronous and I/O-free -- the daemon is not consulted, so this is safe to
     ask inline on the event loop.
+
+    A request that arrived on the entry port (``origin.is_entry_request``) is
+    never a forwarded tailnet request, whatever headers it carries.
     """
+    from kiro_crew.dashboard.origin import is_entry_request
+
+    if is_entry_request(request):
+        return False
     # Same opt-in gate _forwarded_peer_candidate applies, repeated rather than
     # inherited: without it an ordinary install (no identity policy at all)
     # would start answering True and make the caller's deny branch reachable.

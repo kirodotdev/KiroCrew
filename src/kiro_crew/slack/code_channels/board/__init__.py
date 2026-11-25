@@ -49,6 +49,8 @@ import logging
 import time
 from typing import Any
 
+from kiro_crew.slack.code_channels.surface_store import room_key
+
 logger = logging.getLogger(__name__)
 
 #: ``worker slot key -> channel id`` for every worker on a board this process
@@ -76,6 +78,7 @@ def remember(channel_id: str, conductor_key: str, worker_keys: list[str]) -> Non
 
 
 def forget_channel(channel_id: str) -> None:
+    """Drop everything kept for a board (*channel_id* is its room key)."""
     from kiro_crew.slack.code_channels import tabs
     from kiro_crew.slack.code_channels.board import publisher
 
@@ -88,6 +91,25 @@ def forget_channel(channel_id: str) -> None:
     for table in (_worker_channels, _conductor_channels):
         for key in [k for k, v in table.items() if v == channel_id]:
             table.pop(key, None)
+
+
+def is_thread_room(room: str) -> bool:
+    """Whether *room* names a Conductor thread's board (``"<channel_id>:<anchor_ts>"``).
+
+    A Slack channel id has no colon, so the key tells a thread's board from a code
+    channel's without a lookup.
+    """
+    return ":" in room
+
+
+def _thread_binding_of(room: str) -> Any | None:
+    """The live Conductor-thread binding of *room*, from the store's memory (no disk)."""
+    from kiro_crew.slack.code_channels.store import thread_key
+
+    for binding in _loaded_threads():
+        if not binding.ended_at and thread_key(binding.channel_id, binding.anchor_ts) == room:
+            return binding
+    return None
 
 
 def _schedule(channel_id: str, delay: float | None = None) -> bool:
@@ -106,6 +128,13 @@ def _schedule(channel_id: str, delay: float | None = None) -> bool:
 
     if delay is not None:
         return _arm_timer(channel_id, max(delay, BOARD_DEBOUNCE_SECS))
+    if is_thread_room(channel_id):
+        # A Conductor thread's board has no workspace (no folder, no worktree, no
+        # Code tab): its own, smaller refresh.
+        from kiro_crew.slack.code_channels.board import thread_board
+
+        found = _thread_binding_of(channel_id)
+        return found is not None and thread_board.schedule(found)
     service = workspace.service()
     binding = active_binding(channel_id)
     if service is None or binding is None or binding.archived_at:
@@ -276,8 +305,18 @@ def _recently_unbound(key: str) -> bool:
     return seen is not None and time.monotonic() - seen < _UNBOUND_TTL_SECS
 
 
+def _loaded_threads() -> tuple[Any, ...]:
+    """The store's in-memory Conductor-thread bindings (none before it loads)."""
+    from kiro_crew.slack.code_channels.store import store
+
+    try:
+        return tuple(store().loaded_thread_bindings() or ())
+    except Exception:
+        return ()
+
+
 def _bound_channel_of(conductor_key: str) -> str:
-    """The channel whose live binding names *conductor_key*'s session, or ``""``."""
+    """The board room whose live binding names *conductor_key*'s session, or ``""``."""
     from kiro_crew import session_ledger
     from kiro_crew.slack.code_channels.store import store
 
@@ -287,14 +326,16 @@ def _bound_channel_of(conductor_key: str) -> str:
     bindings = store().loaded_bindings()
     if bindings is None:
         return ""  # not loaded yet: unknown, so nothing is remembered as unbound
-    for binding in bindings:
-        if binding.archived_at or not binding.session_key:
+    # Code channels, then live Conductor threads (a thread's room key is its own).
+    for binding in (*bindings, *_loaded_threads()):
+        if binding.archived_at or binding.ended_at or not binding.session_key:
             continue
         if session_ledger.ledger_key(binding.session_key) == key:
             _unbound.pop(key, None)
             # Read the board through the usual path, which re-judges scope.
-            remember(binding.channel_id, binding.session_key, [])
-            return str(binding.channel_id)
+            room = room_key(binding)
+            remember(room, binding.session_key, [])
+            return room
     if len(_unbound) > _MAX_TRACKED:
         _unbound.clear()
     _unbound[key] = time.monotonic()
@@ -361,10 +402,11 @@ def reset_for_tests() -> None:
         handle.cancel()
     _timers.clear()
     from kiro_crew.slack.code_channels import tabs
-    from kiro_crew.slack.code_channels.board import publisher, stops
+    from kiro_crew.slack.code_channels.board import publisher, stops, thread_board
 
     tabs.reset_for_tests()
     stops.reset_for_tests()
+    thread_board.reset_for_tests()
     for table in (
         publisher._last_edit,
         publisher._failures,
@@ -394,9 +436,9 @@ async def read(binding: Any) -> Any:
         # so its "N PRs open" matches the board header.
         _publish_aggregate(state, binding, None)
     if snapshot is not None:
-        _audience_retried.pop(binding.channel_id, None)
+        _audience_retried.pop(room_key(binding), None)
         remember(
-            binding.channel_id,
+            room_key(binding),
             binding.session_key,
             [row.session_key for row in snapshot.rows if row.session_key],
         )
@@ -427,10 +469,18 @@ def _retry_once_audience_is_read(binding: Any) -> None:
     channel = str(getattr(binding, "channel_id", "") or "")
     if not channel or getattr(binding, "archived_at", None):
         return
-    last = _audience_retried.get(channel)
+    room = room_key(binding)
+    last = _audience_retried.get(room)
     if last is not None and time.monotonic() - last < _AUDIENCE_RETRY_WINDOW_SECS:
         return
-    if audience.channel_shared(channel) is not None:
+    from kiro_crew.slack.code_channels.store import ROOM_IM
+
+    thread = getattr(binding, "thread", False) is True
+    if thread and binding.room == ROOM_IM:
+        return  # a DM's room needs no reading
+    # A thread's room is judged by its privacy reading, a code channel's by its sharing.
+    reading = audience.channel_private if thread else audience.channel_shared
+    if reading(channel) is not None:
         return
     try:
         loop = asyncio.get_running_loop()
@@ -438,9 +488,9 @@ def _retry_once_audience_is_read(binding: Any) -> None:
         return
     if len(_audience_retried) > _MAX_TRACKED:
         _audience_retried.clear()
-    _audience_retried[channel] = time.monotonic()
+    _audience_retried[room] = time.monotonic()
     # A clean context, as the re-arm timer has: no Stop fence of the caller rides along.
-    loop.call_later(_AUDIENCE_RETRY_SECS, _schedule, channel, context=contextvars.Context())
+    loop.call_later(_AUDIENCE_RETRY_SECS, _schedule, room, context=contextvars.Context())
 
 
 def _publish_aggregate(state: Any, binding: Any, snapshot: Any) -> None:
@@ -484,7 +534,7 @@ def _refused_word(state: Any, binding: Any) -> str:
     from kiro_crew.slack.code_channels import surface
     from kiro_crew.slack.code_channels.board import source
 
-    if surface.channel_stopped(str(getattr(binding, "channel_id", "") or "")):
+    if surface.channel_stopped(room_key(binding)):
         return "stopped"
     if source.scope_refusal(state, binding) == source.SCOPE_CONFIRMED:
         return "out_of_scope"
@@ -528,7 +578,8 @@ async def publish(binding: Any, snapshot: Any) -> str:
     # The sidebar's summary from the same snapshot the board shows.
     _publish_aggregate(state, binding, snapshot)
     owner = str(getattr(state, "owner_id", "") or "")
-    channel = str(getattr(binding, "channel_id", "") or "")
+    channel = room_key(binding)  # the board's key: the channel's, or the thread's
+    thread = getattr(binding, "thread", False) is True
     cancelled = False
     refused: list[bool] = []
 
@@ -540,7 +591,9 @@ async def publish(binding: Any, snapshot: Any) -> str:
         return ok
 
     try:
-        code = await _code_tab_shown(binding)
+        # A Conductor thread has no Code tab, Workers tab or PR tabs (they are
+        # ``agents.conversations.*`` surfaces): only its board message.
+        code = False if thread else await _code_tab_shown(binding)
         from kiro_crew.slack.code_channels.board import stops
 
         # A Stop from the Workers tab shows within seconds: both edit gaps are
@@ -551,8 +604,12 @@ async def publish(binding: Any, snapshot: Any) -> str:
         urgent = stops.take_urgent(
             r.session_key for r in getattr(snapshot, "rows", ()) if r.stopped
         )
-        await tabs.publish_workers(binding, snapshot, link_for=link_for, code=code, urgent=urgent)
-        linked = tabs.tabs_for(await get_async(channel), channel, code=code)
+        linked = None
+        if not thread:
+            await tabs.publish_workers(
+                binding, snapshot, link_for=link_for, code=code, urgent=urgent
+            )
+            linked = tabs.tabs_for(await get_async(channel), channel, code=code)
         if snapshot is not None and not source.scope_admits(state, binding):
             # Asked again after the Workers tab's awaits: the scope may have
             # changed since the check above.

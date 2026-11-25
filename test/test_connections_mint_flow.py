@@ -578,6 +578,19 @@ async def test_a_refuted_grant_whose_fresh_spawn_fails_stays_unproven(
     }
     attempts = iter([_FakeClient, _RefutedThenFailing])
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+    # A kiro-cli that would say it is signed out is never asked: the reason is set.
+    from kiro_crew import kiro_prerequisite
+
+    asked: list[bool] = []
+
+    class _Service:
+        async def signed_out_confirmed(self) -> bool:
+            asked.append(True)
+            return True
+
+    service = _Service()
+    monkeypatch.setattr(kiro_prerequisite, "_turn_auth_service", None)
+    kiro_prerequisite.register_turn_auth_service(service)  # type: ignore[arg-type]
 
     await mint.start_oauth_mint("notion", _URL)
 
@@ -586,6 +599,7 @@ async def test_a_refuted_grant_whose_fresh_spawn_fails_stays_unproven(
         "reason": "mint_grant_unproven",
     }
     assert logged == ["error reason=mint_grant_unproven"]
+    assert asked == []
 
 
 def _async_value(value: bool):
@@ -1426,6 +1440,91 @@ async def test_a_missing_kiro_cli_records_its_own_reason(monkeypatch: pytest.Mon
         "state": "failed",
         "reason": "mint_kiro_cli_missing",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("whoami_signed_out", "expected"),
+    [
+        (True, "mint_kiro_cli_signed_out"),
+        (False, "mint_acperror"),
+        (None, "mint_acperror"),
+    ],
+    ids=["whoami-signed-out", "whoami-not-signed-out", "no-registered-service"],
+)
+async def test_a_failed_ready_wait_asks_kiro_cli_whether_it_is_signed_out(
+    monkeypatch: pytest.MonkeyPatch, whoami_signed_out: bool | None, expected: str
+):
+    """``ensure_ready`` raises the mint client's ``AcpError`` with no missing-CLI tag.
+
+    A registered prerequisite service answering True records the signed-out
+    reason; one answering False, or no registered service (the real
+    ``kiro_signed_out_confirmed``), keeps the coarse ``mint_acperror``.
+    """
+    from kiro_crew import kiro_prerequisite
+    from kiro_crew.acp.transport_errors import AcpError
+
+    class _SignedOut(_FakeClient):
+        async def ensure_ready(self) -> None:
+            raise AcpError("ACP process exited (code=1)")
+
+    asked: list[bool] = []
+
+    class _Service:
+        async def signed_out_confirmed(self) -> bool:
+            assert whoami_signed_out is not None
+            asked.append(whoami_signed_out)
+            return whoami_signed_out
+
+    service = _Service()
+    monkeypatch.setattr(kiro_prerequisite, "_turn_auth_service", None)
+    if whoami_signed_out is not None:
+        kiro_prerequisite.register_turn_auth_service(service)  # type: ignore[arg-type]
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _SignedOut)
+
+    await asyncio.wait_for(mint.start_oauth_mint("notion", _URL), timeout=30)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {"state": "failed", "reason": expected}
+    assert asked == ([] if whoami_signed_out is None else [whoami_signed_out])
+
+
+@pytest.mark.asyncio
+async def test_a_server_failure_report_keeps_its_reason_without_asking_kiro_cli(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The server reported, so kiro-cli had started: its sign-in is not asked about."""
+    from kiro_crew import kiro_prerequisite
+
+    class _FailsLate(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            self.frames.append(
+                JsonRpcMessage(
+                    method=METHOD_MCP_SERVER_INIT_FAILURE,
+                    params={"serverName": "notion", "error": "connection refused"},
+                )
+            )
+
+    asked: list[bool] = []
+
+    class _Service:
+        async def signed_out_confirmed(self) -> bool:
+            asked.append(True)
+            return True
+
+    service = _Service()
+    monkeypatch.setattr(kiro_prerequisite, "_turn_auth_service", None)
+    kiro_prerequisite.register_turn_auth_service(service)  # type: ignore[arg-type]
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FailsLate)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_server_failed",
+    }
+    assert asked == []
 
 
 @pytest.mark.asyncio

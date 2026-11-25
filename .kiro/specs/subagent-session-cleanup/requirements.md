@@ -1,10 +1,10 @@
 # Requirements Document
 
-Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks.
+Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks. Claude_Code_Provider and Bedrock_Provider are not shipped; ACP is the only provider. On main, `AcpProvider.cleanup_session` (`src/kiro_crew/providers/acp_lifecycle.py`) picks the store by ACP backend: a KAS session goes to `AcpSessionProvider.cleanup_session` (`_kiro/session/delete`); Claude, Codex and OpenCode sessions delete their own stores; only a Kiro CLI session unlinks the two flat files `~/.kiro/sessions/cli/{session_id}.json` and `.jsonl` (`_delete_kiro_session_files`).
 
 ## Introduction
 
-Subagent spawns (cron notifications, watchlist checks, Mochi pet actions, user-initiated spawns) create LLM provider session files on disk that persist indefinitely after the subagent completes. The gateway's `SubagentManager` cleans up its own metadata (`~/.kirocrew/subagents/` folders with tombstones and 7-day pruning), but the underlying LLM provider session files (e.g., `~/.kiro/sessions/cli/{session_id}/`) have no cleanup mechanism. This leads to unbounded disk growth — one user accumulated 26,000+ orphan session files in two weeks.
+Subagent spawns (cron notifications, watchlist checks, Mochi pet actions, user-initiated spawns) create LLM provider session files on disk that persist indefinitely after the subagent completes. The gateway's `SubagentManager` cleans up its own metadata (`~/.kiro/crew/subagents/{id}/` folders with tombstones and 7-day pruning), but the underlying LLM provider session files (e.g., `~/.kiro/sessions/cli/{session_id}.json` and `.jsonl`) have no cleanup mechanism. This leads to unbounded disk growth — one user accumulated 26,000+ orphan session files in two weeks.
 
 This feature adds a provider-agnostic session file cleanup mechanism that integrates with the existing subagent lifecycle, ensuring session files are deleted when subagents complete, are reaped, or are pruned during tombstone cleanup.
 
@@ -13,7 +13,7 @@ This feature adds a provider-agnostic session file cleanup mechanism that integr
 - **Session_Cleanup_Interface**: An abstract method on `LLMProvider` that each provider implements to delete its own on-disk session files given a session identifier.
 - **SessionManager**: The component (`session.py`) that maps session keys to `LLMProvider` instances and manages their lifecycle.
 - **SubagentManager**: The component (`subagent.py`) that spawns, tracks, and reaps isolated background agents.
-- **ACP_Provider**: The LLM provider wrapping kiro-cli (JSON-RPC over stdio), storing sessions in `~/.kiro/sessions/cli/{session_id}/`.
+- **ACP_Provider**: The LLM provider wrapping kiro-cli (JSON-RPC over stdio), storing a Kiro CLI session as `~/.kiro/sessions/cli/{session_id}.json` and `.jsonl`.
 - **Claude_Code_Provider**: The LLM provider wrapping the `claude` CLI, operating in `per_session` or `ephemeral` mode.
 - **Bedrock_Provider**: The text-only LLM provider using AWS Bedrock `converse_stream()` with no persistent session files.
 - **Tombstone**: A JSON file (`tombstone.json`) written to a subagent's folder on abnormal exit, marking it for eventual pruning.
@@ -29,7 +29,7 @@ This feature adds a provider-agnostic session file cleanup mechanism that integr
 #### Acceptance Criteria
 
 1. THE Session_Cleanup_Interface SHALL define an async method `cleanup_session(session_id: str) -> None` on the `LLMProvider` abstract base class
-2. WHEN `cleanup_session` is called on the ACP_Provider, THE ACP_Provider SHALL delete the session directory at `~/.kiro/sessions/cli/{session_id}/` including all contained files
+2. WHEN `cleanup_session` is called on the ACP_Provider, THE ACP_Provider SHALL delete the native session record of that session (for a Kiro CLI session, the files `~/.kiro/sessions/cli/{session_id}.json` and `.jsonl`)
 3. WHEN `cleanup_session` is called on the Claude_Code_Provider in ephemeral mode, THE Claude_Code_Provider SHALL perform no file deletion (no-op)
 4. WHEN `cleanup_session` is called on the Claude_Code_Provider in per_session mode, THE Claude_Code_Provider SHALL delete the session state files associated with that session
 5. WHEN `cleanup_session` is called on the Bedrock_Provider, THE Bedrock_Provider SHALL perform no file deletion (no-op)

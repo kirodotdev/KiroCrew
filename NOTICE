@@ -66,3 +66,11 @@ carried:
 
 Both projects are licensed under the MIT License; the full license text
 is reproduced under "Feishu Streaming Card" in THIRD-PARTY-NOTICES.
+
+The Python package vendors llama-cpp-python 0.3.34 (MIT) under
+src/kiro_crew/_vendor/llama_cpp/ and the llama.cpp and ggml native libraries
+it loads (MIT) under src/kiro_crew/_vendor/llama_cpp_libs/. The Linux
+library directories also carry the GNU OpenMP runtime (libgomp), licensed
+under the GNU General Public License v3 with the GCC Runtime Library
+Exception 3.1. Their notices and license texts are under "Vendored
+Libraries" in THIRD-PARTY-NOTICES.

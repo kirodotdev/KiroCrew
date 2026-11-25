@@ -199,8 +199,9 @@ class CronJob:
     refusal_cannot_clear: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run did
     # nothing a person would look for in the run history (a gateway job's quiet
-    # tick, which woke no one), so the run writes no history row. Reset at the
-    # start of every run.
+    # tick, which woke no one, or a wait for the host sign-in that its notice
+    # already reports), so the run writes no history row. Reset at the start of
+    # every run.
     quiet_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was a
     # script's Skip(), so its history row is marked idle and the Logs tab can
@@ -299,6 +300,11 @@ class CronJob:
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
     person_owner_key: str = ""  # session_key MCP cron_add saw as a live person's tab
+    # The Bot that made this job through ``cron_add`` and the Profile approval mode
+    # it held then (``cron_service.owner_grant``). Read at each fire together with
+    # the Bot's live Profile, so the job never runs above either. "" = no grant.
+    owner_member_id: str = ""
+    owner_approval_mode: str = ""
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)

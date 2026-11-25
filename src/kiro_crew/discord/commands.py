@@ -41,7 +41,8 @@ _BOT_ALIASES = frozenset(("!bot", "/bot", "!bots", "/bots"))
 # ``!models`` (plural) is a typo-safe alias for the same reason.
 _MODEL_ALIASES = frozenset(("!model", "/model", "!models", "/models"))
 _STATUS_ALIASES = frozenset(("!status", "/status"))
-_AGENT_ALIASES = frozenset(("!agent", "/agent"))
+# ``!agents`` (plural) is a typo-safe alias for the same reason.
+_AGENT_ALIASES = frozenset(("!agent", "/agent", "!agents", "/agents"))
 
 _PREFIXES = ("!", "/")
 
@@ -59,7 +60,10 @@ def parse_command(text: str) -> str | None:
     'link', 'unlink', 'stop', 'help'.
     """
     stripped = text.strip()
-    cmd = stripped.split()[0].lower() if stripped.startswith(_PREFIXES) and stripped.split() else ""
+    if not stripped.startswith(_PREFIXES):
+        return None
+    # Prefix-led after a strip, so the first token always exists.
+    cmd = stripped.split()[0].lower()
     if cmd in _NEW_ALIASES:
         return "new"
     if cmd in _COMPACT_ALIASES:

@@ -3,7 +3,8 @@ message carries for the same run.
 
 A run checked later through a status tool must not read as a clean success when
 its completion message said otherwise: failed agent calls / preserved partials
-for a workflow, ``made_no_tool_calls`` / ``leaked_tool_call`` for a sub-agent.
+for a workflow, ``made_no_tool_calls`` / ``leaked_tool_call`` / ``crew_tools_withheld``
+for a sub-agent.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from kiro_crew import mcp_core
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.mcp_core import _call_tool_inner
 from kiro_crew.mcp_shared import DeferredTool
+from kiro_crew.subagent import CREW_TOOLS_WITHHELD_NOTE
 
 
 def _call(tool: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -60,14 +62,24 @@ def test_workflow_status_clean_line_unchanged(value: Any) -> None:
     assert "failed" not in baseline and "preserved" not in baseline
 
 
+_WITHHELD = CREW_TOOLS_WITHHELD_NOTE.format(reason="a settings file in its folder held them")
+
+
 @pytest.mark.parametrize(
-    ("flag", "note"),
-    [("made_no_tool_calls", NO_TOOL_CALLS_NOTE), ("leaked_tool_call", LEAKED_TOOL_CALL_NOTE)],
-    ids=["no_tool_calls", "leaked_tool_call"],
+    ("flag", "value", "note"),
+    [
+        ("made_no_tool_calls", True, NO_TOOL_CALLS_NOTE),
+        ("leaked_tool_call", True, LEAKED_TOOL_CALL_NOTE),
+        # The endpoint sends the finished note itself, not a flag.
+        ("crew_tools_withheld", _WITHHELD, _WITHHELD),
+    ],
+    ids=["no_tool_calls", "leaked_tool_call", "crew_tools_withheld"],
 )
 @pytest.mark.parametrize("args", [{}, {"offset": 1, "limit": 5}], ids=["full", "paged"])
-def test_spawn_status_carries_completion_note(flag: str, note: str, args: dict) -> None:
-    payload: dict[str, Any] = {"done": True, "result": "wrote a.py, commit abc", flag: True}
+def test_spawn_status_carries_completion_note(
+    flag: str, value: object, note: str, args: dict
+) -> None:
+    payload: dict[str, Any] = {"done": True, "result": "wrote a.py, commit abc", flag: value}
     if args:
         payload["result_meta"] = {"total_lines": 3, "offset": 1, "returned_lines": 1}
     out = _call("spawn_status", {"agent_id": "a1", **args}, payload)

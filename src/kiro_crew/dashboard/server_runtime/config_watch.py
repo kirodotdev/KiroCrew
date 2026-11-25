@@ -261,7 +261,8 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
             # Connected computers has server behavior: switching it off ends its
-            # live sockets (scheduled off this cycle). A no-op while it stays off.
+            # live sockets and local grants (scheduled off this cycle). A no-op
+            # while it stays off.
             from kiro_crew.connected_computers import disable as connected_computers
 
             connected_computers.apply(change)
@@ -319,6 +320,17 @@ def _register_config_watch(
         if change.touched("apps"):
             state.push_refresh("config")
 
+    def _push_bot_session_listing(change: ConfigChange) -> None:
+        # Each Bot thread's row carries whether its sessions are listed
+        # (``crew_mode.stamp_rows``: the global switch, else the Bot's own), so a
+        # flip of either from any writer re-sends the slot list and refreshes the
+        # roster and config, and every dashboard's lists and switches follow it.
+        per_bot = any(p.endswith(".show_sessions_in_list") for p in change.under("agents"))
+        if not per_bot and not change.touched("dashboard.show_bot_sessions_in_list"):
+            return
+        state.push_slots_update()
+        state.push_refresh("agents")
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -332,6 +344,22 @@ def _register_config_watch(
         if not change.touched("dashboard.browser_local_origins", "browser"):
             return
         state.push_refresh("config")
+
+    async def _reconcile_bot_chat_app_tools(change: ConfigChange) -> None:
+        # Switching the preview adds or takes away app servers on every Bot chat
+        # that has them, from whichever writer flipped it.
+        from kiro_crew import bot_chat_app_tools
+
+        await bot_chat_app_tools.on_preview_change(state, change)
+
+    async def _revoke_execution_denied_bot_chats(change: ConfigChange) -> None:
+        # Closing blanket third-party trust or removing a per-app grant removes
+        # execution admission for apps that relied on it.  Bot chats that are
+        # currently running those apps must be stopped immediately -- the same
+        # path individual trust revocation takes via stop_app_bot_chat_servers.
+        from kiro_crew import bot_chat_app_tools
+
+        await bot_chat_app_tools.on_execution_trust_change(state)
 
     async def _alarm_crewmate_harness_fallback(change: ConfigChange) -> None:
         # A new Settings harness Crew bots cannot run on moves them onto KAS, and so
@@ -396,7 +424,28 @@ def _register_config_watch(
             callback=_stop_put_off_update,
             name="dashboard.update_nudge",
         ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_reconcile_bot_chat_app_tools,
+            name="dashboard.bot_chat_app_tools",
+        ),
+        live.subscribe(
+            "agent.apps_allow_third_party",
+            "agent.apps_trusted",
+            "agent.apps_trusted_repositories",
+            "agent.apps_trusted_local",
+            callback=_revoke_execution_denied_bot_chats,
+            name="agent.bot_chat_execution_trust",
+        ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe(
+            "dashboard.show_bot_sessions_in_list",
+            callback=_push_bot_session_listing,
+            name="dashboard.show_bot_sessions_in_list",
+        ),
+        live.subscribe(
+            "agents", callback=_push_bot_session_listing, name="agents.show_sessions_in_list"
+        ),
         live.subscribe(
             "dashboard.command_bar_enabled",
             callback=_push_command_bar,
@@ -433,8 +482,9 @@ def _register_config_watch(
             await live.watch().stop()
         except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
             logger.warning("Config watcher stop failed during shutdown", exc_info=True)
-        # Connected computers: close remote connector sockets; records are kept.
-        # Nothing to close (a no-op) unless the preview was on.
+        # Connected computers: stop local connectors (and their process trees)
+        # and close remote connector sockets. Grants and records are kept.
+        # Nothing to stop (a no-op) unless the preview was on.
         from kiro_crew.connected_computers.disable import shutdown as connected_shutdown
 
         try:
@@ -449,6 +499,14 @@ def _register_config_watch(
                 await lifecycle.shutdown()
             except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
                 logger.warning("Dynamic cards shutdown failed", exc_info=True)
+        # Cancel back-off retry timers for unconfirmed KAS close handles so they
+        # do not fire after the event loop is closed.
+        try:
+            from kiro_crew.bot_chat_app_tools import cancel_pending_close_timers
+
+            cancel_pending_close_timers()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Bot-chat pending-close timer cancel failed", exc_info=True)
 
     app.on_cleanup.append(_config_watch_shutdown)
 
@@ -489,6 +547,11 @@ def _kick_config_watch(app: web.Application, state: DashboardState) -> None:
             await live.watch().start(initial=initial)
         except Exception:  # noqa: BLE001 — a dead watcher must not take the gateway down
             logger.warning("Live config watcher failed to start", exc_info=True)
+        # Post-bind, in this background task: the local controller of connected
+        # computers, only when this machine opted in. Off starts and reads nothing.
+        from kiro_crew.connected_computers.disable import start_if_enabled
+
+        start_if_enabled()
 
     task = asyncio.create_task(_start())
     state._background_tasks.add(task)

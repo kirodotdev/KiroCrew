@@ -1,7 +1,11 @@
-"""``request_server``: any template-based session asks the user for an MCP server it lacks.
+"""``request_server``: a session asks the user to add, change or remove an MCP server.
 
-The tool names a server and where it comes from; it never carries a launch line,
-a session or a template. The gateway resolves the calling session from its
+Agents cannot write the MCP config files, so this is how one asks. A server for
+the agent's own template names the server and where it comes from and carries no
+launch line; a server on the MCP page (``source`` ``custom``, or ``action``
+``change`` / ``remove``) carries its whole entry, which the card shows in full
+(``dashboard.handlers.request_server_page``). It never carries a session or a
+template. The gateway resolves the calling session from its
 attested key (``POST /api/cards/agent/request-server``), works out the agent
 template that session runs on, builds the server entry from a server this
 gateway already runs or the official registry's install plan, and raises a
@@ -31,7 +35,17 @@ def request_server(name: str, args: dict[str, Any]) -> str:
     )
     if not session:
         return refusal
-    body = {k: args[k] for k in ("server", "source", "registry_id", "reason") if k in args}
+    keys = (
+        "action",
+        "server",
+        "source",
+        "registry_id",
+        "entry",
+        "uses_chat_folder",
+        "target",
+        "reason",
+    )
+    body = {k: args[k] for k in keys if k in args}
     result = mcp_core._post(REQUEST_SERVER_PATH, body, session_key=session)
     if not isinstance(result, dict):
         return "Error: unexpected gateway answer"

@@ -18,7 +18,8 @@ methods read builder state through ``self``, so a class or instance patch applie
 
 Builder state read and written: ``_bot_name``; ``_cap_figures`` and
 ``_cap_figures_lock``; ``_computer_use_gates`` and ``_computer_use_gates_lock``;
-``_browser_gates`` and ``_browser_gates_lock``; the class constants
+``_browser_gates`` and ``_browser_gates_lock``; ``_engine_subagent_gates`` and
+``_engine_subagent_gates_lock``; the class constants
 ``_CAP_FIGURE_SESSIONS``, ``_MAX_SUBAGENTS_TOKEN`` and ``_COMPUTER_USE_TOKEN``.
 
 New agent-spec reads and prompt templates belong here.
@@ -773,9 +774,9 @@ def _resolve_agent_prompt(
     project: str | None,
     mode: str,
     session_key: str | None,
-    is_cc: bool,
     private_owner: bool,
     session_start: bool,
+    provider_type: str | None = None,
 ) -> str:
     """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
@@ -786,10 +787,17 @@ def _resolve_agent_prompt(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.agent_sdk.kas_tool_names import backend_of_provider_label
 
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    # Asked of the backend behind the provider label
+    # (``SessionCapabilities.crew_sends_persona_prompt``); a label no known backend
+    # carries, ``None`` and ``""`` answer False.
+    backend = backend_of_provider_label(provider_type)
+    sends_persona = backend is not None and capabilities_for(backend).crew_sends_persona_prompt
     agent_prompt: str
-    if is_cc and not is_custom:
+    if sends_persona and not is_custom:
         # CC gets the same Kiro Crew persona prompt as kiro — including
         # the Output Format rules (diff blocks, image embeds, OPTIONS)
         # which are dashboard UI contracts, not kiro-specific. Only the
@@ -835,7 +843,26 @@ def _resolve_agent_prompt(
             refresh=session_start,
         ),
         substitute_bot_name=self._substitute_bot_name,
+        engine_subagents=lambda: self._session_reading(
+            self._engine_subagent_gates,
+            self._engine_subagent_gates_lock,
+            key,
+            lambda: _live_engine_subagents(provider_type, agent, key),
+            refresh=session_start,
+        ),
     )
+
+
+def _live_engine_subagents(provider_type: str | None, agent: str | None, key: str) -> str:
+    """A live reading of how *key*'s contract names the engine's sub-agent tool."""
+    from kiro_crew.agent_sdk.kas_engine_subagents import (
+        DEFAULT_AGENT,
+        contract_engine_subagent_mode,
+    )
+
+    # No agent named is the default agent, as ``_resolve_agent_prompt`` reads it, so
+    # this reading agrees with the session head's, which names it.
+    return contract_engine_subagent_mode(provider_type, agent or DEFAULT_AGENT, key)
 
 
 def _render_contract(
@@ -847,6 +874,7 @@ def _render_contract(
     computer_use: Callable[[], bool],
     browser: Callable[[], bool],
     substitute_bot_name: Callable[[str], str],
+    engine_subagents: Callable[[], str] = lambda: "",
 ) -> str:
     """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
 
@@ -880,6 +908,14 @@ def _render_contract(
             conductor=agent == MATE_CONDUCTOR_AGENT,
             own_thread=is_member_session_key(session_key),
         )
+    # A KAS chat whose agent mounts the engine's own sub-agent tool: the one
+    # ``spawn_sub_agents`` sentence names that tool instead (the kas_subagents preview).
+    from kiro_crew.agent_sdk import kas_engine_subagents as _engine
+
+    if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt:
+        mode = engine_subagents()
+        if mode:
+            agent_prompt = _engine.with_engine_sentence(agent_prompt, mode)
     # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
     # shared core and conductor tail, the same constants Conductor mode carries)
     # rides here at agent rank. After any user prompt.md is read, so a custom

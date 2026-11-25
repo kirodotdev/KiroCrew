@@ -45,6 +45,7 @@ function build(folders: ChatFolder[] = FOLDERS, mode: FolderSortMode = 'custom')
     fetchFolders: async () => folders,
     revealFolder,
     mode,
+    listedSlots: [],
   })
   return { provider, revealFolder }
 }

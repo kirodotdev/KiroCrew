@@ -29,6 +29,16 @@ on:
         description: "Name of the uploaded artifact containing the wheel"
         required: true
         type: string
+      verify_only:
+        description: >-
+          Run the platform-wheel gate and stop: the publish job is skipped, so
+          nothing reaches the distribution bucket, the feed or the manifest
+          signing key. verify-cli-publish.yml passes true so a fix to this
+          lane can be checked from a branch without publishing. Every other
+          caller leaves it false.
+        required: false
+        type: boolean
+        default: false
       promote:
         description: "Publish verified prerelease bytes to stable without rebuilding"
         required: false
@@ -119,8 +129,9 @@ jobs:
   publish-cli:
     name: Publish CLI wheel (${{ inputs.channel }})
     needs: verify-platform-wheels
-    # A promotion carries no platform wheels, so the gate is skipped there.
-    if: ${{ !cancelled() && (needs.verify-platform-wheels.result == 'success' || (inputs.promote && needs.verify-platform-wheels.result == 'skipped')) }}
+    # A promotion carries no platform wheels, so the gate is skipped there. A
+    # verify_only call never publishes, whatever the gate says.
+    if: ${{ !cancelled() && !inputs.verify_only && (needs.verify-platform-wheels.result == 'success' || (inputs.promote && needs.verify-platform-wheels.result == 'skipped')) }}
     # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
     # than by GROUP. nightly.yml calls this lane with no repository guard, so a
     # fork running its own nightly starts it too; there an organization runner

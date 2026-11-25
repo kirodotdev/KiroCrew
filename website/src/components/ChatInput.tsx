@@ -7,6 +7,7 @@ import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
+import { useDictationPanelUsable } from './VoiceDictationPanel'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
 import { ApprovalActions } from './chat-input/ApprovalActions'
 import { DenyOverrideWarning } from './DenyOverrideDropdown'
@@ -92,8 +93,10 @@ import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
+import { clipboardFiles, hasPlainClipboardText } from './composerPastePolicy'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
+import { AskedBySubagent, ApprovalSubagentTask } from './chat-input/ApprovalSubagent'
 import { useTypingLockKeys } from './chat-input/typingLockKeys'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
@@ -239,6 +242,7 @@ function ChatInput({
   stopState,
   approvalMode,
   approvalModeRemote,
+  approveForMe,
   afterApprovalMode,
   reasoningEffort,
   effortIsDefault = false,
@@ -336,9 +340,8 @@ function ChatInput({
     voiceDeviceId = '',
     voiceDictationPanel = false,
     voiceSubmitOnRelease = false, voiceSlideToSend = false, voicePttBinding = null, voiceMuted = false, onVoiceToggleMute,
-    voiceStreaming = false,
+    voiceTransport = null,
     voiceSampleRef,
-    voicePartial = '',
     voiceDownload = null,
     voiceCaretRef,
     voicePendingCaretRef,
@@ -358,6 +361,10 @@ function ChatInput({
   // the draft stays legible, the caret keeps its focus, and the box unlocks in
   // place the moment the lease ends.
   const typingLocked = !!typingLock
+  // Streaming partials replace the dictated region from the capture snapshot.
+  // Keep the editor selectable, but do not accept text edits until capture ends.
+  const dictationPanelUsable = useDictationPanelUsable(voiceDictationPanel && voiceRecording)
+  const streamingDictationReadOnly = voiceRecording && voiceTransport === 'stream' && dictationPanelUsable && !voiceError && !!voiceSampleRef
   // A peer session's folder is another machine's: only the chip shows it.
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
@@ -390,7 +397,7 @@ function ChatInput({
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsUnattended,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, approvalSubagentTask, approvalAskedBySubagent, showGhost, showInChat,
   } = approval
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
@@ -470,7 +477,8 @@ function ChatInput({
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
   const { publishLexicalSelection, recordCaret, holdCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
-    voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle,
+    voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing,
+    streamingReadOnly: streamingDictationReadOnly, onVoiceCancel, onVoiceToggle,
   })
   const wrapperRef = useRef<HTMLDivElement>(null)
   const { inputAreaRef, keyboardLift } = useInputAreaKeyboardLift()
@@ -596,7 +604,13 @@ function ChatInput({
   // not the callback itself: the handler's identity may change every render
   // and would re-run the effect for nothing.
   const hasAutomation = !!onAutomationClick
-  useEffect(() => { remeasureControlRow() }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
+  // Not on mount: the row's observer measures it on its first delivery, and a
+  // read here would force a layout inside the commit that opens a session.
+  const controlRowMountedRef = useRef(false)
+  useEffect(() => {
+    if (!controlRowMountedRef.current) { controlRowMountedRef.current = true; return }
+    remeasureControlRow()
+  }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT(terminal.canAdvertise
     ? 'components.chatInput.message_placeholder_terminal'
@@ -691,7 +705,7 @@ function ChatInput({
   const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize, optimizeBusy, sayBusy } = usePromptOptimizer({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands, optimizerMentionGuard,
-    composerDisabled: disabled || typingLocked,
+    composerDisabled: disabled || typingLocked || streamingDictationReadOnly,
   })
   useEffect(() => { onOptimizingChange?.(optimizing) }, [optimizing, onOptimizingChange])
   // A locked composer (a memory-mode switch is moving its draft) must not
@@ -718,7 +732,7 @@ function ChatInput({
   // or a file would each change the kept draft, and `readOnly` stops none of
   // those programmatic edits.
   const treeDrop = useComposerTreeDrop({
-    enabled: !disabled && !optimizing && !typingLocked,
+    enabled: !disabled && !optimizing && !typingLocked && !streamingDictationReadOnly,
     project: project ?? '',
     onTreeEntryDrop,
     clampDropOffset,
@@ -726,7 +740,7 @@ function ChatInput({
     containerRef: wrapperRef,
     onDragOver,
     onDragLeave,
-    onDrop: typingLocked ? undefined : onDrop,
+    onDrop: typingLocked || streamingDictationReadOnly ? undefined : onDrop,
   })
   const {
     mirrorRef, hoverRef, pastePreviewPanelId, setPastePreviewPanelId, rawPasteRef, noteKeyDown,
@@ -770,10 +784,12 @@ function ChatInput({
     return stopTurnOnEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
   }, ESCAPE_PRIORITY.composer)
   // A rich editor that is not editable drops every key, so Escape stops nothing there.
-  const richDropsKeys = lexicalComposer && !lexicalLoadFailed && (typingLocked || disabled)
+  const richDropsKeys = lexicalComposer && !lexicalLoadFailed && (typingLocked || disabled || streamingDictationReadOnly)
   const lockedKeyDown = useTypingLockKeys({
-    lockedRich: typingLocked && lexicalComposer && !lexicalLoadFailed,
-    isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
+    lockedRich: lexicalComposer && !lexicalLoadFailed && (typingLocked || streamingDictationReadOnly),
+    isRunning,
+    allowIdleSend: streamingDictationReadOnly,
+    sendOnEnter, connected, fireComposer: sendOrOptimize, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
   })
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef,
@@ -816,7 +832,7 @@ function ChatInput({
     voiceModePlaceholder, sendZone, setPointerHoldTarget,
   } = useHoldToTalk({
     onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
-    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked, optimizing, placeholder, showDictation, holdCaret, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
+    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked, optimizing, placeholder, holdCaret, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
@@ -1017,11 +1033,21 @@ function ChatInput({
         onConfirm={terminal.confirm}
         onCancel={terminal.cancelConfirmation}
       />
-      {/* No hand-off: the command draft must survive a failed terminal startup. */}
-      <ErrorNotice message={terminal.failure === 'limit' ? i18nT('components.chatInput.terminal_limit')
-        : terminal.failure === 'failed' ? i18nT('components.chatInput.terminal_failed') : undefined}
-        variant={terminal.failure === 'failed' ? 'inline' : 'block'}
-        onDismiss={terminal.dismissFailure} />
+      {/* No hand-off: the command draft must survive a failed terminal startup.
+          On the dock's glass at the `thick` step, as the Read aloud bar is: the
+          notice alone lets the transcript under the dock show through it. The
+          block one is `nested` on a danger pane; the inline one keeps a plain
+          pane, where its red text holds AA contrast. */}
+      {terminal.failure === 'limit' && (
+        <Glass variant="chip" thickness="thick" radius={8} className="glass-danger mb-1.5 px-3 pb-2.5">
+          <ErrorNotice nested message={i18nT('components.chatInput.terminal_limit')} onDismiss={terminal.dismissFailure} />
+        </Glass>
+      )}
+      {terminal.failure === 'failed' && (
+        <Glass variant="chip" thickness="thick" radius={8} className="mb-1.5 flex px-3 py-1.5">
+          <ErrorNotice message={i18nT('components.chatInput.terminal_failed')} variant="inline" onDismiss={terminal.dismissFailure} />
+        </Glass>
+      )}
       {terminal.active && (
         <div className="flex flex-col gap-1.5" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
           <div className="text-sm text-muted flex items-center gap-1.5" role="status">
@@ -1155,6 +1181,7 @@ function ChatInput({
                                   <Lock size={12} className="text-warn shrink-0" style={{ marginTop: '3px' }} />
                                   <span className="text-muted break-words min-w-0 line-clamp-2">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
                               </div>
+                              <AskedBySubagent name={approvalAskedBySubagent} />
                               <ToolDetails
                                   purpose={approvalPurpose}
                                   pillLabel={approvalLabel}
@@ -1175,10 +1202,11 @@ function ChatInput({
                       </motion.div>
                   )}
               </AnimatePresence>
+              <ApprovalSubagentTask task={approvalSubagentTask} />
               <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
                   {!showGhost && <>
                       <Lock size={12} className="text-warn shrink-0" />
-                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
+                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} /><AskedBySubagent name={approvalAskedBySubagent} />
                   </>}
                   {showGhost && <div className="flex-1 min-w-0" />}
                   {showGhost && approvalToolCallId && (
@@ -1399,9 +1427,9 @@ function ChatInput({
         </div>
 
         <VoiceCaptureStatus
-          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} sendZone={sendZone} sendSteers={steerActive && !steerAuto && !terminal.active} showDictation={showDictation} value={value} voicePartial={voicePartial}
+          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} sendZone={sendZone} sendSteers={steerActive && !steerAuto && !terminal.active} showDictation={showDictation} value={value}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
-          voiceStreaming={voiceStreaming} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
+          voiceIsStreaming={voiceTransport === 'stream'} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
           onClearVoiceError={onClearVoiceError} voiceDrainCancellable={voiceDrainCancellable} cancelVoiceDrain={cancelVoiceDrain} onVoiceToggle={onVoiceToggle}
           micHeldElsewhere={micHeldElsewhere} micHeldElsewhereLabel={micHeldElsewhereLabel} micHeldElsewhereAction={micHeldElsewhereAction} voiceHeldLanded={voiceHeldLanded} voiceMuted={voiceMuted} onVoiceToggleMute={onVoiceToggleMute}
         />
@@ -1445,11 +1473,20 @@ function ChatInput({
           onKeyDown={promptStashEnabled ? promptStash.onKeyDown : undefined}
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
-          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
+          className={/* Typing-locked, the column wears the disabled look of the app's other inert inputs (hover fill, editor at 40%, not-allowed cursor) so it cannot pass for a box that takes typing. Only the editor dims: a staged quote here and the row below keep working, and keep their look. */ `relative ${typingLocked ? 'bg-bg-hover cursor-not-allowed [&_[data-composer-input]]:opacity-40 [&_[data-composer-input]]:cursor-not-allowed' : ''} ${voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
           // Composing in either editor (textarea or rich text) re-arms a reclaimed session's
           // resume prefetch (the sender throttles); ⌘⇧U / Ctrl+Shift+U in either opens Upload file.
           onFocusCapture={() => emitComposeIntent(slotId)}
           onKeyDownCapture={e => { emitComposeIntent(slotId); followUpGhost.onKeyDownCapture(e); if (onUploadFiles && !uploading && !typingLocked && isUploadFileChord(e, ime)) { e.preventDefault(); openPicker(false) } }}
+          onPasteCapture={e => {
+            if (!streamingDictationReadOnly) return
+            const files = clipboardFiles(e.clipboardData)
+            e.preventDefault()
+            if (files.length && onUploadFiles && !uploading && !typingLocked && !disabled && !hasPlainClipboardText(e.clipboardData)) {
+              e.stopPropagation()
+              onUploadFiles(files)
+            }
+          }}
         >
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the
@@ -1498,7 +1535,7 @@ function ChatInput({
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
                 placeholder={activePlaceholder}
                 disabled={disabled}
-                readOnly={optimizing || typingLocked}
+                readOnly={optimizing || typingLocked || streamingDictationReadOnly}
                 sendOnEnter={sendOnEnter}
                 spellCheck={spellCheck}
                 inlineMarkdown={inlineMarkdown}
@@ -1540,9 +1577,9 @@ function ChatInput({
           placeholder={activePlaceholder}
           // A disabled composer takes no keystrokes either: `pointer-events-none`
           // alone still lets a focused textarea be typed into.
-          readOnly={optimizing || disabled || typingLocked}
+          readOnly={optimizing || disabled || typingLocked || streamingDictationReadOnly}
           aria-disabled={disabled || undefined}
-          aria-readonly={typingLocked || undefined}
+          aria-readonly={typingLocked || streamingDictationReadOnly || undefined}
           data-typing-locked={typingLocked ? '' : undefined}
           rows={1}
           value={value}
@@ -1565,9 +1602,9 @@ function ChatInput({
             },
             onBlur: e => { if (!listHintDismissRef.current || e.relatedTarget !== listHintDismissRef.current) setTextareaFocused(false); if (hoverRef.current) hoverRef.current.handleMouseLeave() },
           })}
-          onPaste={disabled || typingLocked ? e => e.preventDefault() : handlePaste}
+          onPaste={disabled || typingLocked || streamingDictationReadOnly ? e => e.preventDefault() : handlePaste}
           onCopy={handleCopy}
-          onCut={typingLocked ? handleCopy : handleCut}
+          onCut={typingLocked || streamingDictationReadOnly ? handleCopy : handleCut}
           onClick={handleTextareaClick}
           onMouseUp={handleSelectSnap}
           onSelect={handleSelectSnap}
@@ -1682,7 +1719,7 @@ function ChatInput({
                 />
               )}
               {!isMobile && approvalMode && (
-                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} approveForMe={approveForMe} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               {!isMobile && afterApprovalMode}
               </div>
@@ -1692,7 +1729,7 @@ function ChatInput({
                   over the translucent composer. */}
             </div>
             {isMobile && approvalMode && (
-              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
+              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} approveForMe={approveForMe} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
             {isMobile && afterApprovalMode}
           </div>
