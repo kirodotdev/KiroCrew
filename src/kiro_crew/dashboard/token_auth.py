@@ -32,6 +32,7 @@ from kiro_crew.dashboard.agent_ipc import agent_socket_gate, request_on_agent_so
 from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
+    is_entry_request,
     is_https_request,
     is_loopback,
     is_proxied_request,
@@ -513,6 +514,10 @@ def token_auth_middleware(
             """The pin key this request must satisfy (RFC §3)."""
             if peer is not None and tailnet_trust is not None:
                 return peer_pin_key(peer, tailnet_trust.pin_scope)
+            if is_entry_request(request):
+                # Every connection on the entry port is the same-machine proxy, and a
+                # proxy that dials ``localhost`` uses either loopback address.
+                return "ip:127.0.0.1"
             return f"ip:{request.remote or 'unknown'}"
 
         def _check_pin(
@@ -596,6 +601,8 @@ def token_auth_middleware(
                         source="token_auth",
                         resources=f"{repin_key} (first-use re-pin)",
                     )
+            if ok and is_entry_request(request):
+                _state.mark_address_pin_proxied(token, request_peer_key)
             return ok, mismatch
 
         # Internal API paths: loopback + secret grants immediate access.

@@ -408,6 +408,10 @@ class AcpRuntime:
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
         self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
+        # Per MCP OAuth client (url, client id), the digest (never the value) of the
+        # last secret this process's engine took through ``setClientSecret``
+        # (``kas_client_secret``). Reset at each handshake.
+        self._mcp_prereg_sent: dict[tuple[str, str], str] = {}
         # Set for a remote session: built-in file/shell tools give way to the workspace server.
         self._remote_workspace: Any = None
         # First answered credential callback per runtime is logged at INFO as a

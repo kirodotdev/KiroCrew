@@ -92,6 +92,7 @@ CAPABILITY_FIELDS = (
     "writes_crew_readable_transcript",
     "honors_chat_steering_off",
     "crew_sends_persona_prompt",
+    "loads_steering_natively",
 )
 
 

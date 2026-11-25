@@ -776,8 +776,9 @@ engine instead ([aws-control.md](aws-control.md)).
   vault still names that account, so a sign-in or sign-out from the dashboard
   or from `kirocrew kas login` / `kas logout` (`cli_kas_login.py`) turns it cold
   ([model-selection.md](../common/model-selection.md)). The dashboard drops its
-  own copy as well: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
-  and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
+  own copy as well: the sign-out (`useKiroSignOut` in
+  `pages/developer/KiroSignInSources.tsx`, behind the card's Sign out and "Use
+  the Kiro CLI account") and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
   model-list caches (`clearCachedModels`, a reset of `['available-models']`),
   because that query is otherwise refetched only when a session spawns. The
   authorized sign-in also asks for a fresh credit reading
@@ -787,10 +788,12 @@ engine instead ([aws-control.md](aws-control.md)).
   back to re-reading the GET. It re-reads the Team Crews list
   (`RELAY_VIEWER_CREWS_KEY`) at once too, which otherwise holds its signed-out
   refusal for its 60 s poll.
-- The device-code screen (`DeviceWaiting`) does not open a browser: it shows the
-  verification URL as a link with a labelled Copy link beside it, and the user code
-  as large, selectable text with its own Copy code, so a host with no browser to
-  open (a Linux desktop, a remote gateway) can still finish. A Copy that reaches no
+- The device-code screen (`DeviceWaiting`) does not open a browser. On the
+  full-screen gate it shows the verification URL as a link with a labelled Copy
+  link beside it, and the user code as large, selectable text with its own Copy
+  code, so a host with no browser to open (a Linux desktop, a remote gateway) can
+  still finish. In card chrome (Settings and the sign-in dialog) it renders
+  `DeviceCodeCard` instead, whose code has no copy control (see below). A Copy that reaches no
   clipboard says Copied nowhere and shows an inline `ErrorNotice` under the steps
   ("Couldn't copy the code. Select it and copy it by hand.", or the link's form);
   the attempt keeps polling, and the next copy that works clears it.

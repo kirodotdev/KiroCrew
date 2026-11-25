@@ -1242,8 +1242,14 @@ def _forwarded_peer_candidate(request: web.Request, trust: TailnetTrust) -> str 
     """The cheap, synchronous gate: RFC §2 conditions (a)–(d), fail-closed.
 
     Returns the single forwarded tailnet address worth asking the daemon
-    about, or ``None``. No I/O — safe to run inline on the event loop.
+    about, or ``None``. No I/O — safe to run inline on the event loop. A
+    request that arrived on the entry port (``origin.is_entry_request``) is
+    ``None`` whatever headers it carries: the socket decides, not a header.
     """
+    from kiro_crew.dashboard.origin import is_entry_request
+
+    if is_entry_request(request):
+        return None
     # (b) explicit opt-in AND a non-empty allowlist. Identity trust is never
     # inferred, and an empty allowlist means trust was refused at config load.
     # An UNREADABLE policy also enforces: the allowlist is unknown, and
@@ -1300,7 +1306,14 @@ def is_forwarded_tailnet_request(request: web.Request, trust: TailnetTrust) -> b
 
     Synchronous and I/O-free -- the daemon is not consulted, so this is safe to
     ask inline on the event loop.
+
+    A request that arrived on the entry port (``origin.is_entry_request``) is
+    never a forwarded tailnet request, whatever headers it carries.
     """
+    from kiro_crew.dashboard.origin import is_entry_request
+
+    if is_entry_request(request):
+        return False
     # Same opt-in gate _forwarded_peer_candidate applies, repeated rather than
     # inherited: without it an ordinary install (no identity policy at all)
     # would start answering True and make the caller's deny branch reachable.

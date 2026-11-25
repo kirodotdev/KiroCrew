@@ -269,6 +269,15 @@ async def start_api_server(
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
     _cfg = KiroCrewConfig.load()
+    if _cfg.dashboard.entry_port:
+        # The entry port opens only beside the dashboard app (start_dashboard), so
+        # an owner who set it is told it stays closed here rather than finding out
+        # from a proxy that cannot connect.
+        logger.warning(
+            "dashboard.entry_port %s is set, but the API-only server does not open the "
+            "entry port; it opens with the regular or the headless kirocrew gateway",
+            _cfg.dashboard.entry_port,
+        )
     _ts_cfg = _cfg.dashboard.tailscale
     _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
     # Same identity-trust value as start_dashboard, via the same shared helper

@@ -123,6 +123,9 @@ READONLY_REASONS: dict[str, str] = {
     "dashboard.shared_crew.containment_enabled": WHY_REACH,
     "dashboard.shared_crew.hard_limits": WHY_REACH,
     "dashboard.shared_crew.ssm_port": WHY_REACH,
+    # A second loopback listener for a reverse proxy that forwards other machines
+    # (dashboard/entry_gate.py); the config file or `kirocrew config set` writes it.
+    "dashboard.entry_port": WHY_REACH,
     # Outbound activity reports.
     "wakatime.enabled": WHY_SHARE,
     "wakatime.send_heartbeats": WHY_SHARE,
