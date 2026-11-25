@@ -461,6 +461,7 @@ class _AnswerStream:
         self.task_counter = 0  # incrementing task ID for task cards
         self.active_task_id = ""  # current in-progress task
         self.active_task_title = ""  # display title (purpose or tool name)
+        self.active_task_has_details = False  # opened with the tool name as details
         self.tool_start_time = 0.0  # monotonic time when current tool started
         self.tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
         self.status_dirty = False  # True when status needs reset to base on next text chunk
@@ -1059,11 +1060,13 @@ class _AnswerStream:
             self.active_task_title = event.tool_purpose or tool_name
             self.active_task_title, _ = redact_exfiltration_urls(self.active_task_title)
             self.active_task_title, _ = redact_credentials(self.active_task_title)
+            _details = tool_name if tool_detail else ""
+            self.active_task_has_details = bool(_details)
             await self.append_task(
                 self.active_task_id,
                 title=self.active_task_title,
                 status="in_progress",
-                details=tool_name if tool_detail else "",
+                details=_details,
             )
             self.start_tool_timer()
         else:
@@ -1193,11 +1196,20 @@ class _AnswerStream:
             logger.debug("agent session resume after approval failed", exc_info=True)
 
     async def on_tool_rejected(self) -> None:
-        """Close the running tool's card as failed, or note the rejection inline."""
+        """Close the running tool's card as rejected, or note the rejection inline.
+
+        The card closes ``complete`` with ``rejected`` in its details, never
+        ``error``: one ``error`` task makes Slack title the whole plan
+        "Something went wrong" while the turn keeps running. Slack adds details
+        to what the card shows, so after the tool name it starts its own line.
+        """
         if self.use_slack_stream and self.active_task_id:
             self.cancel_tool_timer()
             assert self.stream_ts is not None
-            await self.append_task(self.active_task_id, self.active_task_title, "error")
+            details = "\nrejected" if self.active_task_has_details else "rejected"
+            await self.append_task(
+                self.active_task_id, self.active_task_title, "complete", details=details
+            )
             self.active_task_id = ""
         if not self.use_slack_stream:
             self.accumulated += "\n🚫 _Tool use rejected._"

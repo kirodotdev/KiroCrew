@@ -1042,7 +1042,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "shared_runtime_deaths": "7448fcb0e2a7665b8dfbf9e6343876d16fa9f2dab262ac2db302f9defef129d7",
     "status_reactions": "0c53791195fe55281c9103c0dbe4e8b101d63bfaba331f0856f6fe82fa35f9cc",
     "streamed_turn": "9bcdb4e071c8a4399e0f4e42b40c7103e4bf35572323d07fa08c4f93573f98e2",
-    "tool_then_rejected_while_streaming": "5643ecd2047cd28b9b1f209a8f1835009488b03721f9247848a1eed1de2e45cc",
+    "tool_then_rejected_while_streaming": "99426b699d47b1a4e28f4c51dc894f20ab2d97feb3eafd8224dfc6c140652007",
     "top_level_no_placeholder": "da9023327a43497b07e9ca44f6cb54e53eed7d1cfb8a048e4d09531e52cabce7",
     "transport_floor_refusal": "dab70558fc0f95f39b2a4bcf50b692d1700138b04d4173e714a0e39975e103a2",
     "trusted_session": "9ccf0780428341686aa31edfd89e41fa821d92f8dd7774b808ea5086900b8801",

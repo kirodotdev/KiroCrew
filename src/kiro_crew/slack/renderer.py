@@ -642,8 +642,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         self._active_tool_call_id = ""
         #: Terminal outcomes seen for THIS turn's tool calls, keyed by ACP
         #: ``tool_call_id`` -> a ``TERMINAL_TOOL_STATUSES`` value. A call's card
-        #: is finalized against this: "completed" is the ✓ card, anything else is
-        #: an error card naming the exact outcome. Entries are consumed as their
+        #: is finalized against this: anything other than "completed" adds the
+        #: exact outcome to the card's details. Entries are consumed as their
         #: card closes.
         self._tool_outcomes: dict[str, str] = {}
         #: Cards already finalized this turn, keyed by ACP ``tool_call_id`` ->
@@ -1042,7 +1042,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             return False
 
     def _outcome(self, task_id: str, outcome: str) -> str:
-        """An error step's outcome detail, held back while its narration is.
+        """A failed step's outcome detail, held back while its narration is.
 
         A step waiting for the end of its narration gets its details written
         once, narration first; an outcome sent now would land above it. So it
@@ -1059,7 +1059,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         """Send outcomes held for steps whose narration will not come."""
         deferred, self._deferred_outcomes = self._deferred_outcomes, {}
         for task_id, outcome in deferred.items():
-            title, status = self._task_state.get(task_id, ("", "error"))
+            title, status = self._task_state.get(task_id, ("", "complete"))
             await self._append_task(task_id, title, status, details=outcome)
 
     async def on_tool_result(self, tool_call_id: str, tool_status: str) -> None:
@@ -1071,9 +1071,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         A result that arrives for a card ALREADY CLOSED (parallel / out-of-order
         tool use, where the next call opened before this call's result landed)
         is applied immediately: re-emitting that card's ``task_id`` with the
-        ``error`` status replaces it in place, so a late failure is not lost to
-        the ✓ its card was closed with. A terminal status other than
-        "completed" is a call that did not succeed.
+        outcome in its details updates it in place, so a late failure is not
+        lost. A terminal status other than "completed" is a call that did not
+        succeed.
         """
         if not tool_call_id:
             return
@@ -1086,7 +1086,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             task_id, title = self._closed_task_ids[tool_call_id]
             self._tool_outcomes.pop(tool_call_id, None)
             await self._append_task(
-                task_id, title, "error", details=self._outcome(task_id, tool_status)
+                task_id, title, "complete", details=self._outcome(task_id, tool_status)
             )
 
     async def _finalize_active_task(self) -> None:
@@ -1095,11 +1095,10 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         Replaces the three bare ``_append_task(..., "complete")`` calls that
         marked EVERY tool card complete regardless of what the call did. A call
         whose ``on_tool_result`` recorded a non-"completed" terminal status gets
-        an ``error`` card whose detail names the EXACT outcome (``failed`` /
-        ``cancelled`` / ``canceled`` / ``refused``), so a declined or cancelled
-        call is never relabelled as a failure; everything else (a success, or a
-        call whose transport sent no result event) keeps the ✓ card, so
-        behaviour is unchanged wherever no outcome was reported. The card's
+        a detail naming the EXACT outcome (``failed`` / ``cancelled`` /
+        ``canceled`` / ``refused``), so a declined or cancelled call is never
+        relabelled as a failure; everything else (a success, or a call whose
+        transport sent no result event) gets no outcome detail. The card's
         ``task_id`` and final title are remembered under its ``tool_call_id`` so
         a result that lands AFTER this close (out-of-order parallel use) can
         re-emit the card. Idempotent: clears ``_active_task_id`` so a second
@@ -1111,19 +1110,12 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         title = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
         outcome = self._tool_outcomes.pop(self._active_tool_call_id, "") or ""
         succeeded = not outcome or outcome == "completed"
-        if succeeded:
-            await self._append_task(self._active_task_id, title, "complete")
-        else:
-            # Slack's ``task_update`` status is one of error/pending/in_progress/
-            # complete — "error" is the non-✓ card. The detail carries the exact
-            # outcome string, so refused/cancelled read as themselves rather than
-            # as a failure.
-            await self._append_task(
-                self._active_task_id,
-                title,
-                "error",
-                details=self._outcome(self._active_task_id, outcome),
-            )
+        # NEVER ``error``: with ``task_display_mode: "plan"`` Slack titles the
+        # whole plan "Something went wrong" (red) when any one task is
+        # ``error``, on a turn that is still running fine. The detail carries
+        # the exact outcome string, so refused/cancelled read as themselves.
+        details = "" if succeeded else self._outcome(self._active_task_id, outcome)
+        await self._append_task(self._active_task_id, title, "complete", details=details)
         if self._active_tool_call_id:
             self._closed_task_ids[self._active_tool_call_id] = (self._active_task_id, title)
         self._active_task_id = ""
