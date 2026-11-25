@@ -48,7 +48,7 @@ import { api, isAuthBannerShown } from '../api/client'
 import { noteSignInCommand } from '../api/signInCommand'
 import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { gcOrphanedStorage } from '../utils/storageGc'
 import { useMetricsReadout } from './topbar/metricsReadout'
 import { Package } from 'lucide-react'
@@ -487,7 +487,7 @@ export function useAppShell() {
   useNotificationSound()
   // The rail starts collapsed until the user expands it: only a stored '0'
   // (the user's own expand) opens it on load.
-  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') !== '0')
+  const [navCollapsed, setNavCollapsed] = useState(() => safeGetItem('mc-nav') !== '0')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed
   // Preview expand mode from the Web Preview tab collapses the left nav
@@ -679,7 +679,7 @@ export function useAppShell() {
   // unbounded. Above APPS_NAV_LIMIT visible entries the overflow is hidden until
   // the user expands (persisted).
   const APPS_NAV_LIMIT = 6
-  const [appsExpanded, setAppsExpanded] = useState(() => localStorage.getItem('mc-apps-expanded') === '1')
+  const [appsExpanded, setAppsExpanded] = useState(() => safeGetItem('mc-apps-expanded') === '1')
   const toggleAppsExpanded = useCallback(() => setAppsExpanded(v => { const next = !v; safeSetItem('mc-apps-expanded', next ? '1' : '0'); return next }), [])
   const appNavRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Monotonic stamp for app-nav fetches. Cancelling a pending RETRY is not enough:

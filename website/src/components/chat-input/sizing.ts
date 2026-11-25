@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { markComposerResize } from '../../utils/composerResize'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { useMeasuredHeight } from '../../hooks/useMeasuredHeight'
@@ -224,7 +224,7 @@ export function useManualHeight({ wrapperRef, pendingFilesCount, pendingSessions
   /** The persisted drag-to-resize preference. Read `manualHeight` below instead —
    *  this is the raw stored value and is not what the composer renders at. */
   const [manualHeightPref, setManualHeight] = useState<number | null>(() => {
-    const saved = localStorage.getItem(INPUT_HEIGHT_LS_KEY)
+    const saved = safeGetItem(INPUT_HEIGHT_LS_KEY)
     const n = saved ? parseInt(saved, 10) : NaN
     return !isNaN(n) && n >= INPUT_MIN_H ? n : null
   })

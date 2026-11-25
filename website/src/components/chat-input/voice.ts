@@ -4,7 +4,7 @@ import { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
 import { usePointerHoldToTalk } from '../../hooks/usePointerHoldToTalk'
 import { bindingAriaKeyshortcuts, bindingLabel, type PttBinding } from '../../lib/pushToTalk'
 import { useAppSelector } from '../../store'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { i18nT } from '../../i18n/t'
@@ -292,7 +292,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
    * pointer class does not change under a mounted composer.
    */
   const voiceModeAvailable = !!onVoiceStart && !!onVoiceStop && !!onVoiceCancel && isTouchDevice()
-  const [voiceModePref, setVoiceModePref] = useState(() => localStorage.getItem(VOICE_MODE_LS_KEY) === '1')
+  const [voiceModePref, setVoiceModePref] = useState(() => safeGetItem(VOICE_MODE_LS_KEY) === '1')
   /**
    * A draft SUSPENDS hold mode instead of exiting it, so the preference survives.
    *
