@@ -1337,12 +1337,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASH_EXFIL_RULE_BY_PATTERN,
         _CARVEOUT_VERBS,
         _DATA_EXFIL_FILE_BODY_RULE,
+        _FILE_BODY_PATTERN,
         _NC_FILE_REDIRECT_PATTERN,
         _NC_FILE_REDIRECT_RULE,
         _READ_ONLY_GH,
         _backslashes_are_quoted_literals,
         _data_at_carveout_allows,
         _exfil_rule_id_for_match,
+        _file_body_line_is_inert,
         _inert_line_allows,
         _is_read_only_gh,
         _nc_redirect_line_allows,
@@ -1410,6 +1412,7 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
     )
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _INERT_SEARCH_VERBS,
+        _SHELL_TITLE_PREFIX,
         BUILTIN_DENIED_RULES,
         _exception_eligible,
     )

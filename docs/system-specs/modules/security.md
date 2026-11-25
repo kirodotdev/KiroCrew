@@ -5317,14 +5317,26 @@ variable, `--compress-program` runs one), nor is any `gh` call that can send a
 file. A backslash passes only where bash reads it as a plain character inside
 quotes, and never on a line that also holds `$(`, where the quoting starts over.
 
+The shared predicate (`exfil_bash._file_body_line_is_inert`) reads past one
+`Running: ` display prefix before the inertness check, the same way
+`_exception_applies` does, so an inert search is allowed on the kiro-cli
+permission-title path too; the caller still matches the original target for the
+deny and the audit. `rg` (ripgrep) and `ag` (the silver searcher) are NOT carve-out
+verbs, because each can run another program (ripgrep's `--pre`/`--hostname-bin`,
+the silver searcher's `--pager`), so a line naming the flag text could make them
+launch curl.
+
 A refusal by this gate gets its own guidance (`deny_guidance.DENY_CLASS_FILE_BODY_TEXT`):
 it keeps the upload answer and names the forms that pass. The gate's first line names
 no rule, so the guidance is chosen by the rule id on its own last diagnostic line
-(`diagnostics.refusal_rule_id`). The regex tier's row for the same id
-(`.*curl.*--?data…@.*`) has no inert-line carve-out, so a search line naming `curl`
-with a `--data @` form is still refused there; its refusal keeps the exfil-shape
-guidance, and the file-body guidance says to search for that pair with the
-file-search tool.
+(`diagnostics.refusal_rule_id`). The regex tier enforces the same id
+(`.*curl.*--?data…@.*`) in `is_denied`, and it applies the SAME inert-line carve-out:
+`deny_gate._file_body_narrows` runs the shared predicate and narrows the row (SEL
+exception mechanism `_FILE_BODY_SCOPE`) when the line is an inert search, for the
+shipped pattern only — an operator's own copy of the pattern keeps reading the full
+text — and never on Windows, where a script hook runs under cmd.exe and the bash
+reading does not apply. So on POSIX an inert `grep`/`date` search naming `curl` with
+a `--data @` form passes both tiers; on Windows the regex tier stays fail-closed.
 
 A file search is not a command line at all. A call whose host-trusted identity names
 the `grep` or `glob` built-in (`mcp_identity_trusted`, no server, the name in
