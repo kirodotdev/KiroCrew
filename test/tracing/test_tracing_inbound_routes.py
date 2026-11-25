@@ -80,6 +80,9 @@ def _slot():
     slot.is_closing = False
     slot.event = asyncio.Event()
     slot._pending = []
+    slot._pending_consumers = 0
+    slot._stream_epoch = 0
+    slot._stream_handoffs = {}
 
     def drain():
         out = slot._pending[:]

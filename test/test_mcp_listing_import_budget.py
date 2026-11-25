@@ -102,11 +102,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for all four: the credential redactor reads Unicode's default-ignorable
 #: table from the leaf ``kiro_crew.default_ignorable`` (moved there from the artifact
 #: store's tag rules, so both share one pinned table); that one file is the whole rise.
+#: Raised by 1 for all four: the git/tar self-target floor's GNU ``parallel`` replacement
+#: readings move to ``kiro_crew.security.argv_floor_git_tar_parallel``, which the deny-gate
+#: security path imports eagerly, so one more module loads before the listing on every server.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 498,
-    "mcp-cron": 365,
-    "mcp-guide": 359,
-    "mcp-mate": 361,
+    "mcp-core": 499,
+    "mcp-cron": 366,
+    "mcp-guide": 360,
+    "mcp-mate": 362,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

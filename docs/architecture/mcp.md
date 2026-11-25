@@ -2144,7 +2144,11 @@ old-daemon compatibility.
 `_spawns_own_control_plane` vetting gatewayd applies before it hands a pooled
 backend the token: control-plane name, managed binary by real path, exact args,
 no loader or `PYTHON*` overlay in the child env (Kiro Crew's own pinned UTF-8
-values excepted), and no import root shadowing `kiro_crew`. A kept token also
+values excepted), and no import root shadowing `kiro_crew`. The env vetted
+there is the one a kept token's child gets: it has no inherited
+`PYTHONUNBUFFERED`, which a service manager often exports to the whole runtime
+and the pooled resolver removes too, while a declared one stays and still costs
+the token. A target that loses the token keeps its env unchanged. A kept token also
 gets `PYTHONSAFEPATH` (and `PYTHONNOUSERSITE` unless user-site holds this
 package). Every other target has the token removed, so a third-party binary
 never inherits it. Without the token a fallback control plane relies on the
@@ -3875,7 +3879,9 @@ change card, and the server is written to the template's additions record
   folds an alias onto its target on every read and write. A session with no
   template is refused `409 no_template`, and a Bot's own thread, its worker
   sessions and any Bot-owned template are refused `403 crewmate_caller`,
-  which points at `request_capabilities`.
+  which points at `request_capabilities`. On Codex, the Bot's own chat has
+  that tool only while `kirocrew-core` is shared, so its refusal also names
+  that row's Share switch on the MCP Servers page.
 - **The default agent and the worker get a mount-only card.** Both normally
   take their servers from the MCP page
   (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
@@ -5464,7 +5470,10 @@ thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so
 agent whose `tools` grants no `tool_search`, and for every agent while `agent.tool_search`
 is off, Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
-it already holds; a server it holds none for stays deferred. A deferred tool costs a name
+it already holds; a server it holds none for stays deferred, except
+`kirocrew-core::mcp_server_wait`, which a spec that mounts it always lists
+(`loaderless_never_defer_ids`): the still-starting note tells the turn to call it, and an app
+agent with no probed list would otherwise find it behind the loader. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
 scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including
@@ -5535,7 +5544,11 @@ is waiting on it (`acp/mcp_start_wait.py`), a new chat and a re-opened one
 alike, so a turn can begin while some of
 them are still connecting. Such a server is not in the model's tool list yet, and
 the host's tool loader answers a request for one of its tools as though it did
-not exist. Two parts keep the model from repeating that to the user. Both reach
+not exist. Codex differs in two ways: its adapter holds a new chat's `session/new`
+until the array's servers are ready or failed, and a server that comes up during
+a turn is offered from the next turn
+([acp-client](../system-specs/modules/acp-client.md)). Two parts keep the model
+from repeating that to the user. Both reach
 only a turn whose prompt carries the block (the gateway's context builder builds
 it: a dashboard or channel turn). A first turn whose prompt does not, such as
 `kirocrew chat` or a side question, holds its prompt for those servers instead,

@@ -389,6 +389,34 @@ class TestMcpArrayNarrowing:
         assert [s["name"] for s in narrowed] == ["a"]
 
 
+class TestMcpStartupWait:
+    def test_a_session_new_with_servers_asks_the_adapter_to_wait_for_their_startup(self, adapter):
+        """codex gives MCP startup about one second at the first turn, so a server
+        still starting then (a gateway stub most often) is offered on none of that
+        turn's tools. The session/new meta makes the adapter wait for them first."""
+        from kiro_crew.acp.runtime_start import _SESSION_NEW_TIMEOUT
+
+        servers = [{"name": "kirocrew-core", "command": "py", "args": [], "env": []}]
+        params = {"cwd": "/w", "mcpServers": servers, "_meta": {"own": 1}}
+        new, agent = adapter.session_request("session/new", params, "a", agent_capabilities={})
+        assert agent == "a"
+        assert new["mcpServers"] == servers
+        assert set(new["_meta"]) == {"own", "mcpStartupAwaitTimeoutMs"}
+        assert 0 < new["_meta"]["mcpStartupAwaitTimeoutMs"] / 1000 < _SESSION_NEW_TIMEOUT
+        assert params["_meta"] == {"own": 1}
+        # No server to wait for, or not a new session: the request is unchanged.
+        empty = {"cwd": "/w", "mcpServers": []}
+        assert adapter.session_request("session/new", empty, "a", agent_capabilities={}) == (
+            empty,
+            "a",
+        )
+        load = {"sessionId": "s", "cwd": "/w", "mcpServers": servers}
+        assert adapter.session_request("session/load", load, "a", agent_capabilities={}) == (
+            load,
+            "a",
+        )
+
+
 class TestSessionExtras:
     @pytest.mark.asyncio
     async def test_extras_are_empty_and_carry_no_custom_agents(self, adapter):

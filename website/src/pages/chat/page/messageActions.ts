@@ -19,6 +19,7 @@ import { useStreamIdle } from '../ChatFooter'
 import { clampSidebarWidth } from '../sidebarWidth'
 import { revealComposer } from '../composerFocus'
 import { rewindWithRollback } from '../../../lib/rewindCall'
+import type { RefusedPressAction } from './turnActions'
 import { i18nT } from '../../../i18n/t'
 import { speakReply } from '../speakReply'
 
@@ -77,6 +78,7 @@ interface MessageActionsOptions {
   activeSlotRef: MutableRefObject<string | null>
   activeSlotRemoteBound: boolean
   showActionError: (message: string, title?: string) => void
+  showRefusedPress: (action: RefusedPressAction, e: unknown) => void
   handleFileOpen: ReturnType<typeof useChatPageResourcesController>['handleFileOpen']
   handleFolderOpen: (dirPath: string) => void
   handleArtifactOpen: (slug: string) => void
@@ -103,7 +105,7 @@ interface MessageActionsOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useMessageActions({
-  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
+  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, showRefusedPress, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
   tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
@@ -121,11 +123,15 @@ export function useMessageActions({
     // truncated forward turns can't resurface on resume. Mirrors kiro-cli's
     // native /rewind slash command, but swaps the session under the same
     // slot identity so the UI stays in place (no new tab, no title change).
-    rewindWithRollback(activeSlot, ts, newContent, () => {
+    const slot = activeSlot
+    rewindWithRollback(slot, ts, newContent, (e) => {
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
+      // Name the server's reason, or the restored edit reads as a lost click.
+      // A refusal landing after a slot switch would describe another session.
+      if (activeSlotRef.current === slot) showRefusedPress('edit_resend', e)
     })
-  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating])
+  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, activeSlotRef, dispatch, setRegenerating, showRefusedPress])
 
   // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
   // Edit & resend editor. The chord itself is claimed by the composer

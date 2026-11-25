@@ -66,7 +66,7 @@ _MAX_LEVELS = 8
 #: How many run keys keep their noted parents; an evicted one reads its record.
 _MAX_NOTED = 4096
 #: How many distinct sessions one run key keeps as its parents. A new one past it
-#: is refused, never recorded in place of an earlier one (:func:`note_parent`).
+#: is never recorded, in place of an earlier one or at all (:func:`note_parent`).
 MAX_PARENTS_PER_RUN = 64
 
 #: Run session key -> the session keys that started a run on it, oldest first.
@@ -75,39 +75,54 @@ _NOTED: OrderedDict[str, tuple[str, ...]] = OrderedDict()
 #: run, as the gateway knew it then. Read only for a session whose directory the
 #: resolver does not know (:func:`_unresolved_dirs`).
 _NOTED_DIRS: OrderedDict[str, str] = OrderedDict()
+#: Run keys a parent was started from that :func:`note_parent` did not record, so
+#: the parents noted for them are not all of them. A KAS run whose chain reaches one
+#: is refused (:func:`holding_agents`). Every key here has a row in :data:`_NOTED`
+#: and leaves only with it, so the mark is bounded by the notes and never outlived
+#: by the parents it says are not all of them.
+_INCOMPLETE: set[str] = set()
 
 
 class ParentLimitsUnreadable(RuntimeError):
     """A parent agent's limits exist or may exist and could not be applied."""
 
 
-class TooManyParents(RuntimeError):
-    """A run key already holds :data:`MAX_PARENTS_PER_RUN` distinct parent sessions."""
+class TooManyParents(ParentLimitsUnreadable):
+    """A run's chain holds a key that was started from more distinct sessions than
+    :data:`MAX_PARENTS_PER_RUN`, so not every parent above it is known."""
+
+
+def _too_many_parents() -> TooManyParents:
+    return TooManyParents(
+        f"This conversation was already continued from {MAX_PARENTS_PER_RUN} different "
+        "sessions; Kiro Crew refuses another so the limits of every earlier one keep "
+        "holding it. Start a new sub-agent instead."
+    )
 
 
 def note_parent(run_key: str, parent_key: str, parent_dir: str = "") -> None:
     """Record that the session *parent_key* started a run on *run_key*, and
     *parent_dir*, the directory its own session is bound to, when the caller knows it.
 
-    Raises :class:`TooManyParents`, changing nothing, for a new distinct parent of a
-    run key that already holds :data:`MAX_PARENTS_PER_RUN`: every recorded parent
-    keeps holding the run, so the run that would add one more is refused instead.
-    A parent already recorded is accepted as before.
+    Never raises. A new distinct parent of a run key that already holds
+    :data:`MAX_PARENTS_PER_RUN` is not recorded: the key is marked incomplete
+    instead, every recorded parent keeps holding it, and a KAS run whose chain
+    reaches the key is refused when its session starts (:func:`holding_agents`).
+    A run on any other harness reads no parent limits, so it runs as before. A
+    parent already recorded is accepted as before.
     """
     if not run_key or not parent_key or run_key == parent_key:
         return
-    noted = _NOTED.get(run_key, ())
-    if parent_key not in noted and len(noted) >= MAX_PARENTS_PER_RUN:
-        raise TooManyParents(
-            f"This conversation was already continued from {MAX_PARENTS_PER_RUN} different "
-            "sessions; Kiro Crew refuses another so the limits of every earlier one keep "
-            "holding it. Start a new sub-agent instead."
-        )
     known = _NOTED.pop(run_key, ())
-    _NOTED[run_key] = tuple(dict.fromkeys((*known, parent_key)))
+    past_cap = parent_key not in known and len(known) >= MAX_PARENTS_PER_RUN
+    if past_cap:
+        _INCOMPLETE.add(run_key)
+    # Re-inserted either way, so a key that was just used is the last one evicted.
+    _NOTED[run_key] = known if past_cap else tuple(dict.fromkeys((*known, parent_key)))
     while len(_NOTED) > _MAX_NOTED:
-        _NOTED.popitem(last=False)
-    if parent_dir:
+        evicted, _parents = _NOTED.popitem(last=False)
+        _INCOMPLETE.discard(evicted)
+    if parent_dir and not past_cap:
         _NOTED_DIRS.pop(parent_key, None)
         _NOTED_DIRS[parent_key] = parent_dir
         while len(_NOTED_DIRS) > _MAX_NOTED:
@@ -146,13 +161,16 @@ def holding_agents(run_key: str) -> list[tuple[str, str]]:
     Nearest first, each session once. Two sessions on one agent are both listed: the
     directory or the session can decide which spec a name resolves to, and a path
     limit is anchored where its session runs. Raises :class:`ParentLimitsUnreadable`
-    when a parent's record exists and cannot be read.
+    when a parent's record exists and cannot be read, and :class:`TooManyParents`
+    when the run's key or a key above it is marked incomplete (:func:`note_parent`).
     """
     from kiro_crew.subagent import ParentRecordUnreadable, _parent_template_for_spawn
 
     found: list[tuple[str, str]] = []
     seen, level = {run_key}, [run_key]
     for _ in range(_MAX_LEVELS):
+        if any(key in _INCOMPLETE for key in level):
+            raise _too_many_parents()
         above = [p for key in level for p in _parent_keys(key) if p not in seen]
         for parent in dict.fromkeys(above):
             seen.add(parent)

@@ -53,6 +53,13 @@ describe('BotSessionListSwitches', () => {
     expect(mockApi.updateDashboardConfig).not.toHaveBeenCalled()
   })
 
+  it("marks this bot's switch, not the global one, as the find_ui location", async () => {
+    setup(false, false)
+    await loadedAll()
+    expect(screen.getByRole('switch', { name: THIS })).toHaveAttribute('data-ui-location', 'members.bot-sessions-switch')
+    expect(screen.getByRole('switch', { name: ALL })).not.toHaveAttribute('data-ui-location')
+  })
+
   it("with the global switch on, this Bot's reads on and cannot be pressed, whatever it saved", async () => {
     setup(true, false)
     const all = await loadedAll()

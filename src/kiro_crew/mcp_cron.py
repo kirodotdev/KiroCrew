@@ -1045,6 +1045,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                     hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
                     new_chat_per_run=new_chat_per_run,
+                    notify_only=args.get("notify_only") is True,
                     on_tab_close=args.get("on_tab_close", "resume"),
                     folder_id=folder_id,
                     chat_folder_id=chat_folder_id,

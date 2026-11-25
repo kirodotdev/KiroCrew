@@ -284,6 +284,7 @@ def spec_keys_without_carrier(
     translates_tools_settings: bool = False,
     discards_mcp_oauth: bool = False,
     withholds_oauth_secret: bool = False,
+    sends_oauth_secret: bool = False,
     session_key: str = "",
     governance_app: str | None = None,
 ) -> list[str]:
@@ -307,7 +308,9 @@ def spec_keys_without_carrier(
     on KAS, whose projection sends nothing from a block that names a
     ``clientSecret`` or keeps no key it can send
     (``mcp_oauth_projection.oauth_withheld``); each declared server with such a
-    block is then named the same way, whatever the engine keeps.
+    block is then named the same way, whatever the engine keeps. With
+    *sends_oauth_secret* (an engine that takes a secret through ``setClientSecret``),
+    a confidential block that keeps a ``clientId`` is sent and so not named.
     """
     lost = [k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k)]
     lost.extend(projected_resources(spec.get("resources"))[1])
@@ -315,7 +318,10 @@ def spec_keys_without_carrier(
         lost.append("toolAliases")
     if discards_mcp_oauth or withholds_oauth_secret:
         servers = servers_with_discarded_oauth(
-            spec, _registry_governed, withheld_only=not discards_mcp_oauth
+            spec,
+            _registry_governed,
+            withheld_only=not discards_mcp_oauth,
+            sends_secret=sends_oauth_secret,
         )
         lost.extend(oauth_lost_keys(servers))
     raw = spec.get("toolsSettings")
@@ -772,11 +778,13 @@ def to_client_custom_agent(
     forward_ssh_auth_sock: bool = False,
     governance_app: str | None = None,
     scope_muted: frozenset[str] | None = None,
+    prereg_out: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
     Pure: *prompt* is already-resolved content (see :func:`resolve_prompt`).
-    *withheld_out* and *forward_ssh_auth_sock* are handed to :func:`_project_mcp_servers`.
+    *withheld_out*, *forward_ssh_auth_sock* and *prereg_out* are handed to
+    :func:`_project_mcp_servers`.
 
     *stub_server_names* are the servers that will arrive as the session-level
     ``mcpServers`` param and must not also be declared here — see
@@ -1153,6 +1161,7 @@ def to_client_custom_agent(
         engine_features=engine_features,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         scope_muted=scope_muted,
+        prereg_out=prereg_out,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1360,11 +1369,14 @@ def build_kas_custom_agents(
     forward_ssh_auth_sock: bool = False,
     governance_app: str | None = None,
     scope_muted: frozenset[str] | None = None,
+    prereg_out: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
-    *withheld_out*, *engine_features*, *forward_ssh_auth_sock* and *scope_muted* are handed to
-    :func:`_project_mcp_servers`.
+    *withheld_out*, *engine_features*, *forward_ssh_auth_sock*, *scope_muted* and
+    *prereg_out* are handed to :func:`_project_mcp_servers`. Only this, the
+    session's own agent, collects secrets: ``setClientSecret`` names a server of
+    the session, so a sub-agent target's confidential block stays withheld.
 
     A ``file://`` prompt that is missing, unreadable or empty
     (:class:`KasPromptFileUnreadable`) is projected as ``""``, as kiro-cli runs it
@@ -1417,6 +1429,7 @@ def build_kas_custom_agents(
             forward_ssh_auth_sock=forward_ssh_auth_sock,
             governance_app=governance_app,
             scope_muted=scope_muted,
+            prereg_out=prereg_out,
             # Any key turns the relay on (its reference is shared), so a session
             # with none yet (a background or pooled runtime) still relays env.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",

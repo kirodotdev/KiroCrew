@@ -1224,7 +1224,38 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     pass dedups would survive in the original-case pass, the two frame counts would
     diverge, and the floor would drop the option words it reads in the written case
     and lose a denial it should make. This holds whether the `<<` opens a real body
-    or none at all (a here-string `<<<`, an arithmetic `<<` shift). The ordinary
+    or none at all (a here-string `<<<`, an arithmetic `<<` shift). As a backstop,
+    the git/tar floor FAILS CLOSED when the two passes still disagree: if the
+    original-case and lowered walks of a line produce a different number of frames
+    and a frame of one walk has no partner in the other (same source and words once
+    lowered), it refuses the line rather than read on with the written-case option
+    words dropped. The top frame pairs by position when its words agree once
+    lowered, since its source text can differ only through the pre-walk's
+    lowercase-only rewrites (`VERSION=1; echo $VERSION`). Like the floor's other
+    fail-closed reads, it refuses only when the input carries a self-dial signal and a frame with no partner could run git
+    or tar (the top frame, or a payload frame that names a git/tar word or an
+    expansion); otherwise each such frame keeps the lowered reading, so an ordinary
+    line of that shape (`echo "a;b"; npm start; cat <<EOF` with an `eof` body line)
+    is allowed. Payloads that differ only in case (`bash -c 'git log
+    --format=%H' && bash -c 'git log --format=%h'`) are one lowered frame but two
+    written ones; that is not a disagreement, so the floor reads the lowered frame
+    once per written spelling and every spelling's option words are read. Identical
+    inherited environments are read and propagated once, in first-seen order;
+    distinct names, value lists, value order and case remain separate readings.
+    A per-read signature set for each payload deduplicates only incoming launch
+    environments. Reading a frame snapshots the retained list without hashing it
+    again, so neither a launch nor a read rescans accumulated signatures.
+    Typed case-spelling replay has one 262,144-unit work budget shared by all its
+    frames, spellings and commands. It charges frame source characters and command
+    words multiplied by inherited, exported and pending environment names and
+    values before building each environment. It also bounds the replay-list size
+    before allocating it. Exhaustion refuses the line unread, even without a
+    self-dial signal; it never skips a spelling and allows the remainder. Within
+    the budget every written-case interpretation is preserved. Ordinary paired
+    readings do not consume this replay budget.
+    A line whose readings genuinely disagree (a rare quote-and-case here-document
+    shape) is refused, and refusing it is the safe direction. The
+    ordinary
     reading and the main-reading pass keep a body's quotes as origin/main read them,
     so the reset pass only ADDS a denial and never removes one. The here-document
     body readers and the untracked fallback are unchanged.
@@ -1267,6 +1298,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     recovered, and in every case it could have been in when it cannot.
   - `argv_floor_git_tar.py` — the git/tar self-target floor (`_is_git_tar_to_self`),
     which reads the tar grammar, the ssh floor's front end and the host verdicts below it.
+  - `argv_floor_git_tar_parallel.py` — GNU parallel replacement readings and their
+    shared token unmasking and word cap, re-exported by `argv_floor_git_tar.py`.
+    It loads before that reader in the argv-floor mirror so patches reach both
+    modules without an import cycle.
   - `argv_floor_git.py` — protected or ambiguous git-publish detection.
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,
@@ -1524,8 +1559,18 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   the raw text that preceded it (`compat.look_behind`), so the stream yields the
   batch result (`test_stream_table_parity.py`). A unit still open whose start lies
   in that already-sent text (a label streamed before its value) holds the window
-  from its first character (`engine.scan` clamps it to `origin`). The fixed tail hold ends at the last
-  blank, and `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
+  from its first character (`engine.scan` clamps it to `origin`).
+  The fixed tail hold ends at the last
+  word, and a word ends at a blank or at a non-ASCII character that no reader folds
+  onto ASCII (`compat.ends_word`; `ſ`, the Kelvin sign or `ß` fold onto letters and
+  stay inside the word, and so does a default-ignorable character such as `U+200B`,
+  which the credential plan reads a token through): every anchor and credential is ASCII, and unspaced Chinese
+  or Japanese prose would otherwise be held whole until its next blank. The stream
+  snaps the hold back to the start of that word (`compat.word_start`) and holds a
+  hit the cut would end exactly at while more text follows it (its closing quote
+  goes out with it); `text_redaction._outside_batch_spans` holds such a span too,
+  reading the buffer after the text already sent, and
+  `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
   calls it at a tool call or prompt and Slack at a tool card, a `wait` and the
   turn's end. `display_battery.RULE_SOURCES` lists every `redaction_structured/`
   file and `pass_compose.py`, so a table change gives stored verdicts a new version.
@@ -4387,9 +4432,16 @@ and every gap fails closed:
     (`state.json` `parent_session`). The walk repeats for a parent that is itself a
     run, so a grandchild carries its grandparent's denies. A session that is not
     a run is not looked at. One key keeps at most `MAX_PARENTS_PER_RUN` (64)
-    distinct parents: a new one past it raises `TooManyParents` and changes
-    nothing, so the run that would add it fails before its session starts, and
-    every parent already noted keeps holding the key.
+    distinct parents: a new one past it is not recorded and marks the key
+    incomplete (`_INCOMPLETE`), and every parent already noted keeps holding the
+    key. The mark lives exactly as long as the key's row of noted parents: a use
+    of the key refreshes both, and the mark leaves only when that row is evicted,
+    after which the key reads its record as any evicted key does. `note_parent` never raises, so a run on another
+    harness, which reads no parent limits, runs as before. A KAS run whose chain
+    reaches a marked key, its own or one above it, is refused at session start
+    with `TooManyParents` (a `ParentLimitsUnreadable`), fail-closed:
+    `holding_agents` raises it, `session_extras` refuses the session, and
+    `run_is_held` answers held, so the warm pool never serves it.
   - *Each session above holds on its own.* An agent name is not one set of
     limits: the directory or the session can decide which spec the name resolves
     to, and a path limit is anchored where its session runs. So `holding_agents`

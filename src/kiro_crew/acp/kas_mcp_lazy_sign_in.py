@@ -160,8 +160,8 @@ def _slot_session(self: AcpRuntime, server_name: str) -> str:
     """The session of an explicit sign-in of *server_name* now in flight, or ``""``.
 
     The engine can open a second link for that server while the explicit attempt
-    runs, and tag it ``notification`` once the handshake is done; such a link goes
-    where the slot rule sent every link before.
+    runs, and tag it ``notification`` once the handshake is done, so such a link
+    may be that attempt's rather than the holder's.
     """
     entry = self._mcp_sign_in
     return entry[0] if entry is not None and entry[1] == server_name else ""
@@ -175,13 +175,12 @@ async def deliver_mid_session_consent(self: AcpRuntime, params: dict[str, Any], 
     is delivered marked :data:`REPLACES_LINK`: the engine made a new code verifier
     for it, so only the newest link can finish the sign-in, and the chat retires the
     older one when it draws this one. While an explicit sign-in of the same server
-    holds the slot, the link goes to the slot's session, as every link did before.
+    holds the slot for a session other than the holder, the link is refused.
     """
     server_name: str = params["serverName"]
-    session_id = _slot_session(self, server_name)
-    refusal = ""
-    if not session_id:
-        session_id, refusal = lone_holder(self, server_name)
+    session_id, refusal = lone_holder(self, server_name)
+    if session_id and _slot_session(self, server_name) not in ("", session_id):
+        session_id, refusal = "", "more than one session may hold that MCP server"
     queue = self._session_queues.get(session_id) if session_id else None
     if queue is None:
         logger.info(

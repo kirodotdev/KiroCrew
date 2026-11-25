@@ -425,7 +425,11 @@ def build_message(
             native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
         ):
             parts.append(_session_head.agent_prompt_block(block_prompt))
-        with ctx._prompt_build_embedding_deadline(bool(text), query=text):
+        # Recall ranks the user's own span, never the context a dispatcher put in
+        # front of it. Before any hook rewrite: the dashboard starts this same
+        # query's embed and memory reads ahead of the build, before hooks run.
+        _recall_query = _turn.recall_query(text, user_text_range)
+        with ctx._prompt_build_embedding_deadline(bool(text), query=_recall_query):
             session_ctx = self.build_session_context(
                 session_key,
                 agent=agent,
@@ -441,7 +445,7 @@ def build_message(
                 exclude_last_n=exclude_last_n,
                 model_window=model_window,
                 context_groups=context_groups,
-                query_text=text,
+                query_text=_recall_query,
                 conversation_reset=conversation_reset,
                 project=project,
                 # The desk argument, not the record's owner: the callee
@@ -928,13 +932,32 @@ def build_message(
         # a sub-agent with no project); its mapping only narrows the triggered
         # set, which, like scoped_skills, reads from *project* alone.
         template_root = project or template_dir
-        pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
-        if pinned is not None:
-            mapped = pinned
-        elif agent:
-            mapped = ctx.agent_skill_globs(agent, project_dir=template_root)
-        else:
-            mapped = []
+        mapped: list[str] = []
+        if triggered:
+            from kiro_crew.agent_discovery import SkillScopeResolutionError
+
+            try:
+                # Strict, as skill_search is: a scope that cannot be read
+                # admits no triggered skill rather than every one.
+                pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root, strict=True)
+                if pinned is not None:
+                    mapped = pinned
+                elif agent:
+                    # The session key names a Bot's worker's crewmate, whose
+                    # merged spec holds the worker's mapping.
+                    mapped = ctx.agent_skill_globs(
+                        agent,
+                        project_dir=template_root,
+                        strict=True,
+                        session_key=session_key or "",
+                    )
+            except SkillScopeResolutionError as exc:
+                logger.warning(
+                    "Triggered skills dropped: the skill scope of agent %r cannot be resolved: %s",
+                    agent,
+                    exc,
+                )
+                triggered = []
         if mapped:
             allowed = _mapped_trigger_keys(self.skills, project, mapped)
             triggered = [key for key in triggered if key in allowed]

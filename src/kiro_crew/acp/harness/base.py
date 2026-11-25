@@ -447,6 +447,16 @@ class SessionExtras:
     entry or file and never sent to the engine. ``""`` on every other host.
     """
 
+    mcp_prereg_clients: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    """Each confidential client's secret by server name, for the request
+    ``kas_client_secret.deliver_prereg_clients`` sends after the session starts.
+
+    KAS only, and only from an engine that announced ``mcpOAuthClientSecret``:
+    the projection sent those servers' ``oauth`` blocks without the secret. Kept
+    out of ``repr`` so a logged payload never carries a value. Empty on every
+    other host.
+    """
+
     withheld_credentials_notice: str = ""
     """The session-start notice naming MCP servers that start without part of
     their declared ``env`` or ``headers``, by server and key name, never a value.

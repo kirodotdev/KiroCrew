@@ -882,8 +882,10 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "it matters, on each pre-registered provider's card, and the answer "
         "covers only those providers: a server that registers its own client "
         "signs in on every backend that serves remote MCP at all. KAS from "
-        "0.66.104 takes a public client but withholds a confidential one, and "
-        "every pre-registered provider is confidential, so KAS is not a member"
+        "0.66.104 takes a public client; a confidential one signs in only on an "
+        "engine that takes its secret (0.66.135, with sign-ins kept in Crew's "
+        "vault), which the page cannot tell before a chat starts. Every "
+        "pre-registered provider is confidential, so KAS is not a member"
     ),
     "ACP_BACKENDS_NO_MCP_INIT_FRAMES": (
         "whether the drain after session/new folds only the frames already "

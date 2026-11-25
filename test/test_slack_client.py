@@ -25,9 +25,18 @@ class _RecordingBody:
 
 
 class _RecordingResponse:
-    def __init__(self, status: int, body: bytes) -> None:
+    def __init__(
+        self,
+        status: int,
+        body: bytes,
+        *,
+        location: str = "",
+        content_type: str = "application/octet-stream",
+    ) -> None:
         self.status = status
         self.content = _RecordingBody(body)
+        self.headers = {"Location": location} if location else {}
+        self.content_type = content_type
 
     def raise_for_status(self) -> None:
         if self.status >= 400:
@@ -41,13 +50,22 @@ class _RecordingResponse:
 
 
 class _RecordingSession:
-    """Captures the ClientSession/get kwargs the downloader chose."""
+    """Captures the ClientSession/get kwargs the downloader chose.
 
-    def __init__(self, *, status: int = 200, body: bytes = b"") -> None:
-        self._status = status
-        self._body = body
+    ``responses`` scripts a redirect chain: each ``get`` takes the next one
+    (the last repeats), and ``calls`` records every URL and its headers."""
+
+    def __init__(
+        self,
+        *,
+        status: int = 200,
+        body: bytes = b"",
+        responses: list[_RecordingResponse] | None = None,
+    ) -> None:
+        self._responses = responses or [_RecordingResponse(status, body)]
         self.init_kwargs: dict[str, Any] = {}
         self.get_kwargs: dict[str, Any] = {}
+        self.calls: list[tuple[str, dict[str, str]]] = []
 
     def __call__(self, **kwargs: Any) -> "_RecordingSession":
         """Stand in for the ClientSession CONSTRUCTOR too, so the session-level
@@ -57,7 +75,8 @@ class _RecordingSession:
 
     def get(self, url: str, **kwargs: Any) -> _RecordingResponse:
         self.get_kwargs = kwargs
-        return _RecordingResponse(self._status, self._body)
+        self.calls.append((url, dict(kwargs.get("headers") or {})))
+        return self._responses[min(len(self.calls), len(self._responses)) - 1]
 
     async def __aenter__(self) -> "_RecordingSession":
         return self
@@ -166,19 +185,101 @@ class TestFileDownloadGuards:
         assert opened == []
 
     @pytest.mark.asyncio
-    async def test_a_redirect_is_refused_rather_than_followed(
+    async def test_a_redirect_inside_slack_is_followed_and_downloads(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The reported bug: every 3xx was refused, so a Slack image never
+        reached the agent. A hop that stays on Slack is followed by hand,
+        relative Location included, with aiohttp's own following kept off."""
+        session = _RecordingSession(
+            responses=[
+                _RecordingResponse(302, b"", location="https://files-edge.slack.com/a/x.png"),
+                _RecordingResponse(301, b"", location="/b/x.png"),
+                _RecordingResponse(200, b"PNGDATA", content_type="image/png"),
+            ]
+        )
+        monkeypatch.setattr(slack_client.aiohttp, "ClientSession", session)
+        dest = tmp_path / "out"
+        await self._client().download_file("https://files.slack.com/x.png", str(dest))
+        assert dest.read_bytes() == b"PNGDATA"
+        assert [url for url, _ in session.calls] == [
+            "https://files.slack.com/x.png",
+            "https://files-edge.slack.com/a/x.png",
+            "https://files-edge.slack.com/b/x.png",
+        ]
+        assert all(h["Authorization"] == "Bearer xoxb-secret" for _, h in session.calls)
+        assert session.get_kwargs["allow_redirects"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "https://evil.example.com/x.png",  # foreign host
+            "https://files.slack.com.evil.example/x.png",  # suffix-confusion
+            "http://files.slack.com/x.png",  # plaintext downgrade
+            "https://files.slack.com:8443/x.png",  # non-default port
+            "https://files.slack.com:notaport/x.png",  # unparsable port
+        ],
+    )
+    async def test_a_redirect_out_of_slack_is_refused_without_sending_the_token(
+        self, location: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """aiohttp replays an explicitly set Authorization header across a
-        redirect, so following one would bounce the bot token to the redirect
-        target and the host check would have been true only of the first hop."""
-        session = _RecordingSession(status=302)
+        redirect, so each hop is checked before the token goes anywhere."""
+        session = _RecordingSession(responses=[_RecordingResponse(302, b"", location=location)])
         monkeypatch.setattr(slack_client.aiohttp, "ClientSession", session)
         with pytest.raises(ValueError):
             await self._client().download_file(
                 "https://files.slack.com/x.png", str(tmp_path / "out")
             )
-        assert session.get_kwargs["allow_redirects"] is False
+        assert [url for url, _ in session.calls] == ["https://files.slack.com/x.png"]
+        assert not (tmp_path / "out").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_loop_stops_at_the_hop_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = _RecordingSession(
+            responses=[_RecordingResponse(302, b"", location="https://files.slack.com/x.png")]
+        )
+        monkeypatch.setattr(slack_client.aiohttp, "ClientSession", session)
+        with pytest.raises(ValueError, match="too many"):
+            await self._client().download_file(
+                "https://files.slack.com/x.png", str(tmp_path / "out")
+            )
+        assert len(session.calls) == slack_client._FILE_DOWNLOAD_MAX_REDIRECTS + 1
+        assert not (tmp_path / "out").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_without_a_location_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = _RecordingSession(status=302)
+        monkeypatch.setattr(slack_client.aiohttp, "ClientSession", session)
+        with pytest.raises(ValueError, match="Location"):
+            await self._client().download_file(
+                "https://files.slack.com/x.png", str(tmp_path / "out")
+            )
+        assert not (tmp_path / "out").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_to_the_sign_in_page_names_the_missing_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Slack redirects a token without files:read to the workspace sign-in
+        page. That HTML must not be saved as the image, and the note the agent
+        and user see must say which scope to add."""
+        session = _RecordingSession(
+            responses=[
+                _RecordingResponse(302, b"", location="https://acme.slack.com/?redir=%2Ffiles-pri"),
+                _RecordingResponse(200, b"<html>sign in</html>", content_type="text/html"),
+            ]
+        )
+        monkeypatch.setattr(slack_client.aiohttp, "ClientSession", session)
+        with pytest.raises(ValueError, match="files:read"):
+            await self._client().download_file(
+                "https://files.slack.com/x.png", str(tmp_path / "out")
+            )
         assert not (tmp_path / "out").exists()
 
     @pytest.mark.asyncio

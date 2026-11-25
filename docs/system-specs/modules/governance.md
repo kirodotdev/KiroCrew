@@ -1854,6 +1854,10 @@ forwarding nothing would drop the child to a lower policy tier — a looser ceil
 exactly the code that most needs one. In cache-only mode the child needs neither, because
 the gateway has already written the last-known-good cache: the cache IS the
 administrator's ceiling, and the child adopts it with no URL, no token and no network.
+Both markers are on `_AGENT_DENIED_ENV_KEYS`, so a `sandbox.min_level` floor that raises an app
+backend to the cc or strict tier would scrub them; the backend therefore also carries
+them as assignments to a trusted absolute `env` ahead of its argv
+(`mcp_discovery_probe._with_post_scrub_markers`), which apply after that scrub.
 The recorded-source check is skipped in that mode, which is sound rather than a
 relaxation — there is one cache, the parent wrote it, and the parent applied the repoint
 rule when it did. Only `max_cache_age_secs` rides along, because it is the one setting

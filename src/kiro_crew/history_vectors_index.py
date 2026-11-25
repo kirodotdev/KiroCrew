@@ -31,6 +31,20 @@ _LOGGER = logging.getLogger(__name__)
 #: withheld or vanished session has had its rows dropped and nothing to redo.
 INDEXED, WITHHELD, GONE, RETRY = "indexed", "withheld", "gone", "retry"
 
+#: What ``_iter_message_texts`` yields, as part of the chunker value a session's
+#: rows are stored under. A row stored under another value is stale, so moving
+#: this re-chunks every session without dropping vectors for text that did not
+#: change (a chunk is shared by text hash).
+#:
+#: 2: the size-rotated archive head is read before the live file. Rows stored
+#: before held the live file only, and its unchanged stat still vouches for them.
+CORPUS_VERSION = 2
+
+
+def chunker_value(tokenizer: "Tokenizer") -> str:
+    """The value ``session_state.chunker`` holds for rows *tokenizer* chunked now."""
+    return f"{tokenizer.signature}|corpus:{CORPUS_VERSION}"
+
 
 class Tokenizer(NamedTuple):
     count_tokens: Callable[[str], int]
@@ -166,7 +180,7 @@ def chunk_session(
             except OSError:
                 return RETRY
             chunks = chunk_messages(texts, tokenizer.count_tokens)
-            store.sync_session(key, st, tokenizer.signature, chunks)
+            store.sync_session(key, st, chunker_value(tokenizer), chunks)
     except _history_lock_timeout():
         return RETRY
     return INDEXED
@@ -268,7 +282,7 @@ def backfill_chunks(
             stats[meta["key"]] = log._path(meta["key"]).stat()
         except OSError:
             continue
-    fresh = store.fresh_keys(stats, tokenizer.signature)
+    fresh = store.fresh_keys(stats, chunker_value(tokenizer))
     quiet_cutoff_ns = time.time_ns() - int(_INDEX_QUIET_WINDOW_SECS * 1e9)
     pending: list[str] = []
     deferred = 0

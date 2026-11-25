@@ -2695,7 +2695,11 @@ unless the opener names a tab (`openProfile(tab)`: the quiet-chat link and a mat
 session's breadcrumb ask for Sessions; the side panel's send badge and the sidebar
 bot row menu ask for Profile). No
 tab carries a count, and there is no placeholder tab for a view that does not
-exist yet.
+exist yet. When the side panel is an overlay (a phone, or a window too narrow to
+dock it), the send badge closes the overlay before it opens the card: the overlay
+sits above the thread column the floating card opens in. The badge carries a
+Dismiss button that hides it on every bot's tab for good on that browser
+(`mc-dashboard-card-send-badge-dismissed`); the switch itself stays on Profile.
 
 **Profile** shows only the face and name in its head. Its body carries the crew
 description (two lines with a pushed full-text page); when the registry read fails,
@@ -3130,8 +3134,22 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   Bot's tools: every Bot's chat holds `set_goal` (a Bot on its
   own file chats on the conductor, which the gateway builds with
   `kirocrew-mate` whatever the template carried; `member_mate_tools`
-  `PLATFORM_PROVIDED`), so a chat that cannot write the goal down is a defect
-  in that chat, never a state this tab routes around. The Bot's no-tools
+  `PLATFORM_PROVIDED`). A Bot bound to an agent of the user's own
+  (`kirocrew agent update --kiro-agent`, or the agent field) chats on that
+  agent (`mate_worker.member_chat_agent`), so its own DM session gains
+  `kirocrew-mate` there, never in the file on disk. On KAS the projected spec
+  gains the server, its `tools` ref and the `_MATE_AUTO_GRANTS`
+  (`acp/kas_member_goal_tools.py`) and the KAS hoist gives it the session's
+  identity; on every other backend that mounts the crew panel
+  (`ACP_BACKENDS_MEMBER_PANEL`) the session array gains a
+  `members.member_mate_session_server` element (`acp/member_goal_mount.py`),
+  withheld like the panel when the server or one of its tools is switched
+  off. Kiro Crew's own default agent, the conductor and a Bot's own file are
+  left alone, as is a spec that already mounts the server. So a chat that cannot write the goal down is a defect
+  in that chat, never a state this tab routes around; the no-tools prompts
+  (another harness, or a switched-off server) say the chat cannot save a goal
+  and that picking KAS as Agent harness under Settings on the Profile tab gives
+  it the tool, and never send the user to this tab to add one. The Bot's no-tools
   prompts name the Schedules tab for the Heartbeat
   (`context_assembly/member._NO_MATE_TOOLS_IDENTITY`, `goal_setup`,
   `mcp_mate`'s `set_check_ins` description). The former **Add something {name} should track** row is

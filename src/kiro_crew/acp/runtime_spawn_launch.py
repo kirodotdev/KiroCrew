@@ -23,7 +23,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
-``_mcp_secret_server``.
+``_mcp_secret_server`` and ``_mcp_prereg_sent``.
 
 Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
 ``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
@@ -85,7 +85,7 @@ from kiro_crew.agent_sdk.tool_search import (
     custom_agent_never_defer_ids,
     job_tool_ids,
     kas_client_meta_settings,
-    kas_never_defer_ids,
+    loaderless_never_defer_ids,
     spec_grants_tool_search,
     with_client_meta_settings,
 )
@@ -1426,7 +1426,7 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
             )
         else:
             never_defer = await asyncio.to_thread(
-                kas_never_defer_ids, spec, _known_server_tool_names
+                loaderless_never_defer_ids, spec, _known_server_tool_names
             )
     elif operator_mandatory_mcps() is None:
         never_defer = job_tool_ids(self._agent, spec, custom=bool(added))
@@ -1524,6 +1524,8 @@ async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -
     says later.
     """
     runtime._mcp_secret_server = None
+    # A new process holds none of the client secrets the last one was handed.
+    runtime._mcp_prereg_sent = {}
     if not runtime._harness.opens_external_urls:
         return base
     if not await asyncio.to_thread(kas_secret_storage.persistence_enabled):

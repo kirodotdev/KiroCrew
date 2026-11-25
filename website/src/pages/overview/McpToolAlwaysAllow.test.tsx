@@ -29,11 +29,14 @@ vi.mock('../../api/client', () => ({
 
 vi.mock('../../i18n/t', async importOriginal => {
   const orig = await importOriginal<typeof import('../../i18n/t')>()
-  return { ...orig, i18nT: (key: string) => key }
+  // The count line's numbers are the assertion, so that one key keeps them.
+  return { ...orig, i18nT: (key: string, opts?: { on?: string; total?: string }) =>
+    key === 'pages.overview.mcpTab.always_allow_on_count' ? `${key} ${opts?.on}/${opts?.total}` : key }
 })
 
-import McpToolAlwaysAllow, { McpToolGrantsNote, toolGrantRef } from './McpToolAlwaysAllow'
+import McpToolAlwaysAllow, { McpToolGrantsCount, McpToolGrantsNote, toolGrantRef } from './McpToolAlwaysAllow'
 import TrustDropdown from '../../components/TrustDropdown'
+import McpToolsPanel from './McpToolsPanel'
 
 const wrap = (node: ReactElement) => renderWithProviders(node, { queryDefaults: { staleTime: Infinity } })
 
@@ -91,9 +94,58 @@ describe('McpToolAlwaysAllow', () => {
     const sw = await screen.findByRole('switch')
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled', 'true'))
     expect(sw).toHaveAttribute('aria-checked', 'false')
+    // Off: the switch keeps its name, its words keep their slot but are hidden,
+    // and hover names it (#42050).
+    expect(sw).toHaveAccessibleName('pages.overview.mcpTab.always_allow')
+    expect(screen.getByText('pages.overview.mcpTab.always_allow')).toHaveClass('invisible')
+    expect(sw.parentElement).toHaveAttribute('title', 'pages.overview.mcpTab.always_allow')
     fireEvent.click(sw)
     await waitFor(() => expect(setGrant).toHaveBeenCalledWith('@notes/lookup', true))
     await waitFor(() => expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true'))
+    expect(screen.getByText('pages.overview.mcpTab.always_allow')).not.toHaveClass('invisible')
+    expect(screen.getByRole('switch').parentElement).not.toHaveAttribute('title')
+  })
+
+  it('counts the listed tools that are always allowed (#42050)', async () => {
+    grants.mockResolvedValue({ grants: [{ ref: '@notes/LOOKUP' }, { ref: '@notes/unlisted' }], server: 'notes', refusal: '' })
+    // `a*b` can form no grant, so it shows no switch and is not counted.
+    wrap(<McpToolGrantsCount server="notes" tools={['lookup', 'search', 'a*b']} />)
+    expect(await screen.findByTestId('mcp-always-allow-count')).toHaveTextContent('pages.overview.mcpTab.always_allow_on_count 1/2')
+  })
+
+  it('shows no count when a refusal disables every switch and none is on, and keeps it when one is on (#42050)', async () => {
+    grants.mockResolvedValue({ grants: [], server: 'notes', refusal: 'asks_every_time' })
+    const first = wrap(<McpToolGrantsCount server="notes" tools={['lookup']} />)
+    // Settled first, so the absence is the component's answer, not a pending read.
+    await waitFor(() => expect(first.queryClient.getQueryState(['mcp-tool-grants', 'notes'])?.status).toBe('success'))
+    expect(screen.queryByTestId('mcp-always-allow-count')).toBeNull()
+    first.unmount()
+    grants.mockResolvedValue({ grants: [{ ref: '@notes/lookup' }], server: 'notes', refusal: 'set_elsewhere' })
+    wrap(<McpToolGrantsCount server="notes" tools={['lookup']} />)
+    expect(await screen.findByTestId('mcp-always-allow-count')).toHaveTextContent('pages.overview.mcpTab.always_allow_on_count 1/1')
+  })
+
+  const panel = (props: Partial<Parameters<typeof McpToolsPanel>[0]> = {}) => (
+    <McpToolsPanel
+      id="p" labelledBy="" server="notes" tools={['lookup', 'search', 'gone', 'staged']}
+      disabledTools={['gone']} pendingTools={{ staged: false }} serverOff={false} locked={false}
+      notice={null} onToggleTool={() => {}} {...props}
+    />
+  )
+
+  it('the panel counts only its enabled tools: a disabled or staged-off tool with a grant is left out (#42050)', async () => {
+    grants.mockResolvedValue({ grants: [{ ref: '@notes/lookup' }, { ref: '@notes/gone' }, { ref: '@notes/staged' }], server: 'notes', refusal: '' })
+    wrap(panel())
+    expect(await screen.findByTestId('mcp-always-allow-count')).toHaveTextContent('pages.overview.mcpTab.always_allow_on_count 1/2')
+  })
+
+  it('the panel shows no count line on a server that is off (#42050)', async () => {
+    grants.mockResolvedValue({ grants: [{ ref: '@notes/lookup' }], server: 'notes', refusal: '' })
+    wrap(panel({ serverOff: true }))
+    await waitFor(() => expect(grants).toHaveBeenCalledWith('notes'))
+    expect(await screen.findByRole('button', { name: 'lookup' })).toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-always-allow-count')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
   })
 
   it.each(['@notes/lookup', '@notes/LOOKUP', '@NOTES/Lookup'])('turns an existing grant %s off', async ref => {

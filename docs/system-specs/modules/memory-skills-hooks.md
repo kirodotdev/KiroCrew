@@ -1424,7 +1424,10 @@ answers the name of the named store whose vector file `path` is, or `""` — the
 hand the crew schema to each: the eval runner's `ws/"vector_memory.db"`, the bench ingest
 path, the onboarding importer's `destination/"memory.db"`, and every `tmp_path` in the
 suite. The predicate answers `""` for all of those, for the literal
-`memory_stores/default/`, and for a malformed store name. Its containment test is
+`memory_stores/default/`, and for a malformed store name. On Windows it also answers
+`""`, without resolving, for a UNC folder `hooks.unc_probe_allowed` does not admit,
+unless the folder is spelled exactly as the resolved root names it: resolving a UNC path
+opens SMB to its host. Its containment test is
 IDENTITY (`parent.resolve() == memory_stores_root().resolve() / name`) rather than a
 resolved-parent check, for the reason `_named_store_dir` already refuses aliasing: with
 `memory_stores/acme` symlinked at `memory_stores/finance`, a parent check still sees the
@@ -2054,7 +2057,11 @@ budgeted `[Memory activity]` block
 (`get_activity_context`); the facts and episodes are ranked against the request,
 and the lessons block reuses that vector, so a fresh first turn embeds the
 request once — three embed calls on the same text through the shared embedder,
-one inference. With the switch off, that material
+one inference. The request is the user's own span of the turn
+(`context_assembly.turn.recall_query`, the `user_text_range` slice the
+per-message and post-compaction lesson paths also read): a notice or context a
+dispatcher put in front of it ranks nothing, and an `@prompt` turn's empty span
+ranks the prompt body after the prefix. With the switch off, that material
 is on demand through the store-bound `memory_recall` route and startup performs
 no query embedding. Warm follow-ups do not repeat startup memory injection. The
 prompt-build embedding deadline bounds that first-turn inference; past it the three

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
@@ -168,17 +168,22 @@ function loadFilter(store: string): { q: string; kind: MemoryRecordQuery['kind']
   } catch { return { q: '', kind: 'all' } }
 }
 
-export default function MemoryRecordsEditor({ store, privateMemory = false, onDirtyChange, emptyActions, onRecovery }: {
+export default function MemoryRecordsEditor({ store, privateMemory = false, onDirtyChange, emptyActions, onRecovery, focusKey }: {
   store: string; privateMemory?: boolean; onDirtyChange?: (dirty: boolean) => void; emptyActions?: ReactNode; onRecovery?: () => void
+  /** A saved lesson landing, searched by key without replacing the stored filter. */
+  focusKey?: string
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const reduceMotion = useReducedMotion()
   const [saved] = useState(() => loadFilter(store))
-  const [input, setInput] = useState(saved.q)
-  const [search, setSearch] = useState(saved.q)
-  const [kind, setKind] = useState<MemoryRecordQuery['kind']>(saved.kind)
-  useEffect(() => { safeSetSessionItem(FILTER_KEY_PREFIX + store, JSON.stringify({ q: search, kind })) }, [store, search, kind])
+  const [input, setInput] = useState(focusKey ?? saved.q)
+  const [search, setSearch] = useState(focusKey ?? saved.q)
+  const [kind, setKind] = useState<MemoryRecordQuery['kind']>(focusKey ? 'directive' : saved.kind)
+  useEffect(() => {
+    if (focusKey && search === focusKey && kind === 'directive') return
+    safeSetSessionItem(FILTER_KEY_PREFIX + store, JSON.stringify({ q: search, kind }))
+  }, [store, search, kind, focusKey])
   const [page, setPage] = useState(0)
   const pager = usePagerFocus()
   const [selected, setSelected] = useState<Map<string, MemoryRecord>>(new Map())
@@ -213,6 +218,14 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
   const searching = input.trim() !== search || records.isPending
   const recallCurrent = !!recallQuery && recallQuery === search && input.trim() === search
   const rows = searching || records.error ? [] : records.data?.entries || []
+  const focused = input === focusKey && search === focusKey && kind === 'directive' ? rows.find(row => row.id === focusKey) : undefined
+  const focusRow = useRef<HTMLDivElement>(null)
+  const focusScrolled = useRef(false)
+  useEffect(() => {
+    if (!focused || !focusRow.current || focusScrolled.current) return
+    focusRow.current.scrollIntoView({ block: 'center' })
+    focusScrolled.current = true
+  }, [focused])
   const selectedCount = all ? all.count : selected.size
   const isSelected = (row: MemoryRecord) => all ? !all.exclude.has(identity(row)) : selected.has(identity(row))
   const clearSelection = () => { setSelected(new Map()); setAll(null) }
@@ -336,7 +349,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
     </motion.div>
     {searching && <div role="status" aria-label={t('pages.overview.memoryTab.loading')} className="grid gap-3 lg:grid-cols-2">{[0, 1, 2, 3].map(index => <Skeleton key={index} className="h-36 rounded-xl motion-reduce:animate-none" />)}</div>}
     {!searching && !records.error && !rows.length && <Card className="mb-0 py-6"><EmptyState icon={<Search className="lucide-inline" />} title={search || kind !== 'all' ? t('memoryV2.no_matches') : t(privateMemory ? 'memoryV2.empty_title' : 'memoryV2.store_empty_title')} subtitle={search || kind !== 'all' ? t('memoryV2.no_matches_hint') : t(privateMemory ? 'memoryV2.empty_body' : 'memoryV2.store_empty_body')} />{!search && kind === 'all' && <div className="mt-3 flex flex-wrap justify-center gap-2">{emptyActions}</div>}</Card>}
-    <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">{rows.map(row => { const Icon = ICONS[row.kind]; const chosen = isSelected(row); return <motion.div layout={!reduceMotion} key={identity(row)} initial={false} className="min-w-0">
+    <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">{rows.map(row => { const Icon = ICONS[row.kind]; const chosen = isSelected(row); const isFocus = row === focused; return <motion.div layout={!reduceMotion} key={identity(row)} initial={false} className={`min-w-0${isFocus ? ' rounded-xl ring-2 ring-accent' : ''}`} ref={isFocus ? focusRow : undefined} data-memory-focus={isFocus || undefined}>
       <Card className={`mb-0 flex h-full min-w-0 flex-col py-4 transition-colors ${chosen ? 'border-accent bg-accent-subtle' : 'hover:border-border-strong'}`}>
         <div className="flex min-w-0 items-center gap-2.5"><input aria-label={t('memoryEditing.select_record', { text: memoryRecordBody(row) })} type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={chosen} disabled={!row.revision || (!all && !chosen && selectedCount >= MANUAL_LIMIT) || (!!all && chosen && all.exclude.size >= MANUAL_LIMIT)} onChange={() => toggle(row)} /><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg ${TINTS[row.kind]}`}><Icon className="lucide-inline" /></span><div className="min-w-0"><span className="block text-[12px] font-medium">{t(MEMORY_RECORD_LABELS[row.kind])}</span>{!privateMemory && row.key && <span className="block truncate text-[11px] text-muted" title={row.key}>{row.key}</span>}</div></div>
         <p className="my-3 line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{memoryRecordBody(row)}</p>

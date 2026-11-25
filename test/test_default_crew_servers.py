@@ -222,6 +222,14 @@ class TestHelper:
             {"capability": "mcp", "effect": "deny", "exclude": ["kirocrew-core/*"]},
             {"capability": "mcp", "effect": "ask"},
             {"capability": "shell", "effect": "deny"},
+            # Past the array's glob bounds (33 globs, over `_GLOB_COUNT_CAP`), and a
+            # `[` class, the kiro-cli add rule still matches as written.
+            {
+                "capability": "mcp",
+                "effect": "deny",
+                "match": [f"x{i}*/*" for i in range(33)],
+            },
+            {"capability": "mcp", "effect": "deny", "match": ["gh[-_]x"]},
         ],
     )
     def test_a_narrower_permissions_rule_is_not_an_opt_out(self, managed, rule):

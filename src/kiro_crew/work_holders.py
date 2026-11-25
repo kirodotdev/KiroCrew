@@ -7,12 +7,12 @@ one walk. ``quiescence.assess`` reads the census twice in one synchronous step,
 once for the counts that decide and once for the names, which describe them and
 decide nothing.
 
-A holder's ``name`` is one of two identifiers its one reader is already listed:
+A holder's ``name`` is one of two identifiers its readers already see listed:
 a dashboard slot key (``GET /api/chat/slots``) or a cron job name
 (``GET /api/crons``). Every other kind of work is counted unnamed. It is never message text, a session title or a path, and it is
 cleaned for a terminal and redacted where it is made (:func:`clean_name`). Names
-identify other sessions' work, so they are for the host only: see
-``Quiescence.named_holders``. Work that is
+identify other sessions' work, so they go only to a caller entitled to see all
+of it: see ``Quiescence.named_holders``. Work that is
 counted but has no identifier (sub-agents, callbacks) is a holder with an empty
 name and a ``count``.
 

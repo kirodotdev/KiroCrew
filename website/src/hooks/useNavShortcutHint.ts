@@ -79,7 +79,7 @@ export function ariaKeyshortcutsFor(def: ShortcutDef, mac: boolean = IS_MAC): st
   if (def.shift) mods.push('Shift')
   // Single characters name the same key the visible hint does (upper-case
   // letters, matching the shipped Control+Z); named keys are DOM `key` values.
-  const key = def.key.length === 1 ? keyCapGlyph(def.key) : def.key
+  const key = def.key.length === 1 ? keyCapGlyph(def.key, !!def.alt && mac) : def.key
   return [...mods, key].join('+')
 }
 
