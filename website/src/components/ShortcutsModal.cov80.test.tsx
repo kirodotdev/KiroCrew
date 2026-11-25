@@ -205,7 +205,7 @@ describe('ShortcutsModal & subcomponents', () => {
   it('lists Esc for taking back an unread steer whether or not a second Escape is required', () => {
     const takeBackRow = () => groupShortcuts('actions', true).find(s => s.id === 'take-back-steer')
     expect(takeBackRow()).toMatchObject({ key: 'Escape', group: 'actions' })
-    expect(shortcutLabel(takeBackRow()!)).toBe("Take back a steer the agent hasn't read")
+    expect(shortcutLabel(takeBackRow()!)).toBe("Take back a message the agent hasn't read yet")
     saveChatConfig({ ...loadChatConfig(), doubleEscapeToStop: true })
     expect(takeBackRow()).toMatchObject({ key: 'Escape', group: 'actions' })
   })

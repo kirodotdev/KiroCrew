@@ -12368,7 +12368,7 @@
       "switch_to_remote_crew": "Passa alla crew remota {{n}}",
       "walk_back_mru_history": "Torna indietro nella cronologia MRU",
       "stop_speaking": "Interrompi lettura",
-      "take_back_steer": "Recupera un indirizzamento che l’agente non ha ancora letto",
+      "take_back_steer": "Recupera un messaggio che l’agente non ha ancora letto",
       "toggle_focus_mode": "Attiva/disattiva la modalità concentrazione",
       "toggle_left_sidebar": "Attiva/disattiva la barra laterale sinistra",
       "toggle_session_panel": "Attiva/disattiva il pannello delle sessioni",

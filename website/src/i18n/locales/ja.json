@@ -11818,7 +11818,7 @@
       "switch_to_remote_crew": "リモートクルー {{n}} に切り替え",
       "walk_back_mru_history": "MRU履歴を戻る",
       "stop_speaking": "読み上げを停止",
-      "take_back_steer": "エージェントがまだ読んでいない指示をメッセージ欄に戻す",
+      "take_back_steer": "エージェントがまだ読んでいないメッセージをメッセージ欄に戻す",
       "toggle_focus_mode": "フォーカスモードを切り替え",
       "toggle_left_sidebar": "左サイドバーの表示を切り替え",
       "toggle_session_panel": "セッションパネルの表示を切り替え",

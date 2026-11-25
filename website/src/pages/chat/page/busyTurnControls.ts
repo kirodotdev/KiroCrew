@@ -452,6 +452,7 @@ export function useBusyTurnControls({
   const steerEscape = useSteerEscape({
     slot: activeSlot,
     messages,
+    transcriptAuthoritative,
     slotRunning,
     stopState: currentSlot?.stop_state,
     runEpoch: slotRunEpoch,

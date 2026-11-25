@@ -1144,7 +1144,7 @@ describe('useSteerRetract: request outcome, placement and busy retry', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(BUSY_RETRY_DELAYS_MS[0]) })
     let outcome = ''
     await act(async () => { outcome = await result })
-    expect(outcome).toBe('not_sent')
+    expect(outcome).toBe('not_pending')
     expect(retractSteer).toHaveBeenCalledTimes(1)
   })
 })

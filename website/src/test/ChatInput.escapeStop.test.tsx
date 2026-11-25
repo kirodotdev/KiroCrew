@@ -63,6 +63,27 @@ describe('ChatInput textarea: Escape stops the running turn (#22315)', () => {
   })
 })
 
+describe('ChatInput: the take-back hint for a pending steer', () => {
+  const steerEscape = (offered: number, reachable = offered) => ({ offered, reachable, takeBack: vi.fn(() => 'none' as const), stop: vi.fn() })
+
+  it('says the press takes back the message and stops when it is the last steer', () => {
+    renderWithProviders(<Host isRunning onStop={vi.fn()} steerEscape={steerEscape(1)} />)
+    expect(screen.getByTestId('escape-steer-take-back-hint')).toHaveTextContent('Esc to take back your message and stop')
+    expect(screen.getByTestId('stop-button-armed')).toHaveAttribute('title', 'Stop generation (Esc)')
+  })
+
+  it('says the press only takes back the message while another steer stays pending, and the Stop tooltip drops the key', () => {
+    renderWithProviders(<Host isRunning onStop={vi.fn()} steerEscape={steerEscape(2)} />)
+    expect(screen.getByTestId('escape-steer-take-back-hint')).toHaveTextContent('Esc to take back your message')
+    expect(screen.getByTestId('stop-button-armed')).toHaveAttribute('title', 'Stop generation')
+  })
+
+  it('shows no hint for a steer no press can take back yet', () => {
+    renderWithProviders(<Host isRunning onStop={vi.fn()} steerEscape={steerEscape(0, 1)} />)
+    expect(screen.queryByTestId('escape-steer-take-back-hint')).toBeNull()
+  })
+})
+
 describe('the Stop button names the stop key (#23462)', () => {
   it('its tooltip names Esc; its accessible name is unchanged', () => {
     renderWithProviders(<Host isRunning onStop={vi.fn()} />)

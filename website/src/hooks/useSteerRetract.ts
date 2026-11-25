@@ -29,7 +29,8 @@ export type SteerRestorePlacement = 'append' | 'prepend'
 export type SteerRetractRequestOutcome =
   /** The route armed the take-back, so the turn's end takes the steer back too. */
   | 'accepted'
-  /** The steer was no longer pending: the turn read it, or its turn ended first. */
+  /** The steer was no longer pending: the turn read it, or its turn ended first,
+   *  as the route answered or as its row showed during a busy wait. */
   | 'not_pending'
   /** The route refused it, and the row's notice says why. */
   | 'refused'
@@ -408,7 +409,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
           // The row keeps its in-flight line through the wait. A take-back that
           // settled meanwhile (its row moved on, or its turn ended) is not asked again.
           setTimeout(() => {
-            if (pendingTakeBackBySlot.get(taken.slot) !== taken) { resolve('not_sent'); return }
+            if (pendingTakeBackBySlot.get(taken.slot) !== taken) { resolve('not_pending'); return }
             void request(retriesLeft - 1)
           }, BUSY_RETRY_DELAYS_MS[BUSY_RETRY_DELAYS_MS.length - retriesLeft])
           return

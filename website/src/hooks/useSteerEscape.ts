@@ -31,6 +31,9 @@ export interface SteerEscapeOptions {
   /** The slot whose transcript `messages` is. */
   slot: string | null
   messages: ChatMessage[]
+  /** Whether this slot's history fetch has settled. While it has not, a queued
+   *  press whose row is missing waits instead of being dropped. Defaults true. */
+  transcriptAuthoritative?: boolean
   /** A turn is running on the slot. Its pending steers exist only while it runs. */
   slotRunning: boolean
   /** The slot's stop state. A hard stop discards the pending steers, so none is
@@ -65,9 +68,9 @@ export interface SteerEscapeOptions {
  * and the next press asks again. A take-back whose answer is lost holds them
  * until its row settles, since the gateway may or may not hold it.
  */
-export function useSteerEscape({ slot, messages, slotRunning, stopState, runEpoch = 0, onSteerAction, pending, stop }: SteerEscapeOptions): SteerEscape {
-  const latest = useRef({ slot, messages, slotRunning, stopState, onSteerAction, pending, stop })
-  latest.current = { slot, messages, slotRunning, stopState, onSteerAction, pending, stop }
+export function useSteerEscape({ slot, messages, transcriptAuthoritative = true, slotRunning, stopState, runEpoch = 0, onSteerAction, pending, stop }: SteerEscapeOptions): SteerEscape {
+  const latest = useRef({ slot, messages, transcriptAuthoritative, slotRunning, stopState, onSteerAction, pending, stop })
+  latest.current = { slot, messages, transcriptAuthoritative, slotRunning, stopState, onSteerAction, pending, stop }
   const queueRef = useRef<SteerTarget[]>([])
   // The take-back sent and not yet settled. `unanswered` once its request failed
   // before its outcome was known: the take-back hook keeps that record until the
@@ -112,6 +115,7 @@ export function useSteerEscape({ slot, messages, slotRunning, stopState, runEpoc
     while (queueRef.current.length) {
       // One take-back per chat at a time: the next waits until this one settles.
       if (Object.keys(now.pending).length) return
+      if (!now.transcriptAuthoritative) return
       const row = now.messages.find(m => isRowOf(m, queueRef.current[0]))
       const target = row ? targetOf(row) : null
       if (target && 'sendId' in target) return
@@ -151,7 +155,9 @@ export function useSteerEscape({ slot, messages, slotRunning, stopState, runEpoc
 
   // In the commit that shows another chat or turn, before any answer for the old one can land.
   useLayoutEffect(() => { reset() }, [slot, runEpoch, reset])
-  useEffect(() => { pump() }, [messages, pending, slotRunning, stopState, pump])
+  // An answer that lands after the composer is gone stops nothing.
+  useEffect(() => () => { generationRef.current += 1 }, [])
+  useEffect(() => { pump() }, [messages, transcriptAuthoritative, pending, slotRunning, stopState, pump])
 
   const claimed = useCallback((m: ChatMessage, inFlight: Readonly<Record<string, unknown>>) => {
     const mid = (m.meta as { mid?: unknown } | undefined)?.mid
@@ -196,8 +202,11 @@ export function useSteerEscape({ slot, messages, slotRunning, stopState, runEpoc
     return { offered, reachable }
   }, [slot, slotRunning, stopState, messages, pending, claimed, claimsVersion])
 
+  // Keyed on the two numbers, so a streamed chunk that changes neither leaves the
+  // composer's props as they were.
+  const { offered, reachable } = counts
   return useMemo(
-    () => ({ offered: counts.offered, reachable: counts.reachable, takeBack, stop: stopAfterTakeBacks }),
-    [counts, takeBack, stopAfterTakeBacks],
+    () => ({ offered, reachable, takeBack, stop: stopAfterTakeBacks }),
+    [offered, reachable, takeBack, stopAfterTakeBacks],
   )
 }

@@ -12368,7 +12368,7 @@
       "switch_to_remote_crew": "Alternar para a crew remota {{n}}",
       "walk_back_mru_history": "Voltar no histórico MRU",
       "stop_speaking": "Parar de falar",
-      "take_back_steer": "Recuperar um direcionamento que o agente ainda não leu",
+      "take_back_steer": "Recuperar uma mensagem que o agente ainda não leu",
       "toggle_focus_mode": "Alternar o modo de foco",
       "toggle_left_sidebar": "Alternar barra lateral esquerda",
       "toggle_session_panel": "Alternar painel de sessões",
