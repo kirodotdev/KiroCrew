@@ -246,18 +246,22 @@ def test_the_overlay_config_local_json_is_held_to_the_same_workspace_rule(tmp_pa
     "workspace_dir",
     ["/x/../../etc", r"\x\..\..\y", r"C:\x\..\..\y", r"\\host\share\..\y"],
 )
-def test_a_rooted_or_drive_folder_is_kept_on_every_platform(_floor_monkeypatch, workspace_dir):
+def test_a_rooted_or_drive_folder_is_kept_on_every_platform(workspace_dir):
     """Kept where Windows or the OS reads it as absolute; on POSIX the backslash forms are one
     name inside the data home."""
     import os
 
     from kiro_crew.archive_config_vetting import _dir_outside_roots
 
-    _floor_monkeypatch.setattr(os.path, "isabs", lambda p: False)
-    assert _dir_outside_roots(workspace_dir, ["/w", "/data/Crew"]) is False
+    # Undone right after the call: while every path reads as relative, a data-home resolve
+    # anywhere in this process creates the home under the working directory, the checkout.
+    with pytest.MonkeyPatch.context() as scoped:
+        scoped.setattr(os.path, "isabs", lambda p: False)
+        outside = _dir_outside_roots(workspace_dir, ["/w", "/data/Crew"])
+    assert outside is False
 
 
-def test_workspace_containment_compares_case_the_way_the_platform_does(_floor_monkeypatch):
+def test_workspace_containment_compares_case_the_way_the_platform_does():
     """On a case-insensitive platform a differently cased spelling of a root is inside it."""
     import os
 
@@ -266,5 +270,7 @@ def test_workspace_containment_compares_case_the_way_the_platform_does(_floor_mo
     roots = ["/w", "/data/Crew"]
     case_sensitive = os.path.normcase("A") == "A"  # False on Windows, where it lowercases
     assert _dir_outside_roots("../CREW/x", roots) is case_sensitive
-    _floor_monkeypatch.setattr(os.path, "normcase", lambda p: p.lower())
-    assert _dir_outside_roots("../CREW/x", roots) is False
+    with pytest.MonkeyPatch.context() as scoped:
+        scoped.setattr(os.path, "normcase", lambda p: p.lower())
+        outside = _dir_outside_roots("../CREW/x", roots)
+    assert outside is False
