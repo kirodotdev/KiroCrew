@@ -2508,7 +2508,7 @@ subparsers (the parent CLI forwards `REMAINDER`). Full command reference in
 |---|---|---|
 | `doctor [--json]` | platform support + enable state + the advisory TCC probe, and with the feature on, whether the configured chat backend loads the tools | no: it *reports* the enable, and returns no desktop content |
 | `apps` | the on-screen application list | **yes** — see below |
-| `call <tool> [k=v …]` / `call --calls '[…]'` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
+| `call <tool> [k=v …]` / `call --calls '[…]'` / `call --calls-file <path>` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
 
 `apps` is gated, and used not to be. The original reasoning — "this is the operator
 running a diagnostic in their own terminal, and the enable exists to stop the
@@ -2569,7 +2569,9 @@ relative to the `computer_get_state` that produced them, and that mapping lives 
 a per-process `SnapshotIndex` with a 90s TTL. Two separate `kirocrew computer call`
 invocations therefore cannot share indices at all — the second refuses with "no
 state for …". `--calls '[{"tool": …, "args": {…}}, …]'` exists so a
-snapshot-then-act sequence is reproducible from one command line. It runs
+snapshot-then-act sequence is reproducible from one command line;
+`--calls-file <path>` (`-` for standard input) reads the same array from a file, for
+a Windows shell that strips the JSON's inner quotes. It runs
 sequentially and does **not** abort at the first error: a reproduction is more
 useful whole, since "step 2 was refused and step 3 then hit a stale index" is the
 actual story. `--json` emits `[{tool, text}, …]`; the exit code is non-zero if any

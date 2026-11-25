@@ -762,6 +762,7 @@ module outside the snapshot family imports an owner.
 | `kirocrew computer apps` | List on-screen applications the accessibility layer can address (human-facing twin of the `computer_list_apps` MCP tool). Gated by the same chokepoint as `call` — refused while the feature is off or the session is unattended. |
 | `kirocrew computer call <tool> [k=v ...]` | Run ONE computer-use tool through the same gated chokepoint the agent uses, and print its reply (debug / reproduction) |
 | `kirocrew computer call --calls '[…]'` | Run a JSON array of tool calls in a SINGLE process, so `element_index` values from an earlier `computer_get_state` are still resolvable |
+| `kirocrew computer call --calls-file <path>` | The same batch read from a UTF-8 file (`-` reads standard input); the form to use on Windows, whose shells do not pass the `--calls` JSON quoting through |
 | `kirocrew mcp-cron` | MCP server for cron tools (spawned by kiro-cli) |
 | `kirocrew mcp-core` | MCP server for spawn, learn, task tools (spawned by kiro-cli) |
 | `kirocrew mcp-computer` | MCP server for computer-use tools (spawned by kiro-cli; hidden — registered with no `help`, so it is in neither listing). A **thin shim** — it forwards to the gateway over loopback and does no accessibility work itself. |
@@ -4136,7 +4137,10 @@ sequence in ONE process: `call --calls '[{"tool":"computer_get_state","args":
 {"app":"Finder"}},{"tool":"computer_click","args":{"app":"Finder",
 "element_index":12}}]'`. The batch form exists because `element_index` values only
 resolve against the per-process snapshot cache that produced them, so two separate
-invocations cannot share them. `key=value` arguments are JSON-decoded when they can
+invocations cannot share them. `call --calls-file calls.json` reads the same array
+from a file (`-` reads standard input): it is the form to use on Windows, where
+PowerShell and `cmd.exe` do not pass the quoted `--calls '<json>'` through
+`kirocrew.cmd` intact. `key=value` arguments are JSON-decoded when they can
 be (`element_index=3` → int, `screenshot=false` → bool) and kept as text otherwise
 (`app=Finder`). `--json` emits `[{tool, text}, …]`; the exit code is non-zero if any
 reply carries the `Error: ` prefix, and a batch runs to completion rather than
