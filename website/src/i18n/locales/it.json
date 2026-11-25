@@ -6196,6 +6196,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "Impossibile caricare i moduli di avvio.",
+      "retry": "Riprova",
       "failed": "Impossibile avviare {{name}}.",
       "dismiss": "Nascondi l’avviso di avvio di {{name}} fino al ricaricamento",
       "open_app": "Apri {{name}}"

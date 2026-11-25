@@ -2,7 +2,7 @@
  * StartupModules: which apps' `ui.startup` components mount, and that a dropped
  * admission unmounts one (running its cleanup) without a reload.
  *
- * Seams: the installed-app list (`useInstalledApps`), the bundle import, and the
+ * Seams: the installed-app list (`useInstalledAppsWhen`), the bundle import, and the
  * safe-reload / embedded-pane probes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -26,7 +26,7 @@ const state = vi.hoisted(() => ({
 }))
 
 vi.mock('../hooks/panelTabRegistry', () => ({
-  useInstalledApps: () => ({ apps: state.apps }),
+  useInstalledAppsWhen: () => ({ apps: state.apps, loadError: null, retry: vi.fn() }),
 }))
 vi.mock('../lib/safeReload', () => ({ isSafeReload: () => state.safe }))
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: () => state.embedded }))

@@ -6196,6 +6196,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "Não foi possível carregar os módulos de inicialização.",
+      "retry": "Tentar novamente",
       "failed": "Não foi possível iniciar {{name}}.",
       "dismiss": "Ocultar o aviso de inicialização de {{name}} até recarregar",
       "open_app": "Abrir {{name}}"

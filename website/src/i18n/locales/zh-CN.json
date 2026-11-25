@@ -5852,6 +5852,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "无法加载启动模块。",
+      "retry": "重试",
       "failed": "{{name}} 启动失败。",
       "dismiss": "在重新加载前隐藏 {{name}} 的启动通知",
       "open_app": "打开 {{name}}"

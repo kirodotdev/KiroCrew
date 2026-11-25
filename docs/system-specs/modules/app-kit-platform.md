@@ -5213,6 +5213,11 @@ Writers: `apps/backend_runtime/supervision.py` (`_health_check_loop`,
 
 ## 18. An app UI is a dynamically imported ESM module, not an iframe
 
+`website/src/components/StartupModules.tsx` mounts admitted `ui.startup` components
+on every dashboard route. A failed initial `GET /api/apps` load shows one
+`ErrorNotice` with a Retry action; a failed background refetch keeps the cached
+modules without that notice. A successful empty list renders nothing.
+
 A gateway-managed app's dashboard UI is a real ESM module loaded into the
 dashboard's own React tree, so it shares one React instance and the host theme
 instead of living behind an iframe boundary. `AppHost` reads `ui.entry` from the

@@ -18,20 +18,21 @@
 import { useRef, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useInstalledApps } from '../hooks/panelTabRegistry'
+import { useInstalledAppsWhen } from '../hooks/panelTabRegistry'
 import { i18nT } from '../i18n/t'
 import { isSafeReload } from '../lib/safeReload'
 import { isEmbeddedPane } from '../lib/embedded'
 import AppHost, { type AppHostProps } from './AppHost'
 import ErrorNotice from './ErrorNotice'
 import { useGuardedLeave } from './NavigationLeaveGuard'
+import { Btn } from './ui'
 
 function isPlainPrimaryClick(e: MouseEvent<HTMLAnchorElement>): boolean {
   return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 }
 
 export default function StartupModules() {
-  const { apps } = useInstalledApps()
+  const { apps = [], loadError, retry } = useInstalledAppsWhen(true)
   const navigate = useNavigate()
   const guardedLeave = useGuardedLeave()
   const [failedApps, setFailedApps] = useState(() => new Map<string, true>())
@@ -67,12 +68,20 @@ export default function StartupModules() {
             suppressReload
           />
         ))}
-      {failedApps.size > 0 && (
+      {(loadError != null || failedApps.size > 0) && (
         <div
           className="fixed bottom-safe-offset-4 right-safe-offset-4 z-50 flex max-h-[50vh] w-[min(20rem,calc(100vw-2rem-var(--safe-area-x)-var(--safe-area-x)))] flex-col gap-2 overflow-y-auto rounded-lg bg-card p-3 shadow-lg"
           data-testid="startup-module-errors"
         >
           {/* No hand-off: the current page may hold an unsaved Settings or app form draft. */}
+          {loadError != null && (
+            <ErrorNotice
+              testId="startup-modules-load-error"
+              impact="partial"
+              message={i18nT('components.startupModules.load_failed')}
+              actions={<Btn onClick={retry}>{i18nT('components.startupModules.retry')}</Btn>}
+            />
+          )}
           {[...failedApps.keys()].map(name => (
             <ErrorNotice
               key={name}

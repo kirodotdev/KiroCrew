@@ -5852,6 +5852,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "시작 모듈을 불러오지 못했습니다.",
+      "retry": "다시 시도",
       "failed": "{{name}} 시작에 실패했습니다.",
       "dismiss": "새로고침할 때까지 {{name}} 시작 알림 닫기",
       "open_app": "{{name}} 열기"
