@@ -705,3 +705,41 @@ def test_the_owner_turning_auto_on_again_after_a_revoke_signs_it(tmp_path) -> No
     cached = gateway.get_job(job_id)
     assert cached is not None and job_fire_approval_mode(cached) == "auto"
     assert job_fire_approval_mode(_reload(tmp_path, job_id)) == "auto"
+
+
+def test_every_cron_auto_approver_rechecks_the_job_grant() -> None:
+    """Each fire site that builds an auto approver passes ``holds``, so a grant turned
+    off during a running turn makes the next tool call ask."""
+    import ast
+    import inspect
+
+    from kiro_crew.slack.gateway_runtime import cron_turn
+
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(cron_turn)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "auto_job_approver"
+    ]
+    assert len(calls) >= 2
+    assert all(any(kw.arg == "holds" for kw in call.keywords) for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_a_grant_turned_off_during_a_turn_makes_the_approver_ask(tmp_path) -> None:
+    from kiro_crew.cron_service.fields import auto_job_approver
+
+    service = CronService(base_dir=tmp_path)
+    job = service.add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+    asked: list[object] = []
+
+    async def _ask(event: object) -> bool:
+        asked.append(event)
+        return False
+
+    approve = auto_job_approver(_ask, holds=lambda: job_fire_approval_mode(job) == "auto")
+    assert await approve("e1") is True and asked == []
+
+    assert CronService(base_dir=tmp_path).update_job(job.id, approval_mode="") is not None
+    assert await approve("e2") is False and asked == ["e2"]

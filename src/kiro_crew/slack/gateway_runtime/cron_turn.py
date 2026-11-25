@@ -433,7 +433,9 @@ async def _cron_run_sequence(
                             self._interactive_approval(
                                 "cron",
                                 requester=f"cron job {job.id}, agent {step.alias}: {job.name}",
-                            )
+                            ),
+                            # The job's own grant too, so one turned off mid-step asks.
+                            holds=lambda: job_fire_approval_mode(job) == "auto",
                         )
                         if job_fire_approval_mode(job) == "auto"
                         else self._interactive_approval(
