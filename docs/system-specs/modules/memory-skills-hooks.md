@@ -1880,8 +1880,10 @@ tick or clear that value in its group without opening the row.
 Colour follows the approved mock (S2/S3): the accent marks selection, primary
 actions, checkboxes and Every session; an open or picked row is an 8% accent
 tint; the row a Lesson saved link lands on gets the saved tint and an `--ok` bar
-with "Just saved"; the picked kind pill is filled with the text colour on dark;
-Global memory's avatar is the `--tile-blue` tile; only Confidence below 0.5 is red.
+with "Just saved"; the picked kind pill is filled with the text colour on both
+themes; each kind's icon has its own theme colour (fact `--info-text`, lesson
+`--accent`, experience `--ok-text`); Global memory's avatar is the `--tile-blue`
+tile; only Confidence below 0.5 is red.
 
 The page's Graph tab, after Memories, draws the selected store
 (`GET /api/memory/graph?store=`, the same owner-gated resolver as the profile
@@ -2082,10 +2084,14 @@ cards that retain memory type, content, member and channel. Restore keeps its
 original control visible while a separate warning, Confirm and Cancel appear.
 
 Copy from another memory (a bot page's ⋯ menu on every width, and its empty
-list) is an explicit owner operation. The owner picks a source and either
-individual fact, directive or episode identities or Select all matching, which
-copies every source row the search matches with no cap: the dialog reads the
-source page by page while it copies, so nothing is loaded up front.
+list) is an explicit owner operation. The owner picks a source, narrows it with
+kind pills (Facts, Lessons, Experiences, all on by default, the last one cannot
+be turned off) and a search, then picks individual fact, directive or episode
+identities or ticks the one copy-everything box. That box reads Copy all with
+no search and Select all matching with one, and copies every source row of the
+picked kinds that the search matches, with no cap: the dialog reads the source
+page by page while it copies (skipping experience pages when Experiences is
+off), so nothing is loaded up front.
 `POST /api/memory/seed` takes at most `MAX_SEED_ITEMS` (50) per request, a
 request-body bound: each copy is one row write whose vector the backfill sweep
 fills later. So the dialog (`pages/overview/memorySeedBatches.ts`) sends 50-item

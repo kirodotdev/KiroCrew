@@ -23776,6 +23776,7 @@
     }
   },
   "memoryV2": {
+    "copy_all": "すべてコピー",
     "copy_all_matching": "一致するものをすべてコピー",
     "copy_select_all": "一致するものをすべて選択",
     "copy_tally": "{{imported}} 件をコピー、{{existing}} 件は既存。",

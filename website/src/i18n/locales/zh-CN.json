@@ -23776,6 +23776,7 @@
     }
   },
   "memoryV2": {
+    "copy_all": "全部复制",
     "copy_all_matching": "拷贝全部匹配项",
     "copy_select_all": "全选匹配项",
     "copy_tally": "已拷 {{imported}} 条，{{existing}} 条已存在。",

@@ -24980,6 +24980,7 @@
     }
   },
   "memoryV2": {
+    "copy_all": "Copia tutto",
     "copy_all_matching": "Copia tutti i risultati",
     "copy_select_all": "Seleziona tutti i risultati",
     "copy_tally": "{{imported}} copiati. {{existing}} già presenti.",

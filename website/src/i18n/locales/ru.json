@@ -25582,6 +25582,7 @@
     }
   },
   "memoryV2": {
+    "copy_all": "Копировать все",
     "copy_all_matching": "Копировать все совпадения",
     "copy_select_all": "Выбрать все совпадения",
     "copy_tally": "Скопировано: {{imported}}. Уже есть: {{existing}}.",
@@ -25790,7 +25791,7 @@
     "order_z_a": "От Я до А",
     "read_failed": "Не удалось прочитать воспоминания в {{store}}",
     "recall_task": "Задача",
-    "recall_task_placeholder": "Опишите задачу, например «исправить нестабильный тест CI»",
+    "recall_task_placeholder": "Опиши задачу, например «исправить нестабильный тест CI»",
     "record_actions": "Действия с воспоминанием",
     "remove_filter": "Убрать фильтр: {{value}}",
     "reverse_order": "Обратный порядок",

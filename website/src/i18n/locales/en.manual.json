@@ -12206,6 +12206,7 @@
     "viewPr": "Pull request"
   },
   "memoryV2": {
+    "copy_all": "Copy all",
     "copy_all_matching": "Copy all matching",
     "copy_select_all": "Select all matching",
     "copy_tally": "Copied {{imported}}. {{existing}} already there.",

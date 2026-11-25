@@ -30,6 +30,17 @@ function source(facts: number, episodes: number) {
 
 beforeEach(() => { vi.clearAllMocks() })
 
+describe('sourceRows', () => {
+  it('yields only the picked kinds and never reads experiences when they are not picked', async () => {
+    source(150, 30)
+    const pages: { kind: string }[][] = []
+    for await (const page of sourceRows('default', '', new Set(['fact']))) pages.push(page)
+    expect(pages.flat()).toHaveLength(150)
+    expect(pages.flat().every(item => item.kind === 'fact')).toBe(true)
+    expect(api.memberMemoryPage.mock.calls.every(call => call[1] === 'semantic')).toBe(true)
+  })
+})
+
 describe('seedInBatches', () => {
   it('copies every matching source row past 1,000, 50 per request, with running counts', async () => {
     const kept = target()

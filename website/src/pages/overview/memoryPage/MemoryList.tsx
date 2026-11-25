@@ -200,7 +200,7 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
     {phone ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
       {railOpen && <aside className="w-60 shrink-0 pt-1" aria-label={t('memoryPage.filters')}>
         <FilterPanel view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange}
-          trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
+          trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
       </aside>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       {detailPanel}

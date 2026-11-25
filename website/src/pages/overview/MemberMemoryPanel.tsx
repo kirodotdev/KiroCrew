@@ -23,11 +23,14 @@ import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
 import { MemoryGraphPanel } from './memoryPage/MemoryGraphPanel'
 import { memoryRoute } from '../settings/memoryRoute'
 import { seedInBatches, sourceRows, type SeedCounts } from './memorySeedBatches'
+import { PILL_ON } from './memoryPage/MemoryListParts'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
 type Kind = 'fact' | 'directive' | 'episode'
 type MemoryRow = { key?: string; id?: string; value_json?: unknown; text?: string; source?: string; created_at?: string; derived_from?: string }
 type Selection = { kind: Kind; id: string }
+// The copy dialog's kind filter, in the memory page's kind order.
+const KIND_FILTERS: [Kind, string][] = [['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
 const keyOf = (row: MemoryRow) => row.key || row.id || ''
 const kindOf = (row: MemoryRow): Kind => row.key ? (row.key.startsWith('lesson.') ? 'directive' : 'fact') : 'episode'
 const storedValue = (row: MemoryRow): unknown => {
@@ -64,13 +67,16 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
   const phone = useIsMobile()
   const data = useMemoryRows(source, true, filter)
   const [counts, setCounts] = useState<SeedCounts | null>(null)
-  // "Select all matching" copies every source row the search matches, read page
-  // by page while it copies, so no count is loaded up front and none is capped.
+  // One box copies every source row of the picked kinds: all of them ("Copy all")
+  // with no search, or those the search matches ("Select all matching"). Rows are
+  // read page by page while it copies, so no count is loaded up front and none is capped.
   const [allMatching, setAllMatching] = useState(false)
+  const [kinds, setKinds] = useState<ReadonlySet<Kind>>(() => new Set(KIND_FILTERS.map(([kind]) => kind)))
+  const searching = !!filter.trim()
   const copy = useMutation({
     mutationFn: () => {
       setCounts({ imported: 0, existing: 0, failed: 0 })
-      return seedInBatches(source, store, allMatching ? sourceRows(source, filter.trim()) : selection, setCounts)
+      return seedInBatches(source, store, allMatching ? sourceRows(source, filter.trim(), kinds) : selection, setCounts)
     },
     onSettled: onCopied,
   })
@@ -83,7 +89,14 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
     failureReasons.length < failedResults.length ? t('appSdk.chatMessageList.copy_failed') : '',
   ].filter(Boolean).join('\n')
   const choices = (stores.data?.stores || []).filter(s => s.name !== store && s.exists)
-  const visible = data.pending || data.error ? [] : data.rows
+  const visible = data.pending || data.error ? [] : data.rows.filter(row => kinds.has(kindOf(row)))
+  // The last picked kind stays on, so the list is never emptied by the filter alone.
+  const toggleKind = (kind: Kind) => {
+    const next = new Set(kinds)
+    if (next.has(kind)) next.delete(kind); else next.add(kind)
+    setKinds(next)
+    setSelection(old => old.filter(s => next.has(s.kind)))
+  }
   const toggle = (row: MemoryRow) => {
     setAllMatching(false)
     const item = { kind: kindOf(row), id: keyOf(row) }
@@ -93,18 +106,26 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
   const tallies = counts && { imported: fmtNumber(counts.imported), existing: fmtNumber(counts.existing), failed: fmtNumber(counts.failed) }
   return <Modal open title={t('memoryV2.copy_dialog_title', { member })} height={phone ? 'calc(100dvh - 2rem)' : undefined} guardAccidentalDismiss={allMatching || selection.length > 0} dismissDisabled={copy.isPending} onClose={onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
     {tallies ? <span role="status" className="text-[13px] tabular-nums text-text">{t(counts!.failed ? 'memoryV2.copy_tally_failed' : 'memoryV2.copy_tally', tallies)}</span> : <span />}
-    <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !(allMatching ? visible.length : selection.length)} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{allMatching ? t('memoryV2.copy_all_matching') : t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
+    <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !(allMatching ? visible.length : selection.length)} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{allMatching ? t(searching ? 'memoryV2.copy_all_matching' : 'memoryV2.copy_all') : t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
   </div>}>
     <div className="flex min-w-0 flex-col gap-3">
       <p className="text-[13px] text-muted">{t('memoryV2.copy_explanation')}</p>
       <SimpleSelect aria-label={t('memoryV2.source')} options={choices.map(s => s.name)} optionLabels={choices.map(s => s.is_default ? t('pages.kiroCrewAgentsPage.global_memory_v1') : s.owner_member || s.name)} optionIcons={choices.map(s => <MemoryStoreAvatar key={s.name} summary={s} />)} value={source} onChange={value => { setSource(value); setSelection([]); setAllMatching(false); setCounts(null); copy.reset() }} disabled={copy.isPending} />
       <label className="space-y-1 text-[13px]"><span className="block">{t('memoryV2.search')}</span><Input className="w-full" placeholder={t('memoryV2.search')} value={filter} disabled={copy.isPending} onChange={e => setFilter(e.target.value)} /></label>
+      <div role="group" aria-label={t('memoryV2.group_kind')} className="flex flex-wrap gap-2">
+        {KIND_FILTERS.map(([kind, label]) => {
+          const on = kinds.has(kind)
+          return <button key={kind} type="button" aria-pressed={on} disabled={copy.isPending || (on && kinds.size === 1)} onClick={() => toggleKind(kind)} className="flex min-h-11 items-center disabled:cursor-default sm:min-h-8">
+            <span className={`flex h-8 items-center rounded-full border px-3 text-[13px] ${on ? PILL_ON : 'border-border text-text'}`}>{t(label)}</span>
+          </button>
+        })}
+      </div>
       {/* No hand-off: the selection is an unsaved copy request. */}
       <ErrorNotice message={errorText(data.error || copy.error) || copyFailure} />
       {data.pending && <p role="status" className="py-4 text-center text-[13px] text-muted">{t('pages.overview.memoryTab.loading')}</p>}
       {visible.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-3 text-[13px]">
-        <input type="checkbox" aria-label={t('memoryV2.copy_select_all')} className="h-4 w-4 shrink-0 accent-accent" checked={allMatching} disabled={copy.isPending} onChange={() => { setAllMatching(on => !on); setSelection([]) }} />
-        {t('memoryV2.copy_select_all')}
+        <input type="checkbox" aria-label={t(searching ? 'memoryV2.copy_select_all' : 'memoryV2.copy_all')} className="h-4 w-4 shrink-0 accent-accent" checked={allMatching} disabled={copy.isPending} onChange={() => { setAllMatching(on => !on); setSelection([]) }} />
+        {t(searching ? 'memoryV2.copy_select_all' : 'memoryV2.copy_all')}
       </label>}
       <div className={`space-y-2 ${phone ? '' : 'max-h-80 overflow-y-auto'}`}>
         {visible.map(row => <label key={`${kindOf(row)}:${keyOf(row)}`} className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-[13px] transition-colors hover:bg-bg-hover has-[:checked]:border-accent has-[:checked]:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]">

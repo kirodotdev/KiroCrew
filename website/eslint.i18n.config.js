@@ -1325,6 +1325,8 @@ export default [
               // `title` is deliberately NOT here: it renders as a tooltip, so it is
               // user-visible copy, not a machine value.
               'className', 'class', 'id', 'key', 'href', 'src', 'to', 'type',
+              // A class list for a component's popup (SimpleSelect), same as `className`.
+              'contentClassName',
               'name', 'role', 'rel', 'target', 'method', 'action', 'style',
               // A dotted config path (`path="session.pool_agent"`) addressing a key in
               // `config.json`, not copy. Already exempt as an object property below; a

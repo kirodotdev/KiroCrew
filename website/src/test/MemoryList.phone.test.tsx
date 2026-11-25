@@ -79,10 +79,18 @@ describe('row colours (mock S2)', () => {
     expect(screen.getAllByText('Work in a worktree')[0].closest('li')).toHaveClass('bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]')
   })
 
-  it('fills the picked kind pill with the text colour on dark', async () => {
+  it('fills the picked kind pill with the text colour on both themes', async () => {
     renderWithProviders(<List />)
     const pill = (await screen.findByRole('radio', { name: /^All/ })).firstElementChild!
-    expect(pill).toHaveClass('[[data-mode=dark]_&]:bg-text', '[[data-mode=dark]_&]:text-bg', 'bg-bg-hover')
+    expect(pill).toHaveClass('bg-text', 'text-bg')
+    expect(pill.className).not.toContain('data-mode')
+  })
+
+  it('colours the kind icon by kind', async () => {
+    renderWithProviders(<List />)
+    await screen.findByText('Work in a worktree')
+    const icons = [...document.querySelectorAll('[data-testid="memory-list"] svg.lucide-inline')].map(icon => icon.getAttribute('class') || '')
+    expect(icons.some(c => c.includes('text-accent'))).toBe(true)
   })
 })
 
@@ -122,6 +130,8 @@ describe('the filter sheet', () => {
     expect(screen.queryByRole('button', { name: 'Filters' })).toBeNull()
     // The hide button shares the search row, not a row of its own.
     expect(within(rail).getByRole('button', { name: 'Hide filters' }).parentElement).toBe(within(rail).getByRole('searchbox', { name: 'Search filters' }).parentElement!.parentElement)
+    // Its icon sits on the rail's right edge, and the click area stays 36px.
+    expect(within(rail).getByRole('button', { name: 'Hide filters' })).toHaveClass('-mr-2.5', 'h-9', 'w-9')
     fireEvent.click(within(rail).getByRole('button', { name: 'Hide filters' }))
     expect(screen.queryByRole('complementary', { name: 'Filters' })).toBeNull()
     const show = screen.getByRole('button', { name: 'Filters' })

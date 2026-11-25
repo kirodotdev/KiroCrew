@@ -898,12 +898,39 @@ describe('private member memory lifecycle', () => {
     await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     await within(dialog).findByRole('checkbox', { name: 'Source item 99' })
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Select all matching' }))
+    // With no search the one box reads "Copy all".
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Copy all' }))
     expect(within(dialog).getByRole('checkbox', { name: 'Source item 0' })).toBeChecked()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy all matching' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy all' }))
     expect(await within(dialog).findByText('Copied 1,110. 40 already there.')).toBeVisible()
     expect(api.memorySeed.mock.calls.reduce((n, call) => n + call[2].length, 0)).toBe(1150)
     expect(api.memorySeed.mock.calls.every(call => call[2].length <= 50)).toBe(true)
+  })
+
+  it('copies only the picked kinds, and names the box after the search', async () => {
+    const original = api.memberMemoryPage.getMockImplementation()!
+    api.memberMemoryPage.mockImplementation((store: string, table: string, offset: number, query?: string) => store !== 'default' ? original(store, table, offset)
+      : table === 'semantic' ? Promise.resolve({ entries: offset ? [] : [{ key: 'source.fact', value_json: 'Source fact' }, { key: 'lesson.source', value_json: JSON.stringify({ rule: 'Source lesson' }) }].filter(row => !query || row.key.includes(query)) })
+        : Promise.resolve({ entries: offset ? [] : [{ id: 'ep-source', text: 'Source experience' }] }))
+    api.memorySeed.mockImplementation(async (_source: string, _store: string, items: { id: string }[]) => ({ results: items.map(item => ({ id: item.id, outcome: 'imported' })) }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await loaded()
+    await openCopy()
+    const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
+    await within(dialog).findByRole('checkbox', { name: 'Source experience' })
+    const kinds = within(dialog).getByRole('group', { name: 'Memory type' })
+    for (const name of ['Facts', 'Lessons', 'Experiences']) expect(within(kinds).getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(within(kinds).getByRole('button', { name: 'Experiences' }))
+    fireEvent.click(within(kinds).getByRole('button', { name: 'Lessons' }))
+    expect(within(dialog).queryByRole('checkbox', { name: 'Source experience' })).toBeNull()
+    expect(within(dialog).queryByRole('checkbox', { name: 'Source lesson' })).toBeNull()
+    // The last picked kind cannot be turned off.
+    expect(within(kinds).getByRole('button', { name: 'Facts' })).toBeDisabled()
+    fireEvent.change(within(dialog).getByPlaceholderText('Search memory'), { target: { value: 'source' } })
+    fireEvent.click(await within(dialog).findByRole('checkbox', { name: 'Select all matching' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy all matching' }))
+    expect(await within(dialog).findByText('Copied 1. 0 already there.')).toBeVisible()
+    expect(api.memorySeed.mock.calls.flatMap(call => call[2])).toEqual([{ kind: 'fact', id: 'source.fact' }])
   })
 
   it('stages a confirmed recovery for this member and explains the restart requirement', async () => {

@@ -23776,6 +23776,7 @@
     }
   },
   "memoryV2": {
+    "copy_all": "모두 복사",
     "copy_all_matching": "일치 항목 모두 복사",
     "copy_select_all": "일치 항목 모두 선택",
     "copy_tally": "{{imported}}개 복사, {{existing}}개는 이미 있음.",

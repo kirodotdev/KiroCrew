@@ -35,13 +35,16 @@ export const seedItemOf = (row: SourceRow): SeedItem => row.key
   ? { kind: row.key.startsWith('lesson.') ? 'directive' : 'fact', id: row.key }
   : { kind: 'episode', id: row.id || '' }
 
-/** Every source row matching `query`, a page at a time: facts and lessons, then experiences. */
-export async function* sourceRows(source: string, query: string): AsyncGenerator<SeedItem[]> {
+/** Every source row matching `query` whose kind is in `kinds`, a page at a time:
+ *  facts and lessons, then experiences. An unpicked experiences kind skips its pages. */
+export async function* sourceRows(source: string, query: string, kinds: ReadonlySet<SeedItem['kind']> = new Set(['fact', 'directive', 'episode'])): AsyncGenerator<SeedItem[]> {
   for (const kind of ['semantic', 'episodic'] as const) {
+    if (kind === 'semantic' ? !kinds.has('fact') && !kinds.has('directive') : !kinds.has('episode')) continue
     for (let offset = 0; ; offset += SOURCE_PAGE) {
       const page = await api.memberMemoryPage(source, kind, offset, query) as { entries?: SourceRow[] }
       const rows = page.entries || []
-      if (rows.length) yield rows.map(seedItemOf)
+      const items = rows.map(seedItemOf).filter(item => kinds.has(item.kind))
+      if (items.length) yield items
       if (rows.length < SOURCE_PAGE) break
     }
   }

@@ -25,8 +25,10 @@ const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = {
 }
 // A group heading names the kind it filters while the All pill shows every kind.
 const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences' }
-// The picked kind pill: a soft grey on light, the text colour on dark (mock S2).
-export const PILL_ON = 'border-border-strong bg-bg-hover font-medium text-text [[data-mode=dark]_&]:border-text [[data-mode=dark]_&]:bg-text [[data-mode=dark]_&]:text-bg'
+// The picked kind pill: filled with the text colour on both themes (mock S2).
+export const PILL_ON = 'border-text bg-text font-medium text-bg'
+// Each kind's icon colour, so facts, lessons and experiences read apart at a glance.
+const KIND_TONE: Record<MemoryRecord['kind'], string> = { fact: 'text-info-text', directive: 'text-accent', episode: 'text-ok-text' }
 // An open or picked row: an 8% accent tint (mock S2).
 export const ROW_PICKED = 'bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]'
 // The lesson a "Lesson saved" link lands on: the saved tint and a bar on its left edge.
@@ -120,7 +122,7 @@ export function FilterPanel({ view, facets, trailing, onToggle, onRange }: {
     return { group, counts, ticked, values }
   }).filter(item => item.values.length)
   return <div className="space-y-5">
-    <div className="flex items-center gap-1">
+    <div className="flex items-center">
       <div className="relative min-w-0 flex-1">
         <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
         <Input type="search" className="min-h-11 w-full pl-9 sm:min-h-9" aria-label={t('memoryPage.search_filters')} placeholder={t('memoryPage.search_filters')} value={find} onChange={event => setFind(event.target.value)} />
@@ -171,7 +173,7 @@ export function KindLabel({ row }: { row: MemoryRecord }) {
   const { t } = useTranslation()
   const Icon = MEMORY_RECORD_ICONS[row.kind]
   const kind = t(MEMORY_RECORD_LABELS[row.kind])
-  return <><Icon className="lucide-inline" aria-hidden="true" />{row.kind === 'directive' ? t('memoryPage.lesson_category', { kind, category: facetLabel('category', lessonFacts(row).category) }) : kind}</>
+  return <><Icon className={`lucide-inline ${KIND_TONE[row.kind]}`} aria-hidden="true" />{row.kind === 'directive' ? t('memoryPage.lesson_category', { kind, category: facetLabel('category', lessonFacts(row).category) }) : kind}</>
 }
 
 export type ChipFilter = { filters: MemoryRecordFilters; onToggle: (group: MemoryRecordFacetGroup, value: string) => void }

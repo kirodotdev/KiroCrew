@@ -24378,6 +24378,7 @@
     }
   },
   "memoryV2": {
+    "copy_all": "Alle kopieren",
     "copy_all_matching": "Alle Treffer kopieren",
     "copy_select_all": "Alle Treffer auswählen",
     "copy_tally": "{{imported}} kopiert. {{existing}} schon vorhanden.",
