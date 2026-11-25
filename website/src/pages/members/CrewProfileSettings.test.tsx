@@ -801,9 +801,11 @@ describe('CrewProfileSettings Workers can conduct', () => {
 
   it('holds the switch while its write runs, so a second press sends nothing', async () => {
     let finish: (v: unknown) => void = () => {}
-    mockApi.updateKirocrewAgent.mockReturnValueOnce(new Promise((r) => { finish = r }))
     setup(member())
     await screen.findByTestId('crew-profile-worker-conducts')
+    // Queued only once the row is there: `vi.clearAllMocks` keeps a once-answer
+    // nobody took, and the next test's first write would get it.
+    mockApi.updateKirocrewAgent.mockReturnValueOnce(new Promise((r) => { finish = r }))
     fireEvent.click(sw())
     // The requested state shows while the write runs, and the switch takes no press.
     await waitFor(() => expect(sw()).toHaveAttribute('aria-disabled', 'true'))
