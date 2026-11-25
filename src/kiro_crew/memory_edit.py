@@ -8,6 +8,7 @@ write transaction. Embeddings are invalidated and rebuilt by normal backfill.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -17,7 +18,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
-from kiro_crew import memory_schema
+from kiro_crew import memory_record_facets, memory_schema
 
 MAX_BATCH_ROWS = 10000
 MAX_BATCH_BYTES = 32 * 1024 * 1024
@@ -72,8 +73,16 @@ def _normalized(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
 
+_FILTER_KEYS = {*memory_record_facets.FACET_GROUPS, "conf_min", "conf_max"}
+
+
 def _query(raw: Any) -> dict:
-    if not isinstance(raw, dict) or set(raw) - {"q", "kind"}:
+    """Validate a record filter: search words, one kind, and the page's facet filters.
+
+    The facet filters are part of the query, not of the list call, so a
+    "select all matching" edit reaches exactly the rows the filtered list shows.
+    """
+    if not isinstance(raw, dict) or set(raw) - {"q", "kind", "filters"}:
         raise MemoryEditError("Invalid memory filter.")
     query, kind = raw.get("q", ""), raw.get("kind", "all")
     if (
@@ -83,7 +92,17 @@ def _query(raw: Any) -> dict:
         or kind not in _KINDS
     ):
         raise MemoryEditError("Use a valid kind and a query up to 2000 characters.")
-    return {"q": query.strip(), "kind": kind}
+    filters = raw.get("filters", {})
+    if not isinstance(filters, dict) or set(filters) - _FILTER_KEYS:
+        raise MemoryEditError("Invalid memory filter.")
+    try:
+        filters = memory_record_facets.parse_filters(filters)
+    except memory_record_facets.FacetError as exc:
+        raise MemoryEditError(str(exc)) from None
+    result: dict[str, Any] = {"q": query.strip(), "kind": kind}
+    if filters:
+        result["filters"] = filters
+    return result
 
 
 def _identity(item: Any, *, revision: bool = False) -> tuple[str, str]:
@@ -182,9 +201,15 @@ def _rows(
     query: dict,
     identities: list[tuple[str, str]] | None = None,
     *,
-    page: range | None = None,
+    page: range | set[int] | None = None,
+    summaries: bool = False,
 ):
     """Yield every record *query* matches, in ``kind, id`` order.
+
+    With *summaries*, each match is yielded as a light summary instead (kind, id,
+    facets, dates, confidence, importance and the search match score) and no
+    record is assembled. The query's facet filters are NOT applied then: the
+    caller counts facets over every search match and filters itself.
 
     With *page*, only the matches whose position is in it are assembled; each
     other match is yielded as ``None``, so a caller that pages still counts
@@ -207,18 +232,19 @@ def _rows(
     tokens = _normalized(query["q"]).split()
     sql = (
         "SELECT CASE WHEN key LIKE 'lesson.%' THEN 'directive' ELSE 'fact' END AS kind, "
-        "key AS id, key, value_json, value_json AS text, source, updated_at, '' AS tags, "
+        "key AS id, key, value_json, value_json AS text, source, created_at, updated_at, '' AS tags, "
         f"confidence AS importance FROM semantic_memory WHERE is_deleted = 0{clause('key', sem_ids)} UNION ALL "
-        "SELECT 'episode', id, NULL, NULL, text, '', created_at, tags, importance "
+        "SELECT 'episode', id, NULL, NULL, text, '', created_at, created_at, tags, importance "
         f"FROM episodic_memories WHERE is_deleted = 0{clause('id', epi_ids)}"
     )
     # A search matches on three metadata fields too. One join reads them for every
     # row; a query per row cost most of a searched listing. The join key is
     # record_identity_or_none in SQL: no metadata for a NULL, empty or non-text id.
     search_meta, search_join = "", ""
-    if tokens:
+    if tokens or summaries or query.get("filters"):
         search_meta = (
             ", m.category AS _m_category, m.subject AS _m_subject, m.predicate AS _m_predicate"
+            ", m.revision AS _m_revision, m.updated_at AS _m_updated, m.source_ref AS _m_source_ref"
         )
         search_join = (
             " LEFT JOIN memory_record_meta m ON m.record_id = CASE"
@@ -235,6 +261,7 @@ def _rows(
     else:
         sql = f"SELECT b.*, '' AS derived_from{search_meta} FROM ({sql}) b{search_join} ORDER BY b.kind,b.id"
     cursor = store.db.execute(sql, sem_ids + epi_ids)
+    filters: dict = query.get("filters") or {}
     matched = -1
     try:
         for row in cursor:
@@ -242,6 +269,7 @@ def _rows(
                 continue
             if query["kind"] != "all" and row["kind"] != query["kind"]:
                 continue
+            folded = ""
             if tokens:
                 text = row["text"]
                 if row["value_json"] is not None:
@@ -253,6 +281,13 @@ def _rows(
                 folded = _normalized(searchable)
                 if not all(token in folded for token in tokens):
                     continue
+            if summaries or filters:
+                summary = _summary(store, row, tokens, folded)
+                if summaries:
+                    yield summary
+                    continue
+                if not memory_record_facets.matches(summary, filters):
+                    continue
             matched += 1
             if page is not None and matched not in page:
                 yield None
@@ -260,7 +295,14 @@ def _rows(
             record_id = record_identity_or_none(row["kind"], row["id"])
             meta = get_record_metadata(store.db, record_id) if record_id is not None else {}
             record = dict(row)
-            for column in ("_m_category", "_m_subject", "_m_predicate"):
+            for column in (
+                "_m_category",
+                "_m_subject",
+                "_m_predicate",
+                "_m_revision",
+                "_m_updated",
+                "_m_source_ref",
+            ):
                 record.pop(column, None)
             record["source"] = record.pop("_source", record["source"] or meta.get("source_ref", ""))
             record["updated_at"] = record.pop("_updated", record["updated_at"])
@@ -277,18 +319,123 @@ def _rows(
         cursor.close()
 
 
-def list_records(store: Any, query: dict, *, limit: int = 50, offset: int = 0) -> dict:
+def _summary(store: Any, row: Any, tokens: list[str], folded: str) -> dict:
+    """The light form of one row that the record list sorts, filters and counts."""
+    kind = row["kind"]
+    # The same source the assembled record reports: the item's on the crew lineage,
+    # else the row's own, else the metadata's source reference.
+    if "_source" in row.keys():
+        source = row["_source"]
+    else:
+        source = row["source"] or row["_m_source_ref"] or ""
+    updated = row["_updated"] if "_updated" in row.keys() else row["updated_at"]
+    if (
+        store._lineage != memory_schema.LINEAGE_CREW
+        and kind == "episode"
+        and (row["_m_revision"] or 0) > 1
+    ):
+        updated = row["_m_updated"] or updated
+    score = row["importance"]
+    return {
+        "kind": kind,
+        "id": row["id"],
+        "key": row["key"] or "",
+        "created_at": row["created_at"] or "",
+        "updated_at": updated or "",
+        "confidence": score if kind != "episode" and score is not None else None,
+        "importance": score if kind == "episode" and score is not None else None,
+        "match": memory_record_facets.match_score(tokens, _normalized(row["key"] or ""), folded),
+        "facets": memory_record_facets.summary_facets(kind, row["value_json"], row["tags"], source),
+    }
+
+
+@contextlib.contextmanager
+def _read_snapshot(store: Any):
+    """Hold one SQLite read transaction for the block, unless one is already open."""
+    started = not store.db.in_transaction
+    if started:
+        store.db.execute("BEGIN")
+    try:
+        yield
+    finally:
+        if started and store.db.in_transaction:
+            store.db.rollback()
+
+
+def list_records(
+    store: Any,
+    query: dict,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    sort: str | None = None,
+    descending: bool = True,
+    facets: bool = False,
+) -> dict:
+    """One page of records, in ``kind, id`` order unless *sort* names another.
+
+    *sort* is one of ``memory_record_facets.SORTS``; ``match`` needs search words.
+    With *facets*, the body also carries ``facets``: per group, how many rows each
+    value would list (see ``memory_record_facets.count_facets``).
+    """
     query = _query(query)
     if isinstance(limit, bool) or isinstance(offset, bool) or not 1 <= limit <= 100 or offset < 0:
         raise MemoryEditError("Use a page size of 1–100 and a non-negative offset.")
-    entries, total = [], 0
-    with store._db_lock:
-        for row in _rows(store, query, page=range(offset, offset + limit)):
+    if sort is not None and sort not in memory_record_facets.SORTS:
+        raise MemoryEditError("Sort by updated, created, confidence, importance, key or match.")
+    if sort == "match" and not query["q"]:
+        raise MemoryEditError("Best match needs search words.")
+    if sort is None and not facets:
+        entries, total = [], 0
+        with store._db_lock:
+            for row in _rows(store, query, page=range(offset, offset + limit)):
+                if row is not None:
+                    _conflict_count(store, row)
+                    entries.append(row)
+                total += 1
+        return {"entries": entries, "total": total, "has_more": total > offset + limit}
+    filters = query.get("filters", {})
+    with store._db_lock, _read_snapshot(store):
+        # One light pass over every search match, then only the page is assembled.
+        # Both passes read one snapshot, so a position names the same row in each.
+        base = {"q": query["q"], "kind": "all"}
+        everything = list(_rows(store, base, summaries=True))
+        # A summary's position in the match order addresses it for assembly, so a
+        # legacy row with a NULL id, which no id lookup can find, still comes back.
+        for position, summary in enumerate(everything):
+            summary["position"] = position
+        listed = [
+            summary
+            for summary in everything
+            if (query["kind"] == "all" or summary["kind"] == query["kind"])
+            and memory_record_facets.matches(summary, filters)
+        ]
+        if sort is not None:
+            memory_record_facets.order(listed, sort, descending)
+        window = listed[offset : offset + limit]
+        positions = {summary["position"] for summary in window}
+        assembled = {}
+        if positions:
+            rows = _rows(store, base, page=positions)
+            for position, row in enumerate(rows):
+                if row is not None:
+                    _conflict_count(store, row)
+                    assembled[position] = row
+        entries = []
+        for summary in window:
+            row = assembled.get(summary["position"])
             if row is not None:
-                _conflict_count(store, row)
+                if sort == "match":
+                    row["match"] = summary["match"]
                 entries.append(row)
-            total += 1
-    return {"entries": entries, "total": total, "has_more": total > offset + limit}
+    body: dict[str, Any] = {
+        "entries": entries,
+        "total": len(listed),
+        "has_more": len(listed) > offset + limit,
+    }
+    if facets:
+        body["facets"] = memory_record_facets.count_facets(everything, filters, query["kind"])
+    return body
 
 
 def _conflict_count(store: Any, row: dict) -> None:
