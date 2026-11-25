@@ -94,8 +94,8 @@ BASELINE: dict[str, tuple[int, str]] = {
     "slack/events_slash.py": (1, "the /kirocrew conductor parent message, a defused goal line"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),
     "slack/gateway_runtime/cron_delivery.py": (
-        1,
-        "overflow parts of a cron result after its first message",
+        3,
+        "overflow parts of a cron result, and a reminder's rendered parts",
     ),
     "slack/gateway_runtime/cron_failure.py": (
         1,

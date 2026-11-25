@@ -136,6 +136,17 @@ def internal_path_matches(path: str, entries: Iterable[str]) -> bool:
 logger = logging.getLogger("kiro_crew.dashboard.token_auth")
 
 
+async def _strict_cookie_refusal(request: web.Request, path: str) -> web.Response | None:
+    """The owner gate for a cookie caller on a strict internal path, fail closed."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    try:
+        return await require_owner_dashboard_request(request, f"internal_auth {path}")
+    except Exception:  # no owner to compare against: refuse
+        logger.debug("strict-path owner check failed for %s", path, exc_info=True)
+        return _deny(request, "Forbidden")
+
+
 def token_auth_middleware(
     *,
     internal_paths: frozenset[str] = frozenset(),
@@ -610,6 +621,9 @@ def token_auth_middleware(
         # normal cookie auth so dashboard pages can call these routes.
         _matches_strict = internal_path_matches(path, internal_paths)
         _matches_mixed = internal_path_matches(path, mixed_internal_paths)
+        # Kept across the reclassification below: a strict path's cookie caller
+        # is owner-gated whether or not ``local_only`` reads it as mixed.
+        _declared_strict = _matches_strict and not _matches_mixed
         # local_only=False: treat ALL internal paths as mixed (backward compat
         # with mainline's local_only semantics — user opted into remote access)
         if not local_only and _matches_strict and not _matches_mixed:
@@ -832,6 +846,14 @@ def token_auth_middleware(
                 )
             _log_auth(request, _audit_uid(_uid), "granted", f"cookie auth for {_uid}")
             await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
+            if _declared_strict and not _app:
+                # A strict path is an agent tool's leg (it acts with the owner's
+                # messaging and session reach), so a cookie caller with no
+                # secret must be the owner or a teammate. Any other dashboard
+                # session is refused; an app token stays under its scope above.
+                _strict_denied = await _strict_cookie_refusal(request, path)
+                if _strict_denied is not None:
+                    return _strict_denied
             return await handler(request)  # type: ignore[operator]
         elif _matches_internal:
             if _matches_mixed:
@@ -943,6 +965,12 @@ def token_auth_middleware(
                     f"mixed non-loopback cookie auth for {_uid}",
                 )
                 await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
+                if _declared_strict and not _app:
+                    # ``local_only=False`` read this strict path as mixed above; a
+                    # cookie caller still has to be the owner or a teammate.
+                    _strict_denied = await _strict_cookie_refusal(request, path)
+                    if _strict_denied is not None:
+                        return _strict_denied
                 return await handler(request)  # type: ignore[operator]
             else:
                 # INVARIANT: non-loopback access to strict internal paths is

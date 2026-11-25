@@ -50,8 +50,11 @@ from kiro_crew.acp.mcp_session_report import (
     roster_names,
 )
 from kiro_crew.acp.mcp_start_wait import (
+    APP_SERVER_WAIT_SECS,
     first_prompt_brief_wait,
     left_to_first_turn,
+    own_app_servers,
+    owning_app_for_start,
     person_waits,
     policy_hidden_servers,
 )
@@ -71,7 +74,11 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
-from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
+from kiro_crew.acp.session_handle_mcp import (
+    MOUNTED_MCP_WAIT_SECS,
+    KasGovernanceOffError,
+    wait_own_app_servers,
+)
 from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored, host_refused
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
@@ -1106,12 +1113,21 @@ async def _wait_managed_mcp(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if expects_report else 0.0,
             )
+        # An app agent's own app servers first, whoever is waiting: its prompt is
+        # written around their tools. Bounded, never required (``own_app_servers``).
+        # The agent's own id, not its wire alias: the lookup knows the declared name.
+        owner_app = await asyncio.to_thread(owning_app_for_start, agent)
+        app_own = own_app_servers(params, wire_agent, owner_app)
+        if app_own:
+            await wait_own_app_servers(handle, app_own, APP_SERVER_WAIT_SECS)
         # Best effort, never required: a slow or dead one must not block the start.
         # Which servers, and why not the user's own when a person is waiting:
         # ``first_prompt_brief_wait``.
         brief = first_prompt_brief_wait(
             params, wire_agent, required, start_priority, focus_resume=focus_resume
         )
+        # Waited for above already, on its own bound.
+        brief = tuple(name for name in brief if name not in app_own)
         if brief:
             await handle.wait_mounted_mcp(brief, MOUNTED_MCP_WAIT_SECS)
         # The agent's own servers a person-waited start skipped: its first turn
@@ -1119,6 +1135,9 @@ async def _wait_managed_mcp(
         left, more = left_to_first_turn(
             params, wire_agent, required, start_priority, focus_resume=focus_resume
         )
+        # An app server the start already waited for on its own bound is not held
+        # for again by the first turn: the two waits would add up.
+        left = tuple(name for name in left if name not in app_own)
         if left:
             report = handle.mcp_session_report()
             report.left_to_turn, report.left_omitted = left, more

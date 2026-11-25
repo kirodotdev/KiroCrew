@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   Building2,
@@ -268,10 +268,12 @@ function DeviceCodeCard({
   const back = useContext(SignInBackContext)
   const cancelRef = useRef(onCancel)
   cancelRef.current = onCancel
-  useEffect(() => {
+  // Layout effects: the host's header and back control change in the same
+  // paint as this screen, never one frame later with the chooser's header.
+  useLayoutEffect(() => {
     back?.set({ onBack: () => cancelRef.current(), disabled: busy })
   }, [back, busy])
-  useEffect(() => () => back?.set(null), [back])
+  useLayoutEffect(() => () => back?.set(null), [back])
   return (
     <div className="flex w-full flex-col items-stretch text-center" data-testid="kas-login-device-code">
       {back?.ownsHeading ? null : (

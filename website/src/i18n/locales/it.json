@@ -25963,5 +25963,45 @@
       "label": "Computer connessi",
       "shared_crew_off": "Disattivato in un Crew condiviso"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments sono macchine remote che Kiro avvia e mantiene per te. Creane una ed esegui una nuova crew al suo interno.",
+      "name_label": "Nome della crew",
+      "name_placeholder": "my-crew",
+      "name_rule": "Usa da 2 a 32 lettere minuscole, cifre o trattini singoli, iniziando con una lettera.",
+      "name_help": "L'ambiente prende il nome della crew.",
+      "ssh_config_note": "Permette a questo computer di collegarsi ai tuoi ambienti. Aggiunge alcune righe a {{path}}; puoi rimuoverle quando vuoi. Nient'altro nel file cambia.",
+      "launch": "Avvia",
+      "ssh_add": "Consenti a questo computer di collegarsi",
+      "ssh_ready": "{{path}} contiene le impostazioni ssh che Crew usa per raggiungere i tuoi ambienti gestiti.",
+      "ssh_failed": "Impossibile aggiungere le impostazioni ssh",
+      "launch_needs_name": "Inserisci un nome per la crew per avviare.",
+      "launch_needs_ssh": "Consenti a questo computer di collegarsi, poi avvia.",
+      "ssh_failed_hint": "Controlla di poter modificare {{path}}.",
+      "launch_fix_name": "Correggi il nome della crew per avviare.",
+      "ssh_preview": "Vedi le righe che aggiunge",
+      "ssh_preview_why": "Queste righe permettono a Crew di collegarsi ai tuoi Kiro Managed Environments (nomi che iniziano con {{hosts}}) tramite il tuo accesso Kiro, e lasciano gli altri host ssh come sono."
+    },
+    "row": {
+      "stop": "Arresta ambiente",
+      "resume": "Riprendi ambiente",
+      "delete": "Elimina ambiente",
+      "delete_title": "Eliminare l'ambiente di {{name}}?",
+      "delete_body": "L'ambiente gestito e tutto il suo contenuto vengono eliminati. Non si può annullare. La crew resta nel tuo elenco finché non la rimuovi.",
+      "delete_confirm": "Elimina ambiente",
+      "list_failed": "Impossibile leggere i tuoi ambienti gestiti.",
+      "gone": "Questo ambiente non è più tra i tuoi ambienti gestiti. Rimuovi la crew dal tuo elenco.",
+      "state_creating": "Ambiente in avvio",
+      "state_running": "Ambiente in esecuzione",
+      "state_stopped": "Ambiente arrestato",
+      "state_deleting": "Ambiente in eliminazione",
+      "state_error": "Errore dell'ambiente",
+      "state_error_hint": "Il servizio segnala questo ambiente come {{status}}. Eliminalo e avvialo di nuovo, oppure chiedi all'agente di controllare.",
+      "managed_by": "Kiro Managed Environments · Rimuovi toglie la crew da questo elenco, ma mantiene l'ambiente. Per eliminarlo, usa Elimina ambiente.",
+      "stop_failed": "Impossibile fermare l'ambiente di {{name}}",
+      "resume_failed": "Impossibile riprendere l'ambiente di {{name}}",
+      "delete_failed": "Impossibile eliminare l'ambiente di {{name}}"
+    }
   }
 }

@@ -414,6 +414,7 @@ def reset_for_tests() -> None:
         publisher._retry_at,
         publisher._plan_refused,
         publisher._refused,
+        publisher._move_refused,
         publisher._pin_refused_unscoped,
         publisher._unsaved_ts,
         publisher._unsaved_alerts,

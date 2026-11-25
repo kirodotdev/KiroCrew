@@ -1550,8 +1550,27 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   header must decode to JSON naming `alg` or `enc`, and an unsigned JWT is not a
   credential. `armour.py` reads PEM and PGP private-key blocks by their BEGIN/END
   lines. `known_key.py` reads the AWS secret key names in JSON, assignments, CLI
-  flags and XML. `identifiers.py` parses a URL's query per RFC 3986 and masks only
-  the values of credential-type parameters. `identifiers.py` and
+  flags and XML. It reads the text as written first, with no CJK rule. A text
+  that holds a full-width form, or CJK text right before a key, is then read a
+  second time: full-width forms (`ｐａｓｓｗｏｒｄ`, `：`, `＝`) read as their ASCII
+  characters (`charsets.fold_wide`, NFKC for that block, one index for one), and
+  CJK text or punctuation right before a key reads as a blank
+  (`charsets.breaks_word`). That pass reads every value as written, a quoted value
+  closes only on its opening quote as written, an XML value closes only on
+  `</key>` written in ASCII, as in the first pass, an unquoted value ends at CJK
+  punctuation or a CJK blank (U+3000-U+303F and the full-width block, category P
+  or Z), and an unquoted value that starts with a Han, kana or Hangul character is
+  a sentence, not a value (any other non-ASCII first character, such as an
+  accented letter, an emoji or a full-width symbol, is read as a value). Every hit
+  of the first pass is kept. A hit of the second pass is kept when it overlaps no
+  hit of the first and no hit of the first starts at its key, or when it reaches
+  at least to the end of every first-pass hit it overlaps and past at least one of
+  them (a full-width quoted value whose head the first pass masked up to an ASCII
+  `,`). Overlapping Secret hits are masked as their union (`engine.resolve`), so
+  the second pass only adds masking to what the text as written gets; the open
+  units of both passes hold the stream.
+  `identifiers.py` parses a URL's query per
+  RFC 3986 and masks only the values of credential-type parameters. `identifiers.py` and
   `identifier_values.py` mark values that stay visible (AWS access key IDs, account
   IDs, ARNs, request ids, `x-amz-id-2`, UUIDs, git object names and commit
   permalinks, public OAuth values such as `code` and `state`, image data URIs, SSH

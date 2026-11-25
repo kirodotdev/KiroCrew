@@ -24739,5 +24739,45 @@
       "label": "연결된 컴퓨터",
       "shared_crew_off": "공유 Crew에서는 꺼짐"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments는 Kiro가 대신 시작하고 유지하는 원격 머신입니다. 하나를 만들고 그 위에서 새 크루를 실행합니다.",
+      "name_label": "크루 이름",
+      "name_placeholder": "research",
+      "name_rule": "소문자, 숫자, 단일 하이픈으로 2~32자를 쓰고 문자로 시작하세요.",
+      "name_help": "환경 이름은 크루 이름을 따릅니다.",
+      "ssh_config_note": "이 컴퓨터가 환경에 연결할 수 있게 합니다. {{path}}에 몇 줄을 추가하며, 언제든 지울 수 있습니다. 파일의 다른 부분은 바뀌지 않습니다.",
+      "launch": "시작",
+      "ssh_add": "이 컴퓨터의 연결 허용",
+      "ssh_ready": "{{path}}에 Crew가 관리형 환경에 접속할 때 쓰는 ssh 설정이 있습니다.",
+      "ssh_failed": "ssh 설정을 추가할 수 없습니다",
+      "launch_needs_name": "시작하려면 크루 이름을 입력하세요.",
+      "launch_needs_ssh": "이 컴퓨터의 연결을 허용한 뒤 실행하세요.",
+      "ssh_failed_hint": "{{path}}을(를) 편집할 수 있는지 확인하세요.",
+      "launch_fix_name": "시작하려면 크루 이름을 고치세요.",
+      "ssh_preview": "추가되는 줄 보기",
+      "ssh_preview_why": "이 줄 덕분에 Crew가 Kiro 로그인을 통해 Kiro Managed Environments(이름이 {{hosts}}(으)로 시작)에 연결하며, 다른 ssh 호스트는 그대로 둡니다."
+    },
+    "row": {
+      "stop": "환경 중지",
+      "resume": "환경 다시 시작",
+      "delete": "환경 삭제",
+      "delete_title": "{{name}}의 환경을 삭제하시겠습니까?",
+      "delete_body": "관리형 환경과 그 안의 모든 것이 삭제됩니다. 되돌릴 수 없습니다. 크루는 직접 제거할 때까지 목록에 남습니다.",
+      "delete_confirm": "환경 삭제",
+      "list_failed": "관리형 환경을 읽을 수 없습니다.",
+      "gone": "이 환경은 더 이상 관리형 환경에 없습니다. 크루를 목록에서 제거하세요.",
+      "state_creating": "환경 시작 중",
+      "state_running": "환경 실행 중",
+      "state_stopped": "환경 중지됨",
+      "state_deleting": "환경 삭제 중",
+      "state_error": "환경 오류",
+      "state_error_hint": "서비스가 이 환경을 {{status}} 상태로 보고합니다. 삭제한 뒤 다시 실행하거나 에이전트에게 확인을 요청하세요.",
+      "managed_by": "Kiro Managed Environments · 제거를 누르면 크루가 이 목록에서 빠지지만 환경은 남습니다. 환경을 삭제하려면 환경 삭제를 쓰세요.",
+      "stop_failed": "{{name}}의 환경을 중지할 수 없습니다",
+      "resume_failed": "{{name}}의 환경을 다시 시작할 수 없습니다",
+      "delete_failed": "{{name}}의 환경을 삭제할 수 없습니다"
+    }
   }
 }

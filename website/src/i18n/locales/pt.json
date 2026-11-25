@@ -25963,5 +25963,45 @@
       "label": "Computadores conectados",
       "shared_crew_off": "Desativado em um Crew compartilhado"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments são máquinas remotas que o Kiro inicia e mantém para você. Crie uma e execute nela uma nova crew.",
+      "name_label": "Nome da crew",
+      "name_placeholder": "my-crew",
+      "name_rule": "Use de 2 a 32 letras minúsculas, dígitos ou hifens simples, começando com uma letra.",
+      "name_help": "O ambiente recebe o nome da crew.",
+      "ssh_config_note": "Permite que este computador se conecte aos seus ambientes. Adiciona algumas linhas a {{path}}; você pode removê-las quando quiser. Nada mais no arquivo muda.",
+      "launch": "Iniciar",
+      "ssh_add": "Permitir que este computador se conecte",
+      "ssh_ready": "{{path}} tem as configurações de ssh que o Crew usa para chegar aos seus ambientes gerenciados.",
+      "ssh_failed": "Não foi possível adicionar as configurações de ssh",
+      "launch_needs_name": "Digite um nome de crew para iniciar.",
+      "launch_needs_ssh": "Permita que este computador se conecte e depois inicie.",
+      "ssh_failed_hint": "Verifique se você pode editar {{path}}.",
+      "launch_fix_name": "Corrija o nome da crew para iniciar.",
+      "ssh_preview": "Ver as linhas adicionadas",
+      "ssh_preview_why": "Estas linhas deixam o Crew se conectar aos seus Kiro Managed Environments (nomes que começam com {{hosts}}) pelo seu login do Kiro, e mantêm seus outros hosts ssh como estão."
+    },
+    "row": {
+      "stop": "Parar ambiente",
+      "resume": "Retomar ambiente",
+      "delete": "Excluir ambiente",
+      "delete_title": "Excluir o ambiente de {{name}}?",
+      "delete_body": "O ambiente gerenciado e tudo nele são excluídos. Isso não pode ser desfeito. A crew continua na sua lista até você removê-la.",
+      "delete_confirm": "Excluir ambiente",
+      "list_failed": "Não foi possível ler seus ambientes gerenciados.",
+      "gone": "Este ambiente não está mais nos seus ambientes gerenciados. Remova a crew da sua lista.",
+      "state_creating": "Ambiente iniciando",
+      "state_running": "Ambiente em execução",
+      "state_stopped": "Ambiente parado",
+      "state_deleting": "Ambiente sendo excluído",
+      "state_error": "Erro no ambiente",
+      "state_error_hint": "O serviço informa este ambiente como {{status}}. Exclua-o e inicie de novo, ou peça ao agente para verificar.",
+      "managed_by": "Kiro Managed Environments · Remover tira a crew desta lista, mas mantém o ambiente. Para excluí-lo, use Excluir ambiente.",
+      "stop_failed": "Não foi possível parar o ambiente de {{name}}",
+      "resume_failed": "Não foi possível retomar o ambiente de {{name}}",
+      "delete_failed": "Não foi possível excluir o ambiente de {{name}}"
+    }
   }
 }

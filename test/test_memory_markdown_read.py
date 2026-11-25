@@ -405,9 +405,6 @@ class TestUncWorkspaceGate:
         from kiro_crew import memory_files as memory_mod
         from kiro_crew.memory import MemoryStore
 
-        # The constructor names the store by resolving its folder, which on Windows
-        # opens SMB to ``evil-host``; this class pins the read gate, not that name.
-        monkeypatch.setattr("kiro_crew.memory_stores.named_store_of_db", lambda _db: "")
         store = MemoryStore(workspace=Path("//evil-host/share/ws"))
         # Patch ONLY memory.py's view of os (its sole use is the gate's
         # os.name check) — patching the global os.name would make pathlib

@@ -110,7 +110,10 @@ def _list_tools() -> list[dict[str, Any]]:
                 "'schedule'. Requires name + message, plus one of: every "
                 "(seconds), cron_expr, at (unix timestamp), delay (seconds "
                 "from now), or at_time (human string like '5pm', "
-                "'tomorrow 9am', 'in 2 hours'). A Bot's scheduled agent turn "
+                "'tomorrow 9am', 'in 2 hours'). For 'remind me to X', set "
+                "notify_only=true: the message reaches the user as written and "
+                "no agent turn or tool runs. Without it, message is a prompt an "
+                "agent acts on at each run. A Bot's scheduled agent turn "
                 "runs on its worker, cannot message other sessions, and comes "
                 "back to the Bot's chat as a worker report; to hand work to "
                 "another session at a time, have the turn report back and send "
@@ -121,6 +124,13 @@ def _list_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "name": {"type": "string", "description": "Job name"},
                     "message": {"type": "string", "description": "Message to send to agent"},
+                    "notify_only": {
+                        "type": "boolean",
+                        "description": "A reminder: each run delivers message to the user "
+                        "as written (dashboard bell, plus the job's channel) and starts no "
+                        "agent turn, so no tool runs (default false). Not with command or "
+                        "script.",
+                    },
                     "every": {
                         "type": "integer",
                         "description": "Interval in seconds (min 60)",

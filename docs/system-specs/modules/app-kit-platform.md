@@ -1399,11 +1399,15 @@ host agent.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 
-A granted server normally lands in the agent's `allowedTools` (auto-approve):
-the user asked for that server explicitly, and for an unattended app agent a
-prompt resolves to "rejected", so granting it means granting its use.
+A grant mounts the whole server (`@server` in `tools`) but auto-approves only the
+tools its own `autoApprove` names, one literal `@server/<tool>` entry each in
+`allowedTools` (a glob verb is skipped). That entry is the only carrier: the
+registration's last pass strips an app map's server `autoApprove`
+(`honour_owner_written=False`). A tool left out of the list asks before it runs,
+which is what an app's per-tool approval setting promises; for an unattended app
+agent that ask resolves to "rejected". A `mountOnly` grant writes no entry.
 
-**Except where the enterprise ceiling forbids it.** Auto-approve is the one path
+**Each entry is also intersected with the enterprise ceiling.** Auto-approve is the one path
 that never reaches `hooks.on_tool_call`: kiro-cli only sends
 `session/request_permission` for tools it must ask about, and the governance deny
 hangs off that request. Writing a ceiling-denied server into `allowedTools` would
@@ -1416,7 +1420,7 @@ So the grant is intersected with Level 1 POLICY at policy-write time
 
 | Ceiling | Result |
 |---|---|
-| permits | auto-approved, as before |
+| permits | the tools the grant's `autoApprove` names are auto-approved; the rest ask |
 | **denies** | stays in `tools` (the grant is not discarded) but NOT in `allowedTools`, which forces every call through `request_permission`, where the gate denies it |
 | absent (standalone) | unchanged behaviour |
 

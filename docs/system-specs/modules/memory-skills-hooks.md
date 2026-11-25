@@ -1424,7 +1424,10 @@ answers the name of the named store whose vector file `path` is, or `""` — the
 hand the crew schema to each: the eval runner's `ws/"vector_memory.db"`, the bench ingest
 path, the onboarding importer's `destination/"memory.db"`, and every `tmp_path` in the
 suite. The predicate answers `""` for all of those, for the literal
-`memory_stores/default/`, and for a malformed store name. Its containment test is
+`memory_stores/default/`, and for a malformed store name. On Windows it also answers
+`""`, without resolving, for a UNC folder `hooks.unc_probe_allowed` does not admit,
+unless the folder is spelled exactly as the resolved root names it: resolving a UNC path
+opens SMB to its host. Its containment test is
 IDENTITY (`parent.resolve() == memory_stores_root().resolve() / name`) rather than a
 resolved-parent check, for the reason `_named_store_dir` already refuses aliasing: with
 `memory_stores/acme` symlinked at `memory_stores/finance`, a parent check still sees the

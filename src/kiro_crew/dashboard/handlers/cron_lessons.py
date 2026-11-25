@@ -75,6 +75,7 @@ from ._shared import (
     _redact_memory_field,
     guard_owner_surface_routes,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
     resolve_lesson_memory_store,
 )
 
@@ -285,6 +286,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     from kiro_crew.learn import Lesson, lesson_contains_injection  # noqa: F811
     from kiro_crew.vector_memory_runtime.write_outcomes import SemanticRejectCode
 
+    denied = await require_owner_for_dashboard_caller(request, "lessons.create")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     # Default cap: lesson fields are short strings (MAX_SHORT_STRING-bounded).
     body, body_err = await read_bounded_json(request)
@@ -825,6 +829,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
 
 async def api_lessons_delete(request: web.Request) -> web.Response:
     """DELETE /api/lessons — remove lessons by substring."""
+    denied = await require_owner_for_dashboard_caller(request, "lessons.delete")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     # Require the SAME session recognition as ``api_lessons_create``, via the
     # shared ``_recognize_session`` gate. Before this gate, deleting a lesson
@@ -1064,6 +1071,9 @@ async def api_lessons_update(request: web.Request) -> web.Response:
     JSONL fallback the route answers ``unsupported`` and a re-tier stays a delete
     plus an add.
     """
+    denied = await require_owner_for_dashboard_caller(request, "lessons.update")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
@@ -1296,6 +1306,12 @@ async def api_lessons(request: web.Request) -> web.Response:
     window, so a workspace union is not strictly the newest rows across both
     stores.
     """
+    # Lessons steer the owner's agent turns: another dashboard session (one that
+    # is neither the owner nor a teammate) holds the same empty app claim and
+    # would otherwise pass as "the operator's browser" below.
+    denied = await require_owner_for_dashboard_caller(request, "lessons.list")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     # Parsed before any store is resolved: a 400 should not have paid for a
     # silo's first ``init()``.

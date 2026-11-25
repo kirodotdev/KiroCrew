@@ -1,6 +1,6 @@
 """The dashboard's ``/api/managed-environments/*`` routes.
 
-Six routes, each behind the core's owner check (a Shared Crew teammate is refused there:
+Seven routes, each behind the core's owner check (a Shared Crew teammate is refused there:
 ``teammate_access.is_owner_only_for_teammates`` names this prefix), then the lane switch
 (the ``crew_client`` preview, read on every request): off, every route answers 404.
 
@@ -13,9 +13,12 @@ Six routes, each behind the core's owner check (a Shared Crew teammate is refuse
   environment, with the Region the Session Manager plugin starts in. Its answer is a
   secret: it is never logged. An environment the last List read as not RUNNING is read
   once more first, and refused with no session while it is still not RUNNING.
-* ``POST /api/managed-environments/ssh-config``: write the lane's ``crew-sbx-*`` block into
-  ``~/.ssh/config`` with this gateway's own Python (only Crew's marked block, atomic, 0600
-  for a new file), and answer whether it is current, with the block's text.
+* ``GET  /api/managed-environments/ssh-config``: whether ``~/.ssh/config`` holds the lane's
+  current ``crew-sbx-*`` block, and the block's text, so the dashboard shows what a write
+  adds before anyone agrees. It writes nothing;
+* ``POST /api/managed-environments/ssh-config``: write that block into ``~/.ssh/config``
+  with this gateway's own Python (only Crew's marked block, atomic, 0600 for a new file),
+  and answer the same shape.
 
 The routes sit on the dashboard's own listener, which serves loopback unless the
 operator configured otherwise; they add no listener.
@@ -208,14 +211,16 @@ class SandboxRoutes:
 
     # -- ssh-config ------------------------------------------------------------------
 
-    def ssh_config_sync(self) -> dict:
-        """Write the ssh block with this install's own Python (``gateway_python``), so the
-        ProxyCommand runs the install that serves this dashboard, a pipx one too."""
+    def ssh_config_sync(self, write: bool) -> dict:
+        """The ssh block's state, written first when asked, with this install's own Python
+        (``gateway_python``), so the ProxyCommand runs the install that serves this
+        dashboard, a pipx one too."""
         from kiro_crew.managed_env import ssh_config
 
         path = ssh_config.default_config()
         python = ssh_config.gateway_python()
-        ssh_config.ensure_block(path, python)
+        if write:
+            ssh_config.ensure_block(path, python)
         return {
             "present": ssh_config.block_current(path, python),
             "path": path,
@@ -229,13 +234,15 @@ class SandboxRoutes:
         from kiro_crew.managed_env.ssh_config import SshConfigError
 
         try:
-            return web.json_response(await asyncio.to_thread(self.ssh_config_sync))
+            write = request.method == "POST"
+            return web.json_response(await asyncio.to_thread(self.ssh_config_sync, write))
         except (SshConfigError, OSError) as exc:
             return _json(409, code="ssh_config_unwritable", error=str(exc)[:_ERROR_MAX])
 
 
 def register_sandbox_routes(app: web.Application, handlers: SandboxRoutes) -> None:
     app.router.add_get(f"{PREFIX}/list", handlers.list_handler)
+    app.router.add_get(f"{PREFIX}/ssh-config", handlers.ssh_config_handler)
     app.router.add_post(f"{PREFIX}/ssh-config", handlers.ssh_config_handler)
     app.router.add_post(f"{PREFIX}/{{sandbox_id}}/ssh-session", handlers.ssh_session)
     app.router.add_post(f"{PREFIX}/{{sandbox_id}}/{{action}}", handlers.act)

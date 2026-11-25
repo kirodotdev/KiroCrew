@@ -513,7 +513,13 @@ edited in place. It reuses the board package
 - **One message.** The publisher (`board/publisher.py`) posts with `thread_ts`
   set to the anchor, and later edits it with `chat.update`. It is not pinned:
   `pins:write` is a code-channel scope, and a pin on a thread reply would
-  surface in the whole channel. The per-room records the publisher and the
+  surface in the whole channel. So replies would bury it: when the board
+  changes and `conversations.replies` shows a reply newer than it, the board is
+  posted again at the bottom, its new ts stored, and the old message deleted
+  with `chat.delete`. An old board Slack will not delete is edited to
+  one pointer line, and that thread's board is then edited in place for the
+  rest of the process. A stamp-only refresh never moves it, and a move waits
+  out the same edit gap as an edit. The per-room records the publisher and the
   surface store keep (`board_ts`, `board_digest`, the edit gap and retry maps)
   are keyed by the binding's room, `channel_id` for a code channel and
   `"<channel_id>:<anchor_ts>"` for a thread.
