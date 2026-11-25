@@ -289,6 +289,15 @@ def build_pull_request_probe_result(
         and bool(facts.head_revision)
         and previous_head != facts.head_revision
     )
+    # An ACTIONABLE subject carries its blockers, which the coalescing window
+    # reads. A PENDING one carries only the edges that happened on this tick,
+    # which ``decide_monitor`` wakes on directly.
+    if status is MonitorObservationStatus.ACTIONABLE:
+        conditions = pull_request_conditions(canonical)
+    elif status is MonitorObservationStatus.PENDING:
+        conditions = pull_request_waiting_conditions(canonical, previous, settled=settled)
+    else:
+        conditions = ()
     return PullRequestProbeResult(
         response=facts if response is None else response,
         canonical=canonical,
@@ -298,18 +307,7 @@ def build_pull_request_probe_result(
             supplemental_provider_error=supplemental_provider_error,
             reason_code=reason_code,
             head_changed=head_changed,
-            # An ACTIONABLE subject carries its blockers, which the coalescing
-            # window reads. A PENDING one carries only the edges that happened on
-            # this tick, which ``decide_monitor`` wakes on directly.
-            conditions=(
-                pull_request_conditions(canonical)
-                if status is MonitorObservationStatus.ACTIONABLE
-                else (
-                    pull_request_waiting_conditions(canonical, previous, settled=settled)
-                    if status is MonitorObservationStatus.PENDING
-                    else ()
-                )
-            ),
+            conditions=conditions,
         ),
     )
 
