@@ -6,6 +6,9 @@ overlay until the next start. ``_register_app_off_loop`` now asks the running
 broker to rebuild the overlays. The broker reuses the inputs it started with and
 refuses when a setting fixed at start has moved, a routed target is new, or any
 launch approval decision would change; it never writes launch approvals.
+
+A change card that gives a Bot owning its file a gateway-routed server saves it
+through the same refresh, and says on the card when a restart is needed.
 """
 
 from __future__ import annotations
@@ -78,7 +81,7 @@ def home(tmp_path, monkeypatch):
     )
 
 
-def _boot(home, stubs: frozenset[str]) -> GatewayOrchestrator:
+def _boot(home, stubs: frozenset[str], mates: Path | None = None) -> GatewayOrchestrator:
     """Start a broker over the specs on disk, as ``_init_mcp_gateway`` does."""
     import kiro_crew.slack.gateway as gw
 
@@ -89,6 +92,8 @@ def _boot(home, stubs: frozenset[str]) -> GatewayOrchestrator:
         "work_dir": home.tmp / "work",
         "stub_servers": stubs,
     }
+    if mates is not None:
+        inputs["mate_source_dir"] = mates
     approvals = la.load_approvals()
     _r, boot_env = rewriter.rewrite_agents(**inputs, approvals=approvals)
     boot_env, _dropped = gw.filter_target_env(boot_env, approvals)
@@ -133,7 +138,7 @@ async def test_fresh_install_builds_overlays_for_every_app_agent(home) -> None:
 
     out = await overlay_refresh.refresh_after_agent_change(_wrote_specs)
 
-    assert out == {"applied": True, "restart_required": False}
+    assert out == {"applied": True, "restart_required": False, "serving_stub_servers": ["srv"]}
     assert _routed(home, "myapp--one") and _routed(home, "myapp--two")
     assert list(home.scratch.iterdir()) == [], "the probe pass's scratch is removed"
 
@@ -214,7 +219,11 @@ async def test_a_mute_saved_since_start_does_not_block_the_refresh(home, monkeyp
 
     out = await overlay_refresh.refresh_after_agent_change(_wrote_specs)
 
-    assert out == {"applied": True, "restart_required": False}
+    assert out == {
+        "applied": True,
+        "restart_required": False,
+        "serving_stub_servers": ["other", "srv"],
+    }
     assert _routed(home, "myapp--one")
     assert not _routed(home, "host", "other")
 
@@ -238,7 +247,11 @@ async def test_a_server_still_pending_approval_does_not_block_the_refresh(home) 
 
     out = await overlay_refresh.refresh_after_agent_change(_wrote_specs)
 
-    assert out == {"applied": True, "restart_required": False}
+    assert out == {
+        "applied": True,
+        "restart_required": False,
+        "serving_stub_servers": ["pending", "srv"],
+    }
     assert _routed(home, "myapp--one")
     assert la.approvals_path().read_bytes() == store_before
 
@@ -466,3 +479,117 @@ async def test_the_sharing_toggle_restarts_the_broker_under_the_refresh_lock(mon
     await orch._apply_mcp_gateway_enabled(False)
 
     assert held == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_bot_save_adding_a_routed_server_refreshes_or_says_to_restart(
+    home, monkeypatch
+) -> None:
+    """The ``crewmate.capabilities`` card's PUT writes the Bot's file inside the
+    refresh. A launch the daemon does not serve leaves ``mates/<id>.json`` alone
+    and answers ``gateway_restart_required``; a served one is published at once
+    under the Bot's ``crewmate:<id>`` identity; a server outside
+    ``stub_servers`` runs no rewrite at all; and one added to ``stub_servers``
+    since the broker started, by name or by a ``secret://`` server's alias,
+    also answers ``gateway_restart_required``."""
+    import base64
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.agent_capabilities import CapabilityService
+    from kiro_crew.config.loader import _invalidate_config_cache
+    from kiro_crew.dashboard.handlers import agent_capabilities as route
+    from kiro_crew.mate_config import write_mate_config
+    from kiro_crew.slack import gateway as gw
+
+    monkeypatch.setenv("KIRO_HOME", str(home.tmp / "kiro"))
+    config = home.tmp / "crew" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps(
+            {
+                "agents": {"scout": {"kiro_agent": "scout"}},
+                "mcp_gateway": {"stub_servers": ["srv", "late", "npm:@acme/mcp"]},
+            }
+        )
+    )
+    _invalidate_config_cache()
+    write_mate_config("scout")
+    mates = home.tmp / "kiro" / "mates" / "agents"
+    assert (mates / "scout.json").is_file()
+    _seed_store(srv=([], None, {}))
+    store = la.load_approvals()
+    store.approved[la.target_stem("srv")].add(la.launch_fingerprint(_CMD, ["-V"], {}))
+    store.approved_pairs[la.target_stem("srv")].add(
+        la.launch_pair(rewriter.hash_command(_CMD, ["-V"]), la.env_fingerprint({}))
+    )
+    la._write(la.approvals_path(), la._document(store, {}))
+    _spec(home.agents, "host", {"srv": _srv()})
+    _boot(home, frozenset({"srv"}), mates)
+    overlay = home.overlay / "mates" / "scout.json"
+    assert json.loads(overlay.read_text())["mcpServers"] == {}
+
+    async def _owner(_request, _operation):
+        return None
+
+    rewrites: list[int] = []
+    real_rewrite = gw.rewrite_agents
+
+    def _counted(**kwargs):
+        rewrites.append(1)
+        return real_rewrite(**kwargs)
+
+    monkeypatch.setattr(route, "require_owner_dashboard_request", _owner)
+    monkeypatch.setattr(gw, "rewrite_agents", _counted)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.crewmate_worker_reload.schedule_reload_workers", lambda *_a: None
+    )
+    app = web.Application()
+    app["state"] = SimpleNamespace(push_refresh=lambda *_a: None, sessions=None)
+    app[route._SERVICE] = CapabilityService()
+    url = "/api/agents/scout/capabilities"
+    app.router.add_get(url.replace("scout", "{name}"), route.api_member_capabilities)
+    app.router.add_post(url.replace("scout", "{name}") + "/preview", route.api_member_capabilities)
+    app.router.add_put(url.replace("scout", "{name}"), route.api_member_capabilities)
+
+    async def _save(client, server: str, entry: dict) -> dict:
+        revision = (await (await client.get(url)).json())["revision"]
+        ops = [
+            {"section": "mcpServers", "id": server, "action": "set", "value": entry},
+            {"section": "tools", "id": "@" + server, "action": "set", "value": True},
+        ]
+        body = {"revision": revision, "operations": ops}
+        preview = await (await client.post(url + "/preview", json=body)).json()
+        resp = await client.put(url, json={**body, "preview_token": preview["preview_token"]})
+        assert resp.status == 200, await resp.text()
+        return await resp.json()
+
+    def _stub_agent(entry: dict) -> str:
+        flags = next(a for a in entry["args"] if a.startswith("--stub-flags-b64="))
+        parsed = json.loads(base64.b64decode(flags.split("=", 1)[1]))
+        return parsed[parsed.index("--agent") + 1]
+
+    async with TestClient(TestServer(app)) as client:
+        before = overlay.read_bytes()
+        unserved = await _save(client, "srv", _srv(["-V"]))
+        assert unserved.get("gateway_restart_required") is True
+        assert overlay.read_bytes() == before
+
+        served = await _save(client, "srv", _srv())
+        assert "gateway_restart_required" not in served
+        entry = json.loads(overlay.read_text())["mcpServers"]["srv"]
+        assert STUB_MODULE in entry["args"] and _stub_agent(entry) == "crewmate:scout"
+
+        rewrites.clear()
+        refreshed = overlay.read_bytes()
+        unrouted = await _save(client, "plain", _srv(["-c", "pass"]))
+        assert "gateway_restart_required" not in unrouted
+        assert rewrites == [] and overlay.read_bytes() == refreshed
+
+        late = await _save(client, "late", _srv(["-c", "pass"]))
+        assert late.get("gateway_restart_required") is True
+
+        # Routed under its raw name, as the rewriter routes a ``secret://`` server.
+        aliased = await _save(client, "acme-mcp", _srv(["-c", "pass"], {"TOK": "secret://acme"}))
+        assert aliased.get("gateway_restart_required") is True

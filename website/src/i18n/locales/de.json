@@ -11450,6 +11450,7 @@
       "undo_delete_secret": "Secret löschen",
       "undo_unavailable": "Diese Änderung lässt sich nicht rückgängig machen.",
       "undo_unavailable_overwrites": "Rückgängig nicht möglich: Damit wurde ein vorhandenes Secret überschrieben.",
+      "gateway_restart_required": "Der Worker dieses Bot erhält diesen MCP-Server über das Gateway erst, nachdem du das Gateway neu gestartet hast (Einstellungen → Über → Gateway neu starten).",
       "cron_every_day": "Täglich",
       "cron_every_minute": "Jede Minute",
       "cron_every_hour": "Stündlich",
