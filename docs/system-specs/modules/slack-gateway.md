@@ -1622,7 +1622,7 @@ Off by default. A capability refusal (`missing_scope`, `feature_disabled`, `not_
 
 ## Message Queue (`session_parts/claims.py` + `events.py` + `events_queue.py` + `events_inbound.py`)
 
-When a message arrives while a session is actively processing, it's queued instead of spawning a competing session:
+When a message arrives while a session is actively processing, it never spawns a competing session. By default (`messaging.queue_mode: steer`) it is steered into the running turn (`slack/midturn.py`, see [session](session.md)); with `!queue <msg>`, `messaging.queue_mode: queue`, or any message that cannot be steered, it's queued:
 
 - **Session-level queue**: `enqueue()` / `dequeue()` on `SessionManager` using a per-session `deque` + cancelled set
 - **Orchestrator-level queue**: `_pending_queue` dict for the startup race (task running but session object not yet created)
@@ -1845,7 +1845,7 @@ See `session.py` module spec. Each Slack thread_ts maps to a separate AcpClient 
 
 ### Message Queue
 
-Messages arriving while a session is busy are queued with ⏳ reaction and drained FIFO after each handler completes. See [Message Queue](#message-queue-session_partsclaimspy--eventspy--events_queuepy--events_inboundpy) above.
+Messages arriving while a session is busy steer the running turn (↪ reaction) by default; one that is queued instead gets a ⏳ reaction and is drained FIFO after each handler completes. See [Message Queue](#message-queue-session_partsclaimspy--eventspy--events_queuepy--events_inboundpy) above.
 
 ### Startup
 

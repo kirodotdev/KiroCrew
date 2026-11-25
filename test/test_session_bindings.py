@@ -263,6 +263,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_subagent_runtime": ("function", True, "6bc33ba9df46", "runtimes"),
     "get_thread": ("function", False, "4b576121a346", "links"),
     "has_mirror_row": ("function", False, "1eda252b53bd", "links"),
+    "has_queued": ("function", False, "1eda252b53bd", "claims"),
     "has_session": ("function", False, "1eda252b53bd", "claims"),
     "identity_sweep_waiting_on": ("property", False, "9d5ab4ea1828", "state_views"),
     "inbound_callback_count": ("property", False, "fa6cfecd5574", "state_views"),

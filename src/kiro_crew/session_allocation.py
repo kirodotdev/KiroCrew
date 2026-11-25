@@ -1385,6 +1385,11 @@ class SessionAllocationService:
             return True
         return False
 
+    def has_queued(self, key: str) -> bool:
+        """Read whether a folded session has queued entries without consuming them."""
+        session = self._sessions.get(self._owner._fold_key(key))
+        return bool(session and session.queue)
+
     def dequeue(self, key: str) -> tuple[str, str, dict[str, Any]] | None:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)

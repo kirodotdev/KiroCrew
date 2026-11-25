@@ -4864,6 +4864,27 @@ channel-driven turn on the resumed key), or attachments; an incognito or
 temporary session is taken like any other, since those modes keep their
 transcript and queue. See [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery).
 
+Slack reads the same mode (`slack/midturn.py`), with a `!queue` / `!steer` prefix
+overriding it per message. A busy thread session steers through its provider;
+a thread linked to a dashboard chat steers through `hand_to_resumed_slot`,
+whose own queue arm takes a steer that does not land. A refusal is posted in
+the thread, except `REFUSED_IDLE` (the chat's turn ended during the hand-off),
+after which the route starts the message's own turn. A linked turn a shared
+user opened (`turn_requester`) takes no steer; the message is queued. A steer
+that lands in a thread session is written to the turn's transcript as its own
+`user` row, under the key the turn registered once its question row was on disk
+(`open_transcript`, from `handle_message_transport`); a turn with no such entry
+(the native handler writes question and reply together at its end) takes no
+steer. A message with files, from a shared user or a trusted bot, or
+replayed from the queue is always queued; so is one the turn's start
+answers itself (a `!` command, a privacy modifier, a keyword command, a hook
+reply), one sent while a `!stop` settles, one in a `review` channel, one behind
+an already queued entry, one in a thread a dashboard chat owns, one whose
+running turn a shared user's message opened or the router did not start (that
+turn's tool prompts answer to its opener, `router_task_opener`), and, in a
+single-session DM, one sent in a thread or at the root other than where the
+running turn posts, so it is still answered where it was sent.
+
 WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later (see
 [messaging](messaging.md)).

@@ -90,7 +90,8 @@ BASELINE: dict[str, tuple[int, str]] = {
         3,
         "a Conductor thread's fixed notices: started, ended, a one-way refusal",
     ),
-    "slack/events.py": (5, "!stop and !restart notices and the not-authorized refusal"),
+    "slack/events.py": (4, "!stop and !restart notices and the not-authorized refusal"),
+    "slack/events_inbound.py": (1, "the fixed !stop notice helper, moved out of events.py"),
     "slack/events_slash.py": (1, "the /kirocrew conductor parent message, a defused goal line"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),
     "slack/gateway_runtime/cron_delivery.py": (
@@ -161,6 +162,10 @@ BASELINE: dict[str, tuple[int, str]] = {
         "stop and reset notices, resume label, new-session greeting",
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
+    "slack/midturn.py": (
+        2,
+        "fixed notices: the hint for a bare !queue / !steer, and a linked hand-off refusal",
+    ),
     "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
         2,
