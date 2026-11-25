@@ -687,6 +687,12 @@ class SubagentInfo:
     # One re-run on a fresh runtime after a live backend lost this run's
     # session; a second loss is terminal.
     _session_not_found_retry_used: bool = False
+    # The runtime ``agent.acp_failover`` trigger (``usage_limit`` / ``auth``) that
+    # handed this run to a ``backend_failover`` respawn, and the refused
+    # attempt's error text, kept for the failure the respawn records when no
+    # chain member can start. ``""`` when no runtime hop is in flight.
+    _failover_verdict: str = ""
+    _failover_detail: str = ""
     _force_dedicated: bool = False
     # The run's completed-ending CLAIM, a one-shot token like ``_finalized``:
     # taken synchronously by a whole answer (a successful complete event,

@@ -41,7 +41,9 @@ class CancellationCoordinator(ManagerComponent):
         The default serves an unexpected cancellation. ``context_overflow``
         serves a first-turn overflow and forces the replacement onto a fresh
         dedicated runtime after the original attempt's handle (shared) or
-        process (dedicated) has finished teardown. ``session_not_found`` serves a
+        process (dedicated) has finished teardown; ``backend_failover`` does the
+        same for a first request a backend refused, then moves the run to the next
+        ``agent.acp_failover`` member. ``session_not_found`` serves a
         live backend that lost the run's session: the teardown's reset keeps the
         durable pointer, so the replacement re-loads the same id.
 
@@ -98,7 +100,7 @@ class CancellationCoordinator(ManagerComponent):
                 if info.done or info._reap_started or info.reaped or self._manager._shutting_down:
                     info._recovering = False
                     return
-                if reason == "context_overflow":
+                if reason in ("context_overflow", "backend_failover"):
                     # Reset preserves a dedicated session's durable pointer so
                     # an ordinary keep run can resume it. This session was
                     # rejected before its first turn, however, and loading it
@@ -110,7 +112,7 @@ class CancellationCoordinator(ManagerComponent):
                     # and so does a run whose rejected SID was never captured.
                     session_key = f"subagent:{info.id}"
                     rejected_sid = str(getattr(info, "_session_id", "") or "")
-                    if not rejected_sid:
+                    if not rejected_sid and reason != "backend_failover":
                         # The identity capture after session acquisition is
                         # best-effort, while the allocation may already have
                         # persisted a resumable mapping for this key. Without
@@ -124,6 +126,9 @@ class CancellationCoordinator(ManagerComponent):
                             "rejected session identity unknown; cannot retire it "
                             "before recovery respawn"
                         )
+                    # A backend refusing its sign-in at session start leaves no
+                    # SID: then only an absent mapping lets the hop go on, and
+                    # any mapped SID fails closed below like a mismatch.
                     removed, current_sid = self._manager._sessions.forget_conversation_if_sid(
                         session_key, rejected_sid
                     )
@@ -168,6 +173,10 @@ class CancellationCoordinator(ManagerComponent):
                     info._pid = None
                     info._session_sharing = False
                     info._shared_provider = None
+                if reason == "backend_failover":
+                    from kiro_crew.acp_failover_chain import take_runtime_hop
+
+                    await take_runtime_hop(info, self._manager)
                 # Re-acquire a slot through capacity, not blind increment:
                 # the cancelled attempt's finally freed our slot and may have drained a queued
                 # spawn into it. Wait (bounded) for a free slot so recovery
@@ -229,21 +238,9 @@ class CancellationCoordinator(ManagerComponent):
                     # arm with it so a sibling cannot read this member as
                     # done-but-unarmed. The report's own arm is a backstop.
                     self._manager.arm_report_in_flight(info)
-                    if reason == "context_overflow":
-                        info.error = (
-                            "agent context exceeded the model window and the dedicated-session "
-                            "recovery could not start"
-                        )
-                        tombstone_cause = "error"
-                    elif reason == "session_not_found":
-                        info.error = (
-                            "the backend lost this run's session and the fresh-runtime "
-                            "re-run could not start"
-                        )
-                        tombstone_cause = "error"
-                    else:
-                        info.error = "cancelled (recovery failed)"
-                        tombstone_cause = "cancelled"
+                    from kiro_crew.subagent_manager.recovery_reasons import recovery_failed
+
+                    info.error, tombstone_cause = recovery_failed(reason, info)
                     info.elapsed = time.time() - info.started
                     Stats().inc_subagent_failed()
                     # The shutdown's cancel under a tab is left to the next start; a give-up is not.

@@ -545,6 +545,8 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
             # The finally below reports nothing while ``_recovering`` is set.
             raise
     except Exception as exc:
+        from kiro_crew.acp_failover_chain import RUNTIME_FAILOVER_REASON, runtime_hop_verdict
+
         if getattr(exc, "context_overflow", False):
             # Replaying on the same native session reproduces the rejection.
             # A zero-activity first turn on a SHARED runtime retries once on a
@@ -648,6 +650,26 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "error")
                 logger.warning("Subagent %s lost its session: %s", info.id, exc)
+        elif (
+            hop_verdict := runtime_hop_verdict(
+                info, exc, shutting_down=self._manager._shutting_down
+            )
+        ) is not None:
+            # A spent allowance or a rejected login on the first request, before
+            # any output: the operator's agent.acp_failover chain names a later
+            # backend, so the run is torn down and respawned there (the respawn
+            # picks the member and records the hop). The gate is in
+            # ``runtime_hop_verdict``; without an enabled block nothing changes.
+            info._failover_verdict = hop_verdict
+            info._failover_detail = _redact(str(exc))[:MAX_ERROR_DETAIL_LEN]
+            info._force_dedicated = True
+            info._recovering = True
+            logger.warning(
+                "Subagent %s: %s on its first request; trying the next agent.acp_failover member",
+                info.id,
+                hop_verdict,
+            )
+            self._manager._schedule_cancel_recovery(info, reason=RUNTIME_FAILOVER_REASON)
         elif info._reap_started and is_runtime_death(exc):
             # The ECHO of our own teardown, not a fault of the run:
             # ``_force_reap`` resets the session BEFORE cancelling this task,

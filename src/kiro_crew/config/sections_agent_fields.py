@@ -881,7 +881,7 @@ def validate_acp_failover(value: object) -> dict:
     The write path's refusal (``kirocrew config set``): stricter than the load
     path, because the write is the last point where the mistake is still
     attributable to the command that made it. Refuses a bad shape, a repeated
-    name, a trigger this phase does not consume, and a chain name that is not
+    name, a trigger no caller consumes, and a chain name that is not
     selectable now.
     """
     from kiro_crew.acp_failover import AcpFailoverConfig

@@ -42,9 +42,13 @@ class TestNextFailoverBackend:
     def test_a_verdict_the_policy_omits_does_not_hop(self):
         assert _next("codex", ("codex", "claude"), triggers=("backend_restart_required",)) is None
 
-    @pytest.mark.parametrize("verdict", ["usage_limit", "auth", "throttle", "http_5xx"])
-    def test_a_verdict_this_phase_does_not_consume_never_hops_even_if_listed(self, verdict):
+    @pytest.mark.parametrize("verdict", ["throttle", "http_5xx", "connection"])
+    def test_a_transient_verdict_never_hops_even_if_listed(self, verdict):
         assert _next("codex", ("codex", "claude"), verdict=verdict, triggers=(verdict,)) is None
+
+    @pytest.mark.parametrize("verdict", ["usage_limit", "auth"])
+    def test_a_runtime_verdict_hops_when_configured(self, verdict):
+        assert _next("codex", ("codex", "claude"), verdict=verdict) == "claude"
 
 
 class TestFromRaw:
@@ -67,8 +71,13 @@ class TestFromRaw:
         cfg = AcpFailoverConfig.from_raw({"enabled": True, "chain": ["codex", "claude"]})
         assert cfg.triggers == FAILOVER_TRIGGERS
 
-    def test_only_the_spawn_time_refusals_are_triggers_in_this_phase(self):
-        assert set(FAILOVER_TRIGGERS) == {"backend_not_installed", "backend_restart_required"}
+    def test_the_triggers_are_the_spawn_refusals_and_the_runtime_verdicts(self):
+        from kiro_crew.acp_failover import RUNTIME_TRIGGERS, SPAWN_TRIGGERS
+
+        assert FAILOVER_TRIGGERS == SPAWN_TRIGGERS + RUNTIME_TRIGGERS
+        assert "backend_not_installed" in SPAWN_TRIGGERS
+        assert "usage_limit" in RUNTIME_TRIGGERS and "auth" in RUNTIME_TRIGGERS
+        assert "throttle" not in FAILOVER_TRIGGERS
 
     @pytest.mark.parametrize("bad", [[], "codex", 3, True])
     def test_a_non_object_block_is_rejected(self, bad):
@@ -89,9 +98,11 @@ class TestFromRaw:
             AcpFailoverConfig.from_raw({"enabled": True, "chain": ["pi", "claude", "pi"]})
 
     @pytest.mark.parametrize("trigger", ["usage_limit", "auth"])
-    def test_a_phase_two_trigger_is_rejected_as_not_active(self, trigger):
-        with pytest.raises(ValueError, match="not active yet"):
-            AcpFailoverConfig.from_raw({"enabled": True, "chain": ["codex"], "triggers": [trigger]})
+    def test_a_runtime_trigger_is_accepted(self, trigger):
+        cfg = AcpFailoverConfig.from_raw(
+            {"enabled": True, "chain": ["codex"], "triggers": [trigger]}
+        )
+        assert cfg.triggers == (trigger,)
 
     @pytest.mark.parametrize("trigger", ["throttle", "http_5xx", "connection", "retryable"])
     def test_a_transient_trigger_is_rejected(self, trigger):
@@ -150,10 +161,10 @@ class TestNormalizeAcpFailover:
         "block",
         [
             {"enabled": True, "chain": ["pi", "pi"]},
-            {"enabled": True, "chain": ["pi"], "triggers": ["usage_limit"]},
+            {"enabled": True, "chain": ["pi"], "triggers": ["throttle"]},
             {"enabled": "true", "chain": ["pi"]},
         ],
-        ids=["repeated-name", "phase2-trigger", "string-enabled"],
+        ids=["repeated-name", "transient-trigger", "string-enabled"],
     )
     def test_an_invalid_block_loads_as_off_with_a_warning(self, block, caplog):
         from kiro_crew.config.sections_agent_fields import normalize_acp_failover
@@ -178,10 +189,10 @@ class TestValidateAcpFailover:
         [
             ("codex", "must be an object"),
             ({"enabled": True, "chain": ["codex", "codex"]}, "more than once"),
-            ({"enabled": True, "chain": ["codex"], "triggers": ["auth"]}, "not active yet"),
+            ({"enabled": True, "chain": ["codex"], "triggers": ["throttle"]}, "may only contain"),
             ({"enabled": True, "chain": ["codex", "goose"]}, "cannot be selected"),
         ],
-        ids=["not-an-object", "repeated-name", "phase2-trigger", "not-selectable"],
+        ids=["not-an-object", "repeated-name", "transient-trigger", "not-selectable"],
     )
     def test_an_unusable_block_is_refused(self, monkeypatch, block, reason):
         from kiro_crew.config.sections_agent_fields import validate_acp_failover
