@@ -838,16 +838,20 @@ def user_tool_bin_dirs(home: str) -> list[str]:
 
 
 def _extra_path_templates() -> tuple[str, ...]:
-    """:data:`_EXTRA_PATH_DIRS`, minus the fixed POSIX roots on Windows.
+    """:data:`_EXTRA_PATH_DIRS`, minus the ones that name nothing on Windows.
 
     ``/opt/homebrew/bin``, ``/usr/local/bin`` and Linuxbrew's
     ``/home/linuxbrew/.linuxbrew/bin`` name nothing on Windows, where
     Python 3.12's ``isabs`` still accepts them and they resolve against the
     current drive (``C:\\opt\\homebrew\\bin``), a folder any local account can
-    create. Every ``{home}``/``{mise_data}`` template stays.
+    create. ``{home}/.toolbox/bin`` is not Toolbox's folder there either
+    (:func:`_windows_toolbox_bin_dir` is), so it would only rank a folder
+    nothing installs into ahead of the real one.
     """
     if platform_compat.IS_WINDOWS:
-        return tuple(d for d in _EXTRA_PATH_DIRS if not d.startswith("/"))
+        return tuple(
+            d for d in _EXTRA_PATH_DIRS if not d.startswith("/") and d != "{home}/.toolbox/bin"
+        )
     return _EXTRA_PATH_DIRS
 
 
@@ -917,11 +921,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # prepended in this order, so the override's own ``kirocrew`` never shadows it.
     lead = extra + pinned if pinned else []
     extra += pinned
-    extra += [
-        e
-        for d in _extra_path_templates()
-        if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
-    ]
+    extra += user_tool_bin_dirs(resolved_home)
     if platform_compat.IS_WINDOWS and (
         toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
     ):
