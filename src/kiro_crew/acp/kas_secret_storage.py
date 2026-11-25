@@ -232,6 +232,15 @@ class McpGrantStore:
         await asyncio.to_thread(self._assert_unlinked)
         return await self._vault.set_with_revision(key, value)
 
+    async def store_if(self, key: str, value: str, base: str | None) -> str | None:
+        """Store *value* only while *key* still holds revision *base*.
+
+        ``base=None`` means "only if absent". Returns the new revision, or
+        ``None`` when the entry changed since and nothing was written.
+        """
+        await asyncio.to_thread(self._assert_unlinked)
+        return await asyncio.to_thread(self._vault.set_if_revision_sync, key, value, base)
+
     async def delete(self, key: str, revision: str | None = None) -> bool:
         """Delete *key*; with *revision*, only while the entry still has it.
 
@@ -264,8 +273,10 @@ class SecretStorageServer:
     fails clears what it read, and that must not erase a fresh grant another
     process stored since. So the server remembers, per persisted key, the
     revision this process last read or wrote (``None``: it read nothing), and a
-    delete removes only that entry. A key this process never touched is deleted
-    outright: it holds no copy that could be stale.
+    delete removes only that entry. A store writes only over that entry too, so
+    a token refreshed from an older read cannot replace one another process
+    saved since; the refused engine reads again. A key this process never
+    touched is deleted or stored outright: it holds no copy that could be stale.
     """
 
     def __init__(self, store: McpGrantStore | None = None) -> None:
@@ -360,7 +371,21 @@ class SecretStorageServer:
 
     async def _store_value(self, key: str, value: str, persisted: bool) -> None:
         if persisted:
-            self._seen[key] = await self._guarded(self._store.store(key, value))
+            if key not in self._seen:
+                self._seen[key] = await self._guarded(self._store.store(key, value))
+            else:
+                written = await self._guarded(self._store.store_if(key, value, self._seen[key]))
+                if written is None:
+                    # Another engine saved since this one read: a value derived
+                    # from the older read must not replace it. The engine re-reads.
+                    if (subject := _log_subject(key)) is not None:
+                        logger.info(
+                            "%s: %s", subject, "save refused: changed since this engine read it"
+                        )
+                    raise SecretStorageRefused(
+                        "saved entry changed since this engine read it; read it again"
+                    )
+                self._seen[key] = written
             if (subject := _log_subject(key)) is not None:
                 logger.info("%s: %s", subject, "saved" if _is_secret_key(key) else "sign-in saved")
             return
