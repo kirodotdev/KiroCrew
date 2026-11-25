@@ -1161,6 +1161,15 @@ class DashboardConfig:
             "are not affected.",
         ),
     )
+    expand_linked_items: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show Linked Items Expanded",
+            "Start each sidebar session card with its linked items (pull "
+            "requests, issues) shown under it. The count on the card still folds "
+            "or opens each card's list on its own.",
+        ),
+    )
     command_bar_enabled: bool = field(
         default=True,
         metadata=_meta(

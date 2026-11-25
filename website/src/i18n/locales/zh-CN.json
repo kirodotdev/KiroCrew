@@ -20204,6 +20204,8 @@
         "retrying_theme_list": "正在重试…",
         "show_unread_dot": "在会话卡片上显示未读圆点",
         "show_unread_dot_save_failed": "无法保存未读圆点设置。",
+        "expand_linked_items": "在会话卡片上默认展开关联项",
+        "expand_linked_items_save_failed": "无法保存关联项设置。",
         "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
         "font_family_option_custom": "自定义",
         "custom_font_family": "自定义字体",

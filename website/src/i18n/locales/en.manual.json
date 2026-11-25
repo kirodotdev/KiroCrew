@@ -10185,6 +10185,8 @@
         "retrying_theme_list": "Retrying…",
         "show_unread_dot": "Show unread dot on session cards",
         "show_unread_dot_save_failed": "Could not save the unread dot setting.",
+        "expand_linked_items": "Show linked items expanded on session cards",
+        "expand_linked_items_save_failed": "Could not save the linked items setting.",
         "recent_tint_save_failed": "Could not save the recent-session highlight count.",
         "milestones": "Explore",
         "milestones_hint": "Show Explore in the top bar and a Try today card on a new chat.",
