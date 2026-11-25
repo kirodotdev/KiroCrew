@@ -1553,6 +1553,23 @@ def stand_down(
     log("kicked tick: the self-cancel was accepted but has not stopped this step; exiting")
 
 
+def kick_failure_note(failed: list[str]) -> str:
+    """What a kicked tick that exits 1 says about itself, in its log and its summary.
+
+    The kick's step is ``continue-on-error``, so its job and its run read green
+    whatever the step did: a red kick would attach to the pull request whose Fast
+    Gate set it off. The exit code therefore reaches nobody, and the only place a
+    failed kick can say so is its own output.
+    """
+    return (
+        f"this kicked tick FAILED (exit 1, failed outcome(s): {', '.join(failed)}). Its job "
+        "shows green by design: the step is continue-on-error on a kick, so that a failed "
+        "kick cannot put a red check on the pull request whose Fast Gate set it off. The "
+        "runs to act on are named in this log and in the summary; a scheduled tick that "
+        "meets the same condition fails its run"
+    )
+
+
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
@@ -1610,6 +1627,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     verdicts, outcomes = run_watchdog(api, policy)
     summary = render_summary(verdicts, outcomes, policy)
+    failed = sorted(FAILED_OUTCOMES & set(outcomes.values()))
+    failed_kick = bool(failed) and os.environ.get("GITHUB_EVENT_NAME", "") == KICK_EVENT
+    if failed_kick:
+        summary += f"\n### Kicked tick failed\n\n{_md(kick_failure_note(failed))}.\n"
     # Its own footprint against the quota whose exhaustion started all this. Logged
     # rather than enforced: a cap here would silently stop healing, which is the
     # failure this script exists to end. Read these across a few scheduled ticks to
@@ -1646,7 +1667,9 @@ def main(argv: list[str] | None = None) -> int:
             "window up to REPO_LISTING_MAX_WINDOWS, so the remedy is more windows or a narrower "
             "split (branch or event) rather than paging deeper"
         )
-    return 1 if FAILED_OUTCOMES & set(outcomes.values()) else 0
+    if failed_kick:
+        print(f"::error::{kick_failure_note(failed)}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
