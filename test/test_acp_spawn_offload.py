@@ -1125,6 +1125,51 @@ class TestRuntimeProjectedLaunchDocuments:
         assert runtime._native_launch_sources == {str(guide): ""}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["delivered", "cancelled"])
+    async def test_client_secrets_go_out_before_the_session_is_claimed(
+        self, tmp_path, monkeypatch, cancelled
+    ) -> None:
+        """A cancellation while a KAS engine takes a client secret leaves the session
+        unclaimed, so ``create_session``'s handler still tears it down."""
+        from kiro_crew.acp import kas_client_secret
+
+        runtime, _calls = await self._drive(monkeypatch, tmp_path, inherits=False)
+        monkeypatch.setattr(runtime, "_verify_spawn_agent_active", AsyncMock())
+        monkeypatch.setattr(runtime, "_activates_agent_by_mode", lambda: False)
+        monkeypatch.setattr(runtime, "_snapshot_descendants", AsyncMock())
+        seen: list[tuple[str, bool, bool]] = []
+
+        async def deliver(rt, session_id, clients):
+            seen.append(
+                (
+                    session_id,
+                    session_id in rt._session_queues,
+                    session_id in rt._unclaimed_new_sessions,
+                )
+            )
+            if cancelled:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(kas_client_secret, "deliver_prereg_clients", deliver)
+        runtime._unclaimed_new_sessions.add("created-session")
+        clients = {
+            "conf": kas_client_secret.PreregClient(value="s", url="https://x", client_id="c")
+        }
+        finish = runtime._finish_create_session(
+            "created-session",
+            {"models": []},
+            prereg_clients=clients,
+            **self._create_session_kwargs(runtime),
+        )
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                await finish
+        else:
+            await finish
+        assert seen == [("created-session", True, True)]
+        assert ("created-session" in runtime._unclaimed_new_sessions) is cancelled
+
+    @pytest.mark.asyncio
     async def test_load_copies_the_launch_record(self, tmp_path, monkeypatch) -> None:
         runtime, _calls = await self._drive(monkeypatch, tmp_path, inherits=False)
         guide = tmp_path / "workspace" / ".kiro" / "steering" / "guide.md"

@@ -456,15 +456,28 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     from kiro_crew.config import loader_credentials
     from kiro_crew.doctor_checks import confinement
 
-    creds = loader_credentials.resolve_env_credentials(
+    env_creds = loader_credentials.resolve_env_credentials(
         {k: v for k in loader_credentials.CREDENTIAL_KEYS if (v := os.environ.get(k, ""))}
     )
+    creds = env_creds
     creds_read = False
     with render._unreadable_skips_section(
         issues, "credentials", confined=confinement._doctor_vantage_confined
     ):
         creds = cfg.load_credentials()
         creds_read = True
+    if (
+        creds_read
+        and creds == env_creds
+        and render._known_confined(confinement._doctor_vantage_confined)
+    ):
+        # The agent sandbox masks the credentials file with an empty stand-in, so
+        # inside a sandbox a read that found nothing beyond the environment is no
+        # evidence that a credential is absent: it is reported like a denied read.
+        render._print_confined_skip(
+            "credentials", render._safe_display(os.fsdecode(cli_doctor.env_path()))
+        )
+        creds_read = False
     creds_unreadable = not creds_read
     _has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
     _local = cli_doctor.is_local_only(_host, _has_slack)

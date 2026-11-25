@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _WORKING,
         CONTEXT_EVENT_COMPACTION,
         EVENT_COMPLETE,
+        EVENT_MODEL_FALLBACK,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
         EVENT_THINKING_CHUNK,
@@ -90,6 +91,7 @@ if TYPE_CHECKING:
         context_template,
         continue_timed_out_calls,
         credential_give_up_text,
+        drop_echo,
         enter_turn,
         exit_turn,
         expire_slack_options,
@@ -978,7 +980,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
-        async for event in continue_timed_out_calls(client.stream, full_message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(client.stream(prompt)), full_message
+        ):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 
@@ -993,6 +998,12 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 await answer.release_quoted_hold()
                 if await _answer_permission_request(turn, client, event):
                     break
+
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # The engine moved this turn onto another model. On a refusal hop
+                # the refused model's streamed text is dropped here; the delivery
+                # path prepends the fallback notice and overwrites the live copy.
+                await answer.on_model_fallback(event)
 
             elif event.kind == CONTEXT_EVENT_COMPACTION:
                 # The backend compacted the session on its own: the session-start

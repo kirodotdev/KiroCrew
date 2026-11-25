@@ -45,6 +45,18 @@ vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', 
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+// The pane's `hydrated` latch, as the unread landing reads it.
+const landingHydrated = vi.hoisted(() => ({ last: false }))
+vi.mock('../components/chat/useUnreadLanding', async (importActual) => {
+  const actual = await importActual<typeof import('../components/chat/useUnreadLanding')>()
+  return {
+    ...actual,
+    useUnreadLanding: (opts: Parameters<typeof actual.useUnreadLanding>[0]) => {
+      landingHydrated.last = opts.hydrated
+      return actual.useUnreadLanding(opts)
+    },
+  }
+})
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -115,6 +127,28 @@ describe('ChatPane releases its slot on unmount', () => {
     // Flagged at mount, before the fresh page answers.
     expect(store.getState().chat.slotHydrated?.[SLOT]).toBe(true)
     await waitFor(() => expect(detail).toHaveBeenCalledTimes(2))
+    // The remount's re-read stands in for the hydrate read, so it sets the
+    // latch the unread landing waits on.
+    await waitFor(() => expect(landingHydrated.last).toBe(true))
+  })
+
+  it('shows the history notice when the remount re-read fails, and its Retry reads again', async () => {
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(<Panes store={store} qc={qc} count={1} />)
+    await waitFor(() => expect(store.getState().chat.slotHydrated?.[SLOT]).toBe(true))
+    view.unmount()
+    await settle()
+
+    // The remount re-reads the held window with a warm, which fails.
+    detail.mockRejectedValueOnce(Object.assign(new Error('HTTP 503'), { status: 503 }))
+    const again = render(<Panes store={store} qc={qc} count={1} />)
+    await waitFor(() => expect(again.getByTestId('chat-pane-hydrate-error')).toBeTruthy())
+    expect(detail).toHaveBeenCalledTimes(2)
+
+    await act(async () => { again.getByText('Retry').click() })
+    await waitFor(() => expect(detail).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(again.queryByTestId('chat-pane-hydrate-error')).toBeNull())
   })
 
   it('keeps the slot flagged while another pane still shows it', async () => {

@@ -23,6 +23,7 @@ from kiro_crew.context import (
     prepare_store_vectors,
     reserve_memory_prefetch,
 )
+from kiro_crew.context_assembly.turn import recall_query
 from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs, slot_steering_principal
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
@@ -1073,15 +1074,21 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     raise
                 # The builder keeps essentials and reports unavailable learned memory.
                 logger.info("Member learned memory unavailable for context preparation")
-        # Every session-start build starts its message's embedding here, just
+        # Every session-start build starts its recall query's embedding here, just
         # ahead of itself, so the build joins it and waits within its deadline. A
         # pre-warmed session gets its only early embed here; after the cold-start embed in
         # `_turn_admit` (turn_admission), the same text is a cache hit or joins that inference.
+        _user_range = user_text_span(
+            _user_prepend_offset,
+            user_typed_len,
+            quick_prompt=_is_quick_prompt,
+            prompt_expanded=prompt_expanded,
+        )
         if _context_is_new and not _provider_has_history and not is_slash:
             await _prewarm_startup_query(
                 state,
                 slot,
-                message,
+                recall_query(message, _user_range),
                 memory_store=memory_store,
                 execution_context=execution_context,
             )
@@ -1137,12 +1144,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # why the member identity travels separately.
                 member=slot.agent if slot.mode == "member" and slot.agent else "",
                 execution_context=execution_context,
-                user_text_range=user_text_span(
-                    _user_prepend_offset,
-                    user_typed_len,
-                    quick_prompt=_is_quick_prompt,
-                    prompt_expanded=prompt_expanded,
-                ),
+                user_text_range=_user_range,
                 user_span_out=_user_span,
                 needs_reinjection=_needs_reinjection,
                 steering_dirs=_folder_steering_dirs,

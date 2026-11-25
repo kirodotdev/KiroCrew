@@ -39,6 +39,7 @@ import { useSelectInstance } from '../hooks/useSelectInstance'
 import { isRelayHostOffline } from '../utils/relayHostOffline'
 import { useOutageFailure } from '../hooks/useOutageFailure'
 import ErrorNotice from './ErrorNotice'
+import { useLabelTip } from './InstantTip'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
 import {
@@ -748,16 +749,21 @@ function SwitcherMenu({
       : extraNew
         ? i18nT('components.instanceTabBar.switch_crew_new_team_crew')
         : i18nT('components.instanceTabBar.switch_crew')
+  // The caret and the chips sit in the desktop window's drag band, where a
+  // native `title` never paints, so their hint is drawn in the page. It gives
+  // way while the menu is open, which opens right under it.
+  const tip = useLabelTip(label)
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title={label}
+          {...tip.handlers}
           aria-label={label}
           className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted transition-colors hover:bg-bg-hover hover:text-text focus-ring"
         >
           <ChevronDown className="lucide-inline shrink-0" />
+          {open ? null : tip.bubble}
           {elsewhere > 0 ? (
             // Absolutely positioned so appearing cannot change the trigger's
             // width: the chip row is sized from the space this button leaves, so a
@@ -902,6 +908,9 @@ function SwitcherChip({
 }) {
   const isLocal = entry.id === null
   const hasBadge = entry.unread > 0
+  // On the button itself, not a wrapper: the pinned row measures and styles its
+  // chips as its direct children.
+  const tip = useLabelTip(entry.title)
   return (
     <button
       ref={buttonRef}
@@ -911,7 +920,7 @@ function SwitcherChip({
       aria-expanded={menuOpen}
       aria-current={active ? 'true' : undefined}
       aria-label={entry.title}
-      title={entry.title}
+      {...tip.handlers}
       className={
         className +
         ' ' +
@@ -925,6 +934,7 @@ function SwitcherChip({
           : 'border-border text-text hover:bg-bg-hover')
       }
     >
+      {menuOpen ? null : tip.bubble}
       {isLocal ? (
         <Home className="lucide-inline shrink-0" />
       ) : entry.connecting ? (
@@ -938,8 +948,8 @@ function SwitcherChip({
       {/* `tb-drop-crew-name` is the topbar identity group's collapse hook: inside
           `.tb-left` a container rung hides the name so the chip goes icon-only
           rather than pushing the trailing dropdown out of the clip box on a phone.
-          The name stays in `aria-label`/`title`, so the chip keeps its accessible
-          name either way.
+          The name stays in `aria-label` and the hint, so the chip keeps its
+          accessible name either way.
 
           On a shrinkable chip the row squeezes the CHIP down to its declared floor
           and this span absorbs the difference: `truncate`'s `overflow:hidden` gives
@@ -956,7 +966,7 @@ function SwitcherChip({
           The crew's name is capped too, at the box minus the separator and its two
           gaps, so a name longer than the whole box ellipsises inside it. Uncapped,
           a `shrink-0` name overflows the 140px box and paints under the unread
-          badge and past the chip's border; its full text is in `title`. */}
+          badge and past the chip's border; its full text is in the hint. */}
       {entry.pathParent ? (
         <span className="tb-drop-crew-name flex items-center gap-1 max-w-[140px] min-w-0">
           <span className="truncate min-w-0">{entry.pathParent}</span>

@@ -117,11 +117,25 @@ def test_a_child_call_card_of_an_engine_turn_names_the_asker() -> None:
     assert cards.approval_card_fields(turn, _event("run_command_toolu_1", "")) == {}
 
 
-def test_outside_an_engine_turn_no_card_gains_a_field() -> None:
+def test_a_kas_turn_without_the_preview_still_shows_the_task_and_the_asker() -> None:
+    """Every KAS chat names a sub-agent's dispatch ``Sub-agent: <name>`` and keeps its
+    task on the roster row, preview or not. A card that dropped them had nothing to
+    show under its title (Slack report, 0.13.1.2)."""
     turn = _turn(engine=False)
     cards.remember_dispatch_tasks(turn._engine_dispatch_tasks, _roster())
+    assert cards.approval_card_fields(turn, _event()) == {"subagent_task": PROMPT}
+    assert cards.approval_card_fields(turn, _event("run_command_toolu_1", "kirocrew-helper")) == {
+        "asked_by_subagent": "kirocrew-helper"
+    }
+
+
+def test_a_card_with_no_dispatch_row_and_no_asker_gains_no_field() -> None:
+    """Only KAS writes either input (``dispatch_call`` on a roster row, the asker on a
+    permission event), so every other harness's card is as it was."""
+    turn = _turn(engine=False)
+    cards.remember_dispatch_tasks(turn._engine_dispatch_tasks, [{"sessionId": "s", "prompt": "p"}])
     assert cards.approval_card_fields(turn, _event()) == {}
-    assert cards.approval_card_fields(turn, _event("run_command_toolu_1", "kirocrew-helper")) == {}
+    assert cards.approval_card_fields(turn, _event("run_command_toolu_1", "")) == {}
 
 
 def test_the_card_builder_redacts_and_bounds_the_task() -> None:
@@ -184,6 +198,43 @@ async def test_the_approval_card_a_turn_shows_carries_the_task_redacted_and_cut(
     task = card["meta"]["subagent_task"]
     assert token not in task
     assert len(task) == cards.APPROVAL_TASK_MAX
+
+
+@pytest.mark.asyncio
+async def test_a_kas_chat_without_the_preview_carries_the_task_on_its_card() -> None:
+    """Through a real dashboard turn with the ``kas_subagents`` preview off: the
+    dispatch's approval card still carries the task it was given."""
+    from engine_turn_helpers import registered, session
+    from turn_harness import APPROVED, TurnScript, run_turn
+
+    from kiro_crew.acp.types import (
+        EVENT_COMPLETE,
+        EVENT_PERMISSION_REQUEST,
+        EVENT_SUBAGENT_LIST,
+        STOP_REASON_END_TURN,
+        AcpEvent,
+    )
+
+    events = [
+        AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=_roster()),
+        AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id="req-1",
+            tool_call_id=CALL,
+            title="Sub-agent: kirocrew-helper",
+            tool_kind="other",
+        ),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+    ]
+
+    record = await run_turn(
+        TurnScript(
+            events=events, answers={"req-1": APPROVED}, provider=session(registered(mounted_for=""))
+        ),
+    )
+
+    [card] = record.approval_cards
+    assert card["meta"]["subagent_task"] == PROMPT
 
 
 def test_the_remembered_tasks_are_bounded() -> None:

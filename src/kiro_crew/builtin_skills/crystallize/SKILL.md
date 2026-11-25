@@ -1,7 +1,7 @@
 ---
 name: crystallize
 description: Capture the current session as a reusable skill — staged as a candidate by default, or live only when the user explicitly asks for a live/active skill.
-triggers: crystallize, create a skill, create a skill from this, save this as a skill, make this reusable, turn this into a skill, create a live skill, create an active skill
+triggers: crystallize, create a skill, save as skill, make this reusable, turn into skill, create live skill, create active skill
 ---
 
 # Crystallize a session into a skill

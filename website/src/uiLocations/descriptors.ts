@@ -80,6 +80,15 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['reminder', 'reminders', 'scheduled jobs', 'scheduled tasks', 'cron', 'cron jobs', 'recurring tasks'],
     'zh-CN': ['提醒', '定时任务', '计划任务', '定时提醒'],
   },
+  // The catch-up brief a bot or conductor chat posts on return; people name it by
+  // its headings (Goal / Needs you / Doing), not by the setting's label.
+  'setting:chat.since-you-left-briefs': {
+    en: [
+      'goal needs you doing message', 'catch-up message', 'recap when I come back', 'welcome back summary',
+      'turn off the recurring status message', 'stop the bot recap', 'recurring goal needs you doing check-ins message',
+    ],
+    'zh-CN': ['回来时的进度简报', '目标 需要你 正在做 消息', '关闭回来时的总结', '欢迎回来的总结'],
+  },
   'setting:display.mode': {
     en: ['dark mode', 'light mode', 'night mode', 'dark theme', 'light theme'],
     'zh-CN': ['深色模式', '暗色模式', '浅色模式', '夜间模式', '暗黑模式'],
@@ -123,6 +132,21 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
   'settings.tab.kiro-account': {
     en: ['account balance', 'credits', 'my account', 'usage'],
     'zh-CN': ['账户余额', '额度', '我的账户', '用量'],
+  },
+  // What people ask when their bots' sessions are missing from the Sessions
+  // sidebar; the label alone ("Show all bots in my Sessions") matches none of it.
+  'setting:chat.show-all-bots-in-my-sessions': {
+    en: [
+      "show my bots' sessions in my sessions list", 'show bot sessions in the sidebar', 'bot sessions missing from sidebar',
+      'bot sessions not showing', 'hide bot sessions', 'bot sessions in my sessions list',
+    ],
+    'zh-CN': ['在会话列表显示 bot 的会话', 'bot 的会话不显示', '侧边栏看不到 bot 的会话', '机器人的会话不显示', '隐藏 bot 的会话'],
+  },
+  // The split-view button in the chat header shows only while this is on, so a
+  // question about the missing button has to land here.
+  'setting:chat.split-view-session-grid': {
+    en: ['split view', 'split screen', 'side by side sessions', 'session grid', 'two chats at once', 'split view button'],
+    'zh-CN': ['分屏', '分屏视图', '并排显示会话', '会话网格', '同时看两个聊天'],
   },
   // The lasting way to silence a kind of notification (the keep-or-mute prompt
   // under a new channel's first notification is one-time).

@@ -388,12 +388,42 @@ browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
 Center region does not name the control plane that serves the profile (a `us-east-1`
-instance can hold an `eu-central-1` profile), so the call asks every host in
-`_CPS_ENDPOINTS`, the login region's own first, and keeps the first answer that lists
-a profile. A host that refuses or sends an unreadable answer is logged and skipped.
-The poll ends as `error`, with nothing stored, when every host refused or none lists
-a profile (`no available Kiro profiles`); a connection failure is not skipped and
-raises out of the poll, since this leg has no transport budget (above).
+instance can hold an `eu-central-1` profile), and one account can hold profiles on
+two, so every company sign-in asks every host in `_CPS_ENDPOINTS`, one after another,
+the login region's own first: a token from an EU sign-in reaches the `us-east-1` host
+too. While the relay viewer is on, its own host is asked before them, and a listing
+there with any profile is final. Each host's listing reads every page (`nextToken`,
+at most `_MAX_PAGES`), and the result is every profile read, deduped by ARN in
+first-seen order, so its first entry is the first profile of the first host that lists one.
+Before any profile has been read, a host that refuses or sends an unreadable answer is
+logged and skipped (any failure at the viewer host, a transport error included), and a
+connection failure at a prod host raises out of the poll, since this leg has no
+transport budget (above). Once a profile has been read, at that host or an earlier one,
+any failure only ends that host's listing (logged, type only for a transport error)
+and the profiles already read stay. The poll ends as `error`, with nothing stored,
+when every host refused or none lists a profile (`no available Kiro profiles`). A host
+that accepts the connection and never answers costs up to the 30 s total of
+`HTTP_TIMEOUT` (`auth/refresh.py`).
+
+With one profile the poll stores it and answers `authorized`. With several it stores
+nothing yet: it holds the approved token on the pending login (out of its repr) and
+answers `{"status": "choose_profile", "profiles": [{arn, name, region}],
+"selected": <arn>}`, token-free. `selected` is the profile the slot's stored sign-in
+carries when it is listed (an unreadable store reads as none), else the first. A poll
+of a waiting login never polls the redeemed device code again: without `profile_arn`
+it repeats the same answer; with a listed one it stores that profile through the same
+`_persist_and_finish` as any poll, so a cancel, a sign-out in this process (404) or in
+another (`signed_out_during_login`, 409) wins exactly as there; an ARN the login did
+not offer answers `400 unknown_profile`, stores nothing and leaves the login waiting.
+`profile_arn` on a login that is not waiting is ignored. The wait lasts
+`PROFILE_CHOICE_WAIT` (10 minutes) from approval, never past the held token's
+`expires_at`, and replaces the device code's deadline for that login, so the poll's
+expiry check and the stale-login sweep in `_register_pending` read it: a login nobody
+picks for is forgotten on its next poll or the next begin, with no timer. The dashboard
+shows the profiles as a step of the sign-in (`components/KasProfileChoice.tsx`);
+`kirocrew kas login` never prompts and polls once more with `selected`, then names the
+profile it used. On an LTS build, picking a profile other than the one a running
+gateway started with is an account change and gets the existing account-changed answer.
 
 **Edition sign-in profiles (`crew_client` preview, default off, off on LTS).** While the
 preview is on, `auth/login/endpoints.edition_idc_profiles` asks the edition's

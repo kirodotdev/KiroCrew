@@ -125,27 +125,37 @@ def _caller_refusal(exc: GuideError) -> web.Response:
 # ── who is asking, and for which template ──
 
 
-def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]:
+#: The ``crewmate_caller`` refusal: a Bot asks for its servers with its own tool.
+_CREWMATE_REFUSAL = "a Bot asks for its worker's servers with request_capabilities"
+#: The same refusal to a Bot's own chat on Codex, where that tool reaches the chat only
+#: as the kirocrew-core stub's follower (providers spec, "Codex dashboard session mount").
+_CODEX_BOT_CHAT_REFUSAL = (
+    f"{_CREWMATE_REFUSAL}; on Codex a Bot's chat has that tool only while Share is on for "
+    "kirocrew-core, so if this chat lacks it, ask the user to turn on Share for "
+    "kirocrew-core under Customize > MCP Servers > Sharing > Per-server sharing (the row "
+    "then reads direct, which is enough), restart Kiro Crew if the page says to, then "
+    "start a new chat with this Bot; its tools can take one message to appear"
+)
+
+
+def _caller_template(state: Any, slot_key: str, sk: str, backend: str) -> tuple[str, str, str]:
     """``(template, code, message)``: the template the caller runs on, or why there is none.
 
-    Blocking (reads the session's execution record).
+    *backend* is the caller's (:func:`_caller_backend`). Blocking (reads the
+    session's execution record).
     """
     from kiro_crew import mate_worker, members
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
     from kiro_crew.dashboard.chat_utils import slot_history_key
     from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
     from kiro_crew.execution_context import read_session_execution
 
     slot = state.get_slot(slot_key)
-    if (
-        is_crewmate_thread(slot)
-        or members.is_crewmate_worker_session(slot_key)
-        or members.is_crewmate_worker_session(sk)
-    ):
-        return (
-            "",
-            "crewmate_caller",
-            "a Bot asks for its worker's servers with request_capabilities",
-        )
+    worker = members.is_crewmate_worker_session(slot_key) or members.is_crewmate_worker_session(sk)
+    if worker or is_crewmate_thread(slot):
+        # A worker never mounts request_capabilities, so only the Bot's chat is told.
+        codex_chat = backend == ACP_BACKEND_CODEX and not worker
+        return "", "crewmate_caller", _CODEX_BOT_CHAT_REFUSAL if codex_chat else _CREWMATE_REFUSAL
     try:
         execution = read_session_execution(slot_history_key(slot))
     except Exception:  # noqa: BLE001 - an unreadable record names no template
@@ -159,11 +169,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
             "this session runs on no agent template a server can be added to",
         )
     if mate_worker.is_mate_owned_agent(template):
-        return (
-            "",
-            "crewmate_caller",
-            "a Bot asks for its worker's servers with request_capabilities",
-        )
+        return "", "crewmate_caller", _CREWMATE_REFUSAL
     return template, "", ""
 
 
@@ -186,9 +192,9 @@ async def _caller_backend(state: Any, sk: str) -> str:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         from kiro_crew.members import session_backend_pick
 
-        # A crewmate's own pin is checked first (H17); crewmate callers are refused
-        # before this, so a pin that cannot start reads as the default harness. A
-        # session created on a harness outranks the pin, as at allocation.
+        # A crewmate's own pin is checked first (H17); a pin that cannot start raises
+        # and reads as the default harness, so a crewmate caller keeps the plain
+        # refusal. A session created on a harness outranks the pin, as at allocation.
         pick = session_backend_pick(sk)
         backend = select_provider_backend(
             sk,
@@ -388,16 +394,17 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
         return _deny(400, "invalid_body", "target is only for source 'custom'")
     state = request.app["state"]
-    template, code, message = await asyncio.to_thread(_caller_template, state, slot_key, sk)
+    backend = await _caller_backend(state, sk)
+    template, code, message = await asyncio.to_thread(
+        _caller_template, state, slot_key, sk, backend
+    )
     if not template:
         _audit(sk, OP_REQUEST_SERVER, "denied", code)
         return _deny(403 if code == "crewmate_caller" else 409, code, message)
     mount_only = template in MCP_PAGE_TEMPLATES
     if mount_only:
         template = MOUNT_ONLY_TEMPLATE
-    support = additions.addition_support(
-        template, await _caller_backend(state, sk), mount_only=mount_only
-    )
+    support = additions.addition_support(template, backend, mount_only=mount_only)
     if not support.supported:
         _audit(sk, OP_REQUEST_SERVER, "denied", "unsupported")
         return _deny(409, "unsupported", support.reason)

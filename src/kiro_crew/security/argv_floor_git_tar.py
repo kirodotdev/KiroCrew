@@ -57,6 +57,18 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from . import shell_normalizer as _shell_normalizer
+from .argv_floor_git_tar_parallel import (  # noqa: F401
+    _GIT_TAR_WORD_CAP,
+    _PARALLEL_REPLACE_LONG,
+    _PARALLEL_REPLACE_UNSAFE,
+    _PLACEHOLDER_RE,
+    _SEPARATORS,
+    _git_lead_without_paths,
+    _parallel_replacements,
+    _parallel_runs,
+    _rewrites_any,
+    _unmasked,
+)
 from .argv_floor_self import _SELF_FLOOR_MACHINERY_RE, _SELF_FLOOR_QUOTE_JUNK_RE
 from .argv_floor_ssh import (
     _FUNCTION_BIND_CAP,
@@ -218,34 +230,6 @@ _GIT_NON_ESCAPE_SCHEMES: tuple[str, ...] = (
 # git ssh-transport scheme aliases normalized to ``ssh://`` so the ssh floor's
 # operand resolver reads their authority (it models ``ssh://`` but not these).
 _GIT_SSH_SCHEME_ALIASES: tuple[str, ...] = ("git+ssh://", "ssh+git://")
-_SEPARATORS = frozenset({":::", "::::", ":::+", "::::+"})  # GNU ``parallel`` input separators
-# A replacement string ``parallel`` puts each input in place of: ``{}``, ``{.}``, ``{1/}``...
-_PLACEHOLDER_RE = re.compile(r"\{\d*(?:\.|/|//|/\.|#|%)?\}")
-# GNU ``parallel`` options that name a custom replacement string (the default each
-# replaces is in the comment): ``-I`` / ``--replace`` / ``-i`` for ``{}``, and
-# ``--extensionreplace`` for ``{.}`` and so on.  Value by ``=`` or the next word.
-_PARALLEL_REPLACE_LONG = frozenset(
-    {
-        "--replace",  # {}
-        "--extensionreplace",  # {.}
-        "--er",
-        "--basenamereplace",  # {/}
-        "--bnr",
-        "--dirnamereplace",  # {//}
-        "--dnr",
-        "--basenameextensionreplace",  # {/.}
-        "--bner",
-        "--seqreplace",  # {#}
-        "--slotreplace",  # {%}
-    }
-)
-# A custom replacement string with one of these is not read literally (fail closed).
-_PARALLEL_REPLACE_UNSAFE = "$`*?["
-
-
-def _unmasked(token: str) -> str:
-    """*token* with the floor's quoted-separator sentinels restored, de-quoted."""
-    return _dequoted(_unmask_separators(token).strip())
 
 
 def _frame_commands(source: str) -> "tuple[list[str], bool]":
@@ -370,12 +354,11 @@ def _git_remote_word_dials_self(operand: str) -> bool:
 # the value decides.  No real ssh option bundle comes near it.
 _VALUE_WORD_SUFFIX_CAP = 256
 
-# The most words the floor reads from one command value or one git argv.  A
-# command past it is refused unread, the way ``MAX_SCANNABLE_COMMAND_CHARS``
-# refuses an oversized one: the gate runs on the event loop, and a 20 KiB
-# command can still hold about 10,000 one-letter words.  No real git or tar
-# argv, ssh command or ``ext::`` payload comes near it.
-_GIT_TAR_WORD_CAP = 4096
+# Typed replay shares a work budget across all frames, spellings and environments.
+# Ordinary git/tar lines have few case variants; 262,144 units leave room for them
+# while refusing combinatorial batches. Units count source characters and command
+# words multiplied by environment names and values, before copying or replaying.
+_GIT_TAR_REPLAY_WORK_CAP = 262_144
 
 # The most characters of carried commands one read reads, summed over every
 # command value it reads literally (``_value_names_literal_self``) and every
@@ -1665,6 +1648,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     # retain every launch environment without letting a later command rewrite
     # an earlier launch.
     inherited_by_payload: "dict[tuple[tuple[str, ...], ...], list[dict[str, list[str]]]]" = {}
+    inherited_signatures: dict[
+        tuple[tuple[str, ...], ...], set[tuple[tuple[str, tuple[str, ...]], ...]]
+    ] = {}
     try:
         payload_frames = _shell_payload_walk(text_lower)
     except Exception:
@@ -1674,14 +1660,30 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     # the ssh floor reads them: the typed line goes through the same walk, and a
     # frame or command that does not line up word for word with the lowered one
     # keeps the lowered reading, as does every read reached by recursion.
-    cased_frames: "list[str]" = []
+    cased_walk: "list[tuple[str, list[str]]]" = []
     if typed and raw is not None and raw == raw.lower():
-        cased_frames = [s for s, _ in payload_frames]
+        cased_walk = payload_frames
     elif typed and raw is not None:
         try:
-            cased_frames = [s for s, _ in _shell_payload_walk(_ssh_floor_source_text(raw))]
+            cased_walk = _shell_payload_walk(_ssh_floor_source_text(raw))
         except Exception:
             pass  # the lowered reading only
+    cased_frames = [s for s, _ in cased_walk]
+    # Fail closed when the two readings disagree. The floor reads the line in the
+    # case it was written and lowered and pairs the two passes frame for frame to
+    # read each option word in its written case (``sudo -H`` takes no value,
+    # ``sudo -h`` does). A quote mask or a here-document tag that closes a body in
+    # one pass but not the other can give the two passes a different number of
+    # frames; the floor then cannot line the passes up, and reading an
+    # option lowered would drop its written case. Rather than read on with the
+    # written-case words dropped, such a line is refused when the input carries a
+    # self-dial signal and a frame with no partner could run git or tar (the top
+    # frame, or one ``_frame_cannot_run_git_tar`` keeps), as the capped read is.
+    # Otherwise each frame with no partner keeps the lowered reading.
+    # The walk reads a payload once, so payloads that differ only in case
+    # (``bash -c 'x -H' && bash -c 'x -h'``) are one lowered frame but two written
+    # ones. Then each lowered frame is read once per written spelling whose source
+    # and words lower to the frame's own.
     signals: "list[bool]" = []
 
     def _signal() -> bool:
@@ -1690,7 +1692,42 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             signals.append(_carries_self_dial_signal())
         return signals[0]
 
-    for frame_index, (source, _tokens) in enumerate(payload_frames):
+    reads: "list[tuple[int, str, str | None]]" = [
+        (i, s, cased_frames[i] if len(cased_frames) == len(payload_frames) else None)
+        for i, (s, _) in enumerate(payload_frames)
+    ]
+    replay_left: int | None = None
+    if typed and raw is not None and raw != raw.lower() and len(cased_frames) != len(reads):
+        replay_left = _GIT_TAR_REPLAY_WORK_CAP
+        # The top frame pairs by index when its words agree once lowered: its
+        # source text can differ only through the pre-walk's lowercase-only
+        # rewrites (``VERSION=1; echo $VERSION`` keeps ``$VERSION`` written but
+        # reads ``1`` lowered), which the walk's words already resolve.
+        top_paired = bool(cased_walk) and tuple(w.lower() for w in cased_walk[0][1]) == tuple(
+            payload_frames[0][1]
+        )
+        spellings: "dict[tuple[str, tuple[str, ...]], list[str | None]]" = {}
+        for spelling, words in cased_walk[1:]:
+            lowered = (spelling.lower(), tuple(w.lower() for w in words))
+            if spelling not in spellings.setdefault(lowered, []):
+                spellings[lowered].append(spelling)
+        frame_keys = [(s, tuple(t)) for s, t in payload_frames]
+        lowered_keys = set(frame_keys[1:])
+        unpaired = [] if top_paired else [(0, frame_keys[0][0])]
+        unpaired += [(i, k[0]) for i, k in enumerate(frame_keys) if i and k not in spellings]
+        unpaired += [(1, k[0]) for k in spellings if k not in lowered_keys]
+        if any(not i or not _frame_cannot_run_git_tar(s) for i, s in unpaired) and _signal():
+            return True
+        spellings[frame_keys[0]] = [cased_walk[0][0] if top_paired else None]
+        if sum(len(spellings.get(k, [None])) for k in frame_keys) > replay_left:
+            return True
+        reads = [(i, k[0], c) for i, k in enumerate(frame_keys) for c in spellings.get(k, [None])]
+
+    for frame_index, source, cased_source in reads:
+        if replay_left is not None:
+            replay_left -= 1 + len(source) + len(cased_source or "")
+            if replay_left < 0:
+                return True
         if frame_index and _frame_cannot_run_git_tar(source):
             continue  # a payload frame with no git/tar word dials nothing
         # The walk also returns the rest of the line after each escaped backtick
@@ -1702,8 +1739,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             before = text_lower[: len(text_lower) - len(source)]
             if _ESCAPED_TICK_END_RE.search(before) and not _signal():
                 continue
+        # Snapshot the unique launch environments so later propagation cannot change this read.
         inherited_envs = (
-            [{}] if frame_index == 0 else inherited_by_payload.get(_payload_key(source), [{}])
+            [{}] if frame_index == 0 else list(inherited_by_payload.get(_payload_key(source), [{}]))
         )
         frame_env = _FrameEnvironment(_env_assignment, _is_env_name)
         raw_commands, unclosed = _view_commands(source)
@@ -1720,8 +1758,7 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         ):
             return True
         cased_commands: "list[list[str]]" = []
-        if len(cased_frames) == len(payload_frames):
-            cased_source = cased_frames[frame_index]
+        if cased_source is not None:
             cased_commands = (
                 raw_commands if cased_source == source else _view_commands(cased_source)[0]
             )
@@ -1757,6 +1794,15 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             # which case the shell honors is not known (``_FrameEnvironment``).
             envs: "list[dict[str, list[str]]]" = []
             for inherited in inherited_envs:
+                if replay_left is not None:
+                    for layer in (inherited, frame_env.exported, frame_env.pending):
+                        replay_left -= len(command) * (1 + len(layer))
+                        if replay_left < 0:
+                            return True
+                        for values in layer.values():
+                            replay_left -= len(command) * len(values)
+                            if replay_left < 0:
+                                return True
                 env = {name: list(values) for name, values in inherited.items()}
                 for layer in (frame_env.exported, frame_env.pending):
                     for name, values in layer.items():
@@ -1769,7 +1815,15 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             for payload in nested_payloads:
                 key = _payload_key(payload)
                 if key:
-                    inherited_by_payload.setdefault(key, []).extend(envs)
+                    retained = inherited_by_payload.setdefault(key, [])
+                    seen = inherited_signatures.setdefault(key, set())
+                    for env in envs:
+                        signature = tuple(
+                            (name, tuple(values)) for name, values in sorted(env.items())
+                        )
+                        if signature not in seen:
+                            seen.add(signature)
+                            retained.append(env)
             _observe_words(frame_env, command[len(prefix) :], prog=True)
             # ``script -c`` runs its value with this command's environment, so the
             # value is read led by it, as a re-entered command is.  An unknown launcher
@@ -1856,96 +1910,6 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             finally:
                 _GLOB_WORDS.reset(glob_frame)
     return False
-
-
-def _parallel_replacements(opts: "list[str]", argv: "list[str]") -> "tuple[list[str], bool, bool]":
-    """The custom replacement strings ``parallel``'s options in *opts* set (the words
-    between ``parallel`` and the launched verb), whether any option is unsafe, and
-    whether *argv* holds a perl/plus string (``{=``, ``{+``, ``{..}``).  Unsafe is a
-    missing, empty, or ``$``/backtick/glob value (not a literal word), or ``--rpl`` /
-    ``--plus`` (and the ``--rp`` / ``--plu`` abbreviations parallel accepts), whose
-    tags can be any word.  The option name is read case-insensitively (the floor
-    lowers its input); ``--replace``/``-i`` with no value keep ``{}``."""
-    extras: "list[str]" = []
-    unsafe = any(o.lower().split("=", 1)[0] in ("--rp", "--rpl", "--plu", "--plus") for o in opts)
-    braces = any(s in _unmasked(w) for w in argv for s in ("{=", "{+", "{..}", "{...}"))
-    i = 0
-    while i < len(opts):
-        tok = opts[i]
-        low = tok.lower()
-        value: "str | None" = None
-        optional = low in ("--replace", "-i")  # these keep ``{}`` with no value
-        if low in _PARALLEL_REPLACE_LONG or low == "-i":
-            if i + 1 < len(opts):
-                value = opts[i + 1]
-                i += 1
-            elif not optional:
-                unsafe = True
-        elif low.startswith("--") and low.split("=", 1)[0] in _PARALLEL_REPLACE_LONG:
-            value = tok.split("=", 1)[1]
-        elif low.startswith("-i"):  # glued ``-I@@`` / ``-iXX``
-            value = tok[2:]
-        else:
-            i += 1
-            continue
-        if value is not None:
-            v = _unmasked(value)
-            if not v or any(c in v for c in _PARALLEL_REPLACE_UNSAFE):
-                unsafe = True
-            else:
-                extras.append(v)
-        i += 1
-    return extras, unsafe, braces
-
-
-def _git_lead_without_paths(words: "list[str]", cased: "list[str] | None") -> "list[str]":
-    """*words* (``git`` up to its verb) without the value of ``-C``, ``--git-dir`` or
-    ``--work-tree``: ``parallel`` shell-quotes each input, so a replacement string
-    there names a directory, never a verb or config.  ``-C`` is told from ``-c`` by
-    its typed case (*cased*, aligned with *words*); without it, ``-c`` keeps its
-    value (fail closed)."""
-    kept: "list[str]" = []
-    i = 0
-    while i < len(words):
-        typed = cased[i] if cased and i < len(cased) else words[i]
-        if typed.startswith(("--git-dir=", "--work-tree=")):
-            kept.append(typed.split("=", 1)[0])
-        else:
-            kept.append(words[i])
-        i += 2 if typed in ("-C", "--git-dir", "--work-tree") and i + 2 < len(words) else 1
-    return kept
-
-
-def _rewrites_any(words: "list[str]", extras: "list[str]") -> bool:
-    """Whether a replacement string (``{}``... or one of *extras*) is in *words*."""
-    reps = [e.lower() for e in extras]
-    texts = [_unmasked(w).lower() for w in words]
-    return any(_PLACEHOLDER_RE.search(t) or any(e in t for e in reps) for t in texts)
-
-
-def _parallel_runs(
-    words: "list[str]", extras: "list[str] | None" = None
-) -> "list[list[str]] | None":
-    """The argv ``parallel`` runs for each input after the first separator in *words*,
-    each replacement string (``{}`` and the *extras* from ``-I``/``--replace``...) put
-    in by that input.  Case is folded so a direct caller's mixed case reads like the
-    floor's lowered input.  None (refuse unread) past ``_GIT_TAR_WORD_CAP`` words."""
-    reps = [e.lower() for e in (extras or [])]
-    words = [w.lower() for w in words]
-    cut = next((i for i, w in enumerate(words) if w in _SEPARATORS), len(words))
-    head, inputs = words[:cut], dict.fromkeys(w for w in words[cut:] if w not in _SEPARATORS)
-    if not any(_PLACEHOLDER_RE.search(w) or any(e in w for e in reps) for w in head):
-        return []
-    if len(head) * len(inputs) > _GIT_TAR_WORD_CAP:
-        return None
-
-    def _sub(word: str, arg: str) -> str:
-        word = _PLACEHOLDER_RE.sub(lambda _: arg, word)
-        for extra in reps:
-            word = word.replace(extra, arg)
-        return word
-
-    return [[_sub(w, arg) for w in head] for arg in inputs]
 
 
 #: Text that ends in an escaped backtick: an odd run of backslashes, then ```.

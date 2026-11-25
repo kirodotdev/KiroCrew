@@ -431,6 +431,32 @@ describe('InstanceTabBar', () => {
     expect(store.getState().instances.activeId).toBe('cd-1')
   })
 
+  it("draws the chips' and the caret's hints in the page, since the desktop drag band never paints a title", async () => {
+    setCrewPins(['cd-1'])
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    const chip = await screen.findByRole('button', { name: /Cloud One/i })
+    const caret = screen.getByRole('button', { name: /Switch crew/i })
+    for (const control of [chip, caret]) {
+      expect(control).not.toHaveAttribute('title')
+      act(() => { control.focus() })
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(control.getAttribute('aria-label')!)
+      act(() => { control.blur() })
+      await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+    }
+    // The menu opens right under the caret, so the caret's hint gives way to it.
+    await u.hover(caret)
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument()
+    await u.click(caret)
+    await screen.findByRole('menuitemradio', { name: /Local/i })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
   it('closes a non-modal menu on a second click of the active chip instead of reopening it', async () => {
     // A touch device gets a non-modal menu, so a mouse press reaches the chip.
     const media = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({

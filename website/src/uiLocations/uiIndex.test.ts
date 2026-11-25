@@ -35,7 +35,7 @@ import AddJobSplitButton from '../components/AddJobSplitButton'
 import { Glass } from '../components/Glass'
 import HeaderControl from '../pages/members/HeaderControl'
 import { MemoryModeChip } from '../components/MemoryModeChip'
-import { Btn, IconButton, SendBtn } from '../components/ui'
+import { Btn, IconButton, SendBtn, Toggle } from '../components/ui'
 import Clickable from '../components/Clickable'
 import SegmentedControl from '../components/SegmentedControl'
 import SimpleSelect from '../components/SimpleSelect'
@@ -301,7 +301,9 @@ const FORWARDING_PROVEN = [
   'TipClickable',
   // Proven in src/test/sidePanelLeadingTab.test.tsx: a `segments` entry's
   // marker lands, registered, on that leading tab's chip and on no other.
-  'SidePanel',
+  'SidePanel',  // Proven below: Toggle puts the marker, registered, on its role="switch"
+  // button, beside the auto tier's own data-ui-auto.
+  'Toggle',
 ]
 
 describe('a marker must register the element it sits on', () => {
@@ -345,6 +347,20 @@ describe('the custom components real markers sit on forward them', () => {
     ))
     expect(r.container.querySelector(`button[${UI_LOCATION_ATTR}="artifacts.new"]`)?.textContent).toBe('New')
     expect(r.container.querySelector(`button[${UI_LOCATION_ATTR}="schedule.create-first"]`)?.textContent).toBe('Create')
+    expect(unregisteredMarkers()).toEqual([])
+    r.unmount()
+  })
+
+  it('Toggle puts the marker on its switch, with or without an auto-tier stamp', () => {
+    const h = React.createElement
+    const r = render(h(React.Fragment, null,
+      h(Toggle, { checked: false, onChange: () => {}, label: 'Show Ada in my Sessions', ...uiLocation('members.bot-sessions-switch') }),
+      h(Toggle, { checked: true, onChange: () => {}, label: 'Other', 'data-ui-auto': 'auto:fixture' }),
+    ))
+    const marked = r.container.querySelectorAll(`[${UI_LOCATION_ATTR}]`)
+    expect(marked).toHaveLength(1)
+    expect(marked[0].getAttribute('role')).toBe('switch')
+    expect(marked[0].getAttribute('aria-label')).toBe('Show Ada in my Sessions')
     expect(unregisteredMarkers()).toEqual([])
     r.unmount()
   })

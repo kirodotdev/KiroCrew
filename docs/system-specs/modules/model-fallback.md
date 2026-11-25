@@ -55,7 +55,10 @@ spent on a transient error with no qualifying prior activity. Each surface
 tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
 requires no result text or tool activity, `dashboard/chat_runner.py` requires
 no emitted or thought activity, and `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry`
-requires no activity.
+requires no activity. On all three, Kiro's per-user rate limit
+(`AcpError.user_rate_limit`) never starts the walk: every model spends the same
+allowance, so a swap cannot clear it and the error surfaces as its own, with no
+line saying the model was throttled.
 
 After activity, the dashboard and the sub-agent first spend their one continue
 on the same model. When the error after that continue is a capacity or throttle

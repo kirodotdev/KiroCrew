@@ -230,6 +230,10 @@ cron_add(
 
 The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral sessions.
 
+### A Reminder Only (`notify_only`)
+
+A job's `message` is a prompt: at each run an agent reads it and acts on it, with its tools. For "remind me to X", set `notify_only: true`. Each run then delivers the message to you as written (the dashboard bell, plus the job's channel or Slack) and starts no agent turn, so no tool runs. It cannot be combined with `command` or `script`.
+
 ### A New Chat per Run (`new_chat_per_run`)
 
 A stateless job has no chat tab: its result reaches the bell, Slack and the job's History, but there is no conversation to reply in. Reopened from History, such a run's transcript is read-only: it can be read but not replied to, so start a new chat to follow up on it. Set `new_chat_per_run: true` to give every run its own tab, `Cron: <name> | <run time>`, on that run's own fresh session. Open it and reply like any other chat, for example to approve a draft the run wrote; the next run starts clean in a tab of its own.

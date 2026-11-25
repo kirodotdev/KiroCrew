@@ -130,12 +130,64 @@ def test_unreadable_credentials_flag_the_binding(monkeypatch, capsys):
 
 
 def test_readable_credentials_do_not_flag_the_binding(monkeypatch, capsys):
+    _confined(monkeypatch, False)
     cfg = _cfg("http://localhost:8080")
     cfg.load_credentials = lambda: {}
 
     binding = services._doctor_configuration(cfg, [])
 
     assert binding.creds_unreadable is False
+
+
+def _confined_weixin_report(monkeypatch, capsys, read: dict[str, str]):
+    """Doctor inside a sandbox whose credentials read returns *read*, for an enabled
+    WeChat channel missing its token: (output, binding, issues)."""
+    from kiro_crew import channels as channel_pkg
+    from kiro_crew.doctor_checks import channels
+
+    _confined(monkeypatch, True)
+    cfg = _cfg("http://localhost:8080")
+    cfg.load_credentials = lambda: dict(read)
+    issues: list[str] = []
+
+    binding = services._doctor_configuration(cfg, issues)
+    row = SimpleNamespace(
+        channel_type="weixin",
+        enabled=True,
+        ready=False,
+        missing_credentials=("WEIXIN_TOKEN",),
+        missing_config=(),
+    )
+    monkeypatch.setattr(channel_pkg, "channel_readiness", lambda _cfg, _creds: [row])
+    channels._doctor_other_channels(
+        SimpleNamespace(), binding.creds, issues, creds_unreadable=binding.creds_unreadable
+    )
+    return capsys.readouterr().out, binding, issues
+
+
+def test_a_readable_credentials_file_inside_a_sandbox_is_not_evidence(monkeypatch, capsys):
+    # The agent sandbox masks the credentials file with an EMPTY stand-in, so the
+    # read succeeds and finds nothing although the real file holds the tokens. An
+    # enabled channel must then read "unknown", never "enabled but missing".
+    out, binding, issues = _confined_weixin_report(monkeypatch, capsys, {})
+
+    assert "credentials: ⏭  skipped" in out
+    assert "is not readable from this shell" in out
+    assert "enabled but missing" not in out
+    assert "weixin:      credentials ⏭  unknown" in out
+    assert binding.creds_unreadable is True
+    assert issues == []
+
+
+def test_a_credentials_file_with_keys_inside_a_sandbox_is_still_evidence(monkeypatch, capsys):
+    # A sandbox that does not mask the file (the agent sandbox switched off, say)
+    # reads the real one: a token missing from it is missing.
+    out, binding, issues = _confined_weixin_report(monkeypatch, capsys, {"HTTPS_PROXY": "x"})
+
+    assert "skipped" not in out
+    assert "weixin:      ❌ enabled but missing WEIXIN_TOKEN" in out
+    assert binding.creds_unreadable is False
+    assert issues == ["weixin: missing WEIXIN_TOKEN"]
 
 
 def _remote_bind(monkeypatch):
@@ -159,6 +211,7 @@ def test_remote_bind_with_unreadable_credentials_adds_no_slack_issue(monkeypatch
 
 
 def test_remote_bind_with_readable_credentials_still_flags_missing_slack(monkeypatch, capsys):
+    _confined(monkeypatch, False)
     _remote_bind(monkeypatch)
     cfg = _cfg("http://0.0.0.0:8080")
     cfg.load_credentials = lambda: {}

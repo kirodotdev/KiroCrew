@@ -3,6 +3,11 @@ const { createUpdateArm } = require("./update-arm");
 const { createRelaunch, runArmedApply } = require("./armed-apply");
 const { isGatewayStillRunning: gatewayStillRunning } = require("../../gateway-stop");
 
+// A checkCommand version on its own (`1.2.3`, `1.2.3.4`, `1.2.3-4`,
+// `1.2.3-insider.5`). From a longer line (`kirocrew 1.2.3.4`) semver keeps
+// `1.2.3` and drops the build, so that line is not ranked.
+const BARE_VERSION = /^v?\d+\.\d+\.\d+(?:\.\d+|-[0-9A-Za-z.]+)?$/;
+
 /**
  * The marker-driven update lane: an EXTERNALLY-MANAGED marker that carries an
  * `updateCommand` (and a required `checkCommand`) owns this install's
@@ -473,6 +478,21 @@ function createManagedLane({
       // forever. Fail the check rather than report "latest".
       log.error("[update] managed check: exit 0 but printed no version");
       checkFailed(new Error("managed check command produced no version"));
+      return;
+    }
+    // A command that prints the version already installed (a package manager's
+    // "latest" query rather than "newer than mine") offers nothing: offering it
+    // would show "Update available" for the build the person is running. An
+    // unrankable pair or a line that is not a bare version stays offered, so a
+    // version we cannot compare is not hidden.
+    let runningVersion = "";
+    try { runningVersion = String(app.getVersion() || ""); } catch { runningVersion = ""; }
+    if (BARE_VERSION.test(version) && isNewerVersion(version, runningVersion) === false) {
+      log.info(`[update] managed check: ${version} is not newer than running ${runningVersion} — up to date`);
+      disarmManagedQuit();
+      emit("not-available");
+      // The gateway may still hold an arm for a version this app has passed.
+      syncArmFromGateway().catch(() => {});
       return;
     }
     foundVersion = version;

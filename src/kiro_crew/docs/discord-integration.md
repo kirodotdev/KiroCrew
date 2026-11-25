@@ -208,7 +208,7 @@ before the `applications.commands` scope is installed.
 | `!new` / `!start` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
 | `!model` / `!models` | Pick the model from a button list of what your account can use |
-| `!agent [name]` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back |
+| `!agent [name]` / `!agents` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back. A Bot is not an agent here: use `!bot` |
 | `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
 | `!bot [name]` / `!bots` | In a DM, talk to one of your Bots here, in its own thread (owner only) |
@@ -261,8 +261,8 @@ to continue that thread here. `!bot <name>` connects the Bot it names at once
 the same owner-only rule and the same `!unlink` to leave: your messages go to the
 Bot's own thread, and its replies there, including the ones that follow a
 worker's report, come back to this DM. Because the Bot runs in its own thread, it
-keeps its worker. A Bot whose thread is not open is not listed: open it once from
-the Bots page. Cards, guides and the Bot's changes to its own name or face still
+keeps its worker. A Bot whose thread is not open is not listed, and the list says
+so: open it once from the Bots page and send it a message. Cards, guides and the Bot's changes to its own name or face still
 need a message you send in the dashboard. A reply the Bot was already writing
 when you connected is not sent here, because that turn read its work under the
 thread's earlier, unmirrored state; the next reply is.

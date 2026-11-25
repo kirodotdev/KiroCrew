@@ -306,7 +306,9 @@ ready. The first message after you re-open a saved chat is sent the same way.
 Neither message waits for the servers you added, so one that is slow to start
 may still be connecting while the agent works on that message. (The few servers
 Kiro Crew attaches to the session itself, a Connection's bridge for example, get
-a wait of at most 5 seconds.)
+a wait of at most 5 seconds.) On the Codex harness a new chat's first message
+waits for all of the chat's servers, yours included, for up to 30 seconds:
+Codex offers a message only the tools of the servers that are ready when it starts.
 
 The agent is told which of the chat's servers it cannot use and why: still
 starting, failed to start, waiting for a sign-in, switched off, or left out by
@@ -316,7 +318,9 @@ a server settles in one of the other states. When your request needs a server
 that is still starting, the agent says so in a sentence, waits for that server
 with the `mcp_server_wait` tool (up to 90 seconds in one call), then uses its
 tool and finishes the request in the same reply. If the server is still not
-ready after that, the agent says so and you can ask again a moment later. For a
+ready after that, the agent says so and you can ask again a moment later. (On
+the Codex harness a server that finishes starting during a message is offered
+from your next message, not in that reply.) For a
 server in any other state it does not wait: it tells you what is true of the
 server and does what it can without it. For one that failed to start, it tells
 you that **Test** on that server's row of the **MCP Servers** page shows its error

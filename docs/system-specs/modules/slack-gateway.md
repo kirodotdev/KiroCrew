@@ -799,7 +799,7 @@ take the hold in `cli.main` after argument parsing.
   user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
-- **The census names what it counts, for the host only.** `_in_flight_work_census`
+- **The census names what it counts, only to callers that already list that work.** `_in_flight_work_census`
   is the one definition of what is counted: it returns a `work_holders.Holder`
   (`kind`, `name`, `since_secs`, `count`) for every item, and
   `_in_flight_work_counts` is the sum over the holders of one walk.
@@ -817,7 +817,7 @@ take the hold in `cli.main` after argument parsing.
   `channel_handler`, `queued`, `approval`, `callback`, `refusal_write`,
   `update_build`, `task_runner`, or `unreadable` for a source that raised (its
   `name` says which source and nothing else). Only two kinds of work are
-  named, each by an identifier a list route already shows the one reader of
+  named, each by an identifier a list route already shows both readers of
   names: a dashboard slot's turn, queue or approval by its slot key (`key`,
   `running`, `queue_depth` and `pending_approval` in `GET /api/chat/slots`),
   and a script or command cron by its job name and age (`name`, `is_running`
@@ -826,11 +826,11 @@ take the hold in `cli.main` after argument parsing.
   schedule list leaves out (a goal check-in, the stale-wake job). A name is
   never message text, a session title or a path.
   - **Who may read a name.** A name identifies another session's or job's work,
-    which the slot-visibility filter withholds from an app token, so names have
-    ONE reader: `Quiescence.named_holders()`, called only by the host-only
-    `POST /api/restart/when-idle` (the local secret's `internal_auth` mark and a
-    loopback peer), whose busy answer carries the first five as `holders` and
-    the rest as the number `holders_more`. The secret proves the call came from
+    which the slot-visibility filter withholds from an app token, so names are
+    read only through `Quiescence.named_holders()`, by two callers, each of whose
+    answers carries the first five as `holders` and the rest as the number
+    `holders_more`. One is the host-only `POST /api/restart/when-idle` (the local
+    secret's `internal_auth` mark and a loopback peer), on its busy answer. The secret proves the call came from
     inside, not who made it, so the handler adds them only for a caller that
     declares no session and carries no app claim
     (`restart_gate._may_read_names`): the CLI on the host. A caller acting for a
@@ -838,11 +838,16 @@ take the hold in `cli.main` after argument parsing.
     tool call, with `X-Session-Key`) gets the counts alone. This is the caller
     `GET /api/crons` and `GET /api/chat/slots` already answer in full; a
     process that holds the raw secret and omits its session key is that caller
-    on every internal route, and this one tells it nothing those two do not. Everything a dashboard client or an
-    app can receive carries the counts alone: `Quiescence.payload()`,
-    `RestartAdmission.detail()` (the `update_progress` error step, a tier-0
-    event delivered to every app token, and the "Restart refused" log line) and
-    `POST /api/restart`'s `409 work_in_flight`.
+    on every internal route, and this one tells it nothing those two do not. The
+    other is `POST /api/restart`'s `409 work_in_flight`, which the owner gate
+    (`require_owner_dashboard_request`) answers only for the machine owner or a
+    Shared Crew teammate, both of whom `GET /api/chat/slots?crew=all` and
+    `GET /api/crons` already answer in full; an app token, an internal-secret
+    caller and a non-owner dashboard session are refused before the census is
+    read. Everything else a dashboard client or an app can receive carries the
+    counts alone: `Quiescence.payload()` and `RestartAdmission.detail()` (the
+    `update_progress` error step, a tier-0 event delivered to every app token,
+    and the "Restart refused" log line).
     `kirocrew restart --when-idle` prints the names after the counts only when
     its stdout is a terminal; a captured run (Remote Crew over SSH or SSM, whose
     output tail the calling dashboard relays) prints the counts alone.
@@ -933,9 +938,9 @@ take the hold in `cli.main` after argument parsing.
   (`KIROCREW_DESKTOP_GATEWAY`) skips the boot apply, because the desktop owns it.
   `POST /api/restart` is the user restart that brings an armed update in: the
   boot after its re-exec applies it. It answers `409 work_in_flight` with the counts
-  for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
+  and the named holders for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
   `website/src/api/client/updates.ts`: `restartGateway` posts `force: false`, shows
-  the counts (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
+  the counts and the named holders (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
   work_in_flight`, and sends `force: true` only after "Restart anyway"; a "no"
   rejects with a `WorkConfirmDeclined`, which every caller treats as a quiet
   cancel (no error shown). `applyUpdate` posts `{when: "next-start"}` and never
@@ -1333,8 +1338,9 @@ and `message_deleted` cannot disagree.
     session-directive marker (`QuotedDirectiveFilter`, its held line handed on before a
     tool call, an approval prompt and the turn's end), then accumulate response text;
     the turn's first text is held while it could still be the backend's alternation
-    placeholder and dropped when it is ([messaging](messaging.md), "Redaction and
-    protocol framing")
+    placeholder and dropped when it is, and each prompt, a timed-out call's
+    continuation included, streams through `alternation_echo.drop_echo`
+    ([messaging](messaging.md), "Redaction and protocol framing")
 13. On `thinking_chunk` event: accumulate thinking separately
 14. On `tool_call` event: show its task card and set the thread status to "is using <tool>"
 15. On `permission_request` event: auto-approve or post Block Kit buttons
@@ -1445,7 +1451,7 @@ Each channel can have its own activation mode controlling when the bot responds:
 **Owner commands** (`!channel`):
 - `!channel` — show current channel activation mode and agent
 - `!channel always|mention|observe|off` — set activation mode, persisted to `config.json`
-- `!channel agent <name>` — set per-channel agent override
+- `!channel agent <name>` — set per-channel agent override. The name is a kiro agent or a Crew Bot (a `config.agents` key, matched like `!bot`); an exact Bot key wins, and an unknown name lists both
 - `!channel agent off` — remove per-channel agent override
 
 **Implementation**: `events.py:_route_message()` checks `orch._cfg.channel_config(channel)` before dispatching. The `@mention` prefix is stripped from text before sending to the LLM. `_persist_channel_config()` (`slack/handler_runtime/inbound.py`, re-exported by `slack/handler.py`) writes to `config.json` atomically via tmp+rename.
@@ -2856,7 +2862,12 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   a selector, `url()` (https: only), `@charset` or a font / grid-template-areas property, never where it can show as text
   (`content`, `quotes`, list markers, custom properties), and every string still passes the credential screen; Block Kit views are display-only (there is no canvas `set_view`)
   (an allowlist of section / header / divider / context / rich_text / markdown
-  blocks, no accessories or `action_id` elements, no remote media); the diff tab stays the workspace's. `conversations.canvases.create`
+  blocks, no accessories or `action_id` elements, no remote media); `set_view` type `diff`
+  takes no other argument and is refused in a Conductor thread (no Code tab there): the Code tab keeps one writer, so the call runs the channel's own
+  refresh pass now (`CodeTab.show_code_tab`, serialized by `schedule_refresh`, every gate a
+  refresh asks) and says whether the tab holds a diff; when it does not, the agent is told to
+  send the diff as an html view. The wait is bounded (`SHOW_WAIT_SECS`, under the MCP call's
+  timeout): a pass still reading PRs or CI goes on alone and the agent is told to send the html view. `conversations.canvases.create`
   answered `channel_canvas_already_exists` is never retried and never adopted (a
   canvas this gateway did not create may be a shared document).
 - **Plan canvas read-back (`code_channel_read_plan_canvas`).** Takes no argument (a

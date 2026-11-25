@@ -461,6 +461,21 @@ describe('the Review dialog', () => {
     await waitFor(() => expect(document.activeElement).toBe(button), { timeout: 5000 })
   })
 
+  it('says the approval is under way while it is in flight', async () => {
+    mockTwo()
+    let finish: (v: unknown) => void = () => {}
+    vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((() => new Promise(r => { finish = r })) as never)
+    mount()
+    const { dialog } = await openDialog()
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    const busy = await within(block(dialog, 'search-mcp')).findByRole('button', { name: M('review_sharing') }, { timeout: 5000 })
+    expect((busy as HTMLButtonElement).disabled).toBe(true)
+    // The other block is still answerable.
+    expect((within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('review_skip') }) as HTMLButtonElement).disabled).toBe(false)
+    finish({ ok: true, name: 'search-mcp', stub: true })
+    await waitFor(() => expect(within(block(dialog, 'search-mcp')).getByRole('status').textContent).toBe(M('review_approved')), { timeout: 5000 })
+  })
+
   it('shows the refusal in the block when the launch changed underneath, and approves nothing else', async () => {
     mockTwo()
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockRejectedValue(

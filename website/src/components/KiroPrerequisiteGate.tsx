@@ -788,10 +788,13 @@ function KiroInstallCommands({ platform, unzipMissing }: { platform: string; unz
 /**
  * "Use other coding agents": a collapsed alternative to Kiro CLI, modelled on
  * Settings → Agent Harness (same probe, same config key, same install commands).
- * Opened by default only when the config names a non-Kiro agent: then this
- * section, not the Kiro cards (which set up Kiro CLI and the KAS default), is
- * what stands between the user and the app. Choosing an agent writes the config,
- * and the gate opens the dashboard once that agent is usable. Nothing installs here.
+ * Opened by default when the config names a non-Kiro agent: then this section,
+ * not the Kiro cards (which set up Kiro CLI and the KAS default), is what stands
+ * between the user and the app. Also opened when the configured Kiro Agent
+ * cannot start because the host has no sandbox, unless the pod hint already
+ * says so: its notice here is then the only text saying why, and installing
+ * Kiro CLI gives the host no sandbox. Choosing an agent writes the config, and
+ * the gate opens the dashboard once that agent is usable. Nothing installs here.
  */
 function OtherCodingAgents({
   status,
@@ -811,7 +814,14 @@ function OtherCodingAgents({
   const qc = useQueryClient()
   const others = otherCodingAgents(backends)
   const configuredOther = configured !== KIRO_BACKEND ? configured : ''
-  const [open, setOpen] = useState(() => !KIRO_HARNESS_BACKENDS.includes(configured))
+  const configuredProbe = backends.find(b => b.id === configuredOther)
+  // Taken once at mount (the gate holds until the backends probe answers); a
+  // later reason change or probe retry does not reopen it.
+  const [open, setOpen] = useState(() => !KIRO_HARNESS_BACKENDS.includes(configured)
+    || (configured === ACP_BACKEND_KAS && !!configuredProbe
+      && !configuredBackendCanStart(status, configuredProbe)
+      && notReadyReason(status, configuredProbe) === 'sandbox_blocked'
+      && !workloadPodNoSandbox(status, configuredProbe.id)))
   const [picked, setPicked] = useState<string | null>(null)
   // Resolved every render, like Settings → Agent Harness's highlight: the list arrives
   // after first paint, so seeding state would pin the choice to a guess.
@@ -822,7 +832,6 @@ function OtherCodingAgents({
         ? configuredOther
         : (others.find(b => configuredBackendCanStart(status, b))?.id ?? others[0]?.id ?? '')
   const shown = others.find(b => b.id === shownId)
-  const configuredProbe = backends.find(b => b.id === configuredOther)
 
   const switchMut = useMutation({
     mutationFn: (value: string) => api.patchConfig(ACP_BACKEND_CONFIG_KEY, value),

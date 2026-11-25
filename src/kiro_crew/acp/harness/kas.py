@@ -39,7 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
-from kiro_crew.acp import kas_approve_for_me, kas_build_default
+from kiro_crew.acp import kas_approve_for_me, kas_build_default, kas_client_secret
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -63,6 +63,7 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
+from kiro_crew.acp.kas_member_goal_tools import with_member_goal_tools
 from kiro_crew.acp.kas_native_batch import name_left_out, native_batch
 from kiro_crew.acp.kas_parent_grants import founding_grants_spec, limit_to_founders
 from kiro_crew.acp.kas_parent_limits import (
@@ -1351,6 +1352,9 @@ class KasHarness(MembershipHarness):
                 )
             return SessionExtras(vault_identity=vault_identity)
 
+        # Filled by the projection of the session's own agent, read after the build.
+        prereg_clients: dict[str, str] = {}
+
         def _build() -> tuple[
             list[dict[str, Any]],
             Any,
@@ -1457,6 +1461,8 @@ class KasHarness(MembershipHarness):
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir
             spec = with_kas_steering(spec, steering_dir)
+            # A Bot's own chat on an agent of the user's: goals are set there.
+            spec = with_member_goal_tools(spec, agent, session_key)
             spec_notices.extend(
                 n for n in (inheritance_off_notice(steering_dir), use_aws_notice(agent, spec)) if n
             )
@@ -1573,6 +1579,7 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 governance_app=governance_app,
                 scope_muted=scope_muted,
+                prereg_out=prereg_clients,
             )
             if agent == MATE_WORKER_AGENT:
                 # A Bot's worker: the `deniedCommands` entries nobody can judge
@@ -1742,6 +1749,7 @@ class KasHarness(MembershipHarness):
                 withdrawn_stub_names=withdrawn_stubs,
                 withheld_credentials_notice=withheld_notice,
                 shipped_helper_parent=helper_parent,
+                mcp_prereg_clients=kas_client_secret.declared_clients(built, agent, prereg_clients),
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

@@ -70,6 +70,7 @@ import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { useHeldWindowWarm } from './chat/useHeldWindowWarm'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -632,21 +633,33 @@ export default function ChatPane({
     if (pagesActiveSlot) loadOlder()
     else loadOlderPane()
   }, [crewmateQuietUnproven, canWalk, walkLoading, walkFailed, pagesActiveSlot, loadOlder, loadOlderPane])
-  const { data: slotDetail, isPending: slotDetailPending, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
-    queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
-    queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
-    staleTime: Infinity,
-  })
   // The hydrate is refused while this pane's slot is the active one, so it runs
   // again when the slot stops being active: a split pane left on an empty or
   // still-loading active slot has no page marker for the hold below to read,
   // and this re-run is what places its page and flags it.
   const paneIsActive = slotKey === activeSlot
+  // A held window is re-read by a warm instead of this pane's hydrate, which
+  // would discard its page (see useHeldWindowWarm).
+  const heldWarm = useHeldWindowWarm(slotKey, paneIsActive)
+  const { data: slotDetail, isLoading: slotDetailLoading, isError: slotDetailQueryFailed, refetch: refetchSlotDetailQuery } = useQuery({
+    queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
+    queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
+    staleTime: Infinity,
+    enabled: !heldWarm.warm,
+  })
+  // On the warm path the warm stands in for the hydrate read: its failure shows
+  // the same notice, and its Retry runs the warm again.
+  const slotDetailFailed = heldWarm.warm ? heldWarm.failed : slotDetailQueryFailed
+  const refetchSlotDetail = heldWarm.warm ? heldWarm.retry : refetchSlotDetailQuery
+  // ...and its landed page sets the hydrated latch the unread landing waits on.
+  useEffect(() => {
+    if (heldWarm.settled) setHydratedSlot(slotKey)
+  }, [heldWarm.settled, slotKey])
   // The transcript skeleton, on the same terms as the Sessions chat's slot
   // load: only while this slot's first page is in flight and nothing of it is
   // in the store yet. A cached revisit has its page at once, so it never shows
   // on a later refresh; a host that cannot vouch for history never sees it.
-  const firstPageSkeleton = historyKnown && slotDetailPending && allMessages.length === 0
+  const firstPageSkeleton = historyKnown && slotDetailLoading && allMessages.length === 0
   useEffect(() => {
     if (slotDetail?.messages) {
       dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
@@ -1012,6 +1025,7 @@ export default function ChatPane({
                 fullText={pinnedState.full}
                 images={pinnedState.images}
                 bodyBeyondPreview={pinnedState.bodyBeyondPreview}
+                meta={pinnedState.meta}
                 pushUp={pinnedState.push}
                 liveH={pinnedState.liveH}
                 maxH={pinnedState.maxH}

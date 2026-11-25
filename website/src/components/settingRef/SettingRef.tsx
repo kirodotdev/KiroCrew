@@ -15,7 +15,7 @@ import { resolveSettingRef } from './resolveSettingRef'
 import type { SchemaEntry } from './resolveSettingRef'
 import type { SettingEntry } from '../commandPalette/settingsTypes'
 import { useConfigSchema } from './useConfigSchema'
-import { LockedByPolicyBadge, schemaLockedByPolicy } from './LockedByPolicyBadge'
+import { LockedByPolicyBadge, lockedNote, schemaLockedByPolicy } from './LockedByPolicyBadge'
 import { i18nT } from '../../i18n/t'
 import { toPathSegment, SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS } from '../subNavParams'
 import { settingsPath } from '../settingsPath'
@@ -139,8 +139,10 @@ export function SettingRef({ configKey, kind = 'config', schemaIndex: schemaInde
   // Config key mode: resolve against registry + schema
   const resolution = resolveSettingRef(configKey, schemaIndex)
   // An LTS build ignores this local value; the badge says so beside the chip.
+  // Every such path is an `UNKEYED_LOCKS` control no policy term reaches, so
+  // the lock is the edition's.
   const locked = schemaLockedByPolicy(configKey, schemaIndex)
-  const withLock = (chip: ReactElement) => (locked ? <>{chip} <LockedByPolicyBadge /></> : chip)
+  const withLock = (chip: ReactElement) => (locked ? <>{chip} <LockedByPolicyBadge edition /></> : chip)
 
   if (resolution.mode === 'ui') {
     const route = buildSettingsRoute(resolution.entry, configKey)
@@ -183,7 +185,7 @@ export function SettingRef({ configKey, kind = 'config', schemaIndex: schemaInde
         <PopoverContent className="w-96 max-w-[90vw] p-3">
           {locked ? (
             // A set command would only store a value this build ignores.
-            <p className="text-xs text-muted">{i18nT('components.lockedByPolicyBadge.tooltip')}</p>
+            <p className="text-xs text-muted">{lockedNote(true)}</p>
           ) : (
             <>
               <p className="text-xs text-muted mb-2">{i18nT('components.settingRef.fileOnlyDescription')}</p>

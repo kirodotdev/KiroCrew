@@ -333,7 +333,7 @@ async def maybe_start_first_greeting(state: Any, slug: str, ui_lang: object = ""
         return NOT_OWED
     from kiro_crew.member_mate_tools import binding_has_mate_tools
 
-    has_tools = await asyncio.to_thread(binding_has_mate_tools, entry)
+    has_tools = await asyncio.to_thread(binding_has_mate_tools, entry, member)
     if kind == members_mod.WELCOME_KIND_GOAL:
         kickoff = await asyncio.to_thread(
             goal_kickoff, entry, member, slug, has_mate_tools=has_tools

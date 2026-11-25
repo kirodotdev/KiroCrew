@@ -57,7 +57,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_tool_gate_pool
-from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
+from kiro_crew.messaging.alternation_echo import could_be_echo, drop_echo, echo_prefix_len, is_echo
 from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.messaging.empty_turn_copy import (
@@ -570,13 +570,14 @@ class TurnDriver:
         whatever it raises ends the turn with nothing sent. Not passed when
         ``None``, so a provider without the keyword is called as before.
     event_tap:
-        Optional synchronous observer handed every RAW provider event, before
-        the driver acts on it. For a second surface that shows the turn as it
-        runs (the dashboard tab of a channel conversation) and needs fields an
-        ``OutputEvent`` does not carry -- a tool call's arguments and identity,
-        a tool's result. It only observes: its return value is ignored, and an
-        exception it raises is logged and swallowed, so a broken observer can
-        never change or end the turn.
+        Optional synchronous observer handed every provider event, after a
+        timed-out call's continuation has its opening alternation placeholder
+        dropped (``drop_echo``) and before the driver acts on it. For a second
+        surface that shows the turn as it runs (the dashboard tab of a channel
+        conversation) and needs fields an ``OutputEvent`` does not carry -- a
+        tool call's arguments and identity, a tool's result. It only observes:
+        its return value is ignored, and an exception it raises is logged and
+        swallowed, so a broken observer can never change or end the turn.
     hook_agent:
         The agent the session runs, whose spec's own ``hooks`` Crew fires on a
         backend whose harness never receives them
@@ -1005,11 +1006,17 @@ class TurnDriver:
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
         gated = {} if self.prompt_gate is None else {"prompt_gate": self.prompt_gate}
-        # A call whose own silence timer ends the prompt is handed back to the
-        # model in this turn, on the same session (``acp.timed_out_continuation``).
-        async for event in continue_timed_out_calls(
-            lambda prompt: self.provider.stream(prompt, **gated), message
-        ):
+        # ``drop_echo`` drops a continuation's opening placeholder; the first prompt's is held in
+        # ``dispatch_frames``, after ``text_after_terminal`` counts text past a terminal directive.
+        opened = 0
+
+        def open_prompt(prompt: str) -> Any:
+            nonlocal opened
+            opened += 1
+            stream = self.provider.stream(prompt, **gated)
+            return stream if opened == 1 else drop_echo(stream)
+
+        async for event in continue_timed_out_calls(open_prompt, message):
             if self.event_tap is not None:
                 try:
                     self.event_tap(event)

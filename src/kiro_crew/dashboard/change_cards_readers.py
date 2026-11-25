@@ -1030,16 +1030,27 @@ async def undo_survivors(
     return [n for n in names if await asyncio.to_thread(_mcp_scopes, n)]
 
 
-def _connection_grant_fingerprint(slug: str) -> list[int] | None:
-    """``[mtime_ns, size]`` of the provider's token artifact; stats only, never opened."""
-    from kiro_crew import mcp_grant
+def _connection_grant_fingerprint(slug: str) -> list[int] | dict[str, Any] | None:
+    """Which grant the provider holds now; stats and entry digests only, nothing opened.
+
+    ``[mtime_ns, size]`` of kiro-cli's token artifact. While chats run on KAS with
+    sign-ins saved, Crew's grant vault is read too, at the url a KAS chat reads it
+    at (the Connections status view's rule, ``connections.status``), and a sign-in
+    held there makes it ``{"kiroCli": <stamp or None>, "kas": <entry digest>}``, so a
+    new sign-in in either store reads as a different grant.
+    """
+    from kiro_crew import mcp_grant, mcp_grant_kas
+    from kiro_crew.connections.mint_kas import kas_chat_sign_in_urls, kas_signs_in
     from kiro_crew.connections.registry import get_visible_providers
 
     provider = next((p for p in get_visible_providers() if p.get("slug") == slug), None)
     if provider is None:
         return None
     stamp = mcp_grant.grant_fingerprint(str(provider["mcp_url"]))
-    return list(stamp) if stamp is not None else None
+    kiro_cli = list(stamp) if stamp is not None else None
+    vault_url = kas_chat_sign_in_urls([provider]).get(slug) if kas_signs_in() else None
+    saved = mcp_grant_kas.kas_grant_fingerprint(vault_url) if vault_url is not None else None
+    return kiro_cli if saved is None else {"kiroCli": kiro_cli, "kas": saved}
 
 
 async def read_state(
