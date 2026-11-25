@@ -245,6 +245,34 @@ it refuses a link anywhere below the folder, and on POSIX it opens each folder o
 the way by descriptor with `O_NOFOLLOW`, so a link planted after the name check is
 refused too.
 
+Every installed app's manifest, `<data home>/apps/<name>/app.json`, is sealed under
+the same decision (`app_manifest_files`): the gateway reads it to decide the MCP
+servers, tools and agents the app brings, and only the gateway's own app install and
+update writes it. The file-edit tool is refused on `app.json` directly inside any
+folder of the data home's `apps/` whose name does not start with `.`, at both
+data-home prefixes and a relocated home (`app_manifest_write`, inside
+`sensitive_write_path_refusal`, matched by place, so nothing is listed), with the
+`request_server` remedy. The sandbox seals each manifest that exists at spawn
+read-only (`app_manifest_targets`, joined to `PlanHost.kiro_agents_targets`), with
+its folders guarded against rename as the other seals in that field are. It lists
+`apps/` once per spawn, hashes nothing and adds nothing to the gateway's boot path
+(Bolin's rule on #34319). Every existing regular `apps/<non-dot name>/app.json`
+is sealed read-only at spawn, without an install-record prerequisite. A linked
+data home is resolved before listing. On Linux, the gateway restores missing
+owner `rwx` bits on the data home, `apps/` and each app folder through held file
+descriptors before listing. It opens each directory with `O_PATH`, checks its
+ownership, applies the mode through `/proc/self/fd`, and verifies that its reading
+descriptor holds the same directory. Listings and manifest checks are descriptor-relative.
+Other platforms retain the read-only listing. Linked manifests, linked app folders
+and anything else the seal cannot hold are skipped and logged. Absent manifests
+and dot folders add no seal. A seal never stops a session from starting.
+Remaining shapes are tracked privately.
+An app installed while a session runs, and the replacement folder an
+update creates, are fenced in that session by the file-edit refusal alone until its
+next spawn. Like kiro-cli's registry, a manifest is not on the delegated-workspace
+guard, so where kiro-cli's own sandbox confines the spawn the file-tool refusal is the
+only fence.
+
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next
 rebuild merges into that template's spec and a spawn merges into a template Crew
@@ -2207,10 +2235,10 @@ spelling (`sandbox_staging._materialize_declared_mask_dirs`), so its mask is in 
 before the backend first writes into it, an app tree with neither data directory refuses
 the spawn, and its backend gets it back while it is absent or a real directory. The
 agent's file tools are refused an installed `app.json` or retained record while it holds
-a fence (`agent_readonly_dirs.write_protected_home_paths`); they stay readable, and a
-manifest that declares nothing stays writable. The installed app tree is still
-sandbox-writable, so an agent's shell that rewrites an `app.json` drops that app's masks
-from its next spawn; that residual is stated, not sealed.
+a fence (`agent_readonly_dirs.write_protected_home_paths`); they stay readable. Every
+installed `app.json` is also refused and sealed whatever it declares (the app manifest
+paragraph above). The rest of the installed app tree, the retained records included, is
+still sandbox-writable; that residual is stated, not sealed.
 
 **App-declared agent-read-only directories.** An app's manifest may also list
 directories under its own data directory in `agentReadOnlyDirs`

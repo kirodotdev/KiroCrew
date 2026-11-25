@@ -71,12 +71,13 @@ absent, unreadable, not JSON or nested past the parser's depth declares nothing;
 validation refuses it (``AppManifest.validate``).
 
 The agent's file tools may not write a manifest or record that holds a fence
-(:func:`tool_gate_declarations`, on the write gate only). The installed tree is still
-sandbox-writable, so a masked leaf is only as strong as the manifest that declares it:
-an agent shell that rewrites an installed app's ``app.json`` drops that app's masks from
-the next spawn, as it could rewrite the app's code. The
-mask stops an agent that reads files; it does not make an installed app's tree
-tamper-proof. Sealing the tree is the operator's decision, not this seam's.
+(:func:`tool_gate_declarations`, on the write gate only), and every installed app's
+``app.json`` is also sealed read-only in the agent's sandbox
+(:mod:`kiro_crew.app_manifest_files`). The rest of the installed tree is still
+sandbox-writable: an agent shell that rewrites a retained record drops the fence it
+holds on data left behind, as it could rewrite the app's code. The mask stops an agent
+that reads files; it does not make an installed app's tree tamper-proof. Sealing the
+rest of the tree is the operator's decision, not this seam's.
 
 **One engine, two declarations.** ``agentReadOnlyDirs``
 (:mod:`kiro_crew.apps.agent_readonly_dirs`) is read by the same functions with its own
