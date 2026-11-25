@@ -392,6 +392,44 @@ def _agent_labels() -> dict[str, str]:
     return labels
 
 
+#: The Bot that ``agent.default_agent`` names out of the box. The picker's
+#: Default row already returns a conversation to the configured default, so
+#: this Bot is not offered a second row of its own.
+_DEFAULT_BOT = "default"
+
+
+def _bot_rows() -> dict[str, str]:
+    """The Bots the picker offers, ``config.agents`` key -> button label.
+
+    A Bot picked here runs the route's conversation AS that Bot (its mode,
+    workspace and memory), the collapse Slack's ``!bot`` uses
+    (``slack/channel_crew.py``), so each forum Topic can talk to its own Bot.
+    The label is the Bot's display name, else its key, marked so a Bot reads
+    apart from a template of the same name. Blocking: call it off the loop.
+    """
+    from kiro_crew.slack.channel_crew import crew_bots
+
+    rows: dict[str, str] = {}
+    for key, display in crew_bots().items():
+        if not key or key == _DEFAULT_BOT:
+            continue
+        label = f"🤖 {(display or '').strip() or key}"
+        if len(label) > _AGENT_LABEL_MAX:
+            label = label[: _AGENT_LABEL_MAX - 1] + "…"
+        rows[key] = label
+    return rows
+
+
+def _picker_entries(names: list[str], labels: dict[str, str], bots: dict[str, str]) -> list[str]:
+    """Bots first, then the templates no Bot shares a name with, with *labels* updated.
+
+    A name that is both a template and a Bot runs as the Bot at turn time (a
+    ``config.agents`` key always collapses), so it is listed once, as the Bot.
+    """
+    labels.update(bots)
+    return [*bots, *(name for name in names if name not in bots)]
+
+
 #: The name ``agent_capabilities`` gives a crew's private copy of a template.
 _PRIVATE_COPY_NAME = re.compile(r"crew-[0-9a-f]{24}")
 
@@ -460,6 +498,13 @@ async def _handle_agent(
         # A label lookup failure costs readability only, never the picker.
         logger.warning("telegram /agent: agent label lookup failed", exc_info=True)
         labels = {}
+    try:
+        bots = await asyncio.to_thread(_bot_rows)
+    except Exception:
+        # A Bot lookup failure costs the Bot rows only, never the template picker.
+        logger.warning("telegram /agent: bot lookup failed", exc_info=True)
+        bots = {}
+    names = _picker_entries(names, labels, bots)
     choices = self._agent_choices(names, labels)
     if len(choices) <= 1:
         await self._reply(chat_id, "No agent list available on this machine.", thread=thread)

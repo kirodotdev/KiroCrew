@@ -94,6 +94,14 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   agent cannot be swapped inside a running session — the spec decides which MCP
   servers and skills that process loaded at spawn — so a pick opens a fresh
   conversation. The previous one is not destroyed: switching back returns to it.
+  Your **Bots** are listed first, marked 🤖 with their display name (the
+  built-in `default` Bot is the Default row). A Bot picked here runs that
+  conversation as the Bot: its own agent, workspace folder and memory, the same
+  as Slack's `!bot`. With forum Topics on, each Topic keeps its own pick, so one
+  forum can give every Bot a Topic of its own. As on Slack, a Bot run outside its
+  thread on the **Bots** page has no worker, so abilities added to the Bot do not
+  reach it. A pick is kept in memory: after a gateway restart a Topic is back on
+  the default agent until you pick again.
 - `/status` — uptime, message counts, tool decisions, sessions
 - `/ping` — answers `pong`. Answered by the gateway itself, never by the model,
   so it still works when the thing that is wedged is the model.

@@ -380,6 +380,10 @@ the Bot, as a channel bound to it does (`!bot off` goes back;
 files in `~/.kiro/agents/`, not against your roster, so it picks a **template**.
 A Bot whose name has no spec file of its own comes back as `Unknown agent`.
 
+On Telegram, `/agent` lists your Bots first, marked 🤖, and a pick runs that DM
+or forum Topic as the Bot, as Slack's `!bot` does, so each Topic of one forum
+can talk to its own Bot ([telegram-integration.md](telegram-integration.md)).
+
 ## Routing work to a Bot
 
 This section is for an agent deciding where a task belongs. Two tools read the
