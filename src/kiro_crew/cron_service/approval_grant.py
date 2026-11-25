@@ -171,6 +171,7 @@ def sign_existing_grants(store_dir: Path) -> list[str]:
     """
     from kiro_crew.atomic_write import atomic_write
     from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
+    from kiro_crew.owner_only_files import mkdirs_owner_only
 
     marker_dir = store_dir / MIGRATION_DIR_LEAF
     marker = marker_dir / MIGRATION_MARKER
@@ -200,7 +201,9 @@ def sign_existing_grants(store_dir: Path) -> list[str]:
                         signed.append(str(record.get("id") or ""))
                 if signed:
                     atomic_write(path, json.dumps(data, indent=2))
-        marker_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Every directory this creates is 0700; atomic_write gives a data-home
+        # file 0600 by default (owner_only_files).
+        mkdirs_owner_only(marker_dir)
         atomic_write(marker, "1\n")
         return signed
     except Exception:

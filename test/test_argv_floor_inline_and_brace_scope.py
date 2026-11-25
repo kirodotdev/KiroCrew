@@ -745,6 +745,9 @@ class TestInlinePayloadNamesTheMintSurface:
             "_materialize_signing_key_mask_target": (
                 "creates an absent key so the sandbox mask binds; returns its path, never the key"
             ),
+            "sign_existing_grants": (
+                "writes cron grant MACs under a label of their own; returns job ids, never the key"
+            ),
         }
         misses = []
         for mod in seeds:
