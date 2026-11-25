@@ -3302,8 +3302,11 @@ channels whose descriptor names that key in its `credentials` tuple OR its
 `restart_credentials` tuple (`registry.changed_credential_keys`, the credential
 twin of `changed_boot_keys`) and restarts each one through `restart_channel`,
 which re-reads `cfg.load_credentials()` on the way back up — so a rotated
-Telegram/Discord/WeCom/… token reconnects that channel with the new value,
-exactly as a changed `config.json` connection parameter does. The two tuples are
+Telegram/WeCom/… token reconnects that channel with the new value,
+exactly as a changed `config.json` connection parameter does. A channel whose
+descriptor declares `reconnect` (Discord) is offered a credential-only change in
+place first, and is restarted only when that reconnect declines or raises (see
+[messaging](messaging.md) § Connection fields restart ONE channel). The two tuples are
 disjoint by intent: `credentials` names what the channel needs ALL of to connect
 (so `channel_readiness` reports a missing one), while `restart_credentials` names
 a key that is restart-relevant but not required — Teams' `MICROSOFT_APP_TENANT_ID`

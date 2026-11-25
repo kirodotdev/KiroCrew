@@ -119,16 +119,35 @@ server channel; the turn itself always runs in a public thread opened from that
 message, so `auto_thread` (default `true`) must stay on for those channels to
 work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `reactions_enabled` defaults to `true`, `show_thinking` defaults to `false`, and `session_folder` defaults to empty. The bot token belongs in the `DISCORD_BOT_TOKEN` credential (env / `.env` / credential store), not in `config.json`, which an agent can read. A `discord.bot_token` value is still honoured as a legacy fallback, but the credential takes precedence and is the supported place for it.
 
-### 6. Restart the gateway
+### 6. Save, or start the gateway
+
+A running gateway applies Discord settings when you save them in Settings, or
+when you edit `config.json` or `.env`, with no restart:
+
+- The allow-lists, `auto_thread`, the reaction and thinking toggles, the
+  threshold and the session folder apply to the next message.
+- A new bot token for the same bot reconnects the running bot with it. The
+  token is checked with Discord first. Settings does not save one Discord
+  rejects, and a rejected token edited into `.env` is not applied: the current
+  connection keeps running either way. Turns already running finish.
+- Adding the first server thread or channel, or removing the last one,
+  reconnects with the intents that needs: a DM-only connection asks for direct
+  messages alone, and a thread-capable one adds Message Content.
+- Turning Discord on or off, a token for a different bot, or clearing the token
+  restarts the Discord channel inside the gateway.
+
+If the gateway is not running yet, start it:
 
 ```bash
 kirocrew restart
 ```
 
-Discord settings and Gateway intents are read at startup. The Settings page
-shows **Connected** once Discord accepts the IDENTIFY handshake and sends READY.
-If Discord closes with code 4014, enable Message Content Intent in the Developer
-Portal or clear the thread allow-list and restart in DM-only mode.
+The Settings page shows **Connected** once Discord accepts the IDENTIFY
+handshake and sends READY. If Discord refuses the thread intents with close
+code 4014 on a save, the bot stays connected for DMs only and the save says
+so. If it refuses them when the gateway starts, the Discord channel stops. In
+both cases, enable Message Content Intent in the Developer Portal, then save
+again; the save reconnects with the thread intents.
 
 ### 7. Test both paths
 
@@ -140,11 +159,11 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Enabled, but no Discord activity | Token missing or gateway not restarted | Set `DISCORD_BOT_TOKEN`, then `kirocrew restart` |
-| Gateway closes with 4004 | Bad or reset token | Reset the token, update `.env`, restart |
-| Gateway closes with 4014 after adding a thread | Message Content Intent is disabled | Enable it on the Bot page, then restart |
+| Enabled, but no Discord activity | Token missing, or the gateway is not running | Save the bot token in Settings (or set `DISCORD_BOT_TOKEN`); start the gateway if it is stopped |
+| Gateway closes with 4004 | Bad or reset token | Reset the token and save the new one in Settings; the bot reconnects with it |
+| A save warns about close 4014 after adding a thread | Message Content Intent is disabled, so the bot stays on DMs only | Enable it on the Bot page, then save again |
 | DMs are ignored | User ID is missing/wrong | Add the numeric user ID; inspect `kirocrew security events` |
-| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread. For a forum post: the forum is not in `allowed_channel_ids`, or the post's opener is not in `allowed_user_ids` | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart. A thread a person opened outside an allowed forum needs its ID in `allowed_thread_ids` |
+| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread. For a forum post: the forum is not in `allowed_channel_ids`, or the post's opener is not in `allowed_user_ids` | Copy the thread's Channel ID, check permissions/membership, enable the intent, save again. A thread a person opened outside an allowed forum needs its ID in `allowed_thread_ids` |
 | Parent channel is ignored | The channel is not in `allowed_channel_ids` | Use an approved thread, or add the parent channel ID to `allowed_channel_ids` to open public turn threads |
 | Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
 | Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
