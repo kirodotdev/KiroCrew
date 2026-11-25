@@ -524,7 +524,19 @@ seal to overwrite the live message and prefixes the line through
 `annotate_model_fallback`. When no later hop answered (a `refusal` terminal with
 no text), the refused text is put back under the line, so the reply is never
 empty. A throttle or capacity hop keeps its partial text and prints no line
-there. The standalone
+there. The dashboard turn and the sub-agent run drop the refused text on the
+same hop, from the text since the last tool call: the dashboard's open segment
+(`dashboard/chat_turn/session_events.py:_on_model_fallback`: the segment, its
+chunk rows and the live tail, so the flush saves the fallback's text alone and
+its `chat_message` overwrites the tab's streamed copy), and the sub-agent's
+final segment, from the prompt in flight only (`subagent_manager/run_turn.py`:
+the result, the live partial and `result.txt`; a partial an earlier prompt
+streamed, which a transient continue keeps, stays). Text before that tool call
+is an earlier model call's and stays,
+unless an open code block or marker deferred the dashboard's cut there; on the
+captured wire there is none. When no model writes text after the hop and the
+turn ends `refusal`, the refused text is put back (`_restore_refused_text` on
+the dashboard; the sub-agent's result and `result.txt`), as on Slack. The standalone
 channel transports (Telegram, WhatsApp, Discord, Webex, Slack transport mode,
 and the autonudge wake turn) run through `messaging/driver.TurnDriver`, which
 prints no fallback line, the engine's or Crew's own; the session's model state

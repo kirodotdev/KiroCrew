@@ -1,8 +1,10 @@
 """What a dashboard turn's session reports about itself mid-turn: a compaction's progress
 (``_on_compaction_status``), a native clear (``_on_clear_status``, then
 ``_keep_cleared_turns``), an agent switch (``_on_agent_switched``), its todo list
-(``_on_todo_update``) and a notice its harness reported (``_on_harness_notice``, with the
-end-of-turn ``_finish_harness_notices``)."""
+(``_on_todo_update``), a model fallback hop (``_on_model_fallback``, whose refusal hop
+drops the refused model's text, put back by the end-of-turn ``_restore_refused_text``)
+and a notice its harness reported (``_on_harness_notice``, with the end-of-turn
+``_finish_harness_notices``)."""
 
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import NOTICE_KIND_ADAPTER
 from kiro_crew.crew_mode import slot_is_crew_mode_root as crew_mode_is_root
+from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard.chat_utils import (
     _broadcast_compaction_result,
     drained_to_thread,
@@ -24,6 +27,7 @@ from kiro_crew.security import redact
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        STOP_REASON_REFUSAL,
         KiroCrewConfig,
         append_and_surface,
         crew_log_emit,
@@ -545,6 +549,57 @@ async def _on_todo_update(turn: _ChatTurn, event) -> None:
             _crew_log_turn_no,
             items=(event.todo or {}).get("tasks"),
         )
+
+
+def _on_model_fallback(turn: _ChatTurn, event) -> None:
+    """kiro-cli moved this turn onto another model, or could not.
+
+    The handle already moved the resolved model; the slot follows a promotion, and
+    ``_run_chat``'s finally ends the walk with one notice. On a content-filter refusal
+    kiro-cli streams the refused model's text, then a ``model_fallback`` hop
+    (``cause: refused``), then the fallback's answer
+    (``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``). The refused text
+    is not the answer: it leaves the open segment, its chunk rows and the live tail,
+    so the flush saves only the fallback's text, and its ``chat_message`` overwrites
+    the tab's streamed copy. A promotion, or a hop with another cause, moves nothing
+    visible. The native Slack turn's rule (``_AnswerStream.on_model_fallback``).
+    """
+    notice = event.model_fallback
+    if notice is None:
+        return
+    _engine_fallback.record_engine_fallback(
+        turn.state, turn.slot, turn.client, turn._engine_fallback_walk, notice
+    )
+    if notice.promoted or notice.cause != "refused" or not turn.has_assistant_text:
+        return
+    slot = turn.slot
+    slot.purge_chunks()
+    _drop_wire_tail(turn)
+    if turn.assistant_text.strip():
+        # Kept, so a refusal nothing recovered still shows the provider's own words.
+        turn._refused_segment = (
+            turn.assistant_text,
+            slot.segment_raw_text,
+            slot.segment_shown_sha,
+            slot.segment_removed,
+        )
+    turn.assistant_text = _cleared_segment_text(slot)
+
+
+def _restore_refused_text(turn: _ChatTurn) -> None:
+    """Put the dropped refused text back on a refusal terminal no model answered after.
+
+    ``_on_text_chunk`` forgets the kept copy at the first answer text after the hop.
+    """
+    if turn._refused_segment is None or turn._stop_reason != STOP_REASON_REFUSAL:
+        return
+    slot = turn.slot
+    (
+        turn.assistant_text,
+        slot.segment_raw_text,
+        slot.segment_shown_sha,
+        slot.segment_removed,
+    ) = turn._refused_segment
 
 
 #: Harness notice rows a turn holds while a reply segment is open. A notice past it

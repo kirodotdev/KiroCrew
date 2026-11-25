@@ -250,6 +250,9 @@ class _ChatTurn:
     _refusal_notices: "list[str]"
     _refusal_notices_settled: "int"
     _refusal_reasons: "list[tuple[str, str]]"
+    # The open segment a refusal hop dropped (``session_events._on_model_fallback``):
+    # its text and the slot's raw copy, until a model writes text after the hop.
+    _refused_segment: "tuple[str, str | None, Any, dict[str, str]] | None"
     _repeat_loop: "RepeatLoopTracker"
     _replay_accepted_this_turn: "bool"
     _replay_admitted_incarnation: "object"
@@ -477,6 +480,7 @@ class _ChatTurn:
         # alternation placeholder, with each one's ``released`` flag: dropped or
         # replayed by ``stream_chunks._settle_echo_hold`` at the segment's end.
         self._echo_held = []
+        self._refused_segment = None
 
     @property
     def assistant_text(self) -> str:
