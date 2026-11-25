@@ -2,7 +2,7 @@
 
 Pinned: an act grant on the chat's current host lets ``upload`` run with no card,
 and the op route still checks the bound tab's real host first; a read grant, an
-act grant on another host, and ``js``/``cdp``/``http_get`` keep the card.
+act grant on another host, and ``cdp``/``http_get`` keep the card.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _granted(host: str, cls: str) -> _State:
     state = _State()
     pattern = bht.grant_pattern(bht.trust_key(host, cls))
     state._slots["chat-1"] = SimpleNamespace(
-        _trusted_patterns={pattern}, _trusted_pattern_deadlines={}
+        key="chat-1", _trusted_patterns={pattern}, _trusted_pattern_deadlines={}
     )
     return state
 
@@ -103,7 +103,7 @@ async def test_a_tab_that_left_the_granted_host_gets_no_files(
     [
         ("app.example", "read", "upload", _UPLOAD),
         ("other.example", "act", "upload", _UPLOAD),
-        ("app.example", "act", "js", {"expression": "1"}),
+        ("app.example", "act", "js", {"expression": "1", "target_id": "T2"}),
         ("app.example", "act", "cdp", {"method": "Page.reload"}),
         ("app.example", "act", "http_get", {"url": "https://app.example/"}),
     ],
@@ -123,11 +123,11 @@ async def test_the_card_stays_without_an_act_grant_on_this_host(
 def test_the_grant_check_keeps_no_state_and_skips_an_app_slot() -> None:
     state = _granted("app.example", "act")
     _on_page("https://app.example/form")
-    assert card.upload_grant_host(state, _SESSION, "upload") == "app.example"
-    assert card.upload_grant_host(state, _SESSION, "js") == ""
+    assert card.site_grant_host(state, _SESSION, "upload", _UPLOAD) == "app.example"
+    assert card.site_grant_host(state, _SESSION, "cdp", {"method": "Page.reload"}) == ""
     assert bht._pending == {}
     state._slots["chat-1"]._app = "someapp"
-    assert card.upload_grant_host(state, _SESSION, "upload") == ""
+    assert card.site_grant_host(state, _SESSION, "upload", _UPLOAD) == ""
 
 
 @pytest.mark.asyncio
@@ -412,3 +412,13 @@ async def test_the_summary_line_does_not_count_against_the_call_cap(tmp_path: An
     assert answer["code"] == "needs_approval", answer
     # The summary reads each file's size on disk, so it runs off the event loop.
     assert seen == [False]
+
+
+def test_a_dashboard_card_s_turn_gets_no_upload_grant() -> None:
+    from kiro_crew.dashboard import card_send
+
+    state = _granted("app.example", "act")
+    _on_page("https://app.example/form")
+    with card_send.card_turn(_SESSION):
+        assert card.site_grant_host(state, _SESSION, "upload", _UPLOAD) == ""
+    assert card.site_grant_host(state, _SESSION, "upload", _UPLOAD) == "app.example"
