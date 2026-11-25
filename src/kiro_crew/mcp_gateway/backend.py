@@ -82,6 +82,7 @@ from kiro_crew.mcp_gateway.backend_tmp import (
     record_owner,
     sweep_backend_tmp,
     tmp_env,
+    warn_low_socket_room,
 )
 from kiro_crew.mcp_gateway.backend_wire import _keep_stderr_line, _PendingRequest
 from kiro_crew.mcp_gateway.image_budget import (  # noqa: F401
@@ -767,6 +768,7 @@ async def spawn_backend(
         try:
             backend_tmp = await asyncio.to_thread(allocate_backend_tmp, pool_key.stable_hash())
             spawn_env.update(tmp_env(backend_tmp))
+            warn_low_socket_room(backend_tmp)
         except OSError:
             has_inherited_temp = any(key.upper() in CANONICAL_TEMP_KEYS for key in spawn_env)
             fallback = "inherited temp" if has_inherited_temp else "platform default"
