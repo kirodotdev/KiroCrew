@@ -938,9 +938,9 @@ is stdio.
   | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
   | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401` whose server publishes no metadata naming itself. Naming any state here would assert more than the probe observed. |
 
-  On the KAS harness, a remote row whose own `oauth` block reaches no engine
-  (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld`: the block names a
-  `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
+  On the KAS harness, a remote row whose own `oauth` block Crew does not send
+  (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld` with no engine
+  flag: the block names a `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
   provider nor Crew-held offers no sign-in at all (`kasCannotSignIn` in
   `McpTab.tsx`). Neither the chat guidance nor Sign in could ever finish for it. A
   block Crew does send (a public `clientId`) keeps the normal row. A row with no
@@ -955,8 +955,13 @@ is stdio.
   which drops every block, is left to the chat notice. It offers no harness switch: a Kiro CLI pick runs on KAS wherever
   kiro-cli offers its v3 engine (`kiro_cli_pick_backend`, and the row also reads
   the `kiro_selection_runs_on_kas` probe), so the switch would
-  not reach the sign-in either. For an `oauthWithheld` server the chat says the
-  same at session start in a notice tagged
+  not reach the sign-in either. The row cannot see whether the chat's engine
+  announces `mcpOAuthClientSecret` either; an engine that does takes a
+  confidential block with a `clientId` (its secret goes through
+  `_kiro/mcp/oauth/setClientSecret`, `acp/kas_client_secret.py`), so the row
+  reads the block as withheld on every engine. For an `oauthWithheld` server the
+  chat says the same at session start, except on an engine that takes the
+  secret, in a notice tagged
   `meta.kind: "mcp_sign_in_unsupported"`, which `TurnBlock.isAlwaysVisible` keeps
   out of the turn's folded steps.
 

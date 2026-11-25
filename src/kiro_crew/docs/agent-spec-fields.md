@@ -888,9 +888,12 @@ When the engine announces that it accepts registry pointers, Crew instead sends 
 `"type": "registry"` entry of yours as a pointer that keeps its `command` and `args` but
 not its `env` (Crew's own servers are sent as before), with nothing to set.
 For a server's `oauth` block, Crew always sends its `clientId`, `redirectUri` and
-`oauthScopes`, never its `clientMetadataUrl` or `clientSecret`. A block that names a
-`clientSecret`, or keeps nothing Crew can send, is withheld whole, and the session
-notice names its server. And
+`oauthScopes`, never its `clientMetadataUrl` or `clientSecret`. A block that keeps
+nothing Crew can send is withheld whole, and the session notice names its server. A
+block that names a `clientSecret` is withheld the same way, unless it keeps a
+`clientId` and the engine announces that it takes the secret (KAS 0.66.135 with `agent.kas_persist_mcp_sign_in`
+on): then Crew sends the block without the secret, sends the secret through
+`_kiro/mcp/oauth/setClientSecret`, and the notice does not name the server. And
 `KIROCREW_HOME` survives for Crew's own managed servers,
 because it pins the data home — but only as a literal containing no `${`, since
 KAS would expand a reference under that name too. That recorded pin is also
