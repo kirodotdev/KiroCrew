@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 
 // Its own file, not a case inside RemoteCrewPanel.test.tsx, because `vi.mock` is
@@ -114,7 +114,7 @@ describe('announcing a crew connected inside a pane', () => {
       turn_url: 'http://127.0.0.1:7790/v1/chat/completions',
     })
 
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await clickConnect()
 
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('f1'))
@@ -135,7 +135,7 @@ describe('announcing a crew connected inside a pane', () => {
       local_port: 7791,
     })
 
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await clickConnect()
 
     await waitFor(() => expect(announceChainedCrew).toHaveBeenCalledTimes(1))
