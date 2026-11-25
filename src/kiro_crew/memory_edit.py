@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 import unicodedata
@@ -373,6 +374,49 @@ def _read_snapshot(store: Any):
             store.db.rollback()
 
 
+# The summaries of a store's last few searches, reused while the store is unchanged.
+# A filter click, a sort or the next page then skips the pass over every row.
+_SUMMARY_CACHE: dict[tuple, tuple[tuple, list[dict]]] = {}
+_SUMMARY_CACHE_SIZE = 4
+
+
+def _cached_summaries(store: Any, base: dict) -> list[dict]:
+    """Every search match as a summary, numbered by its position in the match order.
+
+    Called inside the read snapshot. The fingerprint is this connection's change
+    count plus SQLite's ``data_version``, which moves when another connection
+    commits, so any write to the store is a miss.
+    """
+    path = str(getattr(store, "_db_path", ""))
+    key = (id(store.db), path, base["q"])
+    # The files' stat too: a store reopened on a restored file starts its counters again.
+    files: list[tuple[int, int, int] | None] = []
+    for name in (path, f"{path}-wal"):
+        try:
+            stat = os.stat(name)
+            files.append((stat.st_ino, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            files.append(None)
+    fingerprint = (
+        store.db.total_changes,
+        store.db.execute("PRAGMA data_version").fetchone()[0],
+        *files,
+    )
+    hit = _SUMMARY_CACHE.get(key)
+    if hit is not None and hit[0] == fingerprint:
+        return hit[1]
+    everything = list(_rows(store, base, summaries=True))
+    # A summary's position in the match order addresses it for assembly, so a
+    # legacy row with a NULL id, which no id lookup can find, still comes back.
+    for position, summary in enumerate(everything):
+        summary["position"] = position
+    _SUMMARY_CACHE.pop(key, None)
+    while len(_SUMMARY_CACHE) >= _SUMMARY_CACHE_SIZE:
+        _SUMMARY_CACHE.pop(next(iter(_SUMMARY_CACHE)))
+    _SUMMARY_CACHE[key] = (fingerprint, everything)
+    return everything
+
+
 def list_records(
     store: Any,
     query: dict,
@@ -410,11 +454,7 @@ def list_records(
         # One light pass over every search match, then only the page is assembled.
         # Both passes read one snapshot, so a position names the same row in each.
         base = {"q": query["q"], "kind": "all"}
-        everything = list(_rows(store, base, summaries=True))
-        # A summary's position in the match order addresses it for assembly, so a
-        # legacy row with a NULL id, which no id lookup can find, still comes back.
-        for position, summary in enumerate(everything):
-            summary["position"] = position
+        everything = _cached_summaries(store, base)
         listed = [
             summary
             for summary in everything
@@ -426,7 +466,13 @@ def list_records(
         window = listed[offset : offset + limit]
         positions = {summary["position"] for summary in window}
         assembled = {}
-        if positions:
+        if window and all(isinstance(s["id"], str) and s["id"] for s in window):
+            # Every row has an id, so the page is read by id, not by a pass over the store.
+            at = {(s["kind"], s["id"]): s["position"] for s in window}
+            for row in _rows(store, base, list(at)):
+                _conflict_count(store, row)
+                assembled[at[(row["kind"], row["id"])]] = row
+        elif positions:
             rows = _rows(store, base, page=positions)
             for position, row in enumerate(rows):
                 if row is not None:

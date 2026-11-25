@@ -127,7 +127,7 @@ async function openProfile() {
 }
 
 /** The view the memory page's list asks for: newest first, with facet counts. */
-const VIEW = { sort: 'updated', order: 'desc', facets: true }
+const VIEW = { sort: 'updated', order: 'desc' }
 
 /** Pick one action from a record row's actions menu. */
 async function rowAction(text: string, action: 'Edit' | 'Forget' | 'View details') {
@@ -545,7 +545,8 @@ describe('private member memory lifecycle', () => {
   it('opens the deep-linked member with scoped reads and no global memory surface', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    expect(api.memberMemoryPage.mock.calls).toEqual([[MEMBER_STORE, 'semantic', 0], [MEMBER_STORE, 'episodic', 0]])
+    // The list and its counts are two record reads; the mock serves each from these two pages.
+    expect([...new Set(api.memberMemoryPage.mock.calls.map(call => JSON.stringify(call)))]).toEqual([[MEMBER_STORE, 'semantic', 0], [MEMBER_STORE, 'episodic', 0]].map(call => JSON.stringify(call)))
     expect(api.memoryPreferences).not.toHaveBeenCalled()
     expect(api.memoryBackups).not.toHaveBeenCalled()
     await openProfile()

@@ -12422,6 +12422,8 @@
     "saved_key": "Saved {{key}}",
     "scope_all_repos": "All repos",
     "search_filters": "Search filters",
+    "scroll_more": "Scroll to see more",
+    "filters_width": "Filter width",
     "select": "Select",
     "select_limit_hint": "Up to {{limit}} at a time",
     "selection_toolbar": "Selected memories",

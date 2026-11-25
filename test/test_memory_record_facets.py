@@ -209,3 +209,50 @@ def test_channel_and_crew_filter_and_count_on_a_bot_store_only(store):  # noqa: 
     assert body["facets"]["crew"] == {"reviewer": 1}
     both = memory_edit.list_records(store, {"filters": {"crew": ["", "reviewer"]}}, facets=True)
     assert both["total"] == 3
+
+
+def test_a_prefixed_source_counts_and_filters_under_its_prefix():
+    """One value per chat session would list thousands of one-row sources."""
+    group = memory_record_facets.source_group
+    assert group("consolidation:dashboard:chat-1-179") == "consolidation"
+    assert group("consolidation") == "consolidation"
+    assert group("user_explicit") == "user_explicit"
+    assert group(":odd") == ":odd"
+    assert group("") == memory_record_facets.SOURCE_UNKNOWN
+    summaries = [
+        {
+            "kind": "fact",
+            "confidence": 0.9,
+            "facets": memory_record_facets.summary_facets(
+                "fact", "1", "", f"consolidation:dashboard:chat-{n}"
+            ),
+        }
+        for n in range(3)
+    ]
+    counts = memory_record_facets.count_facets(summaries, {}, "all")
+    assert counts["source"] == {"consolidation": 3}
+    assert all(memory_record_facets.matches(s, {"source": ["consolidation"]}) for s in summaries)
+
+
+def test_a_repeated_listing_reuses_its_pass_until_the_store_changes(
+    store, monkeypatch  # noqa: F811
+):
+    _seed(store)
+    passes = []
+    real = memory_edit._rows
+
+    def counted(*args, **kwargs):
+        if kwargs.get("summaries"):
+            passes.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(memory_edit, "_rows", counted)
+    first = memory_edit.list_records(store, {}, sort="updated", facets=True)
+    again = memory_edit.list_records(store, {"filters": {"category": ["tool"]}}, sort="key")
+    assert len(passes) == 1
+    assert sorted(_ids(again)) == ["lesson.a", "lesson.b"]
+    assert store.set_semantic("user.editor", "vim", 0.9, "user_explicit") is None
+    after = memory_edit.list_records(store, {}, sort="updated", facets=True)
+    assert len(passes) == 2
+    assert after["total"] == first["total"] + 1
+    assert "user.editor" in _ids(after)

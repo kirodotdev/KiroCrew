@@ -29,7 +29,8 @@ const FACETS = {
 function List(props: Partial<Parameters<typeof MemoryList>[0]>) {
   return <MemoryList store={STORE} storeName="reviewer" privateMemory selecting={false} onSelectingChange={() => {}} recallOpen={false} onRecallOpenChange={() => {}} {...props} />
 }
-const lastView = () => api.memoryRecords.mock.calls.at(-1)!
+// The last list read: the counts are a separate one-row read with facets.
+const lastView = () => api.memoryRecords.mock.calls.filter(call => call[3] === 50).at(-1)!
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -69,7 +70,8 @@ describe('the memory list', () => {
   it('asks for the newest first with facet counts, and labels each pill and score', async () => {
     renderWithProviders(<List />)
     expect(await screen.findByText('Work in a worktree')).toBeVisible()
-    expect(api.memoryRecords).toHaveBeenCalledWith(STORE, { q: '', kind: 'all' }, 0, 50, { sort: 'updated', order: 'desc', facets: true })
+    expect(api.memoryRecords).toHaveBeenCalledWith(STORE, { q: '', kind: 'all' }, 0, 50, { sort: 'updated', order: 'desc' })
+    expect(api.memoryRecords).toHaveBeenCalledWith(STORE, { q: '', kind: 'all' }, 0, 1, { sort: 'updated', order: 'desc', facets: true })
     expect(screen.getByRole('radio', { name: /^All\s*1,284$/ })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: /^Lessons\s*161$/ })).toBeVisible()
     const rows = screen.getByRole('list', { name: 'Memories' })
@@ -99,9 +101,9 @@ describe('the memory list', () => {
     await screen.findByText('Work in a worktree')
     fireEvent.pointerDown(screen.getByRole('button', { name: /^Sort: Updated/ }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /^Confidence/ }))
-    await waitFor(() => expect(lastView()[4]).toEqual({ sort: 'confidence', order: 'desc', facets: true }))
+    await waitFor(() => expect(lastView()[4]).toEqual({ sort: 'confidence', order: 'desc' }))
     fireEvent.click(screen.getByRole('button', { name: 'Reverse order' }))
-    await waitFor(() => expect(lastView()[4]).toEqual({ sort: 'confidence', order: 'asc', facets: true }))
+    await waitFor(() => expect(lastView()[4]).toEqual({ sort: 'confidence', order: 'asc' }))
   })
 
   it('ranks a search by Best match, and falls back to the picked sort when it is cleared', async () => {
@@ -109,9 +111,9 @@ describe('the memory list', () => {
     await screen.findByText('Work in a worktree')
     fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'worktree' } })
     await waitFor(() => expect(lastView()[1]).toEqual({ q: 'worktree', kind: 'all' }))
-    expect(lastView()[4]).toEqual({ sort: 'match', order: 'desc', facets: true })
+    expect(lastView()[4]).toEqual({ sort: 'match', order: 'desc' })
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
-    await waitFor(() => expect(lastView()[4]).toEqual({ sort: 'updated', order: 'desc', facets: true }))
+    await waitFor(() => expect(lastView()[4]).toEqual({ sort: 'updated', order: 'desc' }))
   })
 
   it('opens Test recall with an empty task when the search box is empty, and recalls only once one is typed', async () => {

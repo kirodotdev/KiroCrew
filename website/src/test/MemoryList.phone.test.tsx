@@ -53,13 +53,16 @@ describe('the memory toolbar', () => {
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('basis-full')
   })
 
-  it('keeps the search box at least 20rem wide on a wide screen', async () => {
+  it('keeps the search box at least 20rem wide, and on its own row when the content area is narrow', async () => {
     renderWithProviders(<List />)
     const toolbar = await screen.findByTestId('memory-toolbar')
-    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('min-w-[20rem]')
+    // Keyed on the toolbar's own width (a container query), not the window's.
+    expect(toolbar.parentElement).toHaveClass('@container')
+    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('basis-full', '@[40rem]:min-w-[20rem]', '@[40rem]:basis-0')
+    // Button text never wraps onto a second line.
+    for (const button of within(toolbar).getAllByRole('button')) if (button.textContent?.trim()) expect(button.className).toMatch(/whitespace-nowrap/)
     // A short placeholder, so it fits beside the mode switch, Select and Test recall.
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' })).toHaveAttribute('placeholder', 'Search memories…')
-    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).not.toHaveClass('basis-full')
   })
 })
 
@@ -189,5 +192,71 @@ describe('row chips as filters', () => {
     const rows = await screen.findByRole('list', { name: 'Memories' })
     await within(rows).findByText('#worktree')
     expect(within(rows).queryByRole('button', { name: '#worktree' })).toBeNull()
+  })
+})
+
+describe('the wide filter rail', () => {
+  it('stays in view, as tall as the window, with confidence at the top', async () => {
+    renderWithProviders(<List />)
+    const rail = await screen.findByRole('complementary', { name: 'Filters' })
+    expect(rail.parentElement).toHaveClass('sticky', 'self-start')
+    expect(rail).toHaveClass('max-h-[calc(100dvh-6rem)]', 'overflow-y-auto')
+    const sections = within(rail).getAllByRole('region')
+    expect(sections[0]).toHaveAccessibleName(/Confidence/)
+  })
+
+  it('scrolls each group inside 16 rows and lists ticked values first', async () => {
+    api.memoryRecords.mockResolvedValue({ entries: [LESSON], total: 1, has_more: false, facets: { ...FACETS, scope: { '': 1, website: 9, docs: 4 } } })
+    renderWithProviders(<List />)
+    const rail = await screen.findByRole('complementary', { name: 'Filters' })
+    const scope = await within(rail).findByRole('region', { name: /Scope/ })
+    expect(within(scope).getByTestId('facet-group-scroll')).toHaveClass('max-h-[32rem]', 'overflow-y-auto')
+    expect(within(scope).getAllByRole('checkbox').map(box => box.getAttribute('aria-label'))).toEqual(['website', 'docs', 'All repos'])
+    fireEvent.click(within(scope).getByRole('checkbox', { name: 'docs' }))
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Scope/ })).getAllByRole('checkbox')[0]).toHaveAccessibleName('docs'))
+  })
+
+  it('is dragged or arrowed wider within its bounds, and remembers its width', async () => {
+    renderWithProviders(<List />)
+    const handle = await screen.findByRole('separator', { name: 'Filter width' })
+    expect(handle).toHaveAttribute('aria-valuenow', '240')
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(handle).toHaveAttribute('aria-valuenow', '256')
+    expect(handle.parentElement).toHaveStyle({ width: '256px' })
+    expect(localStorage.getItem('kirocrew:memory-filters-width')).toBe('256')
+    for (let i = 0; i < 20; i++) fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(handle).toHaveAttribute('aria-valuenow', '420')
+    localStorage.removeItem('kirocrew:memory-filters-width')
+  })
+
+  it('gives way to the filter sheet when the content area is too narrow for it', async () => {
+    const original = globalThis.ResizeObserver
+    globalThis.ResizeObserver = class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 640 } } as ResizeObserverEntry], this as unknown as ResizeObserver) }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    try {
+      renderWithProviders(<List />)
+      await screen.findByText('Work in a worktree')
+      expect(screen.queryByRole('complementary', { name: 'Filters' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+      expect(await screen.findByRole('dialog', { name: 'Filters' })).toBeVisible()
+    } finally {
+      globalThis.ResizeObserver = original
+    }
+  })
+})
+
+describe('a chat session source', () => {
+  it('reads and filters as Learned from chat, with the full source on hover', async () => {
+    api.memoryRecords.mockResolvedValue({ entries: [{ ...LESSON, source: 'consolidation:dashboard:chat-12-1790000012' }], total: 1, has_more: false, facets: { ...FACETS, source: { consolidation: 1 } } })
+    renderWithProviders(<List />)
+    const rows = await screen.findByRole('list', { name: 'Memories' })
+    const chip = await within(rows).findByRole('button', { name: 'Learned from chat' })
+    expect(within(chip).getByText('Learned from chat')).toHaveAttribute('title', 'consolidation:dashboard:chat-12-1790000012')
+    fireEvent.click(chip)
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { source: ['consolidation'] } }))
   })
 })

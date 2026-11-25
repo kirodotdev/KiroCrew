@@ -97,6 +97,15 @@ const SOURCE_KEYS: Record<string, string> = {
 }
 
 /** How one facet value reads. An unknown value (a raw source tag, a repo path, a tag) shows as stored. */
+/** The source facet value for a write origin, as `memory_record_facets.source_group`
+ *  makes it: `consolidation:dashboard:<session>` counts as `consolidation`. */
+export function sourceGroup(source: string | undefined): string {
+  const value = (source || '').trim()
+  if (!value) return 'unknown'
+  const colon = value.indexOf(':')
+  return colon > 0 ? value.slice(0, colon) : value
+}
+
 export function facetLabel(group: MemoryRecordFacetGroup, value: string): string {
   if (group === 'category') return CATEGORY_KEYS[value] ? i18nT(CATEGORY_KEYS[value]) : value
   if (group === 'applies') return APPLIES_KEYS[value] ? i18nT(APPLIES_KEYS[value]) : value

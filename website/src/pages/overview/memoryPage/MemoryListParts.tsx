@@ -2,7 +2,7 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { useState, type ReactNode } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Search, X } from 'lucide-react'
 import { Btn, IconButton, Input, PanelSectionHeader, Slider } from '../../../components/ui'
@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioG
 import { compareText, fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRecordFilters, MemoryRecordSort } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
-import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, lessonFacts, recordTags, recordTitle, type KindTab, type ListView } from './memoryListView'
+import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView } from './memoryListView'
 
 const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
 const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
@@ -41,10 +41,10 @@ export const fmtScore = (value: number) => fmtNumber(value, { minimumFractionDig
 const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'memoryPage.importance_value', match: 'memoryPage.match_value' } as const
 
 /** The kind pills, one row with live counts; a phone scrolls the row sideways. */
-export function KindPills({ kind, counts, onChange, disabled }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean }) {
+export function KindPills({ kind, counts, onChange, disabled, wrap = false }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean }) {
   const { t } = useTranslation()
   const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
-  return <div role="radiogroup" aria-label={t('memoryV2.group_kind')} title={t('memoryV2.memory_kinds_explanation')} className="-mx-1 flex min-w-0 gap-2 overflow-x-auto px-1 [scrollbar-width:none]">
+  return <div role="radiogroup" aria-label={t('memoryV2.group_kind')} title={t('memoryV2.memory_kinds_explanation')} className={`-mx-1 flex min-w-0 gap-2 px-1 ${wrap ? 'flex-wrap' : 'overflow-x-auto [scrollbar-width:none]'}`}>
     {KINDS.map(([key, label]) => {
       const on = key === kind
       const count = key === 'all' ? total : counts ? counts[key] || 0 : undefined
@@ -97,12 +97,33 @@ function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count
   </label>
 }
 
+/** A rail group's values, at most 16 rows high; past that the group scrolls, with a
+ *  fade and a hint at its foot until the last row is in view. */
+function GroupScroll({ capped, children }: { capped: boolean; children: ReactNode }) {
+  const { t } = useTranslation()
+  const ref = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState(false)
+  const check = useCallback(() => {
+    const box = ref.current
+    setMore(!!box && box.scrollHeight - box.scrollTop - box.clientHeight > 1)
+  }, [])
+  // After every render: the values or their count may have changed the height.
+  useLayoutEffect(check)
+  if (!capped) return <>{children}</>
+  return <div className="relative">
+    <div ref={ref} onScroll={check} className="max-h-[32rem] overflow-y-auto" data-testid="facet-group-scroll">{children}</div>
+    {more && <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-end justify-center bg-gradient-to-t from-bg to-transparent pb-0.5 text-[11px] text-muted">{t('memoryPage.scroll_more')}</div>}
+  </div>
+}
+
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, trailing, onToggle, onRange }: {
+export function FilterPanel({ view, facets, trailing, capped = false, onToggle, onRange }: {
   view: ListView; facets?: MemoryRecordFacets
   /** A control at the end of the search row (the wide rail's hide button). */
   trailing?: ReactNode
+  /** The wide rail: each group scrolls inside 16 rows. */
+  capped?: boolean
   onToggle: (group: MemoryRecordFacetGroup, value: string) => void
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
@@ -118,7 +139,7 @@ export function FilterPanel({ view, facets, trailing, onToggle, onRange }: {
     // A ticked value stays listed even when the other filters leave it no rows.
     const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
       .filter(value => !needle || facetLabel(group, value).toLocaleLowerCase().includes(needle))
-      .sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
+      .sort((a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
     return { group, counts, ticked, values }
   }).filter(item => item.values.length)
   return <div className="space-y-5">
@@ -129,14 +150,6 @@ export function FilterPanel({ view, facets, trailing, onToggle, onRange }: {
       </div>
       {trailing}
     </div>
-    {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
-    {shown.map(({ group, counts, ticked, values }) => {
-      const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
-      return <section key={group} aria-label={heading}>
-        <PanelSectionHeader label={heading} />
-        {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
-      </section>
-    })}
     {view.kind !== 'episode' && !needle && <section aria-label={t('memoryPage.facet_confidence')}>
       <PanelSectionHeader label={view.kind === 'all' ? t('memoryPage.for_facts_lessons', { group: t('memoryPage.facet_confidence') }) : t('memoryPage.facet_confidence')} />
       <div className="space-y-3 pt-1">
@@ -144,6 +157,16 @@ export function FilterPanel({ view, facets, trailing, onToggle, onRange }: {
         <Slider label={t('memoryPage.conf_highest')} showValue min={0} max={1} step={0.05} value={high} formatValue={fmtScore} onChange={value => onRange('conf_max', value < 1 ? Math.max(value, low) : undefined)} />
       </div>
     </section>}
+    {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
+    {shown.map(({ group, counts, ticked, values }) => {
+      const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
+      return <section key={group} aria-label={heading}>
+        <PanelSectionHeader label={heading} />
+        <GroupScroll capped={capped}>
+          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
+        </GroupScroll>
+      </section>
+    })}
   </div>
 }
 
@@ -204,7 +227,7 @@ export function RecordMeta({ row, sort, chip }: { row: MemoryRecord; sort: Memor
     {row.kind === 'episode' && recordTags(row).map(tag => <FilterChip key={tag} group="tag" value={tag} tone="bg-bg-hover px-2 text-muted" chip={chip}>#{tag}</FilterChip>)}
     {score !== null && <ScoreChip value={score} label={row.kind === 'episode' ? 'importance' : 'confidence'} />}
     {/* The facet counts spell a blank source as `unknown` (memory_record_facets.SOURCE_UNKNOWN). */}
-    <FilterChip group="source" value={row.source?.trim() || 'unknown'} tone="px-1 text-muted" chip={chip}><span className="truncate">{facetLabel('source', row.source || '')}</span></FilterChip>
+    <FilterChip group="source" value={sourceGroup(row.source)} tone="px-1 text-muted" chip={chip}><span className="truncate" title={row.source || undefined}>{facetLabel('source', sourceGroup(row.source))}</span></FilterChip>
     {when && <span className={`${CHIP} text-muted`} title={fmtDateTimeNumeric(when)}><time dateTime={when} className="tabular-nums" data-i18n-opaque>{t(created ? 'memoryPage.created_on' : 'memoryPage.updated_on', { date: fmtDate(when) })}</time></span>}
   </div>
 }

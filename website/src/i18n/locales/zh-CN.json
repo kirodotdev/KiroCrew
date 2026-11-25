@@ -23992,6 +23992,8 @@
     "saved_key": "已保存 {{key}}",
     "scope_all_repos": "所有仓库",
     "search_filters": "搜索筛选项",
+    "scroll_more": "滚动查看更多",
+    "filters_width": "筛选栏宽度",
     "select": "选择",
     "select_limit_hint": "一次最多 {{limit}} 条",
     "selection_toolbar": "已选记忆",

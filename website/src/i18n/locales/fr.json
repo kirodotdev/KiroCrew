@@ -25196,6 +25196,8 @@
     "saved_key": "{{key}} enregistré",
     "scope_all_repos": "Tous les dépôts",
     "search_filters": "Rechercher dans les filtres",
+    "scroll_more": "Fais défiler pour voir la suite",
+    "filters_width": "Largeur des filtres",
     "select": "Sélectionner",
     "select_limit_hint": "Jusqu’à {{limit}} à la fois",
     "selection_toolbar": "Souvenirs sélectionnés",

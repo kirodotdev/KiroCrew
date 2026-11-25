@@ -25196,6 +25196,8 @@
     "saved_key": "{{key}} salvato",
     "scope_all_repos": "Tutti i repository",
     "search_filters": "Cerca nei filtri",
+    "scroll_more": "Scorri per vedere altro",
+    "filters_width": "Larghezza dei filtri",
     "select": "Seleziona",
     "select_limit_hint": "Fino a {{limit}} alla volta",
     "selection_toolbar": "Ricordi selezionati",

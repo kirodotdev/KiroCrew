@@ -81,6 +81,19 @@ def episode_tags(tags_json: Any) -> list[str]:
     return list(dict.fromkeys(tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()))
 
 
+def source_group(source: Any) -> str:
+    """The source facet value for a row's write origin.
+
+    An origin written as ``<prefix>:<id>`` (``consolidation:dashboard:<session>``,
+    one per chat) counts under its prefix, so the filter lists one "Learned from
+    chat" value instead of one per session. The record itself keeps the full source.
+    """
+    if not isinstance(source, str) or not source.strip():
+        return SOURCE_UNKNOWN
+    prefix, colon, _ = source.strip().partition(":")
+    return prefix if colon and prefix else source.strip()
+
+
 def summary_facets(
     kind: str,
     value_json: Any,
@@ -95,7 +108,7 @@ def summary_facets(
         "category": None,
         "applies": None,
         "scope": None,
-        "source": source.strip() if isinstance(source, str) and source.strip() else SOURCE_UNKNOWN,
+        "source": source_group(source),
         "surface": surface,
         "crew": crew,
         "tag": episode_tags(tags_json) if kind == "episode" else [],

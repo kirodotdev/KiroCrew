@@ -1873,7 +1873,22 @@ is keyed on `useIsMobile` (below 768 px), not on a width class, so the toolbar
 wraps and the search box keeps its own row on a 640–767 px phone too. The wide
 filter rail has the same search box and a hide control at its top; hidden, the
 toolbar's Filters button (with the active count) shows it again, and the choice
-is kept per browser (`kirocrew:memory-filters-collapsed`). A row's filterable
+is kept per browser (`kirocrew:memory-filters-collapsed`). The rail is sticky and
+as tall as the window, scrolling on its own while the list scrolls; Confidence
+sits at its top; each group lists its values most rows first (ticked ones first)
+and scrolls inside 16 rows, with a fade and "Scroll to see more" until its last
+row shows. Its right edge drags (or arrow keys move) its width between 200 and
+420 px, kept per browser (`kirocrew:memory-filters-width`). Layout follows the
+content area's own width, not the window's: below the rail plus a 480 px list
+the rail gives way to the Filters button and the filter sheet, and a toolbar
+narrower than 40rem (a container query) puts the search box on its own row.
+Source counts an origin written as `<prefix>:<id>` under its prefix
+(`memory_record_facets.source_group`), so the one-per-chat
+`consolidation:dashboard:<session>` origins are one Learned from chat value; the
+record keeps its full source. The list reads its rows and its counts as two
+requests, so the first rows never wait for the counts, and the server keeps the
+last few searches' row summaries (`memory_edit._cached_summaries`) until the
+store changes, so a filter, sort or page reads only the rows it shows. A row's filterable
 chips (lesson category, applies, scope, tags, source) are toggle buttons that
 tick or clear that value in its group without opening the row.
 

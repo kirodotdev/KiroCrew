@@ -24594,6 +24594,8 @@
     "saved_key": "{{key}} gespeichert",
     "scope_all_repos": "Alle Repos",
     "search_filters": "Filter durchsuchen",
+    "scroll_more": "Scrollen für mehr",
+    "filters_width": "Breite der Filter",
     "select": "Auswählen",
     "select_limit_hint": "Bis zu {{limit}} auf einmal",
     "selection_toolbar": "Ausgewählte Erinnerungen",

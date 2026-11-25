@@ -23992,6 +23992,8 @@
     "saved_key": "{{key}} を保存しました",
     "scope_all_repos": "すべてのリポジトリ",
     "search_filters": "フィルターを検索",
+    "scroll_more": "スクロールして続きを表示",
+    "filters_width": "フィルター欄の幅",
     "select": "選択",
     "select_limit_hint": "一度に {{limit}} 件まで",
     "selection_toolbar": "選択した記憶",

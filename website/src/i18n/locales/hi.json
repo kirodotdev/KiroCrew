@@ -24594,6 +24594,8 @@
     "saved_key": "{{key}} सहेजा गया",
     "scope_all_repos": "सभी रिपो",
     "search_filters": "फ़िल्टर खोजें",
+    "scroll_more": "और देखने के लिए स्क्रॉल करो",
+    "filters_width": "फ़िल्टर की चौड़ाई",
     "select": "चुनो",
     "select_limit_hint": "एक बार में {{limit}} तक",
     "selection_toolbar": "चुनी गई स्मृतियाँ",

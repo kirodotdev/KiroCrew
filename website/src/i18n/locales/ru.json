@@ -25798,6 +25798,8 @@
     "saved_key": "Сохранено: {{key}}",
     "scope_all_repos": "Все репозитории",
     "search_filters": "Поиск по фильтрам",
+    "scroll_more": "Прокрути, чтобы увидеть больше",
+    "filters_width": "Ширина панели фильтров",
     "select": "Выбрать",
     "select_limit_hint": "Не больше {{limit}} за раз",
     "selection_toolbar": "Выбранные воспоминания",
