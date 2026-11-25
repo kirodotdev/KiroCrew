@@ -2529,8 +2529,9 @@ the opener always stays. The panel chord toggles only while a Bot is
 open.
 
 The Profile tab holds the Bot's own settings (`CrewProfileSettings`):
-permission (Normal / Reads / Trust), model and effort, the worker pair and the
-preview switches. They are changed there, never in the chat. The Profile tab
+permission (Normal / Reads / Trust), model and effort, the worker pair, the
+**Workers can conduct** switch and the preview switches. They are changed
+there, never in the chat. The Profile tab
 shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
 the model (permission · model; not the worker pick, which beside the Bot's own
 name read as a riddle); nothing else of the settings
@@ -5122,7 +5123,13 @@ its session array and the Bot's worker limit are what they are today
 The `worker.conducts` piece is rendered from `_LEDGER_CONDUCTOR_RULES` exactly
 as `conductor.patrol` is, so a rule every conductor carries is written once;
 `test_mate_conductor_parity.py` holds the root conductor, a Bot's thread and a
-Bot's conducting worker to that one copy.
+Bot's conducting worker to that one copy. The owner sets the switch on the
+Bot's Profile card (`pages/members/CrewProfileSettings.tsx`: a **Workers can
+conduct** switch in its own group under the one holding **Workers at once**, the
+RFC's §5.1 hint as its caption), which writes `PUT /api/agents/{name}`
+`{worker_conducts}` for that Bot alone; an absent field reads as off, and a
+refused write shows a notice under the group while the switch keeps the stored
+value (`CrewProfileSettings.test.tsx`).
 
 **A stale worker is released, not capped.** A Bot opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle

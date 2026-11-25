@@ -315,7 +315,8 @@ Profile card and read per request. A config that still holds an old
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
 `agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
-bool the owner sets through `PUT /api/agents/{name}` (a non-bool is refused
+bool the owner sets on the Bot's Profile card (**Workers can conduct**) or
+through `PUT /api/agents/{name}` (a non-bool is refused
 with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
 on `GET /api/members`, and read from the Bot's record at each worker's session
 start, never cached on the worker; a save that changes it reloads the Bot's
