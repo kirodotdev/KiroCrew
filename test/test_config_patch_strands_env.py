@@ -145,6 +145,21 @@ def test_the_names_are_the_strands_cli_provider_names() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_a_literal_url_is_refused_with_how_to_map_it(tmp_config) -> None:
+    # The map holds more than keys, so the refusal of a literal must say a URL needs
+    # a reference too and name the card that writes one, naming the key, not the value.
+    status, body = await _patch({"LITELLM_BASE_URL": "http://proxy.example:4000"})
+    assert status == 400
+    error = body["error"]
+    assert "'LITELLM_BASE_URL' holds a literal value" in error
+    assert "including a URL, region or host" in error
+    assert "Model provider card under Settings > Agent Harness" in error
+    assert "Settings > Secrets" in error
+    assert "proxy.example" not in json.dumps(body)
+    assert json.loads(tmp_config.read_text(encoding="utf-8")) == _SEED
+
+
 def test_the_refusal_names_the_key_not_the_value() -> None:
     with pytest.raises(ValueError) as exc:
         validate_strands_env_patch({"GEMINI_API_KEY": "AIza-plaintext"})

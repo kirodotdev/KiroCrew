@@ -79,7 +79,11 @@ from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
 from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
-from kiro_crew.config.sections_agent_env import STRANDS_ENV_NAMES, STRANDS_PROVIDER_CHOICES
+from kiro_crew.config.sections_agent_env import (
+    STRANDS_ENV_LITERAL_GUIDANCE,
+    STRANDS_ENV_NAMES,
+    STRANDS_PROVIDER_CHOICES,
+)
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_uris
 from kiro_crew.sandbox import (
     agent_env_scrub_prefixes,
@@ -341,10 +345,8 @@ def _validate_strands_env_mapping(mapping: dict[str, str]) -> None:
     for key, value in mapping.items():
         if not value.startswith(SECRET_URI_PREFIX):
             raise ValueError(
-                f"agent.strands_env entry {key!r} holds a literal value. This mapping "
-                f"takes a '{SECRET_URI_PREFIX}<vault name>' reference only, so a provider "
-                "key is never stored in config.json. Save the key under Settings > "
-                f"Secrets, then map it as '{SECRET_URI_PREFIX}<vault name>'."
+                f"agent.strands_env entry {key!r} holds a literal value. "
+                + STRANDS_ENV_LITERAL_GUIDANCE
             )
         if not AGENT_ENV_NAME_GRAMMAR.fullmatch(key) or key.startswith(
             _STRANDS_ENV_RESERVED_PREFIXES
