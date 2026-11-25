@@ -26,20 +26,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 
 from aiohttp import web
 
 from kiro_crew.browser_harness.live_hub import redact_wire
 from kiro_crew.browser_harness.recording import FRAME_NAME_RE, TURN_ID_RE, get_recorder
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.browser_live import _SESSION_KEY_RE
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 from kiro_crew.dashboard.state import _normalize_slot_key
 
 logger = logging.getLogger(__name__)
-
-#: The slot-key alphabet the card's POST routes accept, bounded the same way.
-_SESSION_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 _NO_STORE = {
     "Cache-Control": "no-store",
@@ -96,7 +93,7 @@ async def _gate(
     if refusal is not None:
         return None, refusal
     raw = request.match_info.get("session", "")
-    if not _SESSION_RE.fullmatch(raw):
+    if not _SESSION_KEY_RE.fullmatch(raw):
         return None, _not_found()
     key = _normalize_slot_key(raw)
     slots = getattr(request.app["state"], "_slots", None) or {}

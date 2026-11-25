@@ -193,15 +193,17 @@ def cost_breakdown(
         field = "cost" if saw_cost and not saw_credits else "credits"
         mixed = saw_credits and saw_cost
     unit = "usd" if field == "cost" else "credits"
-    # A view split by unit counts only its own unit's turns, so the two cards
-    # together hold each turn once: the dollar view keeps the turns billed in
-    # dollars, the credits view drops them and keeps the rest.
+    # No view counts a turn billed only in the other unit: in a window before a
+    # harness switch it would read as a free turn. A view split by unit also
+    # leaves turns that billed nothing to the credits card, so the two cards
+    # together hold each turn once.
     split = mixed or spend_field is not None
     # Dollars keep their cents; credits read to one decimal as before.
     places = 4 if unit == "usd" else 1
+    other = "credits" if field == "cost" else "cost"
 
     for obj, ts_raw, ts_epoch in _window_rows():
-        if split and not _billed(obj, field) and (field == "cost" or _billed(obj, "cost")):
+        if not _billed(obj, field) and (_billed(obj, other) or (split and field == "cost")):
             continue
         raw_credits = obj.get(field)
         # Shards written before the persist-side guard can already

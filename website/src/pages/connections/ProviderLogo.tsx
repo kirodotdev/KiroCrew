@@ -27,6 +27,7 @@ import neonLogoUrl from './logos/neon.svg'
 import prismaLogoUrl from './logos/prisma.svg'
 import todoistLogoUrl from './logos/todoist.svg'
 import ticktickLogoUrl from './logos/ticktick.svg'
+import slackLogoUrl from '../../assets/slack-logo.svg'
 
 /** Official provider brand marks for the Connections cards.
  *
@@ -48,9 +49,11 @@ import ticktickLogoUrl from './logos/ticktick.svg'
  *     used on a product, so the tile stands until that confirmation.
  *     The marks themselves remain each vendor's trademark and are used only to
  *     indicate compatibility.
- *   - FULL-COLOUR marks (Linear, Atlassian, Stripe, GitLab, TickTick) carry
- *     their identity in their own hues, so they render as a plain `<img>` and
- *     are never flattened to `currentColor`. TickTick's is the simple-icons
+ *   - FULL-COLOUR marks (Linear, Atlassian, Stripe, GitLab, TickTick, Slack)
+ *     carry their identity in their own hues, so they render as a plain `<img>`
+ *     and are never flattened to `currentColor`. Slack's is the shared official
+ *     mark in `assets/slack-logo.svg` (the same file `SlackIcon` renders), used
+ *     unaltered as Slack's brand rules require. TickTick's is the simple-icons
  *     path split into its two brand colours (blue ring #4772FA, amber check
  *     #FFB000, the hues of the vendor's own app icon); a single-hue mask lost
  *     the mark's identity among the coloured cards.
@@ -90,6 +93,7 @@ const COLOURED: Record<string, string> = {
   stripe: stripeLogoUrl,
   gitlab: gitlabLogoUrl,
   ticktick: ticktickLogoUrl,
+  slack: slackLogoUrl,
 }
 
 /** The provider's brand mark, or null for a slug we ship no mark for (the card

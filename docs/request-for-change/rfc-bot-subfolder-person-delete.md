@@ -1,10 +1,10 @@
 ---
 title: The person may delete an empty folder inside a Bot's home folder, and the empty-folder cleanup offers it
-status: accepted
+status: implemented
 author: buluoray (drafted with an agent session)
 created: 2026-11-16
-last-audited: 2026-11-17
-audited-at: 0ce99889fc5
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 38152
 implementation-prs: [38808]
 tracking-issues: [37434]
@@ -14,9 +14,14 @@ superseded-by: []
 
 # RFC: The person may delete an empty folder inside a Bot's home folder
 
-Status: accepted. A maintainer (bolichen97) approved and merged this RFC in
+Status: implemented. A maintainer (bolichen97) approved and merged this RFC in
 [#38152](https://github.com/kirodotdev/KiroCrew/pull/38152), and
-[#38808](https://github.com/kirodotdev/KiroCrew/pull/38808) builds it. It
+[#38808](https://github.com/kirodotdev/KiroCrew/pull/38808) (merged 2026-11-18)
+built it: `delete_empty_bot_subfolder` in
+`src/kiro_crew/dashboard/mate_subfolder_delete.py`, called from
+`api_chat_folder_delete` in `dashboard/chat_folders_routes.py`, and the cleanup
+gate `is_person_browser` in `dashboard/chat_folder_cleanup.py`. Checked at
+`fc89562d69`. It
 answers [#37434](https://github.com/kirodotdev/KiroCrew/issues/37434), which a
 maintainer triaged as a design-level change to the rule that a Bot's home
 folder belongs to the Bot. Every code reference below was read at
@@ -87,10 +92,12 @@ hold:
 
 - the caller is the person's browser: no effective app
   (`_effective_request_app`), no member principal
-  (`MEMBER_CHAT_PRINCIPAL_KEY`), and no internal secret
-  (`request_origin(...)[0] == "dashboard"`). The last test keeps out an agent
-  in the person's own session: it reaches this route through the
-  `chat_folder_delete` MCP tool, on the internal transport;
+  (`MEMBER_CHAT_PRINCIPAL_KEY`), and no internal admission
+  (`request_origin(...)[0] == "dashboard"`: no `X-Internal-Secret` header and
+  `request["internal_auth"]` not set). The last test keeps out an agent in the
+  person's own session: it reaches this route through the `chat_folder_delete`
+  MCP tool, on the internal transport, or over the agent socket, which carries
+  no secret and is admitted by token auth setting `internal_auth`;
 - it has no child folder and no live session, checked inside the
   folder-store callback that removes the row, the same check the existing
   `if_empty` branch runs in `_remove_if_empty`;

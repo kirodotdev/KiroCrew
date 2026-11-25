@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.dashboard.chat_utils_injected_rows import AUTH_REQUIRED_KIND
+from kiro_crew.dashboard.chat_utils_injected_rows import AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.dashboard.state_parts import transcript_rows
 
@@ -29,8 +29,8 @@ def test_answers_the_shared_table(case: dict) -> None:
     assert transcript_rows.newest_error_is_sign_in(case["rows"]) is case["expected"]
 
 
-def test_reads_the_kind_chat_utils_stamps() -> None:
-    assert transcript_rows._AUTH_REQUIRED_KIND == AUTH_REQUIRED_KIND
+def test_reads_the_kinds_chat_utils_stamps() -> None:
+    assert transcript_rows._SIGN_IN_KINDS == (AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND)
 
 
 def test_the_slot_summary_carries_it_beside_interrupted() -> None:

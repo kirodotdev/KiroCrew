@@ -14,10 +14,15 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../api/client'
 import { parseErrorCode } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
+import { compareText } from '../i18n/format'
 import { timeAgo } from '../utils/timeAgo'
 import type { AppDispatch, RootState } from '../store'
 import { relayOpenStarted } from '../store/instancesSlice'
 import { openRelayPane, relayPaneBridge } from '../lib/relayCrewPanes'
+import { forgetRelayCrewsOpened } from '../lib/crewWarmSet'
+
+/** The dev setting a relay domain mismatch names (`offDomain`); a key, so never translated. */
+export const RELAY_DOMAIN_SETTING = 'tunnel.relay_viewer_relay_domain'
 
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
 type RelayCrewBridge = { open: (endpointId: string) => Promise<RelayCrewOpenResult> }
@@ -91,6 +96,8 @@ export function openRelayCrewInBrowser(endpointId: string, dispatch: AppDispatch
  *  browser tab is not closed from here (this page cut its `opener`, which also
  *  ends this page's hold on it): the gateway tells the tab itself. */
 export async function closeRelayCrews(): Promise<void> {
+  // The next account must not warm a Crew only this one opened.
+  forgetRelayCrewsOpened()
   const b = (window as { relayCrewAPI?: { closeAll?: () => Promise<unknown> } }).relayCrewAPI
   if (typeof b?.closeAll !== 'function') return
   try {
@@ -98,6 +105,12 @@ export async function closeRelayCrews(): Promise<void> {
   } catch {
     /* the renewal backstop still closes them */
   }
+}
+
+/** A refusal that says the person is signed out: an ordinary state with a way
+ *  forward (sign in), so it is told as a status, not as an error. */
+export function isSignedOutRefusal(code: string | undefined): boolean {
+  return (code || '').toUpperCase() === 'SIGNED_OUT'
 }
 
 /** Plain text for a typed refusal code (the control plane client's codes, design
@@ -155,6 +168,14 @@ export function relayCrewStatusText(entry: RelayCrewEntry, now: number = Date.no
 }
 
 export const RELAY_VIEWER_CREWS_KEY = ['relay-viewer', 'crews'] as const
+
+/** The Crews in one order whatever order the service answers in, which changes
+ *  from one call to the next: by name, then by endpoint ID, so a Crew stays
+ *  where the person last saw it and a click lands on the row they aimed at. */
+export function sortRelayCrews(crews: readonly RelayCrewEntry[]): RelayCrewEntry[] {
+  return [...crews].sort((a, b) => compareText(a.name, b.name)
+    || (a.endpointId < b.endpointId ? -1 : a.endpointId > b.endpointId ? 1 : 0))
+}
 
 /** The most IDs one seen request carries; the route's own cap (`_MAX_SEEN_IDS`). */
 const SEEN_BATCH = 200
@@ -225,13 +246,17 @@ function relayCrewsPollMs(state: { error: unknown; data?: { crews: RelayCrewEntr
 /** Opening the switcher re-reads the list unless a successful read is this recent. */
 const OPEN_FRESH_MS = 5_000
 
-export function useRelayViewerCrews(): {
+/** `enabled` false reads nothing: an SSH Crew's own page (an embedded pane) shows the rows its window relays instead. */
+export function useRelayViewerCrews(enabled = true): {
   hidden: boolean
   crews: RelayCrewEntry[]
   /** The account the loaded list was read for; null when the gateway named none. */
   account: RelayViewerAccount | null
   /** The latest read failed (a network or server failure, or a throttle); the list shown is the last one loaded, if any. */
   failed: boolean
+  /** The loaded list left Crews out only because `tunnel.relay_viewer_relay_domain`
+   *  does not match their addresses, so that setting is wrong for this relay. */
+  offDomain: boolean
   /** Read a loaded list again unless the last read is under OPEN_FRESH_MS old (the menu opened). */
   refreshOnOpen: () => void
 } {
@@ -242,11 +267,12 @@ export function useRelayViewerCrews(): {
     // stand-in gateway) is read as an empty one rather than breaking the shell.
     queryFn: async () => {
       const answer = await api.relayViewerCrews()
-      return { ...answer, crews: Array.isArray(answer?.crews) ? answer.crews : [] }
+      return { ...answer, crews: Array.isArray(answer?.crews) ? sortRelayCrews(answer.crews) : [] }
     },
     // The poll below is the retry, at its own pace.
     retry: false,
     refetchInterval: query => relayCrewsPollMs(query.state),
+    enabled,
   })
   // Stable, so the menu can call it once when it opens. Only a loaded list is read again.
   const refreshOnOpen = useCallback(() => {
@@ -256,7 +282,8 @@ export function useRelayViewerCrews(): {
   }, [queryClient])
   // A failed read keeps the list it had, unless it was a refusal or the route is off.
   if (isOffError(q.error) || isRefusal(q.error) || (!q.data && !q.error)) {
-    return { hidden: true, crews: [], account: null, failed: false, refreshOnOpen }
+    return { hidden: true, crews: [], account: null, failed: false, offDomain: false, refreshOnOpen }
   }
-  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, failed: !!q.error, refreshOnOpen }
+  const offDomain = typeof q.data?.offDomain === 'number' && q.data.offDomain > 0
+  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, failed: !!q.error, offDomain, refreshOnOpen }
 }

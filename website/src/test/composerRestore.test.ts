@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { restoreToComposer, registerMainComposer } from '../utils/composerRestore'
+import { keepInComposer, restoreToComposer, registerMainComposer } from '../utils/composerRestore'
+import { vi } from 'vitest'
 import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
 import { __resetPaneDraftsForTests, readPaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
 
@@ -41,5 +42,24 @@ describe('restoreToComposer', () => {
   it('ignores blank text', () => {
     restoreToComposer('a', '  ')
     expect(loadDrafts().a).toBeUndefined()
+  })
+
+  it('answers the same visibility as before for every destination', () => {
+    const offMain = registerMainComposer((slot, _t, showingOnly) => slot === 'main' && showingOnly)
+    const offOther = registerMainComposer((slot, _t, showingOnly) => slot === 'other' && !showingOnly)
+    const unsub = subscribePaneDraft('pane', () => {})
+    expect([restoreToComposer('main', 'x'), keepInComposer('main', 'x')]).toEqual([true, 'shown'])
+    expect([restoreToComposer('pane', 'x'), keepInComposer('pane', 'x')]).toEqual([true, 'shown'])
+    expect([restoreToComposer('other', 'x'), keepInComposer('other', 'x')]).toEqual([false, 'kept'])
+    expect([restoreToComposer('none', 'x'), keepInComposer('none', 'y')]).toEqual([false, 'kept'])
+    expect([restoreToComposer('none', ' '), keepInComposer('none', ' ')]).toEqual([false, 'lost'])
+    offMain(); offOther(); unsub()
+  })
+
+  it('says lost when the browser refuses to store the draft', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError') })
+    expect(keepInComposer('a', 'yes')).toBe('lost')
+    expect(restoreToComposer('a', 'yes')).toBe(false)
+    setItem.mockRestore()
   })
 })

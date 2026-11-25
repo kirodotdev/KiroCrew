@@ -85,7 +85,8 @@ def seams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 async def test_spawn_runs_off_the_calling_loop_thread(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(mcp_discovery, "_get_probe_timeout", lambda: 0.2)
+    # A local probe waits four times this (0.2 s) before it reports the timeout.
+    monkeypatch.setattr(mcp_discovery, "_get_probe_timeout", lambda: 0.05)
     server = await probe_server(McpServerInfo(name="slow", command="true"))
 
     assert seams["thread"] is not threading.current_thread()

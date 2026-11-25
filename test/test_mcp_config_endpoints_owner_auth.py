@@ -47,6 +47,7 @@ def _build_app() -> web.Application:
         request["app"] = request.headers.get("X-Test-App", "")
         if request.headers.get("X-Test-Internal") == "1":
             request["internal_auth"] = True
+            request["peer_verified"] = True
         return await handler(request)
 
     app = web.Application(middlewares=[_identity])
@@ -91,11 +92,12 @@ async def test_every_targeted_mutation_rejects_app_tokens() -> None:
 async def test_internal_auth_exception_is_limited_to_server_registration() -> None:
     app = _build_app()
     async with TestClient(TestServer(app)) as client:
-        # The internal caller is admitted by the server-registration handler and
-        # reaches body parsing; no mutation occurs because the body is absent.
+        # The internal caller with an attested session is admitted by the
+        # server-registration handler and reaches body parsing; no mutation occurs
+        # because the body is absent.
         response = await client.put(
             "/api/mcp/servers/example",
-            headers={"X-Test-Internal": "1"},
+            headers={"X-Test-Internal": "1", "X-Session-Key": "agent-session"},
         )
         assert response.status == 400
 

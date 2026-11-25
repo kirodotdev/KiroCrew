@@ -145,8 +145,7 @@ that a field the user set and Kiro Crew never models survives a rebuild. One fie
 in that output is not the user's — the resolved absolute `command`. Reading a
 computed value back as if it were authored is what makes it permanent:
 `_resolve_command` accepts an absolute existing executable without a PATH search,
-so no later change to how commands resolve can rebind one that was stored once
-(#4955).
+so no later change to how commands resolve can rebind one that was stored once.
 
     "x-kirocrew-derived": { "from": "npx", "emitted": "/abs/npx" }
 
@@ -175,7 +174,7 @@ merge picks a winner by which command resolves, then adopts that winner's
 `args`/`env` as a unit. Any pre-resolution guess is wrong in one of two directions:
 scanning per field mixes sources, and taking the first owning scope picks a source
 the merge would not have chosen. That is a merge-precedence question, not a
-provenance one, and it belongs with the ownership work in #6171.
+provenance one, and it is out of scope here.
 
 The ownership test is deliberately conservative and compares by ALIAS, not raw key:
 a scope keys entries by its own raw name while the config's slash-containing keys

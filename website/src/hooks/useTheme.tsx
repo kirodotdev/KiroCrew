@@ -25,6 +25,7 @@ import {
   type ThemeSchedule,
 } from '../utils/themeSchedule'
 import { useThemeSchedule } from './useThemeSchedule'
+import { useThemeModeOverride } from './themeModeOverride'
 import {
   adoptServerLiquidGlass,
   readLiquidGlass,
@@ -1252,6 +1253,10 @@ function useThemeState(): ThemeContextValue {
     && customThemes.some((t) => t.value === colorTheme)
     && !customThemeDataMap.has(activeSlugForFailure)
 
+  // A relay Crew in front paints its own mode over this one, unsaved (themeModeOverride.ts).
+  const modeOverride = useThemeModeOverride()
+  // What is painted, and what every reader of the context's `theme` gets (top-bar art).
+  const painted = modeOverride ?? resolved
   useEffect(() => {
     // A kept custom selection whose pack is listed but whose detail failed has
     // no injected `[data-theme="custom-<slug>-<mode>"]` block to match, so the
@@ -1262,9 +1267,13 @@ function useThemeState(): ThemeContextValue {
     // A pack whose detail is merely pending (no error yet) keeps its custom
     // attribute, as does the render-cache seed path.
     const unstyledFailure = installedThemeLoadFailed
-    applyTheme(unstyledFailure ? DEFAULT_COLOR_THEME : colorTheme, resolved, mode)
+    // The shell reads `data-mode` for a Scheduled preference (`data-mode-pref`), so while a
+    // borrowed mode is painted it is handed the person's own resolved mode as the preference:
+    // the process-wide native theme never takes the borrowed one.
+    const shellPref = modeOverride !== null && mode === 'schedule' ? resolved : mode
+    applyTheme(unstyledFailure ? DEFAULT_COLOR_THEME : colorTheme, painted, shellPref)
     bumpThemeVersion()
-  }, [resolved, colorTheme, mode, bumpThemeVersion, installedThemeLoadFailed])
+  }, [painted, modeOverride, resolved, colorTheme, mode, bumpThemeVersion, installedThemeLoadFailed])
 
   // Tell the Electron shell which mode PREFERENCE is active, so it can set
   // `nativeTheme.themeSource` to match ('system' under Auto). Pushed on change
@@ -1275,15 +1284,16 @@ function useThemeState(): ThemeContextValue {
   useEffect(() => {
     const bridge = window.electronAPI
     bridge?.setThemeMode?.(mode === 'schedule' ? resolved : mode)
-  }, [mode, resolved])
+  }, [mode, resolved, modeOverride])
 
-  // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
+  // Sync the Windows titleBarOverlay colors whenever the painted dark/light
   // mode changes. The overlay strip must match the dashboard chrome at all
-  // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
+  // times, a Remote Crew's lent mode included; the shell stores it on this
+  // window only, so no other window and no native theme takes it.
   useEffect(() => {
     const bridge = window.electronAPI
-    bridge?.setTitleBarOverlayTheme?.(resolved)
-  }, [resolved])
+    bridge?.setTitleBarOverlayTheme?.(painted)
+  }, [painted])
 
   // Read the target token, not body.backgroundColor: the body's colour
   // transition can still be between palettes when this frame runs.
@@ -1299,16 +1309,17 @@ function useThemeState(): ThemeContextValue {
 
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
-  // Reads the computed --accent after paint; a no-op in a plain browser.
+  // Reads the computed --accent after paint; a no-op in a plain browser. Not while a
+  // relay Crew's mode is painted over the person's own: the shell saves this one.
   useEffect(() => {
     const bridge = window.electronAPI
-    if (!bridge?.setThemeAccent) return
+    if (!bridge?.setThemeAccent || modeOverride !== null) return
     const id = requestAnimationFrame(() => {
       const hex = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
       if (hex) bridge.setThemeAccent!(hex)
     })
     return () => cancelAnimationFrame(id)
-  }, [resolved, colorTheme, themeVersion])
+  }, [resolved, colorTheme, themeVersion, modeOverride])
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1595,7 +1606,7 @@ function useThemeState(): ThemeContextValue {
   }, [])
 
   return {
-    theme: resolved,
+    theme: painted,
     preference: mode,
     cycle: cycleMode,
     setTheme: setMode_,

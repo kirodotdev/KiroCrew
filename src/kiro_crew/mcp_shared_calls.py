@@ -499,6 +499,25 @@ def _audit_safe_args(value: Any) -> Any:
     return value
 
 
+_ANSWER_CODE_MAX = 64
+_ANSWER_CODE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _answer_code(text: str) -> str:
+    """The code a failed answer ends with, as ``mcp_work._refusal`` writes it:
+    `` [code]`` or `` [code, field=...]``. Only the tail is read, so any text ending
+    that way gives its token."""
+    if not text.endswith("]"):
+        return ""
+    _, sep, tail = text[:-1].rpartition(" [")
+    if not sep:
+        return ""
+    code = tail.partition(", field=")[0]
+    if not 1 <= len(code) <= _ANSWER_CODE_MAX or not ("a" <= code[0] <= "z"):
+        return ""
+    return code if set(code) <= _ANSWER_CODE_CHARS else ""
+
+
 @overload
 def call_tool_with_logging(
     name: str,
@@ -582,6 +601,8 @@ def call_tool_with_logging(
 
     def _audit(text: str) -> None:
         outcome = "failed" if text.startswith("Error:") else "completed"
+        # Only the code is kept: the answer text can carry what the call was about.
+        code = _answer_code(text) if outcome == "failed" else ""
         sel().log_tool_invocation(
             session_key=session_key,
             source="mcp",
@@ -591,6 +612,7 @@ def call_tool_with_logging(
             downstream_service=downstream_service,
             resources=resources,
             error="execution_failed" if outcome == "failed" else "",
+            metadata={"code": code} if code else None,
         )
 
     if isinstance(result, DeferredTool):

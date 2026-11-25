@@ -200,7 +200,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _publish_empty_ceiling _materialize_sealable_parent_dirs _note_established
         _mint_gateway_id_before_seal _materialize_sealable_ceilings _warn_aliased_strict_leaves
         require_unaliased_cloud_config _delete_file_command require_unaliased_launch_state
-        require_unaliased_model_file
+        require_unaliased_model_file _resolved_kiro_mcp_registry_targets
+        _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry
+        _MAX_REGISTRY_LINK_HOPS _registry_chain_end
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES
@@ -222,6 +224,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _LEGACY_AUTH_SWEEP_CLEAN _materialize_env_mask_target
         _materialize_refresh_chains_mask_target _create_absent_mask_target
+        _materialize_signing_key_mask_target
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
@@ -363,6 +366,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _needs_path_search create_subprocess_limited _prepare_limited_spawn run_limited
         _INTERPRETER_ENOENT_DELAYS _is_transient_interpreter_enoent
         _retry_interpreter_enoent popen_limited
+        _FORK_FREE_SPAWN _FORK_ONLY_SPAWN_KWARGS fork_free_spawns _fork_free_spawn_plan
+        _SHIM_SETSID_FLAG _SHIM_CHDIR_FLAG _SHIM_CLOSE_FDS_FLAG
         """.split()),
     "kiro_crew.sandbox_spawn": tuple("""
         corroborate_launcher_refusal credential_mask_applies spawn_delegates_masking

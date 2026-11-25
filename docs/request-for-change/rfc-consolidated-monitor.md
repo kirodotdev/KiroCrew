@@ -3,9 +3,9 @@ title: One observation layer, one controller
 status: draft
 author: chenmingwei23
 created: 2026-09-08
-last-audited: 2026-10-06
-audited-at: 9348a25a34
-doc-pr:
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
+doc-pr: 9339
 implementation-prs: [5185, 5186, 5305, 8919]
 tracking-issues: []
 supersedes: []
@@ -19,7 +19,8 @@ expose named `MonitorObservation` entries, per-condition coalescing, and bounded
 provider/turn/token accounting, but `monitor_start` still runs the separate
 `irq.poll` path while `monitor_watch` uses the structured controller. The single
 observation stack, out-of-session batching, and unified dashboard surface
-described below are not complete.
+described below are not complete (checked at `fc89562d69`:
+`autonudge_service/gate.py` still calls `irq.poll`).
 
 Premise note: the PR watch runs in the gateway. There is
 no `babysit/scripts/pr_watch.py` cron script
@@ -53,7 +54,7 @@ The second fact is that a body is not re-sent per turn so much as permanent. ACP
 | | Before [#9073](https://github.com/kirodotdev/KiroCrew/pull/9073) | Now |
 |---|---|---|
 | What names the directive | a marker inside the tool's result text, repaired across backend reshaping | `sha256(tool + canonical_json(args))`, computed by the gateway in `session_directive.call_input_digest` |
-| Where it waits | recovered from the result body | a turn-scoped bounded queue, `dashboard/directive_queue.py`, 300s age, 8 per session, 256 sessions |
+| Where it waits | recovered from the result body | a turn-scoped bounded queue, `directive_queue.py`, 300s age, 8 per session, 256 sessions |
 | Who claims it | `_repair_escaped_marker` then apply | `directive_queue.claim(session_key, input_digest, not_before=turn_start)` |
 | `_repair_escaped_marker` | load-bearing | deleted, zero hits in `src/` |
 

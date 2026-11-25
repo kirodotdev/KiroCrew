@@ -101,7 +101,20 @@ def test_a_permissions_block_kas_would_refuse_whole_is_refused_by_name():
     bad = {"rules": [{"effect": "deny", "tools": ["@jira/delete_issue"]}]}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"permissions": bad})
-    assert caught.value.fields == ["permissions"]
+    # Named with KAS's own reason, so the person knows which rule to fix.
+    assert caught.value.fields == ["permissions (rule 0 carries unknown key(s) tools)"]
+
+
+def test_a_refused_rule_is_numbered_as_the_template_numbers_it():
+    """Rules the file already holds do not shift the index the reason names."""
+    held = [
+        {"capability": "fs_read", "effect": "allow"},
+        {"capability": "shell", "effect": "deny", "match": ["sudo *"]},
+    ]
+    bad = {"rules": [{"capability": "shell", "effect": "deny", "tools": ["rm"]}]}
+    with pytest.raises(SpecPolicyUncarried) as caught:
+        mate_spec_policy.layer_policy({"permissions": {"rules": held}}, {"permissions": bad})
+    assert caught.value.fields == ["permissions (rule 0 carries unknown key(s) tools)"]
 
 
 # --- the worker ------------------------------------------------------------------
@@ -506,13 +519,15 @@ def test_a_template_with_a_subagent_allowlist_and_trusted_agents_is_added(home):
 
 def test_the_kit_copy_carries_a_deny_kas_cannot_enforce_and_names_it(home):
     user, mates = home
-    bad = {"execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]}}
+    bad = {"execute_bash": {"deniedCommands": ["git push origin .*|git push upstream .*"]}}
     _use(user, {**TEMPLATE, "toolsSettings": bad})
     preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
-    assert preview["unenforced_denies"] == ["git push (origin|upstream) .*"]
+    assert preview["unenforced_denies"] == ["git push origin .*|git push upstream .*"]
     mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
     assert _file(mates)["toolsSettings"] == bad
-    assert mate_worker_kit.view("pixel")["unenforced_denies"] == ["git push (origin|upstream) .*"]
+    assert mate_worker_kit.view("pixel")["unenforced_denies"] == [
+        "git push origin .*|git push upstream .*"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -944,7 +959,7 @@ def test_an_allow_a_servers_auto_approve_grants_is_not_refused():
 def test_a_permissions_block_whose_rules_is_not_a_list_is_refused_not_crashed(rules, home):
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"permissions": {"rules": rules}}, worker=True)
-    assert caught.value.fields == ["permissions"]
+    assert caught.value.fields == ["permissions (`rules` must be an array)"]
     assert mate_spec_policy.without_held({"permissions": {"rules": rules}}, WORKER_BASE)
     user, _mates = home
     _use(user, {**TEMPLATE, "permissions": {"rules": rules}})

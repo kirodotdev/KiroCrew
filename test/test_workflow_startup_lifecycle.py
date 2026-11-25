@@ -23,6 +23,7 @@ def _state():
     runner._workflow_initializing = False
     runner._runs = {}
     runner._tasks = {}
+    runner._stop_settles = {}
     runner._start_lock = asyncio.Lock()
     runner._start_ids_in_flight = set()
     return SimpleNamespace(

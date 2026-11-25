@@ -14,6 +14,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -498,14 +499,14 @@ class TestServiceCmd:
         ],
     )
     def test_action_forwards_and_audits(self, monkeypatch, sel_rec, action, fn, operation) -> None:
-        monkeypatch.setattr(cli_server.service_controller, fn, lambda: 0)
+        monkeypatch.setattr(cli_server.service_controller, fn, lambda **_kw: 0)
         rc = cli_server._service_cmd(argparse.Namespace(service_action=action))
         assert rc == 0
         assert sel_rec.operations == [operation]
         assert sel_rec.calls[0]["outcome"] == "allowed"
 
     def test_nonzero_rc_is_audited_as_error(self, monkeypatch, sel_rec) -> None:
-        monkeypatch.setattr(cli_server.service_controller, "install_service", lambda: 3)
+        monkeypatch.setattr(cli_server.service_controller, "install_service", lambda **_kw: 3)
         assert cli_server._service_cmd(argparse.Namespace(service_action="install")) == 3
         assert sel_rec.calls[0]["outcome"] == "error"
         assert "rc=3" in sel_rec.calls[0]["resources"]
@@ -1228,8 +1229,8 @@ class TestRunTask:
     def test_builtin_sync_runs_through_the_explicit_seam(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:
-        # _run_task runs on a loop, where construction-time sync skips
-        # itself: the loader must be built with install_builtins=False and
+        # _run_task builds the loader off the loop, where construction would
+        # run the sync itself: it must be built with install_builtins=False and
         # have sync_builtins driven through the explicit off-loop seam.
         created: list[_FakeStore] = []
 
@@ -1248,6 +1249,26 @@ class TestRunTask:
             inst.kwargs.get("install_builtins") is False and inst.builtins_synced
             for inst in created
         )
+
+    def test_skills_loader_is_built_off_the_loop(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # Its constructor resolves every skills.extra_paths root, which blocks
+        # until a slow or network mount answers.
+        built_on: list[int] = []
+
+        class _SpyLoader(_FakeStore):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                built_on.append(threading.get_ident())
+
+        monkeypatch.setattr(cli_server, "SkillsLoader", _SpyLoader)
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=True, fresh=False, timeout=0, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+        assert built_on and threading.get_ident() not in built_on
 
     def test_consolidator_gets_the_configured_migrated_flag(
         self, taskrunner_env, tmp_path, monkeypatch
@@ -1308,6 +1329,38 @@ class TestRunTask:
             asyncio.run(cli_server._run_task(args))
         assert exc.value.code == 1
         assert "step 2 blew up" in capsys.readouterr().err
+
+    def test_a_planning_sandbox_refusal_prints_its_own_text_on_stderr(
+        self, taskrunner_env, tmp_path, monkeypatch, capsys
+    ) -> None:
+        from kiro_crew.sandbox import SandboxUnavailableError
+        from kiro_crew.taskrunner_parts import run_reporting
+
+        refusal = "Sandbox backend unavailable. Run X."
+        result = _Result("failed", error="Failed to decompose spec into tasks")
+
+        class _Refusing:
+            async def _decompose(self, *_a, **_k):
+                raise SandboxUnavailableError(refusal, kind="no_backend", detail="userns denied")
+
+        async def _run(self, spec_path, name=""):
+            # The refusal is met in the task that awaits the run, as in ``TaskRunner.run``.
+            await run_reporting.decompose_recording_refusal(
+                _Refusing(), result, result.error, "spec"  # type: ignore[arg-type]
+            )
+            return result
+
+        taskrunner_env["install_runner"](result)
+        monkeypatch.setattr(cli_server.TaskRunner, "run", _run)
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=False, fresh=False, timeout=0, name=""
+        )
+        with pytest.raises(SystemExit) as exc:
+            asyncio.run(cli_server._run_task(args))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert f"Task failed (demo): {refusal}" in err
+        assert "Failed to decompose" not in err
 
     def test_cancelled_task_exits_one(self, taskrunner_env, tmp_path, capsys) -> None:
         taskrunner_env["install_runner"](_Result("cancelled"))

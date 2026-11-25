@@ -13,7 +13,9 @@ import { i18nT } from '../../i18n/t'
  * failed check, which outranks a sandbox verdict. `notOffered` is the one state
  * only Settings knows — a harness the build lists but never offers — and it
  * outranks everything, because nothing about installing or re-checking applies
- * to an option that is not on the table.
+ * to an option that is not on the table. `refused` is Settings' too: the row's
+ * own launch verdict (`sandbox_refusal`), which outranks the install facts
+ * because installing, restarting or re-checking cannot make that harness start.
  *
  * `sandboxOff` splits the sandbox verdict in two, and each pill names its own
  * cause because the two remedies are opposite. "Host can't sandbox" is a HOST
@@ -31,6 +33,7 @@ export function AgentStatusBadge({
   blocked,
   sandboxOff = false,
   notOffered = false,
+  refused = '',
 }: {
   probe: AcpBackendProbe
   /** The host sandbox cannot confine this harness (setup gate only). */
@@ -39,10 +42,13 @@ export function AgentStatusBadge({
   sandboxOff?: boolean
   /** This build never offers the harness (Settings only). */
   notOffered?: boolean
+  /** Every session start refuses this harness on this host, and whose fix it is (Settings only). */
+  refused?: '' | 'host' | 'setting'
 }) {
   if (notOffered) {
     return <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.word_not_offered')}</Badge>
   }
+  if (refused) return <SandboxPill off={refused === 'setting'} />
   if (probe.installed === 'missing') {
     // The binary is there, on a release the gateway refuses to start: a fault to
     // fix, not an absence, so it gets the warning colour and its own word.
@@ -61,23 +67,23 @@ export function AgentStatusBadge({
   if (probe.installed === 'unknown') {
     return <Badge variant="muted">{i18nT('components.kiroPrerequisiteGate.agent_unverified')}</Badge>
   }
-  if (sandboxOff) {
-    return (
-      <Badge variant="warn">
-        <AlertTriangle className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.agent_sandbox_turned_off')}
-      </Badge>
-    )
-  }
-  if (blocked) {
-    return (
-      <Badge variant="warn">
-        <AlertTriangle className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.agent_host_cannot_sandbox')}
-      </Badge>
-    )
-  }
+  if (sandboxOff) return <SandboxPill off />
+  if (blocked) return <SandboxPill />
   return (
     <Badge variant="ok">
       <CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.agent_installed')}
+    </Badge>
+  )
+}
+
+/** The sandbox verdict's pill: "Sandbox turned off" for the setting, else "Host can't sandbox". */
+function SandboxPill({ off = false }: { off?: boolean }) {
+  return (
+    <Badge variant="warn">
+      <AlertTriangle className="lucide-inline" />{' '}
+      {off
+        ? i18nT('components.kiroPrerequisiteGate.agent_sandbox_turned_off')
+        : i18nT('components.kiroPrerequisiteGate.agent_host_cannot_sandbox')}
     </Badge>
   )
 }

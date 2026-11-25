@@ -58,8 +58,9 @@ def _sandbox_confined() -> bool:
     """True when this process shows evidence of agent-shell confinement.
 
     ``cli.main`` pops ``KIROCREW_SANDBOX_ACTIVE`` before any subcommand runs, so
-    the launch mark it noted first is asked as well as the live probe. Used
-    only to pick a log level, never to grant anything.
+    the launch mark it noted first is asked as well as the live probe. It picks
+    a log level here, and ``kirocrew cron history`` reads an empty result as the
+    mask rather than as no runs when it is True. It never grants anything.
     """
     from kiro_crew import sandbox_launch_mark
     from kiro_crew.sandbox_unavailable import agent_confinement_evidence
@@ -166,6 +167,22 @@ def truncate_summary(text: str, cap: int) -> str:
         [body] if body else []
     )
     return "\n".join(parts)
+
+
+def keep_ends(text: str, cap: int) -> str:
+    """Cut ``text`` to one line of at most ``cap`` characters by removing its middle.
+
+    For a one-line record whose end matters as much as its start, such as a
+    refusal that names its rule after a long command. Newlines become spaces.
+    """
+    flat = text.replace("\n", " ")
+    if len(flat) <= cap:
+        return flat
+    room = cap - len(_CUT_MARKER) - 2
+    if room <= 0:
+        return flat[: max(cap, 0)]
+    tail = room // 2
+    return f"{flat[: room - tail]} {_CUT_MARKER} {flat[len(flat) - tail :]}"
 
 
 def _fit_links(candidates: list[str], budget: int) -> tuple[list[str], int]:
@@ -428,6 +445,8 @@ class CronHistoryStore:
         # racing the prepare degrades rather than touching an unprepared store.
         self._prepared = False
         self._enabled = False
+        #: The last ``OSError`` ``_degrade`` handled; only ``kirocrew cron history`` reads it.
+        self.last_error: OSError | None = None
         if not _defer_prepare:
             self.prepare()
         # The caps above are copies of cron_history.*, so a config write reaches
@@ -566,6 +585,7 @@ class CronHistoryStore:
         (full disk, fd exhaustion, transient I/O) costs ONE record and the store
         stays enabled, because those clear on their own.
         """
+        self.last_error = exc
         if exc.errno in _DENIAL_ERRNOS:
             if self._enabled:
                 self._enabled = False
@@ -615,8 +635,7 @@ class CronHistoryStore:
         platform_compat.release_lock(fd)
         os.close(fd)
 
-    async def append(self, record: CronRunRecord) -> None:
-        """Write record to job file and index."""
+    def _fit(self, record: CronRunRecord) -> None:
         # The ONE truncation site for a summary: callers hand the text over
         # uncut, so the configured cap and the keep-the-links rule apply here.
         # A command cron's failure summary comes from ``job.last_error``, which
@@ -625,12 +644,31 @@ class CronHistoryStore:
         if len(record.trace) > self._trace_cap:
             record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
 
+    async def append(self, record: CronRunRecord) -> None:
+        """Write record to job file and index."""
+        self._fit(record)
         if not self._enabled:
             return
         try:
             await asyncio.to_thread(self._append_sync, record)
         except OSError as exc:
             self._degrade("append", exc)
+
+    def append_sync(self, record: CronRunRecord) -> bool:
+        """Synchronous :meth:`append`, for a worker-thread caller. True once the row is written.
+
+        Blocking filesystem I/O under the history lock, so it never runs on an
+        event loop; there, await :meth:`append`.
+        """
+        self._fit(record)
+        if not self._enabled:
+            return False
+        try:
+            self._append_sync(record)
+        except OSError as exc:
+            self._degrade("append", exc)
+            return False
+        return True
 
     def _append_sync(self, record: CronRunRecord) -> None:
         fd = self._lock()
@@ -755,6 +793,14 @@ class CronHistoryStore:
             if row is not None and row.get("run_id") == run_id:
                 return row
         return None
+
+    def has_run_sync(self, job_id: str, run_id: str) -> bool:
+        """Whether *job_id*'s own history file holds a row with *run_id*. WORKER-THREAD ONLY.
+
+        Raises the ``OSError`` of a read that failed, so a caller never takes a
+        file it could not read for one without the row.
+        """
+        return self._get_run_detail_sync(job_id, run_id) is not None
 
     async def rotate(self, job_id: str) -> None:
         """Trim job file to last _MAX_RECORDS_PER_JOB records."""

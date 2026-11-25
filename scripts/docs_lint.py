@@ -74,7 +74,12 @@ answer on a repository this size is "mostly, with a recorded backlog":
 * ``dead-identifier`` -- a backticked identifier that appears nowhere in the code
   trees. Report-only unless ``--strict-identifiers``, because the class is
   genuinely noisy: a doc may name a wire field, a vendor symbol or a deliberately
-  wrong example.
+  wrong example. A doc that owns such a name declares it on its own line, outside
+  fences: ``<!-- docs-lint: defines a, b -->`` for keys it defines itself (its
+  output schema, fields an agent writes) or ``<!-- docs-lint: wrong-on-purpose a -->``
+  for a name it cites so a reader avoids it. The declaration covers that doc and
+  this check only, and fails the run once the code defines the name or the doc
+  stops citing it.
 * ``anchor-exists`` -- a link written under ``docs/`` whose ``#fragment`` names no
   heading slug and no explicit ``id`` in its markdown target. The file resolves,
   so check 1 stays green while the reader lands at the top of the page.
@@ -1338,6 +1343,7 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     _COUPLING_AMBIGUOUS_NAMES,
     _COUPLING_SCAN_ROOT,
     _COUPLING_SUFFIXES,
+    _DOC_DECLARATION_RE,
     _EMPHASIS_UNDERSCORE_RE,
     _EXPLICIT_ANCHOR_RE,
     _EXTERNAL_TARGET_COORDINATE_DOCS,
@@ -1345,6 +1351,7 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     _FORWARD_LOOKING_DOC_PREFIXES,
     _HTML_TAG_RE,
     _IDENT_CAMEL_RE,
+    _IDENT_CODE_FILES,
     _IDENT_CODE_SUFFIXES,
     _IDENT_CODE_TREES,
     _IDENT_MIN_LEN,
@@ -1357,8 +1364,10 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     _MD_LINK_TEXT_RE,
     _MD_NAME_RE,
     _PACKAGED_DOCS_DIR,
+    _PLANNED_STATUS_RE,
     _REPO_PATH_CITE_RE,
     _SETEXT_UNDERLINE_RE,
+    _STATUS_HEAD_LINES,
     _STRING_LITERAL_RE,
     _TABLE_DELIMITER_RE,
     _TABLE_LINK_CELL_RE,
@@ -1371,7 +1380,11 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     CHECK_PATH_EXISTS,
     CHECK_TABLE_ROW_MERGE,
     DEFAULT_BASELINE,
+    EXTERNAL_IDENTIFIERS_FILE,
     _anchors,
+    _declares_planned,
+    _doc_declared_names,
+    _external_identifiers,
     _github_slug,
     _identifier_index,
     _is_anchor_exempt,

@@ -341,6 +341,14 @@ _DESKTOP_CAPABILITY_WORDS = {
     "gatewayChoice": "switch among your gateways",
 }
 
+#: How the install summary words each ``permissions.browser`` verb. An install
+#: approves none of them: the owner approves each on the app's page.
+_BROWSER_VERB_WORDS = {
+    "view": "see the page you and the Bot are browsing",
+    "read": "read that page",
+    "act": "click and type for you",
+}
+
 
 def format_permissions_summary(manifest: AppManifest) -> str:
     """Format a human-readable permissions summary for display during install."""
@@ -380,6 +388,9 @@ def format_permissions_summary(manifest: AppManifest) -> str:
     if perms.desktopCapabilities:
         words = ", ".join(_DESKTOP_CAPABILITY_WORDS[c] for c in perms.desktopCapabilities)
         lines.append(f"  Desktop:   may {words}")
+    if perms.browser:
+        words = ", ".join(_BROWSER_VERB_WORDS[v] for v in perms.browser)
+        lines.append(f"  Browser:   asks to {words} (approved later on the app's page)")
     if perms.webhookSource:
         lines.append(
             f"  Webhooks:  accepts requests from outside services, which can start work"

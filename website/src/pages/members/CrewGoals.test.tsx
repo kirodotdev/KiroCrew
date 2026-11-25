@@ -50,7 +50,7 @@ const record = (over: Partial<MemberGoals> = {}): MemberGoals => ({
     },
     { id: 'k00000002', text: 'Notes published', target: 'yes', current: '', updated_at: 0, readings: [], goal_ids: [] },
   ],
-  schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60 },
+  schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60, active_from: 0, active_to: 24 },
   reports: [{ kind: 'weekly', slug: 'week-41', title: 'Week 41', at: NOW - 86400 }],
   removed_key_result: null,
   removed_goal: null,
@@ -285,6 +285,33 @@ describe('CrewGoalsPane', () => {
       ])
       fireEvent.change(picker, { target: { value: '60' } })
       await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { interval: 60 }))
+    } finally {
+      touch.on = false
+    }
+  })
+
+  it('keeps the heartbeat to its active hours, counting only the wakes inside them', async () => {
+    touch.on = true
+    try {
+      const base = record()
+      const on = record({ schedules: { ...base.schedules, heartbeat: true, active_from: 8, active_to: 20 } })
+      memberGoals.get.mockResolvedValue(on)
+      memberGoals.setSchedules.mockResolvedValue(on)
+      renderWithProviders(<CrewHeartbeatRow slug="scout" member="scout" />)
+      const row = await screen.findByTestId('crew-heartbeat-row')
+      expect(within(row).getByTestId('crew-heartbeat-hours')).toHaveTextContent('Only between')
+      // Twelve hours at the hourly default make twelve wakes, not twenty-four.
+      expect(row).toHaveTextContent('Each run uses credits. · up to 12 runs a day')
+      const from = within(row).getByRole('combobox', { name: 'Active from' }) as HTMLSelectElement
+      const until = within(row).getByRole('combobox', { name: 'Active until' }) as HTMLSelectElement
+      expect(from.value).toBe('8')
+      expect(Array.from(from.options).map(o => o.textContent)).toHaveLength(24)
+      // The end offers only the hours after the start, up to the end of the day.
+      expect(Array.from(until.options).map(o => o.value)).toEqual(Array.from({ length: 16 }, (_, i) => String(i + 9)))
+      expect(until.options[until.options.length - 1].textContent).toBe('24:00')
+      // A start past the end moves the end to the hour after it.
+      fireEvent.change(from, { target: { value: '21' } })
+      await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { active_from: 21, active_to: 22 }))
     } finally {
       touch.on = false
     }

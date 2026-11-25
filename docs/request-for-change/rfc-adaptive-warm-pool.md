@@ -3,8 +3,8 @@ title: Adaptive warm session pool -- hold one pre-started session while the user
 status: draft
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-24
-last-audited: 2026-10-24
-audited-at: 24d4604c45
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: []
 tracking-issues: [23822]
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: Adaptive warm session pool
 
-- Status: draft. Nothing built. Acceptance by the maintainer (iamwhatever)
+- Status: draft. Nothing built (checked at `fc89562d69`: no `PoolFit`,
+  `miss_stale` or `pool_mode` on main). Acceptance by the maintainer (iamwhatever)
   comes before the first implementation pull request (section 9).
 - Tracking issue: [#23822](https://github.com/kirodotdev/KiroCrew/issues/23822).
 - Code read at `24d4604c45`. Code is cited by symbol name; every symbol is as of that commit.

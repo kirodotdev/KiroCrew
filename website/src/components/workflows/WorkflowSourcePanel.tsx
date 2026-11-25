@@ -22,6 +22,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { apiTransport } from '../../api/apiTransport'
 const CORE_API_BASE = '/api/workflows'
 
 interface RerunOk {
@@ -67,7 +68,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
   // throws a typed marker we branch on in onError.
   const rerunMutation = useMutation({
     mutationFn: async (src: string) => {
-      const r = await fetch(
+      const r = await apiTransport.request(
         `${CORE_API_BASE}/runs/${encodeURIComponent(run_id)}/rerun`,
         {
           method: 'POST',

@@ -454,11 +454,11 @@ again. One rule decides it for every surface
 for them. Until then the dashboard looks as it does for one person.
 
 The same rule shows the sidebar's identity row (`SidebarIdentityRow`, under the
-header): "<name> via Kiro Login", "via Tailscale" or "via Systems Manager" (the
-name alone at this machine or on an unnamed path, from the mode body's
-`viewer_via`), naming who this tab's sends are recorded as before they are sent,
-and a read-only "Shared · N here now", where N counts People rows with an open tab
-plus the viewer (`sharedCrewUi.isHereNow`). It has no toggle. Because it follows
+header): "<name> via Tailscale" or "via Systems Manager" (the name alone at
+this machine, over Kiro Login, the default way in, or on an unnamed path, from
+the mode body's `viewer_via`), naming who this tab's sends are recorded as before
+they are sent, and a read-only "Shared". Who is here now is left to Settings >
+People. It has no toggle. Because it follows
 the same rule, a relay teammate on a Crew whose preview is off sees no identity
 row, as they see no bylines.
 
@@ -520,14 +520,14 @@ Login for `kiro_relay`, Your organization for a `directory` row or, while the mo
 is `console`, any row not at this machine); the local operator carries none, and
 a session creator with no provenance takes the one source that is on, else none
 (`sharedCrewUi.soleSource`; Remove still reads only the derived provenance). The
-same person can be a row once per source, so N counts distinct people by login,
+same person can be a row once per source, and a line under the heading says so;
+N counts those rows, so the number matches the rows a reader sees. Once the rows
+are read, each source card counts the distinct people under its chip, by login,
 else by an e-mail label, else by id, never by a bare display name
-(`sharedCrewUi.distinctPeopleCount`), and a line under the heading says so. The
-owner's local rows read `owner.owner_name` for every reader (`people_view`), so
-the owner and their own relay row count once. Once the rows are read, each
-source card counts the distinct people under its chip, so a card and the list
-agree. "You", "You · Owner" and "Crew owner" mark
-rows as before.
+(`sharedCrewUi.distinctPeopleCount`); the owner's local rows read
+`owner.owner_name` for every reader (`people_view`), so the owner and their own
+relay row count once there. "You", "You · Host" (the viewer who is this
+machine's owner) and "Crew owner" mark rows as before.
 
 Remove sits only where it works, for the owner: an SSM person (Remove revokes the
 invite they opened); a person or invite of a single-use Tailscale invite (Remove);
@@ -579,7 +579,13 @@ The `tailscale serve` path and mobile setup check a login against a derived set
 
 Before the dashboard binds, the gateway publishes an owner-only placeholder
 (`access_set.install_placeholder`, no I/O); `tailnet_direct_listener.start` reads
-the set after the bind. At the first gateway start with a readable tailnet section,
+the set after the bind. All three start paths install the set this way. The
+ordinary dashboard does it through `prepare_at_start` and `start_after_bind`. A
+`gateway --headless` start calls `prepare_tailnet_path` before the bind, which
+records the tailnet path with `loopback_only` true because that bind is always
+loopback, and `finish_access_set` after it, and starts no direct tailnet listener.
+The reduced `--slack-only` server calls `prepare_access_set` and
+`finish_access_set`. At the first gateway start with a readable tailnet section,
 `access_set.install` copies `allowed_logins` (logins and `tag:` entries) into the set
 as its seed and marks it seeded. After that the seed only shrinks: at each start an
 entry no longer in `allowed_logins` leaves the seed, and an entry added later admits
@@ -659,6 +665,10 @@ agent's question cards included. `GET /api/terminal/sessions` answers a teammate
 route refuses them with `owner_only`. A test fails when a Terminal route is
 registered outside those prefixes.
 
+`/api/managed-environments/*` is owner-only for teammates through
+`teammate_access.is_owner_only_for_teammates`; `/api/cloud/*` refuses a teammate on a
+`kiro_managed_env` job.
+
 Three things stay the machine owner's (`is_owner_only_for_teammates`). The
 Terminal's own surface; it is a UI boundary, not a sandbox, since YOLO, cron scripts
 and app installs, all open to a teammate, reach the host too. Every route the relay
@@ -669,8 +679,9 @@ app's own credential mints and the relay viewer; shutdown; and a path not in
 canonical form. Each is a credential that would outlive the teammate's access, or the
 gateway process, so one table holds a teammate on any path to the boundary the relay
 holds every remote caller to. Plus a channel connection's writes
-(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
-connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
+(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, which creates, changes or removes
+the connection, and linking WhatsApp or Weixin), which hold the channel's token; the
+multi-agent channels under `/api/channels` hold none and stay open to a teammate; and a cron
 job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
 a channel and sending through it stay open. And managing who may reach the
 Crew: `routes_invites._owner_refusal` admits only the local operator or this
@@ -684,8 +695,10 @@ refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, 
 the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
-`instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
-`dm_policy`, so a new allow-list is covered by its name). Reading the Remote Control
+`instances` and `tunnel` subtrees, the `dashboard.entry_port` listener key, and any
+key segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered
+by its name; `dashboard.entry_port` has no rule on that route, so the route refuses
+the owner too, 400 `field not editable`). Reading the Remote Control
 state stays open. The teammate's screens follow the same line: an owner-only control
 is hidden or replaced by an "Only the Crew's owner can …" notice
 (`useViewerIsNotOwner`), never offered and then refused: Secrets, Remote Control's
@@ -693,6 +706,9 @@ Turn off, remote crew management, Channels' connection forms and `/terminal` sho
 the notice; Connect your phone is not offered; Voice drops the host install command;
 Privacy says the data stays on the Crew's computer; People reads "Shared with your
 team" and names an owner known only by machine name "Crew owner".
+
+The managed-environment lane never removes Remote Crew rows; a gone environment's row
+is removed with Remove.
 
 A teammate is not the owner for redaction. The owner's credential-redaction OFF
 covers only what the owner alone sees
@@ -737,11 +753,15 @@ audience is the host-owner split above (`is_host_owner_dashboard_request`, and
 which admits a teammate. The owner's socket, stream and reads keep the whole
 diagnostic, and the persisted row keeps it. A session export (`GET
 /api/chat/slots/{slot}/export`, either format) carries user and assistant turns
-only, so no reader's file holds the row. Session search (`_searchable_contents`) and the
+only, so no reader's file holds the row. Session search (`history_search.py::_iter_message_texts`, the one source of the search fold and its snippets) and the
 session-list preview (`last_message_info`, the `preview` of `GET /api/sessions?preview=1`)
 skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
+
+A task run's planning sandbox refusal is stored nowhere. `POST /api/taskrunner/plan`
+shows its text to the machine owner alone (`host_sandbox_refusal.plan_error_text`) and
+gives anyone else the ordinary plan error.
 
 A teammate keeps their own identity: `request["user"]` stays their subject
 (`ssm:<invite>`, `relay:<id>`, `tailnet:uid:<id>`) and the published actor stays
@@ -1068,6 +1088,12 @@ counts the sessions passing the search that the creator filter excluded. The
 list covers persisted sessions; a slot that has never been saved is not in it.
 The route answers only the dashboard user, and refuses an app token or an
 internal caller with 403, so it reaches no session the existing list does not.
+People and mode, which every open dashboard polls, read the same catalog with
+the preview on: concurrent reads of the same route by one viewer share one build
+that started after each of them arrived (`crew_board_flight`). The access check
+runs per request; the key is the gateway and the viewer (for mode, also whether
+the Crew is a relay team Crew), so two viewers never share an answer, and
+nothing is kept between builds.
 
 The `unattributed` filter (the older `unknown` value is accepted and echoed as
 `unattributed`) lists sessions with no human creator and no named trigger; a
@@ -1086,7 +1112,9 @@ the `creators` dimension of `chat-sidebar/rows.ts`): it narrows the rows the
 list already holds, live and peer rows alike, from each row's own
 `attribution`, so closed sessions are reached through Older Sessions as before.
 The section lists You (the verified viewer), each person in People (named
-through `principalName`, so the owner reads `owner.owner_name`), anyone a row
+through `principalName`, so the owner reads `owner.owner_name`, and the owner's
+row tagged "(Crew owner)" as People tags it, since the owner's sign-in can also
+reach the Crew as a teammate under the same name), anyone a row
 names that People does not, and Unattributed, each with its session count over
 every row; a long name or e-mail is cut with an ellipsis and shown in full on
 hover. Rows are checkboxes and ticked rows OR together. A row reads as the
@@ -1412,12 +1440,18 @@ Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
 `Admission.run` waits for a slot, then revalidates right before starting: queue
 expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
-and the entry point's own check (a chat slot must still be live). `running` is
+and the entry point's own check (a chat slot must still be live, and no Stop was
+recorded on its session since the wait began: `admitted_chat_turn`'s `stop_count`,
+not read for an agent-started turn; either ends the turn `cancelled_by_user` with no
+capacity note). `running` is
 written before the work launches, so `admitted` proves it never started, unless it
 names a run id: a child's, or one an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
-queued prompt is never delivered as a steer.
+queued prompt is never delivered as a steer. A dashboard Stop or Interrupt pressed
+while a send waits there, before its runner starts, cancels the work
+(`admission_entry.cancel_waiting_send`), and the turn ends unstarted through its own
+hand-off.
 
 Disabling admission affects new submissions immediately. Maintenance keeps running
 until accepted live work settles: queued work (including parked messages) ends
@@ -1722,7 +1756,11 @@ Rules:
    connection principal the socket handler stamps, never a value from a frame. A
    person's tabs fold into one holder (`typing_lease.same_person`: the same
    principal id, or the local operator's machine-local subjects from
-   `crew_mode.operator_ids`), so their other tabs stay unlocked.
+   `crew_mode.operator_ids`), so their other tabs stay unlocked. The lease and
+   the send race read the gateway's owner id at each comparison, not when they
+   are built: a messaging reconnect sets it from the saved `KIROCREW_OWNER_ID`
+   while the gateway runs, and a tab signed in after that still folds with the
+   operator's earlier tabs.
 2. The first collaborator whose tab sends an accepted `typing` report with a
    non-empty draft acquires a free lease. Each later accepted `typing` report from
    the holder renews it. A typing report never takes a held lease away. Unknown and
@@ -1786,7 +1824,9 @@ spacing while keystrokes continue, so a trailing report lands after the last one
 an edit that leaves the draft empty, and a send, report `draft: 'empty'` at once.
 `useComposerTypingLock` reads the lease and the viewer; when someone else holds
 it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
-stays as it was, and so does focus), replaces the button row with
+stays as it was, and so does focus), gives its text column the look of a
+disabled input (hover fill, editor at 40%,
+not-allowed cursor; the draft can still be selected and copied), replaces the button row with
 `TypingLockBanner` ("<name> is typing…", the only place typing is named; the
 box's placeholder stays empty; a line beside Take over says Take over types in their place and their draft stays with them), and keeps only Stop and Steer for a running turn.
 When the lease ends the box unlocks in place. A send refused `composer_locked` restores the draft and records the refusal
@@ -2034,12 +2074,23 @@ tokens, rows wrap at narrow widths):
 
 The Crew switcher's relay group is headed "Remote Crews"
 (`components.relayCrews.group_team_crews`); the Notifications page names the
-relay channel (`system.relay`) with the same string. Each row's second line reads
+relay channel (`system.relay`) with the same string. It is one list with the
+SSH, SSM and Fargate Crews this dashboard reaches itself: while the relay group
+shows, those rows sit under the same "Remote Crews" heading, above the relay rows,
+and the group draws no second heading (there is no "My Crews" group). Each such
+row's second line reads "Private · <source>" with a lock icon, the source being
+the row's SSH / SSM / Fargate tag, then its host. An SSH Crew's own pane reads
+the source from the `transport` its window relays with each tab (`HostTab`); a
+window that relays none shows the host alone. Each relay row's second line reads
 "<type> · <status>": a `TEAM` Crew is "Shared" with a group icon (lucide `Users`),
 a `PERSONAL` Crew is "Private" with a lock icon (lucide `Lock`), and any other type
 shows its raw value with no icon. The "Shared with me" section on Remote Crew reads the
 same two type strings. The signed-in account line ("Signed in with ...") sits
-under the heading. Each online row's one visible action is a small
+under the heading. When the dev relay domain setting
+(`tunnel.relay_viewer_relay_domain`) alone left listed Crews out
+(`relay_viewer.cps.CrewList.off_domain`), `GET /api/relay-viewer/crews` sends
+`offDomain`, their count, and the group and the "Shared with me" section show a
+notice naming that setting in place of the empty line. Each online row's one visible action is a small
 Connect (accessible name "Connect <name>"); an offline row shows none. Connect
 hands only the endpoint ID on. In the desktop app the shell (`relayCrewAPI.openPane`)
 shows the Crew as a tab in the main window, under the local top bar; another
@@ -2113,7 +2164,7 @@ The People page (`PeoplePanel.tsx`) reads, top to bottom, in every mode but `inv
    Tailscale" (`https://login.tailscale.com/admin/users`, a fixed URL, new tab,
    `noopener noreferrer`). Then the share link with "Copy Tailscale invite" for the
    owner and "Copy link" for a teammate. The AWS SSM card has "Make invite link".
-2. "People · N" (`PeopleCrew.tsx`), N being the distinct people listed. Under the
+2. "People · N" (`PeopleCrew.tsx`), N being the people rows listed. Under the
    heading, the line that one person can appear once per source, then one plain line
    each when Tailscale was not running at start (`daemon_not_found`) and when this Crew cannot
    report work per person (`usage_available` false and `usage_off` false); no tip icon. Each row:

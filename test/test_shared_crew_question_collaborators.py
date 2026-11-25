@@ -182,8 +182,9 @@ async def test_the_losing_answer_is_audited_as_a_conflict(state, monkeypatch):
         )
         assert lost.status == 409
     await task
-    while audit._pending_audits:
-        await asyncio.gather(*list(audit._pending_audits))
+    # A finished task leaves the set only on a later loop turn, so wait on unfinished ones.
+    while pending := [t for t in audit._pending_audits if not t.done()]:
+        await asyncio.gather(*pending)
     # Each audit is written by its own background task, so arrival order is unspecified.
     rows = sorted(
         (e.operation, e.outcome, e.metadata["responder"]["id"], e.resources) for e in events

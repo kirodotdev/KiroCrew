@@ -113,7 +113,6 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: inline in their bodies, and the owner each lives in.
 _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
     "app_platform": (
-        "_reconcile_app_resources",
         "_start_app_backends",
         "_warm_builtin_app_names",
         "_warm_materialized_agents",

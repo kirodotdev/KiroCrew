@@ -266,6 +266,24 @@ class TestGroupGate:
         mock_sel().log_api_access.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_denied_group_audit_record_names_the_chat_id(self) -> None:
+        t = FeishuTransport(
+            FakeClient(),
+            allowed_open_ids=["ou_abc"],
+            allow_group=True,
+            allowed_group_ids=["grp_allowed"],
+            dispatch=AsyncMock(),
+        )
+        with patch("kiro_crew.feishu.transport.sel") as mock_sel:
+            await t.receive(
+                _inbound("ou_abc", "secret text", chat_type="group", chat_id="oc_other")
+            )
+        kwargs = mock_sel().log_api_access.call_args.kwargs
+        assert kwargs["outcome"] == "denied_group_not_allowed"
+        assert kwargs["resources"] == "chat_id=oc_other"
+        assert "secret text" not in repr(kwargs)
+
+    @pytest.mark.asyncio
     async def test_group_allowed_when_flag_and_chat_id_match(self) -> None:
         dispatched: list[LarkInbound] = []
 

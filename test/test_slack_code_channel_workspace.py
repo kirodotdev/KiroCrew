@@ -45,6 +45,13 @@ def _passthrough_spawn(argv, mode="standard", **kw):
 def _no_sandbox(_floor_monkeypatch):
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # These tests prove the workspace, not hook handling. The hook scan starts three
+    # git processes before every git read, and a refresh makes dozens of reads. Both
+    # names that bind the scan are stubbed: `_run_git` reads it from `wt`, the capped
+    # diff reader from `git_ops`. Both carrying the disable flags are covered in
+    # test_git_config_hooks.py.
+    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
+    _floor_monkeypatch.setattr(git_ops, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 @pytest.fixture(autouse=True)

@@ -26,10 +26,12 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
 
-# Global ceiling across ALL chats' terminal tabs. Each chat's activity bar caps
-# its own terminals (frontend MAX_TERMINALS_PER_CHAT); this is the server-side
-# backstop. Override via config.json dashboard.terminal.max_sessions.
+# Global ceiling across ALL chats' terminal tabs. The dashboard sets no count
+# cap of its own, so this is the only one. Override via config.json
+# dashboard.terminal.max_sessions.
 _MAX_SESSIONS = 12
+# Error code for an open or create refused at that ceiling.
+_TERMINAL_MAX_SESSIONS = "terminal_max_sessions"
 
 
 # Bound on a ``{session_id}`` URL path param, applied by BOTH routes that read

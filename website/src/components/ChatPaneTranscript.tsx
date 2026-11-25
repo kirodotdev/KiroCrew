@@ -47,9 +47,9 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /
   // output / live status), the workflow and sub-agent launch cards, thinking
-  // traces, sent files, auto-nudge turns, recovery injects, workflow
-  // completions. The SDK's built-in registry is store-free by design and so
-  // draws weaker rows — or nothing at all — for most of these; the
+  // traces, sent files, auto-nudge turns, workflow completions. The SDK's
+  // built-in registry is store-free by design and so draws weaker rows — or
+  // nothing at all — for most of these; the
   // store-connected set is supplied here as host entries instead, which is the
   // registry's intended extension path and keeps app-sdk/ChatMessageList
   // Redux-free for the embed SDK.
@@ -68,6 +68,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   // Settings -> Chat -> Copy on Select, the same device-only key the Sessions
   // chat reads (transcriptRendering), so a reply here copies a selection too.
   const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
+  const unfold = useCallback(() => setOpenFold(foldBefore), [foldBefore])
   const listMessages = useMemo(
     () => foldEarlierConversation(messages, foldBefore, foldOpen),
     [messages, foldBefore, foldOpen],
@@ -118,7 +119,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
       : rows
   }, [baseRenderers, foldBefore, foldOpen, crewmate, slotKey])
 
-  return { listMessages, renderers }
+  return { listMessages, renderers, unfold }
 }
 
 export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog, warmHasMore, pagesPane, onOpenFull }: {

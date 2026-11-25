@@ -16,7 +16,8 @@ platform could support it.
 | Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Sends a file back to you | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Sends a file back to you | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Sends an image the reply references | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
@@ -36,12 +37,19 @@ figure is the byte budget divided by four — the worst case for non-ASCII text.
 An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
-**Sends a file back to you** is what you receive from `file_send`. On WeCom the
-file arrives as native media (`send_document`), and an inline image reference in a
-reply follows the reply's text the same way: a JPG or PNG up to 2 MB as a picture,
-any other image as a file. On Feishu an inline image reference in a direct-message
-reply arrives as an image message (a group reply keeps the path), but `file_send`
-has no Feishu leg.
+**Sends a file back to you** is what you receive from `file_send`. Slack has its
+own upload leg; Telegram, Discord and WeCom deliver through their `send_document`.
+On every other channel `file_send` does not post into that chat: the file reaches
+the dashboard card and, when Slack is connected, the Slack leg too (the session's
+linked Slack thread, else your Slack DM with the bot). On WeCom the file arrives
+as native media.
+
+**Sends an image the reply references** is the inline path: when a reply names a
+local image, the renderer uploads it and sends the picture instead of printing the
+path. On WeCom a JPG or PNG up to 2 MB arrives as a picture and any other image as
+a file. On Feishu an image in a direct-message reply arrives as an image message
+(a group reply keeps the path). Teams, Webex and WhatsApp send the picture this
+way even though `file_send` has no leg on them.
 
 **Tappable choices** is the total number of interactive options one prompt may
 present. Above the cap, the remainder degrades to a numbered list in the message

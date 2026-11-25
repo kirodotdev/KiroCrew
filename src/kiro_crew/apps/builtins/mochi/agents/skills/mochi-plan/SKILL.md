@@ -4,6 +4,9 @@ description: "INTERNAL pet queue — generates the pet's upcoming-window behavio
 always: false
 ---
 
+<!-- docs-lint: defines typical_start, typical_end, focus_hours, quiet_days, avg_response_mins, meetingStart -->
+<!-- docs-lint: wrong-on-purpose check_watching -->
+
 # @mochi-plan — Full Queue Planning
 
 You are creating a complete plan for the upcoming period. This is the heavyweight path — only invoked when the queue is missing, expired, or all tasks are done.

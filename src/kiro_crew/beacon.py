@@ -95,7 +95,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -122,6 +122,9 @@ logger = logging.getLogger(__name__)
 # the workspace/ tree, so deliberately none is registered.
 INSTALL_ID_FILE = "beacon_install_id"
 STAMP_FILE = "beacon_last_sent"
+#: The UTC day the daily ``kirocrew.app.present`` pass last recorded
+#: (``metrics/app_present.py``), so a restart the same day records no second row.
+APP_PRESENT_STAMP_FILE = "app_present_last_sent"
 
 # Schema version in the path, so a future payload change is a NEW route rather
 # than an ambiguous reinterpretation of historical rows.
@@ -507,19 +510,47 @@ def is_first_send() -> bool:
 
 def _mark_sent() -> None:
     """Record today's date so later starts today skip the send."""
+    _write_stamp(_stamp_path, _today())
+
+
+def _write_stamp(stamp_path: Callable[[], Path], day: str) -> None:
+    """Write the UTC date *day* to the stamp *stamp_path* resolves; never raises."""
     try:
-        path = _stamp_path()
+        path = stamp_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         # atomic_write, never path.write_text: write_text FOLLOWS a symlink, so a
         # symlink planted at beacon_last_sent would have its TARGET truncated and
         # overwritten with today's date. atomic_write renames a temp file over the
         # path, replacing the symlink itself and leaving the target untouched.
-        atomic_write(path, _today())
-    except OSError as exc:
+        atomic_write(path, day)
+    except (OSError, RuntimeError) as exc:
         # Worst case the beacon is re-sent later today. Query-time
         # COUNT(DISTINCT) makes that harmless for correctness (this throttle is
         # politeness, not a correctness requirement), so never raise.
         logger.debug("beacon stamp write failed: %s", exc)
+
+
+def _app_present_stamp_path() -> Path:
+    return config_dir() / APP_PRESENT_STAMP_FILE
+
+
+def app_present_due_day() -> str:
+    """Today's UTC date when the ``kirocrew.app.present`` pass has not recorded it, else "".
+
+    The caller stamps this same value with :func:`mark_app_present_recorded`, so a
+    pass that crosses UTC midnight never marks the new day as recorded.
+    """
+    today = _today()
+    try:
+        done = _read_state(_app_present_stamp_path()) == today
+    except (OSError, RuntimeError):
+        done = False
+    return "" if done else today
+
+
+def mark_app_present_recorded(day: str) -> None:
+    """Record that the ``kirocrew.app.present`` pass recorded UTC date *day*; never raises."""
+    _write_stamp(_app_present_stamp_path, day)
 
 
 def _fields(app_version: str) -> dict[str, str]:

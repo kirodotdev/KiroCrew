@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 /* A crewmate's thread reply, and the parent it hangs off, are drawn by the real
@@ -46,6 +46,17 @@ describe('ThreadPanel draws a blocked link as its chip', () => {
     expect(await screen.findAllByTestId('blocked-link-chip')).toHaveLength(2)
     expect(container.querySelector(`a[href="${URL}"]`)).toBeNull()
     expect(container.querySelector(`a[href="${OTHER}"]`)).toBeTruthy()
+  })
+
+  it("offers the Blocked link card's Allow, the thread being this gateway's own slot", async () => {
+    mockDetail.mockResolvedValue({
+      parent: { mid: 'm-1', role: 'assistant', content: 'Overnight triage.', ts: '2026-09-22T07:02:00Z' },
+      replies: [{ id: 'r2', role: 'assistant', content: `Here: ${URL}`, ts: '2026-09-22T07:41:30Z', link_blocks: [RECORD] }],
+      in_flight: false,
+    })
+    renderPanel()
+    fireEvent.click(await screen.findByTestId('blocked-link-inspect'))
+    expect(await screen.findByTestId('blocked-link-allow')).toBeInTheDocument()
   })
 
   it('a reply with no record renders its link live', async () => {

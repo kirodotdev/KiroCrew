@@ -1,8 +1,8 @@
 /**
- * The sidebar row's single-menu form (phones, and any touch screen) replaces the
- * hover cluster that hosts the fork button, so the menu must carry "Fork chat"
- * itself when the row passes it (#16101 relabelled pages.chatSidebar.duplicate
- * from "Duplicate" to "Fork chat"). Surfaces that pass no handler get no item.
+ * Every sidebar row menu (the single menu on touch screens, the desktop ⋯ menu
+ * and the right-click menu) passes the fork handler, so the menu carries "Fork
+ * chat" itself (#16101 relabelled pages.chatSidebar.duplicate from "Duplicate"
+ * to "Fork chat"). Surfaces that pass no handler get no item.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'

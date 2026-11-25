@@ -2,10 +2,11 @@ import { memo, useState, type ReactNode } from 'react'
 import { KiroSignInStrip, requestIdOf } from '../../components/KiroSignInDialog'
 import KiroCliSignInRow from './KiroCliSignInRow'
 import { useMutation } from '@tanstack/react-query'
-import { ExternalLink, Loader2, MessageSquarePlus, RotateCw, Settings, ShieldCheck, SlidersHorizontal, Wand2 } from 'lucide-react'
+import { ChevronRight, ExternalLink, Loader2, MessageSquarePlus, RotateCw, Settings, ShieldCheck, SlidersHorizontal, Wand2 } from 'lucide-react'
 
 import { ApiError, apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 // The shared two-step restart control. Its module holds only the About panel's
 // update actions (shared components and the api client), not the Settings page.
 import { RestartGatewayButton } from '../settings/AboutPanelUpdateFlow'
@@ -24,6 +25,8 @@ import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { HostSandboxUnavailableCard, isHostSandboxUnavailable } from './HostSandboxUnavailableCard'
 import { resumeProseFor } from './gatewayNotice'
+import { fmtMessageTime, fmtMessageTimeFull } from './messageTime'
+import { useRowDisclosure } from './rowDisclosure'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
@@ -329,10 +332,10 @@ export interface ErrorCardProps {
   /**
    * The fix affordance for an `auth_required` row: deep link to the Kiro
    * sign-in card in Settings, where the user signs in to Kiro Crew's own
-   * identity again. Offered INSTEAD of Continue for the same reason as the
-   * entitlement actions -- a retry hits the same signed-out wall -- and on
-   * EVERY such row, because a lapsed sign-in is settled state the user still
-   * has to act on. Omitted on a surface with no settings route (embed, popout).
+   * identity again. Offered INSTEAD of Continue (until `signInWorks`) for the
+   * same reason as the entitlement actions -- a retry hits the same signed-out
+   * wall -- and on EVERY such row, because a lapsed sign-in is settled state
+   * the user still has to act on. Omitted on a surface with no settings route (embed, popout).
    */
   onOpenSignIn?: () => void
   /** A `kiro_cli_sign_in` row: one line and kiro-cli's two sign-in commands. */
@@ -341,6 +344,17 @@ export interface ErrorCardProps {
   kiroCliCrewSignIn?: boolean
   /** The row's untranslated text, where a translated notice dropped its request id. */
   rawContent?: string
+  /**
+   * True on an `auth_required` row whose sign-in the host has read as working
+   * again: the row's line says so, and `onContinue`'s Resume gets a row of its
+   * own under the kept Sign in button, since a retry no longer meets that wall.
+   */
+  signInWorks?: boolean
+  /**
+   * The failed read of whether that sign-in works again: shown under the
+   * row's text on a surface with no app-level sign-in notice (embed, popout).
+   */
+  signInCheckError?: Error | null
   /**
    * True on the newest `session_start_failed` row when the same session start
    * has already failed `SESSION_START_REPEAT_REFUSAL_AT` times in a row with
@@ -436,6 +450,41 @@ export interface ErrorCardProps {
   /** Internal: render a `host_sandbox_unavailable` row as every other row, the
    *  machine owner's view (`HostSandboxUnavailableCard`). */
   hostSandboxOwnerView?: boolean
+  /**
+   * Every row of the run of identical failures this card stands for, oldest
+   * (this row) first (`errorRuns.ts`). The card then says how many times it
+   * happened and when the newest did, and lists each attempt's time when
+   * expanded. Omitted for a row that is a card of its own.
+   */
+  attempts?: readonly Pick<ChatMessage, 'ts'>[]
+  /** The row's disclosure key, so an expanded attempt list survives a remount. */
+  disclosureKey?: string
+}
+
+/** The run line of a card that stands for several identical failures. */
+function RunAttempts({ attempts, disclosureKey }: { attempts: readonly Pick<ChatMessage, 'ts'>[]; disclosureKey?: string }) {
+  const [open, setOpen] = useRowDisclosure(disclosureKey, false)
+  return (
+    <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-run">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 text-left hover:text-text transition-colors"
+        data-testid="error-card-run-toggle"
+      >
+        <ChevronRight size={12} className={`lucide-inline shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        {i18nT('pages.chat.errorCard.repeated_in_a_row', { count: attempts.length, time: fmtMessageTime(attempts[attempts.length - 1].ts) })}
+      </button>
+      {open && (
+        <ol className="list-decimal pl-8" data-testid="error-card-run-attempts">
+          {attempts.map((a, i) => (
+            <li key={i}><time dateTime={a.ts} title={fmtMessageTimeFull(a.ts)}>{fmtMessageTime(a.ts)}</time></li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
 }
 
 // No `shrink-0` and no `truncate`: every action sits in a flex row, and a
@@ -668,6 +717,8 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
     kiroCliSignIn,
     kiroCliCrewSignIn,
     rawContent,
+    signInWorks,
+    signInCheckError,
     unentitledElsewhere,
     featureRequestFormUrl,
     limitContinueSlot,
@@ -682,6 +733,8 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
     onRepairImages,
     repairImages = 'idle',
     hostSandboxOwnerView,
+    attempts,
+    disclosureKey,
   } = props
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   if (isHostSandboxUnavailable(meta) && !hostSandboxOwnerView) {
@@ -791,6 +844,34 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       </div>
     )
   }
+  const resumeButton = onContinue && (
+    <button
+      type="button"
+      onClick={onContinue}
+      disabled={continuing}
+      className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+      title={i18nT('pages.chat.errorCard.resume_hint')}
+      data-testid="error-card-continue"
+    >
+      {continuing
+        ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+        : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+      {i18nT('pages.chat.errorCard.resume')}
+    </button>
+  )
+  const signInCheckNotice = signInCheckError && (
+    <div className="mt-1">
+      <ErrorNotice
+        title={signInCheckError.message ? i18nT('components.kasLogin.sign_in_status_unavailable') : undefined}
+        message={signInCheckError.message || i18nT('components.kasLogin.sign_in_status_unavailable')}
+        report={reportForError(signInCheckError)}
+        messagePlacement="below"
+        variant="inline"
+        noHandoffReason="This row says the agent's Kiro sign-in failed and no read has shown it working since; on KAS the Ask-the-agent chat runs as that same sign-in and would fail the same way."
+        testId="error-card-sign-in-check-failed"
+      />
+    </div>
+  )
   if (kiroCliSignIn) {
     return (
       <KiroCliSignInRow fallback={content} crewSignIn={kiroCliCrewSignIn} />
@@ -799,14 +880,16 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
   if (onOpenSignIn) {
     // Kiro Crew's own sign-in stopped working: one line and the shared sign-in
     // dialog, opened over the stored (refused) sign-in. The request id stays
-    // behind a copy control.
+    // behind a copy control. Once the host reads the sign-in as working, the
+    // line says so and Resume sits on its own row under Sign in.
     return (
       <div className="self-center w-full max-w-full min-w-0" data-testid="error-card" data-auth-required="true">
         <KiroSignInStrip
-          title={i18nT('components.kiroSignInPrompt.keep_title')}
+          title={signInWorks ? content : i18nT('components.kiroSignInPrompt.keep_title')}
           reauth
           requestId={requestIdOf(rawContent ?? wireContent)}
           testId="error-card-sign-in"
+          action={signInWorks ? resumeButton : undefined}
         />
       </div>
     )
@@ -1042,21 +1125,6 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       </div>
     )
   }
-  const resumeButton = onContinue && (
-    <button
-      type="button"
-      onClick={onContinue}
-      disabled={continuing}
-      className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
-      title={i18nT('pages.chat.errorCard.resume_hint')}
-      data-testid="error-card-continue"
-    >
-      {continuing
-        ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
-        : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
-      {i18nT('pages.chat.errorCard.resume')}
-    </button>
-  )
   if (onOpenTurnLimit || turnLimitSlot) {
     const secondaryBtn = `${ACTION_BTN} bg-transparent text-text ring-1 ring-inset ring-border hover:bg-bg-elevated`
     return (
@@ -1118,6 +1186,7 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       >
         {withOriginLink(displayText)}
         <LimitResetLine meta={meta} />
+        {attempts && <RunAttempts attempts={attempts} disclosureKey={disclosureKey} />}
         {limitHeld}
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
@@ -1136,6 +1205,7 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
             {restartHint()}
           </div>
         )}
+        {signInCheckNotice}
       </div>
     )
   }
@@ -1165,6 +1235,7 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {withOriginLink(displayText)}
         <LimitResetLine meta={meta} />
+        {attempts && <RunAttempts attempts={attempts} disclosureKey={disclosureKey} />}
         {limitHeld}
       </div>
       {resumeButton}

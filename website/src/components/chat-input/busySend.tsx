@@ -10,6 +10,7 @@ import { offlineProps } from '../../utils/offline'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import { i18nT } from '../../i18n/t'
 import { StopControls } from './StopControls'
+import { useChatSetting } from '../../hooks/useChatSetting'
 import type { ComposerBusyMode } from './props'
 import { slotRowByKey } from '../../store/slotIndex'
 
@@ -191,7 +192,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
 
 /** The send slot while a turn runs or a stop is in progress. Stop escalates
  *  from a soft stop to a force kill; a draft offers steer or queue. */
-export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, holdSend, holdSendReason, connected, effectiveBusyMode, setBusySendMode, onBusyModePicked, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false }: {
+export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, holdSend, holdSendReason, connected, effectiveBusyMode, setBusySendMode, onBusyModePicked, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false, escapeStops = true }: {
   stopState?: 'idle' | 'soft_pending' | 'killing'
   /** The press before this one was declined (compaction); the backend treats
    *  the next press as the force stop, and the armed Stop's hint says so. */
@@ -216,7 +217,11 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
   jevAutoAvailable: boolean
   onStop?: () => void
   terminalActive?: boolean
+  /** A bare Escape in the message box reaches the stop key. False while a
+   *  locked or disabled rich-text editor drops its keys, so the tooltip stays plain. */
+  escapeStops?: boolean
 }) {
+  const doubleEscapeToStop = useChatSetting('doubleEscapeToStop')
   const heldBusyAction = effectiveBusyMode === 'queue'
     ? i18nT('components.chatInput.queue_message')
     : effectiveBusyMode === 'auto'
@@ -285,7 +290,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
         <span className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="stop-declined-hint">{i18nT('components.chatInput.click_again_to_force_stop_resets_session')}</span>
       </div>
     ) : onStop ? (
-      <StopControls stopState="idle" killingEscaped={false} stopWithTap={stopWithTap} />
+      <StopControls stopState="idle" killingEscaped={false} stopWithTap={stopWithTap} escapeStops={escapeStops && !doubleEscapeToStop} />
     ) : steerOnly ? (
       // Same shape-stability rule as the split case below, with the
       // surface's own (plain) send button.

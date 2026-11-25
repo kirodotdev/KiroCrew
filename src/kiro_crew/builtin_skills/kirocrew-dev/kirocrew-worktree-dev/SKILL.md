@@ -251,8 +251,8 @@ Permission to commit is not permission to push, and green gates grant neither.
 A fix-and-push monitoring scope must be explicit; absent it, confirm each push.
 Never push to a protected base branch. For authorized publication, follow
 kirocrew-prepare-pr's SHA-pinned force-with-lease protocol and `single_commit` handling,
-and AGENTS.md's at-most-two-commit limit; never use an implicit lease or interactive
-git. No direct merge: hand back review-ready work, or let kirocrew-prepare-pr's
+and AGENTS.md's one-logical-change-per-commit rule; never use an implicit lease or
+interactive git. No direct merge: hand back review-ready work, or let kirocrew-prepare-pr's
 Phase 4 arm auto-merge as its Mode table decides. Any hold turns that off,
 including "don't merge", "review only", or a conductor's or work brief's hold.
 Auto-merge still waits for the required approval and every check.

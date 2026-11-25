@@ -13,7 +13,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
-import { mergeRenderers, resolveRenderer, type MessageRenderContext, type MessageRenderer } from '../app-sdk/messageRenderers'
+import { defaultMessageRenderers, mergeRenderers, resolveRenderer, type MessageRenderContext, type MessageRenderer } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers, type TranscriptRendererOptions } from '../pages/chat/transcriptRenderers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
 import StopEventCard from '../pages/chat/StopEventCard'
@@ -173,7 +173,8 @@ describe('the refined role rows', () => {
 
   it('draws nothing for an inject that stops parsing as a recovery', () => {
     const { ctx } = ctxOf()
-    expect(entryById('recovery_inject').render(msg('inject', { content: 'zzq ordinary' }), ctx)).toBeNull()
+    const entry = defaultMessageRenderers.find(r => r.id === 'recovery_inject')!
+    expect(entry.render(msg('inject', { content: 'zzq ordinary' }), ctx)).toBeNull()
   })
 
   it('draws a workflow completion through its card, wrapped by the host', () => {

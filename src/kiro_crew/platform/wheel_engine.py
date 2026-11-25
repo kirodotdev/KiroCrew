@@ -42,6 +42,8 @@ import base64
 import contextlib
 import hashlib
 import importlib as _importlib
+import importlib.metadata as _metadata
+import itertools
 import json
 import logging
 import os
@@ -55,6 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import asset_downloader  # noqa: F401 - re-export
+from kiro_crew import extras as _extras
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
@@ -68,6 +71,7 @@ from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     try_acquire_lock,
     try_acquire_lock_or_raise,
 )
+from kiro_crew.release_channel import distribution_name
 from kiro_crew.subprocess_utf8 import utf8_stdout
 
 # isort: split
@@ -348,14 +352,15 @@ def _verify_over_nofollow_files(
         raise WheelUpdateError("manifest signature verification failed — refusing to install")
 
 
-def wheel_filename(channel: str, version: str) -> str:
+def wheel_filename(channel: str, version: str, tag: str = "any") -> str:
     """The wheel a channel publishes: the LTS edition's own distribution on lts.
 
     publish-cli.yml, ``packaging/signing/cli-manifest.py`` and ``cli.sh`` pair
-    the same stem with the same channel.
+    the same stem with the same channel. *tag* is ``any`` for the pure wheel, or
+    a platform wheel's tag (:mod:`wheel_engine_platform`).
     """
     stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
-    return f"{stem}-{version}-py3-none-any.whl"
+    return f"{stem}-{version}-py3-none-{tag}.whl"
 
 
 def parse_and_validate_manifest(
@@ -363,6 +368,7 @@ def parse_and_validate_manifest(
     *,
     channel: str,
     artifact_base: str,
+    platform_tag: str = "any",
 ) -> tuple[dict[str, str], bytes, bytes]:
     """Structural validation + canonicalization, PURE (no I/O).
 
@@ -372,7 +378,8 @@ def parse_and_validate_manifest(
     values, oversized payloads, and a wheel URL that is not the ONE canonical
     URL implied by the byte host + channel + signed version are all refused.
     Nothing in the payload is acted on until the signature over the canonical
-    bytes verifies.
+    bytes verifies. *platform_tag* names the wheel a platform manifest
+    (``latest-cli-<tag>.json``) must point at; ``any`` is ``latest-cli.json``'s.
     """
     if len(raw) > _MANIFEST_MAX_BYTES:
         raise WheelUpdateError("manifest exceeds the size ceiling")
@@ -409,7 +416,7 @@ def parse_and_validate_manifest(
     requires = manifest["python_requires"]
     if len(requires) > 128 or any(not (0x20 <= ord(c) <= 0x7E) for c in requires):
         raise WheelUpdateError("manifest python_requires fails validation")
-    wheel_name = wheel_filename(channel, version)
+    wheel_name = wheel_filename(channel, version, platform_tag)
     expected_url = f"{artifact_base}/cli/{channel}/{version}/{wheel_name}"
     if manifest["wheel_url"] != expected_url:
         raise WheelUpdateError("manifest wheel_url is not the canonical artifact URL")
@@ -438,15 +445,42 @@ def fetch_verified_manifest(
     workdir: Path,
     ctx: _BuildContext = _NO_CONTEXT,
 ) -> dict[str, str]:
-    """Fetch the channel manifest and return its AUTHENTICATED payload."""
-    url = f"{feed_base}/feed/{channel}/latest-cli.json"
-    raw = _fetch_bytes(url, _MANIFEST_MAX_BYTES, _FETCH_TIMEOUT_SECS, cancel=ctx.cancel)
-    payload, canonical, signature = parse_and_validate_manifest(
-        raw, channel=channel, artifact_base=artifact_base
-    )
-    _raise_if_cancelled(ctx.cancel)
-    _verify_signature(canonical, signature, workdir, ctx=ctx)
-    return payload
+    """Fetch the channel manifest and return its AUTHENTICATED payload.
+
+    ``latest-cli.json`` is read and verified first: it names the channel's
+    version. On a host a platform wheel is published for (``host_wheel_tag``),
+    that platform's ``latest-cli-<tag>.json`` is then read too, and its payload
+    is returned only when it names the same version, so the update installs the
+    wheel that carries the pinned KAS engine with the code. A platform manifest
+    that is absent (403 or 404) or names another version (a promoted stable or
+    a mirrored insider that published no platform wheels) leaves the pure
+    wheel's payload; one that fails validation or its signature is refused.
+    """
+    from kiro_crew.platform import wheel_engine_platform as plat
+
+    def _verified(url: str, tag: str) -> dict[str, str]:
+        raw = _fetch_bytes(url, _MANIFEST_MAX_BYTES, _FETCH_TIMEOUT_SECS, cancel=ctx.cancel)
+        payload, canonical, signature = parse_and_validate_manifest(
+            raw, channel=channel, artifact_base=artifact_base, platform_tag=tag
+        )
+        _raise_if_cancelled(ctx.cancel)
+        # One scratch directory per verification: the no-/dev/fd fallback creates
+        # its fixed input names O_EXCL, so a second check in the same one fails.
+        scratch = Path(tempfile.mkdtemp(prefix=f"verify-{tag}-", dir=str(workdir)))
+        _verify_signature(canonical, signature, scratch, ctx=ctx)
+        return payload
+
+    pure = _verified(f"{feed_base}/feed/{channel}/latest-cli.json", "any")
+    tag = plat.host_wheel_tag()
+    if tag is None:
+        return pure
+    try:
+        platform = _verified(plat.platform_manifest_url(feed_base, channel, tag), tag)
+    except WheelUpdateError as exc:
+        if plat.is_absent(exc):
+            return pure
+        raise
+    return platform if platform["version"] == pure["version"] else pure
 
 
 def download_verified_wheel(
@@ -455,7 +489,8 @@ def download_verified_wheel(
     """Download the wheel the SIGNED payload names and verify its SHA-256."""
     url = payload["wheel_url"]
     expected_sha = payload["sha256"]
-    wheel_path = dest_dir / wheel_filename(payload.get("channel", ""), payload["version"])
+    # The validated canonical URL ends in the wheel's own name, pure or platform.
+    wheel_path = dest_dir / url.rsplit("/", 1)[-1]
     _download_to_file(
         url,
         wheel_path,
@@ -617,8 +652,13 @@ def build_shadow_venv(
     stable_link: Path | None = None,
     *,
     ctx: _BuildContext = _NO_CONTEXT,
+    extras: tuple[str, ...] = (),
 ) -> None:
     """Build a FRESH venv at *shadow_dir* and install *wheel_path* into it.
+
+    *extras* are installed with the wheel, in the same pip command (see
+    :func:`_carried_extras`), so a carried extra with no wheel for this host
+    fails the update like any other dependency.
 
     The interpreter is this process's own Python: the update replaces Kiro
     Crew's code, not the interpreter, so the shadow tree is built on the same
@@ -734,9 +774,10 @@ def build_shadow_venv(
     # sdist in the shadow tree (the gateway host is not required to have a C
     # toolchain, and a half-built tree is what the sentinel cleanup exists for).
     policy = _pip_binary_policy()
+    target = f"{wheel_path}[{','.join(sorted(extras))}]" if extras else str(wheel_path)
     try:
         _run(
-            shadow_pip + ["install", "--quiet"] + policy + [str(wheel_path)],
+            shadow_pip + ["install", "--quiet"] + policy + [target],
             _PIP_INSTALL_TIMEOUT_SECS,
             "pip install into the shadow venv",
             ctx=ctx,
@@ -752,7 +793,56 @@ def build_shadow_venv(
         missing = _no_wheel_packages(str(exc)) if policy else []
         if not missing:
             raise
-        raise WheelUpdateError(_no_wheel_message(missing) + f" (pip said: {exc})") from exc
+        raise WheelUpdateError(
+            _no_wheel_message(missing)
+            + _carried_extra_hint(missing, extras)
+            + f" (pip said: {exc})"
+        ) from exc
+
+
+def _dist_name(requirement: str) -> str:
+    """The normalized distribution name a PEP 508 *requirement* starts with."""
+    name = "".join(itertools.takewhile(lambda c: c.isalnum() or c in "-_.", requirement))
+    return name.lower().replace("_", "-").replace(".", "-")
+
+
+def _carried_extras() -> tuple[str, ...]:
+    """The declared extras whose every distribution is installed in THIS tree.
+
+    The update runs in the old release's process, so this reads the tree being
+    replaced. No version check: the new wheel's own pins decide.
+    """
+    carried = []
+    for extra, requirements in _extras.REQUIREMENTS.items():
+        try:
+            for requirement in requirements:
+                _metadata.distribution(_dist_name(requirement))
+        except _metadata.PackageNotFoundError:
+            continue
+        carried.append(extra)
+    return tuple(sorted(carried))
+
+
+def _carried_extra_hint(missing: list[str], extras: tuple[str, ...]) -> str:
+    """The way out when a package pip could not find belongs to a carried extra
+    and is not one the release requires without any extra, which no uninstall drops."""
+    try:
+        requires = _metadata.requires(distribution_name()) or []
+    except _metadata.PackageNotFoundError:
+        requires = []
+    base = {_dist_name(r) for r in requires if "extra" not in r.partition(";")[2]}
+    names = {_dist_name(m) for m in missing} - base
+    owned = {e: {_dist_name(r) for r in _extras.requirements_for_extra(e)} for e in extras}
+    owners = sorted(e for e, packages in owned.items() if names & packages)
+    if not owners:
+        return ""
+    # Only what pip could not find: an extra's other packages may back another extra.
+    packages = ", ".join(sorted(names & set().union(*(owned[e] for e in owners))))
+    return (
+        f". The update carries the optional extra {', '.join(owners)} because the running "
+        f"install has it; to update without compiling, uninstall {packages} from the "
+        "running install and the update stops carrying it"
+    )
 
 
 _NO_WHEEL_RE = re.compile(r"No matching distribution found for ([^\s]+)")
@@ -1350,7 +1440,13 @@ def _apply_locked(
         found_before = _dir_identity(shadow_dir)
         progress(f"Building the new environment at {shadow_dir}…")
         try:
-            build_shadow_venv(wheel_path, shadow_dir, stable_link=layout.stable_link, ctx=ctx)
+            build_shadow_venv(
+                wheel_path,
+                shadow_dir,
+                stable_link=layout.stable_link,
+                ctx=ctx,
+                extras=_carried_extras(),
+            )
             progress("Verifying the new environment…")
             verify_shadow_venv(shadow_dir, version, ctx=ctx)
             if install_engine is not None:
@@ -1476,6 +1572,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.platform.wheel_engine_contract import (  # noqa: F401
         _PIP_BINARY_ONLY,
+        _PUT_OFF_REASON,
         _VERSION_RE,
         _WHEEL_FETCH_TOTAL_SECS,
         WheelUpdateNotReady,

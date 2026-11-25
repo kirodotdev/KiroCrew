@@ -43,7 +43,7 @@ async def _counts(request: web.Request) -> dict[str, Any]:
 
     sessions: int | None
     try:
-        rows = await _catalog_rows(request)
+        rows = await _catalog_rows(request.app.get("state"))
         sessions = sum(1 for r in rows if not _machine_only(str(r.get("key") or "")))
     except Exception:  # noqa: BLE001 -- an unknown count is shown as unknown
         sessions = None

@@ -53,6 +53,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from kiro_crew import session_compaction_mark
 from kiro_crew.config.loader import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
 from kiro_crew.session_map import SUPPRESS_REPLAY_FLAG
 from kiro_crew.session_parts.policy import _resolve_compact_wait_secs
@@ -316,12 +317,18 @@ def note_session_head(
     could be cancelled before the caller receives the lease it must release. A
     failure is logged and swallowed for the same reason: the record is
     bookkeeping, and the claim it rides on has already succeeded.
+
+    A fresh start also drops the persisted compaction mark
+    (:data:`~kiro_crew.session_map.COMPACTED_FLAG`): it sends the full session
+    start, and the compacted transcript the mark described is not resumed.
     """
     try:
         folded = self._fold_key(key)
         if resumed:
             provider.session_head_started = self._session_map.sid_head_pending(folded)
             return
+        if is_new:
+            session_compaction_mark.drop(self._session_map, folded)
         if not is_new or provider.session_head_held is not True:
             return
         sid = getattr(getattr(provider, "client", None), "_session_id", None)

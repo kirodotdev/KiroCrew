@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 import { newTerminalByChord, toggleTerminalByChord, __resetTerminalChordFocus } from '../lib/terminalChordFocus'
-import { isBottomTerminalOpen, useBottomTerminal, __resetBottomTerminal, MAX_TERMINALS } from '../hooks/useBottomTerminal'
+import { isBottomTerminalOpen, useBottomTerminal, __resetBottomTerminal } from '../hooks/useBottomTerminal'
 import { renderHook } from '@testing-library/react'
 
 /** A stand-in for the docked panel: an `.xterm` subtree with a focusable node,
@@ -126,10 +126,10 @@ describe('newTerminalByChord: VS Code\'s Create New Terminal', () => {
     expect(tabCount()).toBe(2)
   })
 
-  it('stops adding at the terminal cap but keeps the panel open', () => {
-    for (let i = 0; i < MAX_TERMINALS + 2; i++) newTerminalByChord()
+  it('keeps adding past the old eight-tab cap', () => {
+    for (let i = 0; i < 10; i++) newTerminalByChord()
     expect(isBottomTerminalOpen()).toBe(true)
-    expect(tabCount()).toBe(MAX_TERMINALS)
+    expect(tabCount()).toBe(10)
   })
 
   it('remembers where it opened from, so the toggle chord closing from a shell returns there', () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -662,3 +663,80 @@ def test_cli_pass_on_a_migrated_install_leaves_the_markdown_files_alone():
     )
 
     assert "Lint before every commit" not in MemoryStore().read_preferences()
+
+
+def _on_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+#: Per case: the transcript's two rows, the command's outcome line for the key, its exit code.
+_OFF_LOOP_CASES = {
+    "a sensitive session is skipped": (
+        [("user", "Read my ssh key."), ("tool", "cat /home/u/.ssh/id_ed25519")],
+        "sensitive session, skipping (2 message(s) left)",
+        0,
+    ),
+    "a pass that moves nothing leaves a remainder": (
+        [("user", "Always run the linter before you commit."), ("assistant", "Understood.")],
+        "partially consolidated, 2 message(s) remain",
+        1,
+    ),
+}
+
+
+@pytest.mark.usefixtures("fake_vector_store")
+@pytest.mark.parametrize("case", sorted(_OFF_LOOP_CASES))
+def test_consolidate_reads_the_transcript_off_the_event_loop(case, monkeypatch, capsys):
+    """``kirocrew consolidate`` reads the transcript in worker threads, never on its loop.
+
+    The command runs under ``asyncio.run``. On the loop a transcript read's retry
+    over a transient ``OSError`` cannot pause, so on Windows a sharing violation
+    while another process rewrites the session's metadata line fails every attempt,
+    and the session fails with ``failed (PermissionError)``. The sensitive session
+    takes the counts, the pre-check in ``consolidate_now`` and the post-drain check;
+    a pass that moves nothing adds the count after it. Both outcome lines stay as
+    they were.
+    """
+    from kiro_crew.cli import _consolidate_cmd
+    from kiro_crew.history import ConversationLog, HistoryConsolidator
+
+    rows, line, code = _OFF_LOOP_CASES[case]
+    key = "cli-off-loop"
+    log = ConversationLog()
+    log.init()
+    for role, content in rows:
+        log.append(key, role, content)
+    reads: list[tuple[str, bool]] = []
+
+    def _spy(name: str) -> None:
+        real = getattr(ConversationLog, name)
+
+        def _read(self, *args, **kwargs):
+            reads.append((name, _on_loop()))
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(ConversationLog, name, _read)
+
+    for name in ("_count_messages", "_read_metadata", "_read_messages"):
+        _spy(name)
+    monkeypatch.setattr(HistoryConsolidator, "_consolidate", AsyncMock(return_value=None))
+    exit_code = 0
+    with (
+        patch("kiro_crew.cli.sel"),
+        patch("kiro_crew.cli.SessionManager"),
+        patch("kiro_crew.cli.build_provider_factory"),
+    ):
+        try:
+            _consolidate_cmd(argparse.Namespace(session_key=key, consolidate_all=False))
+        except SystemExit as exc:
+            exit_code = exc.code
+
+    captured = capsys.readouterr()
+    assert f"  {key}: {line}" in captured.out + captured.err
+    assert exit_code == code
+    assert {name for name, _ in reads} >= {"_count_messages", "_read_metadata", "_read_messages"}
+    assert [name for name, on_loop in reads if on_loop] == [], "a transcript read ran on the loop"

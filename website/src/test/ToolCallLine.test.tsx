@@ -354,7 +354,7 @@ describe('ToolCallLine inline expansion', () => {
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /Show details/i }))
     expect(screen.getByText('echo hello')).toBeTruthy()
-    expect(screen.queryByText('Details unavailable for historical tool calls.')).toBeNull()
+    expect(screen.queryByText("This earlier call's details weren't saved. Ask in the chat what it did.")).toBeNull()
   })
 
   it('shows the historical-message hint when the pill already shows the only detail', () => {
@@ -366,7 +366,7 @@ describe('ToolCallLine inline expansion', () => {
     })
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /Show details/i }))
-    expect(screen.getByText('Details unavailable for historical tool calls.')).toBeTruthy()
+    expect(screen.getByText("This earlier call's details weren't saved. Ask in the chat what it did.")).toBeTruthy()
   })
 
   it('falls back to message meta purpose for historical tool calls (raw-label mode)', () => {

@@ -125,7 +125,7 @@ Two paths can emit stubs, and both apply the same explicit
   over the raw same-named global entry at ACP `session/new`
   (`session_servers.py`), which is what keeps a server from being wrapped twice
   under two identities; no settings overlay is written and the real settings
-  file is never modified (#8111). The roster, not poolability, decides the
+  file is never modified. The roster, not poolability, decides the
   injection: a rostered server that is not shared still gets a stub and a
   callback address, and a server off the roster merges raw with no stub. An
   agent whose spec sets `includeMcpJson: false` (or its deprecated alias

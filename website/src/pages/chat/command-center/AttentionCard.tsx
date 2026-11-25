@@ -8,12 +8,15 @@ import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { appendSlotMessage, clearQuestionCard, isAnsweredQuestionEnding, markQuestionSettled, resolveQuestionCard, selectComposerBusy, setQuestionRequestInFlight } from '../../../store/chatSlice'
 import { restoreToComposer } from '../../../utils/composerRestore'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
+import { memberThreadTitle } from '../../../lib/memberThreadTitle'
+import type { OpenMateSessionsState } from '../../../lib/crewMode'
 import { answerFailureKey, answerRejectionReason, answerRestoredCommandCenterNotice, answersAsText, questionName } from '../../../utils/questionAnswers'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../../../components/chat-input/busySend'
 import { useJevAutoSend } from '../useJevAutoSend'
 import { Btn } from '../../../components/ui'
 import QuestionCard from '../../../components/QuestionCard'
+import { ApprovalInputText } from '../../../components/ApprovalInputText'
 import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
@@ -109,6 +112,22 @@ function CrewCardNotice({ item, title, onOpenSession }: {
     <p className="text-[12px] text-warn break-words">{t('commandCenter.crew_approval_on_card', { name: rootTitle })}</p>
     {/* Nothing is lost: the request waits on the server, and a retry is one click. */}
     {reopenFailed && <ErrorNotice variant="inline" message={t('commandCenter.worker_reopen_failed')} askAgent />}
+  </section>
+}
+
+/** A Bot's session waits on the person and this page leaves it out: the Bot's
+ *  name and its chat, opened on its Sessions tab, which lists that session. */
+function MateChatNotice({ item, title }: { item: AttentionItem; title: string }) {
+  const { t } = useTranslation()
+  const mate = useAppSelector(state => state.dashboard.slots.find(slot => slot.key === item.slot))
+  const name = (mate && memberThreadTitle(mate, [])) || title
+  const openSessions: OpenMateSessionsState = { openMateSessions: true }
+  return <section className="rounded-lg border border-border bg-card p-3 space-y-2" data-testid="mate-chat-notice">
+    <div className="flex items-center gap-2 min-w-0">
+      <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{name}</h3>
+      <Link to={mate?.agent ? `/members?member=${encodeURIComponent(mate.agent)}` : '/members'} state={mate?.agent ? openSessions : undefined} className="text-accent text-[12px] inline-flex items-center gap-1 shrink-0">{t('pages.membersPage.team_open_chat')}<ArrowUpRight size={13} /></Link>
+    </div>
+    <p className="text-[12px] text-warn break-words">{t('pages.membersPage.team_waiting_in_chat')}</p>
   </section>
 }
 
@@ -258,6 +277,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
   }
   if (settledElsewhere) return null
   if (item.crewCard) return <CrewCardNotice item={item} title={title} onOpenSession={onOpenSession} />
+  if (item.mateChat) return <MateChatNotice item={item} title={title} />
   return <section className="rounded-lg border border-border bg-card p-3 space-y-3">
     <div className="flex items-center gap-2 min-w-0">
       <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{item.approval && <ShieldCheck size={15} className="lucide-inline" />}{approvalHeading || title}</h3>
@@ -286,7 +306,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
       : item.approval ? <>
         <p className="text-sm break-words">{item.approval.tool_purpose?.trim() || t('commandCenter.purpose_missing')}</p>
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the exact command without splitting its tokens. */}
-        <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono">{typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''}</pre>
+        <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono"><ApprovalInputText text={typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''} /></pre>
         {/* A gone approval has nothing left to answer: no buttons, no help on them. */}
         {!expired && <>
           <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>

@@ -3,8 +3,8 @@ title: Worker messaging — routing, receipts and asks on the existing work repo
 status: draft
 author: kirocrew agent session, directed by zejiangg
 created: 2026-10-31
-last-audited: 2026-10-31
-audited-at: f358d9a217
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: []
 tracking-issues: [26499]

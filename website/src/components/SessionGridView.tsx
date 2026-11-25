@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Plus, Split, Loader2, Circle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
@@ -20,6 +20,7 @@ import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
 import { crewModeView } from '../lib/crewMode'
 import { isSplitChord } from '../hooks/splitChord'
+import { platformShortcut } from '../utils/platform'
 type Slot = {
   key: string
   /** Set on a Crew Mode worker: the root it works for. */
@@ -58,6 +59,7 @@ export default function SessionGridView({
   onFileOpen,
   onFolderOpen,
   onOpenCrewTab,
+  paneDropRef,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -88,8 +90,17 @@ export default function SessionGridView({
   /** The host's single Crew Mode dispatch-notice reveal, forwarded to each pane
    *  so a split pane uses the SAME reveal path as the single-chat surface. */
   onOpenCrewTab?: (slot: string) => void
+  /** Set while mounted to "show `slot` in pane `leafId` and focus it", for the
+   *  sessions sidebar's drop on a pane. */
+  paneDropRef?: MutableRefObject<((leafId: string, slot: string) => void) | null>
 }) {
   const grid = useSessionGrid(seedSlot)
+  const { fillLeaf, setFocused } = grid
+  useEffect(() => {
+    if (!paneDropRef) return
+    paneDropRef.current = (leafId, slot) => { fillLeaf(leafId, { kind: 'session', slot }); setFocused(leafId) }
+    return () => { paneDropRef.current = null }
+  }, [paneDropRef, fillLeaf, setFocused])
 
   // On entry, restore this anchor's persisted layout if one exists (useSessionGrid
   // loaded it from splitLayoutStore); otherwise seed [current session | placeholder]
@@ -196,6 +207,8 @@ export default function SessionGridView({
       const focused = grid.focusedId === leaf.id
       return (
         <ChatPane
+          // A pane given another session (a sidebar drop) starts fresh, as a pick does.
+          key={leaf.slot}
           slotKey={leaf.slot}
           focused={focused}
           pushToTalk={focused}
@@ -369,7 +382,7 @@ function PlaceholderPane({
           aria-label={i18nT('components.sessionGridView.search_sessions')}
           className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text placeholder:text-muted outline-hidden focus-visible:border-accent"
         />
-        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d')} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
+        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
           <SplitGlyph />
         </button>
         <button onClick={onSplitDown} title={i18nT('components.sessionGridView.split_down')} aria-label={i18nT('components.sessionGridView.split_down')} className={ctrlBtn}>

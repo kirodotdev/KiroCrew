@@ -1,7 +1,7 @@
 ---
 name: web-verify
 description: Use after a user-visible UI edit to verify your OWN change on an isolated loopback server. Capture, read and show real screenshots. Backends: the `browser` MCP tool (live in chat; origin must be listed), agent-browser (pixel diff, a11y), or scripted Playwright. Not web-preview or web-browse.
-triggers: verify the ui, check my change, does it look right, screenshot my change, verify front-end, visual check, self-verify, look at the change, prove the ui works, screenshots for the pr, agent-browser, playwright screenshot
+triggers: verify the ui, check my change, screenshot my change, verify front-end, visual check, self-verify, pr screenshots, agent-browser, playwright screenshot
 ---
 
 # Web Verify: look at your own front-end change
@@ -133,7 +133,9 @@ in the isolated harness rather than accepting it as evidence.
 
 The frames you captured here are the ones a user-visible UI change needs on its PR:
 see the `kirocrew-prepare-pr` skill for how they get attached, and the repo's constraint
-against committing binaries. Capture once, use twice.
+against committing binaries. Capture once, use twice. For the PR frames capture the
+full application chrome (nav/sidebar and the whole page or dialog in context), not an
+element-only crop (which draws a UX "not the real pane" finding).
 
 ## Not this skill
 

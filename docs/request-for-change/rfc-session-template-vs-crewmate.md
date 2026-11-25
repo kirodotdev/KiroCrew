@@ -3,8 +3,8 @@ title: A plain session is the default template, never the default crewmate
 status: implemented
 author: CrysisDeu
 created: 2026-10-09
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [18342]
 tracking-issues: [18328]

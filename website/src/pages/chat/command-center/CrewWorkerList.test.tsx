@@ -498,7 +498,7 @@ describe('Conductor mode Crew tab', () => {
 
   it('Status: a report whose reason names a person needs you, and the Needs your input line points at it', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'h1', title: 'Supplies list', status: 'blocked', reason: 'needs_human', summary: 'Sign in to the shop. Then retry.' })] })
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'h1', title: 'Supplies list', status: 'blocked', reason: 'needs_human', summary: 'Sign in to the shop. Then retry.', ask: { what: 'Pick one', why: '', options: [], pick: '', pick_why: '', written_at: '2026-10-30T00:06:00Z' } })] })
     renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
     const row = await screen.findByTestId('conductor-mode-milestone')
     expect(row.getAttribute('data-state')).toBe('needs_you')
@@ -590,6 +590,46 @@ describe('Conductor mode Crew tab', () => {
     expect(summary).toHaveTextContent(/^1 done$/)
     act(() => { (fold as HTMLDetailsElement).open = true; fireEvent(fold, new Event('toggle')) })
     expect(summary).toHaveTextContent(/^1 done$/)
+  })
+
+  it('Milestones: dropped milestones fold into one "N dropped" row below the open ones', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'x1', title: 'Old plan A', state: 'abandoned', terminal: true }),
+      ITEM({ item_id: 'o1', title: 'Live work', alive: 'running' }),
+      ITEM({ item_id: 'x2', title: 'Old plan B', state: 'abandoned', terminal: true }),
+      ITEM({ item_id: 'r1', title: 'Failed check', state: 'rejected', terminal: true }),
+    ] })
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
+    const fold = await screen.findByTestId('conductor-mode-milestones-dropped')
+    const summary = fold.querySelector('summary') as HTMLElement
+    expect(summary).toHaveTextContent(/^2 dropped$/)
+    expect((fold as HTMLDetailsElement).open).toBe(false)
+    // Folded rows stay in the fold; the open list keeps live work and the rejected one.
+    expect(within(fold).getAllByTestId('conductor-mode-milestone').map(r => r.textContent)).toEqual([expect.stringContaining('Old plan A'), expect.stringContaining('Old plan B')])
+    const outside = screen.getAllByTestId('conductor-mode-milestone').filter(r => !fold.contains(r))
+    expect(outside.map(r => r.textContent)).toEqual([expect.stringContaining('Live work'), expect.stringContaining('Failed check')])
+    // Below the open rows, so live work stays on top.
+    expect(outside[0].compareDocumentPosition(fold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The header still counts every milestone.
+    expect(within(screen.getByTestId('conductor-mode-milestones')).getByRole('heading').textContent).toBe('Milestones · 0 of 4')
+  })
+
+  it('Milestones: the dropped fold opens on its own, and drops its top rule when only the done fold sits above it', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'd1', title: 'Drinks menu', state: 'accepted', terminal: true }),
+      ITEM({ item_id: 'x1', title: 'Old plan A', state: 'abandoned', terminal: true }),
+    ] })
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
+    const dropped = await screen.findByTestId('conductor-mode-milestones-dropped')
+    const done = screen.getByTestId('conductor-mode-milestones-done') as HTMLDetailsElement
+    // No open row between the two folds: the done fold's bottom rule is the only divider.
+    expect(done).toHaveClass('border-b')
+    expect(dropped).not.toHaveClass('border-t')
+    act(() => { (dropped as HTMLDetailsElement).open = true; fireEvent(dropped, new Event('toggle')) })
+    expect((dropped as HTMLDetailsElement).open).toBe(true)
+    expect(done.open).toBe(false)
   })
 
   it('Status: a failed summary read and a failed crew read say so', async () => {

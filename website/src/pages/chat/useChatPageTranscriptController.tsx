@@ -3,7 +3,9 @@ import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 
 import type { useScrollManager } from './useScrollManager'
 import { usePinnedPrompt } from './usePinnedPrompt'
 import { jumpAnchorIdx } from '../../utils/pinnedPrompt'
-import { attachUserScrollIntent, glideOnceStep, pollRowSettled } from '../../utils/searchScroll'
+import { attachUserScrollIntent } from '../../utils/searchScroll'
+import { useNavToDisplayIndex } from './useNavToDisplayIndex'
+import { leadMessage } from '../../chat-core/transcript/rowKeys'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
 import { releaseReadingPosition } from '../../utils/panelSlide'
 
@@ -148,95 +150,6 @@ export function useChatPageTranscriptEarlyController({
     composerBandObserverRef.current = ro
   }, [scrollBottom, autoFollowAllowed])
 
-  // Navigate to a (possibly off-window) display index: mount it first via the
-  // virtualizer so the DOM-based scroll can find it, then scroll next frame.
-  // Tracks the in-flight row-mount poll (below) so a newer navigation cancels
-  // the previous one. Without this, an earlier far-jump loop whose target
-  // finally mounts would scroll to that stale destination, yanking away from
-  // the newer target (rapid stepping / click-then-click). cancelAnimationFrame(0)
-  // is a no-op, so 0 is a safe initial value.
-  const navScrollRafRef = useRef(0)
-  // Cancel handle for the in-flight settle poll, so a newer navigation or an
-  // unmount terminates it rather than letting it run to the wall-clock backstop.
-  const navPollCancelRef = useRef<(() => void) | null>(null)
-  const navToDisplayIndex = useCallback((
-    idx: number,
-    opts?: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number },
-  ) => {
-    cancelAnimationFrame(navScrollRafRef.current)
-    // Signal WidgetFrames that a jump is starting so the span of widgets
-    // mountIndex is about to union doesn't all build their iframes in one
-    // frame (see PROGRAMMATIC_BUILD_DELAY_MS in WidgetFrame).
-    window.dispatchEvent(new Event('mc-chat-scroll-jump'))
-    const jumpedFar = mountIndexRef.current(idx)
-    // A FAR jump replaces the window, so the rows between the old viewport and
-    // the target are NOT mounted — a smooth glide would scrub the scroller
-    // through blank spacer (the "occasional flicker" on the ↑/jump pills when
-    // the target is past a long turn). Teleport instantly instead: the target
-    // block is already mounted so it shows immediately, and overflow-anchor
-    // keeps it stable as its rows measure. NEAR jumps keep their smooth glide
-    // (mountIndex unioned the whole path, so there's nothing blank to scrub).
-    const behavior: ScrollBehavior = jumpedFar ? 'auto' : (opts?.behavior ?? 'smooth')
-    // mountIndex queues a React state update (the virtualizer's window range).
-    // A FAR jump REPLACES the window, so the target row is NOT painted into the
-    // DOM within a single frame — one rAF then a DOM query misses it. Poll for
-    // the row and scroll once it mounts, then keep re-scrolling (re-reading the
-    // live offset each frame) until the row's measured height SETTLES — a far
-    // row must mount + measure, and a widget target keeps growing for ~450ms as
-    // its iframe builds (PROGRAMMATIC_BUILD_DELAY_MS). A fixed frame-count
-    // ceiling (~0.5s) gives up before the widget settles, so the jump silently
-    // no-ops and only works on a second click once cached. Condition-based
-    // instead: retry until the target reports a stable (non-estimated) height,
-    // with a ~2s wall-clock backstop so a genuinely unreachable target still
-    // terminates instead of spinning. While the row is missing we do NOTHING —
-    // we never teleport to top (the "far jump jumps to top, second click works"
-    // bug). navScrollRafRef holds the in-flight frame so a newer navigation
-    // cancels this loop (rapid stepping / click-then-click).
-    const rowEl = (): HTMLElement | null =>
-      (scrollerRef.current?.querySelector(`[data-display-index="${idx}"]`) as HTMLElement | null) ?? null
-    navPollCancelRef.current?.()
-    // The poll re-scrolls every frame for up to CONVERGE_MAX_MS (~2s). If the
-    // user tries to scroll during that window, continuing to step would drag
-    // the viewport back to the target and fight their input — so user scroll
-    // ABORTS the convergence, exactly as scrollCurrentMatchIntoView does. (A
-    // fixed frame-count ceiling short enough (~0.5s) masks this; the
-    // longer, condition-based window makes it reachable.) The shared
-    // attachUserScrollIntent covers scrollbar drag and keyboard scrolling too,
-    // not just wheel/touch.
-    const scrollEl = scrollerRef.current
-    const onUserScroll = () => { navPollCancelRef.current?.() }
-    const detachUserScroll = attachUserScrollIntent(scrollEl ?? undefined, onUserScroll)
-    navPollCancelRef.current = pollRowSettled({
-      measure: () => {
-        const el = rowEl()
-        return el ? el.getBoundingClientRect().height : null
-      },
-      // Only the FIRST step may glide — see glideOnceStep. Re-issuing a smooth
-      // scroll cancels and restarts the animation, so stepping every frame
-      // through the quiet window would leave a NEAR jump stuttering until the
-      // poll ends (the same restart trap removed from the streaming pin).
-      step: glideOnceStep(
-        (b) => { scrollToDisplayIndex(idx, { ...opts, behavior: b }) },
-        behavior,
-      ),
-      raf: (cb) => (navScrollRafRef.current = requestAnimationFrame(cb)),
-      now: () =>
-        typeof performance !== 'undefined' && typeof performance.now === 'function'
-          ? performance.now()
-          : Date.now(),
-      onEnd: () => { detachUserScroll(); navPollCancelRef.current = null },
-    })
-  }, [scrollToDisplayIndex, scrollerRef, mountIndexRef])
-
-  // Stop any in-flight settle poll on unmount. Without this the loop keeps
-  // ticking rAFs against a null scroller until the ~2s backstop (harmless but
-  // pointless work after the page is gone).
-  useEffect(() => () => {
-    navPollCancelRef.current?.()
-    navPollCancelRef.current = null
-    cancelAnimationFrame(navScrollRafRef.current)
-  }, [])
-
   // Pinned-prompt banner: geometry, expanded state and the fold/card refs live
   // in the shared usePinnedPrompt hook (also worn by ChatPane). Only the JUMP is
   // page-specific — a virtualized transcript must mount the target row before
@@ -256,6 +169,24 @@ export function useChatPageTranscriptEarlyController({
     onScrollPin,
     pinnedJumpChrome,
   } = usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true })
+
+  // The jump to a (possibly off-window) row lives in the shared
+  // useNavToDisplayIndex, which a Bot chat's Find in chat also uses. It aims at
+  // a message and finds its row in the rows on screen (`displayItemsRef`, the
+  // deferred list the virtualizer draws) on every frame. The pinned-prompt
+  // glide below shares its in-flight handles, so either jump cancels the other.
+  const mountIndex = useCallback(
+    (index: number, opts?: { unionOnly?: boolean }) => mountIndexRef.current(index, opts),
+    [mountIndexRef],
+  )
+  const {
+    navToMessage, navToDisplayIndex, rowOfMessage, cancelNavScroll, navScrollRafRef, navPollCancelRef,
+  } = useNavToDisplayIndex({
+    scrollerRef,
+    displayItemsRef,
+    mountIndex,
+    scrollToDisplayIndex,
+  })
   /** Jump the transcript back to the pinned prompt, landing it just below the
    *  banner so the prompt is read in context — which also un-pins the banner,
    *  since its prompt is no longer above the fold.
@@ -275,6 +206,11 @@ export function useChatPageTranscriptEarlyController({
     // Rationale and near/far interaction: see jumpAnchorIdx's docblock
     // (utils/pinnedPrompt.ts).
     const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    // The glide aims at the prompt itself, and finds its row again each frame
+    // (a page that lands mid-glide renumbers the rows).
+    const anchorItem = displayItemsRef.current[anchor]
+    const prompt = anchorItem ? leadMessage(anchorItem) : null
+    if (!prompt) return
     // NEAR: the window is unioned up to the target, so every row on the path
     // mounts and measures before the glide starts and the destination is exact
     // from the first frame. FAR: nothing is mounted — replacing the window at
@@ -287,18 +223,24 @@ export function useChatPageTranscriptEarlyController({
     // shifted was never corrected.
     const far = mountIndexRef.current(anchor, { unionOnly: true })
     window.dispatchEvent(new Event('mc-chat-scroll-jump'))
-    const rowEl = (): HTMLElement | null =>
-      (scrollerRef.current?.querySelector(`[data-display-index="${anchor}"]`) as HTMLElement | null)
+    const rowElAt = (at: number): HTMLElement | null =>
+      (scrollerRef.current?.querySelector(`[data-display-index="${at}"]`) as HTMLElement | null)
+    const rowEl = (): HTMLElement | null => {
+      const at = rowOfMessage(prompt)
+      return at < 0 ? null : rowElAt(at)
+    }
     // Live destination: the row's top from the DOM once it is mounted, the
     // height index's estimate until then, less the chrome the previous turn's
     // banner needs to pin completely at the landing.
     const goal = (): number | null => {
       const sc = scrollerRef.current
       if (!sc) return null
-      const row = rowEl()
+      const at = rowOfMessage(prompt)
+      if (at < 0) return null
+      const row = rowElAt(at)
       const rowTop = row
         ? sc.scrollTop + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
-        : estimateRowTopRef.current(anchor)
+        : estimateRowTopRef.current(at)
       if (rowTop == null) return null
       return Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, rowTop - pinnedJumpChrome()))
     }
@@ -356,14 +298,17 @@ export function useChatPageTranscriptEarlyController({
       navScrollRafRef.current = requestAnimationFrame(tick)
     }
     navScrollRafRef.current = requestAnimationFrame(tick)
-  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef])
+  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef, navScrollRafRef, navPollCancelRef, rowOfMessage])
 
   return {
     scrollBottom,
     autoFollowAllowed,
     handleSurveyLayoutChange,
     composerBandRef,
+    navToMessage,
     navToDisplayIndex,
+    rowOfMessage,
+    cancelNavScroll,
     displayItemsRef,
     pinFoldRef,
     pinCardRef,

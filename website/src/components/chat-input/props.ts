@@ -264,8 +264,8 @@ export interface ChatInputProps {
    * `useAnchoredTriggerRect`.
    */
   onAgentClick?: (rect: DOMRect, trigger?: HTMLElement) => void
-  /** Shown where the agent chip sits when the session has no agent picker (a
-   *  Crew Mode chat's conductor is Crew Mode's to choose): a label, not a control. */
+  /** A label, not a control, drawn where the agent chip starts: a Crew Mode
+   *  chat's mark, alone or before a kept agent picker. */
   agentBadge?: React.ReactNode
   /** `composerHadFocus` is whether the message editor held focus when the chip
    *  was pressed, read before the press moved focus onto the chip. The picker
@@ -365,6 +365,9 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
+  /** The KAS session's approve-for-me read-back; `undefined` while it offers none,
+   *  which keeps the choice out of the approval-mode picker. */
+  approveForMe?: boolean
   /** Drawn directly right of the approval-mode picker (the mid-chat conductor mode chip). */
   afterApprovalMode?: React.ReactNode
   reasoningEffort?: string

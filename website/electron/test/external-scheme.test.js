@@ -75,6 +75,8 @@ describe("classifyNavigation", () => {
       "vscode://file/c:/Users/me/repo/a.ts:10",
       "vscode://file/D:/work/x.py:3:2",
       "vscode-insiders://file/C:/Users/me/a.ts",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/a.ts:1",
+      "kiro://file/Users/me/repo/a.ts",
     ]) {
       assert.equal(classifyNavigation(url, ORIGIN), "confirm", url);
     }
@@ -82,6 +84,8 @@ describe("classifyNavigation", () => {
 
   it("blocks editor links that are not a plain file path", () => {
     for (const url of [
+      "kiro://some.extension/run",
+      "kiro://vscode-remote/ssh-remote+-oProxyCommand=x/a.ts",
       "vscode://ms-vscode.some-extension/run",
       "vscode://vscode-remote/wsl+Ubuntu/home/me/a.ts",
       "vscode://vscode-remote/ssh-remote+-oProxyCommand=x/a.ts",
@@ -376,6 +380,32 @@ describe("createWindowOpenHandler", () => {
       assert.deepEqual(opened, ["vscode://file/Users/me/a.ts", "vscode://file/C:/Users/me/b.ts:4"]);
     });
 
+    it("asks for a link to another machine's share, even after a remembered local choice", async () => {
+      const asked = [];
+      const { handler, opened } = harness({
+        confirmOpen: async (url) => {
+          asked.push(url);
+          return { open: true, remember: true };
+        },
+        rememberedEditorTargets: new Set(),
+      });
+      const links = [
+        "vscode://file/C:/Users/me/a.ts",
+        // A drive letter keeps a doubled slash local, so the local choice covers it.
+        "vscode://file/C://files.example.test/share/a.ts",
+        "vscode://file//files.example.test/share/a.ts",
+        "vscode://file//files.example.test/share/a.ts:4",
+        // Decoded, this is another path on the same share, so it asks again.
+        "vscode://file/%2Ffiles.example.test/share/b.ts",
+      ];
+      for (const url of links) {
+        handler({ url });
+        await settle();
+      }
+      assert.deepEqual(asked, [links[0], links[2], links[4]]);
+      assert.deepEqual(opened, links);
+    });
+
     it("does not remember a Cancel, even with the box checked", async () => {
       const remembered = new Set();
       const { handler, opened } = harness({
@@ -584,6 +614,43 @@ describe("createNavigationGuard pins the exact-origin compare", () => {
   });
 
   it("still allows the app's own origin", () => {
+    assert.equal(navigate("http://localhost:5476/chat?x=1"), false);
+  });
+
+  it("refuses a blob: the app origin minted unless the window was opened on one", () => {
+    assert.equal(navigate("blob:http://localhost:5476/0388b437-dead-beef"), true);
+  });
+});
+
+// A pop-out the open handler allowed loads its target through this guard, so
+// the two must agree on the dashboard's own blob: document.
+describe("createNavigationGuard with allowOwnBlob", () => {
+  const APP = "http://localhost:5476";
+  const navigate = (url, appOrigin = APP) => {
+    let prevented = false;
+    createNavigationGuard({ getAppOrigin: () => appOrigin, allowOwnBlob: true, log: () => {} })(
+      { preventDefault: () => { prevented = true; } },
+      url,
+    );
+    return prevented;
+  };
+
+  it("allows a blob: the app origin minted", () => {
+    assert.equal(navigate("blob:http://localhost:5476/0388b437-dead-beef"), false);
+  });
+
+  it("refuses a blob: another origin minted", () => {
+    assert.equal(navigate("blob:http://localhost:7780/0388b437-dead-beef"), true);
+    assert.equal(navigate("blob:https://evil.example/abc"), true);
+  });
+
+  it("refuses an opaque blob: even on an opaque app origin", () => {
+    assert.equal(navigate("blob:null/attacker", "blob:null/y"), true);
+    assert.equal(navigate("blob:null/attacker", "file:///app/"), true);
+  });
+
+  it("still refuses another origin and still allows the app's own", () => {
+    assert.equal(navigate("http://localhost:5477/"), true);
     assert.equal(navigate("http://localhost:5476/chat?x=1"), false);
   });
 });

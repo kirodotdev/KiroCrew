@@ -85,7 +85,8 @@ class _ThreadSlack:
 
     async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
         ts = self._ts()
-        self.messages[ts] = ["footer", text]
+        # A no-stream reply part is one ``markdown`` block; the timing footer is not.
+        self.messages[ts] = ["post" if blocks[0]["type"] == "markdown" else "footer", text]
         return ts
 
     async def post_message(self, channel, text, thread_ts=None, **kw):

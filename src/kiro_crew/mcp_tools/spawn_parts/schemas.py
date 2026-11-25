@@ -20,12 +20,19 @@ defines it (the sub-agent readers: :mod:`kiro_crew.subagent_standalone`).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any
 
 from kiro_crew import resource_status as host_status
 from kiro_crew import subagent_standalone
-from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
+from kiro_crew.agent_discovery import (
+    SCOPE_GLOBAL,
+    _kiro_agents_dir,
+    _read_agent_spec,
+    is_internal_agent_spec,
+    list_agents,
+    spec_is_toolless,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.execution_context import read_session_execution
@@ -33,11 +40,17 @@ from kiro_crew.mcp_core_parts.identity import _resolve_session_key
 from kiro_crew.mcp_listing_relay import built_for_a_tool_server
 from kiro_crew.mcp_tools.catalog import loaded_binding
 from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
+from kiro_crew.validation import MAX_LONG_STRING
 
 # Roster carried in the spawn_run parameter descriptions. Kept small on purpose:
 # a tool description is always-on context in every session, so this buys
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
+
+# The bound the validator holds every brief field to (``core_agent_schemas``), named
+# as learn_add names its own: the model cannot measure its text, so it is told the
+# bound before it writes, not by a refusal.
+_BRIEF_LIMIT = f" HARD LIMIT: {MAX_LONG_STRING} characters; put a longer brief in a file."
 
 #: The import path and patch surface of the identity resolver and the agent scan. Importing
 #: it loads every tool handler, so the two names are read from it only once it is loaded.
@@ -94,6 +107,87 @@ def _parent_allowlist_filter(names: Iterable[str]) -> tuple[list[str], bool]:
     return [n for n in names if all(matches(n, al) for al in allowlists)], True
 
 
+#: The mark a roster puts after an agent whose spec mounts no tool at all.
+_TOOLLESS_MARK = " (no tools)"
+
+
+def _toolless_agent_names(rows: Iterable[Any]) -> set[str]:
+    """The names of the user-level *rows* whose spec mounts nothing (``spec_is_toolless``).
+
+    The spec judged is the one a spawn of that name runs: the declared-name resolver
+    with ``agent.spec_pins`` applied (``declared_spec_claim``), not the file a roster
+    row kept, which may be another claimant's. Each file in the user-level folder is
+    read once through the hardened spec reader. A row with no file name, a name the
+    resolver refuses (an ambiguous or broken pin), or a spec that cannot be read, is
+    not tool-less (no mark is the safe answer). A name no file declares falls back to
+    the row's own file. A row of another scope is not judged and stays unmarked: the
+    rosters list the user-level folder only, and the resolver judges only specs in
+    that folder. Blocking: the caller holds the roster's own ``try``.
+    """
+    from kiro_crew.agent_discovery import (
+        AgentSpecPinError,
+        AmbiguousAgentSpecError,
+        declared_spec_claim,
+    )
+    from kiro_crew.agent_spec_format import iter_agent_spec_files
+
+    agents_dir = _kiro_agents_dir()
+    parsed: list[tuple[Any, Any]] | None = None
+    by_file: dict[str, Any] = {}
+    names: set[str] = set()
+    for row in rows:
+        name, filename = getattr(row, "name", ""), getattr(row, "filename", "")
+        if not (isinstance(name, str) and name and isinstance(filename, str) and filename):
+            continue
+        if getattr(row, "scope", SCOPE_GLOBAL) != SCOPE_GLOBAL:
+            continue
+        if parsed is None:
+            parsed = [
+                (_read_agent_spec(path, operation="spawn_roster", source="subagent"), path)
+                for path in iter_agent_spec_files(agents_dir)
+            ]
+            by_file = {path.name: spec for spec, path in parsed}
+        try:
+            claim = declared_spec_claim(
+                agents_dir,
+                name,
+                operation="spawn_roster",
+                source="subagent",
+                parsed_rows=parsed,
+            )
+        except (AgentSpecPinError, AmbiguousAgentSpecError):
+            continue
+        spec = claim.spec if claim is not None else by_file.get(filename)
+        if spec_is_toolless(spec):
+            names.add(name)
+    return names
+
+
+def _roster_with_tools_first(
+    names: list[str],
+    toolless: Collection[str],
+    *,
+    limit: int | None,
+    exclude: Iterable[str] | None = None,
+) -> tuple[list[str], int]:
+    """*names* rendered as a roster: agents with tools first, *toolless* ones marked last.
+
+    A tool-less agent (:func:`_toolless_agent_names`) can only answer in text, and a bare
+    name in front of a model reads like any other child, so a file job sent to one was
+    lost. Each part keeps the caller's order and goes through ``visible_agent_names``
+    (grammar, redaction, bound), the tool-less part taking what the bound leaves, so a cap
+    cuts tool-less names first. Returns ``(shown, withheld)``.
+    """
+    visible = _subagent_reader("visible_agent_names")
+    kwargs: dict[str, Any] = {} if exclude is None else {"exclude": exclude}
+    with_tools, withheld = visible([n for n in names if n not in toolless], limit=limit, **kwargs)
+    if not toolless:
+        return with_tools, withheld
+    room = None if limit is None else max(limit - len(with_tools), 0)
+    marked, withheld_marked = visible([n for n in names if n in toolless], limit=room, **kwargs)
+    return [*with_tools, *(n + _TOOLLESS_MARK for n in marked)], withheld + withheld_marked
+
+
 def _agent_roster_hint() -> str:
     """Valid agent names, for the ``agent``/``agents`` parameter descriptions.
 
@@ -126,14 +220,15 @@ def _agent_roster_hint() -> str:
         # spec forbids spawning are dropped FIRST: advertising them would send
         # the model straight into the gate's refusal. So are Kiro Crew's own
         # generated specs (``is_internal_agent_spec``), which the gate refuses.
-        names, restricted = _parent_allowlist_filter(
-            sorted(
-                a.name
-                for a in loaded_binding(_CORE, "list_agents", list_agents)()
-                if a.name and not is_internal_agent_spec(a)
-            )
+        rows = [
+            a
+            for a in loaded_binding(_CORE, "list_agents", list_agents)()
+            if a.name and not is_internal_agent_spec(a)
+        ]
+        names, restricted = _parent_allowlist_filter(sorted(a.name for a in rows))
+        shown, withheld = _roster_with_tools_first(
+            names, _toolless_agent_names(rows), limit=_MAX_ROSTER_NAMES
         )
-        shown, withheld = _subagent_reader("visible_agent_names")(names, limit=_MAX_ROSTER_NAMES)
     except Exception:
         return ""  # never let a directory read break the tool advertisement
     if not shown:
@@ -295,18 +390,27 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "properties": {
                     "task": {
                         "type": "string",
+                        "maxLength": MAX_LONG_STRING,
                         "description": (
                             "A bounded assignment with goal, ready inputs, ownership, "
                             "verifiable outputs and stop conditions. Never forward the whole "
                             "request to an equivalent worker merely to wait and relay."
+                            + _BRIEF_LIMIT
                         ),
                     },
                     "tasks": {
                         "type": "array",
                         "items": {
                             "type": ["string", "object"],
+                            # maxLength binds the string arm only; the object arm's
+                            # bound is on its task property.
+                            "maxLength": MAX_LONG_STRING,
                             "properties": {
-                                "task": {"type": "string"},
+                                "task": {
+                                    "type": "string",
+                                    "maxLength": MAX_LONG_STRING,
+                                    "description": "The task brief." + _BRIEF_LIMIT,
+                                },
                                 "model": {"type": "string"},
                                 "reasoning_effort": {"type": "string"},
                                 "backend": {"type": "string"},
@@ -375,6 +479,15 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "Must be under a configured subagent_cwd_allowed_roots entry "
                             "(default: [~/workspace, ~/workspaces, ~/workplace, "
                             "~/workplaces]). Applies to all tasks in a batch spawn."
+                        ),
+                    },
+                    "isolate": {
+                        "type": "string",
+                        "enum": ["worktree"],
+                        "description": (
+                            "Optional. 'worktree' gives each task its own git worktree of "
+                            "cwd's repository, detached at HEAD; uncommitted changes are "
+                            "not copied. Needs 'cwd'."
                         ),
                     },
                     "model": {
@@ -492,7 +605,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                     "task": {
                         "type": "string",
-                        "description": "Follow-up task/instruction for the subagent",
+                        "maxLength": MAX_LONG_STRING,
+                        "description": (
+                            "Follow-up task/instruction for the subagent." + _BRIEF_LIMIT
+                        ),
                     },
                     "agent": {"type": "string", "description": "Agent name override"},
                     "max_turns": {
@@ -530,7 +646,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                     "message": {
                         "type": "string",
-                        "description": "Instruction to inject into the running turn",
+                        "maxLength": MAX_LONG_STRING,
+                        "description": (
+                            "Instruction to inject into the running turn." + _BRIEF_LIMIT
+                        ),
                     },
                     "mode": {
                         "type": "string",

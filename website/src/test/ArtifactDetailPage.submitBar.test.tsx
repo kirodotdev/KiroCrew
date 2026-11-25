@@ -264,7 +264,7 @@ describe('ArtifactDetailPage comment submit bar', () => {
     renderPage([mkComment('h1')])
     await bar()
     const draft = screen.getByRole('button', { name: /Draft a prompt in chat/ })
-    expect(draft).toHaveAttribute('title', expect.stringMatching(/Nothing is sent until you send it yourself/))
+    expect(draft).toHaveAttribute('title', expect.stringMatching(/^Opens the chat with a prompt about these comments in its box\.$/))
     // Styled as a quiet link: no border or accent fill a reader could take for a second Submit.
     expect(draft.className).toMatch(/\bborder-none\b/)
     expect(draft.className).not.toMatch(/\b(text-accent|bg-accent|border-accent)/)

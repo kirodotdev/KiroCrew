@@ -438,6 +438,29 @@ def test_a_create_with_work_item_is_born_bound_on_the_callers_ledger(env, monkey
     assert seen["instance"] == INSTANCE and "memory_mode" in seen["create"]
 
 
+def test_a_bound_create_reply_carries_the_binds_patrol_outcome(env, monkeypatch):
+    """M4: the patrol fields the hub bind answered reach the create reply."""
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    async def _bound(state, mgr, board, instance_id, item_id, create):
+        payload = {
+            "key": "chat-77",
+            "patrol": "refused",
+            "patrol_reason": "user-stopped",
+            "patrol_note": "arm one",
+        }
+        return "chat-77", payload, SimpleNamespace(item_id=item_id, title="item one")
+
+    monkeypatch.setattr(remote_ingest, "create_bound", _bound)
+    status, body = _call(env, "create", crew="lab", work_item="it_0000abcd")
+    assert status == 200, body
+    assert (body["patrol"], body["patrol_reason"], body["patrol_note"]) == (
+        "refused",
+        "user-stopped",
+        "arm one",
+    )
+
+
 def test_after_a_restart_the_item_pair_still_fences_the_slot(env, monkeypatch):
     """The in-memory record is gone after a hub restart; an open item bound to the
     slot on that crew still admits the verbs, and nothing else does."""
@@ -452,6 +475,8 @@ def test_after_a_restart_the_item_pair_still_fences_the_slot(env, monkeypatch):
     monkeypatch.setattr(remote_ingest, "holds_peer_slot", never)
     status, body = _call(env, "send", crew="lab", target=target, message="again")
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
+    # The refusal names the restart and the path that survives one.
+    assert "restarts" in body["error"] and "work_item=" in body["error"]
 
     async def only_target(board, inst, slot):
         return (inst, slot) == (INSTANCE, target)

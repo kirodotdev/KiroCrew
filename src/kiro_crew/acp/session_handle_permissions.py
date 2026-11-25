@@ -19,7 +19,8 @@ Instance fields read: ``_config_options``, ``_runtime``,
 ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``kas_crew_answered``, ``kas_crew_answered_commands``,
-``kas_hook_held``, ``kas_spec_denies``, ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``,
+``kas_hook_held``, ``kas_parent_limits``, ``kas_spec_denies``, ``kas_spec_shell_allowlist``,
+``kas_spec_write_allowlist``,
 ``kas_spec_shell_readonly``, ``kas_spec_unjudged_denies``, ``kas_crew_answered_paths``,
 ``kas_crew_answered_read_paths``, ``_bound_cwd``, ``mirror_used``, ``spec_denied_tools``, ``spec_zero_tools``.
 """
@@ -27,6 +28,7 @@ Instance fields read: ``_config_options``, ``_runtime``,
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -37,9 +39,11 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+    asks_allow_always,
     build_permission_event,
     identified_mcp_call,
     is_mcp_tool_approval,
+    offered_allow_id,
     redact_text,
     scope_overflowed,
     scoped_tool_cache_key,
@@ -50,6 +54,7 @@ from kiro_crew.acp.client_permissions import (
     _is_child_permission_frame,
     once_for_always,
 )
+from kiro_crew.acp.session_handle_native_children import kas_requesting_subagent
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -68,9 +73,14 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     permission_value_for,
 )
-from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
+from kiro_crew.constants import (
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_PROVENANCE_UNRETAINED,
+    DENY_CAUSE_UNREADABLE_IDENTITY,
+)
 from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
+from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant, as_spec_denied_grant
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
@@ -162,7 +172,10 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
-        await self.reject_tool(request_id)
+        if gate_event is None:
+            await self.reject_tool(request_id)
+        else:
+            await self._reject_with_host_notice(gate_event, reason, cause=DENY_CAUSE_POLICY)
         return False
     if withdraw_if is not None and withdraw_if():
         # The floor's thread hop is an await: read again before anything else
@@ -176,13 +189,16 @@ async def approve_tool(
         # human-wait segment of the park so an observer does not attribute the
         # person's thinking time to the consumer (see _end_human_wait).
         self._end_human_wait()
+    # By the kind the frame offered an explicit id as, before its spelling.
+    wants_always = asks_allow_always(option_id, gate_event, always=False)
     if recorded:
         if resolved_id is None:
             resolved_id = recorded.get("once") or recorded.get("always")
-        elif resolved_id == OPTION_ALLOW_ALWAYS:
-            resolved_id = recorded.get("always") or recorded.get("once") or resolved_id
-        elif resolved_id == OPTION_ALLOW_ONCE:
-            resolved_id = recorded.get("once") or resolved_id
+        elif resolved_id in (OPTION_ALLOW_ALWAYS, OPTION_ALLOW_ONCE):
+            once = recorded.get("once")
+            resolved_id = (
+                (recorded.get("always") or once) if wants_always else once
+            ) or resolved_id
     if resolved_id is None:
         resolved_id = OPTION_ALLOW_ONCE
     if capability.for_connection:
@@ -190,6 +206,20 @@ async def approve_tool(
         # tool, and the gateway proxy refuses every call no approval was minted
         # for. Crew keeps its own approval memory; the harness is answered once.
         resolved_id = once_for_always(resolved_id, recorded or {})
+    # A canonical literal no recorded id replaced is answered with the offered id of its kind.
+    offered_id = offered_allow_id(
+        resolved_id, gate_event, always=wants_always and not capability.for_connection
+    )
+    if offered_id is None:
+        logger.warning(
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
+            _loggable_request_id(request_id),
+        )
+        # Put back what was taken, so the reject answers with the offered reject id.
+        self._restore_withdrawn(request_id, gate_event, recorded)
+        await self.reject_tool(request_id)
+        return False
+    resolved_id = offered_id
     # The wait for the write lock is the last await before the answer goes
     # out, so the runtime reads the withdrawal again under that lock, ahead
     # of its own liveness check, and the grant's deadline after it: a runtime
@@ -783,15 +813,21 @@ def _remote_workdir(remote_workspace: object) -> str:
     return workdir if isinstance(workdir, str) else ""
 
 
-def _is_native_child_call(handle: AcpSessionHandle, event: AcpEvent) -> bool:
+def _is_native_child_call(handle: AcpSessionHandle, event: AcpEvent, params: object = None) -> bool:
     """Whether *event* is a native KAS sub-agent's tool call on this session.
 
     Such a call carries this session's own id; the KAS update handler records its
     scoped tool-call id when the ``agentSubtaskId`` frame arrives. An event naming
-    no tool call cannot be told apart, so it counts as a child (no grant).
+    no tool call cannot be told apart, so it counts as a child (no grant). So does
+    a request the engine itself names a sub-agent on, *params*
+    (``kas_wire.requesting_subagent``): a sub-agent starting another raises one
+    whose own ``tool_call`` frame reads as its parent's (``kind: agent-subtask``),
+    so the recorded ids miss it.
     """
+    from kiro_crew.acp.kas_wire import requesting_subagent
+
     tool_call_id = getattr(event, "tool_call_id", "") or ""
-    if not tool_call_id:
+    if not tool_call_id or requesting_subagent(params) is not None:
         return True
     child_ids = getattr(handle, "_native_child_tool_call_ids", None)
     if child_ids is None:
@@ -815,6 +851,111 @@ def _claude_mcp_identity_servers(
     if state is None:
         return (), ()
     return tuple(state._harness_mcp_server_names()), _bridged_servers(state)
+
+
+def _denies_only(value: Any) -> SpecDeniedGrant | None:
+    """The deny record *value* with its grants emptied, so the gate's ``spec-denies``
+    row still refuses by it and its grant row grants nothing by it."""
+    record = as_spec_denied_grant(value)
+    if record is None:
+        return None
+    return dataclasses.replace(record, builtins=frozenset(), commands=(), web_fetch_trusted=())
+
+
+def _stamp_parent_grants(handle: AcpSessionHandle, event: AcpEvent) -> None:
+    """Stamp the session agent's GRANTS on a sub-agent's request.
+
+    The fields the session's own request carries beside its limits
+    (``_build_permission_event``), read from the same handle, so the gate judges
+    the sub-agent's call by the rule text it judges its parent's by. Called after the
+    KAS branch of ``_build_permission_event`` stamped the limits and the deny
+    record's denies (:func:`_denies_only`), whose record this replaces with the whole one.
+    """
+    event.spec_granted_builtins = frozenset(getattr(handle, "kas_crew_answered", ()))
+    event.spec_hook_held = frozenset(getattr(handle, "kas_hook_held", ()))
+    event.spec_granted_commands = tuple(getattr(handle, "kas_crew_answered_commands", ()))
+    event.spec_denied_grant = getattr(handle, "kas_spec_denies", None)
+    event.spec_granted_paths = tuple(getattr(handle, "kas_crew_answered_paths", ()))
+    event.spec_granted_read_paths = tuple(getattr(handle, "kas_crew_answered_read_paths", ()))
+
+
+def _shipped_helper_mounted(handle: AcpSessionHandle) -> bool:
+    """Whether Kiro Crew built and appended its own helper for the agent this session runs.
+
+    The host memory the registration wrote (``kas_shipped_helper_parent``, by
+    ``KasHarness.record_session_projection``, from what
+    ``with_engine_subagents`` mounted) names the agent the
+    session runs now. A name, a batch id or a rule value alone is not proof: a
+    person's own agent named like the helper, a registration that mounted none and
+    a session moved to another agent all answer no.
+    """
+    agent = str(getattr(handle, "kas_projected_agent", "") or "")
+    return bool(agent) and getattr(handle, "kas_shipped_helper_parent", "") == agent
+
+
+def _child_is_the_shipped_helper(handle: AcpSessionHandle, params: object) -> bool:
+    """Whether the native child that raised this request is Kiro Crew's own helper.
+
+    Only in a session whose agent the shipped helper was mounted for
+    (:func:`_shipped_helper_mounted`). There, when the helper is the one sub-agent
+    that agent can start (``helper_is_the_only_child``), any native child is
+    the helper. When the mount also spares the person's own agents, the answer is
+    the engine's word on this one request, *params*: the name and depth it reports
+    for the asking sub-agent (``kas_wire.requesting_subagent``,
+    ``engine_names_the_helper``). The helper's entry is built from its parent's, so
+    its call is judged as its parent's is. Any other native child, and one the
+    engine does not name, runs another agent's spec and gets the limits alone.
+    """
+    if not _shipped_helper_mounted(handle):
+        return False
+    from kiro_crew.acp.kas_engine_subagent_target import (
+        engine_names_the_helper,
+        helper_is_the_only_child,
+    )
+    from kiro_crew.acp.kas_wire import requesting_subagent
+
+    registered = getattr(handle, "kas_registered_agents", None)
+    agent = str(getattr(handle, "kas_projected_agent", "") or "")
+    return helper_is_the_only_child(registered, agent) or engine_names_the_helper(
+        requesting_subagent(params)
+    )
+
+
+def _stamp_own_agent_grants(handle: AcpSessionHandle, event: AcpEvent, params: object) -> None:
+    """Stamp the session agent's grants on the request of a person's own agent.
+
+    Only when the registration mounted the shipped helper for the agent the session
+    runs (:func:`_shipped_helper_mounted`) and the engine names, on this one
+    request, an agent that mount registered, started by the session's own agent
+    or, deeper, by another sub-agent (``kas_engine_child_grants.named_own_agent``;
+    there the helper counts too). Such an agent is governed as
+    kiro-cli governs a sub-agent: its parent's grants answer its calls and its own
+    answer nothing, less what ``kas_engine_child_grants.narrow`` takes off. An
+    engine that names no one leaves it with the limits alone, so it is asked.
+    Below the first level the agents between it and the session's agent are the
+    ones the engine's frames of each start name (``started_by``); a start with no
+    such word leaves every registered agent counted as between.
+    """
+    from kiro_crew.acp.kas_engine_child_grants import (
+        named_own_agent,
+        narrow,
+        note_start_request,
+        started_by,
+    )
+    from kiro_crew.acp.kas_wire import requesting_subagent
+
+    if not _shipped_helper_mounted(handle):
+        return
+    note_start_request(handle, params)
+    named = named_own_agent(
+        requesting_subagent(params),
+        getattr(handle, "kas_registered_agents", None),
+        str(getattr(handle, "kas_projected_agent", "") or ""),
+        started_by(handle, params),
+    )
+    if named is not None:
+        _stamp_parent_grants(handle, event)
+        narrow(event, *named)
 
 
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
@@ -877,6 +1018,9 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     event.child_calls_marked = child_calls_marked(
         getattr(self._runtime, "acp_backend", None), ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
     )
+    if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        # Display only: the card names the sub-agent that asked, when the engine says so.
+        event.requesting_subagent = kas_requesting_subagent(_perm_params)
     if frame_sid and frame_sid != self._session_id:
         event.sub_session_id = frame_sid
         if self._runtime.acp_backend == ACP_BACKEND_CLAUDE:
@@ -888,28 +1032,48 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         # call it serves: marked as the per-chat client marks it, so the dashboard
         # keeps the parent's deny overrides away from it.
         event.native_child_call = True
-    elif self._runtime.acp_backend == ACP_BACKEND_KAS and _is_native_child_call(self, event):
-        # A native KAS sub-agent's call carries this session's id, so mark it:
-        # the dashboard keeps the parent's deny overrides away from it.
-        event.native_child_call = True
     elif self._runtime.acp_backend == ACP_BACKEND_KAS:
-        # What this session's own agent granted and the KAS policy kept at ask,
-        # so the gate can answer the request itself after its checks. A child's
-        # request runs another agent's spec, so it never carries this: neither
-        # one under a foreign sessionId, nor a native KAS sub-agent's tool call,
-        # which shares this session's id and is told apart by the id its
-        # agentSubtaskId frame recorded.
-        event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
-        event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
-        event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
+        # The limits of this session's own agent that only Crew's gate applies.
+        # KAS runs a native sub-agent inside this agent's permission rules (its
+        # own and the child's, the stricter answer winning), so they bind a native
+        # sub-agent's call too, as they do a native claude sub-agent's below.
         event.spec_shell_allowlist = getattr(self, "kas_spec_shell_allowlist", None)
+        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
         event.spec_write_allowlist = getattr(self, "kas_spec_write_allowlist", None)
         event.spec_write_cwd = str(getattr(self, "_bound_cwd", "") or "")
-        event.spec_denied_grant = getattr(self, "kas_spec_denies", None)
         event.spec_unjudged_denies = tuple(getattr(self, "kas_spec_unjudged_denies", ()))
-        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
-        event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
-        event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
+        # The denies of every session above a held sub-agent run bind its own
+        # requests and its native sub-agents' alike.
+        event.spec_parent_limits = tuple(getattr(self, "kas_parent_limits", ()))
+        denies = getattr(self, "kas_spec_denies", None)
+        if _is_native_child_call(self, event, _perm_params):
+            # A native KAS sub-agent's call carries this session's id, so mark it:
+            # the dashboard keeps the parent's deny overrides away from it. It
+            # runs another agent's spec, so it gets the deny record's denies and
+            # none of this agent's grants.
+            event.native_child_call = True
+            event.spec_denied_grant = _denies_only(denies)
+            # Kiro Crew's own helper, whose entry is built from its parent's (the
+            # only child the agent can start, or the one the engine names on this
+            # request), is given this agent's grants too, and its deny record
+            # whole; one of the person's own agents the mount registered, when the
+            # engine names it, is given them less the grants on servers it does not
+            # share. A request naming no tool call counts as a child's for want of
+            # proof and keeps no grant.
+            if event.tool_call_id and _child_is_the_shipped_helper(self, _perm_params):
+                _stamp_parent_grants(self, event)
+            elif event.tool_call_id:
+                _stamp_own_agent_grants(self, event, _perm_params)
+        else:
+            # What this session's own agent granted and the KAS policy kept at
+            # ask, so the gate can answer the request itself after its checks.
+            # A request under a foreign sessionId never reaches this branch.
+            event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
+            event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
+            event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
+            event.spec_denied_grant = denies
+            event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
+            event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
     if self._runtime.acp_backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
         # A harness that never reads ``toolsSettings`` (claude): the shell and write
         # allowlists its own setup stamped on this handle

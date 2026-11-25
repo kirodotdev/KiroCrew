@@ -180,6 +180,12 @@ def running_since(self: CronService, job_id: str) -> float | None:
     return self._runs.running_since(job_id)
 
 
+def run_trigger(self: CronService, job_id: str) -> str | None:
+    """How a job's running run was started (``"manual"`` or ``"scheduled"``), or None."""
+    claim = self._runs.claims.get(job_id)
+    return claim.trigger if claim is not None else None
+
+
 def set_refresh_callback(self: CronService, cb: Any) -> None:
     """Set the dashboard refresh callback."""
     self._push_refresh = cb

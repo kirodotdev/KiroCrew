@@ -137,6 +137,7 @@ def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False, real_identit
         ttl="20h",
         remote_port=None,
         embed_parent_port=None,
+        embed_forward_port=None,
         timeout_secs=None,
     ):
         return f"SSH_TOKEN_FOR_{host}_epp{embed_parent_port}"

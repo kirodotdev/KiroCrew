@@ -90,6 +90,7 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/mcp/custom/{name}", api_mcp_custom_update)
     app.router.add_post("/api/mcp/probe", handlers.api_mcp_probe)
     app.router.add_get("/api/mcp/probe", handlers.api_mcp_probe_cached)
+    app.router.add_post("/api/mcp/probe/{name}", handlers.api_mcp_probe_one)
     app.router.add_post("/api/mcp/quarantine/clear", handlers.api_mcp_quarantine_clear)
     app.router.add_post("/api/mcp/measure", handlers.api_mcp_measure_start)
     app.router.add_get("/api/mcp/measure", handlers.api_mcp_measure_progress)
@@ -114,6 +115,7 @@ def register(app: web.Application) -> None:
         allow_head=False,
     )
     app.router.add_get("/api/connections/oauth-clients", handlers.api_connections_oauth_clients)
+    app.router.add_get("/api/connections/app-manifests", handlers.api_connections_app_manifests)
     app.router.add_put(
         "/api/connections/oauth-clients/{slug}", handlers.api_connections_oauth_client_put
     )

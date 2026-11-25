@@ -3,8 +3,8 @@ title: A loop the model arms picks no cycle cap; it ends itself with one final r
 status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-08
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 33382
 implementation-prs: [33385]
 tracking-issues: [33381]

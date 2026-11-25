@@ -4,7 +4,7 @@ export interface ComposerSelection {
 }
 
 export interface ComposerControl {
-  focus(): void
+  focus(options?: FocusOptions): void
   getRootElement(): HTMLElement | null
   getSelection(): ComposerSelection | null
   setSelection(start: number, end?: number, options?: { focus?: boolean }): void

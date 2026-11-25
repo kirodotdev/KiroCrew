@@ -22,7 +22,7 @@
  *   08 320px, Spanish                  -> label wraps, dismiss stays in view
  *   09 refused and expired, light      -> the same "Sign-in expired." copy as
  *                                         01, no agent hand-off
- *   15 signed out, Settings > Kiro account -> the card's one Sign in button,
+ *   15 signed out, Settings > Kiro account -> the sign-in choices in the card,
  *                                         no notice, no dialog open
  *
  * `--before` captures the expired state against a build WITHOUT the notice
@@ -187,14 +187,14 @@ async function main() {
       }
     }
     if (want?.card) {
-      // The signed-out card on Settings > Kiro account, before its dialog opens.
+      // The signed-out card on Settings > Kiro account, its choices shown in place.
       const card = page.getByTestId('kiro-sign-in-card')
       await card.waitFor({ timeout: 20_000 }).catch(() => {})
       await page.waitForTimeout(800)
-      const open = card.getByTestId('kiro-sign-in-open')
+      const inline = card.getByTestId('kiro-sign-in-inline')
       row.card = {
         visible: await card.count() ? await card.isVisible() : false,
-        signIn: await open.count(),
+        signIn: await inline.count(),
         dialog: await page.getByTestId('kiro-sign-in-dialog').count(),
       }
       // No notice shape of any kind is drawn on the card's own page.

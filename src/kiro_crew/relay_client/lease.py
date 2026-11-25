@@ -39,6 +39,13 @@ and any failure is only logged: the lease still lapses on its own.
 A personal Crew, built with a ``profile_arn`` reader, also sends ``profileArn`` on
 both calls; with no reader (the default, and every team Crew) the calls are as above.
 
+A workload lease (``workload=True``, a host on its own JWT-SVID,
+:mod:`kiro_crew.workload_identity`) reads its file with the same claim checks as
+the engine's sign-in, never sends ``TokenType``, and waits 15 minutes after a
+refused sign-in or an invalid-request refusal instead of stopping: a stage that
+does not admit the JWT-SVID yet refuses it that way, and admits it later with no
+change on this machine.
+
 The credential is the Crew's own sign-in to the lease service. It is read from a
 file or from the Crew's secrets vault for each call, never held in the config,
 and never logged or put in a ``repr``. It goes only to the configured lease
@@ -59,6 +66,7 @@ import os
 import random
 import re
 import socket
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -70,7 +78,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
-from kiro_crew.bounded_read import bounded_read
+from kiro_crew.bounded_read import bounded_read_regular_file
+from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.relay_client.backoff import Backoff
 from kiro_crew.relay_client.connection import env_proxy_for
@@ -82,6 +91,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import (
+    HOST_TOKEN_NOT_ISSUED_YET,
     ConnectedPeople,
     HostCredential,
     HostTokenRetryLater,
@@ -149,6 +159,18 @@ SECRET_URI_PREFIX = "secret://"
 #: The ``tunnel.relay_lease_credential`` value that leases with the Crew's own Kiro
 #: sign-in (a personal Crew) instead of a file or a stored secret.
 SIGN_IN_CREDENTIAL = "kiro-sign-in"
+#: The built-in lease service's Region for a Crew whose settings name none.
+DEFAULT_LEASE_REGION = "us-east-1"
+#: Why a source built with no lease URL posts nothing (``provider.py`` always passes one).
+NO_LEASE_URL = (
+    "this Crew has no lease service URL: set tunnel.relay_lease_url, or "
+    "tunnel.relay_lease_region to a Region the built-in lease service covers"
+)
+#: A hint, never a diagnosis, on a refusal for a Crew on the default Region.
+REGION_HINT = (
+    " (if this Crew's credential belongs to a Region other than us-east-1, "
+    "set tunnel.relay_lease_region)"
+)
 
 #: Error types the service refuses this Crew with, and why. An access refusal
 #: waits ``RETRY_AFTER_MAX_SECONDS``; the others stop until Remote Control restarts.
@@ -181,7 +203,13 @@ _REASON_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]{0,63}\Z", re.ASCII)
 #: words only. A message with any other character, an ARN or a run of 12 digits
 #: (an account id) is not shown at all.
 _MESSAGE_RE = re.compile(r"\A[A-Za-z0-9 .,;:'()?!-]+\Z", re.ASCII)
-_MESSAGE_HIDDEN_RE = re.compile(r"arn:|\d{12}", re.ASCII | re.IGNORECASE)
+#: An ARN (``arn:``, spaces allowed before the colon), twelve digits in a row with
+#: at most one space, ``.`` or ``-`` between any two (an account id written in
+#: groups), or an AWS access key id.
+_MESSAGE_HIDDEN_RE = re.compile(
+    r"arn\s*:|\d(?:[ .-]?\d){11}|(?<!\d)\d{4}[,:]\d{4}[,:]\d{4}(?!\d)|" + AWS_KEY_ID,
+    re.ASCII | re.IGNORECASE,
+)
 REFUSAL_MESSAGE_MAX_CHARS = 200
 
 
@@ -211,11 +239,12 @@ def lease_url_problem(url: str) -> Optional[str]:
 
 
 def built_in_lease_url(profile_arn: Optional[str]) -> str:
-    """The lease service a Crew calls when ``tunnel.relay_lease_url`` is empty.
+    """The lease service a personal Crew calls when ``tunnel.relay_lease_url`` is empty.
 
     It is the Kiro control plane sign-in already calls, for the region of
     *profile_arn* (the personal Crew's sign-in), from the same built-in https://
-    table. Read at each call, so building the source does no I/O.
+    table. Read at each call, so building the source does no I/O. Any other Crew is
+    handed its Region's URL when the source is built (``built_in_url``).
     """
     # Loaded here: the auth package is not imported until a call needs it.
     from kiro_crew.auth.login.control_plane import (
@@ -224,8 +253,8 @@ def built_in_lease_url(profile_arn: Optional[str]) -> str:
         profile_region,
     )
 
-    # shortcut: a Crew with no signed-in profile leases from us-east-1, as sign-in does;
-    # read the region from the crew API key if the lease service ever names one.
+    # shortcut: a personal Crew with no signed-in profile leases from us-east-1, as
+    # sign-in does; the service refuses that call until the profile is named.
     try:
         region = profile_region(profile_arn or "")
     except ControlPlaneError:
@@ -265,11 +294,15 @@ class LeaseCredentialReferenceError(LeaseCredentialError):
 
 
 class LeaseSignInCannotHost(LeaseCredentialError):
-    """The Crew's Kiro sign-in is of a kind that never hosts (Builder ID, social).
+    """The Crew's Kiro sign-in cannot host now: none, no Kiro profile, Builder ID, social.
 
     Checked on this machine, before any request. Only a new sign-in changes it, so
     the lease client checks again on a slow fixed step and says so once.
     """
+
+
+class LeaseNotSignedIn(LeaseSignInCannotHost):
+    """The Crew has no Kiro sign-in at all: held the same way, and said at INFO."""
 
 
 #: How often a sign-in that cannot host is checked again. The check reads only the
@@ -301,8 +334,7 @@ def read_lease_credential(ref: str, *, home: Optional[Path] = None) -> str:
         value = secret.reveal()
     else:
         try:
-            with open(os.path.expanduser(ref), "rb") as handle:
-                raw = bounded_read(handle, CREDENTIAL_MAX_BYTES + 1)
+            raw = bounded_read_regular_file(os.path.expanduser(ref), CREDENTIAL_MAX_BYTES + 1)
         except OSError as exc:
             raise LeaseCredentialError(
                 f"the credential file could not be read ({type(exc).__name__})"
@@ -338,6 +370,11 @@ def _data_home() -> Path:
     return data_home()
 
 
+_INSTANCE_ID_LOCK = threading.Lock()
+#: An ID that could not be saved, by its file: every caller of this run gets the same one.
+_UNSAVED_INSTANCE_IDS: dict[Path, str] = {}
+
+
 def crew_instance_id(home: Path) -> str:
     """The UUID this Crew made once for its lease, made and kept on first use.
 
@@ -345,22 +382,30 @@ def crew_instance_id(home: Path) -> str:
     old lease to free (``IDENTITY_IN_USE``). Blocking: call it in a thread.
     """
     path = home / INSTANCE_ID_FILE
-    try:
-        return str(uuid.UUID(path.read_text(encoding="ascii").strip()))
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError):
-        logger.warning("the relay's crew instance ID file is unreadable; making a new one")
-    value = str(uuid.uuid4())
-    try:
-        from kiro_crew.atomic_write import atomic_write
-        from kiro_crew.owner_only_files import mkdirs_owner_only
+    # One reader makes the ID: the lease and GET /v1/crew/info both call this, and two
+    # first reads side by side would each make one and answer with different values.
+    with _INSTANCE_ID_LOCK:
+        try:
+            return str(uuid.UUID(path.read_text(encoding="ascii").strip()))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            logger.warning("the relay's crew instance ID file is unreadable; making a new one")
+        if path in _UNSAVED_INSTANCE_IDS:
+            return _UNSAVED_INSTANCE_IDS[path]
+        value = str(uuid.uuid4())
+        try:
+            from kiro_crew.atomic_write import atomic_write
+            from kiro_crew.owner_only_files import mkdirs_owner_only
 
-        mkdirs_owner_only(path.parent)
-        atomic_write(path, value + "\n", restrict_to_owner=True)
-    except Exception:  # noqa: BLE001 - an unsaved ID still serves this run
-        logger.warning("the relay's crew instance ID could not be saved; it lasts this run only")
-    return value
+            mkdirs_owner_only(path.parent)
+            atomic_write(path, value + "\n", restrict_to_owner=True)
+        except Exception:  # noqa: BLE001 - an unsaved ID still serves this run
+            logger.warning(
+                "the relay's crew instance ID could not be saved; it lasts this run only"
+            )
+            _UNSAVED_INSTANCE_IDS[path] = value
+        return value
 
 
 def stored_lease_version(home: Path, instance_id: str) -> Optional[int]:
@@ -618,7 +663,15 @@ class _Stop(Exception):
 
 
 class _Later(Exception):
-    """No answer this time; the schedule says when to try again."""
+    """No answer this time; the schedule says when to try again.
+
+    *cannot_host_yet* marks a hold on this Crew's own eligibility (its sign-in, or
+    its account or organization refusing remote access), not a transport fault.
+    """
+
+    def __init__(self, message: str, *, cannot_host_yet: bool = False) -> None:
+        super().__init__(message)
+        self.cannot_host_yet = cannot_host_yet
 
 
 class _Unreachable(Exception):
@@ -664,7 +717,15 @@ class LeaseHostTokenSource:
         token_type: Optional[str] = None,
         profile_arn: Optional[Callable[[], Optional[str]]] = None,
         sign_in: Optional[Callable[[Optional[str]], Awaitable[Any]]] = None,
+        workload: bool = False,
+        built_in_url: str = "",
     ) -> None:
+        if workload:
+            # The service recognizes a JWT-SVID only with no TokenType, and a
+            # workload host carries no profile ARN on host operations.
+            token_type = None
+            if profile_arn is not None or sign_in is not None:
+                raise ValueError("a workload lease has no sign-in and no profile ARN")
         if token_type is not None and token_type not in TOKEN_TYPES:
             raise ValueError("the lease credential's token type is not one this client sends")
         if profile_arn is not None and token_type == TOKEN_TYPE_API_KEY:
@@ -672,6 +733,9 @@ class LeaseHostTokenSource:
         # awsJson 1.0: every operation is POST / on the service's base URL. Empty
         # means the built-in one, picked at each call (built_in_lease_url).
         self._renew_url = lease_url.rstrip("/") + "/" if lease_url else ""
+        # No lease URL and no profile reader: the built-in URL for the Crew's Region;
+        # "" (a refused Region, or a source built by hand) stops every call.
+        self._built_in_url = built_in_url
         # Only a lease service on loopback may name a plaintext loopback test relay.
         self._local_test = lease_url_is_loopback(lease_url)
         # The TokenType header, or None for a sign-in that sends none.
@@ -689,7 +753,11 @@ class LeaseHostTokenSource:
         self._crew_version = crew_version[:CREW_VERSION_MAX_CHARS]
         self._home = home
         self._display_name = display_name
-        self._read_credential = read_credential or self._read_from_reference
+        #: A workload lease: its file is a JWT-SVID, and some refusals wait, not stop.
+        self._workload = workload
+        self._read_credential = read_credential or (
+            self._read_workload_svid if workload else self._read_from_reference
+        )
         self._rng = rng or random.Random()
         self._sleep = sleep
         self._monotonic = monotonic
@@ -722,8 +790,12 @@ class LeaseHostTokenSource:
         #: No call before this: a backoff after a failure, or the service's own wait.
         self._hold_until = 0.0
         self._hold_reason = ""
+        #: Whether the current hold is on this Crew's eligibility, not a transport fault.
+        self._hold_cannot_host_yet = False
         #: The sign-in refusal last logged, so a held Crew says it once.
         self._cannot_host_said = ""
+        #: The access refusal last logged at WARNING, so a refused Crew says it once.
+        self._access_denied_said = ""
         #: Why renewals stopped for good, once a refusal or a credential fault did it.
         self._stopped = ""
 
@@ -779,6 +851,8 @@ class LeaseHostTokenSource:
         self._send_version = False
         self._held_until = self._next_at = self._hold_until = 0.0
         self._hold_reason = self._stopped = self._cannot_host_said = ""
+        self._access_denied_said = ""
+        self._hold_cannot_host_yet = False
         self._backoff.reset()
         # Last, so a stop cancelled during the release has already forgotten the
         # lease, and its session still closes.
@@ -815,12 +889,12 @@ class LeaseHostTokenSource:
             except _Stop as exc:
                 raise HostTokenUnavailable(str(exc)) from None
             except _Later as exc:
-                raise HostTokenRetryLater(str(exc)) from None
+                raise HostTokenRetryLater(str(exc), cannot_host_yet=exc.cannot_host_yet) from None
             finally:
                 self._ensure_timer()
             held = self._usable()
         if held is None:
-            raise HostTokenRetryLater("the lease service has not issued a host token yet")
+            raise HostTokenRetryLater(HOST_TOKEN_NOT_ISSUED_YET)
         return held
 
     async def _call(
@@ -841,13 +915,16 @@ class LeaseHostTokenSource:
             raise _Stop(self._stopped)
         now = self._monotonic()
         if now < self._hold_until:
-            raise _Later(f"{self._hold_reason}; next try in {self._hold_until - now:.0f}s")
+            raise _Later(
+                f"{self._hold_reason}; next try in {self._hold_until - now:.0f}s",
+                cannot_host_yet=self._hold_cannot_host_yet,
+            )
         try:
             credential = await self._credential(rejected)
         except LeaseCredentialReferenceError as exc:
             self._stop(f"tunnel.relay_lease_credential names no credential: {exc}")
         except LeaseSignInCannotHost as exc:
-            self._hold_cannot_host(str(exc))
+            self._hold_cannot_host(str(exc), quiet=isinstance(exc, LeaseNotSignedIn))
         except LeaseCredentialError as exc:
             # A file briefly missing or half written during a rotation, or a sign-in
             # to redo: read again on the backoff steps rather than stop until a restart.
@@ -856,6 +933,9 @@ class LeaseHostTokenSource:
             self._back_off(
                 f"the credential tunnel.relay_lease_credential names could not be read: {exc}"
             )
+        if not self._lease_url():
+            # Before the instance ID: a refused start holds no lease to release.
+            self._stop(NO_LEASE_URL)
         self._cannot_host_said = ""
         home = self._home if self._home is not None else _data_home()
         if self._instance_id is None:
@@ -890,7 +970,7 @@ class LeaseHostTokenSource:
             if self._send_version and self._usable() is None:
                 # A service that needs the version mints when a token is due, not on
                 # request, so asking again before the next renewal only repeats this.
-                self._hold(self._next_at, "the lease service has not issued a host token yet")
+                self._hold(self._next_at, HOST_TOKEN_NOT_ISSUED_YET)
             return
         if status == 401:
             # The one status read before the exception name: a sign-in failure from
@@ -909,17 +989,26 @@ class LeaseHostTokenSource:
                     rejected=credential,
                 )
                 return
+            if self._workload:
+                self._hold_workload_refusal(arrived, "HTTP 401")
+            if self._sign_in is not None:
+                # A Crew on its own sign-in has no setting below to fix: only a new sign-in helps.
+                self._stop(
+                    "the lease service refused the Crew's Kiro sign-in (HTTP 401): sign in "
+                    "to Kiro again, then restart Kiro Crew"
+                )
             self._stop(
                 "the lease service refused the Crew's credential (HTTP 401): check that "
                 "tunnel.relay_lease_credential's credential is current and that "
-                "tunnel.relay_lease_token_type matches its kind (a team Crew on a crew API "
+                "tunnel.relay_lease_token_type matches its kind (a Shared Crew on a crew API "
                 "key needs API_KEY, a token from an outside identity provider needs "
                 "EXTERNAL_IDP, and a Kiro sign-in leaves it empty), then restart Remote Control"
+                + self._region_hint()
             )
         kind, reason = refusal_of(payload, answered.error_type)
         named = f"{kind} {reason}" if kind and reason else (kind or f"HTTP {status}")
         message = refusal_message(payload)
-        said = f'. The service said: "{message}"' if message else ""
+        said = (f'. The service said: "{message}"' if message else "") + self._region_hint()
         if kind == _ACCESS_DENIED:
             # Access can be granted again with no change on this machine, so the
             # Crew tries again on its own, at most every 15 minutes, as the refusals
@@ -930,14 +1019,21 @@ class LeaseHostTokenSource:
             self._hold(
                 arrived + RETRY_AFTER_MAX_SECONDS,
                 f"the lease service refused this Crew ({named}): {why}{said}",
+                cannot_host_yet=True,
             )
-            logger.warning(
+            # One WARNING per refusal text: the retry repeats until access is
+            # granted, and the tunnel status keeps naming the reason meanwhile.
+            repeat = self._access_denied_said == self._hold_reason
+            self._access_denied_said = self._hold_reason
+            level = logging.INFO if repeat else logging.WARNING
+            logger.log(
+                level,
                 "the lease service refused this Crew (%s)%s; trying again in %.0fs",
                 named,
                 said,
                 RETRY_AFTER_MAX_SECONDS,
             )
-            raise _Later(self._hold_reason)
+            raise _Later(self._hold_reason, cannot_host_yet=True)
         if kind == _NOT_FOUND:
             self._stop(f"the lease service refused this Crew ({named}): {_NOT_FOUND_WHY}{said}")
         if kind == _VALIDATION:
@@ -974,6 +1070,8 @@ class LeaseHostTokenSource:
                     host_token_requested, endpoint_retry=False, sign_in_retry=sign_in_retry
                 )
                 return
+            if self._workload:
+                self._hold_workload_refusal(arrived, named, f": {_VALIDATION_WHY}{said}")
             self._stop(f"the lease service refused the renewal ({named}): {_VALIDATION_WHY}{said}")
         if kind == _IDENTITY_IN_USE:
             wait = takeover_wait(
@@ -1109,9 +1207,28 @@ class LeaseHostTokenSource:
             headers["TokenType"] = self._token_type
         return headers
 
+    def _region_hint(self) -> str:
+        """:data:`REGION_HINT` for a key Crew on the default Region's built-in URL, else ``""``."""
+        from kiro_crew import workload_identity
+        from kiro_crew.auth.login.control_plane import known_control_plane_url
+
+        default = known_control_plane_url(DEFAULT_LEASE_REGION)
+        if self._renew_url or self._profile_arn is not None or self._built_in_url != default:
+            return ""
+        return "" if workload_identity.active() else REGION_HINT
+
+    def _lease_url(self) -> str:
+        """Where this call goes, or ``""``; after ``_credential()`` names a sign-in's profile."""
+        if self._renew_url:
+            return self._renew_url
+        if self._profile_arn is not None:
+            return built_in_lease_url(self._personal_profile_arn())
+        return self._built_in_url
+
     async def _post(self, credential: str, body: dict, target: str) -> "_Answered":
-        # After _credential(): a personal Crew's sign-in has named its profile by now.
-        url = self._renew_url or built_in_lease_url(self._personal_profile_arn())
+        url = self._lease_url()
+        if not url:
+            raise _Stop(NO_LEASE_URL)
         try:
             async with self._client_session().post(
                 url,
@@ -1137,7 +1254,8 @@ class LeaseHostTokenSource:
 
     def _apply(self, answer: LeaseAnswer, arrived: float) -> None:
         self._hold_until = 0.0
-        self._hold_reason = ""
+        self._hold_reason = self._access_denied_said = ""
+        self._hold_cannot_host_yet = False
         self._backoff.reset()
         self._endpoint_id = answer.endpoint_id
         self._lease_version = answer.lease_version
@@ -1174,9 +1292,10 @@ class LeaseHostTokenSource:
             answer.renew_in,
         )
 
-    def _hold(self, until: float, reason: str) -> None:
+    def _hold(self, until: float, reason: str, *, cannot_host_yet: bool = False) -> None:
         self._hold_until = until
         self._hold_reason = reason
+        self._hold_cannot_host_yet = cannot_host_yet
         self._next_at = until
 
     def _back_off(self, problem: str) -> NoReturn:
@@ -1186,18 +1305,42 @@ class LeaseHostTokenSource:
         logger.warning("lease renewal failed (%s); next try in %.1fs", problem, delay)
         raise _Later(problem)
 
-    def _hold_cannot_host(self, problem: str) -> NoReturn:
+    def _hold_cannot_host(self, problem: str, *, quiet: bool = False) -> NoReturn:
         """Hold quietly on a sign-in that cannot host, and end this call.
 
-        A fixed slow step, not the reconnect steps, and one WARNING until a call
-        gets past the sign-in: the state does not change until the owner signs in
-        again, so every further line would only repeat it.
+        A fixed slow step, not the reconnect steps, and one line until a call gets
+        past the sign-in: the state does not change until the owner signs in again,
+        so every further line would only repeat it. The line is a WARNING, or INFO
+        (*quiet*) for a Crew that has no sign-in at all.
         """
-        self._hold(self._monotonic() + SIGN_IN_CANNOT_HOST_RECHECK_SECONDS, problem)
+        self._hold(
+            self._monotonic() + SIGN_IN_CANNOT_HOST_RECHECK_SECONDS, problem, cannot_host_yet=True
+        )
         if self._cannot_host_said != problem:
             self._cannot_host_said = problem
-            logger.warning("Remote Control held: %s", problem)
-        raise _Later(problem)
+            logger.log(
+                logging.INFO if quiet else logging.WARNING, "Remote Control held: %s", problem
+            )
+        raise _Later(problem, cannot_host_yet=True)
+
+    def _hold_workload_refusal(self, arrived: float, named: str, said: str = "") -> NoReturn:
+        """Wait 15 minutes after the service refused the workload identity, and end this call.
+
+        A stage that does not admit JWT-SVIDs on host operations yet refuses one
+        as a bad sign-in or an invalid request. That changes with no change on
+        this machine, so the pod comes back on its own, like an access refusal.
+        """
+        self._hold(
+            arrived + RETRY_AFTER_MAX_SECONDS,
+            f"the lease service refused the workload identity ({named}){said}",
+        )
+        logger.warning(
+            "the lease service refused the workload identity (%s)%s; trying again in %.0fs",
+            named,
+            said,
+            RETRY_AFTER_MAX_SECONDS,
+        )
+        raise _Later(self._hold_reason)
 
     def _stop(self, reason: str) -> NoReturn:
         """Stop renewals until Remote Control restarts, and end this call."""
@@ -1207,6 +1350,18 @@ class LeaseHostTokenSource:
 
     def _read_from_reference(self, ref: str) -> str:
         return read_lease_credential(ref, home=self._home)
+
+    @staticmethod
+    def _read_workload_svid(ref: str) -> str:
+        from kiro_crew import workload_identity
+
+        problem = credential_reference_problem(ref)
+        if problem is not None:
+            raise LeaseCredentialReferenceError(problem)
+        try:
+            return workload_identity.lease_bearer(ref)
+        except workload_identity.WorkloadIdentityError as exc:
+            raise LeaseCredentialError(str(exc)) from None
 
     # ── the schedule ──
 

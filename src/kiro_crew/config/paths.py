@@ -33,6 +33,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -318,6 +319,26 @@ def _is_windows_system_dir(p: Path) -> bool:
 #: anchored to the cwd and ``HOME`` of the first call. ``None`` means "not yet
 #: computed"; tests reset it with ``_resolved_home``.
 _override_home_pin: tuple[str, Path | None] | None = None
+
+#: The data homes :func:`run_with_data_home` pinned, by thread ident.
+_pinned_homes: dict[int, Path] = {}
+
+
+def run_with_data_home(home: Path, target: Callable[..., object], *args: object) -> None:
+    """Call ``target(*args)`` with the data home resolved to *home* on this thread.
+
+    The entry of a worker thread whose dispatcher resolved the home while its own
+    ``KIROCREW_HOME`` was in force: until *target* returns, :func:`config_dir`,
+    :func:`data_home` and :func:`peek_data_home` answer *home* on this thread
+    without reading the variable, which a test can clear in between
+    (``patch.dict``'s exit, an empty pin). Other threads are unaffected.
+    """
+    ident = threading.get_ident()
+    _pinned_homes[ident] = home
+    try:
+        target(*args)
+    finally:
+        del _pinned_homes[ident]
 
 
 def _valid_override_home() -> Path | None:
@@ -777,6 +798,9 @@ def shared_kiro_agents_writable() -> bool:
 
 def config_dir() -> Path:
     global _config_dir_memo
+    # Before the memo, which is process-wide: a thread's pin must not enter it.
+    if _pinned_homes and (pinned := _pinned_homes.get(threading.get_ident())) is not None:
+        return pinned
     override_raw = os.environ.get("KIROCREW_HOME")
     memo = _config_dir_memo
     if memo is not None and memo[0] == override_raw and memo[1] is _resolved_home:
@@ -841,6 +865,8 @@ def data_home() -> Path:
     the same ``_resolved_home`` that :func:`config_dir` populates, so there is
     one source of truth for where the home is.
     """
+    if _pinned_homes and (pinned := _pinned_homes.get(threading.get_ident())) is not None:
+        return pinned
     if _valid_override_home() is not None:
         return config_dir()
     if _resolved_home is not None:
@@ -866,6 +892,8 @@ def peek_data_home() -> Path:
     (the ``mkdir`` and the recovery breadcrumb). That matters because the
     owner-only file helpers peek on every write that might be in the data home.
     """
+    if _pinned_homes and (pinned := _pinned_homes.get(threading.get_ident())) is not None:
+        return pinned
     override = _valid_override_home()
     if override is not None:
         return override
@@ -1403,4 +1431,6 @@ def _default_workspace_base() -> Path:
 
 def _safe_dir_name(key: str) -> str:
     """Sanitize a session key into a safe directory name."""
-    return key.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")
+    name = key.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")
+    # A key of "." or ".." would otherwise name the folder itself or its parent.
+    return f"_{name}" if name in (".", "..") else name

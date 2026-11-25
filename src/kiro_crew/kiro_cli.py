@@ -1110,6 +1110,10 @@ _MACOS_SYSTEM_DIRS: tuple[str, ...] = (
     "/opt/homebrew/bin",
     "/usr/local/bin",
 )
+#: The Linux counterpart, searched after the home directories: where the
+#: installer and a container image put kiro-cli. Root-owned, so the pin may trust
+#: it as it trusts the macOS ones; fenced and pinned the same way.
+_LINUX_SYSTEM_DIRS: tuple[str, ...] = ("/usr/local/bin",)
 
 
 def known_kiro_cli_dirs(
@@ -1185,6 +1189,9 @@ def known_kiro_cli_dirs(
             for part in augmented_path(environ.get("PATH", ""), home=str(home)).split(os.pathsep)
             if part
         )
+    if platform_name.startswith("linux"):
+        # Last, so an inherited PATH keeps its own order ahead of a system copy.
+        dirs.extend(_LINUX_SYSTEM_DIRS)
     return _unique(dirs)
 
 

@@ -3,8 +3,8 @@ title: Question Card Pager — one question on screen, and answers that carry th
 status: implemented
 author: tilakputta
 created: 2026-09-24
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [13196, 15250]
 tracking-issues: []

@@ -3,7 +3,7 @@
   "base_branch": "main",
   "single_commit": true,
   "setup": [
-    "(cd website && npx playwright install chromium)"
+    "(cd website && node ./node_modules/playwright/cli.js install chromium)"
   ],
   "gates": [
     "python3 -c 'import sys; print(\"Gate Python:\", sys.version, \"executable:\", sys.executable); sys.exit(0 if sys.version_info >= (3, 12) else \"Gate checks require Python >=3.12; activate a supported interpreter.\")'",
@@ -23,6 +23,7 @@
     "python3 scripts/check_file_line_cap.py --test",
     "python3 scripts/check_file_line_cap.py",
     "python3 scripts/check_lockdown_before_publish.py",
+    "python3 scripts/ci_guard_tier_membership.py",
     "isort --check-only src/kiro_crew test",
     "flake8 src/kiro_crew test",
     "mypy src/kiro_crew/",
@@ -57,8 +58,8 @@
     "uv tool run --quiet --from \"cfn-lint==1.22.3\" cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml",
     "npm --prefix website run build",
     "npm --prefix website run gen:ui -- --check",
-    "(cd website && npx tsc -p tsconfig.app.json)",
-    "MW=\"$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+$')\" && [ -n \"$MW\" ] && (cd website && npx eslint src/ --max-warnings \"$MW\")",
+    "(cd website && node ./node_modules/typescript/bin/tsc -p tsconfig.app.json)",
+    "MW=\"$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+$')\" && [ -n \"$MW\" ] && (cd website && node ./node_modules/eslint/bin/eslint.js src/ --max-warnings \"$MW\")",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:check",
     "npm --prefix website run lint:phantom-classes -- --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && PHANTOM_BASE_REF=\"$BASE\" npm --prefix website run lint:phantom-classes",

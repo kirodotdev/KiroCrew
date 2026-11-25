@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, {
-  sseChatMessage, setActiveSlot, refreshSlot, switchSlot, warmSlotCache, snapshotChunkSeq,
+  sseChatMessage, sseThinkingChunk, setActiveSlot, refreshSlot, switchSlot, warmSlotCache, snapshotChunkSeq,
 } from '../store/chatSlice'
 import './mockApiClient'
 
@@ -223,6 +223,51 @@ describe('switchSlot.fulfilled seeds the replay guard', () => {
     expect(store.getState().chat.lastChunkSeq).toBe(3)
     store.dispatch(sseChatMessage({ slot: SLOT, role: 'chunk', content: 'wor', seq: 3 }))
     store.dispatch(sseChatMessage({ slot: SLOT, role: 'chunk', content: 'ld', seq: 4 }))
+    expect(text(store.getState())).toBe('Hello world')
+  })
+})
+
+describe('opening a chat whose reply is streaming', () => {
+  it('an open with no cached copy shows the page row\'s text, which already holds the chunk (#38617)', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(SLOT))
+    store.dispatch(switchSlot.pending('r1', OTHER))
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'wor', seq: 3, batched: true, parts: [{ seq: 3, text: 'wor' }] }))
+    store.dispatch(switchSlot.fulfilled(slotPayload(OTHER, midStream(3)), 'r1', OTHER))
+    expect(store.getState().chat.messages.map(m => [m.role, m.content])).toEqual([['user', 'hi'], ['streaming', 'Hello wor']])
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'wor', seq: 3, batched: true, parts: [{ seq: 3, text: 'wor' }] }))
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'ld', seq: 4, batched: true, parts: [{ seq: 4, text: 'ld' }] }))
+    expect(text(store.getState())).toBe('Hello world')
+  })
+
+  it('the reply keeps its reasoning above it when it takes the page row\'s text', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(SLOT))
+    store.dispatch(switchSlot.pending('r1', OTHER))
+    store.dispatch(sseThinkingChunk({ slot: OTHER, content: 'weighing' }))
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'wor', seq: 3, batched: true, parts: [{ seq: 3, text: 'wor' }] }))
+    store.dispatch(switchSlot.fulfilled(slotPayload(OTHER, midStream(3)), 'r1', OTHER))
+    expect(store.getState().chat.messages.map(m => [m.role, m.content])).toEqual([['user', 'hi'], ['thinking', 'weighing'], ['streaming', 'Hello wor']])
+  })
+
+  it('a cached open whose own row is past the page keeps its own row', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(SLOT))
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'Hello wor', seq: 3 }))
+    store.dispatch(switchSlot.pending('r1', OTHER))
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'ld', seq: 4, batched: true, parts: [{ seq: 4, text: 'ld' }] }))
+    store.dispatch(switchSlot.fulfilled(slotPayload(OTHER, midStream(3)), 'r1', OTHER))
+    expect(store.getState().chat.messages.map(m => [m.role, m.content])).toEqual([['user', 'hi'], ['streaming', 'Hello world']])
+  })
+
+  it('a cached copy that stopped growing while the chat was off screen takes the page row\'s text', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(SLOT))
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'Hel', seq: 1 }))
+    store.dispatch(switchSlot.pending('r1', OTHER))
+    store.dispatch(switchSlot.fulfilled(slotPayload(OTHER, midStream(3)), 'r1', OTHER))
+    expect(store.getState().chat.messages.map(m => [m.role, m.content])).toEqual([['user', 'hi'], ['streaming', 'Hello wor']])
+    store.dispatch(sseChatMessage({ slot: OTHER, role: 'chunk', content: 'ld', seq: 4, batched: true, parts: [{ seq: 4, text: 'ld' }] }))
     expect(text(store.getState())).toBe('Hello world')
   })
 })

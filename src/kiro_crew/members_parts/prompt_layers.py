@@ -271,6 +271,9 @@ def _briefing_pinned_target(slug: str) -> tuple[str, str]:
     that component is opened with ``O_NOFOLLOW`` like every other and a link
     there is refused, which is the property the agent-writable
     ``members/<slug>/`` directory needs.
+
+    Read-only site: the link at ``members`` is resolved by name here, for a read that
+    writes nothing. A write opens :func:`kiro_crew.member_folder.open_member_folder`.
     """
     validate_slug(slug)
     root = members_root().resolve()

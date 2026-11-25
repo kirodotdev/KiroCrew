@@ -113,6 +113,19 @@ def _deploy_with_progress(
     return box["result"]  # type: ignore[return-value]
 
 
+def _wait_for_creating_stack(tag: str, profile: str, region: str) -> None:
+    """Wait for a stack another launch started, printing the same progress as a deploy.
+
+    The wait only polls, so a Ctrl+C here leaves nothing to stop; the caller names the
+    stack. The caller reads the stack's outcome afterwards.
+    """
+    worker = threading.Thread(target=ec2.wait_for_create, args=(tag, profile, region), daemon=True)
+    worker.start()
+    ui.detail("Streaming CloudFormation + bootstrap progress:")
+    _stream_progress(worker, tag, profile, region, set(), set(), "")
+    worker.join()
+
+
 def _terminate_deploy(proc: object) -> None:
     """Best-effort SIGTERM→SIGKILL of an interrupted deploy child."""
     try:
@@ -400,8 +413,12 @@ def launch(
     ami_id: str = "",
     extra_packages: str = "",
     ssm_kms_key_arn: str = "",
+    skip_login: bool = False,
 ) -> int:
     """Run the full interactive launch flow. Returns a process exit code.
+
+    ``skip_login`` (``--no-login``) launches without the Kiro sign-in: a crew on
+    another agent harness works without one, so the step is skipped, not failed.
 
     ``login_target`` is the Kiro identity the crew signs in as (see
     :mod:`kiro_crew.cloud.login_target`); ``None`` is Builder ID. An Identity
@@ -421,7 +438,9 @@ def launch(
     profile = profile or cfg.profile
     region = region or cfg.region or DEFAULT_REGION
     target = login_target or KiroLoginTarget()
-    if target.is_identity_center and not target.region:
+    if skip_login:
+        ui.detail("The crew will not sign in to Kiro (--no-login).")
+    elif target.is_identity_center and not target.region:
         # Inherited from the local whoami, which names the start URL but not the
         # Identity Center region. Decide BEFORE provisioning: nothing is billed
         # yet, and a launch that later cannot sign in is the expensive outcome.
@@ -444,7 +463,9 @@ def launch(
                 break
             except LoginTargetError as exc:
                 ui.warn(str(exc))
-    if target.is_identity_center:
+    if skip_login:
+        pass
+    elif target.is_identity_center:
         ui.info(f"The crew will sign in as {target.describe()}.")
     else:
         ui.detail(
@@ -632,15 +653,12 @@ def launch(
             )
         except KeyboardInterrupt:
             # Stopping the wait does not stop CloudFormation, so say what may be left.
-            print()
-            ui.warn(
-                f"Stopped waiting, but AWS may still be creating {ec2.stack_name(tag)}; "
-                f"it bills ~${tier.approx_usd_per_hr:.2f}/hr "
-                f"({sizes.price_basis(region)}) while its instance runs."
+            _name_stack_still_creating(
+                tag,
+                profile,
+                region,
+                f"~${tier.approx_usd_per_hr:.2f}/hr ({sizes.price_basis(region)})",
             )
-            where = _cli_scope(profile, region)
-            ui.detail(f"Check it:  kirocrew cloud status --tag {tag}{where}")
-            ui.detail(f"Remove it: kirocrew cloud destroy --tag {tag}{where}")
             raise
         except AWSError as exc:
             ui.fail(str(exc))
@@ -665,6 +683,24 @@ def launch(
             _name_stack_left_behind(tag, profile, region)
             return 1
         ui.ok(f"Instance {result.instance_id} is up and KiroCrew is healthy.")
+    elif not result.instance_id and result.status == "CREATE_IN_PROGRESS":
+        tag = result.tag
+        ui.info(f"{result.stack_name} is still being created in AWS; waiting for it to finish…")
+        try:
+            _wait_for_creating_stack(tag, profile, region)
+        except KeyboardInterrupt:
+            _name_stack_still_creating(tag, profile, region)
+            raise
+        settled = _deploy_result_for_tag(tag, profile, region)
+        if settled is None or not settled.instance_id or settled.status in ec2._FAILED_STATES:
+            ui.fail(
+                f"{result.stack_name} did not finish creating "
+                f"({settled.status if settled else 'not found'})."
+            )
+            _name_stack_left_behind(tag, profile, region)
+            return 1
+        result = settled
+        ui.ok(f"Instance {result.instance_id} is up and Kiro Crew is healthy.")
     elif not result.instance_id:
         ui.warn("Previous cloud stack exists but the instance is not ready yet.")
         ui.detail("Check progress with: kirocrew cloud status")
@@ -683,7 +719,10 @@ def launch(
     # condition: it holds through the operational recheck below unless that
     # recheck positively confirms the right identity.
     mismatch_seen = False
-    if login.is_logged_in(instance_id, profile, region, target=target):
+    if skip_login:
+        ui.note("Skipped (--no-login). Sign in later from the crew's Settings, or run:")
+        ui.detail(target.login_command())
+    elif login.is_logged_in(instance_id, profile, region, target=target):
         ui.ok(f"Kiro is already signed in on the instance as {target.describe()}.")
     elif login.remote_identity_state(instance_id, profile, region, target=target) == "mismatch":
         # A resumed instance can carry a valid session for the WRONG account --
@@ -746,8 +785,14 @@ def launch(
     # identity MISMATCH is carried to the exit code below: the dashboard is still
     # opened and the crew registered (the named recovery needs both), but the
     # launch did not deliver the identity it was asked for and must not exit 0.
-    signin_state = _verify_operational(
-        instance_id, profile, region, assume_yes=assume_yes, login_target=target
+    # A skipped sign-in is not re-offered here: the check below would ask to sign
+    # in again, which is the step the owner just chose to skip.
+    signin_state = (
+        "skipped"
+        if skip_login
+        else _verify_operational(
+            instance_id, profile, region, assume_yes=assume_yes, login_target=target
+        )
     )
     if mismatch_seen and signin_state != "ok":
         # The recheck did not confirm the right identity (it failed transiently,
@@ -933,6 +978,21 @@ def _name_stack_left_behind(tag: str, profile: str, region: str) -> None:
     where = _cli_scope(profile, region)
     ui.detail(f"The stack {ec2.stack_name(tag)} is still in your account ({status}). {bills}")
     ui.detail(f"Remove it with: kirocrew cloud destroy --tag {tag}{where}")
+
+
+def _name_stack_still_creating(tag: str, profile: str, region: str, rate: str = "") -> None:
+    """After a Ctrl+C, say the stack may still be creating and billing, and how to reach it.
+
+    Stopping the wait does not stop CloudFormation. *rate* is the hourly price when known.
+    """
+    print()
+    bills = (
+        f"it bills {rate} while its instance runs" if rate else "it bills while its instance runs"
+    )
+    ui.warn(f"Stopped waiting, but AWS may still be creating {ec2.stack_name(tag)}; {bills}.")
+    where = _cli_scope(profile, region)
+    ui.detail(f"Check it:  kirocrew cloud status --tag {tag}{where}")
+    ui.detail(f"Remove it: kirocrew cloud destroy --tag {tag}{where}")
 
 
 def _record_launch(*, profile: str, region: str, tag: str) -> None:
@@ -1142,7 +1202,7 @@ def _saved_launch_matches(cfg: LaunchState, profile: str, region: str) -> bool:
 
 
 def _saved_launch_is_usable(result: ec2.DeployResult) -> bool:
-    """True if a saved-tag stack is worth resuming (has an instance, not failed).
+    """True if a saved-tag stack is worth resuming (has an instance or is being created).
 
     A new launch saves ``last_tag`` before provisioning, so a launch that failed or was
     interrupted leaves it pointing at a ROLLBACK_COMPLETE / no-instance stack. Such a tag
@@ -1151,6 +1211,10 @@ def _saved_launch_is_usable(result: ec2.DeployResult) -> bool:
     """
     if result.status in ec2._FAILED_STATES:
         return False
+    # This installation's own launch, interrupted while AWS kept creating it: resume waits
+    # for it, so a rerun neither drops its pointer nor creates a second stack.
+    if result.status == "CREATE_IN_PROGRESS":
+        return True
     return bool(result.instance_id)
 
 

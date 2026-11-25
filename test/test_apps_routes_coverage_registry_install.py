@@ -360,8 +360,9 @@ class TestRegistryInstallStream:
         _setup_env(tmp_path, monkeypatch)
         refusal = (
             "Python apps that require a build step are not supported in Kiro Crew's "
-            "desktop build: its bundled interpreter is inside the signed "
-            "application bundle and cannot install packages"
+            "desktop build: the build step installs packages into Kiro Crew's own "
+            "interpreter, which is inside the signed application bundle and cannot be "
+            "installed into."
         )
 
         async def _refused(name: str, log_lines: Any = None, **kw: Any) -> dict:

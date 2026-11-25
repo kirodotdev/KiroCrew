@@ -1,40 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
-import { APPS_FLOOR_PX, AdaptiveMobileRail, shouldFoldSecondary, stableRailHeight } from '../shell/nav/adaptiveMobileRail'
-
-describe('shouldFoldSecondary', () => {
-  it('keeps the pins while the Apps list still gets its floor', () => {
-    expect(shouldFoldSecondary(1000, 300, 240, 120, )).toBe(false)
-    expect(shouldFoldSecondary(300 + 240 + 120 + APPS_FLOOR_PX, 300, 240, 120)).toBe(false)
-  })
-  it('folds once pinning would leave the Apps list under the floor', () => {
-    expect(shouldFoldSecondary(300 + 240 + 120 + APPS_FLOOR_PX - 1, 300, 240, 120)).toBe(true)
-    expect(shouldFoldSecondary(740, 300, 240, 120)).toBe(true)
-  })
-  it('keeps the shipped pinned layout before the rail is measured', () => {
-    expect(shouldFoldSecondary(0, 300, 240, 120)).toBe(false)
-  })
-})
-
-describe('stableRailHeight', () => {
-  it('ignores a shrink at the same width (keyboard, browser toolbar)', () => {
-    const tall = stableRailHeight(null, 72, 1000)
-    expect(stableRailHeight(tall, 72, 640)).toEqual({ width: 72, height: 1000 })
-  })
-  it('adopts growth at the same width', () => {
-    expect(stableRailHeight({ width: 72, height: 700 }, 72, 900)).toEqual({ width: 72, height: 900 })
-  })
-  it('re-decides from scratch when the width changes (rotation)', () => {
-    expect(stableRailHeight({ width: 72, height: 1000 }, 80, 500)).toEqual({ width: 80, height: 500 })
-  })
-  it('keeps pinned tiles pinned when the keyboard shrinks a tall rail below the floor', () => {
-    const sizes = [300, 240, 120]
-    const open = stableRailHeight(stableRailHeight(null, 72, 1000), 72, 640)
-    expect(shouldFoldSecondary(1000, ...sizes as [number, number, number])).toBe(false)
-    expect(shouldFoldSecondary(640, ...sizes as [number, number, number])).toBe(true)
-    expect(shouldFoldSecondary(open.height, ...sizes as [number, number, number])).toBe(false)
-  })
-})
+import { describe, expect, it } from 'vitest'
+import { act, render, screen, within } from '@testing-library/react'
+import { AdaptiveMobileRail } from '../shell/nav/adaptiveMobileRail'
+import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
 
 function renderRail() {
   return render(
@@ -50,36 +17,37 @@ function renderRail() {
 }
 
 describe('AdaptiveMobileRail', () => {
-  it('pins the secondary tiles outside the Apps scroller when there is room', () => {
+  it('scrolls top, apps and secondary tiles as one region above a pinned Settings', () => {
     renderRail()
     const rail = screen.getByTestId('rail')
-    const apps = within(rail).getByTestId('mobile-nav-rail-apps')
-    expect(rail).toHaveAttribute('data-secondary-folded', 'false')
-    expect(apps).not.toContainElement(screen.getByRole('button', { name: 'Terminal' }))
-    expect(within(rail).queryByRole('separator', { hidden: true })).toBeNull()
+    const scroller = within(rail).getByTestId('mobile-nav-rail-scroller')
+    const sessions = screen.getByRole('button', { name: 'Sessions' })
+    const appOne = screen.getByRole('button', { name: 'App one' })
+    const terminal = screen.getByRole('button', { name: 'Terminal' })
+    for (const el of [sessions, appOne, terminal]) expect(scroller).toContainElement(el)
+    expect(scroller).not.toContainElement(screen.getByRole('button', { name: 'Settings' }))
+    // Nothing inside the region scrolls on its own.
+    expect(scroller.querySelectorAll('.overflow-y-auto')).toHaveLength(0)
+    // The secondary tiles follow the apps, behind a divider.
+    expect(appOne.compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(scroller).getByRole('separator', { hidden: true })).toBeInTheDocument()
   })
 
-  it('folds them into the Apps scroller, after the apps and behind a divider, on a short rail', () => {
-    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(700)
-    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-      const h = this.getAttribute('data-testid') === 'mobile-nav-rail-secondary' ? 240 : 200
-      return { height: h, width: 72, top: 0, left: 0, bottom: h, right: 72, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
-    })
-    try {
-      renderRail()
-      const rail = screen.getByTestId('rail')
-      const apps = within(rail).getByTestId('mobile-nav-rail-apps')
-      expect(rail).toHaveAttribute('data-secondary-folded', 'true')
-      const terminal = screen.getByRole('button', { name: 'Terminal' })
-      expect(apps).toContainElement(terminal)
-      // After the apps, never before them: the apps are the reason to fold.
-      const appOne = screen.getByRole('button', { name: 'App one' })
-      expect(appOne.compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-      expect(within(apps).getByRole('separator', { hidden: true })).toBeInTheDocument()
-      expect(apps).not.toContainElement(screen.getByRole('button', { name: 'Settings' }))
-    } finally {
-      height.mockRestore()
-      rect.mockRestore()
+  it('fades the bottom edge only while tiles sit below the fold', () => {
+    renderRail()
+    const scroller = screen.getByTestId('mobile-nav-rail-scroller')
+    const mask = MORE_BELOW_MASK.split(' ')[0]
+    const setOverflow = (hidden: number) => {
+      Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 100 + hidden })
+      Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => 0 })
+      act(() => { scroller.dispatchEvent(new Event('scroll')) })
     }
+    setOverflow(0)
+    expect(scroller.className).not.toContain(mask)
+    setOverflow(60)
+    expect(scroller.className).toContain(mask)
+    setOverflow(0)
+    expect(scroller.className).not.toContain(mask)
   })
 })

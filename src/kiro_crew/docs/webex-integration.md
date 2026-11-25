@@ -80,8 +80,8 @@ and `/sessions` there lists the space's history rather than yours.
 
 | Command | What it does |
 |---|---|
-| `/new` | Start a fresh, restart-safe conversation; its first turn adds it to `/sessions` |
-| `/compact` | Compress the conversation context |
+| `/new` (or `/start`) | Start a fresh, restart-safe conversation; its first turn adds it to `/sessions` |
+| `/compact` | Compress the conversation context. Text after it (`/compact keep the API decisions`) is passed to the compaction; the KAS backend's compaction takes no instructions, so there the text is ignored |
 | `/model` | List the models this account can use, and pick one |
 | `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back |
 | `/sessions` | List this conversation's earlier sessions |

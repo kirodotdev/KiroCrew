@@ -55,6 +55,7 @@ def test_every_turn_actor_has_a_trigger_mapping():
         ("cron", "cron"),
         ("autonudge", "monitor"),
         ("subagent", "subagent"),
+        ("resource", "webhook"),
         ("gateway", "system"),
         ("other", "other"),
         ("brand-new", "other"),

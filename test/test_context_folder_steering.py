@@ -553,7 +553,7 @@ def test_member_turn_survives_a_guide_larger_than_the_envelope(member_env, tmp_p
     """One oversized guide truncates inside the envelope; it never aborts the turn.
 
     ``render_essentials`` refuses an envelope over ``ESSENTIAL_MAX_CHARS``
-    (64,000). A folder guide may legitimately be larger than that on its own
+    (65,000). A folder guide may legitimately be larger than that on its own
     (the per-document read cap is four times it), so the member path must fit
     folder documents by their RENDERED size, not just their count -- a small
     first guide lands, the oversized second is dropped, and the member's own

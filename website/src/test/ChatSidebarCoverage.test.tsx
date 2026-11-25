@@ -432,7 +432,7 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     await openHeaderPanel('Switch all to model…')
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true, undefined))
     expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
     expect(screen.getByText('Switch All Sessions')).toBeTruthy()
     // Idle A on Auto is all Switch would send, so it reads as that retry.
@@ -534,7 +534,7 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(retry).toBeEnabled()
     mocks.chatSlotsModel.mockClear()
     fireEvent.click(retry)
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true, undefined))
   })
 
   it('does not label a switch as a retry when a non-chat-page member DM becomes eligible', async () => {
@@ -988,6 +988,25 @@ describe('ChatSidebar — Older Sessions pane', () => {
     expect(screen.getByText('Unfiled hit')).toBeTruthy()
     fireEvent.click(screen.getByLabelText('Expand Alpha results'))
     expect(screen.getByText('Filed hit')).toBeTruthy()
+  })
+
+  it('groups a search hit filed inside a hidden Bot home under its folder', async () => {
+    // No listed session sits in the Bot's home, so the Sessions list draws no
+    // row for it; History still names the folder the hit was filed in.
+    mocks.sessionsSearch.mockResolvedValue({
+      sessions: [{ key: 'h-bot', title: 'Bot hit', modified: daysAgo(2), folder_id: 'f-bot-child' }],
+    })
+    const botFolders = [
+      ...FOLDERS,
+      { id: 'f-bot', name: 'Radar', order: 9, mate_home: true, owner_app: 'member:radar' },
+      { id: 'f-bot-child', name: 'Radar inbox', order: 0, parent_id: 'f-bot' },
+    ]
+    renderSidebar({ history: HISTORY, folders: botFolders })
+    openHistory()
+    fireEvent.change(screen.getByPlaceholderText('Search older sessions…'), { target: { value: 'hit' } })
+    expect(await screen.findByText('Bot hit')).toBeTruthy()
+    expect(screen.getByLabelText('Collapse Radar inbox results')).toBeTruthy()
+    expect(screen.queryByLabelText('Collapse Unfiled results')).toBeNull()
   })
 
   it('exposes the resize separator only while the pane is open', () => {

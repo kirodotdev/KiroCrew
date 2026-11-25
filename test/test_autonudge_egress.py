@@ -186,6 +186,11 @@ class TestEveryProjectionArmUsesTheSameRule:
         out = h._autonudge_loop_reading(_loop(stopped_reason=f"died on {SECRET}"))
         assert SECRET not in out["stopped_reason"], "the in-session reading served it raw"
 
+    def test_the_in_session_reading_scrubs_message(self) -> None:
+        out = h._autonudge_loop_reading(_loop(message=f"retry with {SECRET}"))
+        assert out["message"].startswith("retry with "), "the instruction was not read back"
+        assert SECRET not in out["message"], "the in-session reading served it raw"
+
     def test_the_reduced_row_scrubs_stopped_reason(self) -> None:
         """The reduced row is what ``GET /api/autonudge`` serves for a structured
         monitor, and that route has no owner gate. ``message`` is withheld there

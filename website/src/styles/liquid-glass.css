@@ -143,7 +143,8 @@
  * `--glass-band-plain` is the band's own plain value for the same reason: the
  * hue modifiers mix into it and set `--glass-band`, so the lit edges of a
  * tinted pane are lit in the pane's hue. A white band on a purple pane read as
- * a white frame around it, not as light (issue #18314). */
+ * a white frame around it, not as light (issue #18314). A theme pack may set
+ * `--glass-band-plain` in its variables.json; the modifiers mix into its value. */
 :root {
   --glass-tint-ultrathin: rgba(34, 33, 37, 0.30);
   --glass-tint-thin: rgba(30, 30, 34, 0.40);

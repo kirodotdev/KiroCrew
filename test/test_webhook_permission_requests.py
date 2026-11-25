@@ -215,6 +215,15 @@ def test_gate_deny_is_audited_then_rejected(monkeypatch):
     assert result_text == "hello world"
 
 
+def test_a_gate_deny_row_names_the_rule_that_refused(monkeypatch):
+    verdict = ToolHookResult(action=TOOL_DENY, reason="Blocked by security policy")
+    verdict.tier = "sensitive-bash"
+    _client, sel, _gate, _text = _drive(monkeypatch, TOOL_DENY, gate_result=verdict)
+
+    (row,) = _denial_rows(sel)
+    assert (row["error"], row["metadata"]) == ("hook_deny", {"rule_id": "sensitive-bash"})
+
+
 def test_gate_would_ask_fails_closed(monkeypatch):
     """TOOL_ALLOW means "ask the user" interactively; headless it must deny."""
     client, sel, _gate, _text = _drive(monkeypatch, gate_action=TOOL_ALLOW)

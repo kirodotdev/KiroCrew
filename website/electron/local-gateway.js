@@ -45,7 +45,7 @@ function setLocalGatewayEnabled(store, enabled) {
 /**
  * Which story the gateway error dialog should tell.
  *
- * The client-only case is checked FIRST on purpose. Nothing was launched in that
+ * The client-only case is checked FIRST on purpose. No gateway runs in that
  * state, but the launch log persists across launches, so an "address already in
  * use" line left by an earlier run would otherwise classify a silent port as a
  * conflict and offer to force-stop a holder that does not exist.
@@ -54,14 +54,14 @@ function setLocalGatewayEnabled(store, enabled) {
  * because the installer is still writing the backend, so a plain retry resolves
  * it and "failed to start" would send the user hunting a defect that is not there.
  *
- * "client-only" is the state where this launch started nothing on this machine,
+ * "client-only" is the state where this launch runs no gateway on this machine,
  * which the setting being off is one way to reach and not the only one: a launch
- * whose target port is not one a new gateway may bind also starts nothing, and
+ * whose target port is not one a new gateway may bind runs none either, and
  * `localStartBlocked` says which reason applied. The dialog reads the same
  * condition to decide whether to offer "Start Local Gateway", so a launch that
- * started nothing has to answer this the same way however it got there -- or the
+ * runs no gateway has to answer this the same way however it got there -- or the
  * message names a button the dialog withholds. Any value is enough: whatever
- * sets that field has already decided nothing was launched, so a list of
+ * sets that field has already decided no gateway runs, so a list of
  * qualifying reasons here would only be a second place to forget one.
  *
  * @param {object} o

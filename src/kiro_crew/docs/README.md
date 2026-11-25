@@ -17,7 +17,8 @@ organized for someone browsing the repository.
 | [use-cases.md](use-cases.md) | Real-world workflows. |
 | [troubleshooting.md](troubleshooting.md) | Common problems and fixes. |
 | [blocked-commands.md](blocked-commands.md) | Why a command was refused, what the agent is told to do instead, and how to check your credential setup. |
-| [tool-approvals.md](tool-approvals.md) | Auto-approving one MCP tool on KAS with a `permissions.yaml` rule, and the settings that look like they would but do not. |
+| [tool-approvals.md](tool-approvals.md) | Stopping one MCP tool asking with the dashboard's Always allow, a KAS `permissions.yaml` rule when you need a pattern, and the settings that look like they would but do not. |
+| [security-model.md](security-model.md) | The defense-in-depth layers, what each one protects against, where they stop, and which posture fits a work vs. personal host. |
 
 ## Core capabilities
 
@@ -54,8 +55,9 @@ organized for someone browsing the repository.
 | [work-ledger.md](work-ledger.md) | The conductor/worker record: work items, acceptance conditions, and how a dispatched worker reports. |
 | [artifacts.md](artifacts.md) | Saving, versioning, and reverting generated UI and documents. |
 | [computer-use.md](computer-use.md) | Reading and driving native desktop applications; opt-in and off by default. |
-| [decisions.md](decisions.md) | Jev decisions: letting a small fast model pick the automatic skill for a sampled conversation and pick whether a mid-turn message steers or queues, with the shipped behaviour as the fallback; flagging a risky tool call on its own card in a session that approves its own calls, which changes no permission; and a basic diagnostic log for all of them. |
+| [decisions.md](decisions.md) | Jev decisions: letting a small fast model pick the automatic skill, the model for a chat turn, whether a mid-turn message steers or queues, which recalled memories reach the prompt and whether a watching loop wakes its session, each off by default with the shipped behaviour as the fallback; flagging a risky tool call on its own card, which changes no permission; hosted, SageMaker or local models; and a basic diagnostic log. |
 | [browser-control.md](browser-control.md) | Driving a real web page from the dashboard's Browser panel. |
+| [scripted-test-model.md](scripted-test-model.md) | Testing agent specs, hooks, cron scripts and apps against a stand-in model whose replies come from a file. |
 
 ## Channels
 

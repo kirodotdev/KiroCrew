@@ -23,7 +23,7 @@ from typing import Any, Callable, cast  # noqa: F401
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, redaction_seams  # noqa: F401
+from kiro_crew import platform_compat, redaction_seams, sdk_extras  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE  # noqa: F401
 from kiro_crew.config import live  # noqa: F401
@@ -102,6 +102,7 @@ from kiro_crew.dashboard.messaging_api import notifications as _owner_notificati
 from kiro_crew.dashboard.messaging_api import proactive_send as _owner_proactive_send
 from kiro_crew.dashboard.messaging_api import run_control as _owner_run_control
 from kiro_crew.dashboard.messaging_api import run_views as _owner_run_views
+from kiro_crew.dashboard.messaging_api import slack_owner_claim as _owner_slack_owner_claim
 from kiro_crew.dashboard.messaging_api import slack_settings as _owner_slack_settings
 from kiro_crew.dashboard.messaging_api import slack_workspace as _owner_slack_workspace
 from kiro_crew.dashboard.messaging_api import spawn as _owner_spawn
@@ -128,6 +129,7 @@ from kiro_crew.dashboard.messaging_api.channel_config_writes import (  # noqa: F
 )
 from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _channel_delivery_key,
+    _channel_target_transport,
     _ChannelSendFailed,
     _cron_job_for,
     _deliver_channel_dm,
@@ -138,6 +140,7 @@ from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _send_to_channel_target,
     _vet_app_messaging,
     _vet_channel_send,
+    _vet_channel_target,
 )
 from kiro_crew.dashboard.messaging_api.channel_folder_backfill import (  # noqa: F401
     api_channel_folder_backfill,
@@ -154,6 +157,7 @@ from kiro_crew.dashboard.messaging_api.feishu_settings import (  # noqa: F401
     _is_valid_feishu_id,
     api_feishu_config_get,
     api_feishu_config_save,
+    api_feishu_sdk_install,
 )
 from kiro_crew.dashboard.messaging_api.imessage_settings import (  # noqa: F401
     _clean_imessage_path,
@@ -207,6 +211,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
     _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
+    _open_engine_subagents,
     _queue_unreadable,
     _queued_lookup,
     _queued_not_started,
@@ -232,8 +237,17 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _redact,
     _session_turn_holding,
     _spawn_result_view,
+    _worktree_field,
     api_spawn_list,
     api_spawn_status,
+)
+from kiro_crew.dashboard.messaging_api.slack_owner_claim import (  # noqa: F401
+    _owner_claim_gate,
+    _owner_claim_refused,
+    api_slack_owner_claim_cancel,
+    api_slack_owner_claim_confirm,
+    api_slack_owner_claim_get,
+    api_slack_owner_claim_start,
 )
 from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
     _save_code_channel_dispatch_locked,
@@ -263,6 +277,7 @@ from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _continue_on_loop,
     _failover_backend,
     _inherited_backend_name,
+    _kiro_cli_pick,
     _light_tier_pins,
     _lts_kiro_successor,
     _parent_run_is_silent,
@@ -330,6 +345,7 @@ from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     slot_owner_snapshot,
 )
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env  # noqa: F401
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.members import attributable_session_key, member_identity_for_session  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, canonical_key  # noqa: F401
@@ -545,6 +561,12 @@ _COLLECTED_IDS_CAP = 1000
 _SPAWN_STATUS_MAX_LINES = 2000  # cap lines returned per spawn_status page
 _SPAWN_STATUS_MAX_GREP_LEN = 500
 
+#: Last reported truncation of a NON-internal persisted spawn listing, per
+#: ``auditee``: the ``overflow_is_lower_bound`` it was reported with, the key
+#: absent once complete. Only those callers are remembered because their listing
+#: depends on the app claim alone; an internal caller's is scoped to its own session.
+_PERSISTED_TRUNCATION_REPORTED: dict[str, bool] = {}
+
 
 #: No unit holds the child, so no crew-log record was owed or written.
 DISMISSAL_LOG_ABSENT = "absent"
@@ -704,13 +726,10 @@ async def api_send_message(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"target_channel={target_channel}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {
-                "error": f"channel {target_channel} not in tracked channels. "
-                "Add it to config.json: "
-                f'{{"slack": {{"tracking_channels": [{{"channel_id": "{target_channel}"}}]}}}}. '
-                "Then restart the gateway."
-            },
+            {"error": untracked_channel_error(target_channel), "code": "channel_not_tracked"},
             status=403,
         )
 
@@ -897,7 +916,9 @@ async def api_send_message(request: web.Request) -> web.Response:
     )
 
 
-async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
+async def _write_env_off_loop(
+    updates: dict[str, str | None], *, check: Callable[[str], None] | None = None
+) -> None:
     """Run the blocking ``.env`` write on a worker, drained under the config lock.
 
     Every caller holds ``_get_config_lock()`` across this, and a thread cannot be
@@ -927,7 +948,11 @@ async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
     this through :func:`_write_env_or_roll_back`, which rolls the config write
     back on any failure, so on every channel the 409 means nothing was saved.
     """
-    fut = asyncio.ensure_future(asyncio.to_thread(_write_env_updates, updates))
+    fut = asyncio.ensure_future(
+        asyncio.to_thread(_write_env_updates, updates)
+        if check is None
+        else asyncio.to_thread(_write_env_updates, updates, check)
+    )
     try:
         await asyncio.shield(fut)
     except asyncio.CancelledError:
@@ -1092,6 +1117,10 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
 # SDK is importable by this gateway process and the exact command that installs
 # it into this interpreter. Every panel that reports these renders the shared
 # optional-SDK card instead of a bare ``pip install`` line.
+#: One optional-SDK install at a time (``api_feishu_sdk_install``); a second press
+#: while one runs gets 409.
+_SDK_INSTALL_LOCK = LoopBoundLock()
+
 _CHANNEL_SDK_EXTRA: dict[str, tuple[str, str]] = {
     "feishu": ("lark_oapi", "feishu"),
     # PyJWT installs as the ``jwt`` package (teams/client.py imports ``jwt``).
@@ -1115,6 +1144,7 @@ _facade_compose(
         _owner_proactive_send,
         _owner_channel_delivery,
         _owner_slack_settings,
+        _owner_slack_owner_claim,
         _owner_discord_settings,
         _owner_telegram_settings,
         _owner_teams_settings,

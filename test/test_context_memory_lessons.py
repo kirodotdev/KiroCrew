@@ -276,7 +276,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -298,7 +298,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: False,
         )
@@ -344,7 +344,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -370,7 +370,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=_episodic,
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -390,7 +390,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -555,7 +555,7 @@ class TestDurableModelVersionLessonContext:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap, facts_only=False: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: False,
         )

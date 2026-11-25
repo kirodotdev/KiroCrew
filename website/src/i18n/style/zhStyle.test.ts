@@ -104,6 +104,8 @@ describe('zh-CN terminology (style/zh-CN.md §2)', () => {
     ['orkspace', '工作空间', '工作区'],
     ['ubagent', '子智能体', '子代理'],
     ['WeCom', 'WeCom', '企业微信'],
+    ['Command Bar', 'Command Bar', '命令栏'],
+    ['Side Chat', 'Side Chat', '随手问'],
   ]
 
   for (const [cue, banned, canonical] of BANNED) {
@@ -141,6 +143,15 @@ describe('zh-CN punctuation (style/zh-CN.md §1)', () => {
     const bad = prose
       .filter(([, value]) => value.includes('「') || value.includes('」'))
       .map(([key]) => key)
+    expect(bad, report(bad)).toEqual([])
+  })
+
+  it('keeps no line break and indentation from the source layout', () => {
+    // A JSX literal wrapped across lines leaves `\n` plus its indent in the
+    // value, which renders as a space between two Chinese characters.
+    const bad = prose
+      .filter(([, value]) => /\n[ \t]+/.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, report(bad)).toEqual([])
   })
 

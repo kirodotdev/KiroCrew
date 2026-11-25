@@ -270,12 +270,14 @@ function answerEndIndex(items: readonly TurnItem[]): number {
  * ui/message delivery) is here for the same reason: the user's own click
  * landed it, and nothing in the fold repeats it. A `workflow` follow-up is the
  * same again: its answer is about a workflow run, not the fan-out; and so is a
- * `heartbeat` prompt, whose answer is about the heartbeat task.
+ * `heartbeat` prompt, whose answer is about the heartbeat task. A `resource`
+ * wake is a server-delivered turn about an outside change, not part of the
+ * sub-agent work being folded.
  *
  * `recovery` is deliberately NOT here: a tool-stall recovery inside a fan-out is
  * a continuation of the very work being folded.
  */
-const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app', 'workflow', 'heartbeat'])
+const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app', 'workflow', 'heartbeat', 'resource'])
 const isForeignInjection = (msg: ChatMessage): boolean => {
   if (msg.role !== 'inject') return false
   if (isNoteRow(msg)) return true
@@ -671,4 +673,19 @@ export function stripAppEnvelope(content: string): string {
   return content
     .replace(/^\[MCP app message from ".*"\]\n/, '')
     .replace(/\n\[End of MCP app message\]$/, '')
+}
+
+/** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
+export function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
+  const map = new Map<number, number>()
+  items.forEach((item, di) => {
+    if (item.kind === 'turn') {
+      for (const ti of item.items) {
+        if (ti.kind === 'single') map.set(ti.idx, di)
+        else if (ti.kind === 'group') ti.msgs.forEach((_, mi) => map.set(ti.startIdx + mi, di))
+      }
+    } else if (item.kind === 'single') map.set(item.idx, di)
+    else if (item.kind === 'group') item.msgs.forEach((_, mi) => map.set(item.startIdx + mi, di))
+  })
+  return map
 }

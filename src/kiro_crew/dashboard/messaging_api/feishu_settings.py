@@ -26,6 +26,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _CHANNEL_SDK_EXTRA,
+        _SDK_INSTALL_LOCK,
         DashboardState,
         _hot_apply_after_write,
         _mask_secret,
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
         logger,
         pip_extra_install_command,
         run_to_completion,
+        sdk_extras,
         stored_folder_name,
     )
 
@@ -72,6 +74,9 @@ def _channel_sdk_status(channel: str) -> tuple[bool, bool, str]:
         # panel renders no card.
         return True, False, ""
     import_name, extra = entry
+    # A desktop install made from Settings joins sys.path here too, so the
+    # panel sees it without a restart.
+    sdk_extras.activate()
     if importlib.util.find_spec(import_name) is not None:
         return True, True, ""
     if not _pip_install_channel_available():
@@ -113,7 +118,7 @@ async def api_feishu_config_get(request: web.Request) -> web.Response:
     # rather than just this request. Read as ONE unit of work: the credential
     # read is a method on the config object, and splitting them into two hops
     # would let the two files be read either side of a concurrent save.
-    def _read() -> "tuple[KiroCrewConfig, dict, tuple[bool, bool, str]]":
+    def _read() -> "tuple[KiroCrewConfig, dict, tuple[bool, bool, str], bool]":
         loaded = KiroCrewConfig.load()
         # The SDK probe joins this same unit of work: find_spec and the PEP 668
         # marker are filesystem reads, and the panel polls this endpoint every
@@ -122,9 +127,16 @@ async def api_feishu_config_get(request: web.Request) -> web.Response:
         # propagate=False: a post-boot dashboard read must not re-seed
         # os.environ (a worker-thread setdefault could restore a credential the
         # live watcher just popped); boot owns the one propagation.
-        return loaded, loaded.load_credentials(propagate=False), _channel_sdk_status("feishu")
+        return (
+            loaded,
+            loaded.load_credentials(propagate=False),
+            _channel_sdk_status("feishu"),
+            sdk_extras.install_supported("feishu"),
+        )
 
-    cfg, creds, (sdk_installed, sdk_supported, sdk_command) = await asyncio.to_thread(_read)
+    cfg, creds, (sdk_installed, sdk_supported, sdk_command), sdk_in_app = await asyncio.to_thread(
+        _read
+    )
     app_id = creds.get(CRED_FEISHU_APP_ID, "")
     app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
     fs = cfg.feishu
@@ -169,6 +181,9 @@ async def api_feishu_config_get(request: web.Request) -> web.Response:
             # wrong environment is the actual failure mode. Empty when the SDK is
             # present or no install channel exists.
             "sdk_install_command": sdk_command,
+            # The desktop app installs the SDK itself from this panel
+            # (POST /api/feishu/sdk/install): there is no pip command to show there.
+            "sdk_install_in_app": not sdk_installed and sdk_in_app,
         }
     )
 
@@ -522,3 +537,75 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": "",
         }
     )
+
+
+async def api_feishu_sdk_install(request: web.Request) -> web.Response:
+    """POST /api/feishu/sdk/install — install the Feishu SDK into the data home.
+
+    Desktop app only (``sdk_extras.install_supported``): there the bundle cannot
+    take a pip install, so the gateway lays the locked wheels down outside it.
+    Local machine only, like the config save: it fetches and installs code the
+    gateway will import. The channel still starts on the next gateway start, as
+    after any SDK install.
+
+    A failed install answers 502 with ``sdk_download_failed`` when the wheels
+    could not be fetched (``InstallError.kind``) and ``sdk_install_failed``
+    otherwise; the card words each code itself, so pip's lines stay in the log.
+    """
+    caller = request.get("user", "dashboard")
+
+    def _audit(outcome: str, error: str = "") -> None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="feishu.sdk.install",
+            outcome=outcome,
+            source="dashboard",
+            error=error,
+        )
+
+    if not is_direct_local_request(request):
+        message = "read-only from remote sessions (local machine only)"
+        _audit("denied", message)
+        return web.json_response({"error": message, "code": "remote_read_only"}, status=403)
+    # The dashboard owner only, as for the browser engine install: never an app
+    # token or the internal secret, since this installs code the gateway imports.
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if request.get("internal_auth") or not is_owner_dashboard_request(request):
+        _audit("denied", "the Feishu SDK install requires the dashboard owner")
+        return _owner_denial_response(request, "dashboard user required", "dashboard_user_required")
+    if not await asyncio.to_thread(sdk_extras.install_supported, "feishu"):
+        message = "this install cannot install the Feishu SDK itself"
+        _audit("denied", message)
+        return web.json_response({"error": message, "code": "sdk_install_unsupported"}, status=400)
+    if _SDK_INSTALL_LOCK.locked():
+        return web.json_response(
+            {"error": "an install is already running", "code": "install_already_running"},
+            status=409,
+        )
+    async with _SDK_INSTALL_LOCK:
+        try:
+            await asyncio.to_thread(sdk_extras.install_extra, "feishu")
+        except sdk_extras.InstallError as exc:
+            _audit("error", str(exc)[:500])
+            logger.warning("Feishu SDK install failed (%s): %s", exc.kind, exc)
+            # A stable code and a short message: Settings words it from the code,
+            # and pip's own lines stay in the gateway log.
+            if exc.kind == sdk_extras.KIND_DOWNLOAD:
+                return web.json_response(
+                    {
+                        "error": "could not download the Feishu SDK; check the internet connection",
+                        "code": "sdk_download_failed",
+                    },
+                    status=502,
+                )
+            return web.json_response(
+                {
+                    "error": "could not install the Feishu SDK; the gateway log has the details",
+                    "code": "sdk_install_failed",
+                },
+                status=502,
+            )
+    _audit("ok")
+    return web.json_response({"ok": True, "restart_required": True})

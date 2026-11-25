@@ -132,7 +132,53 @@ def _unpack_strings(payload: bytes) -> list[bytes]:
     return out
 
 
-def _realpath_sharing_folders(path: str, plain: set[str]) -> str:
+def _is_plain_drive_path(path: str) -> bool:
+    """True for an absolute ``X:\\...`` path that ``ntpath`` would not rewrite.
+
+    Anything else (relative, UNC or ``\\\\?\\``, a ``..`` or ``.`` name, a doubled or
+    trailing separator, a forward slash) goes to ``os.path.realpath`` whole, so this
+    file never spells what ``realpath`` normalizes.
+    """
+    drive, rest = os.path.splitdrive(path)
+    return (
+        bool(drive)
+        and not drive.startswith("\\\\")
+        and rest.startswith(os.sep)
+        and os.path.normpath(path) == path
+    )
+
+
+def _realpath_memoizing_folders(path: str, folders: dict[str, str]) -> str:
+    """``os.path.realpath(path)`` for a plain drive path, one call per existing folder.
+
+    Where the separator is not ``/`` a prefix walk would drift from ``realpath``: on
+    Windows it also returns the on-disk letter case and expands 8.3 short names, so a
+    path with no link on the way does not resolve to itself. So this keeps
+    ``realpath``'s own answers instead. *folders* maps a path to its answer for ONE
+    batch. A path whose leaf exists goes to ``os.path.realpath`` whole, which is also
+    what keeps a dangling link at the leaf on the standard library's route. A path
+    whose leaf is missing is its parent's answer joined with the leaf as spelled,
+    which is what non-strict ``realpath`` does with the part that does not exist.
+    """
+    known = folders.get(path)
+    if known is not None:
+        return known
+    parent, leaf = os.path.split(path)
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        if leaf and parent != path:
+            answer = os.path.join(_realpath_memoizing_folders(parent, folders), leaf)
+            folders[path] = answer
+            return answer
+    except (OSError, ValueError):
+        pass
+    answer = os.path.realpath(path)
+    folders[path] = answer
+    return answer
+
+
+def _realpath_sharing_folders(path: str, plain: set[str], folders: dict[str, str]) -> str:
     """``os.path.realpath(path)``, reading each folder on the way once per *plain*.
 
     ``realpath`` walks a path from the root, one ``lstat`` per folder, so a batch of
@@ -146,10 +192,15 @@ def _realpath_sharing_folders(path: str, plain: set[str]) -> str:
     The moment a prefix IS a link the WHOLE path goes to ``os.path.realpath``, so
     targets, chains, ``..`` inside a target and loops are resolved by the standard
     library with its own state, never composed here. A path this walk does not read
-    plainly -- relative, a ``//`` root, an empty, ``.`` or ``..`` name, any path on a
-    platform whose separator is not ``/`` -- goes to ``os.path.realpath`` whole too.
+    plainly -- relative, a ``//`` root, an empty, ``.`` or ``..`` name -- goes to
+    ``os.path.realpath`` whole too. Where the separator is not ``/`` the answers are
+    memoized per folder in *folders* instead (:func:`_realpath_memoizing_folders`).
     """
-    if os.sep != "/" or not path.startswith("/") or path.startswith("//"):
+    if os.sep != "/":
+        if _is_plain_drive_path(path):
+            return _realpath_memoizing_folders(path, folders)
+        return os.path.realpath(path)
+    if not path.startswith("/") or path.startswith("//"):
         return os.path.realpath(path)
     names = path.split(os.sep)[1:]
     if not all(name and name != "." and name != ".." for name in names):
@@ -176,10 +227,11 @@ def realpaths_sharing_folders(paths: list[str]) -> list[str | None]:
     one ``realpath`` per path reads it once per path. Nothing is kept past the batch.
     """
     plain: set[str] = set()
+    folders: dict[str, str] = {}
     out: list[str | None] = []
     for path in paths:
         try:
-            out.append(_realpath_sharing_folders(path, plain))
+            out.append(_realpath_sharing_folders(path, plain, folders))
         except (OSError, ValueError):
             out.append(None)
     return out
@@ -194,10 +246,11 @@ def realpath_many(raw_paths: list[bytes]) -> list[bytes]:
     the parent absolutizes before sending, so a real answer is never empty.
     """
     plain: set[str] = set()
+    folders: dict[str, str] = {}
     out: list[bytes] = []
     for raw in raw_paths:
         try:
-            out.append(os.fsencode(_realpath_sharing_folders(os.fsdecode(raw), plain)))
+            out.append(os.fsencode(_realpath_sharing_folders(os.fsdecode(raw), plain, folders)))
         except (OSError, ValueError):
             out.append(b"")
     return out

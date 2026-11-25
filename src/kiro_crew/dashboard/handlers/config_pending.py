@@ -37,15 +37,16 @@ edit. Where there is no dashboard, the owner's terminal runs the same writer
 which refuses inside a Kiro Crew sandbox.
 
 :func:`sync_pending_notes` rides the event-loop heartbeat: a leaf that goes pending
-raises one bell notification per on-disk version (re-notified only for a new edit) on
-the channel users cannot mute (:data:`CHANNEL`), and a resolved leaf's note is
-acknowledged.
+(listed by two scans in a row, :func:`_settled`) raises one bell notification per
+on-disk version (re-notified only for a new edit) on the channel users cannot mute
+(:data:`CHANNEL`), and a resolved leaf's note is acknowledged.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Callable
 
 from aiohttp import web
@@ -82,6 +83,7 @@ _PUBLISHED_ATTR = "_config_pending_published"
 #: Set while a ``resolved`` mark is only in memory: its log rewrite failed, so the
 #: next sync writes again rather than leave a restart to read the old record.
 _RESOLVED_UNSAVED_ATTR = "_config_pending_resolved_unsaved"
+_LAST_SCAN_ATTR = "_config_pending_last_scan"
 
 
 def _snapshot() -> dict:
@@ -282,7 +284,8 @@ async def _resolve(request: web.Request, op: str, apply: bool) -> web.Response:
         )
     _audit(request, op, "ok", leaf)
     snapshot = await asyncio.to_thread(_snapshot)
-    await _publish(request.app["state"], snapshot["pending"])
+    state = request.app["state"]
+    await _publish(state, _settled(state, snapshot["pending"]))
     return web.json_response(snapshot)
 
 
@@ -308,11 +311,39 @@ def _notes(state: Any) -> list[tuple[dict, dict]]:
     return found
 
 
+def _fenced(lines: list[str]) -> str:
+    """*lines* as one Markdown code block whose fence no line can close early."""
+    longest = max((len(run) for line in lines for run in re.findall(r"`+", line)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return "\n".join([fence, *lines, fence])
+
+
+def _note_text(entry: dict) -> tuple[str, str]:
+    """The note's title and body. An edit that changes ``slack.*`` lists the changed
+    keys, redacted as ``kirocrew config pending`` prints them, and sends the owner there
+    to review and apply: a member id listed by hand is expected to work at once."""
+    leaf, rows = entry["leaf"], entry.get("changes") or []
+    if not lp.touches_slack(leaf, rows):
+        return (
+            "Your config was changed outside Kiro Crew",
+            f"{leaf} was edited outside Kiro Crew. Review to apply or discard it.",
+        )
+    lines = lp.change_lines(rows, bool(entry.get("truncated")))
+    return (
+        "A Slack settings edit is held for review",
+        f"{leaf} was edited outside Kiro Crew and changes Slack settings (slack.*). "
+        "It is held for review and not in effect; a restart does not apply it. "
+        f"Changed keys:\n\n{_fenced(lines)}\n\n"
+        "Review it and apply or discard it with `kirocrew config pending`, or here.",
+    )
+
+
 async def _publish(state: Any, pending: list[dict]) -> None:
     """Notify each newly pending version once; acknowledge resolved ones; push a change."""
     from kiro_crew.notifications.bus import NotificationPayload
 
-    current = {p["leaf"]: p["signature"] for p in pending}
+    entries = {p["leaf"]: p for p in pending}
+    current = {leaf: p["signature"] for leaf, p in entries.items()}
     notes = _notes(state)
     # A resolved note (applied, discarded or put back by hand) answers for a version
     # that STOPPED being pending: the same bytes going pending again later -- a file
@@ -325,6 +356,7 @@ async def _publish(state: Any, pending: list[dict]) -> None:
     for leaf, signature in current.items():
         if (leaf, signature) in seen or published.get(leaf) == signature:
             continue
+        title, body = _note_text(entries[leaf])
         note = state.notification_bus.push(
             NotificationPayload(
                 source="system",
@@ -333,8 +365,8 @@ async def _publish(state: Any, pending: list[dict]) -> None:
                 # A user override on the channel can still raise it.
                 priority="default",
                 kind="agent",
-                title="Your config was changed outside Kiro Crew",
-                body=f"{leaf} was edited outside Kiro Crew. Review to apply or discard it.",
+                title=title,
+                body=body,
                 url=SETTINGS_URL,
                 group_key=f"config-pending:{leaf}",
                 meta={"config_pending_leaf": leaf},
@@ -368,8 +400,26 @@ async def _publish(state: Any, pending: list[dict]) -> None:
         state.broadcast_ws_owners(WS_EVENT, {"count": len(current)})
 
 
+def _settled(state: Any, pending: list[dict]) -> list[dict]:
+    """*pending* without a leaf that is new to this scan.
+
+    A save endorses its copy before it renames the new file into place, so a scan
+    between the two lists the old file, and the next scan does not. A leaf not yet
+    announced therefore counts once two scans in a row list it, at any signature, so a
+    file rewritten faster than the scans is still announced. An announced version
+    counts at once: this process published its leaf, or a note a restart kept, read or
+    not, names it and is not resolved. Dropping such a version would mark its note
+    resolved and send it again on the next scan.
+    """
+    before: set[str] = getattr(state, _LAST_SCAN_ATTR, set())
+    setattr(state, _LAST_SCAN_ATTR, {p["leaf"] for p in pending})
+    counted = before | set(getattr(state, _PUBLISHED_ATTR, None) or {})
+    noted = {(r.get("leaf"), r.get("signature")) for _, r in _notes(state) if not r.get("resolved")}
+    return [p for p in pending if p["leaf"] in counted or (p["leaf"], p["signature"]) in noted]
+
+
 async def _sync(state: Any) -> None:
-    await _publish(state, await asyncio.to_thread(lp.pending_changes))
+    await _publish(state, _settled(state, await asyncio.to_thread(lp.pending_changes)))
 
 
 async def sync_pending_notes(state: Any, now: float) -> None:

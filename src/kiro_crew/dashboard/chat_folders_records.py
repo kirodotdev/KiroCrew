@@ -948,8 +948,18 @@ def refuse_channel_reachable_agent(
     drive, or ``None``. The person's browser is never refused."""
     if not _agent_in_channel_reachable_session(request):
         return None
+    return channel_reachable_refusal(
+        request, operation, resources, caller=_audit_origin(request)[1]
+    )
+
+
+def channel_reachable_refusal(
+    request: web.Request, operation: str, resources: str = "", *, caller: str
+) -> web.Response:
+    """The ``channel_reachable_caller`` 403 and its ``channel_containment`` denial row,
+    named for *caller*, for an agent already found in a session a channel can drive."""
     sel().log_api_access(
-        caller=_audit_origin(request)[1],
+        caller=caller,
         operation=operation,
         outcome="denied",
         source="channel_containment",

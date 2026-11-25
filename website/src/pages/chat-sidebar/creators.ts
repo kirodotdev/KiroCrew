@@ -75,7 +75,10 @@ export function useSidebarCreators({ shown, selectedKeys, people, viewerIds, row
     push(CREATOR_MINE, i18nT('sharedCrew.you'))
     for (const row of people ?? []) {
       if (row.is_viewer || isUnknownPrincipal(row.principal) || viewerIds.has(row.principal.id)) continue
-      push(row.principal.id, principalName(row.principal))
+      // The owner is tagged as People tags them: the owner's sign-in can also
+      // reach the Crew as a teammate, and then both rows carry one name.
+      const name = principalName(row.principal)
+      push(row.principal.id, row.is_owner && name ? i18nT('sharedCrew.started_by_owner', { name }) : name)
     }
     for (const [key, name] of counts.names) push(key, name)
     push(CREATOR_UNATTRIBUTED, i18nT('sharedCrew.unattributed'))

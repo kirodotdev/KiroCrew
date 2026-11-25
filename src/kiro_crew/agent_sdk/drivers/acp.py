@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
+    from contextlib import AbstractContextManager
 
     from kiro_crew.agent_sdk.context import ContextPromptProvider
     from kiro_crew.providers.acp import AcpProvider
@@ -58,6 +59,7 @@ __all__ = [
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
     "spec_with_default_crew_servers",
+    "default_crew_servers_pass",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_honours_session_options",
@@ -615,18 +617,19 @@ def agent_spec_mcp_refs(
     *backends* narrows the rows to those ids, for a caller that asks about one
     backend: each row costs a full translation of the spec.
 
-    On kiro-cli and KAS, the two backends that run the spec's own servers, the
-    refs are judged against the spec with Crew's default servers added
-    (:func:`kiro_crew.acp.default_crew_servers.with_default_crew_servers`), as a
-    spawn on a custom agent runs it, so a user's agent that relies on them is not
-    reported for ``@kirocrew-core``. KAS adds them in its own projected agent
-    whatever the skill view does. kiro-cli adds them only in the skill view, so
-    they count there only while a spawn would project one
+    Each row judges the spec a session on that backend runs
+    (:func:`kiro_crew.acp.default_crew_servers.session_spec_on`, the one list of
+    the spawns that add Crew's default servers to a custom agent), so a user's
+    agent that relies on them is not reported for ``@kirocrew-core`` where its
+    spawn gets them. KAS adds them, after the template's approved additions, in its
+    own projected agent whatever the skill view does. kiro-cli adds them only in
+    the skill view, so they count there only while a spawn would project one
     (:func:`kiro_crew.acp.skill_projection.next_spawn_projects_skill_view`:
     projection switched on and the view ceiling not reached); otherwise the spawn
-    falls back to the authored agent and the spec as written is judged. Every
-    other backend is judged on the spec as written, because no projection there
-    adds them. On kiro-cli and KAS a server the
+    falls back to the authored agent and the spec as written is judged. A mirror in
+    ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY`` adds them, refs included, to the
+    copy the array read here is built from, recording nothing, and its row judges
+    that copy. Every other backend is judged on the spec as written. On kiro-cli and KAS a server the
     global settings ``mcp.json`` defines also counts, but only for a spec that
     states ``includeMcpJson: true`` (or ``useLegacyMcpJson: true``); a spec that
     states neither key, or false, is judged without that file.
@@ -635,10 +638,10 @@ def agent_spec_mcp_refs(
     be resolved is omitted rather than reported wrongly. Function-local imports
     for the same boot-path reason as every other function here.
     """
-    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld
+    from kiro_crew.acp.default_crew_servers import session_spec_on
+    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld, drop_opted_out
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
     from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
     from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
     from kiro_crew.providers.mirrors import has_mirror, mirror_for
@@ -646,7 +649,6 @@ def agent_spec_mcp_refs(
     spec = agent_spec_snapshot(agent)
     if not spec:
         return False, []
-    spawned = _with_default_crew_servers(agent, spec)
     rows: list[tuple[str, list[str], bool]] = []
     for backend in selectable_backend_values() if backends is None else backends:
         try:
@@ -656,21 +658,19 @@ def agent_spec_mcp_refs(
                 params = mirror.session_params(agent, permission_surface_owned=True)
                 raw = params.get("mcpServers")
                 wire = list(raw) if isinstance(raw, list) else []
-            adds_defaults = backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
-            if adds_defaults and backend == ACP_BACKEND_KIRO:
-                # kiro-cli adds them only through the skill view, so a spawn that
-                # falls back to the authored agent runs without them. Asked here,
-                # for the kiro-cli row alone: the doctor calls this once per agent.
-                from kiro_crew.acp.skill_projection import next_spawn_projects_skill_view
-
-                adds_defaults = next_spawn_projects_skill_view()
-            judged = spawned if adds_defaults else spec
-            # Same filter as the runtime detector, so doctor's per-backend rows
-            # and a session's report agree on a gate-withheld server.
-            unresolved = drop_gate_withheld(
-                unresolved_server_refs(
-                    judged, wire, backend=backend, mcp_json=mcp_json_server_names(spec, backend)
-                )
+            judged = session_spec_on(backend, agent, spec)
+            # Same filters as the runtime detector, so doctor's per-backend rows and a
+            # session's report agree on a gate-withheld or an excluded server.
+            unresolved = drop_opted_out(
+                judged,
+                drop_gate_withheld(
+                    unresolved_server_refs(
+                        judged,
+                        wire,
+                        backend=backend,
+                        mcp_json=mcp_json_server_names(spec, backend),
+                    )
+                ),
             )
         except Exception:
             continue
@@ -701,18 +701,18 @@ def mirror_withheld_crew_refs(agent: str) -> frozenset[str]:
 def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
     """*spec* with Crew's default servers added, or *spec* itself when that cannot be read.
 
-    Only ``tools`` and ``mcpServers`` decide a ref, so the helper is handed the spec
-    without ``allowedTools``: under a governance ceiling it withholds an entry that
-    would auto-approve the added servers and records that in the security event
-    log, a decision a spawn makes and a read-only diagnostic must not record. The
-    helper also reads capability and app state from disk; a diagnostic that cannot
-    read them judges the spec as written rather than failing.
+    The helper is handed the whole spec, ``allowedTools`` included, because a
+    wildcard there keeps an app's server out as it does at a spawn. ``audit=False``:
+    under a governance ceiling the helper withholds an entry that would
+    auto-approve the added servers and records that in the security event log, a
+    decision a spawn makes and a read-only diagnostic must not record. The helper
+    also reads capability and app state from disk; a diagnostic that cannot read
+    them judges the spec as written rather than failing.
     """
     from kiro_crew.acp.default_crew_servers import with_default_crew_servers
 
-    probe = {key: value for key, value in spec.items() if key != "allowedTools"}
     try:
-        return with_default_crew_servers(agent, probe)
+        return with_default_crew_servers(agent, spec, audit=False)
     except Exception:
         logger.debug("default Crew servers for %r could not be resolved", agent, exc_info=True)
         return spec
@@ -721,6 +721,13 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
 def spec_with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
     """*spec* with Crew's default servers added, for a read-only check; see :func:`_with_default_crew_servers`."""
     return _with_default_crew_servers(agent, spec)
+
+
+def default_crew_servers_pass() -> AbstractContextManager[None]:
+    """:func:`kiro_crew.acp.default_crew_servers.one_pass`, for a check that walks many agents."""
+    from kiro_crew.acp.default_crew_servers import one_pass
+
+    return one_pass()
 
 
 def kiro_cli_resolves() -> bool:
@@ -1514,6 +1521,7 @@ async def run_kiro_native_commands(
 
     from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpTimeoutError
     from kiro_crew.sandbox import configured_sandbox_mode
+    from kiro_crew.startup_deadline import startup_deadline
 
     sandbox_mode = await asyncio.to_thread(configured_sandbox_mode)
     client = _native_command_client_factory()(
@@ -1531,7 +1539,9 @@ async def run_kiro_native_commands(
         return results
 
     try:
-        return "ok", await asyncio.wait_for(_run(), timeout=timeout_seconds)
+        # Not wait_for: a start this deadline cuts is a startup timeout.
+        async with startup_deadline(timeout_seconds):
+            return "ok", await _run()
     except AcpAuthRequired:
         return "kiro_auth_required", []
     except (asyncio.TimeoutError, AcpTimeoutError):

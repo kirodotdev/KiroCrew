@@ -91,8 +91,9 @@ K_AX_VALUE_CG_SIZE = 2
 
 # ── Accessibility error codes ──
 AX_ERR_SUCCESS = 0
-# kAXErrorCannotComplete. Electron/Chromium apps answer this to EVERY attribute
-# read until ``AXManualAccessibility`` is set. Not a fatal error — a retry signal.
+# kAXErrorCannotComplete. Electron apps (and once, a cold-started Chrome) answer
+# this to EVERY attribute read until ``AXManualAccessibility`` is set. Not a fatal
+# error — a retry signal.
 AX_ERR_CANNOT_COMPLETE = -25204
 # kAXErrorActionUnsupported. Returned by an element that ADVERTISED the action:
 # a real ``AXScrollArea`` listed ``AXScrollDownByPage`` and then refused it. The
@@ -111,9 +112,11 @@ AX_ERR_ACTION_UNSUPPORTED = -25206
 AX_ERR_ATTRIBUTE_UNSUPPORTED = -25205
 AX_ERR_NO_VALUE = -25212
 
-# The Electron/Chromium accessibility opt-in, plus its bounded wait. Measured:
-# Obsidian exposed a 13-node stub before the opt-in and 574 nodes after it;
-# Chrome went from a hard ``-25204`` to 1,431 nodes.
+# The Electron accessibility opt-in, plus its bounded wait. Measured: Obsidian
+# exposed a 13-node stub before the opt-in and 574 nodes after it; a cold-started
+# Chrome went from a hard ``-25204`` to 1,431 nodes. A running Chrome that answers
+# with its browser UI but no page needs ``AXEnhancedUserInterface`` instead
+# (``snapshot_macos``).
 AX_MANUAL_ACCESSIBILITY = "AXManualAccessibility"
 ELECTRON_OPT_IN_WAIT_SECS = 2.0
 ELECTRON_OPT_IN_POLL_SECS = 0.25

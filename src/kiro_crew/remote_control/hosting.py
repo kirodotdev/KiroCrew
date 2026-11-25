@@ -4,14 +4,14 @@
 
 * ``true`` -- turned on (``kirocrew remote-control on``): host.
 * ``false`` -- turned off, or stored by a build before this rule: never host.
-* unset (``null`` or absent) -- nobody chose: host only when the Crew has a
-  credential that is itself the owner's choice to host, a team Crew's key
-  (:func:`hosts_by_default`). A personal sign-in never hosts by default.
+* unset (``null`` or absent) -- nobody chose: a personal sign-in hosts, and so
+  does a Crew whose credential is itself the owner's choice to host, a team
+  Crew's key or a workload identity (:func:`hosts_by_default`).
 
 So a stored value always wins: an install that stores ``false`` (an ``off``, a pod
 seed, or a full save by an older build, whose default was ``false``) stays off, and
-nothing migrates it. An install that stores nothing and has a team key hosts after
-the upgrade, because setting the key was the choice to host.
+nothing migrates it. An install that stores nothing hosts after the upgrade on a
+personal sign-in or a team key; ``kirocrew remote-control off`` stores ``false``.
 
 A leaf module: it reads the config object it is handed and the process
 environment, and imports nothing from the package, so
@@ -52,18 +52,32 @@ def workload_identity_named() -> bool:
 def hosts_by_default(tunnel: Any) -> bool:
     """Whether a Crew whose ``relay_enabled`` is unset hosts.
 
-    Only when ``tunnel.relay_lease_credential`` names a credential (not the Kiro
-    sign-in) and that credential is a team key (``relay_lease_token_type`` is
-    ``API_KEY``) or the deployment names a workload identity. Setting such a
-    credential is the owner choosing to host. A personal sign-in, empty or
-    ``kiro-sign-in``, and any other token type do not host by default.
+    A personal sign-in hosts: ``tunnel.relay_lease_credential`` empty or
+    ``kiro-sign-in``, with no ``relay_lease_token_type`` and no workload identity
+    named. So does a credential that names a team key (``relay_lease_token_type``
+    is ``API_KEY``), or any named credential when the deployment names a workload
+    identity: setting such a credential is the owner choosing to host. An empty
+    or ``kiro-sign-in`` credential with a token type or a workload identity, and a
+    named credential with any other token type, do not host by default.
     """
     credential = _text(tunnel, "relay_lease_credential")
     if not credential or credential == SIGN_IN_CREDENTIAL:
-        return False
+        return personal_sign_in(tunnel)
     if _text(tunnel, "relay_lease_token_type") == TOKEN_TYPE_API_KEY:
         return True
     return workload_identity_named()
+
+
+def personal_sign_in(tunnel: Any) -> bool:
+    """Whether the Crew leases on its own Kiro sign-in: a personal Crew.
+
+    ``relay_lease_credential`` empty or ``kiro-sign-in``, no ``relay_lease_token_type``
+    and no workload identity named.
+    """
+    credential = _text(tunnel, "relay_lease_credential")
+    if credential and credential != SIGN_IN_CREDENTIAL:
+        return False
+    return not _text(tunnel, "relay_lease_token_type") and not workload_identity_named()
 
 
 def is_unset(tunnel: Any) -> bool:
@@ -89,3 +103,14 @@ def relay_requested(tunnel: Any) -> bool:
 def hosting_by_default(tunnel: Any) -> bool:
     """Whether this Crew hosts only because of the default, which nobody chose."""
     return is_unset(tunnel) and hosts_by_default(tunnel)
+
+
+def personal_by_default(tunnel: Any) -> bool:
+    """Whether a personal Crew hosts only because of the default.
+
+    Such a Crew stays quiet while it cannot host yet (no sign-in, a sign-in that
+    cannot own a personal Crew, an organization with remote access off, a bind the
+    relay cannot reach): the tunnel status names the reason, and the dashboard
+    shows nothing for it. Someone who ran ``on`` gets today's errors.
+    """
+    return is_unset(tunnel) and personal_sign_in(tunnel)

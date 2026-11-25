@@ -3,10 +3,10 @@ title: Amend TENETS.md — add "Everything is an app" as tenet 8
 status: implemented
 author: zezhexu
 created: 2026-08-18
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
-doc-pr:
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 4444
+implementation-prs: [4444]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,9 @@ superseded-by: []
 # RFC: Amend TENETS.md — add "Everything is an app" as tenet 8
 
 - Status: implemented — [`../../TENETS.md`](../../TENETS.md) carries
-  **Everything is an app** as tenet 8.
+  **Everything is an app** as tenet 8, landed in
+  [#4444](https://github.com/kirodotdev/KiroCrew/pull/4444). Checked at
+  `fc89562d69`.
 - Author: zezhexu
 - Created: 2026-08-18
 - Related: [`rfc-everything-is-an-app.md`](rfc-everything-is-an-app.md), which

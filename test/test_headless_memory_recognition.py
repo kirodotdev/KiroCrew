@@ -228,7 +228,8 @@ async def test_shared_handle_recognition_ends_at_unregister(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "key", ["subagent:forged", "wf:forged", "wf-pool:forged:0", "unregistered"]
+    "key",
+    ["subagent:forged", "wf:forged", "wf-pool:forged:0", "taskrunner:forged:task1", "unregistered"],
 )
 async def test_unknown_headless_keys_refuse(tmp_path, key):
     state = SimpleNamespace(
@@ -239,6 +240,70 @@ async def test_unknown_headless_keys_refuse(tmp_path, key):
     )
     assert response is not None and response.status == 400
     assert json.loads(response.text)["code"] == "unknown_session"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+async def test_live_task_runner_step_uses_its_run_memory_mode(env, monkeypatch, mode):
+    """A Task Runner step is the live session ``taskrunner:<run id>:task<N>``.
+
+    The run's execution context is bound the way the runner binds it and the step
+    inherits it the way the step executor does; the gate then admits the step's
+    lesson and recall calls in that mode, and only while the step's session lives.
+    """
+    from kiro_crew.context import inherit_session_memory
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.task_models import Project
+    from kiro_crew.taskrunner_parts.run_scope import _bind_run_execution
+
+    monkeypatch.setattr("kiro_crew.context.prepare_store_vectors", AsyncMock())
+    env.state.push_refresh = lambda _resource: None
+    ctx = env.state.context_builder
+    ctx._session_memory_modes = {}
+    run = Project(
+        spec_path="spec.md",
+        spec_content="",
+        task_id="TASK_step",
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew", memory_mode=mode
+        ),
+    )
+    runtime, step = "taskrunner:TASK_step:runtime", "taskrunner:TASK_step:task1"
+    await _bind_run_execution(SimpleNamespace(_ctx=ctx), run, runtime)
+    await inherit_session_memory(ctx, runtime, step)
+    sessions = SessionManager(KiroCrewConfig(), provider_factory=_alive_provider_factory())
+    env.state.sessions = sessions
+    try:
+        await sessions.get_or_create(step)
+        written = await cron.api_lessons_create(
+            make_request(
+                env.state,
+                "/api/lessons",
+                body={"rule": "task step lesson", "category": "knowledge"},
+                session=step,
+                internal=True,
+            )
+        )
+        assert written.status == (200 if mode == "persistent" else 403), written.text
+        recalled = await memory_member.api_memory_recall(
+            make_request(
+                env.state,
+                "/api/memory/recall",
+                query={"q": "task step lesson"},
+                session=step,
+                internal=True,
+            )
+        )
+        assert recalled.status == (403 if mode == "temporary" else 200), recalled.text
+        assert ("task step lesson" in recalled.text) == (mode == "persistent")
+        sessions.release(step, cleanup=False)
+        await sessions.destroy(step)
+        ended = await cron._recognize_session(
+            env.state, step, "learn_add", blocks_persisted_mode=is_incognito_transcript
+        )
+        assert ended is not None and json.loads(ended.text)["code"] == "unknown_session"
+    finally:
+        await sessions.close_all()
 
 
 @pytest.mark.asyncio

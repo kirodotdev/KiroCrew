@@ -120,6 +120,9 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
     app.router.add_patch("/api/chat/slots/{slot}/mutes-opened", chat.api_chat_slot_mutes_opened)
     app.router.add_patch("/api/chat/slots/{slot}/muted", chat.api_chat_slot_muted)
+    app.router.add_patch(
+        "/api/chat/slots/{slot}/source-links-off", chat.api_chat_slot_source_links_off
+    )
     app.router.add_patch("/api/chat/slots/{slot}/todo", chat.api_chat_slot_todo)
     # The whole pinned-session order in one atomic write (sidebar drag and the
     # dashboard MCP's chat_session_pin_move).
@@ -200,6 +203,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots/{slot}/mirror-unlink", chat.api_chat_slot_mirror_unlink)
     app.router.add_post("/api/chat/slots/{slot}/mirror-pause", chat.api_chat_slot_mirror_pause)
     app.router.add_get("/api/chat/channel-targets", chat.api_channel_targets)
+    app.router.add_get("/api/chat/channel-topics", chat.api_channel_topics)
     app.router.add_get("/api/slack/channels", chat.api_slack_channels)
 
     # OpenAI-compatible API

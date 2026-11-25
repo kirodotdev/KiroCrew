@@ -4,9 +4,11 @@
 ``KeptMcpServers.call_tool`` is the one door both ``ScriptContext.call_tool`` and
 ``kirocrew cron preview`` go through. The rules pinned here are the ones the
 session, gateway and KAS paths already apply: a server the user muted is not
-launched, a registry or remote entry is not started as a local process, a tool the
-user switched off is not called, and ``${VAR}`` in a server's ``env`` is resolved
-the way kiro-cli resolves it.
+launched, a registry entry is not started as a local process, a tool the user
+switched off is not called, and ``${VAR}`` in a server's ``env`` is resolved the way
+kiro-cli resolves it. A remote (``url``) entry is called over streamable HTTP from
+the script's own process with its ``headers``, filled in from the view a local
+server's ``env`` is; the remote cases talk to a fake server on 127.0.0.1.
 
 Every case writes Crew's agent spec and the two core MCP config scopes under this
 test's own ``tmp_path``.
@@ -15,13 +17,22 @@ test's own ``tmp_path``.
 from __future__ import annotations
 
 import json
+import socketserver
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.cron_script as cron_script
+from kiro_crew.acp import kas_env_launch
 from kiro_crew.cron_script import KeptMcpServers, McpToolError, _resolve_mcp_server
+
+#: The header value the fake remote server accepts, filled in from ``CRON_REMOTE_TOKEN``.
+TOKEN = "remote-38479-token"
+#: Names a hung call; never reached by a passing run.
+_HANG_SECS = 60.0
 
 
 @pytest.fixture
@@ -100,20 +111,6 @@ class TestMutedServer:
 
 
 class TestUnlaunchableEntry:
-    @pytest.mark.parametrize(
-        "entry",
-        [
-            {"url": "https://example.invalid/mcp"},
-            {"url": "https://example.invalid/mcp", "command": "placeholder"},
-        ],
-        ids=["url-only", "url-with-command"],
-    )
-    def test_a_remote_entry_is_refused_by_name(self, home, entry):
-        _write_servers(home["spec"], {"github": entry})
-
-        with pytest.raises(RuntimeError, match="'github' is a remote"):
-            _resolve_mcp_server("github")
-
     def test_a_registry_entry_is_refused(self, home):
         _write_servers(home["spec"], {"catalog": {"type": "registry", "command": "x"}})
 
@@ -246,3 +243,216 @@ class TestSwitchedOffTool:
         else:
             assert servers.call_tool("srv", tool, {}) == f"ran {tool}"
         servers.close()
+
+
+class _FakeRemote(BaseHTTPRequestHandler):
+    """A streamable-HTTP MCP server with a tool ``echo``; 401 without the token.
+
+    ``hold`` answers ``tools/call`` on an event stream and keeps that stream open
+    until ``release`` is set; ``accept_only`` answers it 202 with no response.
+    """
+
+    seen: list[dict]
+    hold = False
+    accept_only = False
+    release: threading.Event
+
+    def log_message(self, *_a):  # quiet
+        pass
+
+    def _reply(self, status: int, body: bytes = b"", **hdrs: str) -> None:
+        self.send_response(status)
+        if body:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in hdrs.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):  # noqa: N802
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.seen.append({"headers": dict(self.headers), "method": body.get("method")})
+        if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+            self._reply(401, b'{"error":"no token"}')
+            return
+        if "id" not in body or (self.accept_only and body["method"] == "tools/call"):
+            self._reply(202)
+            return
+        if body["method"] == "initialize":
+            result: dict = {"protocolVersion": "2025-06-18", "capabilities": {}}
+        else:
+            text = f"echo {json.dumps(body['params']['arguments'], sort_keys=True)}"
+            result = {"content": [{"type": "text", "text": text}]}
+        payload = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+        if self.hold and body["method"] == "tools/call":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b"event: message\ndata: " + payload + b"\n\n")
+            self.wfile.flush()
+            self.release.wait(_HANG_SECS)
+            return
+        self._reply(200, payload, **{"Mcp-Session-Id": "sess-1"})
+
+    def do_DELETE(self):  # noqa: N802
+        self.seen.append({"headers": dict(self.headers), "method": "DELETE"})
+        self._reply(200)
+
+
+class _LoopbackServer(ThreadingHTTPServer):
+    """Reached by port, never by name: skip the host lookup ``server_bind`` does."""
+
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
+@pytest.fixture
+def remote(monkeypatch):
+    """The fake server on a loopback port 0, and the token's variable set; no
+    process may be started while a remote server is called."""
+    for name in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.setenv("CRON_REMOTE_TOKEN", TOKEN)
+
+    def _no_process(*_a, **_k):
+        pytest.fail("a remote server was started as a process")
+
+    monkeypatch.setattr(cron_script, "popen_limited", _no_process)
+    release = threading.Event()
+    handler = type("Handler", (_FakeRemote,), {"seen": [], "release": release})
+    server = _LoopbackServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield handler, f"http://127.0.0.1:{server.server_address[1]}/mcp"
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(_HANG_SECS)
+
+
+def _remote_entry(url: str, **extra: Any) -> dict[str, Any]:
+    return {"url": url, "headers": {"Authorization": "Bearer ${CRON_REMOTE_TOKEN}"}, **extra}
+
+
+class TestRemoteEntry:
+    @pytest.mark.parametrize(
+        "extra",
+        [{}, {"command": "placeholder-never-run"}],
+        ids=["url-only", "url-with-command"],
+    )
+    def test_a_remote_entry_is_called_with_its_filled_in_headers(self, home, remote, extra):
+        """The url is called from this process, never a command beside it."""
+        handler, url = remote
+        _write_servers(home["spec"], {"remote": _remote_entry(url, **extra)})
+        servers = KeptMcpServers()
+
+        assert servers.call_tool("remote", "echo", {"q": "hi"}) == 'echo {"q": "hi"}'
+        servers.close()
+        methods = [r["method"] for r in handler.seen]
+        assert methods[:3] == ["initialize", "notifications/initialized", "tools/call"]
+        posts = [r for r in handler.seen if r["method"] != "DELETE"]
+        assert all(r["headers"]["Authorization"] == f"Bearer {TOKEN}" for r in posts)
+
+    def test_a_call_returns_when_answered_on_a_stream_the_server_keeps_open(self, home, remote):
+        handler, url = remote
+        handler.hold = True
+        _write_servers(home["spec"], {"remote": _remote_entry(url)})
+        servers = KeptMcpServers()
+        results: list[str] = []
+        call = threading.Thread(
+            target=lambda: results.append(servers.call_tool("remote", "echo", {"q": 1})),
+            daemon=True,
+        )
+
+        call.start()
+        call.join(_HANG_SECS)
+
+        assert not call.is_alive(), "the call waited for the event stream to end"
+        assert results == ['echo {"q": 1}']
+        servers.close()
+
+    def test_a_request_that_ends_without_an_answer_fails_at_once(self, home, remote):
+        handler, url = remote
+        handler.accept_only = True
+        _write_servers(home["spec"], {"remote": _remote_entry(url)})
+        servers = KeptMcpServers()
+
+        with pytest.raises(RuntimeError, match="'remote' ended its answer to 'tools/call'"):
+            servers.call_tool("remote", "echo", {})
+        servers.close()
+
+    def test_a_401_is_a_transport_failure_and_the_next_call_starts_fresh(
+        self, home, remote, monkeypatch
+    ):
+        handler, url = remote
+        monkeypatch.setenv("CRON_REMOTE_TOKEN", "wrong-38479-value")
+        _write_servers(home["spec"], {"remote": _remote_entry(url)})
+        servers = KeptMcpServers()
+
+        for _ in range(2):
+            with pytest.raises(RuntimeError) as raised:
+                servers.call_tool("remote", "echo", {})
+            assert not isinstance(raised.value, McpToolError)
+            assert "'remote'" in str(raised.value) and "HTTP 401" in str(raised.value)
+            assert "wrong-38479-value" not in str(raised.value)
+        assert [r["method"] for r in handler.seen] == ["initialize", "initialize"]
+        servers.close()
+
+    @pytest.mark.parametrize(
+        ("entry", "plain_http_refused", "reason"),
+        [
+            ({"url": "mcp.example.invalid/mcp"}, False, "not http or https"),
+            ({"type": "sse"}, False, "is an 'sse' server"),
+            ({"headers": {"X-Api-Key": "secret://MY_TOKEN"}}, False, "'X-Api-Key'"),
+            ({"url": "http://mcp.example.invalid/mcp"}, True, "plain http"),
+        ],
+        ids=["no-http-scheme", "sse", "secret-header", "plain-http-headers-opted-out"],
+    )
+    def test_an_uncallable_remote_entry_is_refused_by_name_before_any_request(
+        self, home, remote, monkeypatch, entry, plain_http_refused, reason
+    ):
+        handler, url = remote
+        monkeypatch.setattr(kas_env_launch, "refuses_plain_http_headers", lambda: False)
+        _write_servers(home["spec"], {"remote": {**_remote_entry(url), **entry}})
+        if plain_http_refused:
+            # With the opt-in off the url is called, as KAS's bridge calls it.
+            assert _resolve_mcp_server("remote").url == entry["url"]
+            _resolve_mcp_server.cache_clear()
+            monkeypatch.setattr(kas_env_launch, "refuses_plain_http_headers", lambda: True)
+
+        with pytest.raises(RuntimeError, match=f"'remote' .*{reason}") as raised:
+            KeptMcpServers().call_tool("remote", "echo", {})
+        assert "MY_TOKEN" not in str(raised.value)
+        assert handler.seen == []
+
+    @pytest.mark.parametrize(
+        ("variable", "value", "header"),
+        [
+            ("GITHUB_TOKEN", "vault-38479-value", "${GITHUB_TOKEN}"),
+            ("KIROCREW_INTERNAL_SECRET", "internal-38479-value", "${KIROCREW_INTERNAL_SECRET}"),
+        ],
+        ids=["granted", "cron-denied"],
+    )
+    def test_a_granted_or_cron_denied_variable_reaches_the_server_as_written(
+        self, home, remote, monkeypatch, variable, value, header
+    ):
+        handler, url = remote
+        monkeypatch.setattr(cron_script, "_GRANTED_ENV_KEYS", {"GITHUB_TOKEN"})
+        monkeypatch.setenv(variable, value)
+        entry = _remote_entry(url)
+        entry["headers"]["X-Passed"] = header
+        _write_servers(home["spec"], {"remote": entry})
+        servers = KeptMcpServers()
+
+        assert servers.call_tool("remote", "echo", {}) == "echo {}"
+        servers.close()
+        assert {r["headers"]["X-Passed"] for r in handler.seen} == {header}

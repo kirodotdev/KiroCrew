@@ -1,11 +1,11 @@
 ---
 title: App registry sources in private GitHub repositories, read through the host's GitHub CLI sign-in
-status: draft
+status: implemented
 author: buluoray
 created: 2026-11-17
-last-audited: 2026-11-17
-audited-at: 0e618612ac5
-doc-pr: null
+last-audited: 2026-11-20
+audited-at: c157748343
+doc-pr: 38989
 implementation-prs: [38999]
 tracking-issues: [38988]
 supersedes: []
@@ -14,7 +14,11 @@ superseded-by: []
 
 # RFC: App registry sources in private GitHub repositories
 
-- Status: draft. Nothing is on main. Verified at `0e618612ac5`.
+- Status: implemented. Maintainer bolichen97 accepted the design on
+  [#38989](https://github.com/kirodotdev/KiroCrew/pull/38989), and
+  [#38999](https://github.com/kirodotdev/KiroCrew/pull/38999) shipped Phase 1
+  on 2026-11-19 (`apps/registry_pipeline/gh_credential.py`, called from the
+  index, catalog, checkout and manifest fetches). Verified at `c157748343`.
 - Scope: the App Store's external registries and the apps they list, when the
   repository is a private `https://github.com/<owner>/<repo>` repository.
 

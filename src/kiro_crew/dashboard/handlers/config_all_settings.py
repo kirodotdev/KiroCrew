@@ -38,7 +38,7 @@ WHY_OWNED = "owned"  # another step changes it together with other settings
 WHY_MARKER = "marker"  # Kiro Crew sets it itself as a step is finished
 WHY_ALIAS = "alias"  # read from another setting, so a write here changes nothing
 WHY_TEXT = "text"  # free text such as a path, address or command
-WHY_LOCKED = "locked"  # an organization's policy sets it
+WHY_LOCKED = "locked"  # this edition sets it; no policy term reaches it
 WHY_COMPOUND = "compound"  # several values that must change together
 
 #: Keys the page shows but never changes, each with the reason it shows. A key
@@ -79,8 +79,9 @@ READONLY_REASONS: dict[str, str] = {
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
-    "agent.kas_persist_mcp_sign_in": WHY_SIGN_IN,
     "agent.kas_refuse_plain_http_mcp_headers": WHY_SIGN_IN,
+    # Which credential Crew's engine runs on (machine mode reads a host token file).
+    "agent.kas_auth": WHY_SIGN_IN,
     "agent.mcp_registry_mode": WHY_SIGN_IN,
     "dashboard.sso_login_flags": WHY_SIGN_IN,
     "dashboard.qr_session_until_restart": WHY_SIGN_IN,
@@ -114,12 +115,17 @@ READONLY_REASONS: dict[str, str] = {
     "tunnel.enabled": WHY_REACH,
     "tunnel.name_mode": WHY_REACH,
     "tunnel.relay_enabled": WHY_REACH,
+    # Where the Crew's lease credential goes; `kirocrew config set` writes it.
+    "tunnel.relay_lease_region": WHY_REACH,
     "tunnel.relay_viewer_enabled": WHY_REACH,
     "dashboard.tailscale.bind_refresh_chains": WHY_REACH,
     "dashboard.tailscale.pin_scope": WHY_REACH,
     "dashboard.shared_crew.containment_enabled": WHY_REACH,
     "dashboard.shared_crew.hard_limits": WHY_REACH,
     "dashboard.shared_crew.ssm_port": WHY_REACH,
+    # A second loopback listener for a reverse proxy that forwards other machines
+    # (dashboard/entry_gate.py); the config file or `kirocrew config set` writes it.
+    "dashboard.entry_port": WHY_REACH,
     # Outbound activity reports.
     "wakatime.enabled": WHY_SHARE,
     "wakatime.send_heartbeats": WHY_SHARE,
@@ -246,12 +252,9 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
     "memory.repeated_failures_notice": {"tab": "overview"},
     # Settings -> Developer -> Logs: the level picker (POST /api/logs/level).
     "agent.log_level": {"tab": "developer", "sub": "logs"},
+    # Settings -> Agent Harness, the KAS row's engine choice.
+    "agent.kas_bundle": {"tab": "agent", "highlight": "agent.engine"},
     # Settings -> Developer -> Feature Previews.
-    "agent.kas_bundle": {
-        "tab": "developer",
-        "sub": "feature-previews",
-        "highlight": "developer.run-kas-on-kiro-crew-s-own-engine",
-    },
     "dashboard.crewmate_threads": {
         "tab": "developer",
         "sub": "feature-previews",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appWebOrigin } from './webOrigin'
+import { appWebOrigin, appWebOriginStatus } from './webOrigin'
 
 const at = (hostname: string, port = '5476', protocol = 'http:') => ({ hostname, port, protocol })
 
@@ -31,5 +31,31 @@ describe('appWebOrigin', () => {
 
   it.each(['', 'Docs', 'a.b', '-x', 'x-', 'a'.repeat(64), 'a_b', 'é', 'a\n'])('refuses the app name %j', (name) => {
     expect(appWebOrigin(name, at('localhost'))).toBeNull()
+  })
+})
+
+describe('appWebOriginStatus', () => {
+  it('answers the origin appWebOrigin answers, with the reason loopback', () => {
+    expect(appWebOriginStatus('docs', at('localhost', '7778'))).toEqual({
+      origin: 'http://docs.apps.localhost:7778',
+      reason: 'loopback',
+    })
+  })
+
+  it.each([
+    ['https', at('localhost', '5476', 'https:')],
+    ['a tailnet or tunnel host', at('node.tailnet.ts.net', '')],
+    ['a relay viewer name', at('kcr-abc.localhost')],
+    ['a published host', at('crew.example.com')],
+  ])('says to open upstream on %s', (_label, location) => {
+    expect(appWebOriginStatus('docs', location)).toEqual({ origin: null, reason: 'remote-front-door' })
+  })
+
+  it('names IPv6 loopback, which no frame ancestor can express', () => {
+    expect(appWebOriginStatus('docs', at('[::1]'))).toEqual({ origin: null, reason: 'ipv6' })
+  })
+
+  it('names a bad app name before anything about the location', () => {
+    expect(appWebOriginStatus('Docs', at('[::1]'))).toEqual({ origin: null, reason: 'invalid-name' })
   })
 })

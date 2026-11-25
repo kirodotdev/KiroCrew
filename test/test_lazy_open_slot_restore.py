@@ -532,6 +532,27 @@ async def test_a_bounded_open_reads_the_page_and_leaves_the_window_unloaded(seed
 
 
 @pytest.mark.asyncio
+async def test_a_bounded_open_with_a_restored_queue_loads_the_window_off_the_loop(seeded, caplog):
+    """The queue's written marks read the window's rows; the page alone does not."""
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    state = await _restore_on_loop(seeded)
+    key = _pending_key(state)
+    slot = state._slots[key]
+    slot._queue.append({"id": "q-held", "content": "held message", RESTORED_QUEUE_KEY: True})
+
+    with caplog.at_level(logging.WARNING):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get(f"/api/chat/slots/{key}?limit=3")
+            assert resp.status == 200
+            body = await resp.json()
+
+    assert [q["id"] for q in body["queue"]] == ["q-held"]
+    assert not slot.window_pending
+    assert not _loads_on_loop(caplog)
+
+
+@pytest.mark.asyncio
 async def test_a_pending_row_with_a_transient_row_on_disk_loads_its_window(seeded, caplog):
     state = await _restore_on_loop(seeded)
     key = _pending_key(state)

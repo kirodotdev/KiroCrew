@@ -45,8 +45,16 @@ commit**. Concretely:
 5. **Run the gate:** `./scripts/docs-lint.sh`. It fails on a broken internal link, a
    doc no index reaches, a directory with no index, a code comment citing a doc that
    does not exist, a renamed doc whose filename is hardcoded in code, a git
-   conflict marker left at the start of a line, and a section link (`#anchor`) in
-   this tree that no heading or `<a id>` produces. It walks four trees: this one,
+   conflict marker left at the start of a line, a `file.py:NNN` citation past the
+   end of its file, a module spec naming a source file that does not exist, a
+   harness comment citing an invariant ID that `harness-parity.md` does not
+   define, and a section link (`#anchor`) in this tree that no heading or
+   `<a id>` produces. Its fact checks (such as a backticked path that
+   resolves to nothing, or a `file.py:NNN` line citation) fail only on a finding not already
+   listed in
+   [`../.github/docs-lint-baseline.txt`](../.github/docs-lint-baseline.txt), so
+   cite a symbol, not a line number. A backticked identifier absent from the
+   code is reported but does not fail. It walks four trees: this one,
    the packaged [`../src/kiro_crew/docs/`](../src/kiro_crew/docs/README.md),
    [`../website/docs/`](../website/docs/README.md), and the markdown a builtin app
    ships under `src/kiro_crew/apps/builtins/`. That fourth tree is link-checked and

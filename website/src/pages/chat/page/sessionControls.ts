@@ -5,6 +5,8 @@ import { api } from '../../../api/client'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
 import { useFolderSortMode } from '../../../hooks/useFolderSortMode'
 import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY, useSessionControls, useSessionControlStatuses } from '../../../hooks/useSessionControls'
+import { memberThreadTitle } from '../../../lib/memberThreadTitle'
+import type { SessionControlContext } from '../../../components/SessionControlHost'
 import type { ChatFolder, ChatSlot } from '../../../types'
 
 /** One shared empty list, so an absent folder cache keeps a stable identity. */
@@ -100,6 +102,28 @@ export function useComposerSessionControls({ activeSlot, currentSlot, queryClien
     chatFolders, chatFoldersError, chatFoldersLoaded, folderSortMode, folderSortError, activeFolderName,
     mobileNewSessionInFlightRef, mobileNewSessionBusy, setMobileNewSessionBusy,
     sessionControlKey, sessionControlStatuses, sessionControlStatusError,
+  }
+}
+
+/**
+ * The `session` prop a mounted control is handed. `member` names the Bot when
+ * the chat is that Bot's own thread -- its display name, read the same way the
+ * thread's sidebar row reads it -- so a control can say who the user is talking
+ * to rather than guess from the slot slug. Absent in every other chat.
+ */
+export function sessionControlContext({ sessionKey, currentSlot, folderName, agents }: {
+  sessionKey: string
+  currentSlot: ChatSlot | undefined
+  folderName: string
+  agents: readonly { name: string; display_name?: string; selection_kind?: string }[]
+}): SessionControlContext {
+  const memberName = currentSlot ? memberThreadTitle(currentSlot, agents) : null
+  return {
+    sessionKey,
+    folderId: currentSlot?.folder_id || '',
+    folderName,
+    cwd: currentSlot?.project || '',
+    ...(memberName ? { member: { name: memberName } } : {}),
   }
 }
 

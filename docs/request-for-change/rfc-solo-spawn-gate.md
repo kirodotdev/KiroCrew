@@ -3,8 +3,8 @@ title: Solo-Spawn Gate — a one-task sub-agent has to say why
 status: superseded
 author: iamwhatever
 created: 2026-09-18
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 11848
 implementation-prs: [11710, 13458]
 tracking-issues: []

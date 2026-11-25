@@ -19,6 +19,7 @@
  *   sessions/schedule/artifacts/settings/apps.png
  *   chat-focus.png                  focus mode
  *   chat-mobile.png                 390x844
+ *   bots.png                        a Bot's chat, measured over its chat column
  *
  * Exit status is non-zero when any page hides the overlay completely.
  *
@@ -28,6 +29,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { json, stubDashboardApi, logPageProblems } from './lib/stub-dashboard-api.mjs'
+import { MEMBERS, RADAR } from './lib/radar-dm-fixture.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/theme-overlay-behind'
 mkdirSync(OUT, { recursive: true })
@@ -90,12 +92,12 @@ const { srv, base } = await serveDist()
 const browser = await chromium.launch()
 const results = {}
 
-async function open(mode, viewport) {
+async function open(mode, viewport, storage = {}) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 2 })
   logPageProblems(page)
   await stubDashboardApi(page, {
     slots, theme: mode,
-    localStorageEntries: { 'mc-color-theme': `custom-${SLUG}` },
+    localStorageEntries: { 'mc-color-theme': `custom-${SLUG}`, ...storage },
     extra: async (path, route) => {
       const ok = (body, type = 'application/json') =>
         route.fulfill({ status: 200, contentType: type, body: typeof body === 'string' ? body : JSON.stringify(body) })
@@ -104,22 +106,30 @@ async function open(mode, viewport) {
       if (path === '/api/theme/boot') { await ok({ mode, color: `custom-${SLUG}` }); return true }
       if (path === `/api/theme/${SLUG}/overlay/${OVERLAY_ID}`) { await ok(OVERLAY_HTML, 'text/html'); return true }
       if (path.startsWith('/api/chat/slots/')) { await json(route, detail); return true }
+      if (path === '/api/members') { await ok({ members: MEMBERS, default_agent: 'kirocrew' }); return true }
+      if (/^\/api\/members\/[^/]+\/thread$/.test(path)) { await ok({ slot_key: RADAR.slot_key, slug: RADAR.slug, member: RADAR.name, created: false }); return true }
+      if (path === '/api/teams') { await ok({ teams: [] }); return true }
       return false
     },
   })
   return page
 }
 
-/** Shoot, then shoot again with the overlay hidden, and count changed pixels in the content column. */
-async function shoot(page, name) {
+/**
+ * Shoot, then shoot again with the overlay hidden, and count changed pixels in
+ * the content column, or in the element `area` names when the page's own
+ * gutters would show the overlay even with its chat covered.
+ */
+async function shoot(page, name, area = null) {
   const frame = page.locator(`iframe[data-theme-layer="behind"]`)
   await frame.waitFor({ state: 'attached', timeout: 15_000 })
   await page.waitForTimeout(700)
-  const box = await page.evaluate(() => {
-    const el = document.querySelector('main') || document.querySelector('[data-testid="dashboard-shell"]')
+  const box = await page.evaluate((area) => {
+    const el = area ? document.querySelector(area) : document.querySelector('main') || document.querySelector('[data-testid="dashboard-shell"]')
+    if (!el) throw new Error(`no element matches ${area}`)
     const r = el.getBoundingClientRect()
     return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }
-  })
+  }, area)
   const withArt = await page.screenshot({ path: `${OUT}/${name}.png` })
   await page.evaluate(() => { document.querySelector('iframe[data-theme-layer="behind"]').style.visibility = 'hidden' })
   await page.waitForTimeout(150)
@@ -164,6 +174,13 @@ await focus.getByRole('button', { name: /focus mode/i }).first().click()
 await focus.waitForTimeout(400)
 await shoot(focus, 'chat-focus')
 await focus.close()
+
+// Side panel closed, so the frame shows the whole chat column.
+const bots = await open('dark', desktop, { 'mc-members-panel-open': '0' })
+await bots.goto(`${base}/members?member=${RADAR.name}`)
+await bots.getByText('42 tests passed').waitFor({ timeout: 15_000 })
+await shoot(bots, 'bots', '[data-testid="member-thread-pane"]')
+await bots.close()
 
 const mobile = await open('dark', { width: 390, height: 844 })
 await mobile.goto(`${base}/chat/${SLOT}`)

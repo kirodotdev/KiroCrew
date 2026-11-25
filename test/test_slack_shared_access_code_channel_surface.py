@@ -370,7 +370,7 @@ def test_a_shared_users_stop_in_a_thread_resolving_to_a_code_channel_session_is_
         patch.object(
             session_events,
             "resolve_session",
-            lambda *_a: ("555.000001", f"dashboard:{SLOT}", False),
+            lambda *_a, **_kw: ("555.000001", f"dashboard:{SLOT}", False),
         ),
         patch.object(session_events, "_is_ours", lambda *_a: True),
     ):
@@ -1052,7 +1052,13 @@ def _real_access(env: Any, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = T
 
     cfg = KiroCrewConfig()
     cfg.slack = _build_slack_config(
-        {"shared_access": {"enabled": enabled, "user_ids": [SHARED, LISTED_ONLY]}}
+        {
+            "shared_access": {
+                "enabled": enabled,
+                "user_ids": [SHARED, LISTED_ONLY],
+                "verify_with_slack": True,
+            }
+        }
     )
     monkeypatch.setattr(handler, "is_allowed_user", access.is_allowed_user)
     monkeypatch.setattr(handler, "_owner_id", OWNER)
@@ -1068,7 +1074,7 @@ def _real_access(env: Any, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = T
     web = _Web()
     shared_access.install(web)
     if enabled:
-        assert asyncio.run(shared_access.lookup(web, SHARED, owner_id=OWNER)).ok
+        assert asyncio.run(shared_access.lookup(web, SHARED, owner_id=OWNER, verify=True)).ok
     assert handler.is_shared_user(SHARED) is enabled
     assert handler.is_shared_listed(LISTED_ONLY) is enabled
     assert not handler.is_shared_user(LISTED_ONLY)

@@ -18,6 +18,7 @@ library clips that request to the declared length, so the cap is not allocated.
 from __future__ import annotations
 
 import os
+import stat
 from typing import Protocol, TypeVar
 
 #: The size of one request once nothing more is known about the stream. Small enough
@@ -109,3 +110,25 @@ def bounded_read_fd(fd: int, limit: int) -> bytes:
     or to *limit*, whichever comes first.
     """
     return bounded_read(_Descriptor(fd), limit)
+
+
+class NotRegularFileError(OSError):
+    """The path names something other than a regular file (a FIFO, a device, a folder)."""
+
+
+def bounded_read_regular_file(path: str, limit: int) -> bytes:
+    """At most *limit* bytes of the regular file at *path*. Blocking file IO.
+
+    Opened non-blocking, so a FIFO at *path* cannot park the caller in ``open``,
+    and refused unless the opened descriptor is a regular file. A symlink is
+    followed: mounted secrets are links into a data folder. Raises ``OSError``,
+    :class:`NotRegularFileError` for anything that is not a regular file.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegularFileError("not a regular file")
+        return bounded_read_fd(fd, limit)
+    finally:
+        os.close(fd)

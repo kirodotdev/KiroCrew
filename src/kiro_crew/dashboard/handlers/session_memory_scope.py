@@ -6,7 +6,9 @@ which other chats exist or what they are called. This route serves an agent the
 same measurement for its OWN scope and nothing else:
 
 - its own session row (or, for a sub-agent, its own run), and
-- the runs it spawned, as one aggregate.
+- the runs it spawned, as one aggregate, and
+- for a conductor, one row per worker bound to an open item on its own board,
+  keyed by its own item id (:func:`caller_worker_rows`).
 
 Every value served is a count, a size or a ``shared`` flag. No session key,
 title, agent name, task text, run id or pid leaves this module, and a runtime shared
@@ -24,17 +26,24 @@ dashboard owner keeps the full panel at ``/api/sessions/memory``.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
+import sys
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import ledger_wake
 from kiro_crew.dashboard.handlers._shared import member_request_scope
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.resource_status import temp_headroom
 from kiro_crew.session_allocation_parts.companions import subagent_runtime_row_key
+
+logger = logging.getLogger(__name__)
 
 #: Its own sampler, not the Sessions panel's: ``sample`` appends to the panel's
 #: rolling history and CPU baselines, and an agent polling on its own cadence must
@@ -186,6 +195,139 @@ def caller_memory_view(payload: Mapping[str, Any], caller: str) -> dict[str, obj
     }
 
 
+def _proc_cmdline(pid: int) -> bytes:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            return fh.read()
+    except OSError:
+        return b""
+
+
+def _measures_as_test_runner(cmdline: bytes) -> bool:
+    """The orphan sweep's structural test-runner match, plus an interpreter-prefixed
+    console script (``python /venv/bin/pytest ...``). Measurement only: the sweep's
+    own kill classifier is not widened."""
+    from kiro_crew.session_pid_orphan_scan import _work_sweep_cmdline_is_test_runner
+
+    # ``/proc`` ends argv with a NUL; a bare ``pytest`` would otherwise read as one
+    # NUL-suffixed word.
+    if _work_sweep_cmdline_is_test_runner(cmdline.rstrip(b"\0")):
+        return True
+    args = [a for a in cmdline.split(b"\x00") if a]
+    return len(args) >= 2 and args[1].rsplit(b"/", 1)[-1] == b"pytest"
+
+
+def _largest_test_tree_mb(pid: object) -> float | None:
+    """RSS of the largest test-runner tree under *pid* (Linux), 0 when none, else ``None``.
+
+    A tree is rooted at the topmost process the orphan sweep's structural
+    classifier calls a test runner (``_work_sweep_cmdline_is_test_runner``), so a
+    pytest run and its xdist workers are one tree. BLOCKING: walks ``/proc``.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or not sys.platform.startswith("linux"):
+        return None
+    from kiro_crew import platform_compat
+    from kiro_crew.session_pid import _PAGE_SIZE, _read_rss_pages
+
+    # The RSS ceiling's measuring map: a run the worker's shell left behind
+    # (reparented to init, still in the runtime's session) is still its tree.
+    children = platform_compat.proc_child_map(session_members=True)
+    if children is None:
+        return None
+
+    def tree(root: int) -> set[int]:
+        seen: set[int] = set()
+        frontier = [root]
+        while frontier:
+            current = frontier.pop()
+            if current not in seen:
+                seen.add(current)
+                frontier.extend(children.get(current, ()))
+        return seen
+
+    parent = {child: p for p, kids in children.items() for child in kids}
+    below = tree(pid) - {pid}
+    runners = {p for p in below if _measures_as_test_runner(_proc_cmdline(p))}
+    roots = [p for p in runners if parent.get(p) not in runners]
+    sizes = [sum(_read_rss_pages(q) for q in tree(root)) * _PAGE_SIZE / 2**20 for root in roots]
+    return round(max(sizes, default=0.0), 1)
+
+
+def _volume_free_pct(path: str) -> float | None:
+    if not path:
+        return None
+    reading = temp_headroom(path)
+    return None if reading is None else round(reading.free_space_pct, 1)
+
+
+def caller_worker_rows(
+    payload: Mapping[str, Any],
+    caller: str,
+    *,
+    running: Callable[[str], bool],
+    project_of: Callable[[str], str],
+) -> list[dict[str, object]]:
+    """One numbers-only row per open item on *caller*'s OWN board with a bound worker.
+
+    rfc-host-memory-guard.md §5.3. A worker is listed only when its binding file
+    names this board and this item (``read_binding``), so a session bound to
+    another board never appears. Each row is keyed by the caller's own item id and
+    carries sizes and flags only: no session key, title, path or pid. A remote
+    item has no local tree and is skipped. Empty for a caller with no board.
+    BLOCKING: reads the ledger, ``/proc`` and ``statvfs``.
+    """
+    from kiro_crew import work_ledger
+    from kiro_crew.session_ledger import ledger_key
+
+    board = ledger_key(caller)
+    sessions = payload.get("sessions")
+    by_key: dict[str, Mapping[str, Any]] = {}
+    for row in sessions if isinstance(sessions, list) else []:
+        if isinstance(row, Mapping) and isinstance(row.get("key"), str):
+            by_key.setdefault(ledger_key(row["key"]), row)
+    out: list[dict[str, object]] = []
+    for item in work_ledger.list_work_items(board):
+        worker = item.worker_session_key or ""
+        if item.is_terminal or not worker or item.worker_instance_id:
+            continue
+        if work_ledger.read_binding(worker) != (board, item.item_id):
+            continue
+        row = by_key.get(ledger_key(worker))
+        figures = (
+            _row_figures(row, shared=_session_row_shared(row), measured=True)
+            if row is not None
+            else {name: None for name in _ROW_FIELDS}
+        )
+        out.append(
+            {
+                "item_id": item.item_id,
+                "rss_mb": figures["rss_mb"],
+                "procs": figures["procs"],
+                # A shared runtime's tree is not the worker's own, so it is not walked.
+                "test_mb": (
+                    _largest_test_tree_mb(row.get("pid"))
+                    if row is not None and not _session_row_shared(row)
+                    else None
+                ),
+                "turn": "busy" if running(worker) else "idle",
+                "volume_free_pct": _volume_free_pct(project_of(worker)),
+            }
+        )
+    return out
+
+
+def _slot_project(state: Any, session_key: str) -> str:
+    getter = getattr(state, "get_slot", None)
+    if not callable(getter):
+        return ""
+    for candidate in (session_key, f"dashboard_{session_key}"):
+        slot = getter(candidate)
+        if slot is not None:
+            project = getattr(slot, "project", "")
+            return project if isinstance(project, str) else ""
+    return ""
+
+
 async def _host_sample(state: Any) -> dict[str, object]:
     """One host sample, reused by every caller within ``_SAMPLE_REUSE_SECS``.
 
@@ -225,5 +367,38 @@ async def api_spawn_session_memory(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    payload = await _host_sample(request.app["state"])
-    return web.json_response(caller_memory_view(payload, scope.session))
+    state = request.app["state"]
+    payload = await _host_sample(state)
+    view = caller_memory_view(payload, scope.session)
+    try:
+        workers = await asyncio.to_thread(
+            caller_worker_rows,
+            payload,
+            scope.session,
+            running=lambda key: ledger_wake.worker_running(state, key),
+            project_of=lambda key: _slot_project(state, key),
+        )
+    except Exception:
+        logger.debug("session-memory: worker rows could not be read", exc_info=True)
+        workers = []
+    if workers:
+        view["workers"] = workers
+        if not _growth_wake_on():
+            view["growth_wake"] = "off"
+    return web.json_response(view)
+
+
+def _growth_wake_on() -> bool:
+    """Whether the worker growth wake has readings: the watchdog's RSS check is on.
+
+    rfc-resource-control.md §4.3: the wake reads that check's sizes, so with
+    ``session.watchdog_rss_max_mb = 0`` it is silent, and the conductor is told so
+    rather than reading the silence as health. Unreadable config answers on.
+    """
+    try:
+        from kiro_crew.config import live
+
+        snap = live.snapshot()
+    except Exception:  # noqa: BLE001 - the view must answer without config
+        return True
+    return snap is None or bool(getattr(snap.session, "watchdog_rss_max_mb", 1))

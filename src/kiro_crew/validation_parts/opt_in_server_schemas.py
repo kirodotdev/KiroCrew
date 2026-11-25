@@ -522,6 +522,10 @@ DASHBOARD_SAVE_SCHEMA = ToolSchema(
         # Optional: a client can drop an empty object, and the package store reads a
         # missing theme as ``{"tokens": {}}``.
         FieldSpec("theme", dict),
+        # Optional, and absent means "keep the stored widgets": a save without it
+        # behaves as it did before widgets existed. Typed only as a list for the same
+        # reason as above; ``dashboard_widgets`` owns the shape and its refusals.
+        FieldSpec("widgets", list),
     ],
 )
 

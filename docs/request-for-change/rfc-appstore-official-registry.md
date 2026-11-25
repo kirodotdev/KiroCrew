@@ -3,8 +3,8 @@ title: Official App Registry + Editorial Feed
 status: partial
 author: KiroCrew contributors
 created: 2026-07-29
-last-audited: 2026-08-19
-audited-at: cdd8b301
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 807
 implementation-prs: [2961, 3235, 3258, 3386, 3659, 3779, 4574, 4587]
 tracking-issues: [581]

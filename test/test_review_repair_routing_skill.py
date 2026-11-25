@@ -7,6 +7,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from skill_script_helpers import skill_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
@@ -14,7 +15,7 @@ PREPARE = SKILLS / "kirocrew-prepare-pr" / "SKILL.md"
 
 
 def _text(path):
-    return path.read_text(encoding="utf-8")
+    return skill_text(path)
 
 
 def _routing():
@@ -71,7 +72,8 @@ def test_repair_work_and_self_review_are_delegated_then_parent_checked():
     ):
         assert contract in text
     phase_three = _text(PREPARE).split("### Phase 3", 1)[1].split("### Phase 4", 1)[0]
-    assert "MUST execute [Review repair routing](#review-repair-routing)" in phase_three
+    # The step lives in references/, so its link back to the section names SKILL.md.
+    assert "MUST execute [Review repair routing](../SKILL.md#review-repair-routing)" in phase_three
 
 
 def test_fallback_does_not_skip_siblings_or_replay_partial_edits():
@@ -116,14 +118,16 @@ def test_local_review_and_generic_monitoring_keep_their_own_contracts():
     [("kirocrew-worktree-dev", 16000), ("babysit", 22000), ("kirocrew-prepare-pr", 56000)],
 )
 def test_slim_skills_do_not_regrow_duplicate_guidance_or_wire_model_ids(name, byte_ceiling):
-    text = _text(SKILLS / name / "SKILL.md")
+    text = (SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
     assert len(text.encode("utf-8")) <= byte_ceiling, (
         f"{name}/SKILL.md is over {byte_ceiling} bytes. Move detail out rather than "
         "trimming words: script flags to the script's --help, rules a step reads only "
         "sometimes to references/, with a one-line pointer left behind."
     )
     assert not re.search(r"\b(?:gpt|claude|fable)-(?:\d|opus|fable)", text)
-    assert len(_routing().encode("utf-8")) <= 3000
+    # The routing procedure is a reference the core points at; its own title adds ~100.
+    routing = PREPARE.parent / "references" / "review-repair-routing.md"
+    assert len(routing.read_bytes()) <= 3200
 
 
 def test_ci_doc_links_the_contract_and_rationale_drops_stale_budget():

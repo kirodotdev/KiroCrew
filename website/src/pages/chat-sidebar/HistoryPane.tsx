@@ -28,13 +28,14 @@ import type { SidebarScope } from './scope'
 /** The splitter, the footer and the pane, as the sidebar root draws them. */
 export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
   const { clearClosedSessionsWithConfirm, collapsedHistoryGroups, connected, defaultAgent,
-    deleteHistorySessionWithConfirm, dispatch, folderSortMode, folders, history, historyDragging,
+    deleteHistorySessionWithConfirm, dispatch, folderSortMode, allFolders, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
     historySearchScan, openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
     tintAgents } = shell
   // Older sessions have no place in the manual order (it orders the open ones),
-  // so under Manual this pane keeps its own newest-first order and date groups.
-  const sortKey = listSortKey === 'manual' ? 'date-desc' : listSortKey
+  // and none is running, so under Manual and "In progress, then newest" this pane
+  // keeps its own newest-first order and date groups.
+  const sortKey = listSortKey === 'manual' || listSortKey === 'active-then-date' ? 'date-desc' : listSortKey
   return (
     <>
       {historyOpen ? (
@@ -330,7 +331,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                 // relevance-ranked results under collapsible folder headers (+ Unfiled)
                 // by the folder each session was filed in, instead of date segments.
                 if (searchActive) {
-                  return groupHistoryByFolder(sortedHistory, folders, folderSortMode).map(({ key: gid, folder, rows }) => {
+                  return groupHistoryByFolder(sortedHistory, allFolders, folderSortMode).map(({ key: gid, folder, rows }) => {
                     const collapsed = collapsedHistoryGroups.has(gid)
                     const groupName = folder ? folder.name : i18nT('pages.chatSidebar.unfiled')
                     return (

@@ -16,6 +16,7 @@ import { ErrorCard, capabilityRefusal, isAuthRequired, isContextOverflow, isImag
 import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
+import { fmtMessageTime } from '../pages/chat/messageTime'
 
 const setupMeta = (member = 'reviewer') => ({
   code: 'memory_unavailable',
@@ -334,6 +335,21 @@ describe('ErrorCard — agent not signed in', () => {
       />,
     )
     expect(screen.getByTestId('kiro-sign-in-copy-request-id')).toBeInTheDocument()
+    cleanup()
+  })
+
+  it('keeps Sign in and adds Resume on its own row once the host reads the sign-in as working', () => {
+    const onContinue = vi.fn()
+    render(
+      <ErrorCard content="Not signed in to Kiro." resumeContent="Signed in again." onContinue={onContinue} onOpenSignIn={vi.fn()} signInWorks />,
+    )
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-auth-required', 'true')
+    expect(card).toHaveTextContent('Signed in again.')
+    // Resume gets its own row, so the strip's button row keeps two controls.
+    expect(screen.getByTestId('error-card-continue').parentElement).not.toContainElement(screen.getByTestId('kiro-sign-in-open'))
+    fireEvent.click(screen.getByTestId('error-card-continue'))
+    expect(onContinue).toHaveBeenCalledTimes(1)
     cleanup()
   })
 
@@ -934,5 +950,28 @@ describe('a Kiro Cloud reopen that started a new sandbox', () => {
   it('keeps the wire text for a kind it does not know', () => {
     render(<ErrorCard content="channel fallback text" meta={{ kind: 'toString' }} />)
     expect(screen.getByTestId('error-card')).toHaveTextContent('channel fallback text')
+  })
+})
+
+describe('a card that stands for a run of identical failures (#38910)', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it('says how many times it happened and when the newest did, and lists every attempt when expanded', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-18T21:00:00Z'))
+    const attempts = ['2026-11-18T20:50:00Z', '2026-11-18T20:55:00Z', '2026-11-18T20:59:00Z'].map(ts => ({ ts }))
+    render(<ErrorCard content="The agent could not start." attempts={attempts} onContinue={() => {}} />)
+    const toggle = screen.getByTestId('error-card-run-toggle')
+    expect(toggle).toHaveTextContent(i18nT('pages.chat.errorCard.repeated_in_a_row', { count: 3, time: fmtMessageTime('2026-11-18T20:59:00Z') }))
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('error-card-run-attempts')).toBeNull()
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const items = within(screen.getByTestId('error-card-run-attempts')).getAllByRole('listitem')
+    expect(items.map(li => li.textContent)).toEqual(attempts.map(a => fmtMessageTime(a.ts)))
+    expect(screen.getByTestId('error-card-continue')).toBeVisible()
   })
 })

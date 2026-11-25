@@ -84,6 +84,7 @@ def shadowed_path(monkeypatch, tmp_path):
     # real one back so this is a genuine lookup over the fake host.
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", _REAL_RESOLVE)
     monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
+    monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", ())
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
     # The desktop app exports its bundled kiro-cli directory to every child,
@@ -142,6 +143,35 @@ class TestKnownDirsAreFenceable:
         assert self._USER_APP in dirs
         for fixed in self._FIXED:
             assert fixed not in dirs, fixed
+
+    def test_linux_searches_the_system_bin_dirs_after_the_home_ones(self) -> None:
+        """A container image installs kiro-cli in /usr/local/bin, outside PATH-free
+        pinning until these were searched: its version then read as unknown."""
+        assert kiro_cli._LINUX_SYSTEM_DIRS == ("/usr/local/bin",)
+        dirs = kiro_cli.known_kiro_cli_dirs(
+            "linux", self._ACCOUNT_ROOT, {}, include_inherited_path=False
+        )
+        home_bin = str(self._ACCOUNT_ROOT / ".local" / "bin")
+        assert dirs.index(home_bin) < dirs.index("/usr/local/bin")
+        # /usr/bin is not searched: a distro package there is found through PATH.
+        assert "/usr/bin" not in dirs
+        windows = kiro_cli.known_kiro_cli_dirs(
+            "win32", self._ACCOUNT_ROOT, {}, include_inherited_path=False
+        )
+        assert "/usr/local/bin" not in windows
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a chmod +x shim is a POSIX shape")
+    def test_linux_pins_a_system_install_with_no_path(self, monkeypatch, tmp_path) -> None:
+        system_bin = tmp_path / "usr-local-bin"
+        shim = _plant_shim(system_bin)
+        monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", (str(system_bin),))
+        found = _REAL_RESOLVE(
+            platform_name="linux",
+            home=tmp_path / "empty-home",
+            environ={},
+            include_inherited_path=False,
+        )
+        assert found == str(shim)
 
 
 posix_only = pytest.mark.skipif(

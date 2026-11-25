@@ -260,7 +260,12 @@ class TestSeam:
         # covered by the same call -- and the same call feeds the prompt.
         source = inspect.getsource(RunEventCoordinator._run_inner_impl)
         assert source.count("mcp_problems = self._warn_unusable_mcp_servers(info, client)") == 1
-        assert source.count("message = self._spawn_mcp_notice(mcp_problems) + message") == 1
+        assert (
+            source.count(
+                "message = self._spawn_mcp_notice(mcp_problems, info.crew_tools_withheld) + message"
+            )
+            == 1
+        )
 
     def test_the_seam_takes_no_acp_import(self):
         # The agent-SDK boundary gate refuses application code an ACP edge, which

@@ -342,6 +342,18 @@ class TestIterCcAgentNames:
     def test_declared_name_is_yielded(self, tmp_path):
         assert list(h._iter_cc_agent_names(self._cc_dir(tmp_path))) == ["reviewer"]
 
+    def test_a_file_saved_with_a_utf8_byte_order_mark_is_yielded(self, tmp_path):
+        cc = self._cc_dir(tmp_path)
+        (cc / "plugin" / "agents" / "two.md").write_bytes(
+            b"\xef\xbb\xbf---\r\nname: bom-agent\r\n---\r\nbody\r\n"
+        )
+        assert list(h._iter_cc_agent_names(cc)) == ["reviewer", "bom-agent"]
+
+    def test_a_byte_order_mark_without_frontmatter_is_still_skipped(self, tmp_path):
+        cc = self._cc_dir(tmp_path)
+        (cc / "plugin" / "agents" / "two.md").write_bytes(b"\xef\xbb\xbfname: bom-agent\n")
+        assert list(h._iter_cc_agent_names(cc)) == ["reviewer"]
+
 
 # ──────────────────────────────────────────────────────────────────────
 # !compact — every cosmetic/teardown failure arm

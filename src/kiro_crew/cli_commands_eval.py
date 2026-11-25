@@ -258,7 +258,8 @@ async def _judge_results(
 async def _run_eval(args: argparse.Namespace) -> None:
     """Run multi-session evaluation scenarios.
 
-    Exits 1 when a scenario name is unknown (nothing runs) or when any scenario
+    Exits 1 when a scenario name is unknown (nothing runs), when a session refuses
+    the ``--model`` at start (nothing is scored or saved), or when any scenario
     fails (after the report is written); returns normally when every one passes.
     """
 
@@ -288,18 +289,32 @@ async def _run_eval(args: argparse.Namespace) -> None:
     provider_factory = build_provider_factory(config)
 
     provider_kwargs = await _eval_provider_kwargs(args, config)
+    # Imported here, not at the top: ``kiro_crew.cli_commands`` serves this module's
+    # module-level names, and it may serve only names an owner defines.
+    from kiro_crew.config.loader import DEFAULT_MODEL
+    from kiro_crew.eval.runner import ModelNotOffered
+
+    # ``auto`` pins nothing: a default the session inherits and the backend refuses
+    # was not asked for, so only a named model is judged.
+    model = (getattr(args, "model", None) or "").strip()
     runner = EvalRunner(
         provider_factory=provider_factory,
         judge_enabled=getattr(args, "judge", False),
         provider_kwargs=provider_kwargs,
         # The gate judges each call as the agent the sessions run as, as chat does.
         gate_agent=str(provider_kwargs.get("crew_agent") or provider_kwargs.get("agent") or ""),
+        requested_model="" if model == DEFAULT_MODEL else model,
     )
     rounds: list[list[ScenarioResult]] = []
-    for run_index in range(1, repeat + 1):
-        if repeat > 1:
-            print(f"Run {run_index}/{repeat}")
-        rounds.append(await runner.run_scenarios(scenarios))
+    try:
+        for run_index in range(1, repeat + 1):
+            if repeat > 1:
+                print(f"Run {run_index}/{repeat}")
+            rounds.append(await runner.run_scenarios(scenarios))
+    except ModelNotOffered as exc:
+        # Nothing is scored or saved: the results would name a model that never ran.
+        print(f"Error: {safe_terminal_line(str(exc))}", file=sys.stderr)
+        sys.exit(1)
 
     # LLM Judge scoring
     if getattr(args, "judge", False):
@@ -384,7 +399,17 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
 
 #: Flags that only mean something after ``kirocrew eval run`` (dest names).
-_EVAL_RUN_ONLY = ("suite", "tier", "harness", "case_ids", "eval_home", "out", "json", "check")
+_EVAL_RUN_ONLY = (
+    "suite",
+    "tier",
+    "harness",
+    "case_ids",
+    "eval_home",
+    "out",
+    "json",
+    "check",
+    "use_operator_credentials",
+)
 #: Scenario flags ``kirocrew eval run`` does not take (dest names).
 _SCENARIO_ONLY = (
     "all_scenarios",
@@ -450,9 +475,17 @@ def _run_eval_tasks(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(safe_terminal_line(f"Error: {exc}"), file=sys.stderr)
         return 2
+    operator = bool(getattr(args, "use_operator_credentials", False))
+    if operator:
+        import copy
+
+        arms = [copy.copy(arm) for arm in arms]  # never the shared ARMS instances
+        for arm in arms:
+            arm.operator_credentials = True
+        print(safe_terminal_line(tasks.OPERATOR_RISK_LINE), file=sys.stderr)
     if not args.eval_home:
         print(
-            "Error: --suite tasks needs --eval-home DIR; task arms never run in your own home.",
+            "Error: --suite tasks needs --eval-home DIR; each run gets a fresh home under it.",
             file=sys.stderr,
         )
         return 2
@@ -484,6 +517,7 @@ def _run_eval_tasks(args: argparse.Namespace) -> int:
     summary: dict[str, object] = {
         "timestamp": ts,
         "suite": "tasks",
+        "credentials": tasks.OPERATOR_RISK_LINE if operator else "eval-only",
         "summary": rows,
         "runs": records,
     }

@@ -4,7 +4,9 @@
  * kind of refusal the gateway names, the diagnosis is the alert, and the steps
  * and the ownership command's note sit under it as plain text. A plugin that
  * is simply not installed gets a plain next step instead: admin rights for a
- * sudo install, AWS's install page when the gateway has no command.
+ * sudo install, AWS's install page when the gateway has no command. The
+ * checklist's pending rows, drawn while a check with no earlier answer runs,
+ * share this harness.
  */
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -85,6 +87,9 @@ const AWS_EC2_ROW = {
   ],
 }
 
+/** A row title in the answered checklist: the pending rows carry the same titles. */
+const ANSWERED = 'ul:not([aria-busy]) div'
+
 /** A preflight whose plugin was found at PLUGIN and refused. */
 function refused(over: Partial<CloudPreflight>): CloudPreflight {
   return {
@@ -119,6 +124,32 @@ beforeEach(() => {
   vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
   vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [AWS_EC2_ROW] })
   vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: { account_type: 'BuilderId' }, suggested_target: { license: '', start_url: '', region: '' } })
+})
+
+describe('RemoteCrewPanel checklist while a check with no earlier answer runs', () => {
+  it('lists every check the answer fills in, each still checking', async () => {
+    let answer!: (p: CloudPreflight) => void
+    vi.mocked(api.cloudPreflight).mockReturnValue(new Promise<CloudPreflight>(r => { answer = r }))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    const titles = (list: HTMLElement) => within(list).getAllByRole('listitem').map(r => r.querySelector('.font-medium')?.textContent)
+
+    const pending = await screen.findByRole('list', { busy: true })
+    for (const r of within(pending).getAllByRole('listitem')) {
+      expect(within(r).getByText('Checking…')).toBeInTheDocument()
+      expect(r.querySelector('.lucide-refresh-cw')).not.toBeNull()
+      expect(r.querySelector('.lucide-x, .lucide-check')).toBeNull()
+    }
+    expect(within(pending).queryByRole('button')).toBeNull()
+    const pendingTitles = titles(pending)
+    expect(pendingTitles.length).toBeGreaterThan(0)
+
+    // The answer fills in the same rows, in the same order.
+    answer(PREFLIGHT_OK)
+    const answered = (await screen.findByText(pendingTitles[0] as string, { selector: ANSWERED })).closest('ul') as HTMLElement
+    expect(titles(answered)).toEqual(pendingTitles)
+  })
 })
 
 describe('RemoteCrewPanel refused plugin row', () => {
@@ -347,7 +378,7 @@ describe('RemoteCrewPanel env-var AWS credentials', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
-    return (await screen.findByText('AWS credentials')).closest('li') as HTMLElement
+    return (await screen.findByText('AWS credentials', { selector: ANSWERED })).closest('li') as HTMLElement
   }
 
   it('leads with the profile to create and puts the CLI’s own error under it', async () => {
@@ -382,7 +413,7 @@ describe('RemoteCrewPanel plugin row when the plugin is not installed', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
-    return (await screen.findByText('Session Manager plugin')).closest('li') as HTMLElement
+    return (await screen.findByText('Session Manager plugin', { selector: ANSWERED })).closest('li') as HTMLElement
   }
 
   it('picks the step from the command: admin rights for sudo, AWS’s page for none, nothing for brew', () => {

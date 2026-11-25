@@ -77,7 +77,7 @@ def state(tmp_path, monkeypatch):
 
 @contextlib.asynccontextmanager
 async def _serve(state, rows: list[dict[str, Any]], monkeypatch):
-    async def _rows(_request: web.Request) -> list[dict[str, Any]]:
+    async def _rows(_state: Any) -> list[dict[str, Any]]:
         return list(rows)
 
     monkeypatch.setattr(routes_identity, "_catalog_rows", _rows)

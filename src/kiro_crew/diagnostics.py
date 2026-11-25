@@ -25,7 +25,6 @@ import logging
 import os
 import platform
 import re
-import socket
 import stat as stat_module
 import subprocess
 import sys
@@ -37,13 +36,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from kiro_crew import __version__, agent_scratch, platform_compat, release_channel
+from kiro_crew import (
+    __version__,
+    agent_scratch,
+    diagnostics_host_name,
+    diagnostics_kiro_home_logs,
+    platform_compat,
+    release_channel,
+)
 from kiro_crew.cli_log_files import boot_log_paths
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -185,8 +192,17 @@ def _scrub(text: str) -> tuple[str, int]:
     text, warnings = redact_credentials(text)
     count += len(warnings)
     for pattern, repl in _EXTRA_REDACTIONS:
-        text, n = pattern.subn(repl, text)
-        count += n
+        # A match spanning a credential tag re-redacts a secret the passes above
+        # already counted (the header rule over `Authorization: Bearer <tag>`), so
+        # it is replaced but not counted again.
+        # shortcut: such a line is counted once even if it held a second secret
+        # only this rule caught; split the value per secret if exact counts matter.
+        count += sum(
+            1
+            for m in pattern.finditer(text)
+            if not any(tag in m.group(0) for tag in CREDENTIAL_REDACTION_TAGS)
+        )
+        text = pattern.sub(repl, text)
     return text, count
 
 
@@ -281,12 +297,6 @@ def _home_prefixes() -> list[str]:
 # delimiter such as a PATH-list colon, a trailing comma, a closing paren or a
 # sentence-final dot.
 _PREFIX_BOUNDARY = r"(?![\w-]|\.\w)"
-#: The end of a host-name match: only a name character continues it, so
-#: ``jane-laptop2`` is another machine while ``jane-laptop.lan`` still matches.
-_HOST_BOUNDARY = r"(?![A-Za-z0-9_-])"
-#: A host name this long is replaced anywhere it appears; a shorter one only as a
-#: whole word, so a generic short name does not rewrite ordinary words.
-_HOST_ANYWHERE_MIN = 6
 
 
 def _collapse_home_prefixes(text: str) -> tuple[str, int]:
@@ -320,52 +330,6 @@ def _collapse_home_prefixes(text: str) -> tuple[str, int]:
     return text, count
 
 
-def _replace_host_name(text: str) -> tuple[str, int]:
-    """Replace this machine's host names in *text* with ``<host>``.
-
-    Crash-dump headers and the ``last-healthy-boot`` marker record a PID domain
-    that starts with the host name, and a work machine's name often carries its
-    user's name or an asset tag. That domain is cached at boot, so both it and the
-    live name are replaced, each in full and in its short form before the first
-    ``.``: a name of ``_HOST_ANYWHERE_MIN`` characters or more wherever it appears,
-    a shorter one only as a whole segment. A name an earlier gateway process had
-    is out of scope and survives.
-    """
-    own = crash_dump_store.current_process_identity()[0].partition("/")[0]
-    names = {
-        name
-        for full in (socket.gethostname(), own)
-        for name in (full, full.partition(".")[0])
-        if name
-    }
-    # A name of _HOST_ANYWHERE_MIN characters or more is specific enough to go
-    # wherever it sits, whatever precedes it (an escape, a control sequence, a
-    # percent-encoded byte, a word a stripped control byte joined it onto). A
-    # shorter one would rewrite ordinary words, so it stays a whole segment:
-    # it starts after a non-name character other than `\` (so the `t` of `\t` is
-    # never taken for the name), a serialized escape (`\n`, `\x1b`,
-    # `\u001b`) or an ANSI control sequence (`[32m`, `[?25h`). Longest first,
-    # so a full name wins over its short form.
-    by_length = sorted(names, key=len, reverse=True)
-    long_names = [n for n in by_length if len(n) >= _HOST_ANYWHERE_MIN]
-    short_names = [n for n in by_length if len(n) < _HOST_ANYWHERE_MIN]
-    total = 0
-    if long_names:
-        anywhere = re.compile(
-            rf"(?:{'|'.join(map(re.escape, long_names))}){_HOST_BOUNDARY}", re.IGNORECASE
-        )
-        text, total = anywhere.subn("<host>", text)
-    if short_names:
-        whole = re.compile(
-            rf"(^|[^A-Za-z0-9_\\-]|\\(?:x[0-9A-Fa-f]{{2}}|u[0-9A-Fa-f]{{4}}|[A-Za-z])|\[[0-9;?]*[A-Za-z])"
-            rf"(?:{'|'.join(map(re.escape, short_names))}){_HOST_BOUNDARY}",
-            re.IGNORECASE,
-        )
-        text, n = whole.subn(r"\1<host>", text)
-        total += n
-    return text, total
-
-
 def _scrub_bundle(text: str) -> tuple[str, int, int]:
     """``_scrub`` plus a home-prefix collapse and the host-name replacement.
 
@@ -389,13 +353,14 @@ def _scrub_bundle(text: str) -> tuple[str, int, int]:
     """
     # The host pass runs only AFTER the credential scrub and the home collapse:
     # replaced first, a host name that is also a word a credential rule keys on
-    # would hide that credential from the rule. A long name is matched anywhere, so a control
-    # byte the scrub strips cannot hide it; a short name joined onto a word that
-    # way is a known gap (shortcut: whole-word only for names under
-    # _HOST_ANYWHERE_MIN, upgrade if a short-name leak is reported).
+    # would hide that credential from the rule. The scrub strips hidden
+    # characters, which can join a short name onto the word in front of it, so
+    # those joins are read from the text before the scrub.
+    names = diagnostics_host_name.host_names()
+    joined = diagnostics_host_name.find_joined_host_words(text, names)
     text, secrets = _scrub(text)
     text, collapses = _collapse_home_prefixes(text)
-    text, replaced = _replace_host_name(text)
+    text, replaced = diagnostics_host_name.replace_host_names(text, names, joined)
     return text, secrets, collapses + replaced
 
 
@@ -501,6 +466,8 @@ def _kiro_cli_chat_log() -> Path | None:
 
 
 def _kiro_cli_extra_logs() -> list[Path]:
+    # kiro-cli 3.x's per-process logs go after the kiro-log ones; readers name them by folder.
+    home_logs = diagnostics_kiro_home_logs.protocol_logs()
     out: list[Path] = []
     for base in _kiro_log_dirs():
         for level in _kiro_log_levels(base):
@@ -511,8 +478,8 @@ def _kiro_cli_extra_logs() -> list[Path]:
             if out:
                 # One log dir wins; do not mix members from two of them, or the
                 # zip would carry two different `mcp.log` entries under one name.
-                return out
-    return out
+                return out + home_logs
+    return out + home_logs
 
 
 def _scratch_kiro_chat_logs() -> list[Path]:
@@ -573,7 +540,7 @@ def _scratch_log_dir_name(log: Path) -> str:
 # driving kiro-cli has first-hand diagnostics when the backend rejects a turn.
 # The sources sit OUTSIDE the eight fenced identity stores
 # (``identity_stores.IDENTITY_STORE_ROOTS`` -> ``kiro-log/{mcp,lsp}.log`` under
-# XDG_RUNTIME_DIR|TMPDIR).
+# XDG_RUNTIME_DIR|TMPDIR, and ``mcp.log`` under ``<kiro home>/logs/<stamp>-<pid>/``).
 #
 # SCOPE IS THE SECURITY PROPERTY, not just the redaction. Two sources kiro-cli
 # writes are deliberately NOT read, for the same reason:
@@ -620,6 +587,8 @@ def _scratch_log_dir_name(log: Path) -> str:
 # ``<timestamp> ERROR <module>: <message>`` with no JSON-RPC envelope and a
 # longest line of 313 bytes. Sentinel strings passed as tool-call ARGUMENTS in
 # that same session appear in neither file, so this binary logs no frame payloads.
+# On kiro-cli 3.5.0 the per-process ``<kiro home>/logs`` mcp.log holds one JSON event per
+# line, and a tool call is an ``mcp.callTool.ok`` record of ids only: no arguments, no result.
 #
 # That is a measurement of one version, not a guarantee about a component this
 # repo neither builds nor pins, so a later kiro-cli could start logging bodies.
@@ -812,11 +781,10 @@ def _tail_lines(text: str, tail: int) -> str:
 def _filter_since(text: str, since: str) -> str:
     """Keep only events at/after ``since``, each with its own continuation lines.
 
-    kiro-cli log lines lead with an ISO-ish timestamp, so a lexical compare of
-    the line's leading token against ``since`` is a monotone filter without
-    parsing every timestamp shape. ``since`` is matched against the start of each
-    line, so any leading slice of that timestamp works: a bare calendar day, or a
-    day plus hour to narrow within it.
+    A record's timestamp (a text line's leading token, a 3.x JSON event's
+    ``timestamp`` field) is ISO-ish, so a lexical compare against ``since`` is a
+    monotone filter without parsing every timestamp shape. Any leading slice of the
+    timestamp works: a bare calendar day, or a day plus hour to narrow within it.
 
     A line with no recognizable leading timestamp is a CONTINUATION of the event
     above it (a JSON body, a stack trace), so it inherits that event's verdict:
@@ -838,12 +806,11 @@ def _filter_since(text: str, since: str) -> str:
     # No event seen yet -> keep, so the truncation marker survives.
     event_kept = True
     for line in text.splitlines(keepends=True):
-        head = line.lstrip()
         # A record START carries the timestamp and sets the verdict the following
         # continuation lines inherit. Same predicate the boundary trim uses, so a
         # line the two classify differently cannot exist.
-        if _starts_a_record(line):
-            event_kept = head[: len(since)] >= since
+        if (stamp := _record_timestamp(line)) is not None:
+            event_kept = stamp[: len(since)] >= since
         if not event_kept:
             continue
         out.append(line)
@@ -868,9 +835,9 @@ _FRAME_BODY_MARKER = re.compile(r'"jsonrpc"\s*:|"params"\s*:\s*[{\[]|"result"\s*
 #: rather than being spelled twice.
 _TRUNCATION_NOTE_PREFIX = "...[truncated"
 
-#: The shape that STARTS a log record: an ISO calendar date, then ``T`` or a space
-#: before the time. Anything else on a line's left edge is a continuation of the
-#: record above it.
+#: The shape that STARTS a log record, at column 0 of a text line or as a 3.x JSON
+#: event's ``timestamp`` value: an ISO calendar date, then ``T`` or a space before
+#: the time. Any other line is a continuation of the record above it.
 #:
 #: A bare "leading digit" test is not enough, and the difference is a disclosure
 #: rather than a tidiness point: a serialized frame can hold a JSON array of bare
@@ -882,14 +849,17 @@ _TRUNCATION_NOTE_PREFIX = "...[truncated"
 _RECORD_START = re.compile(r"\d{4}-\d{2}-\d{2}[T ]")
 
 
-def _starts_a_record(line: str) -> bool:
-    """True when ``line`` begins a log record rather than continuing one.
+def _record_timestamp(line: str) -> str | None:
+    """Text led by the timestamp of the record ``line`` STARTS; None if it continues one.
 
     One predicate for both :func:`_begin_at_event_boundary` and
     :func:`_filter_since`, which each need the same event/continuation split. Two
-    copies would drift, and here they would drift on a security boundary.
+    copies would drift, and here they would drift on a security boundary. The line is
+    judged as written: a record starts at column 0, and an indented line continues one.
     """
-    return _RECORD_START.match(line.lstrip()) is not None
+    if _RECORD_START.match(line):
+        return line
+    return diagnostics_kiro_home_logs.json_event_timestamp(line)
 
 
 def _begin_at_event_boundary(text: str) -> str:
@@ -924,10 +894,9 @@ def _begin_at_event_boundary(text: str) -> str:
         return text
     note, rest = lines[0], lines[1:]
     for i, line in enumerate(rest):
-        # Must be a record START, not merely a line beginning with a digit: a
-        # frame's JSON array of bare numbers would satisfy the looser test and let
-        # the trim stop inside the frame.
-        if _starts_a_record(line):
+        # A record START, not merely a leading digit: a frame's JSON array of bare
+        # numbers would pass that looser test and let the trim stop inside the frame.
+        if _record_timestamp(line) is not None:
             return note + "".join(rest[i:])
     return note
 
@@ -959,9 +928,9 @@ def read_kiro_cli_logs(
 ) -> str:
     """Redacted tail of kiro-cli's own PROTOCOL logs, for diagnosing a rejected turn.
 
-    Reads ONLY the ``kiro-log`` mcp/lsp log files — never the fenced identity
-    stores, and deliberately NOT the two conversation-bearing sources kiro-cli
-    also writes:
+    Reads ONLY kiro-cli's mcp/lsp logs in ``kiro-log`` and the per-process ``mcp.log``
+    of :mod:`diagnostics_kiro_home_logs` — never the fenced identity stores, and
+    deliberately NOT the two conversation-bearing sources kiro-cli also writes:
 
     * ``sessions/cli/<sid>.jsonl`` transcripts, and
     * ``kiro-chat.log``, which is never a per-session file: the shared one is ONE
@@ -1011,7 +980,10 @@ def read_kiro_cli_logs(
     total_redactions = 0
 
     # mcp/lsp only; no `kiro-chat.log`, shared or per-process — see the docstring.
-    sources: list[tuple[str, Path]] = [(p.name, p) for p in _kiro_cli_extra_logs()]
+    sources: list[tuple[str, Path]] = []
+    for p in _kiro_cli_extra_logs():
+        folder = diagnostics_kiro_home_logs.folder_of(p)
+        sources.append((f"{folder}/{p.name}" if folder else p.name, p))
 
     # Read the caps from the module at CALL time so a test can monkeypatch them.
     # Divide the response budget among the sources instead of giving each the
@@ -1067,7 +1039,8 @@ def read_kiro_cli_logs(
         return (
             "No kiro-cli protocol logs found. kiro-cli writes mcp.log / lsp.log "
             "under $XDG_RUNTIME_DIR|$TMPDIR|%TEMP%/kiro-log/ (kiro-log/logs/ on "
-            "Windows); none exist or are readable "
+            "Windows), and kiro-cli 3.x mcp.log under ~/.kiro/logs/<stamp>-<pid>/ "
+            "($KIRO_HOME/logs/ when set); none exist or are readable "
             "here. (kiro-chat.log can carry other sessions' conversations, so it "
             "is deliberately not a source for this tool.)"
         )
@@ -1178,7 +1151,7 @@ def _kas_engine_version() -> str:
         if not kas_bundle.kas_bundle_route():
             return "not selected"
         engine = kas_bundle.installed_engine_label()
-        pin = kas_bundle.KAS_PIN_VERSION
+        pin = kas_bundle.host_pin_version()
         if engine is None:
             return f"not installed (release pins KAS {pin}; kirocrew kas install)"
         return f"{engine} (release pins KAS {pin})"
@@ -1239,7 +1212,18 @@ _INSTALL_OPTIONS = {
 _CHANNEL_OPTIONS = release_channel.CHANNEL_FORM_OPTIONS
 
 
-def _versions_text(note: str, identity: release_channel.Provenance) -> str:
+#: ``versions.txt``'s ``version_alignment:`` in a bundle the gateway collects: its own
+#: files are not the selected package of a side-by-side install (a promoted update
+#: whose restart was put off, a desktop update), so comparing them would read aligned.
+_ALIGNMENT_NOT_CHECKED = (
+    "not checked (collected inside the gateway, which cannot read a side-by-side"
+    " install's selected package; `kirocrew doctor --bundle` compares them)"
+)
+
+
+def _versions_text(
+    note: str, identity: release_channel.Provenance, version_alignment: str | None = None
+) -> str:
     # Private, so it keeps everything the public report may not: the raw stamp
     # (a repackager's build id), the distribution metadata it was weighed
     # against, and the channel record -- the evidence behind `channel:`.
@@ -1251,6 +1235,7 @@ def _versions_text(note: str, identity: release_channel.Provenance) -> str:
         f"distribution_version: {identity.distribution or 'unavailable'}",
         f"channel: {identity.channel or 'unknown'}",
         f"channel_record: {identity.recorded or 'absent'}",
+        f"version_alignment: {version_alignment or _ALIGNMENT_NOT_CHECKED}",
         f"kiro_cli_version: {_kiro_cli_version()}",
         f"kas_engine: {_kas_engine_version()}",
         f"python: {platform.python_version()}",
@@ -1441,6 +1426,7 @@ def collect_bundle(
     note: str = "",
     include_logs: bool = True,
     output_dir: Path | None = None,
+    version_alignment: str | None = None,
 ) -> BundleResult:
     """Collect, redact, and zip a diagnostics bundle.
 
@@ -1450,6 +1436,9 @@ def collect_bundle(
         include_logs: when False, only versions + crash reports are bundled
             (no full gateway / chat logs) for a lighter, lower-sensitivity zip.
         output_dir: where to write the zip. Defaults to ``<data_home>/diagnostics``.
+        version_alignment: the running gateway's version against the selected
+            package's, as ``kirocrew doctor --bundle`` reads it. None, the
+            dashboard's collector, records it as not checked.
 
     Returns:
         :class:`BundleResult` with the zip path and a pre-filled issue URL.
@@ -1468,11 +1457,13 @@ def collect_bundle(
     except OSError:
         pass
 
-    # Scrub the user-supplied note ONCE up front. It flows into versions.txt,
-    # manifest.json, AND the pre-filled GitHub issue URL — a user may paste a
-    # secret (bearer token, key) into "what happened?", so it needs the same
-    # redaction the log members get below.
-    note, _, _ = _scrub_bundle(note or "")
+    # Scrub the user-supplied note up front for manifest.json AND the pre-filled
+    # GitHub issue URL — a user may paste a secret (bearer token, key) into
+    # "what happened?", so it needs the same redaction the log members get
+    # below. versions.txt is built from the raw note and scrubbed as a whole, so
+    # the note's redactions land in that member's tally like every other member's.
+    raw_note = note or ""
+    note, _, _ = _scrub_bundle(raw_note)
 
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     filename = f"kirocrew-diagnostics-{stamp}-{uuid.uuid4().hex[:8]}.zip"
@@ -1507,7 +1498,10 @@ def collect_bundle(
             # Named for its scratch dir: every per-process log is `kiro-chat.log`.
             text_sources.append((f"kiro-chat/{_scratch_log_dir_name(log)}.log", log, True))
         for extra in _kiro_cli_extra_logs():
-            text_sources.append((f"kiro-cli-{extra.name}", extra, True))
+            # Named for its folder, like the scratch chat logs above, when it has one.
+            folder = diagnostics_kiro_home_logs.folder_of(extra)
+            member = f"kiro-cli-{extra.stem}/{folder}.log" if folder else f"kiro-cli-{extra.name}"
+            text_sources.append((member, extra, True))
 
     # Crash artifacts are always useful and low-volume — include regardless.
     text_sources.append(("crash.log", home / "logs" / "crash.log", False))
@@ -1552,7 +1546,7 @@ def collect_bundle(
     )
     with os.fdopen(_fd, "wb") as _raw, zipfile.ZipFile(_raw, "w", zipfile.ZIP_DEFLATED) as zf:
         # Generated members first.
-        versions = _versions_text(note, identity)
+        versions = _versions_text(raw_note, identity, version_alignment)
         # ``versions.txt`` carries the absolute ``data_home`` path
         # unconditionally, which embeds the OS login. Run it through the bundle
         # scrub stack so the archive does not ship a local path in a file whose

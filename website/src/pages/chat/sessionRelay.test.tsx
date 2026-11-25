@@ -95,6 +95,7 @@ describe('readSessionSendResult', () => {
     expect(readSessionSendResult(withMeta({ sessionSend: { outcome: 'delivered', target: 'chat-9' } }))).toEqual({ outcome: 'delivered', target: 'chat-9' })
     expect(readSessionSendResult(withMeta({ sessionSend: { outcome: 'steered', target: 'chat-9' } }))).toEqual({ outcome: 'steered', target: 'chat-9' })
     expect(readSessionSendResult(withMeta({ sessionSend: { outcome: 'queued', target: 'chat-9' } }))).toEqual({ outcome: 'queued', target: 'chat-9' })
+    expect(readSessionSendResult(withMeta({ sessionSend: { outcome: 'pending-steer', target: 'chat-9' } }))).toEqual({ outcome: 'pending-steer', target: 'chat-9' })
   })
 
   it('reads nothing from the result text, however it is worded', () => {

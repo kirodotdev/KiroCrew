@@ -3,8 +3,8 @@ title: Per-person execution and roles - a shared Crew runs each person's work as
 status: accepted
 author: bolichen
 created: 2026-11-01
-last-audited: 2026-11-01
-audited-at: 414641cc1a
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 27023
 implementation-prs: []
 tracking-issues: [27006]

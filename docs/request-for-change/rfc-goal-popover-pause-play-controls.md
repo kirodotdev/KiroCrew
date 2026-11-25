@@ -3,8 +3,8 @@ title: Goal popover Pause/Play controls — a readable loop state, one press to 
 status: implemented
 author: pepmach
 created: 2026-10-01
-last-audited: 2026-10-06
-audited-at: ea7e91c8e6
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 16030
 implementation-prs: [16030, 16353]
 tracking-issues: []

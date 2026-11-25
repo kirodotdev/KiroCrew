@@ -22,6 +22,8 @@ from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.dashboard import routes as routes_pkg
 from kiro_crew.dashboard.handlers import browser_live as mod
 from kiro_crew.dashboard.routes import browser_live as route_slice
+from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
+from kiro_crew.dashboard.state import _normalize_slot_key
 
 pytestmark = pytest.mark.asyncio
 
@@ -134,6 +136,43 @@ async def test_the_dashboard_prefix_folds_onto_the_bare_slot_key() -> None:
             client, "/api/browser/live/ack", {"session_key": "dashboard:chat-1", "seq": 3}
         )
     assert status == 200 and body == {"ok": True, "session_key": "chat-1", "acked": True}
+
+
+@pytest.mark.parametrize("length", [129, MAX_SLOT_KEY_CHARS])
+@pytest.mark.parametrize("prefix", ["", "dashboard:"])
+async def test_an_owned_slot_key_longer_than_128_characters_is_served(
+    length: int, prefix: str
+) -> None:
+    """A slot key may run to ``MAX_SLOT_KEY_CHARS``, so the card's session check
+    serves an owned slot whose key is longer than 128 characters."""
+    key = "k" * length
+    assert _normalize_slot_key(key) == key, "the fold keeps a key of this length"
+    app, _wire = _app()
+    app["state"]._slots[key] = object()
+    await _live(key)
+    async with TestClient(TestServer(app)) as client:
+        status, body = await _post(
+            client, "/api/browser/live/ack", {"session_key": prefix + key, "seq": 3}
+        )
+    assert status == 200 and body == {"ok": True, "session_key": key, "acked": True}
+
+
+async def test_a_key_past_the_slot_bound_is_still_refused_unread() -> None:
+    """The bound still holds: one character past the longest prefixed slot key is
+    refused before the slot table is consulted."""
+    too_long = "dashboard:" + "k" * (MAX_SLOT_KEY_CHARS + 1)
+    app, _wire = _app()
+    app["state"]._slots = _ExplodingSlots({"chat-1": object()})
+    async with TestClient(TestServer(app)) as client:
+        status, body = await _post(
+            client, "/api/browser/live/ack", {"session_key": too_long, "seq": 1}
+        )
+    assert status == 404 and body["code"] == "unknown_session"
+
+
+class _ExplodingSlots(dict):
+    def __contains__(self, key: object) -> bool:
+        raise AssertionError(f"the slot table was consulted for {key!r}")
 
 
 async def test_a_non_json_body_is_refused() -> None:

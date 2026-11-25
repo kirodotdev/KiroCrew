@@ -294,6 +294,45 @@ def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:
     ), "the carve-out must qualify the STOP rule, and only for a call that finished"
 
 
+_GUIDE_FIRST = (
+    r"HARD RULE.*where-is, how-to or settings question about Kiro Crew itself",
+    r"first call.*`?find_ui`? with the user's words, even when you already know the answer "
+    r"or could find it in Kiro Crew's code",
+    r"guide_ref.*guide_start`? in (the|that) same turn,? before you write the answer",
+    r"fallback",
+    r"`?no_match`?, retry with the control's own words, then `?search_docs`?",
+    r"read Kiro Crew's source only after both miss",
+)
+
+
+def test_the_main_prompt_sends_kiro_crew_questions_to_the_guide_first() -> None:
+    """A where-is question goes find_ui -> guide_start before any code reading.
+
+    Kept in the prompt, not only in the server's MCP instructions: KAS frames those
+    as untrusted hints, and a bot that could read the answer in code skipped them.
+    """
+    caps = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: the heading in prompt.md
+    _require(caps, *_GUIDE_FIRST)
+
+
+@pytest.mark.parametrize("key", ["conductor.crew_log_section", "conductor.crew_log_section_manual"])
+def test_the_bot_prompt_sends_kiro_crew_questions_to_the_guide_first(key: str) -> None:
+    from kiro_crew import crewmate_prompts
+
+    _require(crewmate_prompts.text(key), *_GUIDE_FIRST)
+
+
+def test_the_guide_servers_instructions_route_a_guide_ref_to_guide_start() -> None:
+    from kiro_crew.mcp_instructions import GUIDE
+
+    _require(
+        GUIDE,
+        r"call these first",
+        r"code you read",
+        r"`guide_ref` goes to `guide_start` in the same turn",
+    )
+
+
 def test_the_prompt_points_monitoring_at_the_babysit_skill() -> None:
     """The prompt names the skill by its real key and restates none of its rules."""
     monitor = _section(_read(), "## Wait & Webhook Tools")

@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_crew.decisions import consent, gate
+from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+from kiro_crew.decisions import consent, gate, local_models
 from kiro_crew.decisions import log as _log
 from kiro_crew.decisions import outcomes as _outcomes
 from kiro_crew.decisions.points import memory_recall as mr
@@ -406,6 +407,24 @@ class TestEgress:
         rows = mr.screen_candidates([_episode(f"k{i}") for i in range(mr.MAX_CANDIDATES + 40)])
         assert len(rows) == mr.MAX_CANDIDATES
 
+    @pytest.mark.parametrize(
+        ("endpoint", "offered"),
+        [
+            (local_models.endpoint_for(8102), 2),
+            (DECISION_PROVIDER_ENDPOINT_DEFAULT, mr.MAX_CANDIDATES),
+        ],
+        ids=["on-this-machine", "hosted"],
+    )
+    def test_an_endpoint_on_this_machine_is_offered_the_two_best_memories(
+        self, monkeypatch, endpoint, offered
+    ):
+        """A local server reads every memory once per question, so a full menu outlasts
+        the wait there. The cut keeps the head of the ranked rows, as the hosted cap
+        does; a hosted endpoint keeps the whole menu."""
+        monkeypatch.setattr(gate, "configured_endpoint", lambda config=None: endpoint)
+        rows = mr.screen_candidates([_episode(f"k{i}") for i in range(mr.MAX_CANDIDATES + 5)])
+        assert [row["key"] for row in rows] == [f"k{i}" for i in range(offered)]
+
     def test_a_row_without_a_usable_key_is_not_offered(self):
         """An over-long or missing id cannot map an answer back, so it is dropped."""
         rows = mr.screen_candidates(
@@ -468,6 +487,32 @@ class TestEgress:
         assert outcome["baseline_keys"] == ["a", "b", "x" * (mr.MAX_KEY_CHARS + 1)]
         assert outcome["jev_keys"] == ["a", "x" * (mr.MAX_KEY_CHARS + 1)]
         assert outcome["candidates"] == 2, "the MENU size, which is what was asked"
+
+    @pytest.mark.parametrize(
+        ("endpoint", "recalled", "offered"),
+        [
+            (local_models.endpoint_for(8102), 8, mr.LOCAL_MAX_CANDIDATES),
+            (DECISION_PROVIDER_ENDPOINT_DEFAULT, mr.MAX_CANDIDATES + 5, mr.MAX_CANDIDATES),
+        ],
+        ids=["on-this-machine", "hosted"],
+    )
+    def test_the_record_names_the_rows_jev_was_never_asked_about(
+        self, home, bg_loop, enabled, monkeypatch, endpoint, recalled, offered
+    ):
+        """They are in `jev_keys` because nobody may drop them, not because Jev kept them.
+
+        Without a list of its own the receipt reads every one of them as Jev's choice:
+        asked about 2 of 8 and keeping 1, it said Jev kept 7.
+        """
+        monkeypatch.setattr(gate, "configured_endpoint", lambda config=None: endpoint)
+        rows = [_episode(f"k{i}") for i in range(recalled)]
+        answers = _answers(("keep", 0.9), *[("drop", 0.9)] * (offered - 1))
+        _kept(rows, loop=bg_loop, monkeypatch=monkeypatch, answers=answers)
+        outcome = _rows(home)[-1]
+        unasked = [f"k{i}" for i in range(offered, recalled)]
+        assert outcome.get("unasked_keys") == unasked
+        assert outcome["jev_keys"] == ["k0", *unasked]
+        assert outcome["candidates"] == offered
 
     def test_an_id_less_row_is_named_in_neither_list(self, home, bg_loop, enabled, monkeypatch):
         """Naming it as ``""`` would cost the whole receipt.

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
@@ -277,6 +278,11 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     continue
                 if not isinstance(value, dict):
                     continue
+                # Each paste block repeats a span of ``content``, so keeping
+                # them would store the paste twice and could push a long send
+                # past the budget. A restored send's row shows the full text
+                # instead of chips; no words are lost.
+                value.pop(PASTES_META_KEY, None)
             entry[key] = value
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
@@ -1031,20 +1037,25 @@ class SlotQueueRepository:
             # the linked-thread mirror suppressed, so a human on the mirrored
             # channel never sees what the user typed. Refused, not re-kinded:
             # the entry is not a user prompt to begin with. Scoped to the app
-            # kind and the gateway's own prompts (a workflow follow-up, a
-            # heartbeat prompt): other system kinds (queued cron text among
-            # them) were editable before this endpoint existed, and taking that
-            # away is not this feature's call. The frontend withholds the same
-            # set: the app card's pencil (`isAppMessageQueued`), a gateway
-            # prompt's whole card (`isNonInteractiveQueued`).
+            # kind, a resource wake and the gateway's own prompts (a workflow
+            # follow-up, a heartbeat prompt): other system kinds (queued cron
+            # text among them) were editable before this endpoint existed, and
+            # taking that away is not this feature's call. The frontend withholds
+            # the same set: the server-written cards' pencil
+            # (`isServerWrittenQueued`), a gateway prompt's whole card
+            # (`isNonInteractiveQueued`).
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
                 GATEWAY_PROMPT_INJECT_KINDS,
+                RESOURCE_WAKE_KIND,
             )
 
             kind = item.get("kind")
-            if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
+            if (
+                kind in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND)
+                or kind in GATEWAY_PROMPT_INJECT_KINDS
+            ):
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors

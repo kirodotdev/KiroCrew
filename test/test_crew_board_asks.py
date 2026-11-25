@@ -82,12 +82,15 @@ async def test_asks_are_keyed_by_open_item_and_cleaned(monkeypatch):
     assert (CONDUCTOR, "agentic") in seen
 
 
-def _ask_person(item_id: str, reason: str | None = "needs_human") -> None:
+def _ask_person(item_id: str, reason: str | None = "needs_human", *, relay: bool = True) -> None:
+    """A worker asks; with *relay* the conductor relays it with ``work_ask_record``."""
     worker = f"{WORKER}-{item_id}"
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key=worker)
     wl.apply_worker_report(
         CONDUCTOR, item_id, status="question", summary="which tea?", reason=reason
     )
+    if relay:
+        wl.apply_ask_record(CONDUCTOR, item_id, what="Pick a tea")
 
 
 async def _awaits(item_id: str) -> bool:
@@ -125,6 +128,9 @@ async def test_a_decision_just_before_a_new_question_does_not_answer_it():
     wl.apply_worker_report(
         CONDUCTOR, item_id, status="question", summary="still unsure", reason="needs_human"
     )
+    # A new question is not the person's until the conductor relays it.
+    assert await _awaits(item_id) is False
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Still unsure: pick a tea")
     assert await _awaits(item_id) is True
 
 
@@ -151,3 +157,60 @@ async def test_an_unreadable_fold_still_serves_the_board(monkeypatch):
     assert response.status == 200
     assert body["asks"] == {}
     assert [row["item_id"] for row in body["items"]] == [item_id]
+
+
+def _row(body, item_id: str) -> dict:
+    return next(row for row in body["items"] if row["item_id"] == item_id)
+
+
+@pytest.mark.asyncio
+async def test_a_current_ask_record_reaches_the_card_and_a_newer_report_drops_it():
+    item_id = _item()
+    _ask_person(item_id, relay=False)
+    # Not vetted yet: the worker's question carries no ask record and is not the person's.
+    body, _ = await _call(_state(), CONDUCTOR)
+    assert "ask" not in _row(body, item_id)
+    assert _row(body, item_id)["awaits_person"] is False
+    wl.apply_ask_record(
+        CONDUCTOR,
+        item_id,
+        what="Pick the tea for the menu",
+        why="Only you know the guests",
+        options=[{"label": "Oolong", "outcome": "ships today"}, {"label": "Green"}],
+        pick="Oolong",
+        pick_why="already stocked",
+    )
+    body, _ = await _call(_state(), CONDUCTOR)
+    ask = _row(body, item_id)["ask"]
+    assert (ask["what"], ask["why"], ask["pick"], ask["pick_why"]) == (
+        "Pick the tea for the menu",
+        "Only you know the guests",
+        "Oolong",
+        "already stocked",
+    )
+    assert [o["label"] for o in ask["options"]] == ["Oolong", "Green"]
+    # A newer report is a new question the conductor has not vetted: the old record goes.
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="also the cups?", reason="needs_human"
+    )
+    body, _ = await _call(_state(), CONDUCTOR)
+    row = _row(body, item_id)
+    assert row["awaits_person"] is False
+    assert "ask" not in row
+
+
+@pytest.mark.asyncio
+async def test_a_remote_item_carries_its_current_ask_record_too():
+    item_id = _item()
+    wl.apply_remote_bind(
+        CONDUCTOR, item_id, worker_session_key="chat-peer", worker_instance_id="crew-peer"
+    )
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="which tea?", reason="needs_human"
+    )
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Pick the tea", options=[{"label": "Oolong"}])
+    body, _ = await _call(_state(), CONDUCTOR)
+    row = _row(body, item_id)
+    assert row["ask"]["what"] == "Pick the tea"
+    # An option list with no pick: no pick is sent.
+    assert row["ask"]["pick"] == ""

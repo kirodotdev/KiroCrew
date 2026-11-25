@@ -23,7 +23,8 @@ It never starts the browser: with none running, or no tab bound to the session, 
 answers 409 ``no_tab``. While the person has taken the tab over it answers
 ``user_in_control`` and touches nothing. It takes the same gateway-wide op lock and the
 same per-session takeover fence the agent's ops do
-(``browser_ops._OP_LOCK``), switches the daemon to the session's own tab without
+(``browser_ops._OP_LOCK``), queueing for it through one gateway-wide media gate so
+however many media requests arrive, at most one waits ahead of an agent op; it switches the daemon to the session's own tab without
 raising it, and runs the walker's ``media`` method in the isolated world
 (``browser_harness/media.py``). The page is judged first, so one off the app's
 pages is blanked and refused.
@@ -46,6 +47,7 @@ from kiro_crew.browser_harness.live_hub import get_live_hub
 from kiro_crew.dashboard.handlers import browser_live, browser_ops
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
+from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,43 @@ def _running_supervisor() -> Any:
 
     sup = importlib.import_module("kiro_crew.browser_harness.supervisor")
     return sup.get_supervisor(config_dir())
+
+
+#: One media request at a time, gateway-wide, may wait in ``_OP_LOCK``'s queue. Every
+#: agent op and tab close waits on that lock too, so without this gate a page could fire
+#: a thousand GETs or POSTs, over one session key or many, and an agent op arriving next
+#: would wait behind all of them until ``browser_busy``. With it, an agent op waits
+#: behind at most the one media request already queued (and the one running). Media
+#: requests already ran one at a time on ``_OP_LOCK``; both locks are FIFO, so they still
+#: run in arrival order.
+_MEDIA_GATE = LoopBoundLock()
+
+
+async def _acquire_op_lock() -> bool:
+    """Take ``_OP_LOCK`` through ``_MEDIA_GATE``; ``False`` once ``LOCK_WAIT_S`` passed.
+
+    One deadline from arrival covers both waits, so a media request answers
+    ``browser_busy`` no later than it does without the gate. The gate is let go as soon
+    as ``_OP_LOCK`` is held (or the wait ends), so the next media request can queue
+    while this one runs, as it did before the gate.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + LOCK_WAIT_S
+    try:
+        await asyncio.wait_for(_MEDIA_GATE.acquire(), timeout=LOCK_WAIT_S)
+    except TimeoutError:
+        return False
+    try:
+        # A 1 ms floor: ``wait_for(timeout=0)`` cancels the acquire before it runs, so
+        # a lock that is free at the deadline would still answer ``browser_busy``.
+        await asyncio.wait_for(
+            browser_ops._OP_LOCK.acquire(), timeout=max(0.001, deadline - loop.time())
+        )
+    except TimeoutError:
+        return False
+    finally:
+        _MEDIA_GATE.release()
+    return True
 
 
 async def api_browser_media(request: web.Request) -> web.Response:
@@ -125,9 +164,7 @@ async def api_browser_media(request: web.Request) -> web.Response:
         # The person holds this tab: a read or a click now could blank or move the
         # page under their hands.
         return _error("user_in_control", "you are using this browser tab", 409)
-    try:
-        await asyncio.wait_for(browser_ops._OP_LOCK.acquire(), timeout=LOCK_WAIT_S)
-    except asyncio.TimeoutError:
+    if not await _acquire_op_lock():
         return _error("browser_busy", "another chat is using the browser", 409)
     try:
         # The takeover's fence (``LiveHub.op_fence``), as every agent op takes it: a

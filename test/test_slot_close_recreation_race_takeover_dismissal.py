@@ -516,7 +516,7 @@ async def test_an_unstamp_keeps_a_newer_close_stamped_on_the_same_clock_tick(tmp
 
 
 def test_the_after_commit_hook_does_no_io() -> None:
-    """``update_metadata_if`` documents its hook as I/O-free; the recheck only records a verdict."""
+    """``update_metadata_if`` documents its hook as I/O-free; the recheck only records state."""
     import ast
     import inspect
 
@@ -531,7 +531,10 @@ def test_the_after_commit_hook_does_no_io() -> None:
     ]
     assert len(hooks) == 1
     calls = {ast.unparse(node.func) for node in ast.walk(hooks[0]) if isinstance(node, ast.Call)}
-    assert calls == {"SlotRegistry.dismissal_still_owed"}, calls
+    assert calls == {
+        "SlotRegistry.dismissal_still_owed",
+        "dismissal.slot.note_close_recorded",
+    }, calls
 
 
 def test_the_dismissal_record_carries_the_closed_incarnation(tmp_path) -> None:

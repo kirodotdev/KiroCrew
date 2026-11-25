@@ -33,6 +33,7 @@ from kiro_crew.hooks import (
     HooksConfig,
     TransformHook,
     UserDeniedPattern,
+    _hook_tool_matches,
     _tool_matches,
     untruncated_shell_title,
 )
@@ -58,6 +59,26 @@ class TestToolMatches:
     def test_contains_wildcard(self):
         assert _tool_matches("*phone*", "enterprise-mcp--phonebook")
         assert not _tool_matches("*phone*", "enterprise-mcp--search")
+
+    def test_a_pipe_stays_a_literal_in_approve_and_deny_patterns(self):
+        # Only a hook's tool matcher reads ``|`` as alternatives; here it would
+        # widen a pattern already saved.
+        assert not _tool_matches("fs_write|execute_bash", "fs_write")
+        assert not _tool_matches("fs_write|execute_bash", "execute_bash")
+
+    def test_a_hook_matcher_with_a_glob_or_a_space_stays_one_pattern(self):
+        # Split, its parts would meet calls its author never named: ``*|sh*``
+        # would hold ``*``.
+        assert _hook_tool_matches("*curl * | sh*", "curl -s x | sh")
+        assert _hook_tool_matches("*env|grep*", "env|grep AWS_SECRET")
+        assert not _hook_tool_matches("*|sh*", "fs_read")
+
+    def test_a_pipe_hook_matcher_still_meets_a_title_that_spells_it(self):
+        # A PreToolUse fire names a shell call by its title too, so a deny hook
+        # on ``ls|wc`` keeps meeting the command ``ls|wc``.
+        assert _hook_tool_matches("ls|wc", "ls|wc")
+        assert _hook_tool_matches("ls|wc", "ls")
+        assert not _hook_tool_matches("ls|wc", "ls -la")
 
 
 class TestMessageHooks:
@@ -548,6 +569,13 @@ def _denied_grant():
     return SpecDeniedGrant(denied_commands=("make clean",))
 
 
+def _parent_limits():
+    """Built at use time from the gate's own binding, like :func:`_denied_grant`."""
+    from kiro_crew.hooks import SpecParentLimits
+
+    return SpecParentLimits(agent="boss", shell_allowlist=("git status",))
+
+
 class TestHookGateKwargs:
     """``hook_gate_kwargs`` is the ONE extraction of the event-derived
     ``on_tool_call`` arguments. A dispatcher that hand-copies the fields it
@@ -573,6 +601,7 @@ class TestHookGateKwargs:
             "agent",
             "app",
             "resolved_agent",
+            "app_run",
             "classifier_only",
             "trust_reads",
             "deny_waivers",
@@ -606,6 +635,7 @@ class TestHookGateKwargs:
         "spec_shell_readonly": "spec_shell_readonly",
         "spec_granted_paths": "spec_granted_paths",
         "spec_granted_read_paths": "spec_granted_read_paths",
+        "spec_parent_limits": "spec_parent_limits",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -643,6 +673,7 @@ class TestHookGateKwargs:
             spec_shell_readonly=True,
             spec_granted_paths=("/w/out/**",),
             spec_granted_read_paths=("/w/docs/**",),
+            spec_parent_limits=(_parent_limits(),),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -671,6 +702,7 @@ class TestHookGateKwargs:
             "spec_shell_readonly": True,
             "spec_granted_paths": ("/w/out/**",),
             "spec_granted_read_paths": ("/w/docs/**",),
+            "spec_parent_limits": (_parent_limits(),),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -712,6 +744,7 @@ class TestHookGateKwargs:
             "spec_shell_readonly": False,
             "spec_granted_paths": (),
             "spec_granted_read_paths": (),
+            "spec_parent_limits": (),
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -790,8 +823,8 @@ class TestHookGateKwargs:
 
     def test_the_toolcall_from_an_event_is_the_whole_gate_input(self, monkeypatch):
         """COMPLETENESS, observed: ``ToolCall.from_event`` fills every field of the
-        gate's input from the event (``resolved_agent`` excepted -- no event carries
-        it, so the site supplies it), the helper's output is exactly that call in
+        gate's input from the event (``resolved_agent`` and ``app_run`` excepted -- no
+        event carries them, so the site supplies them), the helper's output is exactly that call in
         keyword form, and the keyword gate hands ``judge`` that same call plus the
         surface. A field added to the gate's input is therefore extracted once, for
         both forms, or this fails -- the failure mode the issue names is a new field
@@ -819,16 +852,17 @@ class TestHookGateKwargs:
         probe.spec_shell_readonly = True
         probe.spec_granted_paths = ("<spec_granted_paths>",)
         probe.spec_granted_read_paths = ("<spec_granted_read_paths>",)
+        probe.spec_parent_limits = (_parent_limits(),)
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
             field.name
             for field in dataclasses.fields(ToolCall)
-            if field.name not in ("title", "resolved_agent")
+            if field.name not in ("title", "resolved_agent", "app_run")
             and getattr(call, field.name) == getattr(blank, field.name)
         ]
         assert unfilled == [], f"ToolCall fields no event attribute fills: {unfilled}"
-        assert (call.title, call.resolved_agent) == ("<title>", "")
+        assert (call.title, call.resolved_agent, call.app_run) == ("<title>", "", ("", ""))
         assert ToolCall.from_event(probe, resolved_agent="kirocrew").resolved_agent == "kirocrew"
         with pytest.raises(TypeError, match="resolved_agnet"):
             ToolCall.from_event(probe, resolved_agnet="typo")
@@ -860,6 +894,8 @@ class TestHookGateKwargs:
                 assert got[kwarg] == (f"<{attr}>",)
             elif kwarg == "spec_denied_grant":
                 assert got[kwarg] == _denied_grant()
+            elif kwarg == "spec_parent_limits":
+                assert got[kwarg] == (_parent_limits(),)
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg
 
@@ -879,7 +915,8 @@ class TestHookGateKwargs:
         shim = inspect.signature(HookManager.on_tool_call).parameters
         assert [n for n, p in shim.items() if p.kind is not p.KEYWORD_ONLY] == ["self", "tool_name"]
         assert keyword_only(HookManager.on_tool_call) == set(call.kwargs()) | self.SURFACE_KWARGS
-        assert keyword_only(HookManager.judge) | {"resolved_agent"} == self.SURFACE_KWARGS
+        site_supplied = {"resolved_agent", "app_run"}
+        assert keyword_only(HookManager.judge) | site_supplied == self.SURFACE_KWARGS
 
         # And the keyword gate judges exactly that call, with the surface beside it.
         seen = []
@@ -899,9 +936,16 @@ class TestHookGateKwargs:
             "pre_tool_hooks_fire": True,
         }
         HookManager().on_tool_call(
-            probe.title, resolved_agent="kirocrew", **surface, **hook_gate_kwargs(probe)
+            probe.title,
+            resolved_agent="kirocrew",
+            app_run=("clock", "clock-keeper"),
+            **surface,
+            **hook_gate_kwargs(probe),
         )
-        assert seen == [(dataclasses.replace(call, resolved_agent="kirocrew"), surface)]
+        judged = dataclasses.replace(
+            call, resolved_agent="kirocrew", app_run=("clock", "clock-keeper")
+        )
+        assert seen == [(judged, surface)]
 
     # Sites the structural scan treats specially. Each entry is a reviewed
     # decision, not drift: a new entry needs a reason in the site's comment.

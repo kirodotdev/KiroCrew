@@ -17,7 +17,8 @@ import urllib.parse
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestServer
+from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from kas_agents_helpers import _spec
 
 from kiro_crew.acp import kas_agents
@@ -295,6 +296,41 @@ async def test_disconnect_revokes_the_access_token(tmp_path, monkeypatch):
         await server.close()
     assert result == {"removed": True, "revoked": True}
     assert seen == [("revoke", {"token": "a1"})]
+    assert not store.present(SLUG)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_renews_an_expired_access_token_before_revoking_it(tmp_path, monkeypatch):
+    seen: list = []
+    answer = {"ok": True, "access_token": "a2", "refresh_token": "r2", "expires_in": 43200}
+    server = await _serve(monkeypatch, seen, answer)
+    monkeypatch.setattr(crew_oauth, "_client", lambda s: _client())
+    store = TokenStore(SecretVault(tmp_path))
+    store.replace(SLUG, Tokens("a1", "r1", time.time() - 10, "", None, "123.456"))
+    try:
+        result = await crew_oauth.disconnect(SLUG, store=store)
+    finally:
+        await server.close()
+    assert result == {"removed": True, "revoked": True}
+    assert [kind for kind, _ in seen] == ["token", "revoke"]
+    assert seen[1] == ("revoke", {"token": "a2"})
+    assert not store.present(SLUG)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_still_revokes_and_deletes_when_the_renewal_fails(tmp_path, monkeypatch):
+    seen: list = []
+    server = await _serve(monkeypatch, seen, {"ok": False, "error": "invalid_refresh_token"})
+    monkeypatch.setattr(crew_oauth, "_client", lambda s: _client())
+    store = TokenStore(SecretVault(tmp_path))
+    store.replace(SLUG, Tokens("a1", "r1", time.time() - 10, "", None, "123.456"))
+    try:
+        result = await crew_oauth.disconnect(SLUG, store=store)
+    finally:
+        await server.close()
+    assert [kind for kind, _ in seen] == ["token", "revoke"]
+    assert seen[1] == ("revoke", {"token": "a1"})
+    assert result["removed"] is True
     assert not store.present(SLUG)
 
 
@@ -1016,6 +1052,69 @@ def test_a_marked_slack_row_names_the_missing_app_when_chat_cannot_sign_in(tmp_p
     assert needs_app(True) == [True, True, None]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [False, True], ids=["no-oauth-app", "oauth-app-saved"])
+@pytest.mark.parametrize("route", ["GET /api/mcp", "POST /api/mcp/probe", "GET /api/mcp/probe"])
+async def test_each_mcp_endpoint_marks_the_row_only_while_no_oauth_app_is_saved(
+    tmp_path, monkeypatch, route, saved
+):
+    """Each endpoint the MCP table reads serves the mark the helper decides."""
+    from kiro_crew import mcp_discovery
+    from kiro_crew.dashboard.handlers import mcp as mcp_handlers
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    if saved:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"connections": {"oauth_clients": {SLUG: {"client_id": "123.456"}}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET", "sec")
+    server = mcp_discovery.McpServerInfo(name=SLUG, url=SLACK_URL)
+    cached = route == "GET /api/mcp/probe"
+    monkeypatch.setattr(mcp_handlers, "_mcp_probe_cache", [server.to_dict()] if cached else [])
+    monkeypatch.setattr(mcp_handlers, "_mcp_probe_ts", time.time())
+    monkeypatch.setattr(mcp_handlers, "_mcp_probe_in_progress", True)  # arms no re-probe
+    monkeypatch.setattr(mcp_handlers, "_mcp_reprobe_armed_for", {})
+    monkeypatch.setattr(mcp_handlers, "_GLOBAL_MCP_JSON", tmp_path / "absent" / "mcp.json")
+    monkeypatch.setattr(mcp_discovery, "list_servers", lambda: [] if cached else [server])
+
+    async def _probe_all():
+        return [server]
+
+    async def _nothing(*_args):
+        return None
+
+    monkeypatch.setattr(mcp_discovery, "probe_all", _probe_all)
+    monkeypatch.setattr(mcp_handlers, "_evaluate_shareability", _nothing)
+    monkeypatch.setattr(mcp_handlers, "_annotate_kas_chat_sign_in", _nothing)
+    for name in (
+        "_record_probe_verdicts",
+        "_annotate_quarantine",
+        "_annotate_owner_sign_in",
+        "_annotate_agent_drops",
+    ):
+        monkeypatch.setattr(mcp_handlers, name, lambda *_args: None)
+    handlers = {
+        "GET /api/mcp": mcp_handlers.api_mcp_servers,
+        "POST /api/mcp/probe": mcp_handlers.api_mcp_probe,
+        "GET /api/mcp/probe": mcp_handlers.api_mcp_probe_cached,
+    }
+    method, path = route.split()
+    app = web.Application()
+    app["state"] = types.SimpleNamespace(owner_id="", sessions=None)
+    app.router.add_route(method, path, handlers[route])
+    client = TestClient(TestServer(as_owner(app)))
+    await client.start_server()
+    try:
+        resp = await client.request(method, path)
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200, body
+    assert [row.get("connectionUnconfigured") for row in body] == [None if saved else True]
+
+
 # --- an entry Crew's sign-in does not own: no Connect, and no steps to turn it on ---
 
 _OWN_HEADER = {"name": SLUG, "url": SLACK_URL, "headers": {"Authorization": "Bearer x"}}
@@ -1214,6 +1313,67 @@ async def test_the_row_says_the_mint_refuses_slack_whether_or_not_a_grant_is_hel
     assert slack.get(wording) is (None if granted else True)
     code, body, started = await _mint_slack(monkeypatch)
     assert (code, body.get("code"), started) == (409, "crew_sign_in_required", [])
+
+
+def _owner_recorded_slack(tmp_path, monkeypatch, url: str) -> None:
+    """:func:`_configured_slack` at *url*, recorded by the owner, with no Slack app saved."""
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    _configured_slack(tmp_path, monkeypatch, {"name": SLUG, "url": url, "headers": {}})
+    (tmp_path / "home" / "config.json").write_text(
+        json.dumps({CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {SLUG: {"url": url}}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granted", [True, False], ids=["grant-held", "no-grant"])
+async def test_an_owner_slack_entry_at_the_exact_url_says_the_mint_refuses(
+    tmp_path, monkeypatch, granted
+):
+    """The owner's own header-less entry at Slack's exact url: the card yields to it.
+
+    ``owns`` is False, so the mint refuses. The card's Connect cannot change
+    that, because writing the registry url leaves the entry the owner's. So the
+    row carries ``crewMintRefused`` and the card offers no Reconnect. Saving an
+    OAuth app takes the slug back, so without a grant the setup steps stay.
+    """
+    from kiro_crew.connections import status
+
+    _owner_recorded_slack(tmp_path, monkeypatch, SLACK_URL)
+    if granted:
+        monkeypatch.setattr(
+            status, "_grant_presence_maps", lambda providers, kas: ({SLUG: True}, {SLUG: True})
+        )
+    assert crew_oauth.manages(SLUG) and not crew_oauth.owns(SLUG)
+
+    slack = {s["slug"]: s for s in await status.collect_connection_statuses()}[SLUG]
+    assert slack.get("crewMintRefused") == "not_owned"
+    assert "crewSignInNotOwned" not in slack
+    assert slack.get("needsClientConfig") is (None if granted else True)
+    code, body, started = await _mint_slack(monkeypatch)
+    assert (code, body.get("code"), started) == (409, "crew_sign_in_required", [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", _url_variants(SLACK_URL), ids=["trailing-slash", "upper-case"])
+async def test_an_owner_slack_entry_at_a_url_variant_is_not_marked_refused(
+    tmp_path, monkeypatch, variant
+):
+    """Control: at a url variant the card's Connect writes the registry url first.
+
+    The entry then stops being the owner's recorded server, so the row keeps
+    Connect and carries no ``not_owned`` mark.
+    """
+    from kiro_crew.connections import status
+
+    _owner_recorded_slack(tmp_path, monkeypatch, variant)
+    assert crew_oauth.manages(SLUG) and not crew_oauth.owns(SLUG)
+
+    slack = {s["slug"]: s for s in await status.collect_connection_statuses()}[SLUG]
+    assert slack.get("crewMintRefused") != "not_owned"
+    assert "crewSignInNotOwned" not in slack
 
 
 @pytest.mark.parametrize("header", ["Authorization", "x-api-key"])

@@ -4,8 +4,8 @@ status: partial
 revision: v2
 author: mingweic, with Kiro
 created: 2026-09-11
-last-audited: 2026-10-05
-audited-at: e281ecaf33
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 10090
 implementation-prs: [10091]
 tracking-issues: []

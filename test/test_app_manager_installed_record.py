@@ -540,6 +540,53 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
 
         assert app_enabled_state("shape-probe") is True
 
+    @staticmethod
+    def _link_record_to(app_home, target: Path, *, enabled: bool) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"name": "shape-probe", "enabled": enabled}), encoding="utf-8")
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").symlink_to(target)
+
+    def test_a_link_into_a_protected_location_is_unknown_and_not_read(
+        self, app_home, tmp_path, monkeypatch
+    ):
+        """The record is screened as the owner lookup screens it: a refusal is None."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._link_record_to(app_home, home / ".aws" / "installed.json", enabled=True)
+
+        def no_read(self, *args, **kwargs):
+            raise AssertionError(f"read {self} past the screen")
+
+        monkeypatch.setattr(Path, "read_text", no_read)
+
+        assert app_enabled_state("shape-probe") is None
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_a_link_to_an_ordinary_file_still_reports_its_flag(
+        self, app_home, tmp_path, monkeypatch, enabled
+    ):
+        """The control: the screen refuses protected targets only, not every link."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._link_record_to(app_home, home / "elsewhere" / "installed.json", enabled=enabled)
+
+        assert app_enabled_state("shape-probe") is enabled
+
+    def test_a_regular_record_reads_beside_an_unlistable_apps_entry(self, app_home):
+        """A looped apps entry fences the whole apps folder; a regular record still reads."""
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").write_text(
+            '{"name": "shape-probe", "enabled": true}', encoding="utf-8"
+        )
+        (app_home / "apps" / "loop").symlink_to(app_home / "apps" / "loop")
+
+        assert app_enabled_state("shape-probe") is True
+
 
 class TestEnabledReadsStrictly:
     """Only a JSON boolean ``true`` (or a missing key) reads as enabled.

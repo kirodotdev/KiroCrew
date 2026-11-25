@@ -1,6 +1,6 @@
 import React from 'react'
 import { act, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ShortcutsModal from '../components/ShortcutsModal'
 import type { ChatSection } from '../hooks/useChatNavigation'
@@ -46,7 +46,7 @@ function setRect(el: HTMLElement, top: number, height: number) {
 }
 
 /** Mount the transcript scrolled `offset` px down and wire both hooks to it. */
-function setup({ offset, active = true, setHighlightTs }: { offset: number; active?: boolean; setHighlightTs?: (update: string | null | ((current: string | null) => string | null)) => void }) {
+function setup({ offset, active = true, flash }: { offset: number; active?: boolean; flash?: (ts: string) => void }) {
   const scroller = document.createElement('div')
   setRect(scroller, 0, 600)
   for (let i = 0; i < 10; i++) {
@@ -65,7 +65,7 @@ function setup({ offset, active = true, setHighlightTs }: { offset: number; acti
   })
   const hook = renderHookWithProviders(() => {
     useKeyboardShortcuts({ onToggleShortcutsModal: () => {}, onNewChat: () => {} })
-    return useTurnStepper({ active, turns: TURNS, windowed: false, scrollerRef, landingInset: () => LINE, jump, setHighlightTs })
+    return useTurnStepper({ active, turns: TURNS, windowed: false, scrollerRef, landingInset: () => LINE, jump, flash })
   }, { store })
   return { hook, jump, scroller }
 }
@@ -139,25 +139,13 @@ describe('Alt+↑ / Alt+↓ step through the turns of the open chat', () => {
     expect(hook.result.current).toBe('Turn 3 of 4: prompt 3')
   })
 
-  it('flashes the landed prompt with the jump highlight, and clears only its own', () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
-    let highlighted: string | null = null
-    const setHighlightTs = vi.fn((update: string | null | ((current: string | null) => string | null)) => {
-      highlighted = typeof update === 'function' ? update(highlighted) : update
-    })
-    setup({ offset: 300, setHighlightTs })
+  it('flashes the landed prompt through the jump owner', () => {
+    const flash = vi.fn()
+    setup({ offset: 300, flash })
     press('ArrowDown')
-    expect(highlighted).toBe(TURNS[2].ts)
-    act(() => { vi.advanceTimersByTime(2000) })
-    expect(highlighted).toBeNull()
-
-    // A highlight another jump set in the meantime survives this one's timer.
+    expect(flash).toHaveBeenLastCalledWith(TURNS[2].ts)
     press('ArrowDown')
-    expect(highlighted).toBe(TURNS[3].ts)
-    highlighted = 'pinned-message-ts'
-    act(() => { vi.advanceTimersByTime(2000) })
-    expect(highlighted).toBe('pinned-message-ts')
+    expect(flash).toHaveBeenLastCalledWith(TURNS[3].ts)
   })
 
   it('never fires while typing in the composer or any other text field', () => {

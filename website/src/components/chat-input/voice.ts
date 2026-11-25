@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useDictationPanelUsable } from '../VoiceDictationPanel'
 import { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
+import { usePointerHoldToTalk } from '../../hooks/usePointerHoldToTalk'
 import { bindingAriaKeyshortcuts, bindingLabel, type PttBinding } from '../../lib/pushToTalk'
 import { useAppSelector } from '../../store'
 import { safeSetItem } from '../../utils/safeStorage'
@@ -8,7 +9,7 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { i18nT } from '../../i18n/t'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
-import type { ComposerControl } from '../composerControl'
+import type { ComposerControl, ComposerSelection } from '../composerControl'
 import { anotherEscapeOwnerIsOpen } from './escapeOwners'
 import { slotRowByKey } from '../../store/slotIndex'
 
@@ -32,10 +33,10 @@ const VOICE_MODE_LS_KEY = 'mc-voice-mode'
  *  `noopSelectDevice`, whose one parameter makes it unassignable to `() => void`. */
 const noopVoiceControl = () => {}
 
-/** The dictation bridge: the caret a transcript splices in at, the panel that
- *  replaces the textarea while recording, focus while a transcript lands, and
- *  Escape to discard. */
-export function useDictationControls({ composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel, voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle }: {
+/** The dictation bridge: the caret a transcript splices in at, the panel above
+ *  the persistent desktop editor, focus while a transcript lands, and Escape
+ *  to discard. */
+export function useDictationControls({ composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel, voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, streamingReadOnly, onVoiceCancel, onVoiceToggle }: {
   composerControl: () => ComposerControl | null
   value: string
   autoFocusKey?: string | null
@@ -52,20 +53,46 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
   voiceError: VoiceInput['voiceError']
   voiceSampleRef: VoiceInput['voiceSampleRef']
   voiceTranscribing: boolean
+  /** The editor is read-only for a live streaming capture. */
+  streamingReadOnly: boolean
   onVoiceCancel: VoiceInput['onVoiceCancel']
   onVoiceToggle: VoiceInput['onVoiceToggle']
 }) {
-  const publishLexicalSelection = useCallback((selection: { start: number; end: number }) => {
-    if (voiceCaretRef) voiceCaretRef.current = selection
+  /** True while a pointer hold is down (`holdCaret`). */
+  const caretHeldRef = useRef(false)
+  /**
+   * Take the live selection as dictation's caret. While a pointer hold is down
+   * the browser keeps drag-selecting under the held button, and a range here
+   * would have the transcript replace the drifted-over draft, so only a
+   * collapsed caret is taken. Dictation's own caret restore writes directly.
+   */
+  const takeLiveCaret = useCallback((selection: ComposerSelection | null | undefined) => {
+    if (!selection || !voiceCaretRef) return
+    if (caretHeldRef.current && selection.start !== selection.end) return
+    voiceCaretRef.current = selection
   }, [voiceCaretRef])
+  const publishLexicalSelection = useCallback((selection: ComposerSelection) => {
+    takeLiveCaret(selection)
+  }, [takeLiveCaret])
   // Publish the live caret so ChatPage's dictation handler can splice a
   // transcript in at the cursor instead of appending. Written on every caret
   // move (typing, click, selection); the value persists through blur (clicking
   // the mic button), which is exactly when a batch transcript needs it.
   const recordCaret = useCallback(() => {
-    const selection = composerControl()?.getSelection()
-    if (selection && voiceCaretRef) voiceCaretRef.current = selection
-  }, [composerControl, voiceCaretRef])
+    takeLiveCaret(composerControl()?.getSelection())
+  }, [composerControl, takeLiveCaret])
+  /**
+   * The pointer hold's side of the caret: `true` once it has collapsed the
+   * selection to where the words go (publish that caret, and take only carets
+   * until the hold ends), `false` when the hold is over. The rich editor reads
+   * its selection from its own state, which catches up with the collapsed DOM
+   * selection on the next `selectionchange`; until then the read is the old
+   * range and is refused, and the editor's own publish brings the caret.
+   */
+  const holdCaret = useCallback((holding: boolean) => {
+    caretHeldRef.current = holding
+    if (holding) recordCaret()
+  }, [recordCaret])
   // Restore the caret after a dictation transcript lands in `value`. The update
   // arrives via the parent (onChange → ChatPage setInput → value prop), so the
   // parent can't set the DOM selection itself. rAF mirrors applyPickedToken:
@@ -81,9 +108,7 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
       // existing draft doesn't publish offset 0 here (which would make the next
       // batch transcript prepend at 0 instead of using the append fallback that
       // a null ref provides).
-      const control = composerControl()
-      const selection = control?.getSelection()
-      if (selection && voiceCaretRef && voiceCaretRef.current) voiceCaretRef.current = selection
+      if (voiceCaretRef?.current) takeLiveCaret(composerControl()?.getSelection())
       return
     }
     pendingRef.current = null
@@ -98,25 +123,35 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
     // again before it fires — otherwise the callback would stamp this slot's
     // caret onto whatever composer is mounted next.
     return () => cancelAnimationFrame(raf)
-  }, [value, voicePendingCaretRef, voiceCaretRef, autoFocusKey, composerControl])
-  // Dictation-panel gate. Three independent conditions must hold: the setting
-  // is on, the browser has WebGL2, and the OS is not asking for reduced motion
-  // (the hook covers the latter two). A mic error always falls through to
+  }, [value, voicePendingCaretRef, voiceCaretRef, autoFocusKey, composerControl, takeLiveCaret])
+  // Dictation-panel gate. Two independent conditions must hold: the setting
+  // is on and the OS is not asking for reduced motion (the hook covers
+  // both). A mic error always falls through to
   // VoiceStatusBar, which owns the dismissible error affordance — the panel
   // has no way to surface it. Resolves to the sample ref (not a boolean) so
   // the non-optional prop narrows without a cast.
-  const dictationUsable = useDictationPanelUsable(voiceDictationPanel)
+  const dictationUsable = useDictationPanelUsable(voiceDictationPanel && voiceRecording)
   const showDictation =
     dictationUsable && voiceRecording && !voiceError && voiceSampleRef ? voiceSampleRef : null
-  // Focus the composer when the dictation panel is up (as before) OR while a
-  // batch transcript is landing (voiceTranscribing), so Enter sends and typing
-  // edits the result. Deliberately NOT keyed on bare voiceRecording: focusing
-  // during a STREAMING recording would invite mid-dictation typing that the
-  // next partial rebuilds away — the panel (showDictation) already handles the
-  // visible streaming case, where the user watches rather than types.
+  // Focus the composer while the panel is up or a batch transcript is landing.
+  // During streaming capture the editor is read-only: partial hypotheses rebuild
+  // the dictated region from its frozen snapshot, so accepting edits there would
+  // let the next hypothesis erase them. Capture end unlocks it in place.
   useEffect(() => {
     if (showDictation || voiceTranscribing) composerControl()?.focus()
   }, [showDictation, voiceTranscribing, composerControl])
+  // A read-only rich editor cannot hold focus, and a capture that ends without a
+  // drain (an Escape discard) never reaches the effect above, so refocus on unlock.
+  // Only the session that started the capture gets focus back: a keyboard
+  // session switch releases composer focus on purpose.
+  const wasStreamingReadOnly = useRef(streamingReadOnly)
+  const lockedAutoFocusKey = useRef(autoFocusKey)
+  useEffect(() => {
+    const unlocked = wasStreamingReadOnly.current && !streamingReadOnly
+    if (!wasStreamingReadOnly.current && streamingReadOnly) lockedAutoFocusKey.current = autoFocusKey
+    wasStreamingReadOnly.current = streamingReadOnly
+    if (unlocked && !anyPickerOpenRef.current && lockedAutoFocusKey.current === autoFocusKey) composerControl()?.focus()
+  }, [streamingReadOnly, composerControl, anyPickerOpenRef, autoFocusKey])
 
   // Discarding a drain from the strip's own button removes the element the press
   // happened on: the discard clears `draining`, so `voiceDrainCancellable` goes
@@ -199,13 +234,13 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
     return () => document.removeEventListener('keydown', handler)
   }, [voiceRecording, voiceDrainCancellable, onVoiceCancel, onVoiceToggle, anyPickerOpenRef])
 
-  return { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain }
+  return { publishLexicalSelection, recordCaret, holdCaret, showDictation, cancelVoiceDrain }
 }
 
 /** Hold-to-talk: on a touch device the mic switches the composer between the
  *  keyboard and a press-and-hold target, and every label on those controls
  *  says what the next press actually does. */
-export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease = false, voiceSlideToSend = false, voiceSendSteers = false, voicePttBinding = null, voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation }: {
+export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease = false, voiceSlideToSend = false, voiceSendSteers = false, voicePttBinding = null, voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked = false, optimizing, placeholder, holdCaret }: {
   onVoiceStart: VoiceInput['onVoiceStart']
   onVoiceStop: VoiceInput['onVoiceStop']
   onVoiceCancel: VoiceInput['onVoiceCancel']
@@ -232,9 +267,13 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   /** The composer holds text or files a send would carry (session refs excluded). */
   composerHasDraft: boolean
   disabled: boolean
+  /** The composer reads but takes no input (a running turn, a memory-mode
+   *  move). A transcript could not land, so the pointer hold does not arm. */
+  typingLocked?: boolean
   optimizing: boolean
   placeholder: string
-  showDictation: VoiceInput['voiceSampleRef'] | null
+  /** `useDictationControls`' `holdCaret`, driven by the pointer hold. */
+  holdCaret?: (holding: boolean) => void
 }) {
   /**
    * Hold-to-talk mode: the textarea is swapped for a press-and-hold target and
@@ -327,6 +366,33 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
     draftZone: voiceSubmitOnRelease,
     sendZone,
   })
+  /**
+   * Press-and-hold on the message box itself, for mouse and trackpad
+   * (`usePointerHoldToTalk`; opt-in through `PttConfig.pointerHold`). Bound to
+   * the text COLUMN rather than the textarea, so the one binding covers the plain
+   * textarea and the rich editor alike; the hook itself only arms on a press that
+   * lands in the editor. State, not a ref, for the same reason as `holdTarget`.
+   * Same stop/cancel controls as `touchVoice`, so a release runs the same finish
+   * path the key and the hold bar do (submit-on-release included). The start is
+   * SILENT, as the keyboard binding's is: a slow click that only meant to place
+   * the cursor must not open the voice setup dialog when STT is off or not yet
+   * loaded, and the setting that turns this gesture off is hidden while STT is off.
+   * Locked out while the composer only reads: the transcript would have nowhere
+   * to land.
+   */
+  const pointerVoice = useMemo(
+    () => ({
+      ...touchVoice,
+      start: onVoiceStart ? () => onVoiceStart({ silent: true }) : noopVoiceControl,
+    }),
+    [touchVoice, onVoiceStart],
+  )
+  const [pointerHoldTarget, setPointerHoldTarget] = useState<HTMLElement | null>(null)
+  const pointerPtt = usePointerHoldToTalk(pointerVoice, {
+    target: pointerHoldTarget,
+    disabled: disabled || typingLocked || micBlocked || optimizing,
+    onCaretHeld: holdCaret,
+  })
   /*
    * A draft suspends hold mode, EXCEPT while the touch gesture's own capture is
    * still running — otherwise a transcript landing in the composer would unmount
@@ -390,7 +456,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   const voiceSettling = voiceHoldMode && touchPtt.bar === 'settling'
   /**
    * The textarea is PARKED: still mounted, but clipped out of layout by the
-   * `sr-only` box the hold bar and the dictation panel both put it in.
+   * `sr-only` box the hold bar puts it in.
    *
    * Anything that measures the textarea has to ask this first — see `applyHeight`
    * for what a 1px-wide measurement did to the composer's height. It also has to
@@ -398,7 +464,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
    * value that was streamed in while parked is exactly the value whose height was
    * never measurable.
    */
-  const textareaParked = !!showDictation || voiceHoldMode
+  const textareaParked = voiceHoldMode
   const toggleVoiceMode = useCallback(() => {
     setVoiceModePref(prev => {
       const next = !prev
@@ -518,6 +584,6 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   return {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder, sendZone,
+    voiceModePlaceholder, sendZone, setPointerHoldTarget, pointerPtt,
   }
 }

@@ -126,6 +126,10 @@ def _orch_attrs_consumed(channel_type: str) -> set[str]:
 _HOIST_EXEMPT: dict[str, frozenset[str]] = {
     # ``getattr(orch, "_weixin_home", "") or str(data_home())``.
     "weixin": frozenset({"_weixin_home"}),
+    # ``getattr(orch, "_feishu_sdk_install_task", None)``: the one-per-start
+    # SDK install handle. A hoist would reset it on ``restart_channel`` and
+    # let a second install start.
+    "feishu": frozenset({"_feishu_sdk_install_task"}),
 }
 
 

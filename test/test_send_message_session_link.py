@@ -18,8 +18,6 @@ nothing:
 from __future__ import annotations
 
 import json
-import sys
-import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,21 +26,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-# Importable stub so api_send_message's inline `from kiro_crew.slack.handler
-# import ...` resolves even without the heavy transitive deps installed, exactly
-# as test_send_message_targeted.py does.
-if "kiro_crew.slack.handler" not in sys.modules:
-    _stub = types.ModuleType("kiro_crew.slack.handler")
-    _stub.is_allowed_user = lambda uid: False  # type: ignore[attr-defined]
-    _stub.is_tracked_channel = lambda cid: False  # type: ignore[attr-defined]
-    sys.modules["kiro_crew.slack.handler"] = _stub
-
-from kiro_crew.dashboard.handlers import api_send_message  # noqa: E402
-from kiro_crew.dashboard.handlers.messaging import _resolve_session_link_url  # noqa: E402
-from kiro_crew.mcp_core import _call_tool  # noqa: E402
-from kiro_crew.mcp_tools.messaging import schemas  # noqa: E402
-from kiro_crew.session_surface import set_dashboard_surfaced  # noqa: E402
-from kiro_crew.validation import SEND_MESSAGE_SCHEMA, validate_tool_args  # noqa: E402
+from kiro_crew.dashboard.handlers import api_send_message
+from kiro_crew.dashboard.handlers.messaging import _resolve_session_link_url
+from kiro_crew.mcp_core import _call_tool
+from kiro_crew.mcp_tools.messaging import schemas
+from kiro_crew.session_surface import set_dashboard_surfaced
+from kiro_crew.validation import SEND_MESSAGE_SCHEMA, validate_tool_args
 
 _SESSION_KEY = "dashboard:chat-7-1"
 _BARE_KEY = "chat-7-1"
@@ -648,10 +637,11 @@ async def test_no_button_to_a_named_channel(mock_sel, fixed_token) -> None:
     slack = _mock_slack()
     state = _mock_state(slack)
     app = _make_app(state)
-    stub = sys.modules["kiro_crew.slack.handler"]
+    from kiro_crew.slack import handler as slack_handler
+
     with (
         patch("kiro_crew.dashboard.handlers.messaging.KiroCrewConfig") as cfg_cls,
-        patch.object(stub, "is_tracked_channel", lambda cid: True),
+        patch.object(slack_handler, "is_tracked_channel", lambda cid: True),
     ):
         cfg_cls.load.return_value = _cfg()
         async with TestClient(TestServer(app)) as client:

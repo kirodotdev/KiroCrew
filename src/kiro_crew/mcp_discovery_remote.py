@@ -40,6 +40,11 @@ from kiro_crew.mcp_grant_kas import kas_grant_observed
 
 logger = logging.getLogger("kiro_crew.mcp_discovery")
 
+#: A probe's error for ``headers`` that are not a map of header names to values.
+_HEADERS_NOT_A_MAP_ERROR = (
+    'headers must be an object of header names to values, like {"Authorization": "Bearer ..."}'
+)
+
 
 async def _read_jsonrpc_response(resp: aiohttp.ClientResponse) -> dict:
     """Parse a JSON-RPC response from either JSON or SSE content-type.
@@ -191,6 +196,40 @@ def _is_bearer_challenge(header_value: str) -> bool:
     return bool(params.get("scope", "").split())
 
 
+async def advertises_protected_resource(mcp_url: str) -> bool:
+    """Whether a server whose ``401`` carried no challenge publishes OAuth metadata.
+
+    The MCP authorization spec lets a server leave ``resource_metadata`` out of
+    ``WWW-Authenticate``, and a client then reads the RFC 9728 document at the
+    server's well-known path, path-inserted first, then the root. A gateway in
+    front of a server can also rename the header, so a bare ``401`` is all the
+    probe sees. The fetch and the checks are the Connections discovery's own
+    (``mcp_oauth_discovery._fetch_json``: vetted public HTTPS on 443, pinned, no
+    redirects, size-bounded; ``l0_probe._read_resource_metadata``: the document
+    covers this url's origin and names an HTTPS authorization server). The
+    document's ``resource`` must also be this endpoint itself
+    (``tool_aliases.normalized_endpoint``): a root document for a sibling path on
+    the same origin says nothing about this one.
+    Nothing in the document is followed. Any failure reads as "no".
+    """
+    from kiro_crew.connections.l0_probe import _read_resource_metadata, _resource_metadata_urls
+    from kiro_crew.connections.tool_aliases import normalized_endpoint
+    from kiro_crew.mcp_oauth_discovery import _FETCH_ERRORS, _fetch_json
+
+    want = normalized_endpoint(mcp_url)
+    for url in _resource_metadata_urls(mcp_url):
+        try:
+            document = await _fetch_json(url)
+            _read_resource_metadata(document, mcp_url)
+        except _FETCH_ERRORS:
+            continue
+        resource = document.get("resource")
+        values = resource if isinstance(resource, list) else [resource]
+        if want is not None and any(normalized_endpoint(v) == want for v in values):
+            return True
+    return False
+
+
 # A Location header is untrusted input too, and the row shows it.
 _MAX_REDIRECT_TARGET_LEN = 256
 
@@ -334,6 +373,20 @@ async def _probe_remote(
     server.auth_challenge = False
     server.auth_grant_present = None
     server.auth_crew_held = False
+    # ``headers`` maps header names to values. A hand-edited entry can hold a
+    # string such as ``"Authorization: Bearer ..."`` or a list there instead,
+    # and the request below reads it by name, so without this the error would be
+    # Python's own attribute message, which names nothing the person wrote. Not
+    # contacted: the server would be asked without the credential the entry
+    # meant to send. An EMPTY one (``""``, ``[]``, ``null``) declares no headers
+    # and probes like an entry without any, the rule a stdio ``env`` follows.
+    if server.headers and not isinstance(server.headers, Mapping):
+        server.sent_headers, server.resolved_header_values = None, []
+        server.status = "error"
+        server.error = _HEADERS_NOT_A_MAP_ERROR
+        logger.warning("MCP probe failed [%s]: headers is not an object", server.name)
+        _cache_probe(server)
+        return server
     refusal = remote_header_secret_ref_error(server.headers)
     if refusal:
         # Not contacted: the header would reach the server as the literal
@@ -390,7 +443,7 @@ async def _probe_remote(
         # the row because redaction must key on the values that actually left
         # the process (see McpServerInfo.redaction_headers).
         server.sent_headers, server.resolved_header_values = _expand_header_placeholders(
-            server.headers
+            server.headers or {}
         )
         hdrs = {
             **server.sent_headers,
@@ -431,6 +484,8 @@ async def _probe_remote(
                         # report "needs_auth" instead of a misleading error.
                         server.status = "needs_auth"
                         server.error = ""
+                        if not server.auth_challenge and resp.status == 401:
+                            server.auth_challenge = await advertises_protected_resource(server.url)
                         # The GRANT, unlike the challenge, is looked up only on
                         # this branch. Its sole reader gates on ``needs_auth``, so
                         # on an error row the stat would run -- and
@@ -455,6 +510,8 @@ async def _probe_remote(
                     return await _probe_remote(server, protocol_version=fallback)
                 if data.get("error"):
                     server.status = "error"
+                    # Answered, not unreachable: see the stdio probe's rule.
+                    server.probe_mode = "refused"
                     err = data["error"]
                     server.error = (
                         err.get("message", "unknown error") if isinstance(err, dict) else str(err)
@@ -499,6 +556,7 @@ async def _probe_remote(
                 if data.get("error"):
                     err = data["error"]
                     server.status = "error"
+                    server.probe_mode = "refused"
                     server.error = "tools/list: " + (
                         err.get("message", "unknown error") if isinstance(err, dict) else str(err)
                     )

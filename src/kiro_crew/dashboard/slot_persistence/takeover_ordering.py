@@ -375,6 +375,8 @@ def record_deferred_dismissal(
     def _recheck_after_commit() -> None:
         if not SlotRegistry.dismissal_still_owed(state, dismissal):
             superseded_after_commit[0] = True
+        elif dismissal.slot is not None:
+            dismissal.slot.note_close_recorded()
 
     try:
         written = bool(

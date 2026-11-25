@@ -25,12 +25,12 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
+    require_owner_for_dashboard_caller,
     string_field_error,
 )
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _probe_busy_response, _run_path_probe
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _audited_write,
-    _require_knowledge_owner,
     _sel_log,
     _store,
     _task_registry,
@@ -270,7 +270,7 @@ async def list_sources(request: web.Request) -> web.Response:
     sweep after sweep at idle, so without them here the only place the ongoing
     cost surfaces is a credit balance after the fact.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.sources.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.sources.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -368,7 +368,7 @@ async def pick_folder(request: web.Request) -> web.Response:
     Offered only on a local macOS dashboard (see _folder_picker_available). The
     returned path is not trusted -- it is fed back into the folder path field and
     re-validated by add_source like any typed path."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.pick_folder")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.pick_folder")
     if owner_denied is not None:
         return owner_denied
     if not _folder_picker_available(request):
@@ -683,7 +683,7 @@ async def _insert_bedrock_source(  # type: ignore[no-untyped-def]
 
 async def add_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources -- add a remote source."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.add")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.add")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -709,7 +709,7 @@ async def add_source(request: web.Request) -> web.Response:
         # Owner action, like the consent grant it rides: validation below
         # probes the KB with the owner's AWS credentials and the insert
         # registers a KB the gateway then queries on the owner's account.
-        # ``_require_knowledge_owner`` above gates dashboard users only; an
+        # ``require_owner_for_dashboard_caller`` above gates dashboard users only; an
         # app token and an internal-secret caller pass it, which is fine for
         # a local folder but would let them expose an unapproved KB against
         # the owner's grant. This gate refuses every caller but the owner.
@@ -868,9 +868,8 @@ async def add_source(request: web.Request) -> web.Response:
                 )
                 # The row's id under "id" too, the key every caller reads: the
                 # md-notebook app confirms the id it gets back, as it does for a
-                # 409, and the Knowledge tab's follow-up sync is a no-op for a
-                # folder (its connector never reports changes; the watcher
-                # scans it).
+                # 409, and the Knowledge tab's add form names the row it holds
+                # under that id.
                 return web.json_response(
                     {
                         "id": same["id"],
@@ -1008,7 +1007,7 @@ async def add_source(request: web.Request) -> web.Response:
 
 async def delete_source(request: web.Request) -> web.Response:
     """DELETE /api/knowledge/sources/{id} -- remove a source and its items."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.delete")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.delete")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1088,7 +1087,7 @@ async def rename_source(request: web.Request) -> web.Response:
     identity) stays immutable. Every field sent is checked before anything is
     written.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.rename")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.rename")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1246,7 +1245,7 @@ def _pause_source_row(store, source_id: str) -> bool:
 
 async def confirm_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/confirm -- confirm and start scanning."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.confirm")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.confirm")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1280,7 +1279,7 @@ async def confirm_source(request: web.Request) -> web.Response:
 
 async def pause_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/pause -- pause active scan."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.pause")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.pause")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1292,7 +1291,7 @@ async def pause_source(request: web.Request) -> web.Response:
 
 async def resume_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/resume -- resume paused scan."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.resume")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.resume")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1337,7 +1336,7 @@ def _folder_file_rows(store, source_id: str) -> list:
 
 async def list_source_files(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources/{id}/files -- list files with scan status."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.files.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.files.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1366,7 +1365,7 @@ async def list_source_files(request: web.Request) -> web.Response:
 
 async def retry_file(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/files/retry -- reset file to pending."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.file_retry")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.file_retry")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1401,7 +1400,7 @@ async def retry_file(request: web.Request) -> web.Response:
 
 async def skip_file(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/files/skip -- mark file as skipped."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.file_skip")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.file_skip")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -1443,7 +1442,7 @@ async def _url_allowed_hosts_or_none() -> list[str] | None:
 
 async def get_config(request: web.Request) -> web.Response:
     """GET /api/knowledge/config -- returns supported formats and status."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.config.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.config.read")
     if owner_denied is not None:
         return owner_denied
     pipeline = request.app.get("knowledge_pipeline")

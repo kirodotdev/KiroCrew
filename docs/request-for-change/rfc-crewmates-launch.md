@@ -1,10 +1,10 @@
 ---
 title: CrewMates launch — one vocabulary and nine screens for AI teammates
-status: accepted
+status: partial
 author: CrysisDeu
 created: 2026-09-22
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: cdb601611f
 revision: 2026-10-22 — §08 Meet your Mates launch intro
 doc-pr:
 implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925, 15103, 15280, 16317, 17156]
@@ -15,7 +15,8 @@ superseded-by: []
 
 # RFC: CrewMates launch — one vocabulary and nine screens for AI teammates
 
-- Status: accepted — the product owner's decision record from the CrewMates
+- Status: partial (accepted; the PRs in the front matter are on main, and § 8
+  names the branches still to open) — the product owner's decision record from the CrewMates
   launch review of 2026-09-22, merged ahead of most of the implementation
   because the First Principles lane reads a product-shape decision off the base
   branch. Every "exists today" claim below was checked at `87553ba866` (main,

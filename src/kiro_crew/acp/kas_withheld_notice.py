@@ -3,20 +3,22 @@
 KAS takes the agent spec over the ACP wire, so the projection
 (:func:`kiro_crew.acp.kas_agents._project_mcp_servers`) withholds every ``env``
 value it cannot prove is not a credential, and every ``headers`` block. A stdio
-server's env and a streamable-HTTP server's headers then reach it through Crew's
-local launcher, so what is left is a server that launcher did not carry. Every
+server's env and a remote server's headers then reach it through Crew's local
+launcher, so what is left is a server that launcher did not carry. Every
 such server keeps the projection's INFO log line, which names the field.
 
 The same notice names servers that will not run at all: in MCP registry mode,
 every server Crew withholds, and Crew's own, which KAS drops when the Kiro profile
-is registry-governed too (KAS keeps only admin-catalog servers then); and a plain
-``http`` url to another host (KAS refuses it as ``insecure-url``).
+is registry-governed too (KAS keeps only admin-catalog servers then); a plain
+``http`` url to another host (KAS refuses it as ``insecure-url``); and a server the
+agent declares and asks for in its ``tools`` that a global MCP config switches off
+(the MCP Servers switch writes that file, so Crew honours it over the declaration).
 
 For a server that does run, the chat gets a notice only when the user can fix it:
 a stdio server Crew does not ship that lost env. Turning on Share for it in MCP
 Management hands it to the gateway, which starts it on this machine with its whole
 env. A server Share alone would not fix (a lost key the gateway does not forward),
-a remote server the bridge cannot carry (an ``sse`` one), and a server Crew or the
+a remote server whose headers the bridge did not carry, and a server Crew or the
 edition ships are left to the log line, so the chat never asks for a step its user
 cannot take there. That line names no config term: the server, the Share switch
 and where it is.
@@ -32,6 +34,7 @@ from kiro_crew.acp.kas_agents import (
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,
+    NOT_RUN_SCOPE_MUTED,
     WithheldOut,
 )
 from kiro_crew.acp.kas_env_literals import _loggable_key_names
@@ -84,6 +87,7 @@ def _not_run_notice(withheld: WithheldOut) -> str:
     registry = named(NOT_RUN_REGISTRY)
     own = named(NOT_RUN_REGISTRY_IF_GOVERNED)
     insecure = named(NOT_RUN_INSECURE_URL)
+    switched_off = named(NOT_RUN_SCOPE_MUTED)
     parts = []
     if registry or own:
         lines = ["⚠ MCP registry mode is on (`agent.mcp_registry_mode`)."]
@@ -109,6 +113,17 @@ def _not_run_notice(withheld: WithheldOut) -> str:
             "machine (localhost), so these servers will not run in this session:\n"
             + "\n".join(f"• {_server_label(n)}" for n in insecure)
             + "\nChange each url to `https://` to use it here."
+        )
+    if switched_off:
+        parts.append(
+            "⚠ A global MCP config (such as `~/.kiro/settings/mcp.json`) switches these "
+            "servers off, so they will not run in this session even though the agent "
+            "declares them:\n"
+            + "\n".join(f"• {_server_label(n)}" for n in switched_off)
+            + "\nTo use one, turn it on in MCP Servers, which also turns it on for Kiro "
+            "Crew's own agent and every agent that loads that file, or remove its entry "
+            "from that file to keep it only in the agents that declare it. Then start a "
+            "new session."
         )
     return "\n\n".join(parts)
 

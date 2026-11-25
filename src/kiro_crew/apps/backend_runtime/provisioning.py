@@ -34,7 +34,12 @@ from kiro_crew.apps.manager import _DEPS_STAGING_SWEEP_RE
 from kiro_crew.apps.manifest import REQUIREMENTS_TXT_MAX_BYTES, requirements_in_tree
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
+from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
+    cgroup_scope_argv,
+    run_limited,
+    wrap_argv,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -905,6 +910,8 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
                         str(req_src),
                     ),
                     mode="standard",
+                    # A source build runs third-party setup code.
+                    extra_hidden_dirs=app_backend_secret_mask_targets(),
                 )
                 pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling
                 # check=True: a non-zero pip exit IS a provisioning failure. It

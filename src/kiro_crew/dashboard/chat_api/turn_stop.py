@@ -646,17 +646,36 @@ async def stop_slot_turn(
 
         _config = live.snapshot()
         _peer_recovery = _config is not None and _config.agent.peer_steer_loss_recovery
+        from kiro_crew.dashboard import deferred_steer
+
+        _injected = set(slot._deferred_steer_injected.values())
+        _still_held = {held.text for held in slot._deferred_steers}
+        # Injected held steers the client only buffered: they never left the gateway.
+        _never_sent = deferred_steer.unsent_injected(slot, getattr(slot, "_acp_client", None))
         for _discarded in slot._pending_steers:
             # With the key on a peer steer can wait for its turn's clean end, so a hard stop tells
-            # its sender; one still in its RPC will answer unavailable and be queued instead.
+            # its sender; one still in its RPC will answer unavailable and be queued instead. A
+            # held steer injected at a boundary, marked or not, is told too whatever the key says,
+            # and its receipt stops reading delivered: "discarded" when the client never sent it,
+            # else "unconfirmed". One still held is told by `discard_all`.
             _admission = slot._steer_admissions.get(_discarded)
-            if _peer_recovery and _admission and _discarded not in slot._steer_rpc_in_flight:
+            _unsent = _discarded in _never_sent
+            _was_injected = _discarded in _injected and _discarded not in _still_held
+            if _unsent:
+                deferred_steer.restamp(slot, _discarded, "discarded")
+            elif _was_injected:
+                deferred_steer.mark_unconfirmed(slot, _discarded)
+            if (
+                (_peer_recovery or _was_injected)
+                and _admission
+                and _discarded not in slot._steer_rpc_in_flight
+            ):
                 notify_send_origin_discarded(
                     state,
                     entry_meta=_admission,
                     target_slot=slot,
                     text=_discarded,
-                    cause=SEND_DISCARD_HARD_STOP_STEER,
+                    cause=SEND_DISCARD_HARD_STOP if _unsent else SEND_DISCARD_HARD_STOP_STEER,
                 )
             slot._steer_delivery_ids.pop(_discarded, None)
             # Lockstep with the line above (see `_ChatSlot._steer_send_ids`): a hard
@@ -674,6 +693,23 @@ async def stop_slot_turn(
             slot._steer_possibly_delivered.discard(_discarded)
             crew_steer_discarded(slot, _discarded)
         slot._pending_steers.clear()
+        # A hard stop discards held peer steers with the rest of the turn's pending work.
+        # Each was never injected, so its sender is told it will not run, as a queued
+        # delivery's sender is, and its receipt reads "discarded".
+        deferred_steer.discard_all(
+            slot,
+            lambda held: notify_send_origin_discarded(
+                state,
+                entry_meta=held.origin_meta,
+                target_slot=slot,
+                text=held.text,
+                cause=(
+                    SEND_DISCARD_HARD_STOP_STEER
+                    if held.steer_id in slot._deferred_steer_delivered
+                    else SEND_DISCARD_HARD_STOP
+                ),
+            ),
+        )
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
 
@@ -899,13 +935,15 @@ async def stop_slot_turn(
     # is resolved and the reply names the honest state -- there is no running
     # provider turn here to report as "stopped", and no provider turn to kill.
     _idle_running = outcome == "idle" and slot.running
+    if outcome == "idle" and (
+        _cancel_preparing_runner(slot, preparing) or await _cancel_admission_wait(slot)
+    ):
+        # The turn had no provider turn yet: this press stopped it.
+        _idle_running = False
     # A newer press owns the card and the posture now: settling either here
     # would idle its stop, and its next press would start over instead of
     # escalating to the hard kill.
     _owns_posture = slot._stop_generation == stop_generation
-    if outcome == "idle" and _cancel_preparing_runner(slot, preparing):
-        # The runner had no provider turn yet: this press stopped it.
-        _idle_running = False
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
@@ -974,6 +1012,19 @@ def _cancel_preparing_runner(slot: "_ChatSlot", preparing: Any) -> bool:
     slot._preparing_turn = None
     runner.cancel()
     return True
+
+
+async def _cancel_admission_wait(slot: "_ChatSlot") -> bool:
+    """End a dashboard send still waiting in fair admission; whether it did.
+
+    That wait runs before the send's runner starts, so it has no
+    ``_preparing_turn`` record for :func:`_cancel_preparing_runner` to find. Its
+    work is cancelled as a person's cancel instead: the turn ends unstarted and
+    its own hand-off drains the queue.
+    """
+    from kiro_crew.shared_crew import admission_entry
+
+    return await admission_entry.cancel_waiting_send(slot.key)
 
 
 def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
@@ -1549,9 +1600,9 @@ async def _interrupt_claimed_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
-    if outcome == "idle":
-        # Its tail drains the promoted card, as at the end of any stopped turn.
-        _cancel_preparing_runner(slot, preparing)
+    if outcome == "idle" and not _cancel_preparing_runner(slot, preparing):
+        # Either tail drains the promoted card, as at the end of any stopped turn.
+        await _cancel_admission_wait(slot)
     # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
     # new generation during the await owns the card and the posture.
     _owns_posture = slot._stop_generation == claim_generation

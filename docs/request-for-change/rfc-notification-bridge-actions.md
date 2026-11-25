@@ -3,8 +3,8 @@ title: Interactive actions for the Notification Bridge (B4) — act on a bridged
 status: partial
 author: rohnkum
 created: 2026-11-08
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 32917
 implementation-prs: [33749, 33815, 34064, 34474, 34565, 34822, 36050, 36336]
 tracking-issues: [32902]

@@ -211,6 +211,10 @@ async def test_the_sign_in_api_needs_the_owner_token() -> None:
         assert (await client.get("/api/health")).status == 200
         assert (await client.get("/api/kas-login")).status in (401, 403)
         assert (await client.get("/api/kiro-prerequisite")).status in (401, 403)
+        # The sign-in screen's own status read passes the owner gate.
+        resp = await client.get("/api/kas-login", cookies=_owner_cookie(port))
+        assert resp.status == 200
+        assert "authenticated" in await resp.json()
         resp = await client.get("/api/kiro-prerequisite", cookies=_owner_cookie(port))
         assert resp.status == 200
         body = await resp.json()
@@ -616,7 +620,7 @@ def test_cli_a_second_start_on_a_served_sign_in_screen_points_at_its_link(
     assert "KIROCREW_HOME" in err
 
 
-@pytest.mark.parametrize("flag", ["--test-mode", "--json-ready"])
+@pytest.mark.parametrize("flag", ["--test-mode", "--json-ready", "--headless"])
 def test_cli_test_and_scripted_starts_still_exit(
     lts: None,
     signed_out: list[bool],
@@ -628,6 +632,7 @@ def test_cli_test_and_scripted_starts_still_exit(
     assert exit_.code == lts_boot.EXIT_CODE
     assert boots == [1]
     gateway.assert_not_called()
+    assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize("port", ["abc", "99999"])
@@ -665,7 +670,12 @@ def test_cli_opens_a_browser_only_where_the_gateway_would(
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr("kiro_crew.cli.sys.platform", "linux")
+    from kiro_crew import cli
+
+    # Take the non-macOS branch on every host through `cli`'s own one-line helper. A faked
+    # `sys.platform` or `platform_compat` would be live while `_cli_gateway` imports
+    # `cli_server`, and every module imported then would see the fake value.
+    monkeypatch.setattr(cli, "_headless_ssh_skips_browser_here", lambda: True)
     seen: dict[str, Any] = {}
 
     def sign_in_then_exit(_exc: BaseException, **kwargs: Any) -> None:

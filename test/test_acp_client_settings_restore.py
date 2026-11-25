@@ -466,7 +466,7 @@ class TestCreateRaceLoserPoll:
             if not fired and os.fspath(p) == os.fspath(path) and flags & os.O_EXCL:
                 fired.append(1)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(payload, encoding="utf-8")
+                path.write_bytes(payload.encode("utf-8"))
             return real_open(p, flags, *args, **kwargs)
 
         monkeypatch.setattr(os, "open", winner_created_the_file)

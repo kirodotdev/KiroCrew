@@ -341,9 +341,7 @@ async def test_low_memory_queues_every_subagent_and_defers_only_a_durable_row(h,
         info = hz.spawn("pressure sentinel", _memory_mode=mode)
         await hz.settle()
         assert info.queued and not info.done and info.error == ""
-        assert info.queued_reason == "low_memory" and "0.5 GB available" in (
-            info.queued_reason_detail
-        )
+        assert info.queued_reason == "low_memory" and "0.5 GB free" in info.queued_reason_detail
         assert hz.mgr._running_count == 0 and not hz.started
         if mode == "persistent":
             assert hz.store.get(info.id).state == model.QUEUED

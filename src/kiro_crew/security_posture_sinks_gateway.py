@@ -289,6 +289,20 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "state and binary pixel frames are unchanged.",
     ),
     (
+        "Browser js, cdp and http_get results",
+        "browser_harness/raw_ops.py",
+        "The value a page script, a DevTools command or a direct fetch returns to the "
+        "agent passes the exfiltration-URL and credential redactors whole, then is "
+        "fence-neutralized and capped, before it leaves the op route.",
+    ),
+    (
+        "Browser per-origin sign-in",
+        "browser_harness/sign_in_guard.py",
+        "A provider's sign-in outcome reaches the agent as the site's host, a fixed "
+        "reason code and a note; the provider's own message passes the exfiltration-URL "
+        "and credential redactors whole before it is cut to 200 printable characters.",
+    ),
+    (
         "Browser action change reports",
         "browser_harness/change_report.py",
         "The `changes` report a click, type or select carries while "
@@ -974,6 +988,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
+        "Crew API responses",
+        "dashboard/crew_api_responses.py",
+        "The reply text and the failure reason of a POST /v1/responses turn, redacted "
+        "before the answer leaves. `metadata`, the model name and the names of ignored "
+        "fields go back as the caller sent them.",
+    ),
+    (
+        "Crew API response stream",
+        "dashboard/crew_api_response_stream.py",
+        "The text deltas of a streamed POST /v1/responses turn pass through "
+        "StreamRedactor with the route's _redact before they leave. Its final text "
+        "is the concatenation of those deltas, including on failure. Held text is "
+        "redacted at the turn's end; oversized sensitive runs are replaced and their "
+        "continuations discarded. Approved links' token values are redacted too.",
+    ),
+    (
         "A conductor mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
@@ -1057,5 +1087,47 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "kept only as plain ASCII words with no ARN or 12-digit number, passes "
         "the credential redactor (`redact_via_context`) and is cut to 200 "
         "characters; anything else leaves the text the gateway wrote itself.",
+    ),
+    (
+        "The prompt a turn sent",
+        "dashboard/handlers/prompt_as_sent.py",
+        "The Context tab's prompt as sent: the text one turn sent the agent, read from "
+        "the in-memory prompt record, passes the exfiltration-URL and credential "
+        "redactors before it reaches the owner's browser.",
+    ),
+    (
+        "App Kiro call error bodies",
+        "apps/kiro_calls.py",
+        "The Kiro BFF's own error message, passed back to the app that made the call "
+        "in `kiro.message`. The upstream can echo request headers, so every token the "
+        "call sent is replaced first (a bare token matches no secret pattern) and the "
+        "credential scanner then runs over the text, cut to 300 characters.",
+    ),
+    (
+        "Managed-environment service error text",
+        "managed_env/client.py",
+        "The managed-environment service's own error message, kept on the client's "
+        "error for the caller to show. A 401 or 403 keeps no message; any other has "
+        "the bearer the call sent replaced first, then passes the credential scanner, "
+        "cut to 200 characters.",
+    ),
+    (
+        "Browser page text handed to an app",
+        "apps/browser_page_port.py",
+        "Every string `ctx.browser.page(slot)` returns to an app's backend: the page "
+        "outline, a tab's address and title, an op's result or error, the live view's "
+        "address and title and a picked element's name. Each passes the "
+        "exfiltration-URL and credential redactors whole before any cut to a length.",
+    ),
+    (
+        "The work a restart is waiting on",
+        "work_holders.py",
+        "The names a busy restart idle check lists to the CLI on the gateway "
+        "host: dashboard slot keys and cron job names. Terminal control "
+        "sequences and format characters are dropped, then the active "
+        "credential policy (`redact_via_context`) masks credentials, inside "
+        "URLs too, before the name is cut to 64 characters; a host whose "
+        "policy cannot be composed lists no name. The CLI repeats it on what "
+        "it prints.",
     ),
 )

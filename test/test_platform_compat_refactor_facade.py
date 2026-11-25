@@ -255,7 +255,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
         _windows_process_handle_identity process_matches process_image_name
-        _win_process_image_name process_argv_matches_exact process_argv_fingerprint
+        _win_process_image_name process_argv process_argv_matches_exact process_argv_fingerprint
         linux_process_name process_cgroups_match process_command_line process_owner_uid
         effective_uid _START_TIME_PS_TIMEOUT _process_lstart process_start_time
         process_start_id_for_source _OWN_START_TIME _linux_boot_id _own_identity_token
@@ -336,6 +336,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
         _linux_available_mib host_total_mib _darwin_memsize_bytes host_available_mib MEMORY_PRESSURE_NORMAL
+        _LINUX_MEMORY_PSI_PATH linux_memory_psi_full_avg10
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
         POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE

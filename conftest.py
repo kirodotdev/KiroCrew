@@ -193,7 +193,7 @@ def _floor_monkeypatch():
         for name, value in cli_process_environment.items():
             if value is None:
                 os.environ.pop(name, None)
-            else:
+            elif os.environ.get(name) != value:
                 os.environ[name] = value
 
 
@@ -225,6 +225,7 @@ def monkeypatch(_floor_monkeypatch):
 # copy of this file shares one module object per part. No bytecode is written for them, since
 # this runs before ``pytest_configure`` moves bytecode off the checkout.
 _FLOOR_PARTS = (
+    "conftest_floor_guards",
     "conftest_floor_home",
     "conftest_floor_tmp",
     "conftest_floor_configure",
@@ -234,6 +235,7 @@ _FLOOR_PARTS = (
     "conftest_floor_determinism",
     "conftest_floor_reporting",
     "conftest_floor_git",
+    "conftest_floor_read_budget",
 )
 
 
@@ -258,6 +260,8 @@ def _load_floor_part(stem: str):
     return module
 
 
+# The guard runner both conftests' guard sets are built on; not a part of either.
+_load_floor_part("per_test_guards")
 for _stem in _FLOOR_PARTS:
     _load_floor_part(_stem)
 
@@ -272,6 +276,7 @@ from conftest_floor_configure import (  # noqa: E402,F401 -- bound for pytest an
     _put_the_tree_under_test_first_on_child_paths,
     _redirect_bytecode_cache,
     _redirect_hypothesis_database,
+    _refuse_unc_network_paths,
     pytest_warning_recorded,
 )
 
@@ -310,6 +315,21 @@ from conftest_floor_git import (  # noqa: E402,F401 -- bound for pytest and for 
     _git_maintenance_off_entries,
     _git_vars_to_strip,
     _load_git_maintenance_helpers,
+)
+
+# The fixtures that run the per-test floors; ``seal_floor_guards`` at the end of
+# this file sorts the floors bound here into them.
+from conftest_floor_guards import (  # noqa: E402,F401 -- bound for pytest and for tests
+    FLOOR_SEGMENT_FIXTURES,
+    FLOORS,
+    _c_floors,
+    _f_floors,
+    _isolate_b_floors,
+    _isolate_l_floors,
+    _j_floors,
+    _rest_floors,
+    floor_guard,
+    seal_floor_guards,
 )
 
 # Data home: the import-time floor and the per-test home, SEL and ~/.kiro pins.
@@ -373,6 +393,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _no_leaked_telemetry_exporter,
     _record_skill_search_indexes,
     _restore_boot_wired_globals,
+    _restore_cli_log_file_handlers,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
     _restore_log_record_factory,
@@ -409,6 +430,7 @@ from conftest_floor_services import (  # noqa: E402,F401 -- bound for pytest and
     _SERVICE_MANAGERS,
     _block_host_service_mutation,
     _fail_on_refused_real_reclaim_write,
+    _no_engine_install_at_gateway_start,
     _no_real_cgroup_reclaim_write,
     _no_systemd_user_session,
     _refusal_reason,
@@ -426,6 +448,7 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
     _prefer_short_tmp_base,
     _redirect_tempfile_base,
     _remove_tree,
+    _root_residue_leaves,
     _stop_git_discovery_above_the_temp_roots,
     _tmp_residue,
     _tmp_residue_report,
@@ -435,8 +458,19 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
 if _TMP_PER_TEST:
     from conftest_floor_tmp import _isolate_tempfile_base_per_test  # noqa: E402,F401
 
+# The crew-log read-budget check, and its fixture only when the switch is on.
+from conftest_floor_read_budget import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _READ_BUDGET_ENV,
+    _READ_BUDGET_RAISE,
+    KNOWN_OVER_BUDGET_SITES,
+    check_read_budget,
+)
 
-@pytest.fixture(autouse=True)
+if _READ_BUDGET_RAISE:
+    from conftest_floor_read_budget import _crew_log_read_budget_check  # noqa: E402,F401
+
+
+@floor_guard
 def _scrub_inherited_preload_env(_floor_monkeypatch):
     """Hide the entries ``name_grant`` refuses as inherited preloads, then restore them.
 
@@ -635,6 +669,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
     _install_determinism_audit_hook()
+    _refuse_unc_network_paths(str(config.rootpath))
     _put_the_tree_under_test_first_on_child_paths()
     _put_the_real_node_first_on_path()
     _gate_pytest_asyncio_fixture_scan()
@@ -1326,14 +1361,14 @@ def _check_pool_leftovers(item) -> None:
             )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _kiro_crew_package_attr_floor(request):
     """Restore the ``kiro_crew`` module graph a test inherited; report the test that changed it.
 
     Compares, at teardown, every ``kiro_crew.*`` entry of ``sys.modules`` the test
     inherited and its parent package's attribute (plus the root package's own globals,
     which an in-process ``importlib.reload(kiro_crew)`` rebinds) with what they were at
-    setup, using C-level ``map`` comparisons; only a change takes the slow path. A
+    setup, read through one C-level multi-key read per dict; only a change takes the slow path. A
     module the test imported for the first time is checked too: one left in
     ``sys.modules`` without its parent attribute is bound back. Reports by default and
     fails under ``KIROCREW_PKG_ATTR_STRICT=1``; restores either way. A module- or
@@ -1875,6 +1910,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     )
     for name in residue:
         reporter.write_line(f"    {name}")
+        for leaf in _root_residue_leaves(_REPO_ROOT / name):
+            reporter.write_line(f"        {leaf}")
     reporter.write_line("")
     reporter.write_line(
         "A test must not write into the checkout. The usual cause is a "
@@ -1952,3 +1989,6 @@ def pytest_terminal_summary(
             f"{_MAX_ANNOTATED_FAILURES} are annotated. The remaining {hidden} are in "
             "this job's short test summary."
         )
+
+
+seal_floor_guards(globals())

@@ -16,6 +16,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+from time import gmtime, strftime
 
 import pytest
 from conftest_floor_home import _tmp_root_prefix_for_run
@@ -139,13 +140,20 @@ _TMP_PER_TEST = bool(os.environ.get(_TMP_PER_TEST_ENV))
 #:   deliberately keeps under ``tempfile.gettempdir()`` as a persistent ring buffer
 #:   (pinned by ``test_computer_use_capture.py``). Long-lived BY DESIGN, so its presence
 #:   is the feature working, not a test leaking.
-#: * ``playwright-`` / ``.org.chromium.`` -- created by the browser and its driver, which
-#:   inherit the redirected ``TMPDIR`` like any other child. Third-party scratch this
-#:   suite does not own and cannot register cleanup for.
+#: * ``playwright-`` / ``playwright_<browser>dev_profile-`` / ``.org.chromium.`` -- created
+#:   by the browser and its driver, which inherit the redirected ``TMPDIR`` like any other
+#:   child. Third-party scratch this suite does not own and cannot register cleanup for.
+#:   The ``dev_profile-`` forms are the driver's per-launch browser profile, which the
+#:   driver removes when the browser exits and so stays behind when that child is killed
+#:   instead. Only the three exact profile names are allowed, so any other
+#:   ``playwright_`` entry is still reported.
 _TMP_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (
     "pytest-of-",
     "kirocrew-computer-shots",
     "playwright-",
+    "playwright_chromiumdev_profile-",
+    "playwright_firefoxdev_profile-",
+    "playwright_webkitdev_profile-",
     ".org.chromium.",
 )
 
@@ -326,6 +334,37 @@ def _tmp_residue_report(
         "after it -- NOT an rmtree in tearDown, which unittest skips entirely when "
         "setUp raises.\n" + hint
     )
+
+
+#: How many leaves the repository root residue report lists under each new entry.
+_ROOT_RESIDUE_LEAVES_SHOWN = 10
+
+
+def _root_residue_leaves(entry: pathlib.Path) -> list[str]:
+    """Up to ten leaves of a repository-root residue *entry*, each with its UTC mtime.
+
+    The entry's name rarely says who wrote it, and a leaf usually does: a ``tmp_path``
+    mirrored under the entry carries the test's own directory name, and the time places
+    the write in the job log. A leaf is a file, or a folder with nothing in it.
+    """
+    leaves = [str(entry)]
+    if entry.is_dir() and not entry.is_symlink():
+        leaves = []
+        for folder, subfolders, files in os.walk(entry):
+            subfolders.sort()
+            leaves += [os.path.join(folder, name) for name in sorted(files)]
+            if not subfolders and not files:
+                leaves.append(folder)
+            if len(leaves) >= _ROOT_RESIDUE_LEAVES_SHOWN:
+                break
+    shown = []
+    for leaf in leaves[:_ROOT_RESIDUE_LEAVES_SHOWN]:
+        try:
+            when = strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(os.lstat(leaf).st_mtime))
+        except OSError:
+            when = "gone"
+        shown.append(f"{os.path.relpath(leaf, entry.parent)}  {when}")
+    return shown
 
 
 if _TMP_PER_TEST:

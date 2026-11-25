@@ -70,9 +70,11 @@ every shipped built-in package's ``app.json``, every installed app's
 absent, unreadable, not JSON or nested past the parser's depth declares nothing; an invalid entry is dropped and logged once, and the install
 validation refuses it (``AppManifest.validate``).
 
-The installed tree is sandbox-writable, so a masked leaf is only as strong as the
-manifest that declares it: an agent that rewrites an installed app's ``app.json``
-drops that app's masks from the next spawn, as it could rewrite the app's code. The
+The agent's file tools may not write a manifest or record that holds a fence
+(:func:`tool_gate_declarations`, on the write gate only). The installed tree is still
+sandbox-writable, so a masked leaf is only as strong as the manifest that declares it:
+an agent shell that rewrites an installed app's ``app.json`` drops that app's masks from
+the next spawn, as it could rewrite the app's code. The
 mask stops an agent that reads files; it does not make an installed app's tree
 tamper-proof. Sealing the tree is the operator's decision, not this seam's.
 
@@ -89,6 +91,7 @@ Process state only (a cache of parsed manifests); no per-caller data.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -371,15 +374,35 @@ def _read_declaration(
     return entries, clean
 
 
+@functools.cache
+def _builtins_root() -> Path:
+    """The shipped ``builtins/`` directory, resolved once: this module does not move."""
+    return Path(__file__).resolve().parent / "builtins"
+
+
+@functools.cache
+def _builtin_manifest_path(root: Path, package: str) -> Path:
+    """``<root>/<package>/app.json``, built and parsed once per directory and package.
+
+    Every sandboxed spawn asks for the declared masks several times, and building
+    and formatting these paths would otherwise be most of what each ask costs.
+    :func:`_builtin_manifests` lists the directory and every manifest is stat'ed
+    on each ask, so a package or a manifest that changes is read as it is on disk.
+    """
+    path = root / package / "app.json"
+    str(path)  # pathlib parses lazily; parse here so the cached path never parses again
+    return path
+
+
 def _builtin_manifests() -> list[tuple[str, Path]]:
     """``(installed name, app.json)`` for every shipped built-in package."""
-    root = Path(__file__).resolve().parent / "builtins"
+    root = _builtins_root()
     try:
         packages = sorted(entry.name for entry in os.scandir(root) if entry.is_dir())
     except OSError:
         return []
     return [
-        (package.replace("_", "-"), root / package / "app.json")
+        (package.replace("_", "-"), _builtin_manifest_path(root, package))
         for package in packages
         if not package.startswith(("_", "."))
     ]
@@ -529,6 +552,20 @@ def tool_gate_crew_leaves(kind: DeclarationKind = CREDENTIAL_MASKS) -> ToolGateL
     here can name a path outside ``apps/<name>/data/`` or the lifecycle's move-aside of
     it, nor a publish artifact outside them, so the gate gains refusals and loses none.
     """
+    return tool_gate_declarations(kind)[0]
+
+
+def tool_gate_declarations(
+    kind: DeclarationKind = CREDENTIAL_MASKS,
+) -> tuple[ToolGateLeaves, tuple[str, ...]]:
+    """:func:`tool_gate_crew_leaves`, and the files those fences come from, in one listing.
+
+    The second item is every installed manifest and retained record that declares an
+    entry or does not read cleanly, as a crew-home leaf (``apps/<name>/app.json``,
+    ``apps/.<name><record suffix>``). Only the WRITE gate takes it, never the read gate:
+    rewriting one of these files is how the fence it holds would be dropped
+    (``agent_readonly_dirs.write_protected_home_paths``).
+    """
     try:
         sources = _installed_manifests(kind, strict=True)
     except Exception:
@@ -538,18 +575,24 @@ def tool_gate_crew_leaves(kind: DeclarationKind = CREDENTIAL_MASKS) -> ToolGateL
             APPS_LEAF,
             exc_info=True,
         )
-        return ToolGateLeaves((), (APPS_LEAF,))
+        return ToolGateLeaves((), (APPS_LEAF,)), ()
     declared: set[str] = set()
     unreadable: set[str] = set()
+    fencing: set[str] = set()
     for name, path in sources:
         entries, clean = _read_declaration(path, name, kind)
         if not clean:
             unreadable.add(f"{APPS_LEAF}/{name}/{DATA_LEAF}")
             unreadable.add(f"{APPS_LEAF}/.{name}{STAGED_DATA_SUFFIX}")
+        if entries or not clean:
+            # A record is ``apps/.<name>...``; a manifest is ``apps/<name>/app.json``.
+            parent = "" if path.name.startswith(".") else f"{name}/"
+            fencing.add(f"{APPS_LEAF}/{parent}{path.name}")
         for entry in entries:
             declared.add(crew_leaf(name, entry))
             declared.add(staged_crew_leaf(name, entry))
-    return ToolGateLeaves(tuple(sorted(declared)), tuple(sorted(unreadable)))
+    leaves = ToolGateLeaves(tuple(sorted(declared)), tuple(sorted(unreadable)))
+    return leaves, tuple(sorted(fencing))
 
 
 def tool_gate_home_rows() -> ToolGateLeaves:

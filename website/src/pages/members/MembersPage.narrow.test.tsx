@@ -736,6 +736,96 @@ describe('MembersPage default member, memory and URL', () => {
       }
     })
 
+    it('in the shell bar caps the fixed identity stack clear of the side controls and lets only its face and chip catch taps', async () => {
+      // jsdom cannot lay out, so this pins the classes that keep the fixed,
+      // z-30 stack's box off the drawer toggle, channel chip and panel opener.
+      const slot = document.createElement('div')
+      slot.id = 'mobile-topbar-slot'
+      document.body.appendChild(slot)
+      try {
+        await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+        await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+        const pill = await within(slot).findByTestId('member-identity-pill')
+        expect(pill).toHaveClass('fixed', 'max-w-[calc(100vw-12rem)]', 'pointer-events-none')
+        expect(pill).not.toHaveClass('pointer-events-auto')
+        expect(pill).not.toHaveClass('max-w-full')
+        const face = within(pill).getByTestId('member-pill-face')
+        expect(face).toHaveClass('pointer-events-auto')
+        const name = within(pill).getByTestId('member-pill-name')
+        const chip = name.closest('.glass-shadow')
+        expect(chip).toHaveClass('pointer-events-auto', 'max-w-full')
+        expect(name).toHaveClass('truncate')
+        expect(within(pill).getByTestId('member-pill-activity')).toHaveClass('truncate')
+        // The bar's side cells sit above the stack and pass input through to
+        // their controls only, so they neither lose taps to the chip nor cover the face.
+        for (const id of ['member-thread-header-lead', 'member-thread-header-trail']) {
+          const cell = within(slot).getByTestId(id)
+          expect(cell).toHaveClass('relative', 'z-40', 'pointer-events-none')
+        }
+        expect(within(slot).getByTestId('member-thread-header-lead')).toContainElement(within(slot).getByTestId('member-back'))
+        expect(within(slot).getByTestId('member-thread-header-trail')).toContainElement(within(slot).getByTestId('member-panel-toggle'))
+        // Still the one button: a tap on the chip bubbles to it and opens Profile.
+        fireEvent.click(name)
+        await screen.findByTestId('crew-profile-modal')
+      } finally {
+        slot.remove()
+      }
+    })
+
+    it('in the shell bar the identity stack steps out while the side panel or the roster drawer is on screen', async () => {
+      // The bar (shell header, z-45) paints the fixed stack over every page
+      // overlay that opens under it, so the stack must not cover their tops.
+      const slot = document.createElement('div')
+      slot.id = 'mobile-topbar-slot'
+      document.body.appendChild(slot)
+      try {
+        await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+        await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+        const pill = await within(slot).findByTestId('member-identity-pill')
+        // Stepped out = zero opacity, and neither the face nor the chip catches
+        // a tap; never `invisible`, which would drop a keyboard user's focus.
+        const steppedOut = (shown: boolean) => {
+          const p = within(slot).getByTestId('member-identity-pill')
+          const hit = [within(p).getByTestId('member-pill-face'), within(p).getByTestId('member-pill-name').closest('.glass-shadow')!]
+          expect(p).not.toHaveClass('invisible')
+          if (shown) {
+            expect(p).toHaveClass('opacity-0')
+            for (const el of hit) { expect(el).toHaveClass('pointer-events-none'); expect(el).not.toHaveClass('pointer-events-auto') }
+          } else {
+            expect(p).not.toHaveClass('opacity-0')
+            for (const el of hit) expect(el).toHaveClass('pointer-events-auto')
+          }
+        }
+        steppedOut(false)
+        // The side panel sheet.
+        fireEvent.click(within(slot).getByTestId('member-panel-toggle'))
+        await screen.findByTestId('member-side-panel')
+        steppedOut(true)
+        fireEvent.click(within(slot).getByTestId('member-panel-toggle'))
+        await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+        await waitFor(() => expect(within(slot).getByTestId('member-identity-pill')).not.toHaveClass('opacity-0'), { timeout: 3000 })
+        steppedOut(false)
+        // Profile opened from the keyboard: the stack steps out but keeps
+        // focus, so pressing it again closes the card.
+        pill.focus()
+        fireEvent.click(pill)
+        await screen.findByTestId('crew-profile-modal')
+        steppedOut(true)
+        expect(pill).toHaveFocus()
+        expect(pill).toHaveAttribute('aria-expanded', 'true')
+        fireEvent.click(pill)
+        await waitFor(() => expect(screen.queryByTestId('crew-profile-modal')).toBeNull(), { timeout: 3000 })
+        await waitFor(() => expect(pill).toHaveAttribute('aria-expanded', 'false'), { timeout: 3000 })
+        await waitFor(() => steppedOut(false), { timeout: 3000 })
+        // The roster drawer.
+        fireEvent.click(within(slot).getByTestId('member-back'))
+        await screen.findByTestId('roster-drawer')
+        steppedOut(true)
+      } finally {
+        slot.remove()
+      }
+    })
+
     it('wears the Sessions bar\'s bare drawer toggle and a bare panel toggle in the shell bar, not Glass chips', async () => {
       const slot = document.createElement('div')
       slot.id = 'mobile-topbar-slot'

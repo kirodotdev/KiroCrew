@@ -3,8 +3,9 @@
  *
  *  Each row carries a chip naming the source the person came in through
  *  (`sharedCrewUi.personSource`), so the same person can be a row once per
- *  source; the heading counts distinct people. Invites nobody has used yet are
- *  rows of the same list, with their source chip, and are not counted.
+ *  source; the heading counts those rows, so its number is the rows a person
+ *  sees. Invites nobody has used yet are rows of the same list, with their
+ *  source chip, and are not counted.
  *
  *  Remove sits where it works: an SSM person and an unopened SSM invite
  *  ("Revoke invite"), and a person or invite of a single-use Tailscale invite.
@@ -20,7 +21,7 @@ import { ExternalLink, Pencil } from 'lucide-react'
 import { api } from '../../api/client'
 import { AVATAR_MAX_BYTES, AVATAR_TYPES, avatarPreviewUri, avatarUrl, fileToBase64, inviteErrorCode } from '../../api/sharedCrewInvites'
 import { ssmInviteFor, waitingSsmInvites, type SsmInvite } from '../../api/sharedCrewSsm'
-import { distinctPeopleCount, personSource, principalInitials, principalName, waitingInvites, type PeopleRow, type PersonSource } from '../../api/sharedCrewUi'
+import { personSource, principalInitials, principalName, waitingInvites, type PeopleRow, type PersonSource } from '../../api/sharedCrewUi'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Badge, Btn, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -164,7 +165,7 @@ function PersonLine({ row, usageAvailable, invite, ssmInvite, canManage, fallbac
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
           {row.is_viewer && row.is_owner
-            ? <Badge variant="muted">{i18nT('sharedCrew.you_owner')}</Badge>
+            ? <Badge variant="muted">{i18nT('sharedCrew.you_host')}</Badge>
             : row.is_viewer
               ? <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>
               : row.is_owner && !ownerKnownOnlyByMachine(row) && <Badge variant="muted">{i18nT('sharedCrew.crew_owner')}</Badge>}
@@ -298,9 +299,9 @@ function InviteRows({ invites, ssmInvites }: { invites: TailscaleInvite[]; ssmIn
 }
 
 /** "People · N": everyone connected or seen, each with the source they came in
- *  through, then invites nobody has used yet. N counts distinct people: one
- *  person on two sources is two rows and one person, and an invite is not one
- *  yet. A current member hides their own invite. *fallbackSource*: the chip a
+ *  through, then invites nobody has used yet. N counts the people rows: one
+ *  person on two sources is two rows, which the note under the heading
+ *  explains, and an invite is not one yet. A current member hides their own invite. *fallbackSource*: the chip a
  *  row with no provenance takes (`sharedCrewMode.rowSourceFallback`). */
 export function PeopleList({ people, usageAvailable, notes = [], footer, fallbackSource = null }: {
   people: PeopleRow[]
@@ -317,7 +318,7 @@ export function PeopleList({ people, usageAvailable, notes = [], footer, fallbac
   const ssm = useSsmStatus()
   const ssmInvites = ssm.data?.invites ?? []
   const waitingSsm = waitingSsmInvites(people, ssmInvites)
-  const count = distinctPeopleCount(people)
+  const count = people.length
   const canManage = !!invites.data
   const title = i18nT('sharedCrew.people_title', { n: fmtNumber(count) })
   return (

@@ -175,7 +175,7 @@ async def callback(job):
         root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
         from kiro_crew.slack import gateway
 
-        census = inspect.getsource(gateway.GatewayOrchestrator._in_flight_work_counts)
+        census = inspect.getsource(gateway.GatewayOrchestrator._in_flight_work_census)
         for token in (
             "sessions.inbound_callback_count",
             "inbound_spool.pending_refusal_write_count()",
@@ -220,7 +220,7 @@ async def callback(job):
                     *sorted((root / "slack" / "gateway_runtime").glob("*.py")),
                 ],
                 2,
-                ("len(self._running_script_ids)",),
+                ("for job_id in list(self._running_script_ids)",),
             ),
             "taskrunner": (
                 [root / "taskrunner.py", *sorted((root / "taskrunner_parts").glob("*.py"))],

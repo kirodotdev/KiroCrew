@@ -106,6 +106,9 @@ export interface SideMessage {
    *  restore read (`link_blocks`): the links its bubble draws as a Blocked link
    *  card. Validated where they are drawn. */
   link_blocks?: unknown
+  /** A stored answer's credential records, raw from its final frame or the read
+   *  (`redactions`): what its lock tags draw from. Validated where they are drawn. */
+  redactions?: unknown
   /** Shown before the server confirmed it, so it can be found again by identity.
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */
@@ -341,6 +344,11 @@ export interface ChatState {
    *  onto a session this tab saw closed (#14762). Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
   switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport } | null
+  /** The key whose last open failed transiently and stayed selected with an
+   *  empty pane (`switchSlot.rejected`), until a load of it lands. Unlike
+   *  `switchSlotGone` a notice dismiss does not clear it: the sidebar row reads
+   *  it so a click on that open chat retries instead of toggling the panel. */
+  slotOpenFailed: string | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -807,6 +815,7 @@ export const initialState: ChatState = {
   slotSwitchLatestRequestId: null,
   slotSwitchOrigin: null,
   switchSlotGone: null,
+  slotOpenFailed: null,
   loadingOlder: false,
   slotOlderError: false,
   lastChunkSeq: undefined,

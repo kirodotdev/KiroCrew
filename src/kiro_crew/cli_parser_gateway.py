@@ -1,8 +1,9 @@
 """Argparse definitions for the ``Start here``, ``Run the gateway`` and ``Set it up`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: doctor, service,
-status, usage, restart, stop, gateway-pid, logs, token, logout, ledger-sweep, tmp, update,
-setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level parser and
+status, usage, restart, stop, gateway-pid, mcp, logs, token, logout, ledger-sweep, tmp,
+update, setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level
+parser and
 calls every registrar in the command line's registration order, so a new command of these
 sections gets a registrar here and a call there. The ``gateway`` command's own arguments
 stay in ``cli.py``: ``pod.runtime_boot.target_supports_flag`` reads them from that file.
@@ -163,6 +164,19 @@ def register_update_parser(sub: _Commands) -> None:
             "upstream (git installs only)"
         ),
     )
+    # A plain string, never validated here: argparse's exit 2 is what tells the
+    # hub's "Update remote" this CLI predates the option, so a bad value must be
+    # refused by the update itself (exit 1), never by the parser.
+    update_parser.add_argument(
+        "--release",
+        metavar="VERSION",
+        default=None,
+        help=(
+            "For a git checkout detached at a release tag, move to the release tag "
+            "of VERSION (never an older one) instead of origin's main branch; "
+            "other installs ignore it"
+        ),
+    )
 
 
 def register_stop_parser(sub: _Commands) -> None:
@@ -189,6 +203,9 @@ def register_stop_parser(sub: _Commands) -> None:
             "that already identified the gateway they mean to stop."
         ),
     )
+    # The desktop's "Stop and restart" of an older gateway: a restart, not a stop the
+    # user chose, so the grants kept across other exits are kept (``kept_grants``).
+    stop_parser.add_argument("--keeps-grants", action="store_true", help=argparse.SUPPRESS)
 
 
 def register_restart_parser(sub: _Commands) -> None:
@@ -248,6 +265,23 @@ def register_gateway_pid_parser(sub: _Commands) -> None:
     )
 
 
+def register_mcp_parser(sub: _Commands) -> None:
+    # mcp reload <server> -- retire one MCP server's pooled backends on the
+    # running MCP gateway daemon, so the next session to attach boots a fresh
+    # process. For a boot-time input the pool key cannot see (a token file, an
+    # env key left out of the identity hash); config edits already apply live.
+    mcp_parser = cli_help.add_command(sub, "mcp")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+    reload_parser = mcp_sub.add_parser(
+        "reload",
+        help="Recycle one server's running backends; idle ones stop now, busy ones finish first",
+    )
+    reload_parser.add_argument(
+        "server",
+        help="MCP server name, as it appears in mcp.json (its slash-free alias also works)",
+    )
+
+
 def register_service_parser(sub: _Commands) -> None:
     # service — install/uninstall/status as a system-level systemd unit (Linux,
     # /etc/systemd/system/, requires sudo) or launchd LaunchAgent (macOS,
@@ -255,7 +289,21 @@ def register_service_parser(sub: _Commands) -> None:
     # auto-restarts on crash, and auto-starts on boot.
     svc_parser = cli_help.add_command(sub, "service")
     svc_sub = svc_parser.add_subparsers(dest="service_action")
-    svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
+    install = svc_sub.add_parser(
+        "install", help="Install and start the gateway service (sudo on Linux)"
+    )
+    # No default mode: with neither flag the install keeps what the installed
+    # service already starts with (service.controller.install_service).
+    install.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Start the service's gateway with `gateway --headless`: no dashboard, "
+            "loopback only. Kept by a later `service install` run without the flag; "
+            "--no-headless installs the service with the dashboard again."
+        ),
+    )
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
 
@@ -359,6 +407,15 @@ def register_token_parser(sub: _Commands) -> None:
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
     )
     token_parser.add_argument("--ttl", default="20h", help="Token TTL, e.g. 1h, 30m (default: 20h)")
+    token_parser.add_argument(
+        "--bearer",
+        action="store_true",
+        help=(
+            "Print the credential alone, instead of a dashboard link, for a client "
+            "to send in 'Authorization: Bearer' to the Crew API paths under /v1/. "
+            "POST /v1/chat/completions does not read that header."
+        ),
+    )
     token_parser.add_argument(
         "--embed-parent-port",
         type=int,

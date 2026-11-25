@@ -48,6 +48,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _classify_registry_fetch_failure,
     _entry_git_url,
     _git_target_is_unsupported,
+    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _looks_like_git_url,
     _public_registry_name,
@@ -395,7 +396,7 @@ async def _fetch_external_registry_index(
                 fetch_log,
                 credential_target=credential_target,
                 clone_env=minimal_env(),
-                sandbox_mode=_context_clone_sandbox_mode(git_url),
+                sandbox_mode=await asyncio.to_thread(_context_clone_sandbox_mode, git_url),
                 gh_path=gh_path,
             )
             if err is not None:
@@ -421,6 +422,7 @@ async def _fetch_external_registry_index(
             clone_cmd = [
                 "git",
                 *_HOOKS_NEUTRALIZER_ARGV,
+                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
                 "--depth",
                 "1",
@@ -432,7 +434,7 @@ async def _fetch_external_registry_index(
             ]
             # An owner-configured registry row, never an index entry: ask for the
             # ssh-agent socket and let wrap_argv re-judge it against the tier.
-            mode = _context_clone_sandbox_mode(git_url)
+            mode = await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
             sandboxed_cmd, _ = await wrap_argv_async(
                 clone_cmd, mode=mode, forward_ssh_auth_sock=True, _prepare=wrap_argv
             )

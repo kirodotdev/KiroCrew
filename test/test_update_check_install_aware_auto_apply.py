@@ -617,6 +617,30 @@ class TestAutoUpdateEffect:
         # Only the source pin refuses every path, the manual ones included.
         assert answer.blocked is bool(shape.get("blocked"))
 
+    def test_the_running_checkout_takes_the_git_route_without_a_project_dir(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew.platform import update_capability, update_governance
+
+        routed: list[str] = []
+
+        def _git_route(root):
+            routed.append(root)
+            return update_capability.AUTO_ROUTE_GIT, ""
+
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(update_capability, "_source_checkout_root", lambda: tmp_path)
+        monkeypatch.setattr(update_capability, "is_git_worktree", lambda r: r == str(tmp_path))
+        monkeypatch.setattr(update_capability, "_git_route", _git_route)
+        monkeypatch.setattr(update_governance, "update_required", lambda _v: False)
+        monkeypatch.setattr(update_governance, "unattended_apply_allowed", lambda: True)
+
+        answer = update_capability.auto_update_effect(
+            dist="source", provider=None, running_version="1.0.0"
+        )
+        assert answer.route == update_capability.AUTO_ROUTE_GIT
+        assert routed == [str(tmp_path)]
+
     @pytest.mark.parametrize("shape, effect, route", _SHAPES)
     def test_the_update_loop_acts_on_that_effect(self, monkeypatch, shape, effect, route):
         """``install`` stages with the switch on; ``mandatory`` stages with it off (the

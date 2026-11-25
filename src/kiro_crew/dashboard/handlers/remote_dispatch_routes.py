@@ -30,9 +30,9 @@ Four rules hold for every call, in this order:
 only a peer slot that THIS caller created with ``session_create(crew=)`` on THAT
 crew, as recorded in gateway memory by :func:`_record_dispatch`. The record is not
 persisted: after a hub restart the conductor cannot drive the slot, and the person
-still can from the crew window. Wave 4 replaces this record with the work
-item's ``worker_session_key`` + ``worker_instance_id`` pair, which survives a
-restart.
+still can from the crew window. Wave 4 adds the work item's
+``worker_session_key`` + ``worker_instance_id`` pair as a second admission, which
+survives a restart.
 """
 
 from __future__ import annotations
@@ -565,7 +565,10 @@ def _fenced_target(state: "DashboardState", caller: str, instance_id: str, targe
         raise CrewCallError(
             403,
             "crew_target_not_dispatched",
-            "that crew session was not opened by this session with session_create(crew=)",
+            "this session holds no record of opening that crew session with "
+            "session_create(crew=) on that crew, and your work ledger shows no open item "
+            "bound to it there; a session_create(crew=) record lasts only until this "
+            "gateway restarts, so open a crew session you will keep driving with work_item=",
         )
     return slot
 
@@ -724,6 +727,11 @@ async def _create(
             # The latest decision did not reach the new worker; it holds the one
             # the create carried until the next decide.
             result["decision_error"] = payload["decision_error"]
+        # The bind's default-patrol outcome: that patrol's tick is what pulls this
+        # worker's reports, so the reply says whether one runs (RFC §2).
+        for name in ("patrol", "patrol_reason", "patrol_note"):
+            if isinstance(payload, dict) and isinstance(payload.get(name), str):
+                result[name] = payload[name]
     if fields["title"]:
         # The session exists from here on: a failed rename is reported beside its
         # key, never as a refusal that would hide a session the caller must close.

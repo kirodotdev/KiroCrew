@@ -3,8 +3,8 @@ title: Agent-started turns — show a turn the agent starts between user turns a
 status: partial
 author: iamwhatever
 created: 2026-10-08
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 18051
 implementation-prs: [18285, 25132, 25133, 29269]
 tracking-issues: [17566, 17791]

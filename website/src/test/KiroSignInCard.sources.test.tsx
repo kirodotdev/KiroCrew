@@ -109,7 +109,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     kasLoginSources.mockResolvedValue(NONE)
     renderWithProviders(<KiroSignInCard />)
-    await screen.findByTestId('kiro-sign-in-open')
+    await screen.findByTestId('kiro-sign-in-inline')
     await waitFor(() => expect(kasLoginSources).toHaveBeenCalled())
     expect(screen.queryByTestId('kiro-sign-in-sources')).toBeNull()
   })
@@ -127,8 +127,34 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     )
     // Nothing of this app's is stored, so there is nothing to remove.
     expect(screen.queryByTestId('kiro-sign-in-use-kiro-cli')).toBeNull()
-    // The chooser is still there for a person who wants another account.
-    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
+    // The chooser is still there (behind a quiet button) for a person who wants another account.
+    expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
+  })
+
+  it('nothing stored here and kiro-cli signed in: the header names the kiro-cli account, the choices show in place', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    kasLoginSources.mockResolvedValue(ONLY_KIRO_CLI)
+    renderWithProviders(<KiroSignInCard />)
+    const hero = await screen.findByTestId('kiro-sign-in-hero')
+    await waitFor(() => expect(hero).toHaveAttribute('data-hero', 'kiro-cli'))
+    // The account, blurred by default, with its eye toggle; never "Sign in to Kiro" as the title.
+    expect(within(hero).getByTestId('kiro-sign-in-account')).toHaveTextContent('person@example.com')
+    expect(within(hero).getByTestId('kiro-account-email-toggle')).toBeInTheDocument()
+    expect(within(hero).queryByRole('heading', { name: 'Sign in to Kiro' })).toBeNull()
+    expect(screen.queryByTestId('looking-ghost')).toBeNull()
+    // The sign-in choices show in place right away, with no button to reveal them.
+    expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-show-choices')).toBeNull()
+  })
+
+  it('kiro-cli signed in with no name known: the header says so once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    kasLoginSources.mockResolvedValue({ ...ONLY_KIRO_CLI, kiro_cli: { stored: true, usable: true } })
+    renderWithProviders(<KiroSignInCard />)
+    const hero = await screen.findByTestId('kiro-sign-in-hero')
+    await waitFor(() => expect(hero).toHaveAttribute('data-hero', 'kiro-cli'))
+    expect(within(hero).getByRole('heading')).toHaveTextContent('Using your Kiro CLI sign-in')
+    expect(screen.getAllByText('Using your Kiro CLI sign-in')).toHaveLength(1)
   })
 
   it('hide e-mail on (the default): the Kiro CLI-only notice names the account by its kind and portal', async () => {
@@ -207,7 +233,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       "Kiro Agent runs as the account Kiro CLI is signed in to. You don't need to sign in here.",
     )
     expect(unnamed).not.toHaveTextContent('could not read.')
-    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
   })
 
   it('an unreadable Kiro CLI name beside a sign-in here: names both by where they live, with the error notice', async () => {
@@ -247,7 +273,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       expect(error).toHaveTextContent('Could not check the Kiro CLI sign-in')
       // The card's own sign-in status and controls stay as they were.
       if (status.authenticated) expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
-      else expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
+      else expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
       expect(screen.queryByTestId('kiro-sign-in-sources')).toBeNull()
       expect(screen.getByTestId('kiro-sign-in-card')).not.toHaveTextContent(/signed out/i)
     },
@@ -280,7 +306,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       // The Kiro CLI store was read: no error for it.
       expect(screen.queryByTestId('kiro-sign-in-kiro-cli-unreadable')).toBeNull()
       if (status.authenticated) expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
-      else expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
+      else expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
       expect(screen.getByTestId('kiro-sign-in-card')).not.toHaveTextContent(/signed out/i)
     },
   )
@@ -374,7 +400,6 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     await waitFor(() =>
       expect(screen.getByTestId('kiro-sign-in-sources')).toHaveAttribute('data-notice', 'using_kiro_cli'),
     )
-    expect(screen.getByTestId('kiro-sign-in-takes-effect')).toBeInTheDocument()
   })
 
   it('"Use the Kiro CLI account" closes the relay Crew windows that ran as the removed sign-in', async () => {
@@ -445,7 +470,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch account' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
-    await waitFor(() => expect(api.kasLoginPoll).toHaveBeenCalledWith('switch-account'))
+    await waitFor(() => expect(api.kasLoginPoll).toHaveBeenCalledWith('switch-account', undefined))
     kasLoginStatus.mockResolvedValueOnce(SIGNED_IN).mockResolvedValue({
       ...SIGNED_IN, expires_at: '2099-01-02T00:00:00Z',
     })
@@ -469,7 +494,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     expect(error).toHaveTextContent('Could not check which account Kiro Agent uses')
     expect(error).toHaveTextContent('boom')
     expect(screen.queryByTestId('kiro-sign-in-sources')).toBeNull()
-    fireEvent.click(authenticated ? screen.getByRole('button', { name: 'Switch account' }) : await screen.findByTestId('kiro-sign-in-open'))
+    if (authenticated) fireEvent.click(screen.getByRole('button', { name: 'Switch account' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
   })

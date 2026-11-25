@@ -9,13 +9,16 @@ import { reconcileSubagentQueuedFromSlots, refreshSlot, warmSlotCache, wireTurnI
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
 import type { StreamBuffers } from './streamBuffers'
-import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
+import { clearIdleRowRefreshes, recordIdleRowRefresh, settleIdleRowRefresh, type WireIdentity } from './idleRowRefresh'
 import { clearBehindReads, reReadPanesBehindServer, settleStatusOfIdleRows } from './paneResync'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
 import { observedPaneSlots } from '../../api/slotMessagesQuery'
 import { autoBatched } from '../../lib/streamBatch'
 import { noteAppSlotRows } from '../../utils/appSlotPush'
 import { createSlotStorageSweep } from '../../utils/slotStorageSweep'
+import { applyServerReads } from './serverReads'
+import { resendKeptReads } from '../../lib/readOutbox'
+import { resendSlotRead } from '../../lib/slotReadRelay'
 
 export interface SlotListSync {
   /** A new connection: forget the last-seen generations and raw frame. */
@@ -24,6 +27,7 @@ export interface SlotListSync {
   onSlotPatch(frame: SlotPatchFrame): void
   /** A `slots_diff` frame; `requestResync` asks the gateway for a full list. */
   onSlotsDiff(frame: SlotsDiffFrame, raw: string, requestResync: () => void): void
+  dispose(): void
 }
 
 /** One changed row of a `slots_diff` frame: the whole row as the full list would carry it. */
@@ -100,10 +104,22 @@ export function useSlotListSync(
   return useMemo<SlotListSync>(() => {
     const sweepSlotStorage = createSlotStorageSweep()
     // Warm an on-screen pane that is not the active slot. A failed warm drops
-    // the idle-row record, so a `_done` that follows warms as before.
-    const warmOtherPane = (slot: string): void => {
+    // the idle-row record, so a `_done` that follows warms as before; when that
+    // `_done` came first and skipped its read for this warm, read again (#39620).
+    const warmOtherPane = (slot: string, identity: WireIdentity | null = null): void => {
       void dispatch(warmSlotCache(slot)).then((result) => {
-        if (warmSlotCache.rejected.match(result)) recordIdleRowRefresh(slot, null)
+        const failed = warmSlotCache.rejected.match(result)
+        if (!identity) { if (failed) recordIdleRowRefresh(slot, null); return }
+        if (settleIdleRowRefresh(slot, identity, failed)) void dispatch(warmSlotCache(slot))
+      })
+    }
+    let stopConfigWait = (): void => {}
+    const runServerReads = (rows: readonly ChatSlot[]): void => {
+      stopConfigWait()
+      if (applyServerReads(rows, { dispatch, queryClient })) return
+      // Held app badges get one more pass, on the current rows, once the config first loads.
+      stopConfigWait = queryClient.getQueryCache().subscribe(() => {
+        if (queryClient.getQueryData(['kirocrewConfig']) !== undefined) runServerReads(store.getState().dashboard.slots)
       })
     }
     const resetForConnection = (): void => {
@@ -127,6 +143,7 @@ export function useSlotListSync(
       // A `_done` the old socket never delivered will not arrive on this one.
       clearIdleRowRefreshes()
       clearBehindReads()
+      resendKeptReads(resendSlotRead)
     }
     const onSlots = (msg: FrameData, data: ChatSlot[], raw: string): void => {
       // A numbered list is the base the next `slots_diff` is built on. Reducers
@@ -231,6 +248,7 @@ export function useSlotListSync(
         [slot, store.getState().dashboard.slots.find(s => s.key === slot)?.queue_held_depth ?? 0] as const))
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      runServerReads(lastSlotsArrayRef.current)
       // localStorage is a side effect, so the orphan sweep runs here, after the
       // reducers have applied this frame's hold fields and rows.
       if (Array.isArray(data)) {
@@ -275,9 +293,9 @@ export function useSlotListSync(
       // The panes this frame re-read, so the behind-the-server check below
       // does not read one of them twice.
       const readThisFrame = new Set<string>()
-      const warmPane = (slot: string): void => {
+      const warmPane = (slot: string, identity: WireIdentity | null = null): void => {
         readThisFrame.add(slot)
-        warmOtherPane(slot)
+        warmOtherPane(slot, identity)
       }
       if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
           && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning || missedWholeTurn)
@@ -453,7 +471,7 @@ export function useSlotListSync(
           continue
         }
         recordIdleRowRefresh(slot, identity)
-        warmPane(slot)
+        warmPane(slot, identity)
       }
       if (Array.isArray(data)) {
         // A turn whose `_done` this tab never got leaves its live status
@@ -515,6 +533,6 @@ export function useSlotListSync(
       noteAppSlotRows(frame.slots)
       notifyAppsSlotsChanged()
     }
-    return { resetForConnection, onSlots, onSlotPatch, onSlotsDiff }
+    return { resetForConnection, onSlots, onSlotPatch, onSlotsDiff, dispose: () => stopConfigWait() }
   }, [buffers, dispatch, queryClient])
 }

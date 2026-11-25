@@ -32,6 +32,7 @@ import SourcesPopover from '../../components/appstore/SourcesPopover'
 import { MarketStoreSections, isMarketSourceKey, marketRowTags, useMarketSourceRows, useRailStoreRows } from '../../components/appstore/MarketListingRows'
 import { registriesReadError, useMarketRegistriesQuery } from '../../components/appstore/marketAccount'
 import { categoryCounts, categoryFor, categoryLabel, type Category } from '../../components/appstore/categories'
+import { editorialCopy } from '../../components/appstore/editorialCopy'
 import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
 import { useConnected } from '../../hooks/useConnected'
@@ -39,6 +40,7 @@ import { offlineProps } from '../../utils/offline'
 import { i18nT } from '../../i18n/t'
 import { compareText } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import useAppsData from './useAppsData'
 import { useAppActions } from './useAppActions'
@@ -108,11 +110,17 @@ function BrowseCardFallback({ label, message, className }: { label?: string; mes
  * hijack it. (The key is still cleared either way.)
  */
 export default function DiscoverPage() {
-  const { pathname } = useLocation()
-  const stored = sessionStorage.getItem('appstore-tab')
-  const legacyLibrary = stored === 'library' || stored === 'installed'
+  const { pathname, state } = useLocation()
+  // Decided once per mount: a re-render before the redirect lands (the key is
+  // gone by then) must not fall through to the body, which would consume the
+  // router state and replace the URL back to /apps.
+  const [legacyLibrary] = useState(() => {
+    const stored = sessionStorage.getItem('appstore-tab')
+    return (stored === 'library' || stored === 'installed') && pathname !== UPDATES_PATH
+  })
   useEffect(() => { sessionStorage.removeItem('appstore-tab') }, [])
-  if (legacyLibrary && pathname !== UPDATES_PATH) return <Navigate to="/apps/library" replace />
+  // Router state (an uninstall's notice) is for whichever page this lands on.
+  if (legacyLibrary && pathname !== UPDATES_PATH) return <Navigate to="/apps/library" replace state={state} />
   return <DiscoverPageBody />
 }
 
@@ -144,6 +152,11 @@ function DiscoverPageBody() {
      (enable lives in Library) and persists until acted on; an update success
      resolves HERE, so it links nowhere and auto-dismisses instead. */
   const [successLink, setSuccessLink] = useState(false)
+  /* Update All's chat-control consent lines: the update landed, so not the red
+     error notice; warn-toned like the detail page's own re-consent notice,
+     because the app is now disabled; and not transient, because each names an
+     app the user still has to enable. */
+  const [updateNotice, setUpdateNotice] = useState('')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   // The store refresh, Enable and the Updates tab write to the gateway, so each
   // is refused while it is offline (offlineProps names why), as on the Library.
@@ -216,7 +229,7 @@ function DiscoverPageBody() {
   // navigate away mid-triage (the hook's comment carries the full contract).
   const { updatingAll, updatePending, runUpdate, updateAll, trustHandoff } = useAppUpdates({
     apps, updatables, announceAppsChanged, updateApp,
-    setError, setSuccess: showSuccess,
+    setError, setSuccess: showSuccess, setNotice: setUpdateNotice,
     // A lapsed execution trust on an in-place update is a consent prompt:
     // reuse the enable path's modal, but hand the gate the UPDATE retry —
     // its default retry is the enable action, which would start the app
@@ -224,6 +237,22 @@ function DiscoverPageBody() {
     onTrustDenied: (name, retryUpdate) => trust.open(trustTarget(name), retryUpdate),
     rowUpdatesInPlace: true,
   })
+  // The "Open <app> details" buttons of the Update All notice showing
+  // *message*, if that notice named any. One app per line: a batch can name
+  // any number of apps, and a row of buttons holds at most two
+  // (max-two-buttons-per-row).
+  const handoffButtons = (message: string) => {
+    const linked = trustHandoff.find(h => h.message === message)?.apps
+    return linked && (
+      <div className="flex flex-col items-start gap-2 mt-1">
+        {linked.map(({ name, label, rerunUpdate }) => (
+          <Btn key={name} onClick={() => (rerunUpdate ? updateApp(name) : openDetail(name))}>
+            {i18nT('pages.appsPage.open_app_details', { name: label })}
+          </Btn>
+        ))}
+      </div>
+    )
+  }
 
   // Manual store refresh. This exists because the two cache layers degrade
   // silently -- a failed catalog fetch leaves the store on the seed listing
@@ -506,17 +535,7 @@ function DiscoverPageBody() {
             message={displayError}
             onDismiss={dismissError}
             className="mb-4 animate-rise"
-            footer={trustHandoff && trustHandoff.message === displayError ? (
-              // One app per line: a batch can name any number of apps, and a
-              // row of buttons holds at most two (max-two-buttons-per-row).
-              <div className="flex flex-col items-start gap-2 mt-1">
-                {trustHandoff.apps.map(({ name, label, rerunUpdate }) => (
-                  <Btn key={name} onClick={() => (rerunUpdate ? updateApp(name) : openDetail(name))}>
-                    {i18nT('pages.appsPage.open_app_details', { name: label })}
-                  </Btn>
-                ))}
-              </div>
-            ) : undefined}
+            footer={handoffButtons(displayError)}
           />
         )}
         {/* No hand-off: the SourcesPopover's install-path input shares this
@@ -530,6 +549,14 @@ function DiscoverPageBody() {
             testId="registry-fetch-notice"
           />
         )}
+        <StatusNotice
+          message={updateNotice}
+          tone="warn"
+          onDismiss={() => setUpdateNotice('')}
+          className="mb-4 animate-rise"
+          testId="update-all-notice"
+          footer={handoffButtons(updateNotice)}
+        />
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
             <span className="text-text text-sm flex-1">{successMsg}</span>
@@ -666,7 +693,7 @@ function DiscoverPageBody() {
                          has no title by design, so its label is the app's
                          own name -- same line the old dedicated fallback
                          cards printed. */
-                      label={section.title || section.apps[0]?.displayName || section.apps[0]?.name}
+                      label={editorialCopy(section).title || section.apps[0]?.displayName || section.apps[0]?.name}
                       message={i18nT('pages.appsPage.this_section_could_not_be_displayed')}
                       className="mb-6"
                     />

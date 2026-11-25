@@ -150,8 +150,32 @@ describe('row callbacks keep their identity across streamed frames', () => {
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 
+  it('useRegenerate: offers Regenerate only on a reply in the turn a press re-runs', () => {
+    const base = {
+      activeSlot: 'slot-a', slotRunning: false, activeSlotRemoteBound: false,
+      isStreaming: false, setRefusedPress: vi.fn(), showRefusedPress: vi.fn(),
+    }
+    const hidden = (ts: string): ChatMessage => ({ ...msg('assistant', ts), content: '\u200b' })
+    const workflow: ChatMessage = { ...msg('inject', 't3'), meta: { injectKind: 'workflow' } }
+    const ref = { current: first }
+    const { result, rerender } = renderHook((p: { messages: ChatMessage[] }) => useRegenerate({ ...base, ...p, messagesRef: latest(ref, p.messages) }), {
+      initialProps: { messages: [...first, msg('user', 't3'), hidden('t4')] },
+    })
+    // The newest turn's only reply is hidden: the press re-runs that turn, so the
+    // reply drawn above it must not carry the button.
+    expect(result.current.lastTextIdx).toBe(1)
+    expect(result.current.regenerateIdx).toBe(-1)
+    rerender({ messages: [...first, workflow, hidden('t4')] })
+    expect(result.current.lastTextIdx).toBe(1)
+    expect(result.current.regenerateIdx).toBe(-1)
+    // A quiet monitor cycle's nudge opens no turn the press stops at.
+    rerender({ messages: [...first, msg('nudge', 't3'), hidden('t4')] })
+    expect(result.current.lastTextIdx).toBe(1)
+    expect(result.current.regenerateIdx).toBe(1)
+  })
+
   it('useTranscriptPins: handleJumpToQuote is stable and finds a row only the newest frame holds', () => {
-    const navToDisplayIndex = vi.fn()
+    const navToMessage = vi.fn(() => true)
     const ref = { current: first }
     // Every non-row prop keeps one identity across renders, as ChatPage's do:
     // only `messages` moves between the two renders.
@@ -159,8 +183,8 @@ describe('row callbacks keep their identity across streamed frames', () => {
       embedded: false, dispatch: vi.fn() as never, isMobile: false, activeSlot: 'slot-a',
       slotRunning: false, splitMode: false, crewWindow: null, slotHasMore: false, slotOldestIndex: 0,
       cursorIsForActiveSlot: true, loadingOlder: false, activeViewIsBoundedPage: false, isWelcomeState: false, activeSlotRemoteBound: false,
-      scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex, pinnedJumpChrome: () => 0,
-      scrollToPinnedPrompt: vi.fn(), setHighlightTs: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
+      scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex: vi.fn(), navToMessage, pinnedJumpChrome: () => 0,
+      scrollToPinnedPrompt: vi.fn(), markStep: vi.fn(), markJump: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
       editSeqRef: { current: 0 },
     }
     const build = (messages: ChatMessage[]) => ({
@@ -174,7 +198,7 @@ describe('row callbacks keep their identity across streamed frames', () => {
     rerender({ messages: next })
     expect(result.current.handleJumpToQuote).toBe(before)
     act(() => { result.current.handleJumpToQuote({ ts: 't4', mid: 'm4' } as never) })
-    expect(navToDisplayIndex).toHaveBeenCalledWith(3, expect.anything())
+    expect(navToMessage).toHaveBeenCalledWith(next[3], expect.anything())
   })
 
   it('useMessageActions: handleEditResend is stable and snapshots the newest rows', () => {
@@ -200,6 +224,20 @@ describe('row callbacks keep their identity across streamed frames', () => {
     dispatch.mockClear()
     act(() => { rollback() })
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/replaceMessages', payload: next }))
+  })
+
+  it('useMessageActions: edit-and-resend speaks the resent text', () => {
+    const announceSent = vi.fn()
+    const base = {
+      dispatch: vi.fn() as never, navigate: vi.fn() as never, filteredSlotsRef: { current: [] }, connected: true, activeSlot: 'slot-a',
+      slotRunning: false, activityOpen: false, activeSlotRef: { current: 'slot-a' }, activeSlotRemoteBound: false,
+      showActionError: vi.fn(), handleFileOpen: vi.fn() as never, handleFolderOpen: vi.fn(), search: { isOpen: false } as never,
+      tabsCtl: {} as never, sessionTitles: new Map(), selectSessionTab: vi.fn(), linkPreviewsOn: false, planTaskId: '',
+      setSidebarPinned: vi.fn(), sidebarAutoHidden: { current: null }, sidebarWidth: 280, setRegenerating: vi.fn(), announceSent,
+    }
+    const { result } = renderHook(() => useMessageActions({ ...base, messages: first, messagesRef: { current: first } }), { wrapper })
+    act(() => { result.current.handleEditResend(2, 't3', 'edited') })
+    expect(announceSent).toHaveBeenCalledWith('edited')
   })
 
   it('useMessageActions: a refused edit-and-resend answers false so the open editor keeps its draft', () => {

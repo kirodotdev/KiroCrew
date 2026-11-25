@@ -153,10 +153,14 @@ class WheelUpdateIncompatible(WheelUpdateError):
         self.sha256 = sha256
 
 
+#: The cancel reason of an unattended apply whose version the user put off in the
+#: update prompt; the gateway keeps running after it.
+_PUT_OFF_REASON = "put off by the user"
+
 #: Cancel reasons after which the process keeps running, so a partial tree is
 #: removed at once. Any other reason (a shutdown, an exec, a hard exit) means the
 #: process is ending: the tree is only renamed aside, and the next sweep deletes it.
-_REMOVE_PARTIAL_TREE_REASONS = frozenset({"deadline", "cancel"})
+_REMOVE_PARTIAL_TREE_REASONS = frozenset({"deadline", "cancel", _PUT_OFF_REASON})
 
 
 class ApplyCancel:

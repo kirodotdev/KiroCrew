@@ -225,10 +225,10 @@ class TestLauncherPublishesAVerifiableToken:
             token = env[STUB_SESSION_TOKEN_ENV]
             assert token
             assert verify_session_token(token) == f"cron:{job_id}"
-            assert len(list(signing_root.glob("session_token_*.sig"))) == 1
+            assert len(list((signing_root / "session-tokens").glob("session_token_*.sig"))) == 1
 
         env = _capture_launcher_env(job_id, during_spawn=verify_during_run)
-        assert not list(signing_root.glob("session_token_*.sig"))
+        assert not list((signing_root / "session-tokens").glob("session_token_*.sig"))
         assert verify_session_token(env[STUB_SESSION_TOKEN_ENV]) == ""
         return env
 
@@ -261,12 +261,12 @@ class TestLauncherPublishesAVerifiableToken:
 
         with pytest.raises(RuntimeError, match="spawn failed"):
             _capture_launcher_env(JOB_ID, during_spawn=fail_spawn)
-        assert not list(signing_root.glob("session_token_*.sig"))
+        assert not list((signing_root / "session-tokens").glob("session_token_*.sig"))
 
     def test_early_overlap_return_retracts_the_mapping(self, signing_root):
         def refuse_spawn(job_id):
             assert job_id == JOB_ID
-            assert len(list(signing_root.glob("session_token_*.sig"))) == 1
+            assert len(list((signing_root / "session-tokens").glob("session_token_*.sig"))) == 1
             return False
 
         with patch("kiro_crew.cron_script._begin_spawn", side_effect=refuse_spawn):
@@ -277,7 +277,7 @@ class TestLauncherPublishesAVerifiableToken:
                     "error": "Another run of this job is already starting or running",
                 },
             )
-        assert not list(signing_root.glob("session_token_*.sig"))
+        assert not list((signing_root / "session-tokens").glob("session_token_*.sig"))
 
     def test_an_inherited_token_is_overwritten_not_kept(self, signing_root, monkeypatch):
         from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV

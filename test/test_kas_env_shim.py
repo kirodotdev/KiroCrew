@@ -8,8 +8,10 @@ without starting a server.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -113,6 +115,57 @@ def test_a_linked_launch_directory_is_refused(home, tmp_path, capsys):
     assert "launch directory is a link" in _refused(home, capsys)
 
 
+def _failing_open(monkeypatch, path: Path, error: type[OSError], times: int | None) -> list[str]:
+    """Make the launcher's open of *path* raise *error* *times* times (``None``: always)."""
+    real_open, tries = os.open, []
+    code = errno.ENOENT if error is FileNotFoundError else errno.EACCES
+
+    def _open(name, flags, *args, **kwargs):
+        if os.fspath(name) == str(path):
+            tries.append(name)
+            if times is None or len(tries) <= times:
+                raise error(code, os.strerror(code))
+        return real_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(kas_env_shim.os, "open", _open)
+    return tries
+
+
+def test_a_windows_open_that_meets_a_replace_reads_the_snapshot_a_moment_later(
+    home, monkeypatch, capsys
+):
+    """Windows refuses an open while the gateway replaces the shared snapshot,
+    which it rewrites on every projection there; the launcher tries again."""
+    path = _write(home, json.dumps(_doc()).encode())
+    tries = _failing_open(monkeypatch, path, PermissionError, times=1)
+    monkeypatch.setattr(kas_env_shim.os, "name", "nt")
+    try:
+        argv, env = kas_env_shim.resolve_launch(list(REF), _environ(home))
+    except SystemExit:
+        pytest.fail(f"the launcher refused: {capsys.readouterr().err}")
+    assert argv == ["server-bin", "--flag"] and env["TOKEN_FOR_TEST"] == "value"
+    assert len(tries) == 2
+
+
+@pytest.mark.parametrize(
+    ("os_name", "error", "reason", "retried"),
+    [
+        ("nt", PermissionError, "cannot be opened (Permission denied)", True),
+        ("posix", PermissionError, "cannot be opened (Permission denied)", False),
+        ("nt", FileNotFoundError, "launch snapshot is missing", False),
+    ],
+    ids=["windows-held-past-the-budget", "posix-at-once", "windows-missing-at-once"],
+)
+def test_an_open_that_keeps_failing_is_refused_with_its_reason(
+    home, monkeypatch, capsys, os_name, error, reason, retried
+):
+    path = _write(home, json.dumps(_doc()).encode())
+    tries = _failing_open(monkeypatch, path, error, times=None)
+    monkeypatch.setattr(kas_env_shim.os, "name", os_name)
+    assert reason in _refused(home, capsys)
+    assert len(tries) == (kas_env_shim._OPEN_ATTEMPTS if retried else 1)
+
+
 _LAUNCH = (["server-bin", "--flag"], {"TOKEN_FOR_TEST": "value"})
 
 
@@ -212,7 +265,7 @@ def _exit_raises(code):
 
 
 @pytest.mark.parametrize(("rc", "code"), [(3, 3), (-9, 1)])
-def test_the_windows_child_exits_with_the_servers_status(monkeypatch, rc, code):
+def test_the_windows_child_exits_with_the_servers_status(monkeypatch, tmp_path, rc, code):
     started: list[list[str]] = []
 
     def _popen(argv, **kwargs):
@@ -220,24 +273,25 @@ def test_the_windows_child_exits_with_the_servers_status(monkeypatch, rc, code):
         started.append(argv)
         return _Proc(rc)
 
-    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: name)
     monkeypatch.setattr(kas_env_shim.subprocess, "Popen", _popen)
     monkeypatch.setattr(kas_env_shim.os, "_exit", _exit_raises)
     with pytest.raises(SystemExit) as exc:
-        kas_env_shim._spawn_child(["server-bin", "--flag"], {"PATH": "/bin"})
+        kas_env_shim._spawn_child(["server-bin", "--flag"], {"PATH": str(tmp_path)})
     assert exc.value.code == code
-    assert started == [["/bin/server-bin", "--flag"]]
+    assert started == [[str(tmp_path / "server-bin"), "--flag"]]
 
 
-def test_the_windows_child_that_cannot_start_ends_with_the_one_line(monkeypatch, capsys):
+def test_the_windows_child_that_cannot_start_ends_with_the_one_line(monkeypatch, tmp_path, capsys):
     def _popen(*_a, **_k):
         raise FileNotFoundError(2, "The system cannot find the file specified")
 
     monkeypatch.setattr(kas_env_shim.os, "name", "nt")
-    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: None)
+    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: name)
     monkeypatch.setattr(kas_env_shim.subprocess, "Popen", _popen)
+    env = {"PATH": str(tmp_path), "TOKEN_FOR_TEST": "value"}
     with pytest.raises(SystemExit) as exc:
-        kas_env_shim._spawn_child(["server-bin", "--flag"], {"TOKEN_FOR_TEST": "value"})
+        kas_env_shim._spawn_child(["server-bin", "--flag"], env)
     assert exc.value.code == 127
     err = capsys.readouterr().err
     assert err == (
@@ -246,10 +300,60 @@ def test_the_windows_child_that_cannot_start_ends_with_the_one_line(monkeypatch,
     )
 
 
-def test_the_windows_child_is_stopped_when_the_launcher_is_interrupted(monkeypatch):
+def test_the_windows_child_is_stopped_when_the_launcher_is_interrupted(monkeypatch, tmp_path):
     proc = _Proc(error=KeyboardInterrupt())
-    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: None)
+    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: name)
     monkeypatch.setattr(kas_env_shim.subprocess, "Popen", lambda argv, **_k: proc)
     with pytest.raises(KeyboardInterrupt):
-        kas_env_shim._spawn_child(["server-bin"], {})
+        kas_env_shim._spawn_child(["server-bin"], {"PATH": str(tmp_path)})
     assert proc.terminated
+
+
+@pytest.mark.parametrize("launcher", ["kas_env_shim", "stub_fallback"])
+def test_a_windows_launch_never_starts_a_file_from_the_working_directory(
+    monkeypatch, tmp_path, launcher
+):
+    """A bare server command is looked up only in the absolute entries of the server's PATH.
+
+    Windows looks in the current directory first, both in ``shutil.which`` and in
+    ``CreateProcess``, so a file there named like the command must not start, and
+    a relative PATH entry must not reach it either. Both Windows launchers share
+    the lookup.
+    """
+    from kiro_crew.mcp_gateway import stub_fallback
+
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+    name = "zzsrvcmd.cmd" if os.name == "nt" else "zzsrvcmd"
+    work, empty, tools = (tmp_path / leaf for leaf in ("work", "empty", "tools"))
+
+    def plant(folder):
+        folder.mkdir()
+        target = folder / name
+        target.write_text("@exit /b 7\n")
+        target.chmod(0o755)
+        return str(target)
+
+    plant(work)
+    empty.mkdir()
+    monkeypatch.chdir(work)
+    started: list[str] = []
+
+    def _popen(argv, **_kwargs):
+        started.append(os.path.normcase(argv[0]))
+        return _Proc(0)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    monkeypatch.setattr(os, "_exit", _exit_raises)
+    if launcher == "kas_env_shim":
+        spawn, not_found = kas_env_shim._spawn_child, SystemExit
+    else:
+        spawn, not_found = stub_fallback._fallback_spawn_child, FileNotFoundError
+
+    with pytest.raises(not_found):
+        spawn(["zzsrvcmd"], {"PATH": os.pathsep.join([str(empty), os.curdir])})
+    assert started == []
+
+    real = plant(tools)
+    with pytest.raises(SystemExit):
+        spawn(["zzsrvcmd"], {"PATH": os.pathsep.join([os.curdir, str(tools)])})
+    assert started == [os.path.normcase(real)]

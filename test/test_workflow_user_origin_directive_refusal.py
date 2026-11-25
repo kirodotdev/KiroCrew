@@ -197,7 +197,7 @@ async def test_a_scalar_schema_step_keeps_its_answer_and_still_audits_the_refusa
     from kiro_crew.workflows.schema import run_with_schema
 
     schema = {"type": "boolean"}
-    opts = {"schema": schema}
+    opts = {"schema": schema, "_on_refusal": lambda _t: None}
     if executor == "cold":
         monkeypatch.setattr(agent_exec, "stream_and_collect", _stream_answering("true"))
         fn = agent_exec.build_agent_fn(_Sessions(), run_id="wf_s")
@@ -226,9 +226,131 @@ async def test_a_pooled_plain_step_after_a_schema_step_still_leads_with_its_refu
     monkeypatch.setattr(agent_pool, "stream_and_collect", _stream_calling("kiro-cli"))
     fn, pool = agent_pool.build_pooled_agent_fn(_Sessions(), run_id="wf_m", max_workers=1)
     try:
-        await fn("structured", {"schema": {"type": "boolean"}})
+        await fn("structured", {"schema": {"type": "boolean"}, "_on_refusal": lambda _t: None})
         text = await fn("plain", {})
     finally:
         await pool.shutdown()
 
     assert text.startswith("Error: set_project only works from a user-facing session")
+
+
+_SCHEMA_STEP = (
+    'META = {"name": "s"}\n'
+    "async def workflow(ctx):\n"
+    "    return await ctx.agent('call set_project', schema={'type': 'boolean'}{session})\n"
+)
+
+
+@pytest.mark.parametrize("executor", ["cold", "pooled", "unpooled"])
+async def test_a_schema_step_refusal_reaches_the_run_stream_as_a_log_line(
+    executor: str, audits: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.workflows.runner import WorkflowRunner
+
+    pool = None
+    session = ""
+    if executor == "cold":
+        monkeypatch.setattr(agent_exec, "stream_and_collect", _stream_answering("true"))
+        fn = agent_exec.build_agent_fn(_Sessions(), run_id="wf_e")
+        key = "wf:wf_e:0"
+    else:
+        monkeypatch.setattr(agent_pool, "stream_and_collect", _stream_answering("true"))
+        fn, pool = agent_pool.build_pooled_agent_fn(_Sessions(), run_id="wf_e", max_workers=1)
+        key = "wf-pool:wf_e:0"
+        if executor == "unpooled":
+            session, key = ", session='chain-A'", "chain-A"
+    try:
+        res = await WorkflowRunner(agent_fn=fn, audit=lambda *a, **k: None).run(
+            _SCHEMA_STEP.replace("{session}", session), run_id="wf_e", now="2026-11-15T00:00:00Z"
+        )
+    finally:
+        if pool is not None:
+            await pool.shutdown()
+
+    assert res.ok and res.result is True, res.error
+    logs = [i for i, e in enumerate(res.events) if e.type == "log"]
+    assert [res.events[i].data["message"] for i in logs] == [
+        'agent a0 "call set_project": Error: set_project only works from a user-facing '
+        "session (dashboard or a messaging channel); headless callers such as cron jobs "
+        f"and sub-agents are refused (this turn is {key!r}). Nothing was changed."
+    ]
+    types = [e.type for e in res.events]
+    assert types.index("agent_started") < logs[0] < types.index("agent_finished")
+
+
+async def test_refusal_log_lines_are_capped_per_run() -> None:
+    from kiro_crew.workflows.runner import WorkflowRunner, _RunContext
+
+    limit = _RunContext._FAILED_TASK_LOG_LIMIT
+
+    async def fn(_prompt: str, opts: dict) -> str:
+        for _ in range(limit + 1):
+            opts["_on_refusal"]("Error: refused.")
+        return "true"
+
+    res = await WorkflowRunner(agent_fn=fn, audit=lambda *a, **k: None).run(
+        _SCHEMA_STEP.replace("{session}", ""), run_id="wf_c", now="2026-11-15T00:00:00Z"
+    )
+
+    assert res.ok and res.result is True, res.error
+    logs = [e.data["message"] for e in res.events if e.type == "log"]
+    assert len(logs) == limit
+    assert logs[-1].endswith("(further refusals in this run are not logged)")
+
+
+async def test_a_refusal_log_line_bounds_the_label_and_the_refusal() -> None:
+    from kiro_crew.workflows.runner import (
+        CEILING_MAX_LABEL_CHARS,
+        MAX_AGENT_ERROR_CHARS,
+        WorkflowRunner,
+    )
+
+    # The refusal names the step's session key, which a ``session=`` step chooses.
+    refusal = "Error: set_project was refused (this turn is '" + "k" * 10_000 + "')."
+
+    async def fn(_prompt: str, opts: dict) -> str:
+        opts["_on_refusal"](refusal)
+        return "true"
+
+    res = await WorkflowRunner(agent_fn=fn, audit=lambda *a, **k: None).run(
+        _SCHEMA_STEP.replace("{session}", ", label='L' * 10_000"),
+        run_id="wf_b",
+        now="2026-11-15T00:00:00Z",
+    )
+
+    assert res.ok and res.result is True, res.error
+    assert [e.data["message"] for e in res.events if e.type == "log"] == [
+        f'agent a0 "{"L" * CEILING_MAX_LABEL_CHARS}…": {refusal[:MAX_AGENT_ERROR_CHARS]}…'
+    ]
+
+
+async def test_a_replayed_schema_step_runs_nothing_and_logs_no_refusal() -> None:
+    from kiro_crew.workflows.runner import WorkflowRunner
+
+    calls: list[str] = []
+    fingerprints: dict[int, str] = {}
+
+    async def fn(prompt: str, opts: dict) -> str:
+        calls.append(prompt)
+        opts["_on_refusal"]("Error: refused.")
+        return "true"
+
+    def checkpoint(call_index: int, *, fingerprint: str = "", **_kw: Any) -> None:
+        fingerprints[call_index] = fingerprint
+
+    script = _SCHEMA_STEP.replace("{session}", "")
+    first = await WorkflowRunner(agent_fn=fn, audit=lambda *a, **k: None).run(
+        script, run_id="wf_r1", now="2026-11-15T00:00:00Z", on_agent_result=checkpoint
+    )
+    again = await WorkflowRunner(agent_fn=fn, audit=lambda *a, **k: None).run(
+        script,
+        run_id="wf_r2",
+        now="2026-11-15T00:00:00Z",
+        replay_results=first.agent_results,
+        replay_before=1,
+        replay_fingerprints=fingerprints,
+    )
+
+    # The refusal sink is not part of the call's identity, so the call replays.
+    assert len(calls) == 1 and again.ok and again.result is True, again.error
+    assert [e for e in again.events if e.type == "log"] == []

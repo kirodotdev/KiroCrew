@@ -148,6 +148,18 @@ vi.mock('../components/dnd', async (orig) => {
   return { ...real, DndDroppable }
 })
 
+// Sidebar body renders: `useStaleCollapse` runs once per body render and nowhere
+// else, so its call count is the body's render count.
+const { bodyRenders } = vi.hoisted(() => ({ bodyRenders: { n: 0 } }))
+vi.mock('../pages/chat-sidebar/stale', async (orig) => {
+  const real = await orig<typeof import('../pages/chat-sidebar/stale')>()
+  const useStaleCollapse: typeof real.useStaleCollapse = (args) => {
+    bodyRenders.n++
+    return real.useStaleCollapse(args)
+  }
+  return { ...real, useStaleCollapse }
+})
+
 import ChatSidebar, { SIDEBAR_DISPLACEMENT_WINDOW } from '../pages/ChatSidebar'
 import { setSlotStatusDetail } from '../store/chatSlice'
 
@@ -564,5 +576,109 @@ describe('chat sidebar — onOpenSource identity', () => {
     act(() => { setOpen!(() => false) })
 
     expect(counts).toEqual({})
+  })
+})
+
+/**
+ * `canStageSessionRef` turns true when the first chat opens, in the same task
+ * that renders the transcript. It gates one item of a row menu, which reads it
+ * from context while open, so the flip must not reach the row actions object.
+ */
+describe('chat sidebar — canStageSessionRef flip', () => {
+  it('turning canStageSessionRef on re-renders no rows', () => {
+    const slots = [slot('k-a'), slot('k-b'), slot('k-c')]
+    const { wrap } = renderSidebarWithSlots(slots)
+    let setCanStage: ((v: boolean) => void) | undefined
+    function Harness() {
+      const [canStage, set] = React.useState(false)
+      setCanStage = set
+      return (
+        <ChatSidebar
+          slots={slots} activeSlot={null} unreadSlots={EMPTY_UNREAD}
+          history={EMPTY_HISTORY} historyHasMore={false} defaultAgent="" installedAgents={EMPTY_AGENTS}
+          onDropSessionRef={NOOP_DROP_SESSION_REF} canStageSessionRef={canStage}
+        />
+      )
+    }
+    render(wrap(<Harness />))
+    expect(counts['k-a']).toBeGreaterThan(0)
+    for (const k of Object.keys(counts)) delete counts[k]
+
+    act(() => { setCanStage!(true) })
+
+    expect(counts).toEqual({})
+  })
+})
+const NOOP_DROP_SESSION_REF = () => {}
+
+/**
+ * A chat switch moves the highlight between two rows. The sidebar keeps the open
+ * session and the unread keys in its row-status store, so the switch re-renders
+ * those two rows and not the sidebar body, even though the chat page hands a new
+ * unread array on every switch.
+ */
+describe('chat sidebar — open-session switch', () => {
+  const UNREAD_B = ['k-b']
+  function renderSwitchable() {
+    const slots = ['k-a', 'k-b', 'k-c', 'k-d', 'k-e'].map(k => slot(k))
+    const { wrap } = renderSidebarWithSlots(slots)
+    let setOpen: ((key: string) => void) | undefined
+    let setUnread: ((keys: string[]) => void) | undefined
+    function Harness() {
+      const [open, set] = React.useState('k-a')
+      const [unread, setU] = React.useState(UNREAD_B)
+      setOpen = set
+      setUnread = setU
+      return (
+        <ChatSidebar
+          slots={slots} activeSlot={open} unreadSlots={[...unread]}
+          history={EMPTY_HISTORY} historyHasMore={false} defaultAgent="" installedAgents={EMPTY_AGENTS}
+        />
+      )
+    }
+    const view = render(wrap(<Harness />))
+    return { view, open: (k: string) => act(() => { setOpen!(k) }), read: (keys: string[]) => act(() => { setUnread!(keys) }) }
+  }
+  const rowEls = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>('[data-slot-key]')]
+    .filter((el, i, all) => all.findIndex(o => o.dataset.slotKey === el.dataset.slotKey) === i)
+  const isOpen = (el: HTMLElement) => !!el.querySelector('[aria-current="true"]') || el.getAttribute('aria-current') === 'true'
+  /** Every row but the last carries a divider unless it or the row below it is open. */
+  const expectDividers = (container: HTMLElement) => {
+    const rows = rowEls(container)
+    rows.forEach((el, i) => {
+      const want = i < rows.length - 1 && !isOpen(el) && !isOpen(rows[i + 1])
+      expect(!!el.querySelector('[data-row-divider]'), `divider under ${el.dataset.slotKey}`).toBe(want)
+    })
+  }
+
+  it('re-renders only the rows whose highlight or divider changes, and no sidebar body', () => {
+    const { view, open } = renderSwitchable()
+    expect(isOpen(rowEls(view.container).find(el => el.dataset.slotKey === 'k-a')!)).toBe(true)
+    expectDividers(view.container)
+    const order = rowEls(view.container).map(el => el.dataset.slotKey!)
+    for (const k of Object.keys(counts)) delete counts[k]
+    bodyRenders.n = 0
+
+    open('k-d')
+
+    // The row that lost the highlight, the one that gained it, and the row drawn
+    // above each, whose divider shows or hides.
+    const touched = new Set(['k-a', 'k-d'].flatMap(k => [k, order[order.indexOf(k) - 1]]).filter(Boolean))
+    expect(Object.keys(counts).sort()).toEqual([...touched].sort())
+    expect(Object.values(counts).every(n => n === 1)).toBe(true)
+    expect(bodyRenders.n).toBe(0)
+    const rows = rowEls(view.container)
+    expect(rows.filter(isOpen).map(el => el.dataset.slotKey)).toEqual(['k-d'])
+    expectDividers(view.container)
+  })
+
+  it('still repaints the unread marker when a session is read', () => {
+    const { view, read } = renderSwitchable()
+    const marker = () => view.container.querySelector('[data-slot-key="k-b"] [role="img"][style*="--ok"]')
+    expect(marker()).not.toBeNull()
+
+    read([])
+
+    expect(marker()).toBeNull()
   })
 })

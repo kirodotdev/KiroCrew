@@ -53,6 +53,9 @@ export const ALLOWED_CSS_VARS = new Set([
   // (TestAllowlistParity asserts the two sets are equal).
   '--term-magenta', '--term-cyan',
   '--term-bg', '--term-fg', '--term-cursor', '--term-selection',
+  // The lit top/bottom band of the Liquid Glass panes; never derived, so a pack
+  // that omits it keeps liquid-glass.css's polarity default.
+  '--glass-band-plain',
 ])
 
 /**
@@ -148,7 +151,7 @@ function mixHex(a: string, b: string, pct: number): string | null {
 
 /**
  * `variables.json` requires only `--bg`, `--text` and `--accent` per block, so a
- * pack may legitimately declare three of the 60 allowlisted tokens. Every token
+ * pack may legitimately declare three of the 61 allowlisted tokens. Every token
  * it leaves out inherits from `index.css`'s bare `:root`, and that selector
  * carries the DARK palette (`:root,[data-theme="dark"],[data-theme="amber-dark"]`)
  * — there is no light counterpart. A pack with a light `--bg` therefore renders

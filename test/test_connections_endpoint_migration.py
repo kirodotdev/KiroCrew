@@ -205,6 +205,29 @@ def test_a_malformed_mcp_json_is_not_rewritten(home: dict) -> None:
     assert home["mcp_json"].read_text(encoding="utf-8") == "{broken"
 
 
+def test_an_unreadable_mcp_json_waits_for_the_next_start(
+    home: dict, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A store another program holds is not written, and the owner record does
+    not move without its entry: the start logs the slug as failed and retries."""
+    _write_mcp(home, {"atlassian": {"url": _V1}})
+    _write_owner_record({"atlassian": {"url": _V1}})
+    before = home["mcp_json"].read_bytes()
+    real_read_text = pathlib.Path.read_text
+
+    def held_read_text(self: pathlib.Path, *args: object, **kwargs: object) -> str:
+        if self == home["mcp_json"]:
+            raise PermissionError(13, "held by another program", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", held_read_text)
+
+    assert _start() == []
+    assert "endpoint migration failed for atlassian" in caplog.text
+    assert home["mcp_json"].read_bytes() == before
+    assert _owner_record()["atlassian"] == {"url": _V1}
+
+
 def test_a_failure_is_logged_and_does_not_raise(
     home: dict, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

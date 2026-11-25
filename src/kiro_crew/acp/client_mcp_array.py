@@ -12,8 +12,8 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 ``_crew_bridge_snapshots``, ``_loaded_capability_template``, ``_mcp_mount_opened_at``,
 ``_mcp_mount_servers``, ``_mcp_pruned``, ``_mcp_pruned_names``, ``_mcp_pruned_omitted``,
 ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``, ``_member_stub_allowlist``,
-``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_session_agent_spec``,
-``_session_harness_deny_rules``, ``_session_mcp_cache``, ``_session_mcp_excludes_local``,
+``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_worker_stub_names``,
+``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_mcp_cache``, ``_session_mcp_excludes_local``,
 ``_session_mcp_inline_settings``, ``_session_mcp_snapshot``, ``_session_mcp_unhonoured``,
 ``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
 ``_spec_write_cwd``, ``_spec_zero_tools``.
@@ -46,6 +46,7 @@ from kiro_crew.acp.mcp_ref_guard import (
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_sign_in_probe import schedule_sign_in_probe
+from kiro_crew.acp.member_goal_mount import append_member_goal_server
 from kiro_crew.acp.pi_mcp_registration import discard_registration
 from kiro_crew.acp.session_mcp import SessionMcpProjection, ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.spec_tools_allowlists import (
@@ -58,6 +59,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
@@ -69,10 +71,13 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_discovery import spec_is_toolless as spec_is_toolless
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
 )
+from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -92,41 +97,19 @@ logger = logging.getLogger("kiro_crew.acp.client")
 _GRANTS_NOTHING = ToolsAllowlist(applies=True, grant_all=False, refs=frozenset())
 
 
-def spec_is_toolless(spec: object) -> bool:
-    """True when *spec* mounts nothing: no tool, no grant, no MCP server, no hook.
+def _keyed_pi_worker(client: AcpClient) -> bool:
+    """Whether *client* is a pi session this process knows as a crewmate's worker.
 
-    All must hold: ``tools`` is an empty list; ``allowedTools`` is absent or an
-    empty list; ``mcpServers`` is absent or an empty object; ``hooks``,
-    ``permissions`` and ``toolsSettings`` are absent or empty; ``includePowers``
-    is absent or ``False`` (KAS reads an absent one as False); and
-    ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
-    then start every server in the user-level ``mcp.json``). An empty ``tools``
-    alone is not enough: a server listed under ``mcpServers`` is still started, a
-    hook still runs a command, and either include flag widens what the turn can
-    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
-    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
-
-    Fails closed: a non-dict and any key of the wrong type answer False.
+    The one identity both the keyed stub lookup and the ``tools`` allowlist record
+    in :meth:`_mirrorless_member_mounts` read, so a session they would disagree on
+    takes main's path: no keyed stubs.
     """
-    if not isinstance(spec, dict):
-        return False
-    tools = spec.get("tools")
-    if not (isinstance(tools, list) and not tools):
-        return False
-    if "allowedTools" in spec and not (
-        isinstance(spec["allowedTools"], list) and not spec["allowedTools"]
-    ):
-        return False
-    if "mcpServers" in spec and not (
-        isinstance(spec["mcpServers"], dict) and not spec["mcpServers"]
-    ):
-        return False
-    for key in ("hooks", "permissions", "toolsSettings"):
-        if key in spec and not (isinstance(spec[key], (dict, list)) and not spec[key]):
-            return False
-    if "includePowers" in spec and spec["includePowers"] is not False:
-        return False
-    return spec.get("includeMcpJson") is False
+    if client.backend == ACP_BACKEND_PI:
+        # circular import: members' module graph is heavy; resolved at call time.
+        from kiro_crew.members import is_crewmate_worker_session
+
+        return is_crewmate_worker_session(client._session_key)
+    return False
 
 
 def authored_agent_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
@@ -305,11 +288,23 @@ def _pooled_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         for element in (getattr(self, "_session_mcp_cache", None) or [])
         if isinstance(element, dict)
     }
-    stubs = [s for s in self._pooled_broker_stubs() if s.get("name") not in mounted]
-    # A member session on a BROKER_ONLY host (pi) recorded its spec's ``tools``
-    # allowlist beside its consumed spec; the stubs pass through it the way a
-    # mirror's do. Only the instance field is read here: nothing else records one,
-    # so kiro-cli's stubs return unchanged with no added branch or lookup (H13).
+    pooled = self._pooled_broker_stubs()
+    withheld: frozenset[str] = getattr(self, "_pi_worker_stub_names", frozenset())
+    if withheld:
+        lost = withheld - {str(s.get("name")) for s in pooled}
+        if lost:
+            logger.warning(
+                "worker session %s: no gateway stub for %s on this start, and its spec "
+                "entry is withheld, so it does not mount; the next start reads it again",
+                getattr(self, "_session_key", None),
+                sorted(lost),
+            )
+    stubs = [s for s in pooled if s.get("name") not in mounted]
+    # A member session or a crewmate's worker on a BROKER_ONLY host (pi) recorded its
+    # spec's ``tools`` allowlist beside its consumed spec; the stubs pass through it
+    # the way a mirror's do. Only instance fields are read here, and both this one
+    # and ``_pi_worker_stub_names`` are empty off pi, so kiro-cli's stubs return
+    # unchanged with no added lookup (H13).
     allowlist = getattr(self, "_member_stub_allowlist", None)
     if allowlist is None:
         return stubs
@@ -363,6 +358,16 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
             self._agent,
             **overlay_project_scope(self.backend, self._work_dir),
         )
+        if self._agent == MATE_WORKER_AGENT and _keyed_pi_worker(self):
+            # A crewmate's worker: the by-name lookup above answers nothing for it,
+            # so the spec entries withheld are those its keyed stubs replace, base
+            # servers' and the Bot's added ones alike.
+            # shortcut: a server that has no stub in this lookup yet (added since the
+            # last overlay pass, or between here and the spec read) mounts from its
+            # spec for this start, as on main; the next start gets its stub.
+            stubbed = frozenset(
+                str(s["name"]) for s in self._pooled_broker_stubs() if s.get("name")
+            )
     except Exception:
         logger.warning(
             "could not resolve pooled stub names; the session MCP array may re-declare one",
@@ -371,13 +376,27 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         stubbed = frozenset()
     mirror = mirror_for(self.backend)
     if mirror is None:
-        return _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
+        if self.backend == ACP_BACKEND_PI:
+            # The names withheld for the keyed stubs, so the append can say when
+            # its own lookup returns fewer of them.
+            self._pi_worker_stub_names = (
+                frozenset(stubbed) if self._agent == MATE_WORKER_AGENT else frozenset()
+            )
+        final = _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
+        _record_bot_chat_mounts(self, final)
+        return final
     # Recorded BEFORE the projection reads the governed flag, and beside the
     # array it authorizes: the session/new envelope reads this record, so an
     # array delivered under the exclusion always ships with it.
     excludes_local, inline_settings = self._local_settings_exclusion()
     self._session_mcp_excludes_local = excludes_local
     self._session_mcp_inline_settings = inline_settings
+    # A crewmate's worker withholds exactly the entries its stubs replace, from
+    # that one lookup: the by-name ``injection_server_names`` answers nothing for it.
+    stubs = self._pooled_broker_stubs()
+    worker_stubbed: frozenset[str] | None = None
+    if self._agent == MATE_WORKER_AGENT:
+        stubbed = worker_stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
     # The STRUCTURED face rather than the wire one, for every mirror alike: two
     # things can come out of the one spec parse and only one of them is wire
     # data -- the array, and a per-tool deny set this client enforces at the
@@ -390,7 +409,7 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         # The broker stubs as ELEMENTS, for a mirror that must place them itself
         # so one withhold rule covers both halves of the array (codex). A mirror
         # that leaves them to the shared append ignores them.
-        stub_elements=self._pooled_broker_stubs(),
+        stub_elements=stubs,
         permission_surface_owned=self._permission_surface_governed,
         work_dir=self._work_dir,
         # A codex stdio child starts from env_clear() plus an allowlist, so
@@ -434,6 +453,15 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     self._session_agent_spec = projection.agent_spec
     servers = projection.params.get("mcpServers") or []
     out = list(servers) if isinstance(servers, list) else []
+    if worker_stubbed is not None:
+        # The projection read the worker spec after its stubs were picked, so a
+        # server dropped, muted or retyped in between loses its stub, as on KAS.
+        from kiro_crew.acp.harness.kas import withdrawn_worker_stubs
+        from kiro_crew.acp.runtime_session_setup import _drop_withdrawn_stubs
+
+        out = _drop_withdrawn_stubs(
+            out, withdrawn_worker_stubs(projection.agent_spec or {}, worker_stubbed)
+        )
     if self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         from kiro_crew.acp import kas_env_launch
 
@@ -450,20 +478,66 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
             "changed after they were written, or the re-seed was declined). The worker "
             "runs without MCP tools; the next start reads the file again.",
         )
+        from kiro_crew.bot_chat_app_tools import mark_seed_lag_reproject
+
+        mark_seed_lag_reproject(self._session_key or "")
+        _record_bot_chat_mounts(self, [])
         return []
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
     # refused on a transport where the withhold is the whole of the enforcement.
-    return _with_own_ipc_pickups(
+    final = _with_own_ipc_pickups(
         self,
-        self._append_member_panel_server(
-            self._append_member_dispatch_server(
-                out, projection.restricted_servers, projection.disabled_servers
+        append_member_goal_server(
+            self,
+            self._append_member_panel_server(
+                self._append_member_dispatch_server(
+                    out, projection.restricted_servers, projection.disabled_servers
+                ),
+                projection.restricted_servers,
+                projection.disabled_servers,
             ),
+            projection.agent_spec,
             projection.restricted_servers,
             projection.disabled_servers,
         ),
     )
+    _record_bot_chat_mounts(self, final)
+    return final
+
+
+def _record_bot_chat_mounts(client: AcpClient, servers: list[dict[str, Any]]) -> None:
+    """Settle a Bot chat's app-server record from the array this session is handed
+    (``bot_chat_app_tools.record_mounted``), after every withholding above."""
+    from kiro_crew.bot_chat_app_tools import carries_app_tools
+
+    key = client._session_key or ""
+    if not carries_app_tools(client._agent, key, client._acp_backend):
+        return
+    from kiro_crew.bot_chat_app_tools import (
+        check_and_filter_projection,
+        mounted_names,
+        record_mounted,
+    )
+    from kiro_crew.providers.mirrors.codex import codex_name
+
+    # codex registers each server under its whitespace-folded name.
+    spelled = codex_name if client._acp_backend == ACP_BACKEND_CODEX else str
+    # Strip any entry whose revocation generation advanced since the projection.
+    servers_dict = {e["name"]: e for e in servers if isinstance(e, dict) and e.get("name")}
+    # For codex: pass codex_name as name_transform so the sidecar lookup can match
+    # whitespace-folded aliases to the original form stored by conductor_session_spec.
+    name_xform = codex_name if client._acp_backend == ACP_BACKEND_CODEX else None
+    servers_dict = check_and_filter_projection(key, servers_dict, name_transform=name_xform)
+    servers[:] = list(servers_dict.values())
+    voided_apps = record_mounted(key, mounted_names(servers_dict), spelled)
+    if voided_apps:
+        servers_dict = {
+            a: e
+            for a, e in servers_dict.items()
+            if ":" not in a or a.split(":")[0] not in voided_apps
+        }
+        servers[:] = list(servers_dict.values())
 
 
 def _with_own_ipc_pickups(client: AcpClient, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -534,10 +608,32 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     On a MEMBER session the same parse also records the spec's ``tools`` allowlist,
     which :meth:`_pooled_mcp_servers` filters the broker stubs through: a mirror
     applies it to the stubs it places itself, and without it a stub the spec never
-    references would reach pi beside a spec confirmed as consumed. A non-member
-    session records none, so its stubs are unchanged.
+    references would reach pi beside a spec confirmed as consumed. A crewmate's
+    worker records it too, member flag or not. Any other non-member session
+    records none, so its stubs are unchanged.
+
+    A crewmate's WORKER session on pi (``members.is_crewmate_worker_session``) is
+    held the same way to the spec built for that session (the worker base plus its
+    crewmate's file, ``session_mcp._crewmate_worker_spec``): its servers are mounted
+    and its stubs pass that spec's allowlist, whatever ``member_context`` says. The
+    same in-process identity (:func:`_keyed_pi_worker`) decides whether its stubs are
+    looked up by its key at all, so the two cannot disagree. A worker whose
+    kit cannot be read, or whose crewmate's file sets single-tool limits or
+    ``hooks``, ``permissions`` or ``toolsSettings`` pi cannot carry, raises here
+    rather than running as plain chat, as a mirrored host's projection does.
     """
     records_zero_tools = projection_for(self.backend).kind is ProjectionKind.BROKER_ONLY
+    # A crewmate's WORKER session (see the docstring): positive identity, asked only
+    # on the BROKER_ONLY host (pi), so every other backend's path is unchanged (H13).
+    worker = False
+    if records_zero_tools:
+        # circular import: members' module graph is heavy; resolved at call time.
+        from kiro_crew.members import is_crewmate_worker_session
+
+        worker = is_crewmate_worker_session(self._session_key)
+    # A worker's stubs are held to its spec's ``tools`` whatever ``member_context``
+    # says: its keyed stub lookup does not read that flag.
+    held_to_spec = worker or getattr(self, "member_context", False)
     if (
         not records_zero_tools
         and self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
@@ -549,11 +645,10 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         # A member's stubs are cleared to granting nothing, so a read that fails
         # leaves them withheld; a non-member's to no filter, its stubs unchanged.
         self._session_agent_spec = None
-        self._member_stub_allowlist = (
-            _GRANTS_NOTHING if getattr(self, "member_context", False) else None
-        )
+        self._member_stub_allowlist = _GRANTS_NOTHING if held_to_spec else None
     try:
         from kiro_crew.acp.session_mcp import session_mcp_projection
+        from kiro_crew.bot_chat_app_tools import carries_app_tools
         from kiro_crew.mate_spec_policy import applies_spec_policy
 
         projection = session_mcp_projection(
@@ -563,8 +658,15 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             session_key=self._session_key or "",
             worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
             spec_policy_honoured=applies_spec_policy(self.backend),
+            bot_app_tools_carried=carries_app_tools(
+                self._agent, self._session_key or "", self.backend
+            ),
         )
     except Exception:
+        if worker:
+            # A worker never runs without its kit: an unreadable kit, or single-tool
+            # limits this host cannot carry, refuse the session as on a mirrored host.
+            raise
         logger.warning(
             "member session %s: agent spec unreadable, so no member tools are "
             "mounted -- the DM thread runs as plain chat this session",
@@ -578,7 +680,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     if records_zero_tools:
         self._spec_zero_tools = projection.zero_tools
         self._session_agent_spec = projection.agent_spec
-        if getattr(self, "member_context", False):
+        if held_to_spec:
             # A missing spec references nothing either (stricter than a mirror's
             # "no spec, no filter"): its confirmation refuses, and the handoff is
             # written before it. A server with a tool switched off (in the spec or
@@ -600,8 +702,14 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     self._session_mcp_unhonoured = narrowed
     disabled = projection.disabled_servers
-    members = self._append_member_panel_server(
-        self._append_member_dispatch_server([], narrowed, disabled),
+    members = append_member_goal_server(
+        self,
+        self._append_member_panel_server(
+            self._append_member_dispatch_server([], narrowed, disabled),
+            narrowed,
+            disabled,
+        ),
+        projection.agent_spec,
         narrowed,
         disabled,
     )
@@ -613,13 +721,15 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     # mounts. The spec servers lead, so the member mounts keep last-wins on a name
     # clash, as they do over a pooled stub. Scoped to the crewmate DM session the
     # gap is about -- the same ``is_member_session_key`` gate the member mounts
-    # above ride -- so an ordinary non-member pi session is unchanged, as it is on
-    # every other mirror-less path (the member mounts are already empty for it).
+    # above ride -- and to a crewmate's worker, whose projection above is its own
+    # per-session spec (``session_mcp._crewmate_worker_spec``), so an ordinary pi
+    # session is unchanged, as it is on every other mirror-less path (the member
+    # mounts are already empty for it).
     # circular import: members' module graph is heavy; resolved at call time.
     from kiro_crew.members import is_member_session_key
 
     out = members
-    if records_zero_tools and is_member_session_key(self._session_key):
+    if records_zero_tools and (worker or is_member_session_key(self._session_key)):
         out = self._broker_only_spec_mounts(projection) + members
     if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         out = _with_crew_connections(self, projection, out)
@@ -745,6 +855,10 @@ def _broker_only_spec_mounts(
 def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
     """The raw broker stubs for this session, with no per-backend narrowing.
 
+    On a mirrored backend, and on pi for a worker this process has noted
+    (:func:`_keyed_pi_worker`), a crewmate's worker resolves its stubs by its own
+    session key (``session_servers.pooled_session_servers``), never by name.
+
     Split from :meth:`_pooled_mcp_servers` so codex can take them through its
     own withholding rules while that method keeps returning ``[]`` for codex at
     the shared call site. Blocking; both callers are already off the loop.
@@ -760,6 +874,9 @@ def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
             self._agent,
             self._channel_id,
             **overlay_project_scope(self.backend, self._work_dir),
+            worker_session_key=(
+                self._session_key if self.backend in MIRRORS or _keyed_pi_worker(self) else None
+            ),
         ),
         self._stub_session_token,
     )

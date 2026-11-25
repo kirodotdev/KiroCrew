@@ -19,8 +19,6 @@ from __future__ import annotations
 #: and the ``case`` in ``scripts/stamp-distribution.sh``.
 KNOWN_BUILD_CHANNELS = frozenset({"stable", "insider", "nightly"})
 
-BUILD_CHANNEL_NIGHTLY = "nightly"
-
 # ``_build_info`` exists only in a packaged artifact, so ImportError is the normal
 # case in a checkout. Its own import, like beacon's WEBSITE_TREE: a stamp written
 # before this field existed raises ImportError for the name and must read as "".
@@ -37,8 +35,3 @@ def baked_build_channel() -> str:
     if isinstance(value, str) and value in KNOWN_BUILD_CHANNELS:
         return value
     return ""
-
-
-def is_nightly_build() -> bool:
-    """Whether this build's bytes came from the nightly pipeline."""
-    return baked_build_channel() == BUILD_CHANNEL_NIGHTLY

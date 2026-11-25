@@ -24,6 +24,7 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
 from kiro_crew.dashboard.mcp_oauth_expiry_watch import watch_open_oauth_banners
 from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
+from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
@@ -313,7 +314,7 @@ def _mcp_sign_in_needed_notice(names: list[str], more: int) -> str:
 def _notice_mcp_sign_in_needed(
     state: "DashboardState", slot: "_ChatSlot", payload: dict[str, Any] | None, provider: Any
 ) -> None:
-    """One row per chat naming the servers this session reports as waiting for a sign-in.
+    """One row naming the servers this session reports as waiting for a sign-in.
 
     A session that needs a sign-in draws a card only when its host sends a link by
     itself. A host that waits to be asked (KAS: the user names the server) leaves
@@ -325,8 +326,11 @@ def _notice_mcp_sign_in_needed(
     sends the consent link back (``ACP_BACKENDS_OPEN_EXTERNAL_URL``, the check
     ``begin_mcp_sign_in`` makes first). Elsewhere the advice would start nothing.
 
-    Shown once per chat, so a server that stays unsigned does not repeat it on
-    every turn. Best-effort: a row that cannot be built is skipped.
+    A chat shows at most one such row per gateway run, and once a person's own
+    plain dashboard chat has named a server, no other chat names it again in that
+    run: a server that stays unsigned is not repeated in every chat. A chat whose
+    rows in memory already name it (reopened after a restart) does not name it
+    again. Best-effort: a row that cannot be built is skipped.
     """
     if slot._mcp_sign_in_notice_shown:
         return
@@ -363,7 +367,16 @@ def _notice_mcp_sign_in_needed(
                 )
             )
         }
-        names = [name for name in waiting if name and name not in carded]
+        told = state._mcp_sign_in_notice_servers | {
+            name
+            for row in slot.messages
+            if isinstance(row, dict)
+            and row.get("role") == "notice"
+            and isinstance(meta := row.get("meta"), dict)
+            and meta.get("kind") == MCP_SIGN_IN_NEEDED_KIND
+            for name in meta.get("servers") or ()
+        }
+        names = [name for name in waiting if name and name not in carded and name not in told]
         if not names:
             return
         shown = names[:_MCP_SIGN_IN_NOTICE_NAMES]
@@ -377,6 +390,16 @@ def _notice_mcp_sign_in_needed(
             "msg msg-warn",
             meta={"kind": MCP_SIGN_IN_NEEDED_KIND, "servers": shown, "more": more},
         )
+        # Only a person's own plain dashboard chat uses up the run's one row: a cron's,
+        # an app's, a channel's, a mode chat (an app page's worker) or a session an
+        # agent opened (``_created_by``, though its origin is user) may go unread.
+        if (
+            slot._origin == SlotOrigin.USER
+            and not slot._app
+            and not slot.mode
+            and not slot._created_by
+        ):
+            state._mcp_sign_in_notice_servers.update(shown)
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("Failed to show the MCP sign-in notice", exc_info=True)
 
@@ -691,7 +714,7 @@ def _emit_mcp_oauth_request(
             },
         )
         return
-    if oauth_url_contains_credential(oauth_url):
+    if oauth_url_contains_credential(oauth_url, server_name):
         # Two distinct causes reach this branch and the user cannot tell them
         # apart from the banner alone:
         #   1. A genuinely bogus URL — legitimate OAuth consent URLs carry

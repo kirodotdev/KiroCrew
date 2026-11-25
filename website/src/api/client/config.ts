@@ -65,6 +65,13 @@ export interface AcpBackendProbe {
    */
   restart_required: boolean
   /**
+   * Set when every session start refuses this harness on this host: it is
+   * enforced and its credential mask cannot apply here. `'host'` = the host has
+   * no OS sandbox backend (native Windows); `'setting'` = `agent.sandbox` leaves
+   * the one it has off. OPTIONAL: a gateway that predates it sends none.
+   */
+  sandbox_refusal?: '' | 'host' | 'setting'
+  /**
    * How this harness gets its credential, and what to tell an operator who has
    * not given it one. OPTIONAL because a gateway that predates this field sends
    * no `auth` at all, and the panel already treats absent probe information as

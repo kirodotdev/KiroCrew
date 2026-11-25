@@ -376,6 +376,24 @@ export default [
       // Stated as a false-negative class: copy added to THIS path will not be
       // reported, so keep it data in, data out.
       'src/lib/themeCssImport.ts',
+      // The canvas editor's CSS paint: connector ink, the thumbnail's ground, a
+      // sticky's shadow, a label's transform origin, a swatch dot's hairline and
+      // the border / see-through fill builders. Every literal is handed to the
+      // CSS parser, never read as words; the editor's copy stays in the gated
+      // components under `src/components/canvas/`, through the catalog.
+      //
+      // Verified copy-free by the same mechanical boundary as `themeCss.ts`
+      // above: no `i18nT` / `useTranslation` import, no JSX, no DOM access.
+      // Stated as a false-negative class: copy added to THIS path will not be
+      // reported, so keep it CSS values in, CSS strings out.
+      'src/components/canvas/canvasPaint.ts',
+      // The theme decor slot's `clip-path` builder: every literal is polygon
+      // text (`polygon(evenodd, ...)`, `0px 0px`) handed to the CSS parser,
+      // never read as words. Its DOM reader, `themeDecorKeepClear.ts`, stays
+      // fully gated. Same mechanical boundary as `themeCss.ts` above: no
+      // `i18nT` / `useTranslation` import, no JSX, no DOM access. Stated as a
+      // false-negative class: copy added to THIS path will not be reported.
+      'src/lib/decorClipPath.ts',
       // The Kiro-ghost avatar generator's art tables. Every literal in the module
       // is SVG handed to the SVG parser: the shipped mark's `d` path data, the
       // per-part fragments built from it, and the hex tile colors. Translating any
@@ -1053,7 +1071,7 @@ export default [
               // The local editor brands the "Open in {{editor}}" row names
               // (utils/remoteEditorUrl.ts `REMOTE_EDITORS`): a product name, the same in
               // every language. Whole-value-anchored like the entries above.
-              '^VS Code$',
+              '^(VS Code|Kiro)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal
@@ -1618,31 +1636,6 @@ export default [
   // tree from the gate.
   {
     files: ['src/utils/toolPurpose.ts'],
-    rules: {
-      'i18next/no-literal-string': 'off',
-    },
-  },
-
-  // A GLSL-ONLY module: two shader programs (`VERT`, `FRAG`) as template literals,
-  // plus CSS custom-property token names and Tailwind classes. The component
-  // renders exactly one `<canvas aria-hidden="true">` and no text node, so it has
-  // no path to user-visible copy at all.
-  //
-  // A `words.exclude` shape rule was tried first and cannot do this job: WebGL2
-  // makes `#version 300 es` the mandatory first line, so `'#version [\\s\\S]*$'`
-  // looks like a precise, self-anchoring shape — but upstream validates a template
-  // literal QUASI BY QUASI (`no-literal-string.js` -> `TemplateLiteral`), and this
-  // shader interpolates its loop bounds (`uColors[${MAX_COLORS}]`,
-  // `i < ${MAX_STRANDS}`). Only the first chunk carries the version pragma; every
-  // chunk after an interpolation starts mid-program, so the pattern exempts the
-  // first and reports the second. Widening it to "C-like punctuation" would exempt
-  // any prose carrying braces and semicolons.
-  //
-  // Scoped to this one file for the same reason as `styles.ts` above: a shape rule
-  // cannot express "GLSL, but only in this module". Keep this module shader-only —
-  // any copy later added here belongs in the catalog, not behind this exemption.
-  {
-    files: ['src/components/Strands.tsx'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

@@ -3,8 +3,8 @@ title: Slack page replies route back to the sending session
 status: draft
 author: phantom-tim
 created: 2026-10-08
-last-audited: 2026-10-08
-audited-at: 8c7417ea82b843875507593d712ac0eff6491644
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: []
 tracking-issues: [17933]

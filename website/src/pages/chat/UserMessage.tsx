@@ -1,7 +1,6 @@
-import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
-import { ReactReduxContext } from 'react-redux'
-import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
-import { MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
+import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { parseSessionSeed } from '../../lib/crewSeed'
+import { MessageByline, OtherSenderBubble, SpeakerHeading, useSeedSender } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { readRelay } from './sessionRelay'
 import { pasteBlocksOf, unseededUserText } from './userMessageText'
@@ -11,11 +10,11 @@ import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
-import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
+import { useSearchHighlight, useCurrentOcc, useRevealMatch } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { useReturnInsertsNewline } from '../../hooks/useComposerSendMode'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
-import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
@@ -192,6 +191,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   const timestamp = useChatSetting('showTimestamps') ? timestampProp : undefined
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
+  const returnInsertsNewline = useReturnInsertsNewline()
   const [draft, setDraft] = useState(content)
   // Outcome of the last Copy / Copy-link press, shown on the icon for 1.5s.
   // `failed` is the refused clipboard write (permission, insecure context):
@@ -421,6 +421,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   const userRef = useRef<HTMLDivElement>(null)
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
+  const revealMatch = useRevealMatch()
 
   // Search matches the full message, so a banner row opens its body for the
   // active match; the label and toggle are skipped when counting occurrences.
@@ -432,14 +433,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     const el = userRef.current
     if (!el) return
     applySearchHighlights(el, term, caseSensitive, currentOcc)
-    // Converge-center the exact occurrence (see scrollCurrentMatchIntoView).
+    // Converge-center the exact occurrence when a find action asked for it,
+    // once per action (see useRevealMatch and scrollCurrentMatchIntoView).
     // Cancel on re-run/unmount so rapid navigation doesn't accumulate loops.
-    const cancelScroll = currentOcc >= 0 ? scrollCurrentMatchIntoView(el) : undefined
+    const cancelScroll = revealMatch(el)
     // The ranges live on a page-wide CSS.highlights entry (see domHighlight):
     // withdraw this bubble's on unmount so a virtualized row that scrolls away
     // is not kept alive through them.
     return () => { cancelScroll?.(); clearSearchHighlights(el) }
-  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded])
+  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded, revealMatch])
 
   /** Native select+copy from a sent bubble gives the literal chip label
    *  ("Paste #1 · 5 lines") — worthless on the other end. Intercept the
@@ -631,7 +633,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
           // still consumed instead of inserting a newline into the draft.
           // An open `$` menu takes Enter and Escape first (its document
           // capture listener), so a pick never sends and never cancels.
-          if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+          if (e.key === 'Enter' && !e.shiftKey && !returnInsertsNewline) { if (ime.claimEnter(e)) submit() }
           if (e.key === 'Escape') { ime.reset(); cancel() }
         }}
       />
@@ -643,6 +645,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
       // the fold would otherwise continue inside an invisible textarea, with its
       // Send out of reach. The editor stays visible; the banner is simply absent.
       <div data-role="user" data-message-editing="" className="group/msg flex flex-col items-end max-w-full">
+        {/* Offscreen heading: the transcript is a flat run of bubbles, so a
+            screen reader arriving mid-conversation has nothing to navigate by
+            and no cue to who is speaking — the right/left alignment that says
+            it visually is announced as nothing. A heading per message makes the
+            turns the page's heading outline, which is how the H key steps
+            through a conversation. Offscreen because the visual design already
+            carries the speaker. */}
+        <SpeakerHeading meta={meta} slotKey={slotKey} relayedFrom={seed || relay ? (senderTitle || seedFrom || undefined) : undefined} />
         {/* `edit-grow` is a CSS grid auto-sizer: a hidden ::after mirror (fed by
             data-replicated-value) drives the grid track so the textarea grows
             with its own content — width AND height — exactly like the read-only
@@ -840,6 +850,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
     <div data-role="user" data-user-side={other ? 'start' : undefined} className={`group/msg flex flex-col ${other ? 'items-start' : 'items-end'} max-w-full`}>
+      {/* Offscreen heading — see the editing branch above for why. */}
+      <SpeakerHeading meta={meta} slotKey={slotKey} relayedFrom={seed || relay ? (senderTitle || seedFrom || undefined) : undefined} />
       {/* User-typed line breaks (Shift+Enter) are preserved at the markdown
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
@@ -1170,23 +1182,3 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
 })
 
 export default UserMessage
-
-const noopSubscribe = () => () => {}
-
-/**
- * Who a delivered message is from, by role (`seedSenderKey`), SUBSCRIBED to the
- * store when one is mounted, so a bubble drawn before the slots frame arrives is
- * relabelled when it does. Without a store the label is generic.
- */
-function useSeedSender(sender: string | undefined, slotKey: string | undefined): string {
-  const redux = useContext(ReactReduxContext)
-  const subscribe = redux ? redux.store.subscribe : noopSubscribe
-  const role = useSyncExternalStore<SeedSender | ''>(subscribe, () => {
-    if (!sender) return ''
-    const rows = ((redux?.store.getState() as { dashboard?: { slots?: SeedRow[] } } | undefined)?.dashboard?.slots) ?? []
-    return seedSender(rows, sender, slotKey)
-  })
-  if (role === 'conductor') return i18nT('pages.chat.userMessage.seed_from_conductor')
-  if (role === 'worker') return i18nT('pages.chat.userMessage.seed_from_worker')
-  return role ? i18nT('pages.chat.userMessage.seed_from_session') : ''
-}

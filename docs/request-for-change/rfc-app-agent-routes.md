@@ -3,8 +3,8 @@ title: "App agent routes: an installed app declares which of its routes agents m
 status: draft
 author: unstablebrainiac
 created: 2026-10-13
-last-audited: 2026-10-21
-audited-at: 098bc0a17
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 19676
 implementation-prs: [17015]
 tracking-issues: [16910]

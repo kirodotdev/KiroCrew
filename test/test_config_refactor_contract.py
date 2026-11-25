@@ -164,7 +164,8 @@ _WHATSAPP_GROUP_COOLDOWN_DEFAULT _WHATSAPP_GROUP_MODES _WORKSPACE_DIR_NAME
 _YOLO_DURATION_DEFAULT _YOLO_DURATION_SECS _actual_type_name _adopt_in_memory
 _apply_document_migrations _apply_field_default _archive_retention_days _build_agent_config
 _build_computer_use_config _build_cron_history_config _build_dashboard_config
-_build_discord_config _build_feishu_config _build_imessage_config _build_instances_config
+_build_discord_config _build_feishu_config _build_heartbeat_config _build_imessage_config
+_build_instances_config
 _build_knowledge_config _build_mcp_config _build_mcp_gateway_config _build_memory_config
 _build_messaging_config _build_monitoring_config
 _build_publish_config _build_session_config _build_session_summary_config _build_skills_config
@@ -477,9 +478,9 @@ class TestLoaderSeamsReachTheOwners:
 
     def test_moved_builders_are_the_loader_names(self) -> None:
         moved = sorted(n for n in vars(section_builders) if n.startswith("_build_"))
-        # 31: ``_build_code_channel_defaults`` (Slack Code) and ``_build_shared_access``
-        # (slack.shared_access) joined the moved builders.
-        assert len(moved) == 31
+        # 32: ``_build_code_channel_defaults`` (Slack Code), ``_build_shared_access``
+        # (slack.shared_access) and ``_build_heartbeat_config`` joined the moved builders.
+        assert len(moved) == 32
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n

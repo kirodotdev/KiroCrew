@@ -238,7 +238,7 @@ def test_a_query_string_never_reaches_the_resource_or_the_audit(vendor, monkeypa
     import kiro_crew.security.exfil_oauth as exfil_oauth
 
     monkeypatch.setattr(
-        exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda h, p, u: audited.append(u)
+        exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda h, p, u, s: audited.append(u)
     )
     exfil_oauth._OAUTH_DISCOVERED_ENDPOINTS.clear()
     raw = MCP + "?api_key=SECRET"
@@ -323,6 +323,33 @@ def test_a_declined_switch_keeps_the_client_that_issued_the_pair(vendor):
     # The owner switches to client B, then declines consent: nothing is stored.
     asyncio.run(crew_oauth_dcr.prepare_custom(key, MCP, {"clientId": "B"}))
     assert ClientStore().read(key)[0].client_id == "A"
+
+
+def test_forgetting_an_owner_grant_revokes_it_and_deletes_its_pair_and_client(vendor, monkeypatch):
+    """Only the named server's key goes: its pair revoked once, then its client."""
+    revoked: list[str] = []
+
+    async def _revoke(slug, tokens, store=None):
+        # The revoke still finds the client it authenticates with.
+        assert ClientStore().read(slug)[0] is not None
+        revoked.append(slug)
+        return True
+
+    monkeypatch.setattr(crew_oauth_dcr, "revoke", _revoke)
+    gone, kept = crew_oauth.custom_key("acme", MCP), crew_oauth.custom_key("acme", MCP + "/v2")
+    client = asyncio.run(crew_oauth_dcr.prepare_custom(gone, MCP, {"clientId": "A"})).client
+    for key in (gone, kept):
+        crew_oauth_dcr.keep_client(key, client, crew_oauth.Tokens("at", "rt", None, ""))
+
+    asyncio.run(crew_oauth.forget_owner_grants({"acme": MCP}))
+
+    assert revoked == [gone]
+    assert not TokenStore().present(gone) and ClientStore().read(gone)[0] is None
+    assert TokenStore().present(kept) and ClientStore().read(kept)[0] is not None
+    # A client left without its pair (an expired one was dropped) goes with no revoke.
+    TokenStore().delete(kept)
+    asyncio.run(crew_oauth.forget_owner_grants({"acme": MCP + "/v2"}))
+    assert revoked == [gone] and ClientStore().read(kept)[0] is None
 
 
 def test_a_grant_runs_the_post_grant_hook_once_and_a_failure_does_not(monkeypatch):
@@ -540,7 +567,9 @@ def discovered_slack(monkeypatch):
     monkeypatch.setattr(exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda *a: None)
     monkeypatch.setattr(exfil_oauth, "_OAUTH_DISCOVERED_ENDPOINTS", {})
     parts = urllib.parse.urlsplit(AS_DOC["authorization_endpoint"])
-    assert record_discovered_oauth_endpoint(parts.hostname, parts.path, mcp_url=MCP)
+    assert record_discovered_oauth_endpoint(
+        parts.hostname, parts.path, mcp_url=MCP, server_name="acme"
+    )
 
 
 def _plan(client_id: str, registered: bool = True) -> crew_oauth_dcr.Plan:
@@ -570,9 +599,9 @@ def test_crews_registered_client_id_passes_only_on_its_own_sign_in(discovered_sl
     from kiro_crew.security import oauth_url_contains_credential
 
     url = _link(("client_id", DCR_ID))
-    assert not oauth_url_contains_credential(crew_oauth._vetted_link(url, _plan(DCR_ID)))
+    assert not oauth_url_contains_credential(crew_oauth._vetted_link(url, _plan(DCR_ID)), "acme")
     # The ACP banner path reads the same link whole and still refuses it.
-    assert oauth_url_contains_credential(url)
+    assert oauth_url_contains_credential(url, "acme")
 
 
 @pytest.mark.parametrize(
@@ -593,7 +622,7 @@ def test_everything_but_crews_own_client_id_is_still_scanned(discovered_slack, p
     from kiro_crew.security import oauth_url_contains_credential
 
     vetted = crew_oauth._vetted_link(_link(*pairs), _plan(DCR_ID, registered))
-    assert oauth_url_contains_credential(vetted)
+    assert oauth_url_contains_credential(vetted, "acme")
 
 
 def test_a_custom_server_with_a_long_dcr_client_id_reaches_consent(vendor, monkeypatch):

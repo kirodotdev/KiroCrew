@@ -75,6 +75,7 @@ vi.mock('../pages/chat', async () => {
 interface QueueProps {
   messages: ChatMessage[]
   onCancel: (id: string) => void
+  onCancelAll: (ids: readonly string[]) => void
   onInterrupt: (id: string) => void
   onEdit: (id: string, content: string) => void
   onReorder: (id: string, direction: 'next' | 'later') => void
@@ -566,6 +567,15 @@ describe('ChatPage — queued message actions', () => {
     await waitFor(() => expect(queueProps!.messages.map(m => m.meta?.queueId)).toEqual(['q2']))
   })
 
+  it('Discard all cancels every queued card and leaves the composer as it was', async () => {
+    await renderWithQueue()
+    const before = inputProps!.value
+    act(() => { queueProps!.onCancelAll(['q1', 'q2']) })
+    await waitFor(() => expect(queueProps!.messages).toEqual([]))
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q1'], ['chat-1', 'q2']])
+    expect(inputProps!.value).toBe(before)
+  })
+
   it('cancelling a queued send restores the typed text and chips losslessly from the stash', async () => {
     // The queued card holds the LLM-facing serialization, not the typed text.
     // When THIS tab made the send, cancel restores the stashed pre-send
@@ -853,7 +863,7 @@ describe('ChatPage — queued message actions', () => {
     act(() => { queueProps!.onEdit('q1', '   ') })
     expect(apiSpy('editQueuedMessage')).not.toHaveBeenCalled()
     act(() => { queueProps!.onEdit('q1', '  run the tests twice  ') })
-    expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice')
+    expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice', expect.any(String))
     await waitFor(() =>
       expect(queueProps!.messages.find(m => m.meta?.queueId === 'q1')?.content)
         .toBe('run the tests twice'),

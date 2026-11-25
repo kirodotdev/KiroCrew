@@ -20,7 +20,8 @@
  * - it cannot change anything the parent or the gateway owns: `lookPreviewBoot.ts`
  *   fences its `localStorage` and `sessionStorage` (reads fall through, writes
  *   stay in the frame), answers every non-GET/HEAD `fetch` locally, silences
- *   `BroadcastChannel` and `WebSocket#send`.
+ *   `BroadcastChannel` and `WebSocket#send`, and makes the frame's own `focus()`
+ *   calls do nothing, so the picture never takes the keyboard from the step.
  * The parent renders the frame `aria-hidden`, `inert` and `pointer-events:
  * none`, so nothing in it is reachable.
  */

@@ -16,6 +16,7 @@ import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from '../components/ArtifactBody'
+import { CanvasArtifactBody } from '../components/canvas/lazyCanvas'
 import { PublishHub } from '../components/PublishHub'
 import ArtifactVersionCompare from '../components/ArtifactVersionCompare'
 import { COMPARE_NONE } from '../lib/artifactCompare'
@@ -219,11 +220,15 @@ const ActivityTimeline = memo(function ActivityTimeline({
               {ev.by ? (
                 // One sentence per row, so a language can place the actor
                 // before or after the action; only the action is emphasised.
+                // Both are slot children, never values: <Trans> parses its
+                // string as markup, so a value would be parsed with it.
                 <span className="text-muted">
                   <Trans
                     i18nKey="pages.artifactDetailPage.action_by_actor"
-                    values={{ action: verb(ev.type, ev.metadata), name: ev.by }}
-                    components={[<span key="action" className="font-medium text-text" />]}
+                    components={[
+                      <span key="action" className="font-medium text-text">{verb(ev.type, ev.metadata)}</span>,
+                      <span key="name">{ev.by}</span>,
+                    ]}
                   />
                 </span>
               ) : (
@@ -520,6 +525,10 @@ export function ArtifactDetailPageBody({
             <WebAppArtifactCard artifact={artifact} />
           ) : artifact.kind === 'image' ? (
             <ArtifactBodyImage artifact={artifact} slug={slug} />
+          ) : artifact.kind === 'canvas' ? (
+            // Keyed per artifact: the route is reused across a param-only
+            // navigation, and the editor's undo history belongs to one canvas.
+            <CanvasArtifactBody key={slug} artifact={artifact} isCurrent={isCurrent} />
           ) : usesIframe ? (
             <div ref={iframeBodyRef}>
               <ArtifactBodyIframe

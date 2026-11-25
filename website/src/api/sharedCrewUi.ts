@@ -187,11 +187,6 @@ export function distinctPeopleCount(rows: readonly PeopleRow[]): number {
   return new Set(rows.map(personKey)).size
 }
 
-/** Here now: an open tab in presence, or the viewer, who is on this page. */
-export function isHereNow(row: PeopleRow): boolean {
-  return !!row.live || !!row.is_viewer
-}
-
 /** The invites listed under "Invites": every pending email invite the server
  *  returns, and an accepted one until its accepting login is a current member
  *  (a row carrying `member.invite_id`), so a share that outlives its person's

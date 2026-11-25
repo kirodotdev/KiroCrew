@@ -141,8 +141,9 @@ probe rather than claimed for the module:
 
 - the cmdline match keys shell liveness evidence to THIS session's in-flight
   command; signal authority is narrower: an exact, post-dispatch match must be
-  the direct child of an identity-pinned harness, whose location comes from the
-  runtime's trusted ``sandbox_wrapped_by_crew`` spawn fact;
+  the direct child of an identity-pinned harness, or of that harness's
+  identity-pinned engine, located from the runtime's trusted
+  ``sandbox_wrapped_by_crew`` and ``engine_is_child`` spawn facts;
 - the ``remote_flat`` socket scan reads only the subtree of the process that
   was launched as the in-flight tool's own MCP server, and declines when that
   process is not found exactly once (a second copy of the server is another
@@ -339,6 +340,7 @@ class LivenessOracle(_ShellCleanupMixin):
         tenancy: Callable[[], int | None] | None = None,
         cleanup_tenancy: Callable[[], int | None] | None = None,
         sandbox_wrapped_by_crew: Callable[[], bool] | None = None,
+        engine_is_child: Callable[[], bool] | None = None,
         server_launches: Callable[[], LaunchRoster | None] | None = None,
         attribution_launches: Callable[[], LaunchRoster | None] | None = None,
     ) -> None:
@@ -381,6 +383,11 @@ class LivenessOracle(_ShellCleanupMixin):
         # harness in place, so runtime_pid remains the parent there. Missing or
         # non-boolean context can inform liveness but cannot authorize a signal.
         self._sandbox_wrapped_by_crew = sandbox_wrapped_by_crew
+        # Spawn-time fact owned by the harness (``SpawnPlan.engine_is_child``): the
+        # harness relays to an engine that is its sole direct child and spawns the
+        # tools, so the shell's parent is one identity-pinned hop lower. None adds
+        # no hop; a raising or non-boolean answer authorizes no signal.
+        self._engine_is_child = engine_is_child
         self._cleanup_lineage: _CleanupLineage | None = None
         # How this session launched its MCP servers (see :data:`LaunchRoster`),
         # read ONLY by the socket scan behind the ``remote_flat`` tag, which
@@ -437,6 +444,7 @@ class LivenessOracle(_ShellCleanupMixin):
             tenancy=self._tenancy,
             cleanup_tenancy=self._cleanup_tenancy,
             sandbox_wrapped_by_crew=self._sandbox_wrapped_by_crew,
+            engine_is_child=self._engine_is_child,
             server_launches=self._server_launches,
             attribution_launches=self._attribution_launches,
         )

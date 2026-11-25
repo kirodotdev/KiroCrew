@@ -40,6 +40,7 @@ from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS
 # into a weaker bound.
 from kiro_crew.instances.token_mint import (
     _OUTPUT_TAIL_CHARS,
+    NO_LAUNCHER_MARKER,
     TokenMintError,
     _mint_timeout_advice,
     _redacted_output_tail,
@@ -66,6 +67,18 @@ logger = logging.getLogger(__name__)
 # default lives in instances.constants; an explicit user override of
 # ``instances.mint_timeout_secs`` wins for both transports.
 _DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_SSM_MINT_TIMEOUT_SECS
+
+# The causes a failed mint's own output names, worded with the crew setting that
+# fixes each. Diagnose's SSM ladder words the same causes from these strings, so
+# Connect and Diagnose give one answer.
+USER_UNKNOWN_REASON = (
+    "User {user} doesn't exist on this instance. Ubuntu images use ubuntu. "
+    "Set Remote user in Edit settings."
+)
+NOT_INSTALLED_REASON = (
+    "Kiro Crew isn't installed for user {user} on this instance. Run the install there "
+    "as that user, or set Remote kirocrew path in Edit settings."
+)
 
 
 def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
@@ -94,6 +107,21 @@ def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     The carried tail is ``_OUTPUT_TAIL_CHARS``, shared for the same reason.
     """
     return _redacted_output_tail(text, limit)
+
+
+def _mint_failure_cause(result: cloud_ssm.CommandResult, run_as: str) -> str:
+    """The sentence naming a failed mint's cause and its setting, or ``""`` when unsure.
+
+    sudo refuses an unknown *run_as* before any remote command runs. Not installed
+    is only the candidate search's own no-launcher line: a launcher that ran, or a
+    custom ``remote_bin``, can exit 127 for reasons of its own.
+    """
+    stderr = result.stderr or ""
+    if "sudo: unknown user" in stderr:
+        return USER_UNKNOWN_REASON.format(user=run_as)
+    if NO_LAUNCHER_MARKER in stderr:
+        return NOT_INSTALLED_REASON.format(user=run_as)
+    return ""
 
 
 async def _send_over_ssm(
@@ -195,8 +223,9 @@ async def mint_remote_token_ssm(
         raise TokenMintError(f"SSM send-command failed for {target}: {e}") from e
 
     if not result.ok:
+        cause = _mint_failure_cause(result, run_as)
         raise TokenMintError(
-            f"remote token mint on {target} over SSM exited "
+            (f"{cause} " if cause else "") + f"remote token mint on {target} over SSM exited "
             f"status={result.status} code={result.exit_code}: "
             f"stderr: {_redacted_tail(result.stderr) or '<none>'} | "
             f"stdout tail: {_redacted_tail(result.stdout)}"

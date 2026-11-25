@@ -2,7 +2,8 @@
 
 Shows the primitives that make Kiro Crew workflows MORE than an external agent
 CLI's workflows — persistence, cron self-scheduling, memory-aware behavior,
-nudges, and Slack delivery. Illustrative only — DSL not implemented yet.
+nudges, and Slack delivery. Illustrative; see this folder's README for the ports
+the shipped host does not wire.
 
 Author once; it re-arms itself daily and learns which finders are noisy.
 """

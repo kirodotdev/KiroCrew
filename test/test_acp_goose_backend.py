@@ -1314,14 +1314,47 @@ def test_the_credential_declaration_is_internally_consistent() -> None:
     from kiro_crew.agent_sdk.host_auth import declaration_for
 
     decl = declaration_for(GOOSE)
-    assert decl.credential_leaves == (".config/goose/secrets.yaml",)
+    assert decl.credential_leaves == (
+        ".config/goose/secrets.yaml",
+        "AppData/Roaming/Block/goose/config/secrets.yaml",
+    )
     assert set(decl.adapter_own_leaves) <= set(decl.credential_leaves)
-    assert decl.home_override_env_vars == ("XDG_CONFIG_HOME",)
+    assert decl.home_override_env_vars == ("XDG_CONFIG_HOME", "APPDATA")
     # The override replaces the ``.config`` PREFIX, so the relocated file keeps two
     # segments -- an override spelling of the final segment alone would fence a path
     # the harness never writes and leave the real one readable.
-    assert decl.override_relative_leaves == ("goose/secrets.yaml",)
+    assert decl.override_relative_leaves == (
+        "goose/secrets.yaml",
+        "Block/goose/config/secrets.yaml",
+    )
     assert decl.host_logout_retires_children is False
+
+
+def test_the_windows_config_folder_is_fenced_like_the_posix_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """goose keeps its config in ``%APPDATA%\\Block\\goose\\config`` on Windows.
+
+    There, and at that folder's default under the home, the file tools may not read
+    ``secrets.yaml`` or edit any of the three files, and the two permission files
+    stay readable: the same answers ``~/.config/goose`` gets. The tables are
+    platform-independent data, so this runs on every host.
+    """
+    from kiro_crew.security.paths import sensitive_path_refusal, sensitive_write_path_refusal
+
+    home, roaming = tmp_path / "home", tmp_path / "roaming"
+    home.mkdir()
+    # Path.home() reads HOME on POSIX and USERPROFILE on Windows.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("APPDATA", str(roaming))
+    default = home / "AppData" / "Roaming"
+    for folder in (roaming / "Block" / "goose" / "config", default / "Block" / "goose" / "config"):
+        assert sensitive_path_refusal(str(folder / "secrets.yaml")), folder
+        for name in ("secrets.yaml", "permission.yaml", "config.yaml"):
+            assert sensitive_write_path_refusal(str(folder / name)), folder / name
+        for name in ("permission.yaml", "config.yaml"):
+            assert sensitive_path_refusal(str(folder / name)) is None, folder / name
 
 
 def test_every_declared_home_override_is_scrubbed_from_a_child_env() -> None:

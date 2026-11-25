@@ -325,7 +325,7 @@ class TaskRunner:
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None
     async def plan(self, input_text: str = "", source: str = "text", spec_path: str = "", agent: str = "", workspace_dir: str = "", workflow_name: str = "", workflow_id: str = "", workflow_slug: str = "", workflow_revision: int = 0, workflow_source: str = "", session_key: str = "", execution_context: ExecutionContext | None = None, start_priority: StartPriority = BACKGROUND) -> Project
     async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, input_content: str | None = None) -> Project
-    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None) -> str
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None, task_id: str = "") -> str
     def cancel(self, task_id: str | None = None, *, exact: bool = False) -> None  # None = cancel all
     def pause(self, task_id: str) -> None
     def status(self) -> dict
@@ -338,7 +338,7 @@ class TaskRunner:
     # Mutation APIs await fsync-backed persistence off the event loop.
     async def update_plan(task_id: str, tasks: list[dict]) -> TaskRun
     async def update_task(task_id: str, index: int, updates: dict) -> dict
-    async def execute_plan(task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str
+    async def execute_plan(task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False, adopting: bool = False) -> str
     async def retry_from_task(task_id: str, from_task: int, agent: str = "") -> str
     async def delete_run(task_id: str) -> bool
 
@@ -398,6 +398,21 @@ fallback.
 Every `decompose_yaml` audit event carries the run's provenance — `source` and
 `spec_name` in its metadata, and the source as its caller identity (`dashboard` for
 unsourced runs), so a denial is attributed to the surface that started the run.
+
+An LLM decomposition that fails returns an empty plan (`run()`: `Failed to decompose spec
+into tasks`; `plan()`: `Could not generate a plan. Try rephrasing.`; a replan: `Re-plan
+failed after task N`). A sandbox refusal (`SandboxUnavailableError` or
+`SandboxCeilingUnsealable` from a run's decompose) gives the same failure, through
+`run_reporting.decompose_recording_refusal`, so `run.error`, its notices, `runs.json`,
+`TASK_PROGRESS.md`, the workflow run record and the task-queue record carry exactly that
+text, and the stack trace is logged at DEBUG only. The refusal's own text names the host's
+remedy and is stored nowhere. It reaches two live readers alone: `kirocrew run`'s stderr
+line, through `run_reporting.live_error` (a `ContextVar` of the task that awaited the run,
+read only while `run.error` is still the failure it stands behind), and `POST
+/api/taskrunner/plan`'s answer to the machine owner (`plan()` raises
+`PlanSandboxRefused`, a `ValueError` whose text is the ordinary one and whose `refusal`
+is the host text). The run list and the task review sent to chat show `run.error` to every
+reader.
 
 A YAML plan with no workflow name, no `# ` line and no path is named after its first
 step's title (`auto_name`'s `first_step`), not after its first line, a YAML key such as
@@ -466,8 +481,12 @@ class Project:
 When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
 complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
 acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
-answer (#32476). The snapshot taken while the turn runs stays raw, so a step whose stream
-raises (a dead process, a context overflow) keeps that snapshot as it is.
+answer. Each line that only quotes a directive tool's marker is dropped the same way
+(`session_directive.strip_quoted_markers`). The snapshot taken while the turn runs stays raw, so a step whose stream
+raises (a dead process, a context overflow) keeps that snapshot as it is. Neither
+carries the alternation placeholder the model repeats at the start of a turn after
+one that ended on a tool result: each prompt of the step streams through
+`alternation_echo.drop_echo` ([messaging](messaging.md)).
 
 ## Concurrent Tasks
 
@@ -634,7 +653,11 @@ The boot reconciler has no adapter for `taskrunner_step`, so it only drops the
 dead lease and stamps `awaiting_adapter`; `legacy import` rows arrive
 `recovering`. `attach_task_admission` schedules one `adopt_task_rows()` sweep
 (a concurrent explicit call joins it rather than adopting twice), which runs
-`taskq.adapters.runner.adopt_orphaned_rows`. The sweep is armed only when the
+`taskq.adapters.runner.adopt_orphaned_rows`. The sweep resumes each run through
+`execute_plan(..., adopting=True)`, which re-checks under the start reservation that
+the run is still `paused` or `planned`: a run cancelled while the sweep set up an
+earlier run stays cancelled, and the sweep ends that run's adopted queue row
+(`cancelled`) instead of leaving it `recovering`. The sweep is armed only when the
 admission ALREADY has a store: the gateway attaches once while the manager's
 store may still be opening off the loop (so both consumers can refuse typed
 from the moment they serve) and again at the store-ready boundary, and the
@@ -678,7 +701,7 @@ On gateway restart (`_load_runs`), a run left in an active state is settled so n
 
 A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume. Its `agent` is restored from `runs.json`, so the adoption sweep's `execute_plan(task_id)` resumes it on the agent it ran with; an entry written before the field existed loads with `""`, the default agent.
 
-A graceful gateway stop or restart ends active runs the same way a crash does. `_shutdown` calls `TaskRunner.begin_shutdown()` before it stops memory, the MCP broker or any session, because those stops break the step that is running; a set `shutdown_event` (the stop signal) counts the same from the moment it is set. From then on a run that is still `running` is not re-planned, a replan already under way that the stop cuts short does not fail it, and a failure or an exception the stop causes does not mark it `failed` or `completed`. A cancellation (`CancelledError`) is always a cancel, never read as the stop, because some cancel paths (Workflow Runs) cancel the driver without setting `cancelling` first. Its driver's `finally` saves its progress with the status still `running` and skips `_taskq_end_run` and `git_coord.finalize`, so the run row stays for the adoption sweep and the worktree stays on disk; the restart settles the run by the table above and resumes it from its checkpoint. A run the operator was pausing or cancelling (`pause()` and `cancel()` set the status before they cancel) still ends as before. A run whose driver already exited at the stop is listed in `_stop_frozen`; a later `pause()` or `cancel()` schedules `_settle_stopped_run` (held in `_stop_settles`, apart from `_tasks`, so a repeated cancel cannot cancel it), which writes the `paused` or `cancelled` outcome and ends the queue row as the driver's `finally` would have. A Workflow Runs cancel of a TaskRunner-driven run reaches it too: `WorkflowService.cancel` also calls `TaskRunner.cancel(task_id, exact=True)` when the registry accepts the cancel. `_admission_closed()` refuses new runs once `begin_shutdown()` has run.
+A graceful gateway stop or restart ends active runs the same way a crash does. `_shutdown` calls `TaskRunner.begin_shutdown()` before it stops memory, the MCP broker or any session, because those stops break the step that is running; a set `shutdown_event` (the stop signal) counts the same from the moment it is set. From then on a run that is still `running` is not re-planned, a replan already under way that the stop cuts short does not fail it, and a failure or an exception the stop causes does not mark it `failed` or `completed`. A cancellation (`CancelledError`) is always a cancel, never read as the stop, because some cancel paths (Workflow Runs) cancel the driver without setting `cancelling` first. Its driver's `finally` saves its progress with the status still `running` and skips `_taskq_end_run` and `git_coord.finalize`, so the run row stays for the adoption sweep and the worktree stays on disk; the restart settles the run by the table above and resumes it from its checkpoint. A run the operator was pausing or cancelling (`pause()` and `cancel()` set the status before they cancel) still ends as before. A run whose driver already exited at the stop is listed in `_stop_frozen`; a later `pause()` or `cancel()` schedules `_settle_stopped_run` (held in `_stop_settles`, apart from `_tasks`, so a repeated cancel cannot cancel it), which writes the `paused` or `cancelled` outcome and ends the queue row as the driver's `finally` would have. A Workflow Runs cancel of a TaskRunner-driven run reaches it too: `WorkflowService.cancel` also calls `TaskRunner.cancel(task_id, exact=True)` when the registry accepts the cancel. A paused run has no driver task, so nothing would end it: `WorkflowService.cancel` calls the awaited `TaskRunner.cancel_paused(task_id)`, which returns True only once the named run is `cancelled` and persisted, and False for a run that is neither `paused` nor `planned` (a new plan waiting for approval is `planned`, with its Workflows run paused, and has no worktree yet) or that has a start or a settle already running. It takes `_start_lock`, registers its settle in `_stop_settles` before releasing it, where `_reserve_start` refuses a restart while that settle is running, so a resume cannot begin while the worktree is being finalized; it ends the unfinished steps `cancelled` and settles through `_settle_stopped_run(run, finalize_git=False)`: the pause already cleaned up the worktree and a run recovered as paused keeps it for a resume, so a cancel never removes a worktree a second time. If persisting fails, the run goes back to the status it had with its steps and the error propagates, so the cancel can be repeated. `cancel()` with or without an id still leaves paused runs resumable. `_admission_closed()` refuses new runs once `begin_shutdown()` has run.
 
 - Prevents zombie tasks that appear running but have no backing asyncio task
 - User can resume manually from dashboard
@@ -724,9 +747,9 @@ re-derived at every run entry (see *Live config* below):
 - `compute_memory_sized_parallel_cap` is the **host-safe ceiling**: available
   memory and the learned/configured per-agent memory cost size the result, then
   `agent.subagent_auto_max` caps it, never below 3 (3 when memory cannot be
-  read), so the auto value is never 0. It keeps the memory arithmetic the
-  subagent cap dropped (`compute_max_subagents` is now the bare
-  `subagent_auto_max` ceiling, because memory bounds subagents per start)
+  read), so the auto value is never 0. It carries the memory arithmetic the
+  subagent cap does not use (`compute_max_subagents` is the
+  `subagent_auto_max` ceiling, because the spawn floor bounds subagents per start)
   because no per-start memory floor prices a TaskRunner step. CPU is
   deliberately not a sizing term; the adaptive controller reacts to failing
   work instead.
@@ -820,6 +843,8 @@ workspace is never removed.
 
 ## API Endpoints
 
+The `/api/projects` alias (list, get, rename, delete) answers only the owner and an admitted Shared Crew teammate; any other dashboard session gets 403 `owner_only`.
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/taskrunner` | Status with all runs, each with its `task_details` |
@@ -844,7 +869,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/refine/answer` | Legacy answer hook; current refine never enters a question wait, so ordinary calls return 409 |
 | POST | `/api/reveal` | Reveal a path in the host file manager for a direct-local caller; remote or launcher-less cases return a clipboard-copy fallback |
 
-The mutating task-runner routes pass `_require_taskrunner_owner`: a dashboard-user
+The mutating task-runner routes pass `require_owner_for_dashboard_caller`: a dashboard-user
 request (`app == ""`) must be the dashboard owner (`require_owner_dashboard_request`,
 403 `owner_only`); an internal-secret loopback caller (the `task_run` MCP tool) and an
 app token keep the controls that already govern them (the app is confined to its
@@ -1045,7 +1070,7 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 | Revised plan | Revised plan | New step count + titles |
 | Possible loop | Warning: Possible loop | Same error repeated Nx |
 | Token budget | Error: Token budget exceeded | Usage vs budget |
-| Branch ready | 🌿 Branch: `name` | Shown in completion summary |
+| Branch ready | Branch: `name` | Shown in completion summary |
 
 The completion summary's step list and `TASK_PROGRESS.md` mark each step from one
 map, `task_reporter.TASK_STATUS_ICONS`: Passed, Failed, Running, Reviewing,
@@ -1254,7 +1279,7 @@ A mid-step agent switch (`EVENT_AGENT_SWITCHED`) rebuilds the ladder for the new
 The SEL row is written before any wire I/O for a refusal, and a refusal row that cannot be written is raised before the wire rather than delivered unaudited, as is an exception from the interactive handler; an approval is audited after the wire answered (`approved`, or `rejected_transport_floor` when the transport floor turned it into a rejection). A HOST refusal steers the in-band deny notice before the reject; the interactive handler's no and the compaction reject stay bare. The ladder's stages, the shared adapters and this surface's SEL rows (`TaskrunnerRows`) live in `tool_permission.py`; what reads or moves the run's own state (its trust grant `_RunTrust`, its log lines, the watchdog's activity stamp) stays in `task_executor.py`.
 
 **Person-only directives are refused out loud.** A task runner turn is not a
-person's, and no session applier reads its stream (#34756), so each turn observes
+person's, and no session applier reads its stream, so each turn observes
 it with `person_only_directive_refuser` (`dashboard/session_directive_apply.py`,
 the observer the cron turn, workflow steps, app turns and completion turns use) on
 that turn's own key: each completed call to a directive in
@@ -1388,7 +1413,9 @@ and an error that names the stop reason, with the partial text still sent beside
 cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
 status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
 (`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
-not the spec (#32476).
+not the spec. A line that only quotes a directive tool's marker is dropped the same way
+(`session_directive.strip_quoted_markers`): the refine turn runs the default spec, which
+pre-grants the directive tools, so they run without a permission request.
 
 ## Dashboard UI (Projects Page)
 

@@ -3,8 +3,8 @@ title: Agent self-tagging on the board — governed self-tagging via a protected
 status: partial
 author: jeeshofone
 created: 2026-09-16
-last-audited: 2026-09-24
-audited-at: c079a117d
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [7779, 12983]
 tracking-issues: [7774]

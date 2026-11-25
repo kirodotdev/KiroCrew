@@ -105,13 +105,11 @@ def test_every_declared_extra_is_covered() -> None:
     ), f"extras declared in setup.cfg but absent from REQUIREMENTS: {sorted(missing)}"
 
 
-# ── The pins embedded in the UI catalogs ──
+# ── No pin embedded in the UI catalogs ──
 #
-# The Feishu guide spells a command out inside its translated prose, so that
-# specifier is a SECOND copy of the pin that no Python caller reads. Without
-# this test, bumping setup.cfg leaves the same panel showing two different
-# commands -- the generated one and a stale hand-written one -- across 13
-# locale files.
+# Every optional-SDK channel takes its install step from the gateway's card
+# (the command naming the gateway's interpreter, or the desktop app's Install
+# button). A pin spelled out in catalog prose would be a second, stale copy.
 
 
 def _embedded_specs(text: str, package: str) -> set[str]:
@@ -129,25 +127,9 @@ def _embedded_specs(text: str, package: str) -> set[str]:
     return {package + m.group(1).rstrip("<>=,") for m in re.finditer(pattern, text)}
 
 
-@pytest.mark.parametrize(
-    ("extra", "package"),
-    [("feishu", "lark-oapi")],
-)
-def test_locale_catalogs_carry_the_declared_pin(extra: str, package: str) -> None:
-    expected = extras.REQUIREMENTS[extra][0]
-    seen_anywhere = False
-    for path in sorted(LOCALES.glob("*.json")):
-        found = _embedded_specs(path.read_text(encoding="utf-8"), package)
-        assert found <= {
-            expected
-        }, f"{path.name} embeds {sorted(found - {expected})}, expected {expected}"
-        seen_anywhere = seen_anywhere or bool(found)
-    assert seen_anywhere, f"no locale embeds a {package} pin; did the key move?"
-
-
-@pytest.mark.parametrize("package", ["PyJWT", "neonize"])
+@pytest.mark.parametrize("package", ["PyJWT", "neonize", "lark-oapi"])
 def test_locale_catalogs_embed_no_pin_for_card_channels(package: str) -> None:
-    """Teams and WhatsApp take their install command from the gateway's
+    """Feishu, Teams and WhatsApp take their install command from the gateway's
     optional-SDK card, which names the gateway's interpreter. A pin spelled out
     in catalog prose would be a bare ``pip install`` beside it."""
     for path in sorted(LOCALES.glob("*.json")):
@@ -334,3 +316,31 @@ def test_a_multi_package_extra_quotes_every_specifier() -> None:
     command = extras.pip_install_command("voice")
     for req in extras.REQUIREMENTS["voice"]:
         assert extras.quote_spec(req) in command
+
+
+def test_a_distribution_named_in_several_places_carries_one_specifier() -> None:
+    """The managed-venv update installs the new wheel with every extra the running
+    install has, so a pin that differs between ``install_requires`` and an extra (or
+    between two extras) would be a resolution conflict on every such update."""
+    parser = configparser.ConfigParser()
+    parser.read(SETUP_CFG, encoding="utf-8")
+    places = {"install_requires": parser["options"]["install_requires"]}
+    # Only the extras an update carries: `dev` is never one (see REQUIREMENTS).
+    places.update(
+        (k, v) for k, v in parser["options.extras_require"].items() if k in extras.REQUIREMENTS
+    )
+    specifiers: dict[str, dict[str, str]] = {}
+    for place, raw in places.items():
+        for line in raw.splitlines():
+            req = line.split("#", 1)[0].strip()
+            if not req or re.match(r"^kirocrew\s*\[", req, re.IGNORECASE):
+                continue
+            name = re.match(r"^[A-Za-z0-9._-]+", req)
+            assert name is not None, req
+            key = re.sub(r"[-_.]+", "-", name.group(0)).lower()
+            spec = re.sub(r"^\[[^\]]*\]", "", req[name.end() :].strip()).replace(" ", "")
+            specifiers.setdefault(key, {})[place] = spec
+    shared = {k: v for k, v in specifiers.items() if len(v) > 1}
+    assert shared, "no distribution is named in two places; the guard checks nothing"
+    differing = {k: v for k, v in shared.items() if len(set(v.values())) > 1}
+    assert not differing, f"one distribution, several specifiers: {differing}"

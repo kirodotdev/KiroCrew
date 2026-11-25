@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import GrillCard, { COMPOSE_SEND_EVENT, type ComposeSendDetail, type ComposeSendOutcome } from '../components/chat/GrillCard'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import type { GrillProposal } from '../app-sdk/protocol/grillMarker'
@@ -8,6 +8,11 @@ vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
 }))
 vi.mock('../hooks/useSmoothStream', () => ({ useSmoothStream: (content: string) => content }))
+const upload = vi.hoisted(() => ({ fn: vi.fn() }))
+vi.mock('../api/client', async (orig) => {
+  const real = await orig<typeof import('../api/client')>()
+  return { ...real, api: { ...real.api, uploadFiles: (...a: unknown[]) => upload.fn(...a) } }
+})
 
 const GRILL: GrillProposal = {
   q: 'Who writes the facts?',
@@ -19,6 +24,7 @@ const GRILL: GrillProposal = {
 
 let sent: string[]
 let slots: string[]
+let files: (string[] | undefined)[]
 /** What the stand-in host does with a press: stage it, send it (`pending`),
  *  or nothing (null). A send's outcome waits in `outcomes` for the test. */
 let take: 'pending' | 'staged' | null
@@ -27,6 +33,7 @@ const listener = (e: Event) => {
   const d = (e as CustomEvent<ComposeSendDetail>).detail
   sent.push(d.text)
   slots.push(d.slot)
+  files.push(d.files)
   d.result = take
   if (take === 'pending') outcomes.push(d.onOutcome)
 }
@@ -36,6 +43,8 @@ beforeEach(() => {
   localStorage.clear()
   sent = []
   slots = []
+  files = []
+  upload.fn.mockReset()
   outcomes = []
   take = 'pending'
   window.addEventListener(COMPOSE_SEND_EVENT, listener)
@@ -64,6 +73,15 @@ describe('GrillCard', () => {
     expect(screen.getByTestId('grill-card-sent').textContent).toBe('Sending…')
     settle('sent')
     expect(screen.getByTestId('grill-card-sent').textContent).toBe('Sent.')
+  })
+
+  it('drops the resize handle from a locked field', () => {
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    for (const name of ['Question', 'Must', 'Not discussing']) {
+      expect(screen.getByLabelText(name)).toBeDisabled()
+      expect(screen.getByLabelText(name)).toHaveClass('disabled:resize-none')
+    }
   })
 
   it('sends the decline text, locks on this page only, and writes nothing to storage', () => {
@@ -198,6 +216,63 @@ describe('GrillCard', () => {
     expect(screen.getByTestId('grill-card').getAttribute('data-result')).toBe('unconfirmed')
   })
 
+  it('sends a field\'s further lines starting with two spaces, so the key line stays whole', () => {
+    render(<GrillCard grill={GRILL} slotKey="s1" wireKey="m1:0" />)
+    fireEvent.change(screen.getByLabelText('Must'), { target: { value: 'line one  \nkey: m1:0\n\nline three' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(sent[0].split('\n')).toEqual([
+      'Start the discussion',
+      'Question: Who writes the facts?',
+      'Must: line one',
+      '  key: m1:0',
+      '  ',
+      '  line three',
+      'Not discussing: Board layout',
+      'key: m1:0',
+    ])
+  })
+
+  it('sends its own uploaded pictures with Start', async () => {
+    upload.fn.mockResolvedValue({ paths: ['/up/a.png'], resized: [], resizedByPath: {} })
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    const picture = new File(['x'], 'a.png', { type: 'image/png' })
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: [picture] } })
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByTestId('grill-card-files').textContent).toContain('a.png'))
+    expect(upload.fn.mock.calls[0][0]).toEqual([picture])
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(files).toEqual([['/up/a.png']])
+  })
+
+  it('shows no picture as added when its upload fails, and Start still sends the text', async () => {
+    upload.fn.mockRejectedValue(new TypeError('Failed to fetch'))
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(screen.getByTestId('grill-card-upload-failed')).toBeInTheDocument())
+    expect(screen.getByTestId('grill-card-files').textContent).not.toContain('a.png')
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(files).toEqual([undefined])
+  })
+
+  it('refuses more than 20 pictures as a hint, uploading nothing', () => {
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    const many = Array.from({ length: 21 }, (_, i) => new File(['x'], `p${i}.png`))
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: many } })
+    expect(screen.getByTestId('grill-card-upload-hint')).toBeInTheDocument()
+    expect(screen.queryByTestId('grill-card-upload-failed')).toBeNull()
+    expect(upload.fn).not.toHaveBeenCalled()
+  })
+
+  it('drops a removed picture before Start', async () => {
+    upload.fn.mockResolvedValue({ paths: ['/up/a.png', '/up/b.png'], resized: [], resizedByPath: {} })
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: [new File(['x'], 'a.png'), new File(['y'], 'b.png')] } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove a.png' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Remove a.png' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(files).toEqual([['/up/b.png']])
+  })
+
   it('holds Start while the question is empty', () => {
     render(<GrillCard grill={GRILL} />)
     fireEvent.change(screen.getByLabelText('Question'), { target: { value: '  ' } })
@@ -230,12 +305,28 @@ describe('AssistantMessage with a [GRILL:] marker', () => {
     expect(screen.getByLabelText('Question')).toHaveValue('Kept?')
   })
 
-  it('sends no key from a regenerated reply, and a key does not lock it', () => {
-    // A Regenerate settles which version is which only at its turn's end, so a
-    // regenerated row's card follows the old rule: no key line, page-life lock.
-    const v = (g: GrillProposal) => ({ content: `Two paths.\n[GRILL: ${JSON.stringify(g)}]` })
-    const both = [v(GRILL), v({ ...GRILL, q: 'Other?' })]
-    render(<AssistantMessage content={both[1].content} variants={both} variantIdx={1} onSwitchVariant={() => {}} isStreaming={false} slotRunning={false} slotKey="chat-b" grillRowId="r1" grillMid="m-1" grillSent={'m-1:0\nm-1:1'} />)
+  const version = (g: GrillProposal, mid?: string) => ({ content: `Two paths.\n[GRILL: ${JSON.stringify(g)}]`, mid })
+  const regenerated = [version(GRILL, 'm-old'), version({ ...GRILL, q: 'Other?' }, 'm-new')]
+
+  it('keys each version of a regenerated reply on the mid of the row it was written as', () => {
+    const { unmount } = render(<AssistantMessage content={regenerated[1].content} variants={regenerated} variantIdx={1} onSwitchVariant={() => {}} isStreaming={false} slotRunning={false} slotKey="chat-b" grillRowId="r1" grillMid="m-new" />)
+    fireEvent.click(screen.getByRole('button', { name: 'No thanks' }))
+    unmount()
+    render(<AssistantMessage content={regenerated[0].content} variants={regenerated} variantIdx={0} onSwitchVariant={() => {}} isStreaming={false} slotRunning={false} slotKey="chat-b" grillRowId="r1" grillMid="m-new" />)
+    fireEvent.click(screen.getByRole('button', { name: 'No thanks' }))
+    expect(sent).toEqual(['No discussion needed\nkey: m-new:0', 'No discussion needed\nkey: m-old:0'])
+  })
+
+  it('locks only the regenerated version whose key a later stored message sent', () => {
+    const { rerender } = render(<AssistantMessage content={regenerated[0].content} variants={regenerated} variantIdx={0} onSwitchVariant={() => {}} isStreaming={false} slotRunning={false} slotKey="chat-b" grillRowId="r3" grillMid="m-new" grillSent="m-old:0" />)
+    expect(screen.getByTestId('grill-card-sent').textContent).toBe('Sent.')
+    rerender(<AssistantMessage content={regenerated[1].content} variants={regenerated} variantIdx={1} onSwitchVariant={() => {}} isStreaming={false} slotRunning={false} slotKey="chat-b" grillRowId="r3" grillMid="m-new" grillSent="m-old:0" />)
+    expect(screen.queryByTestId('grill-card-sent')).toBeNull()
+  })
+
+  it('sends no key from a version stored without a mid, and a key does not lock it', () => {
+    const plain = [version(GRILL), version({ ...GRILL, q: 'Other?' })]
+    render(<AssistantMessage content={plain[1].content} variants={plain} variantIdx={1} onSwitchVariant={() => {}} isStreaming={false} slotRunning={false} slotKey="chat-b" grillRowId="r5" grillMid="m-1" grillSent={'m-1:0\nm-1:1'} />)
     fireEvent.click(screen.getByRole('button', { name: 'No thanks' }))
     expect(sent).toEqual(['No discussion needed'])
   })

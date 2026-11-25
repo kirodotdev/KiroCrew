@@ -124,6 +124,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AgentOwner,
         _absence_is_genuine,
         _add_adoption_row,
+        _add_shadowed_builtin_row,
         _adoption_rows_context,
         _app_agent_names,
         _app_agent_registration,
@@ -234,6 +235,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         approved_manifest_permissions,
         apps_dir,
         get_app_manifest,
+        held_back_app_grants,
         hold_app_record_lock,
         holds_app_record_locks,
         refresh_app_config_keys,
@@ -257,6 +259,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         preserved_data_awaits,
     )
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
+        _count_uninstall,
         _drop_trust_grant,
         _has_trust_grant,
         _holds_base_grant,
@@ -264,6 +267,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rmtree_app_dir,
         _trust_grant_local,
         _trust_grant_repository,
+        _uninstall_labels,
         trust_grant_removal_blocked,
         uninstall_app,
     )

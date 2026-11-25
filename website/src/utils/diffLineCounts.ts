@@ -288,7 +288,7 @@ function trimBlankEdges(lines: string[]): string[] {
 const ROW_STATED_META_RE = /^(?:index [0-9a-f]+\.\.[0-9a-f]+|similarity index \d+%|(?:rename|copy) (?:from|to) )/
 
 /** How the positional walk reads one line of a unified diff. */
-type PatchLineKind =
+export type PatchLineKind =
   /** A `diff ` / `Index: ` preamble line: where a file begins. */
   | 'file'
   /** A `--- x` file header: outside a hunk body and paired with a `+++ ` line. */
@@ -373,6 +373,14 @@ function walkPatch(lines: readonly string[], visit: (kind: PatchLineKind, line: 
     else if (startsFileHeader(lines, i - 1, false)) visit('new-header', line, i)
     else visit('meta', line, i)
   }
+}
+
+/** Each line's kind under `walkPatch`, index for index, for a surface that
+ *  prints every line itself and only styles it by kind. */
+export function patchLineKinds(lines: readonly string[]): PatchLineKind[] {
+  const kinds = new Array<PatchLineKind>(lines.length)
+  walkPatch(lines, (kind, _line, i) => { kinds[i] = kind })
+  return kinds
 }
 
 /** The prefix rule for text with no hunk header: every `+`/`-` line is content

@@ -34,7 +34,15 @@ from ai_review_workflows_helpers import (
 
 from kiro_crew.testing.wait import default_timeout
 
-LANES = ("fork-gpt-review.yml", "fork-opus-review.yml", "fork-security-scope-review.yml")
+LANES = (
+    "fork-gpt-review.yml",
+    "fork-opus-review.yml",
+    "fork-security-scope-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+    "fork-first-principles-review.yml",
+    "fork-internal-content-scan.yml",
+)
 STEP = "Resolve and validate PR (authoritative from GitHub)"
 FUNCTIONS = ("gh_read_reset_delay", "gh_read")
 
@@ -46,6 +54,8 @@ RATE_LIMITED = "gh: API rate limit exceeded for installation ID 1. (HTTP 403)"
 
 def _helpers(lane: str) -> str:
     script = _step_script(_workflow(lane), STEP)
+    missing = [name for name in FUNCTIONS if f"{name}() {{" not in script.splitlines()]
+    assert not missing, f"{lane}: the resolver step defines no {missing}"
     return "\n".join(_shell_function(script, name) for name in FUNCTIONS)
 
 

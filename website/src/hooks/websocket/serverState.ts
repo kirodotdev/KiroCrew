@@ -106,6 +106,11 @@ const ARTIFACT_TARGETS: readonly RefreshTarget[] = [
   { queryKey: ['artifact-folders'] },
 ]
 
+// The server list the MCP Servers table and the Connections page show. Exact:
+// `['mcp-servers', agent]` is the chat header's per-agent list, another read
+// (`/api/mcp/active`) that its menu re-runs each time it opens.
+const MCP_SERVERS_TARGET: RefreshTarget = { queryKey: ['mcp-servers'], exact: true }
+
 /** Every cache a `refresh` frame can make stale. */
 const ALL_TARGETS: readonly RefreshTarget[] = [
   ...CRON_TARGETS,
@@ -115,6 +120,9 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
   TEMPLATES_TARGET,
   { queryKey: ['workspaces'] },
   { queryKey: ['kirocrewConfig'] },
+  // The sign-in status lists the portals the company form warns for, which the
+  // `crew_client` preview in config.json decides (`useKasLogin` KAS_LOGIN_STATUS_KEY).
+  { queryKey: ['kas-login'] },
   // The Security panel's safety switches live in config.json; a save from
   // another tab reaches this one only through the config refresh frame.
   { queryKey: ['safety-switches'] },
@@ -127,13 +135,16 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
   { queryKey: ['resolved-model'] },
   { queryKey: ['agent-resolved-model'] },
   ...ARTIFACT_TARGETS,
+  MCP_SERVERS_TARGET,
 ]
 
-/** The cron kinds, each with the only caches its writers change. `crons` and
+/** The narrow kinds, each with the only caches its writers change. `crons` and
  *  `cron_history` are pushed on every cron edit and at the start and end of
  *  every run, and re-reading all of `ALL_TARGETS` for them refetched every
  *  observed config and registry read several times a minute on a cron-heavy
  *  install. Every cron writer runs in the gateway and announces itself.
+ *  `mcp_servers` is pushed when a background MCP probe has filled in each
+ *  server's status, so an open server list shows it without a reload.
  *
  *  Every other kind invalidates everything, and so do a kind this client does
  *  not know and a frame with no kinds. That includes `turn_end`, pushed at the
@@ -143,6 +154,7 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
 const NARROW_KINDS: Readonly<Record<string, readonly RefreshTarget[]>> = {
   crons: [...CRON_TARGETS, TEMPLATES_TARGET],
   cron_history: CRON_TARGETS,
+  mcp_servers: [MCP_SERVERS_TARGET],
 }
 
 /** Invalidate one cache a frame made stale. The crew registry (and the roster under
@@ -220,12 +232,13 @@ function scheduleTurnEndCronRefresh(qc: QueryClient, onCronsStale?: () => void):
 }
 
 /** Kinds whose writers touch no agent and no crewmate: a cron run, a lesson, a task
- *  runner state, an update notice. Every one is announced by the gateway code that
- *  wrote it. A frame made only of these leaves the crew registry and the roster
+ *  runner state, an update notice, an MCP probe. Every one is announced by the gateway
+ *  code that wrote it. A frame made only of these leaves the crew registry and the roster
  *  alone, so neither re-reads for it. The crons are the busy ones: a run pushes a
  *  frame when it starts and when it ends. */
 const REGISTRY_NEUTRAL_KINDS: readonly string[] = [
   'crons', 'cron_history', 'lessons', 'taskrunner', 'update_available', 'update_failed', 'updating',
+  'mcp_servers',
 ]
 
 /** Whether a `refresh` frame can have changed an agent, a template or a crewmate.
@@ -261,7 +274,8 @@ const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.ev
  * outside React Query (the Schedule page). `onOthersStale` is called whenever the
  * other caches are re-read, for the readers keyed on the store's refresh counter
  * (the agent catalog); a page on screen follows every frame through
- * `liveRefreshTrigger` instead (the Memory view).
+ * `liveRefreshTrigger` instead (the Memory view). A frame that names only
+ * `mcp_servers` re-reads the server list and calls neither.
  */
 export function invalidateRefreshQueries(
   qc: QueryClient, kinds?: readonly string[], onCronsStale?: () => void, onOthersStale?: () => void,
@@ -292,14 +306,14 @@ export function invalidateRefreshQueries(
     else onCronsStale?.()
     return
   }
-  onOthersStale?.()
-  // Every narrow kind names the cron caches.
   const named = kinds.flatMap(kind => NARROW_KINDS[kind])
+  const cronsNamed = CRON_TARGETS.some(target => named.includes(target))
+  if (cronsNamed) onOthersStale?.()
   for (const target of ALL_TARGETS) {
     if (named.some(t => sameTarget(t, target))) qc.invalidateQueries(target)
     else qc.invalidateQueries({ ...target, predicate: query => query.state.status === 'error' })
   }
-  onCronsStale?.()
+  if (cronsNamed) onCronsStale?.()
 }
 
 /** Re-read one slot's pins, or every slot's when no slot is named, on this
@@ -345,6 +359,9 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
   queryClient.invalidateQueries({ queryKey: ['safety-switches'] })
   queryClient.invalidateQueries({ queryKey: ['mcp-tool-grants'] })
+  // And an `mcp_servers` frame from a probe that finished while the socket was
+  // down, such as the one a gateway restart runs.
+  queryClient.invalidateQueries(MCP_SERVERS_TARGET)
   // The runtime monitor contract is fetched once with no staleTime, so a
   // gateway restart that registered a contributed monitor kind while the
   // socket was down would otherwise never refresh: its monitors would read as
@@ -432,6 +449,7 @@ export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { 
       enabled,
       changed_at: typeof d.changed_at === 'string' ? d.changed_at : '',
       locked_by_policy: typeof d.locked_by_policy === 'boolean' ? d.locked_by_policy : prev?.locked_by_policy === true,
+      locked_by_edition: prev?.locked_by_edition,
     }))
   }
   queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })

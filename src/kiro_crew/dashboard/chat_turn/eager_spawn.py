@@ -1030,28 +1030,33 @@ async def _spawn_admitted_prefetch(
         # allocation resolves the default-model ladder itself, exactly as it
         # will for the first real turn.
         _requested_model = slot.model or agent_model or ""
+        from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
+
         try:
-            _, is_new, resumed = await sessions.get_or_create(
-                session_key,
-                agent=kiro_agent or slot.agent or None,
-                # Canonical crew identity — the resolver's alias, which
-                # covers the default crew on an empty slot; plumbed to the
-                # session so per-agent watchdog windows never depend on a
-                # cross-namespace name match. "" is authoritative: no
-                # alias applied, so no override applies.
-                crew_agent=crew_alias,
-                model=_requested_model or None,
-                cwd=slot.project or None,
-                # Same opt-in as the turn's claim: the chat shows the notice.
-                fallback_hidden_cwd=True,
-                speculative=True,
-                speculative_resume=allow_resume,
-                reasoning_effort_override=slot.reasoning_effort or None,
-                start_priority=start_priority,
-                focus_resume=focus_resume,
-                **_app_allocation_kwargs(slot),
-                **_slot_backend_allocation_kwargs(slot),
-            )
+            # The tab's own next turn is its person's, so the start it prefetches is
+            # marked as that turn's (``kas_project_hooks.PERSON_TURN``).
+            with person_turn_claim(True):
+                _, is_new, resumed = await sessions.get_or_create(
+                    session_key,
+                    agent=kiro_agent or slot.agent or None,
+                    # Canonical crew identity — the resolver's alias, which
+                    # covers the default crew on an empty slot; plumbed to the
+                    # session so per-agent watchdog windows never depend on a
+                    # cross-namespace name match. "" is authoritative: no
+                    # alias applied, so no override applies.
+                    crew_agent=crew_alias,
+                    model=_requested_model or None,
+                    cwd=slot.project or None,
+                    # Same opt-in as the turn's claim: the chat shows the notice.
+                    fallback_hidden_cwd=True,
+                    speculative=True,
+                    speculative_resume=allow_resume,
+                    reasoning_effort_override=slot.reasoning_effort or None,
+                    start_priority=start_priority,
+                    focus_resume=focus_resume,
+                    **_app_allocation_kwargs(slot),
+                    **_slot_backend_allocation_kwargs(slot),
+                )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
             # start was attempted and failed, so none of them is counted.

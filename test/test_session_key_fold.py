@@ -184,7 +184,7 @@ class TestThreadIndexRegistryAgreement:
         (SessionMap canonicalizes the session key; the thread index stays
         keyed by the bare ts)."""
         mgr = SessionManager(cfg, provider_factory=_alive_provider_factory())
-        # Legacy writer: both args bare (pre-fix handler behavior)
+        # Bare-key writer: both args bare, as stored links may still be
         mgr.set_slack_link(_BARE_TS, _BARE_TS, "D123")
         linked = mgr.get_session_for_thread(_BARE_TS)
         assert linked == _CANON

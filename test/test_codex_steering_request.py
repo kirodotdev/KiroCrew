@@ -282,6 +282,42 @@ async def test_an_unanswered_steer_is_undelivered_once_its_turn_ends():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("answered_with_the_terminal", [False, True])
+async def test_a_steer_its_turn_ended_around_stays_possibly_delivered(answered_with_the_terminal):
+    """The turn ends before the answer, or with ``injected`` beside it: False, and
+    the text stays in ``held_steers_possibly_delivered`` on the handle and the
+    provider, so the caller does not run it again."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    rt = _Runtime()
+    handle = _handle(rt)
+    provider = AcpSessionProvider(handle, rt, session_key="k")  # type: ignore[arg-type]
+    steer = asyncio.ensure_future(handle.steer("hello"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert handle.held_steers_possibly_delivered == {"hello"}, "registered before the answer"
+    if answered_with_the_terminal:
+        rt.answer.set_result({"outcome": "injected"})
+    handle._turn_done.set()
+    assert await await_until(steer, what="the steer settling") is False
+    if not answered_with_the_terminal:
+        rt.answer.set_result({"outcome": "injected"})
+    assert handle.held_steers_possibly_delivered == {"hello"}
+    assert provider.held_steers_possibly_delivered == {"hello"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [{"outcome": "injected"}, {"outcome": "failed"}])
+async def test_a_steer_answered_in_its_turn_is_resolved(answer):
+    """Accepted or refused while the turn runs: delivery is known, nothing is kept."""
+    rt = _Runtime()
+    rt.answer.set_result(answer)
+    handle = _handle(rt)
+    await _steer_and_settle(handle, "hello")
+    assert handle.held_steers_possibly_delivered == frozenset()
+
+
+@pytest.mark.asyncio
 async def test_a_late_started_new_turn_is_cancelled():
     rt = _Runtime()
     handle = _handle(rt)

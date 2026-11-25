@@ -3,8 +3,8 @@ title: A crewmate's dispatched workers run on its model and effort, with a profi
 status: implemented
 author: iamwhatever
 created: 2026-10-12
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [19368]
 tracking-issues: [19344]

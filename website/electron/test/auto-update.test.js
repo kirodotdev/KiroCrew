@@ -339,6 +339,15 @@ test("isNewerVersion ranks a fourth build-number part when the first three tie",
   assert.strictEqual(isNewerVersion("0.12.0-rc.6", "0.12.0-rc.5"), true);
 });
 
+test("isNewerVersion reads an edition shell's 0.13.0-11 stamp as the build 0.13.0.11", () => {
+  assert.strictEqual(isNewerVersion("0.13.0.11", "0.13.0-11"), false, "the same build is not newer");
+  assert.strictEqual(isNewerVersion("0.13.0-11", "0.13.0.11"), false);
+  assert.strictEqual(isNewerVersion("0.13.0.12", "0.13.0-11"), true);
+  assert.strictEqual(isNewerVersion("v0.13.0-12", "0.13.0-11"), true, "a leading v is the same build");
+  assert.strictEqual(isNewerVersion("0.13.0-11", "0.13.0.10"), true);
+  assert.strictEqual(isNewerVersion("0.13.0", "0.13.0-11"), false, "the bare release is not newer than its build");
+});
+
 test("isNewerVersion: unrankable input is null (fail-open, never a false 'not newer')", () => {
   assert.strictEqual(isNewerVersion("", "1.0.0"), null);
   assert.strictEqual(isNewerVersion("1.0.0", undefined), null);
@@ -1028,7 +1037,7 @@ test("the update runtime loads without Electron and without load-time effects", 
   const owners = nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort();
   assert.deepStrictEqual(owners, [
     "armed-apply.js", "feed-lane.js", "freshness-gate.js", "gateway-arm.js", "gateway-probe.js",
-    "managed-exec.js", "managed-lane.js", "policy-channel.js", "policy-source.js", "startup-apply.js",
+    "install-splash.js", "managed-exec.js", "managed-lane.js", "policy-channel.js", "policy-source.js", "startup-apply.js",
     "state-reporter.js", "update-arm.js",
   ]);
   // Who composes whom: the facade composes the two lanes and the reporter; the
@@ -1047,9 +1056,10 @@ test("the update runtime loads without Electron and without load-time effects", 
     "armed-apply.js": { file: nodePath.join(runtimeDir, "managed-lane.js"), path: "./armed-apply" },
     "startup-apply.js": { file: updateFiles[0], path: "./runtime/update/startup-apply" },
     "gateway-arm.js": { file: nodePath.join(electronDir, "ipc-registrar.js"), path: "./runtime/update/gateway-arm" },
-    // main.js builds the start-time gateway probe; the start-time apply reads the
-    // policy file through the policy source.
+    // main.js builds the start-time gateway probe and the install window; the
+    // start-time apply reads the policy file through the policy source.
     "gateway-probe.js": { file: nodePath.join(electronDir, "main.js"), path: "./runtime/update/gateway-probe" },
+    "install-splash.js": { file: nodePath.join(electronDir, "main.js"), path: "./runtime/update/install-splash" },
     "policy-source.js": { file: nodePath.join(runtimeDir, "startup-apply.js"), path: "./policy-source" },
     "policy-channel.js": {
       file: nodePath.join(electronDir, "ipc-registrar.js"),
@@ -1129,7 +1139,7 @@ test("every lane hands back the handle shape its callers read", () => {
     { keys: stub, disabled: "externally-managed" });
   assert.deepStrictEqual(keys({ isPackaged: false }), { keys: stub, disabled: "dev" });
   assert.deepStrictEqual(keys({ osPlatform: "freebsd" }), { keys: stub, disabled: "platform" });
-  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "relaunch", "getInfo", "isReady"]);
+  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "relaunch", "getInfo", "isReady", "flags"]);
 
   const restoreTimers = (() => {
     const originalSetTimeout = global.setTimeout;

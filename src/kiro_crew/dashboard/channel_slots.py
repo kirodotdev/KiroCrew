@@ -72,6 +72,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
+from kiro_crew.dashboard.slack_session_list import auto_folder_id as slack_auto_folder_id
 from kiro_crew.dashboard.slot_persistence.message_entries import remember_unknown_row_fields
 from kiro_crew.dashboard.state import (
     _normalize_slot_key,
@@ -620,8 +621,13 @@ def surface_channel_session(
     # the persisted tombstone. Local import for the same circular-import reason
     # as _validate_autocompact_pct above.
     from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
+    from kiro_crew.dashboard.slot_persistence import metadata_values as mv
 
     _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
+    if meta:  # the chips-off switch too; a line this pass did not observe stays on disk
+        mv._restore_source_links_off(slot, meta)
+    else:
+        mv._mark_source_links_off_unread(slot)
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):
@@ -1364,6 +1370,11 @@ async def _reconcile_channel_slots_locked(
         ns = channel_namespace_of(key)
         if ns and ns not in folder_ids:
             folder_ids[ns] = await lookup_channel_folder(state, ns)
+            if ns == "slack" and not folder_ids[ns]:
+                # Listed Slack conversations with no ``slack.session_folder``
+                # file into a "Slack" folder made on first use, in one locked
+                # store transaction (see ``slack_session_list.auto_folder_id``).
+                folder_ids[ns] = await slack_auto_folder_id(state)
 
     # Folder tags are deliberately NOT read here: the raw ids are read fresh
     # under ``tags_write_lock`` immediately before validation and the filing

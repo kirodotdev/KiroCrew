@@ -271,17 +271,69 @@ def app_backend_secret_mask_targets() -> tuple[str, ...]:
     routes, the one app that does, run inside the gateway). ``apps/backend.py`` passes
     these paths as ``extra_hidden_dirs``, so the plan masks the files and leaves
     ``run`` itself readable. Both data-home spellings and a relocated data home are
-    covered; only files that exist at spawn time are listed.
+    covered; files that exist at spawn time are listed.
 
-    shortcut: a ``gateway-*.secret`` written after the spawn is not masked for it;
+    A backend started at gateway boot is spawned BEFORE the gateway writes this
+    generation's files, so the files of the gateway's own listener (named by
+    ``KIROCREW_BOUND_PORT``) and ``.local_secret`` are created empty in the live data
+    home first, on POSIX, and listed like the rest. The gateway writes each one in
+    place, so the backend keeps seeing the empty stand-in after the write.
+
+    shortcut: a file under a data-home spelling other than the live one, or for a
+    listener this gateway does not name, is masked only if it exists at spawn;
     upgrade by masking ``run`` once the launcher lives outside it.
     """
+
+    def bound_gateway_secret_paths(run_dir: str) -> tuple[str, ...]:
+        """This gateway's own listener files by name; ``KIROCREW_BOUND_PORT`` names the port.
+
+        The listener files carry the bound address in their name, which the environment
+        keeps only in part, so the four loopback and wildcard spellings and
+        ``KIROCREW_BOUND_HOST`` are all named.
+        """
+        try:
+            port = int(os.environ.get("KIROCREW_BOUND_PORT", "").strip())
+        except ValueError:
+            return ()
+        if not 1 <= port <= 65535:
+            return ()
+        from kiro_crew.instances import run_marker
+
+        bound = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
+        hosts = dict.fromkeys(("127.0.0.1", "::1", "0.0.0.0", "::", bound))
+        names = [run_marker.secret_file_name(port)]
+        names.extend(run_marker.listener_secret_file_name(port, h) for h in hosts if h)
+        return tuple(os.path.join(run_dir, n) for n in names)
+
+    def precreate_empty(path: str) -> None:
+        """Create *path* empty and owner-only if absent; never follow a link."""
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+        except FileExistsError:
+            pass
+        except OSError:
+            logger.warning("could not precreate %s for the secret mask", os.path.basename(path))
+
     home = str(Path.home())
     roots = [os.path.join(home, prefix) for prefix in _CREW_HOME_PREFIXES]
+    live_root = ""
     try:
-        roots.append(str(config_dir()))
+        live_root = os.path.normpath(str(config_dir()))
+        roots.append(live_root)
     except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
         logger.debug("could not resolve the crew data home for secret masking", exc_info=True)
+    bound_names: tuple[str, ...] = ()
+    if live_root and os.name == "posix":
+        run_dir = os.path.join(live_root, "run")
+        bound_names = bound_gateway_secret_paths(run_dir)
+        if bound_names:
+            try:
+                os.makedirs(run_dir, mode=0o700, exist_ok=True)
+            except OSError:
+                logger.warning("could not create the run directory for the secret mask")
+            else:
+                for path in (os.path.join(live_root, ".local_secret"), *bound_names):
+                    precreate_empty(path)
     targets: list[str] = []
     for root in dict.fromkeys(os.path.normpath(r) for r in roots):
         targets.append(os.path.join(root, ".local_secret"))

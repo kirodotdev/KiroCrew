@@ -30,6 +30,7 @@ def _job(job_id="abc12345", *, session_key="", created_by=""):
     job.session_key = session_key
     job.created_by = created_by
     job.folder_id = ""
+    job.member_id = ""
     return job
 
 

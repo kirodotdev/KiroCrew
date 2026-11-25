@@ -89,9 +89,11 @@ interface MessageActionsOptions {
   setSidebarPinned: Dispatch<SetStateAction<boolean>>
   sidebarAutoHidden: MutableRefObject<boolean | null>
   sidebarWidth: number
-  /** The `/embed/chat` frame, its own document with no session sidebar (not a companion chat in the main window). */
+  /** The `/embed/chat` frame or the pop-out session window: its own document with no session sidebar (not a companion chat). */
   embedChatFrame: boolean
   setRegenerating: Dispatch<SetStateAction<boolean>>
+  /** Speaks the resent message, as the page's other send paths do (`useTranscriptAnnouncement`). */
+  announceSent?: (markdown: string) => void
 }
 
 /**
@@ -104,7 +106,7 @@ interface MessageActionsOptions {
  */
 export function useMessageActions({
   dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
-  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating,
+  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating, announceSent,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
   // frame, and this callback feeds the transcript renderers memo, so a
@@ -116,6 +118,7 @@ export function useMessageActions({
     const snapshot = [...messagesRef.current]
     dispatch(truncateAfterIndex(index))
     dispatch(appendMessage({ role: 'user', content: newContent, cls: '', ts: new Date().toISOString() }))
+    announceSent?.(newContent)
     setRegenerating(true)
     // Use /rewind (fork-and-swap) — discards the orphan kiro-cli session so
     // truncated forward turns can't resurface on resume. Mirrors kiro-cli's
@@ -125,7 +128,7 @@ export function useMessageActions({
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating])
+  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating, announceSent])
 
   // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
   // Edit & resend editor. The chord itself is claimed by the composer
@@ -164,7 +167,9 @@ export function useMessageActions({
     caseSensitive: search.caseSensitive,
     currentMessageIdx: search.currentMessageIdx,
     currentOccurrenceIdx: search.currentOccurrenceIdx,
-  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx])
+    reveal: search.reveal,
+    revealLedger: search.revealLedger,
+  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx, search.reveal, search.revealLedger])
 
   const renderUserContentCb = useCallback(
     // The session triple matches what the assistant / note rows hand
@@ -248,9 +253,9 @@ export function useMessageActions({
   // sidebarWidth is the width ChatSidebar reports its root paints at, already
   // held to this view and this window (see sidebarPaintWidth); the stored
   // preference stays with the sidebar for a wider window or for board view.
-  // The embed chat frame mounts no sidebar, so the shared stored width takes no
-  // room from its row (#37165). A companion chat keeps it: it sits in the main
-  // window, whose chrome is really beside it.
+  // The embed chat frame and the pop-out session window mount no sidebar, so the
+  // shared stored width takes no room from their row. A companion chat keeps it:
+  // in the main window that chrome is really beside it.
   const effectiveSidebarWidth = embedChatFrame ? 0 : clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
   const toggleAct = useCallback(() => {
     // Opening with no tabs shows the empty-state launcher grid (no seeded

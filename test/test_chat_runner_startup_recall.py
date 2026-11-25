@@ -6,8 +6,9 @@ early, on the recall pool: before ``get_or_create`` when the turn has to start t
 session itself (so it runs beside ``session/new``), and again just before every
 session-start build (so the build only ever joins it and waits within its
 deadline). On the real embedder that second start is a cache hit, or joins the
-first inference. A message the turn rewrites before its build (an ``@prompt``
-body, drained notices or context put in front of it) is embedded only there.
+first inference. Both embed the user's own text, which is what the build ranks:
+a drained notice or context put in front of it is not embedded. An ``@prompt``
+body replaces the message after the claim, so it is embedded only the second time.
 
 Each test drives the REAL runner with a mocked session manager and builder, and a
 fake ``embed_startup_query`` that records what it was asked to embed. Ordering is
@@ -137,21 +138,28 @@ async def test_a_cold_start_embeds_only_the_text_its_build_reads(tmp_path, monke
 
 
 @pytest.mark.parametrize(
-    "message, failures, pending, rewritten",
+    "message, rewritten",
     [
-        pytest.param(MESSAGE, [], [], False, id="plain"),
-        pytest.param("@release-checklist", [], [], True, id="prompt-mention"),
-        pytest.param(MESSAGE, ["[sub-agent result timed out]"], [], True, id="drained-failures"),
-        pytest.param(
-            MESSAGE, [], [{"source": "app", "content": "a note"}], True, id="pending-context"
-        ),
+        pytest.param(MESSAGE, False, id="plain"),
+        pytest.param("@release-checklist", True, id="prompt-mention"),
     ],
 )
-def test_a_message_the_turn_rewrites_is_recognised_before_the_claim(
-    message, failures, pending, rewritten
-):
-    slot = SimpleNamespace(_pending_subagent_failures=failures, _pending_context=pending)
-    assert chat_runner._message_rewritten_before_build(slot, message) is rewritten
+def test_a_message_the_turn_rewrites_is_recognised_before_the_claim(message, rewritten):
+    assert chat_runner._message_rewritten_before_build(message) is rewritten
+
+
+@pytest.mark.asyncio
+async def test_a_notice_put_in_front_of_the_message_is_not_embedded(tmp_path, monkeypatch):
+    """A drained notice sits outside the user's span, so neither embed carries it."""
+    state, _provider = _turn_state(tmp_path, monkeypatch, registered=False)
+    embedded = _record_embeds(monkeypatch)
+    notice = "[sub-agent result timed out]"
+    state.get_or_create_slot("notice")._pending_subagent_failures.append(notice)
+    await _turn(state, "notice")
+
+    state.context_builder.build_message.assert_called_once()
+    assert state.context_builder.build_message.call_args.args[0] == f"{notice}\n\n{MESSAGE}"
+    assert embedded == [MESSAGE, MESSAGE]
 
 
 def test_the_early_embed_outlasts_the_longest_wait_a_build_can_join() -> None:

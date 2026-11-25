@@ -22,6 +22,12 @@ from kiro_crew.timed_out_call import timed_out_call_body
 # owns the complete envelope; every delivery surface passes it through unchanged.
 MONITOR_WAKE_PREFIX = "[Monitor wake]"
 
+# A wake for a subscription: an MCP resource subscription today
+# (rfc-mcp-resource-subscriptions.md §4.9.2), the webhook subscriptions'
+# ``session`` consumer once rfc-webhook-subscriptions PR 1 lands and reuses it.
+WEBHOOK_WAKE_PREFIX = "[Webhook wake]"
+WEBHOOK_WAKE_END = "[End of webhook wake]"
+
 
 # Cron notification wrapper format — used by handlers.py (create), chat.py (detect), transcriptRendering.tsx (render)
 CRON_NOTIFY_PREFIX = "[Cron notification from "
@@ -207,6 +213,27 @@ HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
 # recovered and no continuation was sent, which is the whole point. Same
 # reasoning as HOOK_HALTED_RECOVERY_PREFIX, whose row is also display-only.
 REFUSAL_INBAND_RECOVERY_PREFIX = "[Tool blocked — reason sent to the agent]"
+
+
+# Prefix on the note the agent's next prompt carries after the watchdog recycled
+# its session's process (``session_events.wire_session_recycle_callback``). A
+# natively resumed session replays only the harness's own transcript, which still
+# shows a background command or sub-agent as started; the note says it ended with
+# the process. Prompt text only, never a transcript row: the person gets the
+# ``_SESSION_RECYCLED_NOTICE`` row instead.
+SESSION_RESTARTED_NOTICE_PREFIX = "[Session process restarted by Kiro Crew]"
+
+
+def session_restarted_notice(reason: str) -> str:
+    """The note the next prompt carries after a recycle that ended for *reason*."""
+    return (
+        f"{SESSION_RESTARTED_NOTICE_PREFIX} The watchdog ended this session's process "
+        f"({reason}). Work your harness ran in the background inside that process (a "
+        "background command, a background sub-agent or a Workflow) ended with it and "
+        "will not report back, so do not describe it as still running; check what it "
+        "left behind and start it again if it is still needed. Kiro Crew sub-agents "
+        "started with spawn_run were not stopped."
+    )
 
 
 def should_queue_refusal_recovery(

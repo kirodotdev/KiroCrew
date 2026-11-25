@@ -62,6 +62,17 @@ class SessionConfig:
         default=DEFAULT_SESSION_TIMEOUT,
         metadata=_meta("Session Timeout", "Idle session timeout in seconds."),
     )
+    automated_idle_timeout_secs: int = field(
+        default=0,
+        metadata=_meta(
+            "Idle Timeout After an Automated Turn",
+            "Idle timeout in seconds for a session whose last turn no person sent, such as "
+            "a scheduled job, a loop wake, a sub-agent completion or an app waking a chat. "
+            "Your next message puts the session back on the Session Timeout. Used only when "
+            "shorter than the Session Timeout, and not while that is 0. 0 (the default) "
+            "turns it off. Read at every idle sweep, so a change needs no restart.",
+        ),
+    )
     idle_exempt_keys: list[str] = field(
         default_factory=list,
         metadata=_meta(
@@ -515,6 +526,19 @@ class KiroCrewAgentConfig:
             "every card did before. A card-sent turn is tagged '[Dashboard "
             "card]', is never an approval, and is refused while the thread has an "
             "open approval or question.",
+        ),
+    )
+    # On by default: the sessions this Bot's thread opens are listed in its side
+    # panel and in the person's own session list too. Off leaves them out of the
+    # person's list (``crew_mode.list_view`` and the dashboard's ``crewModeView``).
+    # While ``dashboard.show_bot_sessions_in_list`` is on, every Bot's are listed
+    # and this switch does not apply.
+    show_sessions_in_list: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show in my Sessions list",
+            "List the sessions this bot opens in your Sessions list. Show all "
+            "bots in my Sessions lists every bot's, whatever this says.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``

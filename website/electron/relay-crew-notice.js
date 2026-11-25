@@ -30,7 +30,12 @@ function noticeText(kind, name) {
       close: "Close",
     };
   }
-  return { title: `${crew} is currently unavailable`, body: "", check: "Check again", close: "Close" };
+  return {
+    title: `${crew} is currently unavailable`,
+    body: "The machine running it is offline, or Kiro Crew is not running there. Once it is back, press Check again.",
+    check: "Check again",
+    close: "Close",
+  };
 }
 
 module.exports = { NOTICE, NOTICE_FOR_CODE, noticeText };

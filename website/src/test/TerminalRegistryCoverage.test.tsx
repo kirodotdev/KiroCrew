@@ -48,6 +48,8 @@ import {
   useTerminalManualRetry,
   useTerminalInvalidCwd,
   useTerminalWrongMachine,
+  useTerminalAtLimit,
+  isTerminalAtLimit,
   retryTerminalConnection,
 } from '../utils/terminalRegistry'
 
@@ -722,6 +724,26 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(1)
       act(() => { retryTerminalConnection(id) })
       expect(result.current.wrongMachine).toBe(false)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+    it('parks a shell the gateway refused at its terminal ceiling, until the user retries', () => {
+      vi.useFakeTimers()
+      const id = session('at-limit')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      const failed = vi.fn()
+      onTerminalReady(id, () => {}, failed)
+      const { result } = renderHook(() => ({ status: useTerminalConnStatus(id), atLimit: useTerminalAtLimit(id) }))
+      act(() => { ws.simulateJson({ type: 'error', code: 'terminal_max_sessions', message: 'Max 12 terminal sessions' }); ws.simulateClose() })
+      expect(result.current).toEqual({ status: 'disconnected', atLimit: true })
+      expect(isTerminalAtLimit(id)).toBe(true)
+      expect(failed).toHaveBeenCalledOnce()
+      // No automatic redial into the same refusal, even on a revive event.
+      act(() => { vi.advanceTimersByTime(60_000); window.dispatchEvent(new Event('online')) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current.atLimit).toBe(false)
       expect(WS_INSTANCES).toHaveLength(2)
     })
     it('redials a shell whose placement could not be read, instead of parking it', () => {

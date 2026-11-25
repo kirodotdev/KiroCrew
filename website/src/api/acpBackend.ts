@@ -241,7 +241,7 @@ export function agentChoiceSaved(error: unknown): boolean {
 
 /**
  * What ONE `GET /api/acp-backends` row says about starting its harness, on its
- * own — no host, sandbox or setup facts.
+ * own — no setup facts.
  *
  * First-run setup and Settings > Agent Harness both decide from this, so the two
  * cannot drift on what a probe row means (#14517). Each keeps the checks only it
@@ -250,6 +250,8 @@ export function agentChoiceSaved(error: unknown): boolean {
  *
  * - `unprobed`: no row (query in flight, 403/404, or the payload omits it).
  * - `unselectable`: this build or policy refuses it; a switch would be rejected.
+ * - `sandbox_refused`: every session start refuses it on this host (the row's
+ *   `sandbox_refusal`), so installing, restarting or re-checking cannot help.
  * - `missing`: its components are not installed on this machine.
  * - `restart_required`: installed, but this gateway cached its absence, so a
  *   session started now still fails until the cache is dropped.
@@ -264,6 +266,7 @@ export function agentChoiceSaved(error: unknown): boolean {
 export type AcpProbeState =
   | 'unprobed'
   | 'unselectable'
+  | 'sandbox_refused'
   | 'missing'
   | 'restart_required'
   | 'unknown'
@@ -272,6 +275,7 @@ export type AcpProbeState =
 export function acpProbeState(probe: AcpBackendProbe | undefined): AcpProbeState {
   if (!probe) return 'unprobed'
   if (probe.selectable === false) return 'unselectable'
+  if (probe.sandbox_refusal) return 'sandbox_refused'
   if (probe.installed === 'missing') return 'missing'
   if (probe.restart_required) return 'restart_required'
   if (probe.installed === 'unknown') return 'unknown'
@@ -286,7 +290,12 @@ export function acpProbeState(probe: AcpBackendProbe | undefined): AcpProbeState
  */
 export function acpProbeBlocksUse(probe: AcpBackendProbe | undefined): boolean {
   const state = acpProbeState(probe)
-  return state === 'unselectable' || state === 'missing' || state === 'restart_required'
+  return (
+    state === 'unselectable' ||
+    state === 'sandbox_refused' ||
+    state === 'missing' ||
+    state === 'restart_required'
+  )
 }
 
 /**

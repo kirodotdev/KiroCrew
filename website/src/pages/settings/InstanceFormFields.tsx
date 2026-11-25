@@ -563,7 +563,14 @@ export function InstanceFormFields({
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <label htmlFor={`${idPrefix}-name`} className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.name')}
-        <input id={`${idPrefix}-name`} aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={values.name} onChange={e => set('name', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} />
+        <input id={`${idPrefix}-name`} aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={values.name} onChange={e => set('name', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} required aria-required="true" aria-describedby={values.name.trim() ? undefined : `${idPrefix}-name-hint`} />
+        {/* The placeholder looks like a value, so an empty Name has to say it is
+            why the submit button stays disabled. */}
+        {!values.name.trim() && (
+          <span id={`${idPrefix}-name-hint`} className="text-[12px] text-muted leading-snug">
+            {i18nT('pages.settings.instancesPanel.name_required_hint')}
+          </span>
+        )}
       </label>
       {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
           at no form control. The caption text stays put and the accessible name
@@ -673,7 +680,9 @@ export function InstanceFormFields({
       {isFargate ? null : (
       <label htmlFor={`${idPrefix}-ttl`} className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.token_ttl')}
-        <input id={`${idPrefix}-ttl`} aria-label={i18nT('pages.settings.instancesPanel.token_ttl')} className={inputCls} value={values.ttl} onChange={e => set('ttl', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.20h')} />
+        {/* The placeholder is DEFAULT_TTL, a machine value the field parses, so it
+            is data to the render-time i18n scan rather than untranslated prose. */}
+        <input id={`${idPrefix}-ttl`} aria-label={i18nT('pages.settings.instancesPanel.token_ttl')} className={inputCls} value={values.ttl} onChange={e => set('ttl', e.target.value)} placeholder={DEFAULT_TTL} data-i18n-opaque="" />
         {!ttlValid ? (
           <span className="text-[12px] text-danger leading-snug">
             {i18nT('pages.settings.remoteCrewPanel.ttl_must_be_hours_or_minutes')}

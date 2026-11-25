@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import threading
 
 import pytest
 
@@ -113,10 +114,13 @@ def test_restrict_to_owner_runs_before_any_content_is_written(tmp_path, monkeypa
     write reporting 0 bytes forever instead of failing.
     """
     events: list[str] = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
 
     def _spy(path, **_kw):
-        events.append("restrict")
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            events.append("restrict")
         return real_restrict(path)
 
     monkeypatch.setattr(platform_compat, "restrict_to_owner", _spy)

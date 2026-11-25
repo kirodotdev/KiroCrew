@@ -477,6 +477,7 @@ class TestControlFrameBytes:
             "owner_port_unverifiable",
             "pid",
             "start_time",
+            "gateway_path",
         ]
         assert writer.writes[0] == _line(pong)
 

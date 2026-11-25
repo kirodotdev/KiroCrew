@@ -576,6 +576,7 @@ def test_the_counts_answer_what_is_done_and_what_needs_me() -> None:
                 reason="needs_human",
                 summary="which?",
             ),
+            _work("ask", item_id="it_2", ask={"what": "which?"}),
             _work("create", item_id="it_3", title="stuck", round=2),
             _work(
                 "report",
@@ -585,6 +586,7 @@ def test_the_counts_answer_what_is_done_and_what_needs_me() -> None:
                 reason="approval",
                 summary="no creds",
             ),
+            _work("ask", item_id="it_3", ask={"what": "creds?"}),
             _work("create", item_id="it_4", title="running", round=2),
             _work("report", actor="worker", item_id="it_4", status="progress", summary="moving"),
             _work("create", item_id="it_5", title="conductor's", round=2),
@@ -622,6 +624,7 @@ def test_a_closed_item_no_longer_needs_me() -> None:
                     reason="needs_human",
                     summary="?",
                 ),
+                _work("ask", item_id=item_id, ask={"what": "?"}),
                 _work("close", item_id=item_id, state=state),
             ]
     for status in ("question", "blocked", "progress"):
@@ -634,12 +637,14 @@ def test_a_closed_item_no_longer_needs_me() -> None:
                 status=status,
                 reason="needs_human" if status != "progress" else None,
             ),
+            _work("ask", item_id=f"it_open_{status}", ask={"what": "?"}),
         ]
     entries += [
         _work("create", item_id="it_reopened", title="reopened question", round=1),
         _work(
             "report", actor="worker", item_id="it_reopened", status="question", reason="approval"
         ),
+        _work("ask", item_id="it_reopened", ask={"what": "?"}),
         _work("close", item_id="it_reopened", state="accepted"),
         _work("close", item_id="it_reopened", state="open"),
     ]
@@ -658,15 +663,17 @@ def test_a_closed_item_no_longer_needs_me() -> None:
 
 
 def test_a_savepoint_from_before_reason_and_answered_rebuilds() -> None:
-    """Items in an older savepoint carry no ``reason``/``answered``, so resuming one
-    would hide a real person wait from ``needs_you``. The bumped version retires it."""
-    assert projection._FOLDS["workstreams"].state_version == projection._FOLD_STATE_VERSION_BASE + 2
+    """Items in an older savepoint carry no ``reason``/``answered``/``asked``, so
+    resuming one would miscount ``needs_you``. The bumped version retires it."""
+    assert projection._FOLDS["workstreams"].state_version == projection._FOLD_STATE_VERSION_BASE + 3
 
 
 def _asked(item_id: str, status: str, reason: str | None) -> list[Entry]:
+    """A worker's report, relayed to the person by the conductor's ``ask``."""
     return [
         _work("create", item_id=item_id, title=item_id, round=1),
         _work("report", actor="worker", item_id=item_id, status=status, reason=reason),
+        _work("ask", item_id=item_id, ask={"what": "?"}),
     ]
 
 
@@ -692,6 +699,7 @@ def test_an_answered_report_no_longer_needs_me() -> None:
         _work(
             "report", actor="worker", item_id="asked_again", status="question", reason="approval"
         ),
+        _work("ask", item_id="asked_again", ask={"what": "?"}),
     ]
     entries += _asked("closed", "blocked", "needs_human")
     entries += [_work("close", item_id="closed", state="abandoned")]
@@ -731,6 +739,7 @@ def test_a_baselined_item_reads_its_hand_back_from_the_stamps(
                 reason="needs_human",
                 last_report_at="2026-10-03T12:00:00+00:00",
                 decided_at=decided_at,
+                ask={"what": "?", "written_at": "2026-10-03T12:01:00+00:00"},
                 verdict="pending",
             ),
         ]
@@ -1472,3 +1481,25 @@ def test_a_baselined_task_keeps_its_committed_fields(
     assert item["worker_session_key"] == WORKER_A
     # The close itself still applies: the baseline seeds, it does not replace.
     assert item["state"] == "accepted"
+
+
+def test_a_person_wait_counts_only_once_the_conductor_relays_it() -> None:
+    """The Board's rule (``awaits_person``): a report naming a person needs the
+    conductor's ``ask`` after it. Before the ask, and after a newer report, the
+    question is still the conductor's, so it is not counted."""
+    entries = [_opened(CONDUCTOR), _work("goal", goal="relay", round=1)]
+    entries += [
+        _work("create", item_id="unrelayed", title="unrelayed", round=1),
+        _work(
+            "report", actor="worker", item_id="unrelayed", status="question", reason="needs_human"
+        ),
+    ]
+    entries += _asked("relayed", "question", "needs_human")
+    entries += _asked("superseded", "blocked", "approval")
+    entries += [
+        _work("report", actor="worker", item_id="superseded", status="blocked", reason="approval")
+    ]
+    board = _board(_fold(entries), "relay")
+    waits = {t["item_id"]: t["awaits_person"] for t in board["tasks"]}
+    assert waits == {"unrelayed": False, "relayed": True, "superseded": False}
+    assert board["needs_you"] == 1

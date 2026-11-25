@@ -424,6 +424,19 @@ describe("classifyMinidump", () => {
     assert.equal(verdict.reason, "not-a-crash");
   });
 
+  it("rejects Crashpad's Windows snapshot code 0x517a7ed, which is DumpWithoutCrash and not a crash", () => {
+    // A Windows snapshot of our own executable is not a crash; a real Windows
+    // exception on the same module is.
+    const exe = `C:\\Program Files\\${APP}\\${APP}.exe`;
+    assert.deepEqual(classifyMinidump(parsed({ exceptionCode: 0x517a7ed, mainModule: exe }), APP), {
+      crash: false,
+      readable: true,
+      reason: "not-a-crash",
+      deletable: true,
+    });
+    assert.equal(classifyMinidump(parsed({ exceptionCode: 0xc0000005, mainModule: exe }), APP).crash, true);
+  });
+
   it("leaves an own dump pending when the exception code could not be read", () => {
     // exceptionCode null = the stream was absent or too short to read, not a
     // parsed 0. Reading that as code 0 would write our own crash off as
@@ -1289,17 +1302,43 @@ describe("collectCrashReports — bounds and failure", () => {
 });
 
 describe("crashNoticeSummary", () => {
-  it("exposes a count and nothing else — no path, filename, or timestamp", () => {
+  it("exposes the count and the newest crash's time — no path or filename", () => {
     const fs = fakeFs({ [path.join(PENDING, "own.dmp")]: buildMinidump() });
-    const summary = crashNoticeSummary(collectCrashReports(withBaseline(fs)));
-    assert.deepEqual(Object.keys(summary).sort(), ["newCount"]);
+    const scan = collectCrashReports(withBaseline(fs));
+    const summary = crashNoticeSummary(scan);
+    assert.deepEqual(Object.keys(summary).sort(), ["lastCrashAt", "newCount"]);
     assert.equal(summary.newCount, 1);
+    assert.equal(summary.lastCrashAt, scan.newCrashes[0].at);
     assert.equal(JSON.stringify(summary).includes("own.dmp"), false);
     assert.equal(JSON.stringify(summary).includes(LOGS), false);
   });
 
+  it("reports the newest crash's time, wherever it sits in the list", () => {
+    const summary = crashNoticeSummary({
+      newCrashes: [
+        { kind: "minidump", name: "a.dmp", at: "2026-10-10T19:58:23.706Z" },
+        { kind: "minidump", name: "b.dmp", at: "2026-10-28T19:19:55.283Z" },
+        { kind: "minidump", name: "c.dmp", at: "2026-10-20T08:00:00.000Z" },
+      ],
+    });
+    assert.deepEqual(summary, { newCount: 3, lastCrashAt: "2026-10-28T19:19:55.283Z" });
+  });
+
+  it("compares parsed times and ignores an `at` that does not parse", () => {
+    const summary = crashNoticeSummary({
+      newCrashes: [{ at: "not a time" }, { at: "2026-10-10T19:58:23.706Z" }, {}],
+    });
+    assert.deepEqual(summary, { newCount: 3, lastCrashAt: "2026-10-10T19:58:23.706Z" });
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{ at: "garbage" }] }), { newCount: 1, lastCrashAt: null });
+    // Later as a string, earlier as a time (2026-10-28T19:00:00Z).
+    assert.deepEqual(
+      crashNoticeSummary({ newCrashes: [{ at: "2026-10-28T19:19:55.283Z" }, { at: "2026-10-29T03:00:00+08:00" }] }),
+      { newCount: 2, lastCrashAt: "2026-10-28T19:19:55.283Z" },
+    );
+  });
+
   it("is safe on a scan that never ran", () => {
-    assert.deepEqual(crashNoticeSummary(null), { newCount: 0 });
+    assert.deepEqual(crashNoticeSummary(null), { newCount: 0, lastCrashAt: null });
   });
 });
 
@@ -1341,8 +1380,8 @@ it("the crash collector exports its twenty names, in order, with their values", 
   assert.strictEqual(collector.MAX_CRASH_LOG_LINES, 500);
   assert.strictEqual(collector.MAX_INSPECT_PER_RUN, 25);
   assert.strictEqual(collector.MAX_PENDING_ATTEMPTS, 3);
-  assert.deepStrictEqual(collector.crashNoticeSummary({ newCrashes: [{}, {}] }), { newCount: 2 });
-  assert.deepStrictEqual(collector.crashNoticeSummary(null), { newCount: 0 });
+  assert.deepStrictEqual(collector.crashNoticeSummary({ newCrashes: [{}, {}] }), { newCount: 2, lastCrashAt: null });
+  assert.deepStrictEqual(collector.crashNoticeSummary(null), { newCount: 0, lastCrashAt: null });
 });
 
 it("the crash collector loads without Electron and touches no file at load", () => {

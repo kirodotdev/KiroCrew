@@ -1,4 +1,4 @@
-"""A stdio MCP server that relays to a streamable-HTTP one, adding headers kept local.
+"""A stdio MCP server that relays to a remote one, adding headers kept local.
 
 On KAS a remote server's ``headers`` never cross the wire
 (:func:`kiro_crew.acp.kas_agents._withhold_credential_fields`). Without them a
@@ -11,11 +11,19 @@ the recorded url with the recorded headers, following the streamable-HTTP
 transport (``Mcp-Session-Id``, ``MCP-Protocol-Version``, a JSON or an event-stream
 answer).
 
-What it does not do: open the optional GET stream a server may use for messages
-that answer no request, or speak the older two-endpoint ``sse`` transport (the
-projection does not bridge such an entry). Redirects are not followed, so a
-header is only ever sent to the recorded url's origin. No header value is ever
-written to stderr or into an error the engine sees.
+A server that refuses ``initialize`` with a 4xx other than 401 or 403 is spoken to
+over the older two-endpoint ``sse`` transport instead, the fallback KAS itself
+makes: a GET to the url opens an event stream whose ``endpoint`` event names where
+each message is POSTed, and the answers arrive on that stream as ``message``
+events. A stream that ends is opened again by the next message, which first sends
+the engine's ``initialize`` again, so a server that restarted still serves the
+engine's session.
+
+What it does not do: open the optional GET stream a streamable-HTTP server may use
+for messages that answer no request. Redirects are not followed, and an
+``endpoint`` on another origin is refused, so a header is only ever sent to the
+recorded url's origin. No header value is ever written to stderr or into an error
+the engine sees.
 
 Standard library only, plus the standard-library leaf
 :mod:`kiro_crew.mcp_structured_text`, until a request fails: the engine starts
@@ -54,6 +62,12 @@ _BRIDGE_ERROR = -32000
 #: ``Python-urllib/x.y`` is refused 403 by bot filters (Atlassian Rovo's), which
 #: then reads as a bad auth header.
 _USER_AGENT = "kirocrew-mcp-bridge/1"
+#: The id of the ``initialize`` sent again on a reopened ``sse`` stream; its answer
+#: is the bridge's own and never reaches the engine.
+_REPEAT_ID = "kirocrew-bridge-reinitialize"
+#: How long a reopened ``sse`` stream waits for the answer to that ``initialize``.
+_REPEAT_SECS = 30.0
+_STREAM_CLOSED = "stopped answering (its event stream closed)"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -135,24 +149,74 @@ def _sent_inline(line: bytes) -> bool:
     )
 
 
-def _sse_data(stream: IO[bytes]) -> Iterator[bytes]:
-    """The ``data`` of each event in an event stream, joined across its lines."""
+def _sse_events(stream: IO[bytes]) -> Iterator[tuple[str, bytes]]:
+    """``(event, data)`` of each event in an event stream, ``data`` joined across its
+    lines; an event that names no type is a ``message``."""
+    event = "message"
     data: list[bytes] = []
     for raw in stream:
         line = raw.rstrip(b"\r\n")
         if not line:
             if data:
-                yield b"\n".join(data)
-            data = []
+                yield event, b"\n".join(data)
+            event, data = "message", []
         elif line.startswith(b"data:"):
             value = line[5:]
             data.append(value[1:] if value.startswith(b" ") else value)
+        elif line.startswith(b"event:"):
+            event = line[6:].strip().decode("utf-8", "replace")
     if data:
-        yield b"\n".join(data)
+        yield event, b"\n".join(data)
+
+
+#: The port a url that names none is reached on.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _same_origin(url: str, other: str) -> bool:
+    """Whether *url* has *other*'s scheme, host and port, a port left out being its
+    scheme's default (``https://host`` is ``https://host:443``)."""
+
+    def origin(text: str) -> tuple[str, str | None, int | None]:
+        parts = urllib.parse.urlsplit(text)
+        scheme, port = parts.scheme.lower(), parts.port
+        return scheme, parts.hostname, _DEFAULT_PORTS.get(scheme) if port is None else port
+
+    try:
+        return origin(url) == origin(other)
+    except ValueError:
+        return False
+
+
+def _moves_to_sse(status: int) -> bool:
+    """Whether a refused ``initialize`` means the older ``sse`` transport, as KAS reads
+    it: any 4xx but a refused credential, which that transport would refuse too."""
+    return 400 <= status < 500 and status not in (401, 403)
+
+
+class _NoAnswer(Exception):
+    """A request the server did not answer: *reason* in plain words, never a header
+    value, and the HTTP *status* when it answered with an error."""
+
+    def __init__(self, reason: str, status: int | None = None) -> None:
+        super().__init__(reason)
+        self.reason, self.status = reason, status
+
+
+def _cut_off(exc: BaseException) -> str:
+    """Why an answer stopped part way: the class name alone for a malformed one
+    (``IncompleteRead``), since its text carries the server's bytes."""
+    if isinstance(exc, http.client.HTTPException):
+        return f"stopped answering ({type(exc).__name__})"
+    return f"stopped answering ({_network_cause(exc) or exc})"
 
 
 class Bridge:
     """Relay one engine's stdio to one remote server."""
+
+    #: Whether a refused ``initialize`` is tried again over the older ``sse``
+    #: transport (:func:`_moves_to_sse`).
+    falls_back_to_sse = True
 
     def __init__(
         self,
@@ -175,6 +239,8 @@ class Bridge:
         self._session_id: str | None = None
         self._protocol: str | None = None
         self._initialize_ids: set[Any] = set()
+        #: The older transport, once a stream it opened named where to POST.
+        self._sse: _LegacySse | None = None
 
     def _request_headers(self) -> dict[str, str]:
         headers = dict(self._headers)
@@ -234,6 +300,22 @@ class Bridge:
             return []
         return self._emit(msg)
 
+    def _open(self, request: urllib.request.Request) -> Any:
+        """The server's answer to *request*; :class:`_NoAnswer` says why there is none."""
+        try:
+            return self._opener.open(request, timeout=_READ_TIMEOUT_SECS)
+        except urllib.error.HTTPError as exc:
+            reason = self._http_error_reason(exc)
+            exc.close()
+            raise _NoAnswer(reason, exc.code) from None
+        except http.client.HTTPException as exc:
+            # A malformed answer (a status line that is not HTTP): the class name
+            # alone, since the exception text carries the server's bytes.
+            raise _NoAnswer(f"could not be reached ({type(exc).__name__})") from None
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            reason = _network_cause(exc) or getattr(exc, "reason", None) or type(exc).__name__
+            raise _NoAnswer(f"could not be reached ({reason})") from None
+
     def send(self, line: bytes) -> None:
         """POST one engine message and relay whatever the server answers."""
         try:
@@ -246,28 +328,26 @@ class Bridge:
             )
             return
         ids = _request_ids(msg)
-        if isinstance(msg, dict) and msg.get("method") == "initialize" and "id" in msg:
+        initialize = isinstance(msg, dict) and msg.get("method") == "initialize"
+        if initialize and "id" in msg:
             with self._lock:
                 self._initialize_ids.add(msg["id"])
+        if self._sse is not None:
+            self._sse.send(msg, ids)
+            return
         body = json.dumps(msg, separators=(",", ":")).encode("utf-8")
         request = urllib.request.Request(
             self._url, data=body, headers=self._request_headers(), method="POST"
         )
         try:
-            resp = self._opener.open(request, timeout=_READ_TIMEOUT_SECS)
-        except urllib.error.HTTPError as exc:
-            reason = self._http_error_reason(exc)
-            exc.close()
-            self._fail(ids, reason)
-            return
-        except http.client.HTTPException as exc:
-            # A malformed answer (a status line that is not HTTP): the class name
-            # alone, since the exception text carries the server's bytes.
-            self._fail(ids, f"could not be reached ({type(exc).__name__})")
-            return
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            reason = _network_cause(exc) or getattr(exc, "reason", None) or type(exc).__name__
-            self._fail(ids, f"could not be reached ({reason})")
+            resp = self._open(request)
+        except _NoAnswer as exc:
+            if initialize and self.falls_back_to_sse and _moves_to_sse(exc.status or 0):
+                sse = _LegacySse(self)
+                if sse.send(msg, ids):
+                    self._sse = sse
+                return
+            self._fail(ids, exc.reason)
             return
         answered: list[Any] = []
         try:
@@ -279,18 +359,14 @@ class Bridge:
                 if resp.status in (202, 204):
                     return
                 if resp.headers.get_content_type() == "text/event-stream":
-                    for data in _sse_data(resp):
+                    for _event, data in _sse_events(resp):
                         answered += self._relay_body(data)
                 else:
                     answered += self._relay_body(resp.read())
-        except http.client.HTTPException as exc:
-            # A body cut off before its declared length (``IncompleteRead``).
-            reason = type(exc).__name__
-            self._fail([i for i in ids if i not in answered], f"stopped answering ({reason})")
-            return
-        except OSError as exc:
-            reason = _network_cause(exc) or str(exc)
-            self._fail([i for i in ids if i not in answered], f"stopped answering ({reason})")
+        except (http.client.HTTPException, OSError) as exc:
+            # A body cut off before its declared length (``IncompleteRead``), or the
+            # network dropped it.
+            self._fail([i for i in ids if i not in answered], _cut_off(exc))
             return
         missing = [i for i in ids if i not in answered]
         if missing:
@@ -331,8 +407,139 @@ class Bridge:
             workers = [w for w in workers if w.is_alive()]
         for worker in workers:
             worker.join(_DRAIN_SECS)
+        if self._sse is not None:
+            self._sse.drain()
         self.close()
         return 0
+
+
+class _LegacySse:
+    """The older two-endpoint ``sse`` transport, for one :class:`Bridge`.
+
+    A GET to the bridge's url opens the event stream, and its ``endpoint`` event
+    names where each message is POSTed. The answers arrive as ``message`` events,
+    which a reader thread relays to the engine. The stream is opened by the first
+    message that finds none open; one that ends answers each request still waiting
+    on it with why, and the next message opens another.
+    """
+
+    def __init__(self, bridge: Bridge) -> None:
+        self._bridge = bridge
+        #: Held while a stream is opened, so concurrent messages open one.
+        self._opening = threading.Lock()
+        #: Guards the two below, and is notified as requests are answered.
+        self._answered = threading.Condition()
+        self._post_url: str | None = None
+        self._pending: set[Any] = set()
+        self._initialize: dict[str, Any] | None = None
+        self._repeated = threading.Event()
+
+    def send(self, msg: Any, ids: list[Any]) -> bool:
+        """POST *msg* on the open stream, opening one first; whether one was open."""
+        initialize = isinstance(msg, dict) and msg.get("method") == "initialize"
+        if initialize:
+            self._initialize = msg
+        with self._opening:
+            post_url = self._post_url or self._connect(ids, repeat=not initialize)
+        if post_url:
+            self._post(post_url, msg, ids)
+        return bool(post_url)
+
+    def drain(self) -> None:
+        """Wait a bounded while for the answers still on their way."""
+        with self._answered:
+            self._answered.wait_for(lambda: not self._pending, _DRAIN_SECS)
+
+    def _take(self, ids: list[Any]) -> list[Any]:
+        """Those of *ids* still waiting for an answer, taken off the waiting set."""
+        with self._answered:
+            taken = [i for i in ids if i in self._pending]
+            self._pending.difference_update(taken)
+            self._answered.notify_all()
+        return taken
+
+    def _post(self, url: str, msg: Any, ids: list[Any]) -> None:
+        with self._answered:
+            ended = self._post_url != url
+            if not ended:
+                self._pending.update(ids)
+        if ended:
+            self._bridge._fail(ids, _STREAM_CLOSED)
+            return
+        body = json.dumps(msg, separators=(",", ":")).encode("utf-8")
+        headers = {**self._bridge._headers, "Content-Type": "application/json"}
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            self._bridge._open(request).close()
+        except _NoAnswer as exc:
+            self._bridge._fail(self._take(ids), exc.reason)
+
+    def _connect(self, ids: list[Any], *, repeat: bool) -> str | None:
+        """Open a stream; where to POST, or ``None`` once each of *ids* is answered
+        with why. *repeat* first sends the engine's ``initialize`` again, for a server
+        that restarted and so does not know the engine's session."""
+        bridge = self._bridge
+        headers = {**bridge._headers, "Accept": "text/event-stream"}
+        try:
+            stream = bridge._open(urllib.request.Request(bridge._url, headers=headers))
+        except _NoAnswer as exc:
+            bridge._fail(ids, exc.reason)
+            return None
+        events = _sse_events(stream)
+        post_url = None
+        reason = "ended its event stream without saying where to send messages"
+        try:
+            endpoint = next((data for event, data in events if event == "endpoint"), None)
+        except (http.client.HTTPException, OSError) as exc:
+            endpoint, reason = None, _cut_off(exc)
+        if endpoint is not None:
+            post_url = urllib.parse.urljoin(
+                bridge._url, endpoint.decode("utf-8", "replace").strip()
+            )
+            if not _same_origin(post_url, bridge._url):
+                post_url = None
+                reason = "asked for its messages on another site, where its headers are not sent"
+        if post_url is None:
+            stream.close()
+            bridge._fail(ids, reason)
+            return None
+        with self._answered:
+            self._post_url = post_url
+        threading.Thread(target=self._read, args=(stream, events), daemon=True).start()
+        if repeat and self._initialize is not None:
+            self._repeated.clear()
+            self._post(post_url, {**self._initialize, "id": _REPEAT_ID}, [])
+            self._repeated.wait(_REPEAT_SECS)
+            self._post(post_url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, [])
+        return post_url
+
+    def _read(self, stream: Any, events: Iterator[tuple[str, bytes]]) -> None:
+        """Relay each ``message`` event until the stream ends."""
+        reason = _STREAM_CLOSED
+        try:
+            with stream:
+                for event, data in events:
+                    if event == "message":
+                        self._relay(data)
+        except (http.client.HTTPException, OSError) as exc:
+            reason = _cut_off(exc)
+        with self._answered:
+            waiting, self._pending = list(self._pending), set()
+            self._post_url = None
+            self._answered.notify_all()
+        self._repeated.set()
+        if waiting:
+            self._bridge._fail(waiting, reason)
+
+    def _relay(self, data: bytes) -> None:
+        try:
+            msg = json.loads(data)
+        except ValueError:
+            return
+        if isinstance(msg, dict) and msg.get("id") == _REPEAT_ID and "method" not in msg:
+            self._repeated.set()
+            return
+        self._take(self._bridge._emit(msg))
 
 
 def run_bridge(url: str, headers: dict[str, str], *, server: str) -> int:

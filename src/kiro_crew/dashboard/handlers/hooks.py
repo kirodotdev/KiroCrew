@@ -889,8 +889,10 @@ async def _run_hook_inner(
         identity_grant_covers_child,
     )
     from kiro_crew.llm_helpers import _steer_host_deny
+    from kiro_crew.messaging.alternation_echo import drop_echo
     from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
+    from kiro_crew.session_directive import strip_quoted_markers
 
     execution: ExecutionContext = (
         execution_context
@@ -911,8 +913,8 @@ async def _run_hook_inner(
         # Publish the captured identity WITHOUT vouching. A vouched entry is only
         # ever read for the CALLER slot of `create_session`'s own-store admission,
         # and a hook session can never be that caller: its key is a `hook:` synthetic
-        # (see `_HOOK_SESSION_PREFIX`) belonging to an ephemeral session that
-        # `_run_hook_agent` destroys after the turn, so it is never a dashboard slot
+        # (see `_HOOK_SESSION_PREFIX`) belonging to a session that `_run_hook_agent`
+        # resets after the turn, so it is never a dashboard slot
         # and `caller_slot_key` cannot resolve it. Vouching it would only occupy a
         # slot in the capped vouched map for an entry nothing can read. Publishing the
         # record still lets the hook turn run.
@@ -977,7 +979,9 @@ async def _run_hook_inner(
     # at 0, so without this the row records a literal 0. Started after the
     # context build so prompt assembly is not charged to the turn.
     _turn_t0 = time.monotonic()
-    async for event in client.stream(full_message):
+    # A caller that reuses a ``sessionKey`` resumes its conversation, so a turn
+    # can open with the alternation placeholder (``drop_echo``).
+    async for event in drop_echo(client.stream(full_message)):
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
         elif event.kind == _EVENT_PERMISSION_REQUEST_KIND:
@@ -1136,6 +1140,11 @@ async def _run_hook_inner(
                     source="webhook",
                     request_id=str(event.request_id),
                     error=deny_error,
+                    metadata=(
+                        {"rule_id": decision.tier}
+                        if deny_error == "hook_deny" and decision is not None and decision.tier
+                        else None
+                    ),
                 )
                 # No person is attached to a webhook turn, so every deny here
                 # is the host's: tell the model which one before the wire.
@@ -1146,6 +1155,15 @@ async def _run_hook_inner(
             _complete_event = event
             break
     state.sessions.record_success(session_key)  # sync; record_failure is async
+    # Per-interaction telemetry, only for a completion that landed: the loop
+    # above also ends on a failed one (e.g. ``error: compaction failed``).
+    from kiro_crew.llm_helpers import record_interaction_event
+    from kiro_crew.messaging.dispatch import stop_reason_landed
+
+    if _complete_event is not None and stop_reason_landed(
+        str(getattr(_complete_event, "stop_reason", "") or "")
+    ):
+        record_interaction_event(client, session_key, "webhook")
 
     # ── Per-turn usage row: attribute webhook spend. ──
     try:
@@ -1177,8 +1195,8 @@ async def _run_hook_inner(
     except Exception:
         logger.debug("usage row (webhook) persist failed", exc_info=True)
 
-    # kiro-cli's [STEERING steer-…] ack is protocol, not the result.
-    return strip_steering_markers(result_text)
+    # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are protocol.
+    return strip_quoted_markers(strip_steering_markers(result_text))
 
 
 async def _run_hook_agent(
@@ -1192,15 +1210,16 @@ async def _run_hook_agent(
     token_id: str | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[str, str]:
-    """Execute a webhook-triggered agent turn in an ephemeral session.
+    """Execute a webhook-triggered agent turn in its hook session.
 
     Returns ``(outcome, result text)``, the text redacted as delivery sends it,
     for a caller that waits for the answer.
 
-    Sessions are always destroyed after the turn completes (like subagents).
+    The session is reset after the turn: its process stops and its resume sid
+    stays, so a caller that reuses a ``sessionKey`` resumes the conversation.
     Context continuity across webhook calls is provided by hooks.json —
     the agent calls ``register_hook`` to persist context_summary, and this
-    handler injects it into the next fresh session.
+    handler injects it into each turn's message.
     """
     # Pure, cannot raise, so it may sit outside the try below.
     hook_id = session_key.removeprefix(_HOOK_SESSION_PREFIX)

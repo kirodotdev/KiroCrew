@@ -8,6 +8,8 @@
  * is dropped. The run itself has already happened (or not) by the time this is sent.
  */
 
+import { apiTransport } from '../api/apiTransport'
+
 export type TerminalRunOutcome = 'ran' | 'copied' | 'failed'
 export type TerminalRunReason = 'not_ready' | 'remote_chat' | 'no_tab' | 'not_sent' | 'copy_failed'
 export type TerminalRunSource = 'run_yourself' | 'code_block'
@@ -22,7 +24,7 @@ export function noteTerminalRun(
 ): void {
   if (!slot || !note.command) return
   try {
-    void fetch(terminalRunNotePath(slot), {
+    void apiTransport.request(terminalRunNotePath(slot), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: note.command, outcome: note.outcome, reason: note.reason ?? '', source: note.source }),

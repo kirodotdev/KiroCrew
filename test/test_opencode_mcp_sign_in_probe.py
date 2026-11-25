@@ -163,6 +163,31 @@ async def test_only_401_with_a_bearer_challenge_asks_for_a_sign_in(status, chall
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("advertised", "expected"), [(True, True), (False, False)])
+async def test_a_bare_401_asks_when_the_well_known_metadata_names_the_server(
+    monkeypatch, advertised, expected
+):
+    from kiro_crew import mcp_discovery
+
+    async def _handler(_request: web.Request) -> web.Response:
+        return web.Response(status=401)
+
+    asked: list[str] = []
+
+    async def _advertises(url: str) -> bool:
+        asked.append(url)
+        return advertised
+
+    monkeypatch.setattr(mcp_discovery, "advertises_protected_resource", _advertises)
+    runner, url, _seen = await _serve(_handler)
+    try:
+        assert await probe.asks_for_sign_in(url) is expected
+    finally:
+        await runner.cleanup()
+    assert asked == [url]
+
+
+@pytest.mark.asyncio
 async def test_a_slow_server_reads_as_no_answer():
     release = asyncio.Event()
 

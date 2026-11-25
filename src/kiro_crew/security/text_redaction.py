@@ -37,6 +37,8 @@ from .redaction_switch import credential_pass_bypassed
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .redaction_structured.compat import StreamRead
+
 
 def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     """Apply all redaction passes, reporting what each one removed.
@@ -272,34 +274,39 @@ def _snap_back(buf: str, cut: int) -> int:
 
 
 def _word_start(buf: str, cut: int) -> int:
-    """The detectors' ``cut`` moved back to whitespace, as the natural cut ends at one.
+    """The detectors' ``cut`` moved back to the start of its word, as the natural cut ends at one.
 
     Their hold is a fixed tail, so it can land on a non-class character inside a
     word (``?data=!`` in a URL) and commit half of something a later pass reads
     whole. A word longer than ``_STREAM_HOLDBACK_MAX`` keeps the class-run snap,
-    so the hold stays bounded.
+    so the hold stays bounded. Where a word starts: ``compat.word_start``.
     """
-    start = _token_start(buf, cut)
+    start = _submodule(_SEAM).word_start(buf, cut)
     if cut - start <= _STREAM_HOLDBACK_MAX:
         return start
     return _snap_back(buf, cut)
 
 
-def _outside_batch_spans(buf: str, cut: int) -> int:
+def _outside_batch_spans(buf: str, cut: int, context: str = "") -> int:
     """``cut`` moved back so no span the batch plan replaces in ``buf`` straddles it.
 
-    The detectors' hold, once snapped back to whitespace, can land inside a value the
-    plan reads whole (a token glued to the word before the cut). Each move walks back
-    to whitespace, as :func:`_aws_label_cut` does, and is checked again against every
-    span, so the commit never splits one.
+    The detectors' hold, once snapped back to a word start, can land inside a value the
+    plan reads whole (a token glued to the word before the cut), or right at its end.
+    Each move walks back to whitespace, as :func:`_aws_label_cut` does, and is checked
+    again against every span, so the commit never splits one. The plan reads ``buf``
+    after ``context``, the raw text already sent, as the committed window is read: a
+    value whose label went out earlier is still a span.
     """
-    spans = [(start, end) for start, end in _batch_spans(buf) if start < cut]
+    with _submodule(_SEAM).look_behind(context, buf):
+        spans = [(start, end) for start, end in _batch_spans(buf) if start < cut]
     # One walk from the last span back. A move only lowers ``cut`` to at most the start
     # of the span that moved it, so a span that starts later cannot straddle the new
     # cut, and every earlier one is still ahead. Restarting the scan after each move
     # would cost quadratic time in the spans an attacker can chain.
+    # A cut right at a span's end, with more text after it, would commit the span
+    # without the character it was decided by (a closing quote).
     for start, end in sorted(spans, reverse=True):
-        if start < cut < end:
+        if start < cut < end or start < cut == end < len(buf):
             cut = _snap_back(buf, _token_start(buf, start))
     return cut
 
@@ -331,6 +338,8 @@ class StreamRedactor:
         "_engine_tail",
         "_engine_pad",
         "_boundary",
+        "_armour_from",
+        "_armour_blocks",
     )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
@@ -346,6 +355,19 @@ class StreamRedactor:
         self._engine_tail = ""
         self._engine_pad = 0
         self._boundary = False
+        # Where the last committed private-key block's END line ends, and the blocks
+        # the detectors' last read ended, all in offsets from the buffer's start.
+        self._armour_from = 0
+        self._armour_blocks: tuple[tuple[int, int], ...] = ()
+
+    def _engine_read(self, boundary: bool = False) -> StreamRead | None:
+        """The detectors' hold on the buffer; keeps the private-key blocks it ended."""
+        read = _submodule(_SEAM).stream_read(
+            self._ctx, self._buf, boundary=boundary, armour_from=self._armour_from
+        )
+        if read is not None:
+            self._armour_blocks = read.armour_blocks
+        return read
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
@@ -353,7 +375,7 @@ class StreamRedactor:
         seam = _submodule(_SEAM)
         suspension = redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.set(True)
         try:
-            with seam.look_behind(self._ctx, text):
+            with seam.look_behind(self._ctx, text, self._armour_from):
                 return self._redact(text)
         finally:
             redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.reset(suspension)
@@ -363,6 +385,14 @@ class StreamRedactor:
         """Note raw text that left the buffer (emitted or dropped), for the look-behind."""
         keep = _submodule(_SEAM).stream_context_max()
         self._ctx = (self._ctx + raw)[-keep:]
+        # A block whose BEGIN left the buffer is decided: whole text resumes its
+        # private-key scan after the block's END line, so the stream does too.
+        k = len(raw)
+        for begin, end in self._armour_blocks:
+            if begin < k:
+                self._armour_from = max(self._armour_from, end)
+        self._armour_from = max(self._armour_from - k, -keep)
+        self._armour_blocks = tuple((b - k, e - k) for b, e in self._armour_blocks if b >= k)
 
     def _engine_discard(self) -> str | None:
         """Drop a structured unit's continuation; None once the unit has ended."""
@@ -527,7 +557,7 @@ class StreamRedactor:
 
         # A unit the detectors have not decided yet is held whole, and one decided
         # while still running is dropped to its end.
-        engine = _submodule(_SEAM).stream_read(self._ctx, self._buf, boundary=self._boundary)
+        engine = self._engine_read(boundary=self._boundary)
         if engine is not None and engine.tail:
             commit, raw = self._buf[: engine.cut], self._buf[engine.cut :]
             self._buf = ""
@@ -541,7 +571,9 @@ class StreamRedactor:
             # own cut already sits outside every hit, so only a snap that moved it is read.
             snapped = _word_start(self._buf, engine.cut)
             engine_cut = (
-                snapped if snapped == engine.cut else _outside_batch_spans(self._buf, snapped)
+                snapped
+                if snapped == engine.cut
+                else _outside_batch_spans(self._buf, snapped, self._ctx)
             )
             safety_cuts.append(engine_cut)
 
@@ -685,10 +717,10 @@ class StreamRedactor:
             floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
             if floor_crossing is not None:
                 i = floor_crossing.end(1)
-            # The same holds for a complete AWS key-value pair the floor would
-            # split (a PEM hold can keep one buffered after its value ended):
-            # its tail would stream with no label left to redact it.
-            if aws_label_seen:
+            # The same holds for a complete AWS key-value pair or private-key
+            # body the floor would split (a PEM hold can keep one buffered after
+            # its value ended): its tail would stream with no anchor left to redact it.
+            if aws_label_seen or self._armour_blocks:
                 for start, end in _batch_spans(self._buf):
                     if start < i < end:
                         i = end
@@ -706,7 +738,7 @@ class StreamRedactor:
             # detectors' own cut, kept out of any span the plan replaces; a run
             # they hold nothing in keeps the floor.
             if engine is not None and engine.undecided:
-                i = min(i, _outside_batch_spans(self._buf, engine.cut))
+                i = min(i, _outside_batch_spans(self._buf, engine.cut, self._ctx))
 
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
@@ -765,7 +797,7 @@ class StreamRedactor:
         """
         if self.discarding or not ends_plain_sentence(self._buf):
             return ""
-        read = _submodule(_SEAM).stream_read(self._ctx, self._buf)
+        read = self._engine_read()
         if read is not None and (read.undecided or read.tail):
             return ""
         run, self._buf = self._buf, ""
@@ -776,6 +808,8 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._armour_from = 0
+        self._armour_blocks = ()
 
     @property
     def held(self) -> str:

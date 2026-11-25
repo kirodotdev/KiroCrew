@@ -36,11 +36,20 @@ def _assert_refused(kind, path):
         assert _read(kind, path) is None
 
 
-def _track_open(monkeypatch):
+def _track_open(monkeypatch, source):
+    """Record descriptors the read under test opens for ``source``.
+
+    A process-wide daemon (the skill-view reaper) opens its own files through
+    this seam on its own schedule, from any thread; those pass through
+    unrecorded so they cannot join the closed-descriptor assertion.
+    """
     descriptors = []
     real_open = platform_compat.open_file_no_reparse
+    canonical = os.path.realpath(source)
 
     def capture(path, *, nonblocking=False):
+        if path != canonical:
+            return real_open(path, nonblocking=nonblocking)
         assert nonblocking
         fd = real_open(path, nonblocking=nonblocking)
         descriptors.append(fd)
@@ -68,10 +77,13 @@ def test_directory_swap_cannot_replace_the_authorized_file(tmp_path, monkeypatch
     moved = tmp_path / "moved"
     requested = original / "report.txt"
     real_open = platform_compat.open_file_no_reparse
+    canonical = os.path.realpath(requested)
     descriptors = []
 
     def swap_then_open(path, *, nonblocking=False):
-        assert path == os.path.realpath(requested)
+        # Another thread's open of its own file must neither swap nor record.
+        if path != canonical:
+            return real_open(path, nonblocking=nonblocking)
         assert nonblocking
         original.rename(moved)
         make_dir_link(original, outside)
@@ -98,7 +110,7 @@ def test_unverifiable_or_refused_descriptor_is_closed_without_reading(
 ):
     source = tmp_path / "report.txt"
     source.write_bytes(b"unchanged")
-    descriptors = _track_open(monkeypatch)
+    descriptors = _track_open(monkeypatch, source)
     _forbid_content_read(monkeypatch)
     if failure == "unknown_path":
         monkeypatch.setattr(hooks, "_fd_real_path", lambda _fd: None)
@@ -124,11 +136,32 @@ def test_ordinary_authorized_reads_remain_available(tmp_path, monkeypatch, kind)
     payload = b"raw\r\nbytes\x00\x1a"
     (directory / "report.bin").write_bytes(payload)
     path = directory / "report.bin"
-    descriptors = _track_open(monkeypatch)
+    descriptors = _track_open(monkeypatch, path)
     expected = payload[:4] if kind == "prefix" else payload
     if kind == "text":
         expected = payload.decode().replace("\r\n", "\n")
     assert _read(kind, path) == expected
+    _assert_closed(descriptors)
+
+
+def test_open_spy_ignores_another_threads_open_of_its_own_file(tmp_path, monkeypatch):
+    """A daemon's read inside the spy window does not join the recorded opens."""
+    import threading
+
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"safe")
+    foreign = tmp_path / "skill-view.md"
+    foreign.write_bytes(b"view")
+    descriptors = _track_open(monkeypatch, source)
+
+    daemon_reads = []
+    daemon = threading.Thread(
+        target=lambda: daemon_reads.append(hooks.safe_read_file_bytes(str(foreign)))
+    )
+    daemon.start()
+    daemon.join(10)
+    assert daemon_reads == [b"view"]
+    assert hooks.safe_read_file_bytes(str(source)) == b"safe"
     _assert_closed(descriptors)
 
 
@@ -160,7 +193,7 @@ def test_fifo_refusal_never_waits_for_a_writer(tmp_path, monkeypatch, kind):
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(os, "open", require_nonblocking)
-    descriptors = _track_open(monkeypatch)
+    descriptors = _track_open(monkeypatch, fifo)
     _forbid_content_read(monkeypatch)
     _assert_refused(kind, fifo)
     _assert_closed(descriptors)
@@ -215,7 +248,7 @@ def test_remaining_nonregular_admissions_never_wait_for_a_writer(tmp_path, monke
 def test_size_refusal_still_closes_the_verified_descriptor(tmp_path, monkeypatch):
     source = tmp_path / "report.txt"
     source.write_bytes(b"too large")
-    descriptors = _track_open(monkeypatch)
+    descriptors = _track_open(monkeypatch, source)
     monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 4)
     with pytest.raises(hooks.FileTooLargeError):
         hooks.safe_read_file_bytes(str(source))
@@ -578,7 +611,7 @@ async def test_outbox_reader_keeps_loop_live_and_closes_after_cancel(
     loop_thread = threading.get_ident()
     entered = asyncio.Event()
     release = threading.Event()
-    descriptors = _track_open(monkeypatch)
+    descriptors = _track_open(monkeypatch, source)
 
     def pause():
         # Fail before blocking if the syscall reaches the event-loop thread.

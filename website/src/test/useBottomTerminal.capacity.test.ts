@@ -3,39 +3,32 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   __resetBottomTerminal,
   addTab,
-  closeBottomTerminal,
-  MAX_TERMINALS,
-  removeTab,
-  setActiveTab,
   useBottomTerminal,
 } from '../hooks/useBottomTerminal'
 
 beforeEach(() => { __resetBottomTerminal(); localStorage.clear() })
 afterEach(() => { act(() => { __resetBottomTerminal() }) })
 
-describe('terminal capacity recovery', () => {
-  it('reveals the last existing tab at capacity and permits a new tab only after one is closed', () => {
+// The dock sets no tab cap: the gateway's own ceiling is the only limit, and a
+// tab it refuses says so. Twenty is well past the old cap of eight.
+describe('terminal tabs have no front-end cap', () => {
+  it('opens a new tab on every request', () => {
     const { result } = renderHook(() => useBottomTerminal())
+    const ids: string[] = []
     act(() => {
-      for (let i = 0; i < MAX_TERMINALS; i++) addTab(`/work/project-${i}`)
+      for (let i = 0; i < 20; i++) ids.push(addTab(`/work/project-${i}`))
     })
-    const existing = result.current.tabs
-    act(() => { setActiveTab(existing[0].id); closeBottomTerminal() })
-    expect(result.current.open).toBe(false)
-    expect(result.current.activeId).toBe(existing[0].id)
+    expect(ids.every(id => typeof id === 'string' && id.length > 0)).toBe(true)
+    expect(new Set(ids).size).toBe(20)
+    expect(result.current.tabs).toHaveLength(20)
+    expect(result.current.activeId).toBe(ids.at(-1))
+  })
 
-    let refused: string | null = 'not called'
-    act(() => { refused = addTab('/work/requested') })
-    expect(refused).toBeNull()
-    expect(result.current.tabs).toEqual(existing)
-    expect(result.current.open).toBe(true)
-    expect(result.current.activeId).toBe(existing.at(-1)!.id)
-
-    let created: string | null = null
-    act(() => { removeTab(existing[0].id); created = addTab('/work/requested') })
-    expect(created).not.toBeNull()
-    expect(result.current.tabs).toHaveLength(MAX_TERMINALS)
-    expect(result.current.tabs.at(-1)).toEqual({ id: created, cwd: '/work/requested' })
-    expect(result.current.activeId).toBe(created)
+  it('adopts every saved tab, not only the first eight', () => {
+    const { result } = renderHook(() => useBottomTerminal())
+    const tabs = Array.from({ length: 12 }, (_, i) => ({ id: `saved-${i}` }))
+    localStorage.setItem('mc-bottom-terminal', JSON.stringify({ tabs, activeId: 'saved-0' }))
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key: 'mc-bottom-terminal', storageArea: localStorage })) })
+    expect(result.current.tabs.map(t => t.id)).toEqual(tabs.map(t => t.id))
   })
 })

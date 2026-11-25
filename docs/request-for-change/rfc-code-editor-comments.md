@@ -3,8 +3,8 @@ title: Comments on code files from the side panel's editor, before a pull reques
 status: draft
 author: biasedbit
 created: 2026-11-06
-last-audited: 2026-11-06
-audited-at: 083e552cf
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: []
 tracking-issues: [18472]

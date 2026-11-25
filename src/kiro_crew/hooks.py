@@ -152,6 +152,7 @@ from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
     dispatch_session_lane_changed_bulk,
     fire_tool_hooks,
     get_global_hook_store,
+    hook_tool_input,
     permission_pre_tool_block,
     persisted_hook_store,
     pre_tool_match_names,
@@ -230,6 +231,8 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _granted_names,
     _granted_patterns,
     _has_global_inline_flags,
+    _hook_matcher_alternatives,
+    _hook_tool_matches,
     _host_builtin_alias,
     _is_declared_builtin_mcp_server,
     _is_deepseek_read_only_builtin,
@@ -283,11 +286,14 @@ from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime
 # names; hooks keeps its HARD-DENY reading of ``TargetPaths.truncated``.
 from kiro_crew.platform.spec_denied_grant import (  # noqa: F401  (read by tool_identity)
     SpecDeniedGrant,
+    SpecParentLimits,
+    as_parent_limits,
     as_spec_denied_grant,
 )
 from kiro_crew.platform.tool_names import (  # noqa: F401  (read by hook_runtime owners)
     DEEPSEEK_READ_ONLY_TOOLS,
     KIRO_TOOL_ALIASES,
+    builtin_names,
     deepseek_policy_alias,
     policy_alias_split,
     policy_aliases,
@@ -1518,6 +1524,46 @@ def _tier_app_browser_sites(facts: GateFacts, tier: GateTier) -> ToolHookResult 
     return ToolHookResult.auto_approve(identity_grant=True)
 
 
+def _tier_app_own_tools(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A first-party app's OWN agent calling a tool that same app's manifest declares.
+
+    The conditions live in :func:`kiro_crew.apps.own_agent_tools.gate_grants`, imported
+    when a call reaches this row. A grant vouches for the caller, so ``classifier_only``
+    skips it like the other grant rows.
+    """
+    if facts.classifier_only:
+        return None
+    from kiro_crew.apps import own_agent_tools  # noqa: PLC0415 - off the listing path
+
+    if not own_agent_tools.gate_grants(facts):
+        return None
+    return ToolHookResult.auto_approve(identity_grant=True)
+
+
+def _tier_spec_parent_limits(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS sub-agent run's call that an agent above it is refused: refuse it too.
+
+    The four limit rows above, run once per ``ToolCall.spec_parent_limits`` record
+    (:func:`kiro_crew.platform.spec_parent_gate.refusal`). Only ever refuses. A call
+    no record refuses and one cannot decide loses the run's own spec grants for the
+    rows below (``spec_parent_gate.withhold_undecided``), so it asks as the parent's does.
+    """
+    if not facts.call.spec_parent_limits:
+        return None
+    from kiro_crew.platform import spec_parent_gate  # noqa: PLC0415 - rare path
+
+    rows = (
+        _tier_spec_shell_allowlist,
+        _tier_spec_write_allowlist,
+        _tier_spec_denies,
+        _tier_spec_unjudged_denies,
+    )
+    verdict = spec_parent_gate.refusal(facts, tier, rows)
+    if verdict is None:
+        spec_parent_gate.withhold_undecided(facts, _spec_builtin_names(facts.call))
+    return verdict
+
+
 # The tool gate, row by row, in the order ``HookManager.judge`` runs it. Built after
 # ``compose`` so each row holds the rebound tier function, which reads this module's
 # globals -- built before it, a row would keep the owner's original, and a patch of
@@ -1546,7 +1592,9 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("spec-write-allowlist", "deny_policy", _tier_spec_write_allowlist),
     GateTier("spec-denies", "deny_policy", _tier_spec_denies),
     GateTier("spec-unjudged-denies", "deny_policy", _tier_spec_unjudged_denies),
+    GateTier("spec-parent-limits", "deny_policy", _tier_spec_parent_limits),
     GateTier("app-own-server", "grant", _tier_app_own_server),
+    GateTier("app-own-tools", "grant", _tier_app_own_tools),
     GateTier("app-browser-sites", "grant", _tier_app_browser_sites),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

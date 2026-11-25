@@ -67,6 +67,7 @@ class StubGateway:
                 "query": dict(request.query),
                 "body": body,
                 "cookie": request.headers.get("Cookie", ""),
+                "app_secret": request.headers.get("X-App-Secret", ""),
             }
         )
         if self.statuses:
@@ -178,6 +179,31 @@ class TestAuthCookie:
         async with _client(gw, token="stale", on_auth_expired=refresh) as mc:
             assert await mc.get_status() == {"version": "x"}
         assert gw.last["cookie"].endswith("=fresh")
+
+    async def test_explicit_app_secret_authenticates_and_refreshes(self, gw, monkeypatch, tmp_path):
+        # A self-managed app holds the secret its registration returned: no
+        # env pair and no file in the app's folder.
+        monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
+        monkeypatch.delenv("KIROCREW_APP_NAME", raising=False)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        token_route = ("POST", "/api/apps/a/token")
+        gw.responses[token_route] = {"token": "t1"}
+
+        async with _client(gw, app_name="a", app_secret="s") as mc:
+            assert await mc.authenticate() is True
+            assert (gw.last["method"], gw.last["path"]) == token_route
+            assert gw.last["app_secret"] == "s"
+            assert mc.token == "t1"
+
+            gw.statuses = [401]
+            gw.responses[token_route] = {"token": "t2"}
+            await mc.get_status()
+
+        refresh, retried = gw.requests[-2], gw.requests[-1]
+        assert (refresh["method"], refresh["path"]) == token_route
+        assert refresh["app_secret"] == "s"
+        assert (retried["method"], retried["path"]) == ("GET", "/api/status")
+        assert retried["cookie"].endswith("=t2")
 
 
 class TestContextNotQueued:
@@ -577,6 +603,41 @@ class TestNotificationsAndApprovals:
         async with _client(gw) as mc:
             with pytest.raises(KiroCrewError) as exc:
                 await mc.resolve_approval("r1", "typo", slot_id="s1")
+        assert exc.value.code == ErrorCode.VALIDATION_ERROR
+        assert gw.requests == []
+
+    async def test_request_mid_sends_the_native_target_on_the_slot_route(self, gw):
+        async with _client(gw) as mc:
+            await mc.resolve_approval("r1", "trust", slot_id="s1", request_mid="m-1")
+        assert gw.last["path"] == "/api/chat/slots/s1/approve"
+        assert gw.last["body"] == {
+            "action": "trust",
+            "request_id": "r1",
+            "origin": "native",
+            "request_mid": "m-1",
+        }
+
+    @pytest.mark.parametrize(("slot", "action"), [("dashboard:s1", "approve"), ("", "reject_once")])
+    async def test_instance_sends_the_coordinator_target_in_the_query(self, gw, slot, action):
+        # The record's own slot is part of the target, empty for a slotless one,
+        # and it names no slot route.
+        async with _client(gw) as mc:
+            await mc.resolve_approval("r1", action, slot, instance="i-1")
+        assert gw.last["path"] == f"/api/approvals/r1/{action}"
+        assert gw.last["query"] == {"origin": "coordinator", "slot": slot, "instance": "i-1"}
+
+    @pytest.mark.parametrize(
+        ("kwargs", "reason"),
+        [
+            ({"slot_id": "s1", "request_mid": "m-1", "instance": "i-1"}, "not both"),
+            ({"request_mid": "m-1"}, "needs slot_id"),
+            ({"slot_id": "s1", "instance": "i-1", "action": "trust"}, "with an instance"),
+        ],
+    )
+    async def test_an_unsendable_target_is_refused_before_request(self, gw, kwargs, reason):
+        async with _client(gw) as mc:
+            with pytest.raises(KiroCrewError, match=reason) as exc:
+                await mc.resolve_approval("r1", **kwargs)
         assert exc.value.code == ErrorCode.VALIDATION_ERROR
         assert gw.requests == []
 

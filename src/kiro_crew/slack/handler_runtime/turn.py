@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         context_template,
         continue_timed_out_calls,
         credential_give_up_text,
+        drop_echo,
         enter_turn,
         exit_turn,
         expire_slack_options,
@@ -151,6 +152,7 @@ class _SlackTurn:
     had_voice_input: "bool"
     spool_text: "str | None"
     spool_attachments: "int"
+    spool_attachment_names: "tuple[str, ...]"
     _compaction_replay: "_CompactionReplay | None"
     start_priority: "StartPriority"
     user_meta: "dict[str, Any] | None"
@@ -223,6 +225,7 @@ class _SlackTurn:
         had_voice_input: "bool",
         spool_text: "str | None",
         spool_attachments: "int",
+        spool_attachment_names: "tuple[str, ...]",
         _compaction_replay: "_CompactionReplay | None",
         start_priority: "StartPriority",
         user_meta: "dict[str, Any] | None" = None,
@@ -257,6 +260,7 @@ class _SlackTurn:
         self.had_voice_input = had_voice_input
         self.spool_text = spool_text
         self.spool_attachments = spool_attachments
+        self.spool_attachment_names = spool_attachment_names
         self._compaction_replay = _compaction_replay
         # Set by ``_run_turn``; none until a turn has run its hooks.
         self._hook_turn = None
@@ -637,6 +641,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 had_voice_input=had_voice_input,
                 spool_text=turn.spool_text,
                 spool_attachments=turn.spool_attachments,
+                spool_attachment_names=turn.spool_attachment_names,
                 _compaction_replay=replay,
                 start_priority=start_priority,
                 user_meta=turn.user_meta,
@@ -694,10 +699,12 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # crew identity, workspace cwd) -- see slack/channel_crew.py. Same rule
         # as the messaging transport: only when the selected agent IS the
         # channel's binding (a thread value equal to it is that binding restored
-        # from the transcript header) and the session is Slack's own.
+        # from the transcript header) or the thread's own agent (``!bot``), and
+        # the session is Slack's own.
         _channel_crew = (
-            await asyncio.to_thread(resolve_channel_crew, channel_agent)
-            if channel_agent and _agent == channel_agent and is_slack_born(session_key)
+            await asyncio.to_thread(resolve_channel_crew, _agent)
+            if _agent in (_thread_agents.get(session_key), channel_agent)
+            and is_slack_born(session_key)
             else None
         )
         # The context builder takes the TEMPLATE the turn runs, never a record's
@@ -972,7 +979,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
-        async for event in continue_timed_out_calls(client.stream, full_message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(client.stream(prompt)), full_message
+        ):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 
@@ -980,9 +990,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 await answer.on_thinking(event)
 
             elif event.kind == EVENT_TOOL_CALL:
+                await answer.release_quoted_hold()
                 await _screen_tool_call(turn, event)
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                await answer.release_quoted_hold()
                 if await _answer_permission_request(turn, client, event):
                     break
 
@@ -1012,6 +1024,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                         session_key,
                     )
                 break
+        # The turn's text ends here, with or without a complete event.
+        await answer.release_quoted_hold()
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for %s", session_key)

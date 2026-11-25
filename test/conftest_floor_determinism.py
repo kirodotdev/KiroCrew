@@ -12,6 +12,7 @@ are stdlib, pytest and the floor parts loaded before this one, and nothing here 
 
 from __future__ import annotations
 
+import operator
 import os
 import sys
 import time
@@ -207,7 +208,16 @@ def _pool_activity() -> dict[str, tuple[int, int]]:
 class _PackageTable:
     """The inherited ``kiro_crew`` module graph: one row per bound submodule."""
 
-    __slots__ = ("modules_len", "root", "root_items", "names", "objs", "parent_dicts", "childs")
+    __slots__ = (
+        "modules_len",
+        "root",
+        "root_items",
+        "names",
+        "objs",
+        "parent_dicts",
+        "childs",
+        "_checks",
+    )
 
     def __init__(self) -> None:
         self.modules_len = -1
@@ -217,6 +227,7 @@ class _PackageTable:
         self.objs: list[object] = []
         self.parent_dicts: list[dict] = []
         self.childs: list[str] = []
+        self._checks: tuple | None = None
 
     def rebuild(self) -> None:
         modules = sys.modules
@@ -245,8 +256,66 @@ class _PackageTable:
             childs.append(child)
         self.names, self.objs, self.parent_dicts, self.childs = names, objs, parent_dicts, childs
         self.modules_len = len(modules)
+        self._checks = self._compile_checks()
+
+    def _compile_checks(self) -> tuple | None:
+        """The rows as ``intact`` reads them: one C-level multi-key read per dict.
+
+        ``(read the rows' names from sys.modules, the modules it must return, per parent
+        package (its dict, read its rows' child names, the modules it must return),
+        the root package's global names, their values)``. The rows of one parent are read
+        together, so its dict is in the processor's cache for all of them, and a child
+        name is interned, which is the string object ``setattr`` stored as the key.
+        ``None`` when a row cannot be read that way; ``intact`` then reads row by row.
+        """
+
+        def read(keys: list[str]):
+            # One key would make itemgetter return the bare value, not a tuple.
+            return operator.itemgetter(*keys) if len(keys) > 1 else operator.itemgetter(*keys * 2)
+
+        def expected(objs: list[object]) -> tuple:
+            return tuple(objs) if len(objs) > 1 else tuple(objs * 2)
+
+        if any(type(parent_dict) is not dict for parent_dict in self.parent_dicts):
+            return None  # only a plain dict is read by subscript as ``dict.get`` reads it
+        by_parent: dict[int, tuple[dict, list[str], list[object]]] = {}
+        for obj, parent_dict, child in zip(self.objs, self.parent_dicts, self.childs):
+            group = by_parent.setdefault(id(parent_dict), (parent_dict, [], []))
+            group[1].append(sys.intern(child))
+            group[2].append(obj)
+        return (
+            read(self.names) if self.names else None,
+            expected(self.objs),
+            [(d, read(keys), expected(objs)) for d, keys, objs in by_parent.values()],
+            [key for key, _ in self.root_items],
+            [value for _, value in self.root_items],
+        )
 
     def intact(self) -> bool:
+        modules = sys.modules
+        if modules.get("kiro_crew") is not self.root:
+            return False
+        checks = self._checks
+        if checks is None or type(modules) is not dict:
+            return self._intact_row_by_row()
+        read_names, objs, parents, root_keys, root_values = checks
+        try:
+            if read_names is not None and read_names(modules) != objs:
+                return False
+            for parent_dict, read_children, children in parents:
+                if read_children(parent_dict) != children:
+                    return False
+        except (KeyError, TypeError):
+            # A missing key, or a parent's dict that is not one: let the row-by-row
+            # read decide, which treats a missing entry as ``None``.
+            return self._intact_row_by_row()
+        root_dict = getattr(self.root, "__dict__", None)
+        return root_dict is None or all(
+            map(operator.is_, map(root_dict.get, root_keys), root_values)
+        )
+
+    def _intact_row_by_row(self) -> bool:
+        """``intact`` read one row at a time; what the grouped read must agree with."""
         modules = sys.modules
         if modules.get("kiro_crew") is not self.root:
             return False

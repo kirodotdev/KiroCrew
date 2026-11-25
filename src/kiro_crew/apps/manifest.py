@@ -274,6 +274,7 @@ def cron_permission_error(manifest: AppManifest) -> str:
 #:   verbs ``uninstall`` (whose ``uninstall/preview`` child is covered by the segment),
 #:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``,
 #:   ``bot-grants``
+#: * ``apps/routes_kiro.py`` -- ``kiro``
 #: * ``dashboard/routes/system.py`` -- ``token``
 #: * ``apps/job_routes.py`` -- ``_jobs``
 #: * ``apps/sel_routes.py`` -- ``_sel``
@@ -288,11 +289,13 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "_jobs",
         "_sel",
         "bot-grants",
+        "browser-sites",
         "config",
         "dev",
         "disable",
         "enable",
         "frames",
+        "kiro",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -637,6 +640,19 @@ class AppManifest:
         if refusal:
             report_path(refusal, f"ui.entry {refusal}: {self.ui.entry!r}")
 
+        if self.ui.startup:
+            refusal = path_refusal(self.ui.startup)
+            if refusal:
+                report_path(refusal, f"ui.startup {refusal}: {self.ui.startup!r}")
+            # The same rule admission applies on every read: a plain script path the
+            # browser cannot normalize out of ui/. Local import: startup_modules
+            # imports the app records module, which imports this one.
+            from kiro_crew.apps.startup_modules import entry_refusal
+
+            startup_refusal = entry_refusal(self.ui.startup)
+            if startup_refusal:
+                errors.append(f"ui.startup refused: {startup_refusal}")
+
         refusal = path_refusal(self.backend.entryPoint)
         if refusal:
             report_path(refusal, f"backend.entryPoint {refusal}: {self.backend.entryPoint!r}")
@@ -695,14 +711,7 @@ class AppManifest:
 
         # UI overlay validation
         errors.extend(self.ui.frame_source_errors())
-        # Deferred: browser_sites stays off an MCP server's pre-list import budget.
-        from kiro_crew.apps.browser_sites import browser_site_errors  # noqa: PLC0415
-
-        errors.extend(
-            ["permissions.browserSites must be an array of strings"]
-            if self.permissions.bad_browser_sites
-            else browser_site_errors(self.permissions.browserSites)
-        )
+        errors.extend(self.permissions.list_errors())
         seen_overlay_ids: set[str] = set()
         for overlay in self.ui.overlays:
             if not overlay.id:

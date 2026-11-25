@@ -3,8 +3,8 @@ title: Worker debate — record the protocol, make critics question harder, and 
 status: partial
 author: kirocrew agent session, directed by zejiangg
 created: 2026-11-08
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [33783]
 tracking-issues: [33405]

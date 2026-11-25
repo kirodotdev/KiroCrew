@@ -1070,6 +1070,15 @@ class TestLibraryRoutes(_RoutesFixture):
         self.assertIsNotNone(routes._scanned_bitmap_bytes(clean)[0])
         self.assertEqual(routes._redact_artifact(doc.encode("utf-8")).decode("utf-8"), doc)
 
+    async def test_a_url_carrying_data_out_in_bitmap_metadata_is_not_exempted(self) -> None:
+        """Redaction masks only credential values inside a URL, so a URL that carries
+        other data out leaves the decoded bytes unchanged; the exfil scan refuses it."""
+        url = "https://collector.example/c?d=" + "aGVsbG8gd29ybGQgdGhpcyBpcyBkYXRh" * 3
+        evil = base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"tEXtComment\x00" + url.encode() + b"\x00" * 64
+        ).decode()
+        self.assertEqual(routes._scanned_bitmap_bytes(evil), (None, True))
+
     async def test_style_cover_thumbnails_are_redacted(self) -> None:
         """`coverHtml` is a SLICE of the same agent-authored file `/style` serves
         whole, and the Library tab loads it on every visit — so redacting only the

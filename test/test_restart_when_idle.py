@@ -16,10 +16,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 
 from kiro_crew import cli_restart_idle as idle_cli
 from kiro_crew import cli_server, cli_server_stop, quiescence, restart_admission
 from kiro_crew.dashboard.handlers import restart_gate
+from kiro_crew.dashboard.token_auth import token_auth_middleware
 from kiro_crew.service import controller as service_controller
 from kiro_crew.slack import gateway
 
@@ -41,6 +43,7 @@ def _request(
     req = MagicMock()
     req.remote = remote
     req.transport = None
+    req.headers = {}
     req.can_read_body = body is not None
     req.json = AsyncMock(return_value=body)
     # A bare MagicMock.get is truthy and would pass the auth-mark check vacuously.
@@ -86,6 +89,21 @@ class TestRoute:
 
         body = json.loads(resp.body)
         assert (body["idle"], body["turns"], body["background"]) == (False, 2, 5)
+
+    async def test_a_busy_gateway_names_what_the_counts_are_to_its_own_host(self):
+        script = quiescence.Holder("script", "nightly-sync", 21.4)
+        probe = MagicMock(return_value=_census(background=1, holders=(script,)))
+
+        body = json.loads((await restart_gate.api_restart_when_idle(_request(probe))).body)
+
+        assert body["holders"] == [
+            {"kind": "script", "name": "nightly-sync", "since_secs": 21, "count": 1}
+        ]
+        assert body["holders_more"] == 0
+        idle = MagicMock(return_value=_census())
+        assert "holders" not in json.loads(
+            (await restart_gate.api_restart_when_idle(_request(idle))).body
+        )
 
     async def test_a_commit_ask_takes_the_restart_admission_unforced(self, monkeypatch):
         probe = MagicMock(return_value=_census())
@@ -319,6 +337,19 @@ class TestCli:
 
         assert cli.restarts == [None]
         assert cli.clock.sleeps == [idle_cli.POLL_SECS]
+
+    def test_a_busy_wait_says_which_work_it_waits_on(self, cli, capsys, monkeypatch):
+        monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: True)
+        cli.answers.append(idle_cli._Verdict("busy", 0, 1, waiting_on="nightly-sync script (21 s)"))
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None, max_wait_secs=0)
+
+        assert exc.value.code == idle_cli.EXIT_BUSY
+        out = capsys.readouterr().out
+        assert "0 chat turn(s) and 1 background task(s) (nightly-sync script (21 s))" in out
+        # The marker a remote caller parses carries the counts only, as before.
+        assert out.splitlines()[-1] == idle_cli.busy_marker(0, 1)
 
     def test_a_turn_admitted_after_the_idle_answer_is_not_restarted_over(self, cli):
         """The census is a snapshot: the idle answer is asked again before the restart."""
@@ -683,6 +714,15 @@ class TestAskGate:
         )
         assert idle_cli._ask_gate(5476).service_identity == "unknown"
 
+    def test_reads_the_work_a_busy_gateway_names(self, monkeypatch):
+        busy = {"idle": False, "turns": 0, "background": 1}
+        named = [{"kind": "script", "name": "nightly-sync", "since_secs": 21, "count": 1}]
+        self._answer(monkeypatch, {**busy, "holders": named, "holders_more": 2})
+        assert idle_cli._ask_gate(5476).waiting_on == "nightly-sync script (21 s), +2 more"
+        # An answer whose holders are not a list of entries reads as none named.
+        self._answer(monkeypatch, {**busy, "holders": "nightly-sync"})
+        assert idle_cli._ask_gate(5476).waiting_on == ""
+
     def test_the_body_says_whether_only_the_service_may_answer(self, monkeypatch):
         sent: list = []
         self._answer(monkeypatch, {"idle": True, "turns": 0, "background": 0}, sent)
@@ -898,3 +938,104 @@ def test_the_service_check_is_the_one_restart_service_gates_on(
     monkeypatch.setattr(macos, "is_active", lambda: not mac_loaded)
 
     assert idle_cli._service_active() is expected
+
+
+# -- who is told the names -------------------------------------------------------------
+
+_GATE_PATH = "/api/restart/when-idle"
+_GATE_SECRET = "internal-secret-for-the-idle-check"
+
+
+class _OwnedSlot:
+    def __init__(self, app: str = "") -> None:
+        self._app = app
+        self.linked_session_key = ""
+
+
+def _owned_job(job_id: str, created_by: str = "") -> SimpleNamespace:
+    return SimpleNamespace(id=job_id, created_by=created_by)
+
+
+async def _ask_as(session_key: str | None) -> web.Response:
+    """One busy idle check through the real token middleware, as *session_key* (or none)."""
+    script = quiescence.Holder("script", "zebra-cron-name", 21.0)
+    turn = quiescence.Holder("turn", "quokka-slot", 240.0, turn=True)
+    census = _census(turns=1, background=1, holders=(turn, script))
+    store: dict = {"peer_verified": True}
+    req = MagicMock(spec=web.Request)
+    req.path = _GATE_PATH
+    req.method = "POST"
+    req.query = {}
+    req.cookies = {}
+    req.remote = "127.0.0.1"
+    req.transport = None
+    req.can_read_body = False
+    req.headers = {"X-Internal-Secret": _GATE_SECRET}
+    if session_key is not None:
+        req.headers["X-Session-Key"] = session_key
+    req.__setitem__.side_effect = store.__setitem__
+    req.__getitem__.side_effect = store.__getitem__
+    req.__contains__.side_effect = store.__contains__
+    req.get.side_effect = store.get
+    req.app = {
+        "state": SimpleNamespace(
+            _quiescence_probe=lambda *, quiet_window_secs: census,
+            _slots={"app-slot": _OwnedSlot("mochi"), "my-slot": _OwnedSlot()},
+            crons=SimpleNamespace(_jobs=[_owned_job("app-job", "app:mochi"), _owned_job("my-job")]),
+            subagents=SimpleNamespace(_agents={"abc123": SimpleNamespace(app="mochi")}),
+        )
+    }
+    middleware = token_auth_middleware(
+        internal_paths=frozenset({_GATE_PATH}), internal_secret=_GATE_SECRET
+    )
+    return await middleware(req, restart_gate.api_restart_when_idle)
+
+
+@pytest.mark.asyncio
+class TestWhoIsToldTheNames:
+    """The secret proves the call came from inside, not who made it."""
+
+    async def test_the_cli_on_the_host_declares_no_session_and_is_told(self):
+        body = json.loads((await _ask_as(None)).body)
+
+        assert (body["turns"], body["background"]) == (1, 1)
+        assert [h["name"] for h in body["holders"]] == ["quokka-slot", "zebra-cron-name"]
+
+    @pytest.mark.parametrize(
+        "session_key",
+        [
+            "cron:app-job",  # an app's script cron
+            "cron:my-job",  # the person's own script cron
+            "dashboard:app-slot",  # an app agent's tool call
+            "dashboard:my-slot",  # an ordinary agent's tool call
+            "subagent:abc123",  # an app's sub-agent
+            "slack:C123:169.1",  # a channel session's tool call
+        ],
+    )
+    async def test_a_caller_acting_for_a_session_gets_the_counts_alone(self, session_key):
+        resp = await _ask_as(session_key)
+        text = resp.body.decode()
+
+        assert "zebra" not in text and "quokka" not in text
+        if resp.status == 200:
+            body = json.loads(text)
+            assert (body["idle"], body["turns"], body["background"]) == (False, 1, 1)
+            assert "holders" not in body and "holders_more" not in body
+
+    async def test_a_caller_whose_own_record_is_gone_is_told_nothing(self):
+        resp = await _ask_as("cron:deleted-job")
+
+        assert "zebra" not in resp.body.decode() and "quokka" not in resp.body.decode()
+
+    @pytest.mark.parametrize(
+        "claim", [{"app": "mochi"}, {"is_dashboard_user": False}, {"app": "mochi", "x": 1}]
+    )
+    async def test_an_app_claim_alone_withholds_the_names(self, claim):
+        script = quiescence.Holder("script", "zebra-cron-name", 21.0)
+        probe = MagicMock(return_value=_census(background=1, holders=(script,)))
+        req = _request(probe)
+        req.get = {"internal_auth": True, **claim}.get
+
+        body = json.loads((await restart_gate.api_restart_when_idle(req)).body)
+
+        assert body["background"] == 1 and "holders" not in body

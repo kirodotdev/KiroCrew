@@ -221,32 +221,12 @@ def _refusal_diagnostic_id(row: dict[str, Any]) -> str:
     the reason, and re-deriving it here would let the two disagree about which rule
     fired.
 
-    Read from the LAST line carrying the prefix, and only from a line that STARTS
-    with it. :func:`~kiro_crew.security.diagnostics.annotate_refusal` appends the
-    diagnostic on its own final line, so the last such line is the gateway's own;
-    an earlier one is inside the refusal text, and a refusal reason can quote the
-    subject that caused it. Taking the first match would let quoted text name the
-    rule. The token is then passed through the writer's own validator, so a value
-    that is not a diagnostic id is dropped rather than echoed to the operator as
-    one.
+    Read by :func:`~kiro_crew.security.diagnostics.refusal_rule_id`, which takes
+    the LAST diagnostic line, so quoted text inside the refusal cannot name the rule.
     """
-    from kiro_crew.security.diagnostics import (
-        _UNNAMED,
-        REFUSAL_DIAGNOSTIC_PREFIX,
-        _diagnostic_id,
-    )
+    from kiro_crew.security.diagnostics import refusal_rule_id
 
-    for line in reversed(str(row.get("error") or "").splitlines()):
-        if not line.startswith(REFUSAL_DIAGNOSTIC_PREFIX):
-            continue
-        tail = line[len(REFUSAL_DIAGNOSTIC_PREFIX) :]
-        for token in tail.split():
-            if not token.startswith("rule="):
-                continue
-            value = _diagnostic_id(token[len("rule=") :])
-            return "" if value == _UNNAMED else value
-        return ""
-    return ""
+    return refusal_rule_id(str(row.get("error") or ""))
 
 
 # --------------------------------------------------------------------------- #

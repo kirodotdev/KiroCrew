@@ -355,4 +355,3 @@ Stated plainly, because these are guarantees:
 
 * [`../../../../../../docs/system-specs/modules/auto-improvement.md`](../../../../../../docs/system-specs/modules/auto-improvement.md)
   — how it works internally (routes, storage, safety controls) and how it is verified.
-* [`PORT_PLAN.md`](PORT_PLAN.md) — historical record of the port.

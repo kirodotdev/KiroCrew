@@ -3,8 +3,8 @@ title: Conductor patrol session -- a crewmate conductor's patrol wakes run in a 
 status: draft
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-24
-last-audited: 2026-10-24
-audited-at: 1270c45f4d
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: []
 tracking-issues: [23621]

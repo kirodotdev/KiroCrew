@@ -6,6 +6,7 @@ shells included. A seatbelt, not a parser: other shapes stay with the rows and t
 
 from __future__ import annotations
 
+import bisect
 import re
 
 from ..trust_patterns import ENV_ASSIGNMENT_RE
@@ -43,24 +44,38 @@ _PRINTERS = frozenset({"echo", "printf"})  # a pipe stage whose own words are wh
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
 _PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
-#: A STANDALONE fd prefix (a bare number or ``{name}``) directly before a redirection
-#: operator: ``2>`` and ``{fd}>`` redirect fd 2 / a named fd, but the ``2`` in
-#: ``/tmp/2>x`` is part of the path, so the prefix counts only at a word boundary.
-_FD_PREFIX_RE = re.compile(r"(?:^|(?<=[\s\x00]))(?:\{[A-Za-z_]\w*\}|\d+)\Z")
 
 
 def _pull_trailing_fd_prefix(seg: "list[str]") -> str:
     """Remove and return a standalone fd prefix at the end of *seg*, else ``""``.
 
     Keeps ``2>``/``{fd}>`` as one redirection word rather than splitting the fd
-    number off as its own word (which would be read as the program).
+    number off as its own word (which would be read as the program). It counts only
+    as a whole word (the ``2`` in ``/tmp/2>x`` is part of the path), so only the last
+    word is read and a segment of many redirections stays linear.
     """
-    joined = "".join(seg)
-    match = _FD_PREFIX_RE.search(joined)
-    if match is None:
+    end, head = len(seg), ""
+    while end:
+        text = seg[end - 1]
+        cut = len(text)
+        while cut and not (text[cut - 1].isspace() or text[cut - 1] == "\x00"):
+            cut -= 1
+        if cut:
+            head = text[cut:]
+            break
+        end -= 1
+    word = head + "".join(seg[end:])
+    name = word[1:-1] if word[:1] == "{" and word[-1:] == "}" else ""  # ``{fd}``
+    if not word.isdecimal() and not (
+        name[:1].isascii()
+        and (name[:1].isalpha() or name[:1] == "_")
+        and all(c.isalnum() or c == "_" for c in name)
+    ):
         return ""
-    seg[:] = [joined[: match.start()]]
-    return joined[match.start() :]
+    del seg[end:]
+    if head:
+        seg[end - 1] = text[:cut]
+    return word
 
 
 def _can_fire(command: str) -> bool:
@@ -238,28 +253,6 @@ def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) ->
     return tokens[before] in verbs or _shell._program_basename(tokens[before]) in verbs
 
 
-def _command_lines(text: str) -> "list[str]":
-    """*text* without its heredoc bodies (data unless fed to a shell, see
-    :func:`_heredoc_payloads`), cut at each live newline, a comment cut off."""
-    text = _without_bodies(text)
-    lines: list[str] = []
-    pos = 0
-    while pos <= len(text):
-        rest, cut, end = text[pos:], len(text), len(text)
-        for step in _shell._iter_shell_chars(rest):
-            at = step.offset
-            if step.active and step.char == "#" and _shell._opens_comment(rest, at):
-                newline = rest.find("\n", at)
-                cut, end = pos + at, len(text) if newline < 0 else pos + newline
-                break
-            if step.active and step.char == "\n":
-                cut = end = pos + at
-                break
-        lines.append(text[pos:cut])
-        pos = end + 1
-    return lines
-
-
 def _without_bodies(text: str) -> str:
     """*text* with each heredoc body and the tag line that closed it cut out."""
     commands = _commands.read_commands(text, heredocs=True) if "<<" in text else []
@@ -279,6 +272,8 @@ def _heredoc_payloads(command: str) -> "list[str]":
     and each command read from a substitution in an unquoted body, which bash runs."""
     commands = _commands.read_commands(command, heredocs=True)
     docs = [d for c in commands for d in c.heredocs if not d.quoted]
+    firsts = sorted((c.steps[0].start, j) for j, c in enumerate(commands) if c.steps)
+    bodies = sorted(d.start for c in commands for d in c.heredocs)
     out: list[str] = []
     for i, cmd in enumerate(commands):
         if cmd.steps and any(d.start <= cmd.steps[0].start < d.end for d in docs):
@@ -286,13 +281,35 @@ def _heredoc_payloads(command: str) -> "list[str]":
         if cmd.heredocs and (
             _runs_shell(cmd)
             or cmd.separator == "|"
-            and i + 1 < len(commands)
-            and _runs_shell(commands[i + 1])
             and _forwards_stdin(cmd)
-            and not _stdin_redirect(commands[i + 1])[0]  # its own stdin replaces the pipe
+            and any(_reads_pipe(r) for r in _pipe_recipients(commands, i, firsts, bodies))
         ):
             out.extend(_stdin_body(cmd))
     return out
+
+
+def _pipe_recipients(
+    commands: "list[_commands.ShellCommand]",
+    i: int,
+    firsts: "list[tuple[int, int]]",
+    bodies: "list[int]",
+) -> "list[_commands.ShellCommand]":
+    """The commands ``commands[i]``'s pipe may feed: the next one read (a substitution in
+    the recipient's words, ``| grep "$(sh)"``, is read first and reads the pipe too) and
+    the one starting first after it on its own line, as a quoted substitution's commands
+    are read before the command holding them (``| sh -s "$(true)"``)."""
+    out = commands[i + 1 : i + 2]
+    end = commands[i].steps[-1].end  # it holds a heredoc: its ``<<`` is a step, its body later
+    k = bisect.bisect_right(firsts, (end, len(commands)))
+    b = bisect.bisect_right(bodies, end)
+    if k < len(firsts) and firsts[k][0] < bodies[b]:
+        out.append(commands[firsts[k][1]])
+    return out
+
+
+def _reads_pipe(cmd: "_commands.ShellCommand") -> bool:
+    """*cmd* is a shell reading its script from a pipe: no stdin of its own replaces it."""
+    return _runs_shell(cmd) and not _stdin_redirect(cmd)[0]
 
 
 def _program(cmd: "_commands.ShellCommand") -> str:
@@ -400,38 +417,37 @@ def _literal_shell_script(tokens: "list[str]") -> "str | None":
 
 
 def _command_tokens(text: str, pipelines: bool = False) -> "list[list[str]]":
-    """Dequoted argv of each command the shared reader finds in each line, read every
-    way so each reading only adds payloads; a command stopped at ``<<`` runs to the
-    line's end (a herestring is a payload). With *pipelines*, a pipeline whose later stage
+    """Dequoted argv of each command the shared reader finds in *text*, read every way
+    so each reading only adds payloads. The reader alone cuts lines, comments and
+    heredoc bodies, so a ``#`` or ``<<`` inside ``${…}`` / ``$[…]`` ends nothing (the
+    untracked reading still runs). With *pipelines*, a pipeline whose later stage
     is a shell reading its script from the pipe is also read as its ``echo`` / ``printf``
     stages and its shells joined, so the text printed into that shell is a payload
     (``echo '<script>' | sh``)."""
     out: list[list[str]] = []
-    for line in _command_lines(text):
-        for part in dict.fromkeys((line, _shell._fold_line_continuations(line))):
-            for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
-                for track in (True, False) if "${" in plain or "$[" in plain else (True,):
-                    commands = _commands.read_commands(plain, track)
-                    for cmd in commands:
-                        words = " ".join(plain[word.start : word.end] for word in cmd.argv)
-                        if cmd.separator == "<<":  # the read stops there; the line runs on
-                            words = plain[cmd.steps[0].start if cmd.steps else 0 :]
-                        out.append(_shell._shell_tokens(words))
-                        if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
-                            out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
-                    groups = _commands.pipelines(commands) if pipelines and "|" in plain else []
-                    if groups:  # a quoted substitution body's commands split no stage
-                        flat = _commands.read_commands(plain, track, nested=False)
-                        groups += _commands.pipelines(flat) if len(flat) < len(commands) else []
-                    for pipe in groups:
-                        if not any(_runs_shell(c) and not _stdin_redirect(c)[0] for c in pipe[1:]):
-                            continue  # no later stage is a shell reading its script from the pipe
-                        # the shell reads what a stage prints: ``echo`` / ``printf`` their own
-                        # words, a filter its input (``sed 's/^/rm -rf -- /'`` wipes no ``/``)
-                        kept = [c for c in pipe if _runs_shell(c) or _program(c) in _PRINTERS]
-                        argvs = [" ".join(plain[w.start : w.end] for w in c.argv) for c in kept]
-                        if len(argvs := [argv for argv in argvs if argv]) > 1:
-                            out.append(_shell._shell_tokens(" | ".join(argvs)))
+    for part in dict.fromkeys((text, _shell._fold_line_continuations(text))):
+        for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
+            for track in (True, False) if "${" in plain or "$[" in plain else (True,):
+                commands = _commands.read_commands(plain, track, heredocs=True)
+                for cmd in commands:
+                    out.append(
+                        _shell._shell_tokens(" ".join(plain[w.start : w.end] for w in cmd.argv))
+                    )
+                    if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
+                        out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
+                groups = _commands.pipelines(commands) if pipelines and "|" in plain else []
+                if groups:  # a quoted substitution body's commands split no stage
+                    flat = _commands.read_commands(plain, track, nested=False, heredocs=True)
+                    groups += _commands.pipelines(flat) if len(flat) < len(commands) else []
+                for pipe in groups:
+                    if not any(_runs_shell(c) and not _stdin_redirect(c)[0] for c in pipe[1:]):
+                        continue  # no later stage is a shell reading its script from the pipe
+                    # the shell reads what a stage prints: ``echo`` / ``printf`` their own
+                    # words, a filter its input (``sed 's/^/rm -rf -- /'`` wipes no ``/``)
+                    kept = [c for c in pipe if _runs_shell(c) or _program(c) in _PRINTERS]
+                    argvs = [" ".join(plain[w.start : w.end] for w in c.argv) for c in kept]
+                    if len(argvs := [argv for argv in argvs if argv]) > 1:
+                        out.append(_shell._shell_tokens(" | ".join(argvs)))
     return out
 
 

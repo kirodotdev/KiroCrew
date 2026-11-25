@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { readAfterRenewal } from '../api/readAfterRenewal'
 import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { canRenderMobileConnectKind } from './mobileConnectRenderers'
 
@@ -30,7 +31,9 @@ export function useMobileConnect(locationKey: string) {
   useEffect(() => { setMobileConnectOpen(false) }, [locationKey])
   const mobileConnectQuery = useQuery({
     queryKey: ['mobile-connect-methods'],
-    queryFn: api.mobileConnectMethods,
+    // No retry, so a read refused at a lapsed sign-in would hide the row until
+    // the window next gets focus: it is read once more after the renewal.
+    queryFn: () => readAfterRenewal(() => api.mobileConnectMethods()),
     staleTime: 5 * 60_000,
     retry: false,
   })

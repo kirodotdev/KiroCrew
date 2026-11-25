@@ -48,6 +48,10 @@ PROOF_DAEMON_NOT_FOUND = "daemon_not_found"
 
 _PROC = Path("/proc")
 _TCP_ESTABLISHED = "01"
+#: The kernel serves ``/proc/net/tcp{,6}`` a page per read and resumes each page by
+#: position inside a hash bucket, so a socket closing between two reads can make one
+#: pass skip a live row. A pass that misses the client row is repeated.
+_SOCKET_SCAN_PASSES = 3
 _DAEMON_COMM = "tailscaled"
 #: The daemon's uid is stable for its process lifetime; a short TTL bounds the
 #: cost of the ``/proc`` scan under a request storm.
@@ -89,26 +93,27 @@ def _socket_owner_uid(peer: tuple[str, int], local: tuple[str, int]) -> int | No
     want_peer_ip, want_local_ip = _norm(peer[0]), _norm(local[0])
     if want_peer_ip is None or want_local_ip is None:
         return None
-    for name in ("tcp", "tcp6"):
-        try:
-            rows = (_PROC / "net" / name).read_text().splitlines()[1:]
-        except OSError:
-            continue
-        for row in rows:
-            cols = row.split()
-            # sl local remote st tx:rx tr:when retrnsmt uid timeout inode
-            if len(cols) < 8 or cols[3] != _TCP_ESTABLISHED:
-                continue
+    for _pass in range(_SOCKET_SCAN_PASSES):
+        for name in ("tcp", "tcp6"):
             try:
-                lip, lport = _decode(*cols[1].split(":"))
-                rip, rport = _decode(*cols[2].split(":"))
-                uid = int(cols[7])
-            except (ValueError, TypeError, struct.error):
+                rows = (_PROC / "net" / name).read_text().splitlines()[1:]
+            except OSError:
                 continue
-            if lport != peer[1] or rport != local[1]:
-                continue
-            if _norm(str(lip)) == want_peer_ip and _norm(str(rip)) == want_local_ip:
-                return uid
+            for row in rows:
+                cols = row.split()
+                # sl local remote st tx:rx tr:when retrnsmt uid timeout inode
+                if len(cols) < 8 or cols[3] != _TCP_ESTABLISHED:
+                    continue
+                try:
+                    lip, lport = _decode(*cols[1].split(":"))
+                    rip, rport = _decode(*cols[2].split(":"))
+                    uid = int(cols[7])
+                except (ValueError, TypeError, struct.error):
+                    continue
+                if lport != peer[1] or rport != local[1]:
+                    continue
+                if _norm(str(lip)) == want_peer_ip and _norm(str(rip)) == want_local_ip:
+                    return uid
     return None
 
 

@@ -845,7 +845,9 @@ async def test_a_run_superseded_during_re_projection_is_kept_as_never_started(
     """Nothing was sent, so the run is retained, not counted as a success or a failure."""
     from kiro_crew.agent_sdk import spec_hooks
 
-    async def _superseded(_sessions: Any, _key: str, _agent: str, claimed: Any, *_a: Any) -> Any:
+    async def _superseded(
+        _sessions: Any, _key: str, _agent: str, claimed: Any, *_a: Any, **_kw: Any
+    ) -> Any:
         return SimpleNamespace(claimed=claimed, reprojected=False, superseded=True)
 
     monkeypatch.setattr(spec_hooks, "reproject_unattended_claim", _superseded)
@@ -872,7 +874,7 @@ async def test_a_sequence_superseded_after_an_earlier_step_ran_is_not_replayed(
     from kiro_crew.agent_sdk import spec_hooks
 
     async def _second_superseded(
-        _sessions: Any, key: str, _agent: str, claimed: Any, *_a: Any
+        _sessions: Any, key: str, _agent: str, claimed: Any, *_a: Any, **_kw: Any
     ) -> Any:
         return SimpleNamespace(claimed=claimed, reprojected=False, superseded=key.endswith(":beta"))
 

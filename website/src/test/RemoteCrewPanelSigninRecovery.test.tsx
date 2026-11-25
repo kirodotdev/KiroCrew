@@ -240,6 +240,8 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
     const signed = {
       ...UNSIGNED_JOB,
       signin_detected: true,
+      // Just finished: a finished card closes by itself 2 minutes after its last write.
+      updated_at: Date.now() / 1000, // flake-ok: the card's timer reads the same clock; its window is 120 s
       steps: STEPS_REGISTERED.map(s => (s.key === 'signin' ? { ...s, state: 'done' as const, detail: '' } : s)),
     }
     useJob(signed)

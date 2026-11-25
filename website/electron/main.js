@@ -53,6 +53,7 @@ const { describeChromiumSandboxOff, showChromiumSandboxNotice } = require("./chr
 const { findKirocrewBin } = require("./find-bin");
 const { resolveLinuxInstall, readExternallyManaged, runStartupApply } = require("./auto-update");
 const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
+const { createInstallSplash } = require("./runtime/update/install-splash");
 const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
 const { watchSessionLock } = require("./session-lock");
@@ -60,6 +61,7 @@ const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
 const { initGpuCrashFallback } = require("./gpu-crash-fallback");
+const { isRelaunching, watchRelaunch } = require("./relaunch-intent");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
@@ -312,10 +314,27 @@ function readInternalSecret(gatewayUrl) {
 }
 
 let isQuitting = false;
+// Why this quit happens, for the gateway: only a quit the user chose ends the YOLO
+// and chat trust it keeps across every other exit. An update's quit and the OS
+// ending the session are not one. On macOS and Linux powerMonitor's `shutdown` says
+// the OS is ending it (watched once the app is ready); on Windows `before-quit` is
+// not emitted for a shutdown, restart or log off at all.
+let quittingForUpdate = false;
+let osSessionEnding = false;
+// A relaunch (GPU fallback, update Restart now, the dashboard relaunch, a managed
+// apply) is a restart, not a user stop: every `app.relaunch()` is noted.
+watchRelaunch(app);
 let desktopMetricsRecorder = null;
 let windows = null;
 // The kirocrew:// deep-link handler (armed by the single-instance winner below).
 let deepLinks = null;
+// The window a start-time update apply shows while its command runs.
+const installSplash = createInstallSplash({
+  BrowserWindow,
+  page: path.join(__dirname, "loading.html"),
+  log: glog,
+  isQuitting: () => isQuitting,
+});
 
 /** The main window's dashboard view webContents, or null while there is none. */
 function mainDashboardContents() {
@@ -417,6 +436,7 @@ const requestQuit = () => {
 onQuitForUpdate(electron.autoUpdater, () => {
   if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
   isQuitting = true;
+  quittingForUpdate = true;
 });
 
 // Only the lock winner may arm native logging. A rejected second instance must
@@ -512,10 +532,14 @@ if (!app.requestSingleInstanceLock()) {
   // when no listener is attached.
   deepLinks = createDeepLinkHandler({ deliver: deliverDeepLink, log: glog });
   installDeepLinks({ app, handler: deepLinks, log: glog });
+  // The close notice's click waits for the same ack (close-hide-notice.js).
   installNavigateReady({
     app,
     ipcMain,
-    handler: deepLinks,
+    handler: {
+      navigateReady: () => { deepLinks.navigateReady(); windows?.closeHideNavigation.navigateReady(); },
+      navigationStarted: () => { deepLinks.navigationStarted(); windows?.closeHideNavigation.navigationStarted(); },
+    },
     isDashboardContents: (contents) => Boolean(contents) && contents === mainDashboardContents(),
   });
   // On Windows and Linux the URL that launched THIS instance is in its own
@@ -524,13 +548,19 @@ if (!app.requestSingleInstanceLock()) {
   deepLinks.handleArgv(process.argv);
 
   app.on("second-instance", (_event, argv) => {
-    // On Windows and Linux a kirocrew:// link launches a second copy with the
-    // URL in argv; route to it. Otherwise a relaunch is explicit intent to see
-    // the existing window. The window owner cancels a pending fullscreen/tray
-    // hide before restore/show/focus.
+    // During a start-time update apply the install window is the only one, so
+    // it is what a relaunch brings forward. On Windows and Linux a kirocrew://
+    // link launches a second copy with the URL in argv; route to it. Otherwise
+    // a relaunch is explicit intent to see the existing window. The window owner
+    // cancels a pending fullscreen/tray hide before restore/show/focus.
+    installSplash.raise();
     if (deepLinks && deepLinks.handleArgv(argv)) return;
     windows?.showMainWindow({ focus: true });
   });
+  // macOS reopens a running app (Dock, Finder) through `activate`, not
+  // `second-instance`, and the boot's own activate handler exists only after
+  // the apply.
+  app.on("activate", () => installSplash.raise());
 }
 
 // Factories are created at module load, before any renderer can change settings.
@@ -582,6 +612,9 @@ const gateway = createGatewaySupervisor({
   predictLocalPort: () => fallbackLocalPort(store, glog),
   // The respawned backend can be healthy while this app's own bundle is gone.
   onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
+  // The tray's quit label depends on a gateway this app started: re-read it on
+  // every spawn, exit, stop or switch to a remote gateway.
+  onOwnedGatewayChange: () => windows?.refreshTrayMenu(),
   currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
 });
 
@@ -604,6 +637,7 @@ windows = createWindowLifecycle({
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
   isQuitting: () => isQuitting,
   requestQuit,
+  stopsGatewayOnQuit: () => gateway.stopsGatewayOnQuit(),
   connectWindow: (...args) => gateway.connect(...args),
   syncTunnel: () => gateway.syncTunnel(),
   downloadExpectations,
@@ -620,6 +654,7 @@ const ipcRegistrar = createIpcRegistrar({
   closeCrewCompanionForUpdate,
   reopenCrewCompanionAfterUpdate,
   crashScan: scanCrashArtifacts,
+  nativeLoggingStatus: () => nativeLogging,
   downloadExpectations,
   readInternalSecret,
   fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
@@ -749,6 +784,11 @@ app.whenReady().then(async () => {
   } catch (error) {
     glog("power: could not watch for resume: " + (error && error.message));
   }
+  try {
+    electron.powerMonitor.on("shutdown", () => { osSessionEnding = true; });
+  } catch (error) {
+    glog("power: could not watch for shutdown: " + (error && error.message));
+  }
 
   // A dictation left running when the person locks the screen keeps the
   // microphone open in an empty room; the dashboard stops it on this message.
@@ -797,10 +837,11 @@ app.whenReady().then(async () => {
   }
 
   // An update the user armed whose quit-time apply was interrupted or failed is
-  // finished HERE: before the gateway spawns and before any window opens, so the
-  // gateway and the app are never on different versions. On success the app
-  // relaunches once into the new bundle and this launch ends; on failure the
-  // installed version starts and the updater shows the error.
+  // finished HERE: before the gateway spawns and before the main window opens, so
+  // the gateway and the app are never on different versions. While its command
+  // runs, the install window says so. On success the app relaunches once into
+  // the new bundle and this launch ends; on failure the installed version starts
+  // and the updater shows the error.
   const startupApply = await runStartupApply({
     app,
     store,
@@ -814,6 +855,7 @@ app.whenReady().then(async () => {
       stopCommand: `kirocrew stop --port ${PORT}`,
     }),
     Notification: electron.Notification,
+    showApplying: (version) => installSplash.show(version),
   });
   if (startupApply.outcome === "relaunching") return;
 
@@ -824,6 +866,9 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.syncTray();
   const mainWindow = windows.createMainWindow();
+  // Only now: destroying the hidden install window while it is the last one
+  // fires window-all-closed, which quits the app on Windows and Linux.
+  installSplash.close();
 
   // An AppImage whose AppRun added --no-sandbox says why and how to fix it.
   // Shown before the gateway boot, not awaited, so a gateway that never
@@ -959,8 +1004,8 @@ app.whenReady().then(async () => {
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
       displayMemoryPath: appWindowDisplays,
-      showDashboardSession: (slotKey) => openDashboardSession(
-        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
+      showDashboardSession: (slotKey, crewId) => openDashboardSession(
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP, crewId,
       ),
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
       // Which crew each app's windows show is this computer's choice, kept by the shell.
@@ -972,8 +1017,9 @@ app.whenReady().then(async () => {
     glog("app-window-host: init failed — " + (error && error.message));
   }
 
-  // Preserve the historical registration point: activation starts being
-  // handled only after boot and optional companion initialization finish.
+  // Preserve the historical registration point: the main window's activation
+  // starts being handled only after boot and optional companion initialization
+  // finish.
   app.on("activate", () => {
     windows.activateMainWindow();
   });
@@ -1002,7 +1048,7 @@ app.on("before-quit", () => {
   } catch {
     // Best effort during quit.
   }
-  gateway.stopOnQuit();
+  gateway.stopOnQuit({ userStop: !quittingForUpdate && !osSessionEnding && !isRelaunching() });
 });
 
 // Release only the shell summon accelerator. Mochi owns and removes its own

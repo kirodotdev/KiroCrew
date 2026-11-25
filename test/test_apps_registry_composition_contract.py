@@ -254,6 +254,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "annotations",
     "anonymous_git_env",
     "app_admission_denied",
+    "app_backend_secret_mask_targets",
     "app_execution_denied",
     "app_name_error",
     "app_source_dir",

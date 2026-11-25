@@ -1,7 +1,7 @@
 ---
 name: session-summaries
 description: What the chat right-panel session summary shows, what it costs, and how to make a session summarize well. Load when the user asks about the session summary panel, why a summary looks wrong or empty, or how to turn it on.
-triggers: session summary, summary panel, summarize this session, what is this session about, session summaries setting, summary is wrong, no summary yet
+triggers: session summary, summary panel, summarize this session, session summaries setting, summary is wrong, no summary yet
 ---
 
 # Session summaries

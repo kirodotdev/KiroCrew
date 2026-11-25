@@ -57,3 +57,23 @@ describe('cloudLaunchSigninRestart — the wire call', () => {
     expect(restartUrl.startsWith(fetchUrl)).toBe(true)
   })
 })
+
+describe('cloudLaunchSigninSkip — the wire call', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof fetch
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => ok({ id: 'j-1', status: 'running', steps: [] }))
+    originalFetch = globalThis.fetch
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+  })
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it('POSTs the skip route, which is neither cancel nor restart', async () => {
+    // Cancel would remove the instance being created; skip keeps it and connects.
+    await api.cloudLaunchSigninSkip('a/b')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/cloud/launch/a%2Fb/signin/skip')
+    expect(init.method).toBe('POST')
+  })
+})

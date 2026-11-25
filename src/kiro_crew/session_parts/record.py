@@ -106,6 +106,10 @@ class _Session:
     # Set by a lifecycle holder for the whole of its turn, INCLUDING the setup before the
     # provider registers one. ``has_active_turn`` cannot see that window.
     lifecycle_turn_active: bool = False
+    # Whether the last turn released on this session was started by automation
+    # (``session_idle_clock.turn_was_automated``), so the idle sweep applies
+    # ``session.automated_idle_timeout_secs``. A person's turn clears it.
+    last_turn_automated: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
     # Bounded rather than plain: a release() call that lands on this object
@@ -189,6 +193,10 @@ class _Session:
     # Consumed one-shot by the next prompt builder to re-inject the skills
     # index so the model can still discover skills post-compaction.
     needs_context_reinjection: bool = False
+    # Set once this record consumed the post-compaction mark. The session map's
+    # copy (``session_map.COMPACTED_FLAG``) stays until a turn lands, so this
+    # keeps the record from reading that copy again on every turn meanwhile.
+    compaction_mark_taken: bool = False
     # The exit-0 stdout of this session's ``agentSpawn`` hooks, kept from the
     # session's first turn so a turn after a compaction can send it again
     # without running the hooks a second time.
@@ -224,6 +232,7 @@ class _Session:
         self.consecutive_failures = 0
         self.prev_turn_cancelled = False
         self.needs_context_reinjection = False
+        self.compaction_mark_taken = False
         # The fresh provider's first turn runs the agentSpawn hooks again.
         self.agent_spawn_context = ()
         # A recycled provider replays history on its first turn, so its first

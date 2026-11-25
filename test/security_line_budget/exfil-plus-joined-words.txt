@@ -1,0 +1,4 @@
++28
+The exfil base64-blob test in `exfil_git_object` skips a run of plain words or ids
+joined by `+` (a form-encoded space), so a batched ticket search in a URL query is not
+read as a secret. A secret split at its own `+` still fires.

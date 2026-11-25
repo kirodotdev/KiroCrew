@@ -23,12 +23,18 @@ import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.config import live
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
     _redact_for_display,
     _redact_meta,
+)
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    AUTOMATION_STEER_META,
+    AUTOMATION_STEER_WIRE_KEY,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
     ATTACHMENT_META_KEYS,
@@ -41,6 +47,7 @@ from kiro_crew.dashboard.steer_supersedes_approval import reject_approvals_super
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+from kiro_crew.slack.turn_requester import forget_turn_requester
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -406,6 +413,18 @@ def _engine_has_no_prompt(client: Any) -> bool:
         return False
 
 
+def steer_origin_kwargs(slot: Any, message: str) -> dict[str, str]:
+    """The keywords that tell a client's ``steer`` who wrote *message*.
+
+    ``origin`` is automation while the slot holds *message* as an automation steer
+    (a work-ledger wake), so the agent is not told the user wrote it. A user's or a
+    peer's steer passes nothing, so its call is the one every client always took.
+    """
+    if message in getattr(slot, "_steer_automation", {}):
+        return {"origin": STEER_ORIGIN_AUTOMATION}
+    return {}
+
+
 def _steer_target(slot: Any) -> tuple[object, bool, int]:
     """The turn a steer is aimed at: its task, whether it has finished, and the stop count."""
     task = getattr(slot, "task", None)
@@ -436,8 +455,18 @@ async def steer_into_running_turn(
     banner: str = "",
     relay_meta: dict | None = None,
     author: dict | None = None,
+    held_peer: bool = False,
+    held_key: str = "",
+    held_entry: object = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
+
+    ``held_peer`` marks a peer steer the gateway held for this tool boundary: on a
+    harness that can drop an accepted steer it skips the ``peer_steer_loss_recovery``
+    refusal. ``held_key`` names that held steer (``dashboard.deferred_steer``): just
+    before the RPC, with no await since the last check, this call confirms the steer is
+    still held (a hard stop may have discarded it) and, on such a harness, marks it
+    delivered, so the teardown requeue skips it and it is injected at most once.
 
     Requires a live, steer-capable inner ACP client that the turn published on
     the slot. Fire-and-forget by design: the inline steer card materializes when
@@ -583,8 +612,12 @@ async def steer_into_running_turn(
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
-    if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
+    loss_prone = getattr(client, "steer_needs_loss_recovery", False) is True
+    if not user_origin and not held_peer and loss_prone:
         # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
+        # A held peer steer (``dashboard.deferred_steer``) opts in for itself: it is
+        # sent at a tool boundary, registered pending, and marked delivered by its
+        # sender first, so the requeue never queues a second copy of it.
         # A snapshot, not a load: no file read on the loop, no await before registering.
         live_config = live.snapshot()
         if live_config is None or not live_config.agent.peer_steer_loss_recovery:
@@ -671,6 +704,20 @@ async def steer_into_running_turn(
     # it is handed to the requeue, which puts it on the queue entry; the drain then
     # unions entry meta onto the row it appends, so the id reaches the row even
     # through a merge.
+    if held_key:
+        # No await since `wait_for_clear` above: a hard stop that discarded this held
+        # steer meanwhile has already emptied the list, and nothing is registered yet.
+        # By identity: a discard followed by a re-send leaves an entry of the same id.
+        if not any(h is held_entry for h in slot._deferred_steers):
+            return STEER_UNAVAILABLE
+        slot._deferred_steer_injected[held_key] = message
+        # With the key on the operator wants the ordinary requeue-on-loss, so no mark.
+        # A missing config reads as off, as the refusal above does.
+        recovery_config = live.snapshot() if loss_prone else None
+        if loss_prone and not (
+            recovery_config is not None and recovery_config.agent.peer_steer_loss_recovery
+        ):
+            slot._deferred_steer_delivered[held_key] = message
     if not (isinstance(delivery_id, str) and delivery_id):
         delivery_id = uuid.uuid4().hex
     slot._steer_delivery_ids[message] = delivery_id
@@ -698,6 +745,9 @@ async def steer_into_running_turn(
     # Same lockstep again: the requeue reads this for the entry's
     # ``directive_owner_origin`` and a definite False is what fails it closed.
     slot._steer_owner_origin[message] = bool(owner_origin)
+    # Any text steered in, from anyone, ends "one shared user asked for this
+    # turn": its tool prompts go back to the owner alone. Before the RPC, as below.
+    forget_turn_requester(slot)
     if channel_origin:
         # NARROW the running turn's directive provenance, at admission. The turn's
         # ``_directive_channel_origin`` is its opener's -- False for a
@@ -790,10 +840,11 @@ async def steer_into_running_turn(
         slot._steer_automation[message] = dict(nudge_meta)
     slot._pending_steers.append(message)
     possibly_delivered = False
+    wire_message = message
     slot._steer_rpc_in_flight.add(message)
     try:
         wire_message = responsive_chat.steer_message(slot, message) if responsive else message
-        steered = await client.steer(wire_message)
+        steered = await client.steer(wire_message, **steer_origin_kwargs(slot, message))
     except Exception as exc:  # best-effort — the caller falls back to the queue
         logger.warning("steer failed for slot %s: %s", slot.key, exc)
         steered = False
@@ -802,6 +853,13 @@ async def steer_into_running_turn(
         possibly_delivered = getattr(exc, "ambiguous_delivery", False) is True
     finally:
         slot._steer_rpc_in_flight.discard(message)
+    if held_key and loss_prone and not steered and not possibly_delivered:
+        # The client answered False but keeps the text as unresolved: the adapter took it
+        # as its turn ended. Kept as possibly delivered, so the delivered mark stays and
+        # the teardown neither queues it nor runs it again.
+        unresolved = getattr(client, "held_steers_possibly_delivered", None)
+        if isinstance(unresolved, (set, frozenset)) and (wire_message or "").strip() in unresolved:
+            possibly_delivered = True
 
     # The append-only log records no steer of its own, and this coroutine is why.
     # ``steered`` means the client accepted the write and nothing more: the turn it
@@ -1281,6 +1339,11 @@ START_BACKGROUND_META_KEY = "start_background"
 #: person's message is never in it. Weak, so a finished task leaves on its own.
 BACKGROUND_START_TASKS: "weakref.WeakSet[asyncio.Task[Any]]" = weakref.WeakSet()
 
+#: Entry meta key marking a retry of a Bot's Heartbeat wake (``_queue_recovery``): it mirrors
+#: only its reply, as the wake did. Honoured only when every consumed entry carries it, so a
+#: person's message drained beside it keeps the normal mirror.
+MIRROR_REPLY_ONLY_META_KEY = "mirror_reply_only"
+
 
 def queue_for_next_turn(
     state: "DashboardState",
@@ -1303,6 +1366,7 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    pastes: list[dict[str, Any]] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1381,6 +1445,10 @@ def queue_for_next_turn(
 
     *knowledge* is the send's :func:`knowledge_meta`, stamped on the entry and its
     ``queue_push`` frame so the queue card finds the knowledge envelope exactly.
+
+    *pastes* is the send's :func:`~kiro_crew.dashboard.chat_paste_meta.paste_meta`:
+    the drained row keeps them, so it draws the paste chips a dispatched send's
+    row draws.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
@@ -1425,6 +1493,8 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if pastes:
+        meta[PASTES_META_KEY] = pastes
     qid = slot.queue_append(
         message,
         meta=meta,
@@ -1480,8 +1550,11 @@ def queue_for_next_turn(
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
     # that case is logged at WARNING and drawn on the card this frame makes.
-    if not warn_if_not_durable(slot._queue, qid, slot.key):
+    if not warn_if_not_durable(slot.durable_source(), qid, slot.key):
         push.setdefault("meta", {})["durable"] = False
+    from kiro_crew.dashboard import responsive_chat as _rc
+
+    _rc.mark_written_on_push(slot, qid, push)
     state.broadcast_ws("queue_push", push)
     start_queue_persist(state, slot)
     return qid
@@ -1775,6 +1848,8 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     label = (item.get("meta") or {}).get("appLabel")
     if isinstance(label, str) and label:
         view.setdefault("meta", {})["appLabel"] = label
+    if isinstance((item.get("meta") or {}).get(AUTOMATION_STEER_META), dict):
+        view.setdefault("meta", {})[AUTOMATION_STEER_WIRE_KEY] = True
     # Entries loaded from disk on restart carry RESTORED_QUEUE_KEY=True.
     # Projecting this as a boolean lets the client skip a restored queued row
     # when deciding whether to offer Resume — matching the backend gate in
@@ -1793,7 +1868,9 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def queue_view(
-    queue: list[dict[str, Any]], refused: set[str] | None = None
+    queue: list[dict[str, Any]],
+    refused: set[str] | None = None,
+    written: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The slot-detail ``queue[]`` field: :func:`queue_entry_view` per entry, with
     ``meta.durable: false`` on each prompt the durable write will not keep. Judged
@@ -1801,7 +1878,12 @@ def queue_view(
 
     A caller rendering a trimmed copy of the queue passes ``refused``, read off the
     LIVE entries: the writer weighs fields such a copy drops (source channels, the
-    system-entry stamps), so judging the copy would mark the wrong prompts."""
+    system-entry stamps), so judging the copy would mark the wrong prompts.
+
+    ``written`` holds the ids whose user row is already in the transcript
+    (``responsive_chat.row_already_written``, read off the live slot): each gets
+    ``meta.written: true``, because the cancel and edit endpoints refuse such an
+    entry and the card must not offer either."""
     snapshot = list(queue)
     if refused is None:
         refused = refused_durable_ids(snapshot)
@@ -1809,4 +1891,6 @@ def queue_view(
     for view in views:
         if view["id"] in refused:
             view.setdefault("meta", {})["durable"] = False
+        if written and view["id"] in written:
+            view.setdefault("meta", {})["written"] = True
     return views

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _ts_before,
         auto_title,
         logger,
+        slack_cfg,
     )
 
 
@@ -77,8 +78,15 @@ def build_timing_footer(
 ) -> tuple[list[dict], str]:
     """Build the timing/context footer blocks for a Slack response.
 
-    Returns ``(blocks, fallback_text)`` suitable for ``post_blocks``.
+    Returns ``(blocks, fallback_text)`` suitable for ``post_blocks``. With
+    ``slack.show_timing_footer`` off it returns no blocks and the OPTIONS
+    fallback text: the only thing such a footer can still carry is a control, so
+    a caller posts it only when its final block list is not empty.
     """
+    if not slack_cfg().slack.show_timing_footer:
+        from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT
+
+        return [], OPTIONS_FALLBACK_TEXT
     if elapsed < 60:
         duration = f"{int(elapsed)}s"
     else:
@@ -153,14 +161,16 @@ async def seal_stream(
     its own. On False (no footer asked for, or the footer seal refused, e.g.
     ``message_not_in_streaming_state`` once the stream's 10 minutes are up) the
     stream is sealed bare and the caller posts the footer as its own message: one
-    footer per turn, never zero or two. Never raises: the seal is decoration.
+    footer per turn, never zero or two. Never raises: the seal is decoration. A
+    footer with no text to read back (only a control, the timing line hidden) is
+    never folded in, since the read-back below could not confirm it.
 
     A failed footer seal may still have landed (Slack applied it and the reply was
     lost, or the SDK's retry of an applied seal was refused), and the error cannot
     say which. So the message is read back from *thread_ts*: a footer found there
     counts as delivered; a footer not found, or a read that fails, means post it.
     """
-    if footer_blocks:
+    if footer_blocks and _block_texts(footer_blocks):
         try:
             if await slack.stop_stream(channel, ts, final_text, blocks=footer_blocks):
                 return True

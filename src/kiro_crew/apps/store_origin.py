@@ -34,17 +34,23 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _shipped_builtin_ids() -> frozenset[str]:
-    """The ``app.json`` names of the built-ins in this package. Read once per process."""
+def _shipped_builtin_ids() -> tuple[tuple[str, str], ...]:
+    """``(name, version)`` from each built-in ``app.json`` in this package. Read once per process."""
     from kiro_crew.apps.discovery import discover_builtin_apps
 
-    return frozenset(
-        app["name"] for app in discover_builtin_apps() if isinstance(app.get("name"), str)
+    return tuple(
+        (app["name"], str(app.get("version") or ""))
+        for app in discover_builtin_apps()
+        if isinstance(app.get("name"), str)
     )
 
 
-def public_app_ids() -> frozenset[str]:
-    """Every app on this machine with a public id. Reads the install records: call off the loop."""
+def public_app_ids() -> dict[str, str]:
+    """Every app on this machine with a public id, mapped to its version.
+
+    A built-in's version is its shipped ``app.json``'s; a store install's is the one
+    its install record names. Reads the install records: call off the loop.
+    """
     from kiro_crew.apps.manager import (
         InstalledRecordShapeError,
         _is_sidecar_entry,
@@ -53,10 +59,10 @@ def public_app_ids() -> frozenset[str]:
     )
     from kiro_crew.apps.update_status import _recorded_source
 
-    ids = set(_shipped_builtin_ids())
+    ids = dict(_shipped_builtin_ids())
     root = apps_dir()
     if not root.is_dir():
-        return frozenset(ids)
+        return ids
     for entry in root.iterdir():
         if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
@@ -76,17 +82,28 @@ def public_app_ids() -> frozenset[str]:
             }
         )
         if recorded is not None and recorded[1] == "":
-            ids.add(entry.name)
-    return frozenset(ids)
+            ids[entry.name] = meta.version
+    return ids
 
 
-async def count_first_install(name: str, via: str) -> None:
-    """Count *name*'s first registry install, after its provenance is on disk.
+async def count_install(name: str, via: str, *, was_installed: bool) -> None:
+    """Count *name*'s registry install, after its provenance is on disk.
 
-    The public ids are re-read first, off the loop, so the count names an app this
-    install just made public. Never raises past a cancellation.
+    A first install counts ``kirocrew.app.installed``; one over an installed app
+    counts ``kirocrew.app.updated``. The public ids are re-read first, off the loop,
+    and the count is labelled from that read, so it names an app this install just
+    made public, at the version it just wrote. Never raises past a cancellation.
     """
-    from kiro_crew.metrics.feature_usage import record_app_installed, refresh_public_app_ids
+    try:
+        from kiro_crew.metrics.feature_usage import (
+            record_app_installed,
+            record_app_updated,
+            refresh_public_app_ids,
+        )
 
-    await asyncio.to_thread(refresh_public_app_ids)
-    record_app_installed(name, via)
+        # Labelled from this call's own scan: a concurrent refresh can swap the
+        # shared map for an older scan while this one waits.
+        ids = await asyncio.to_thread(refresh_public_app_ids)
+        (record_app_updated if was_installed else record_app_installed)(name, via, ids)
+    except Exception:  # recording never changes the install's result
+        logger.debug("install count failed for %s", name, exc_info=True)

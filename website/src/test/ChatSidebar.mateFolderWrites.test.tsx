@@ -18,18 +18,27 @@
  *   (5) a board column's copy of that empty child gives the same Delete-only
  *       menu and no new-chat control;
  *   (6) a child holding a live Bot thread's session, which the person's list
- *       leaves out, opens no menu.
+ *       leaves out, opens no menu;
+ *   (7) a mate home none of whose sessions the list shows draws no row at all,
+ *       in the list and in a board column,
+ *       so a Bot whose sessions left the list leaves no empty `0` row behind;
+ *       the same home holding one listed session draws its row again, and
+ *       the empty-folder cleanup still names a folder inside a hidden home.
+ *
+ * Cases (1)-(6) give the home one listed session (`listedInHome`), the state
+ * in which the list draws a Bot's rows.
  *
  * Radix DropdownMenu cannot be opened by mouse in jsdom (needs PointerEvent),
  * so the create menu is opened by keyboard. The phone branch lists folder rows
  * inline, so they are queryable without opening a flyout.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { requestFolderReveal } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatTag, TagColumn } from '../types'
@@ -75,7 +84,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), chatFolders: vi.fn() }))
+const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), chatFolders: vi.fn(), cleanupChatFolders: vi.fn() }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -112,6 +121,11 @@ const mateHome: ChatFolder = { id: HOME, name: 'Radar', order: 0, mate_home: tru
 const mateChild: ChatFolder = { id: HOME_CHILD, name: 'Radar inbox', order: 0, parent_id: HOME }
 const plain: ChatFolder = { id: PLAIN, name: 'Research', order: 1 }
 
+type Slots = RootState['dashboard']['slots']
+/** A session of the person's own, filed in the mate home: the list shows it,
+ *  so it draws the home's rows. */
+const listedInHome = [{ key: 'own-1', folder_id: HOME, title: 'Old chat', agent: '' }] as unknown as Slots
+
 const tags: ChatTag[] = [{ id: TAG, name: 'Review', color: '#1a1', order: 0, status: true }]
 const columns: TagColumn[] = [{ id: COL, name: 'Review', tag_ids: [TAG], mode: 'any', order: 0 }]
 
@@ -130,7 +144,7 @@ function renderSidebar(folders: ChatFolder[], slots: RootState['dashboard']['slo
   qc.setQueryData(['chat-tags'], tags)
   qc.setQueryData(['tag-columns'], columns)
   mocks.chatFolders.mockResolvedValue(folders)
-  return render(
+  const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -144,6 +158,7 @@ function renderSidebar(folders: ChatFolder[], slots: RootState['dashboard']['slo
       </Provider>
     </QueryClientProvider>,
   )
+  return { ...view, store }
 }
 
 function openCreateMenu() {
@@ -161,7 +176,7 @@ afterEach(() => vi.clearAllMocks())
 describe('mate-managed folders offer no person writes', () => {
   it('the header "New chat in folder" picker omits a mate home and its child', async () => {
     mobile.value = true
-    renderSidebar([mateHome, mateChild, plain])
+    renderSidebar([mateHome, mateChild, plain], listedInHome)
     openCreateMenu()
     await screen.findByTestId('new-chat-in-folder-caption')
     const menu = within(screen.getByRole('menu'))
@@ -172,7 +187,7 @@ describe('mate-managed folders offer no person writes', () => {
 
   it('drops the picker entirely when only mate folders exist', async () => {
     mobile.value = true
-    renderSidebar([mateHome, mateChild])
+    renderSidebar([mateHome, mateChild], listedInHome)
     openCreateMenu()
     // The menu is open (its fixed rows render) but carries no folder section.
     await screen.findByTestId('new-temporary-chat')
@@ -181,7 +196,7 @@ describe('mate-managed folders offer no person writes', () => {
 
   it('a board column renders no menu or new-chat control for a mate home', () => {
     cfg.value = { ...cfg.value, tagColumnsEnabled: true }
-    const { container } = renderSidebar([mateHome, plain])
+    const { container } = renderSidebar([mateHome, plain], listedInHome)
     const q = (id: string) => container.querySelector(`[data-testid="${id}"]`)
     // Both folders render in the column: the mate home stays openable.
     expect(q(`col-${COL}-folder-${HOME}`)).not.toBeNull()
@@ -197,7 +212,7 @@ describe('mate-managed folders offer no person writes', () => {
 
   it('a board column gives an empty folder inside a mate home a Delete-only menu', async () => {
     cfg.value = { ...cfg.value, tagColumnsEnabled: true }
-    const { container } = renderSidebar([mateHome, mateChild, plain])
+    const { container } = renderSidebar([mateHome, mateChild, plain], listedInHome)
     const q = (id: string) => container.querySelector(`[data-testid="${id}"]`)
     expect(q(`col-${COL}-folder-${HOME_CHILD}`)).not.toBeNull()
     expect(q(`col-${COL}-folder-${HOME}-menu`)).toBeNull()
@@ -210,7 +225,7 @@ describe('mate-managed folders offer no person writes', () => {
   })
 
   it('an empty folder inside a mate home offers Delete folder and nothing else', async () => {
-    const { container } = renderSidebar([mateHome, mateChild, plain])
+    const { container } = renderSidebar([mateHome, mateChild, plain], listedInHome)
     const q = (id: string) => container.querySelector(`[data-testid="${id}"]`)
     await screen.findByTestId(`folder-menu-${HOME_CHILD}`)
     expect(q(`folder-menu-${HOME}`)).toBeNull()
@@ -232,15 +247,78 @@ describe('mate-managed folders offer no person writes', () => {
     const slots = [
       { key: 'mate-1', mode: 'member', title: 'Radar', agent: '' },
       { key: 'work-1', mate_root: 'mate-1', folder_id: HOME_CHILD, title: 'Inbox run', agent: '' },
-    ] as unknown as RootState['dashboard']['slots']
+      ...listedInHome,
+    ] as unknown as Slots
     const { container } = renderSidebar([mateHome, mateChild, plain], slots)
+    // The child row is drawn, so the missing menu below is the rule, not a hidden row.
     await screen.findByTestId(`folder-menu-${PLAIN}`)
+    expect(container.querySelector(`[data-folder-row="${HOME_CHILD}"]`)).not.toBeNull()
     expect(container.querySelector(`[data-testid="folder-menu-${HOME_CHILD}"]`)).toBeNull()
   })
 
   it('a folder inside a mate home that holds an archived session offers no menu', async () => {
-    const { container } = renderSidebar([mateHome, { ...mateChild, history_count: 1 }, plain])
+    const { container } = renderSidebar([mateHome, { ...mateChild, history_count: 1 }, plain], listedInHome)
     await screen.findByTestId(`folder-menu-${PLAIN}`)
     expect(container.querySelector(`[data-testid="folder-menu-${HOME_CHILD}"]`)).toBeNull()
+  })
+})
+
+describe('a Bot whose sessions the list leaves out draws no row', () => {
+  // Its live mate thread hides the Bot's session from the person's list.
+  const hiddenOnly = [
+    { key: 'mate-1', mode: 'member', title: 'Radar', agent: '' },
+    { key: 'work-1', mate_root: 'mate-1', folder_id: HOME_CHILD, title: 'Inbox run', agent: '' },
+  ] as unknown as Slots
+
+  it('the list draws no row for the home or its child', async () => {
+    const { container } = renderSidebar([mateHome, mateChild, plain], hiddenOnly)
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    expect(container.querySelector(`[data-folder-row="${PLAIN}"]`)).not.toBeNull()
+    expect(container.querySelector(`[data-folder-row="${HOME}"]`)).toBeNull()
+    expect(container.querySelector(`[data-folder-row="${HOME_CHILD}"]`)).toBeNull()
+  })
+
+  it('a board column draws no copy of the home', () => {
+    cfg.value = { ...cfg.value, tagColumnsEnabled: true }
+    const { container } = renderSidebar([mateHome, mateChild, plain], hiddenOnly)
+    expect(container.querySelector(`[data-testid="col-${COL}-folder-${PLAIN}"]`)).not.toBeNull()
+    expect(container.querySelector(`[data-testid="col-${COL}-folder-${HOME}"]`)).toBeNull()
+    expect(container.querySelector(`[data-testid="col-${COL}-folder-${HOME_CHILD}"]`)).toBeNull()
+  })
+
+  it('a listed session in the child folder alone keeps the home and child drawn', async () => {
+    const inChild = [{ key: 'own-2', folder_id: HOME_CHILD, title: 'Child chat', agent: '' }] as unknown as Slots
+    const { container } = renderSidebar([mateHome, mateChild, plain], [...hiddenOnly, ...inChild] as unknown as Slots)
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    expect(container.querySelector(`[data-folder-row="${HOME}"]`)).not.toBeNull()
+    expect(container.querySelector(`[data-folder-row="${HOME_CHILD}"]`)).not.toBeNull()
+  })
+
+  it('the empty-folder cleanup still names a folder inside the hidden home', async () => {
+    // The server may list such a folder; the preview must say which one it deletes.
+    mocks.cleanupChatFolders.mockResolvedValue({ ids: [HOME_CHILD], archived: {} })
+    renderSidebar([mateHome, mateChild, plain], hiddenOnly)
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    fireEvent.keyDown(screen.getByLabelText('More options'), { key: 'Enter' })
+    fireEvent.click(await screen.findByTestId('clean-up-empty-folders'))
+    expect(await screen.findByTitle('Radar / Radar inbox')).toBeTruthy()
+  })
+
+  it('a folder reveal of the hidden home keeps the search text', async () => {
+    // The command bar lists every folder; picking a hidden Bot home must not
+    // clear the person's search for a row that is not drawn (#39653).
+    const { store } = renderSidebar([mateHome, mateChild, plain], hiddenOnly)
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    const search = screen.getByPlaceholderText('Search sessions…')
+    fireEvent.change(search, { target: { value: 'Rese' } })
+    act(() => { store.dispatch(requestFolderReveal(HOME)) })
+    expect(screen.getByPlaceholderText('Search sessions…')).toHaveValue('Rese')
+    expect(store.getState().chat.revealRequest).toBeFalsy()
+  })
+
+  it('the home with one listed session draws its row again', async () => {
+    const { container } = renderSidebar([mateHome, mateChild, plain], [...hiddenOnly, ...listedInHome] as unknown as Slots)
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    expect(container.querySelector(`[data-folder-row="${HOME}"]`)).not.toBeNull()
   })
 })

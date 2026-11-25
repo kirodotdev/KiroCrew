@@ -3,9 +3,9 @@ title: Opt-in memory sharing between connected Kiro Crew instances
 status: draft
 author: djman-aws
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: 766c658641985e58b91752979dac229f88794b4d
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 21384
 implementation-prs: []
 tracking-issues: [18593]
 supersedes: []

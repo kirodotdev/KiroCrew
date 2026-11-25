@@ -235,6 +235,92 @@ class TestMapResponse:
         assert api._map_response(data)["plan"] == "X" * 100
 
 
+class TestPlanWithoutLimit:
+    """A used amount and no credit limit anywhere: no reading, and the fact is reported."""
+
+    @pytest.mark.parametrize(
+        "pools",
+        [
+            # Two CREDIT pools, neither with a limit (an organization-managed plan).
+            [{"resourceType": "CREDIT", "currentUsage": 15.45, "usageLimit": 0},
+             {"resourceType": "CREDIT", "currentUsage": 2}],
+            # No limit field at all; the precision used amount alone.
+            [{"resourceType": "CREDIT", "currentUsageWithPrecision": 3.5}],
+            # A legacy untyped plan pool with a null limit.
+            [{"currentUsage": 3, "usageLimit": None, "usageLimitWithPrecision": None}],
+            # A zero sent as a string reads as zero, as it does for a reading.
+            [{"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": "0"}],
+        ],
+    )
+    def test_reported_when_no_pool_has_a_limit(self, pools):
+        data = {"usageBreakdownList": pools}
+        assert api._map_response(data) is None
+        assert api._plan_without_limit(data) is True
+
+    @pytest.mark.parametrize(
+        "pools",
+        [
+            # A limit-less CREDIT pool listed ahead of one that has a limit.
+            [{"resourceType": "CREDIT", "currentUsage": 5},
+             {"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": 50}],
+            # No used amount: a malformed answer, not a limit-less plan.
+            [{"resourceType": "CREDIT", "usageLimit": 0}],
+            [{"resourceType": "CREDIT"}],
+            # A limit this module cannot read is not proof there is none.
+            [{"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": api._MAX_CREDITS + 1}],
+            [{"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": "n/a"}],
+            [{"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": float("inf")}],
+            [{"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": "-1"}],
+            [{"resourceType": "CREDIT", "currentUsage": 3, "usageLimit": True}],
+            # A zero precision limit beside a positive legacy one.
+            [{"resourceType": "CREDIT", "currentUsage": 3,
+              "usageLimitWithPrecision": 0, "usageLimit": 100}],
+            # A limit anywhere else in the answer: a grant nested in the plan pool,
+            # a trial pool, another quota.
+            [{"resourceType": "CREDIT", "currentUsage": 3,
+              "bonuses": [{"displayName": "Welcome", "currentUsage": 1, "usageLimit": 500}]}],
+            [{"resourceType": "CREDIT", "currentUsage": 3,
+              "bonuses": [{"status": "EXPIRED", "currentUsage": 1, "usageLimit": 500}]}],
+            [{"resourceType": "CREDIT", "currentUsage": 3,
+              "freeTrialInfo": {"usageLimitWithPrecision": 50, "currentUsage": 0}}],
+            [{"resourceType": "CREDIT", "currentUsage": 3},
+             {"resourceType": "FREE_TRIAL", "currentUsage": 0, "usageLimit": 50}],
+            [{"resourceType": "CREDIT", "currentUsage": 3},
+             {"resourceType": "TOKEN", "currentUsage": 9, "usageLimit": 1000}],
+            # A typed non-CREDIT quota is never the plan.
+            [{"resourceType": "TOKEN", "currentUsage": 3}],
+            [],
+        ],
+    )
+    def test_not_reported_otherwise(self, pools):
+        assert api._plan_without_limit({"usageBreakdownList": pools}) is False
+
+    def test_a_limit_outside_the_breakdown_list_keeps_the_generic_message(self):
+        pools = [{"resourceType": "CREDIT", "currentUsage": 3}]
+        data = {"usageBreakdownList": pools, "overageConfiguration": {"usageLimit": 100}}
+        assert api._plan_without_limit(data) is False
+
+    def test_a_readable_plan_is_unchanged(self):
+        data = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 5, "usageLimit": 100},
+            {"resourceType": "CREDIT", "currentUsage": 1},
+        ]}
+        out = api._map_response(data)
+        assert (out["credits_used"], out["credits_plan"]) == (5.0, 100.0)
+        assert api._plan_without_limit(data) is False
+
+    def test_two_pool_warning_records_each_pool_shape_only(self, caplog):
+        data = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 1545, "usageLimit": 0},
+            {"resourceType": "CREDIT", "usageLimit": 777},
+        ]}
+        with caplog.at_level("WARNING", logger=api.logger.name):
+            api._map_response(data)
+        msg = next(r.getMessage() for r in caplog.records if "CREDIT-typed pools" in r.getMessage())
+        assert "no limit [True, False], used amount [True, False]" in msg
+        assert "1545" not in msg and "777" not in msg
+
+
 class TestParseIso:
     def test_handles_nanosecond_precision(self):
         # kiro-cli emits 9 fractional digits; fromisoformat accepts <=6.
@@ -1033,6 +1119,24 @@ class TestAuthStateClassification:
             out = api.fetch_usage_limits(expected_arn=self.ARN)
         assert out.usage is None
         assert out.auth_state == api.AUTH_OTHER
+        assert out.plan_without_limit is False
+
+    def test_a_used_amount_with_no_limit_is_reported(self, caplog):
+        body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 15.45, "usageLimit": 0},
+            {"resourceType": "CREDIT", "currentUsage": 2},
+        ]}
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_list_profile_arn", return_value=self.ARN), \
+             patch.object(api, "_post", return_value=_resp(200, body)), \
+             patch.object(api, "_API_DEGRADED_WARNED", False), \
+             caplog.at_level("WARNING", logger=api.logger.name):
+            out = api.fetch_usage_limits(expected_arn=self.ARN)
+        # The API-health warning names the shape, so a diagnostics bundle shows it.
+        assert any("credits used and no credit limit" in r.getMessage() for r in caplog.records)
+        assert out.usage is None
+        assert out.auth_state == api.AUTH_OTHER
+        assert out.plan_without_limit is True
 
     def test_token_acquisition_error_is_not_reported_as_no_credential(self):
         # The enumeration did not finish, so "there is no live credential" was

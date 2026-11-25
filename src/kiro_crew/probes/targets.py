@@ -313,6 +313,20 @@ def _gh_pr_target(owner: str, repo: str, number: int, *, host: str | None) -> Ta
     )
 
 
+def same_subject(kind: str, subject: str, other_kind: str, other_subject: str) -> bool:
+    """Whether two ``(kind, subject)`` pairs name one subject.
+
+    A gh-pr subject is ``owner/name#N`` and GitHub slugs are case-insensitive, so it
+    compares case-folded; the number has no case. Every other kind compares exactly.
+    A subject string carries no host, so a caller holding one compares it itself.
+    """
+    if kind != other_kind:
+        return False
+    if kind == GH_PR:
+        return subject.lower() == other_subject.lower()
+    return subject == other_subject
+
+
 def infer(
     text: str,
     *,

@@ -1,7 +1,7 @@
 """The cron page's job list and the folders it groups jobs into.
 
-``GET /api/crons`` and the cron-folder routes, which serialize their mutations
-under one loop-bound lock.
+``GET /api/crons``, ``GET /api/crons/{id}`` and the cron-folder routes, which
+serialize their mutations under one loop-bound lock.
 
 Served through :mod:`kiro_crew.dashboard.handlers.cron`, which callers and tests import and patch; this module
 never imports it.
@@ -10,6 +10,7 @@ never imports it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -25,6 +26,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _audit_app_cron,
     _invalid_path_id_response,
     _redacted_grant_map,
+    _refuse_foreign_app_job,
 )
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401 -- a handlers.cron public name
     is_owner_dashboard_request,
@@ -37,6 +39,12 @@ from kiro_crew.validation import MAX_SHORT_STRING
 from ._shared import guard_owner_surface_routes, read_bounded_json
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.cron")
+
+#: How much of each job's ``last_result`` and ``last_error`` the list carries.
+#: A row's tooltip and the partial-block phrase, which opens the error, need no
+#: more, and a few hundred long results sent whole made the body megabytes. The
+#: job dialog reads the whole text from ``GET /api/crons/{id}``.
+_LIST_TEXT_PREVIEW = 1000
 
 
 def _job_snapshot(job: Any) -> Any:
@@ -60,6 +68,23 @@ def _job_snapshot(job: Any) -> Any:
 
 
 async def api_crons(request: web.Request) -> web.Response:
+    """``GET /api/crons``: every job, its last result and error cut to a preview."""
+    return await _jobs_response(request, None)
+
+
+async def api_cron_get(request: web.Request) -> web.Response:
+    """``GET /api/crons/{id}``: one job's row, its last result and error whole."""
+    state: DashboardState = request.app["state"]
+    job_id = request.match_info["job_id"]
+    if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
+        return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.get")
+    if app_denied is not None:
+        return app_denied
+    return await _jobs_response(request, job_id)
+
+
+async def _jobs_response(request: web.Request, job_id: str | None) -> web.Response:
     # Function-local for the reason the helpers in cron_shared are: importing
     # `kiro_crew.apps.cron_sdk` executes `kiro_crew.apps.__init__`, which pulls
     # `bridges` and its documented mcp_cron cycle. Nothing on the boot path
@@ -77,11 +102,24 @@ async def api_crons(request: web.Request) -> web.Response:
     )
     from kiro_crew.cron_service.model import parked_by_its_run
     from kiro_crew.cron_service.schedule import backoff_delaying_next_run
+    from kiro_crew.dashboard.chat_utils_display import _redact_for_display
     from kiro_crew.host_timezone import published_host_timezone
+    from kiro_crew.security.redaction_switch import always_scan, credential_pass_bypassed
 
     def _r(text: str) -> str:
         # The two redaction passes every free-text field below goes through.
         return redact_credentials(redact_exfiltration_urls(text)[0])[0]
+
+    def _result_text(text: str) -> str:
+        # The credential pass over the whole text, through the display redaction's
+        # cache: it keeps the answer under a keyed digest of the text and of every
+        # setting the pass reads, so a list re-read redacts only the results it does
+        # not hold. That pass opens the chat seam, which the owner's redaction setting
+        # stands down; `_r` stands down only in a scope the caller opened, so outside
+        # one the pass runs in full. The list carries the opening of the answer.
+        with contextlib.nullcontext() if credential_pass_bypassed() else always_scan():
+            text = _redact_for_display(text)
+        return text if job_id is not None else text[:_LIST_TEXT_PREVIEW]
 
     state: DashboardState = request.app["state"]
     # Freshness-guaranteed list for the user-facing GET: offloads a locked
@@ -105,7 +143,10 @@ async def api_crons(request: web.Request) -> web.Response:
     # internal-secret callers (``app == ""``) skip the filter and the audit, so
     # the owner-view poll stays unaudited and unaffected, as before.
     app = _app_caller(request)
-    if app:
+    if job_id is not None:
+        # api_cron_get has already refused, and audited, a job this app does not own.
+        jobs = [j for j in jobs if j.id == job_id]
+    elif app:
         jobs = [j for j in jobs if app_owner_name(j.created_by) == app]
         _audit_app_cron(app, "crons.list", "allowed", f"jobs={len(jobs)}")
     # A crewmate's goal check-ins are controlled only by its Goals tab switches,
@@ -117,6 +158,8 @@ async def api_crons(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.stale_wake import is_stale_wake_job
 
     jobs = [j for j in jobs if not is_reminder_job(j) and not is_stale_wake_job(j)]
+    if job_id is not None and not jobs:
+        return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
     now = time.time()
     tz_name, _ = get_local_tz()
     # What a job with no zone of its own follows, as the job form offers it: the
@@ -195,6 +238,9 @@ async def api_crons(request: web.Request) -> web.Response:
                 "agent_sequence": [_r(a or "") for a in (j.agent_sequence or [])],
                 "model": _r(j.model or "") or None,
                 "channel": _r(j.channel or "") or None,
+                # The pinned destination on another channel; null when unpinned.
+                "channel_type": _r(j.channel_type) or None,
+                "target_id": _r(j.target_id) or None,
                 # "" not null: the stored default, and a value PATCH accepts.
                 "approval_mode": _r(j.approval_mode or ""),
                 # The chat session that owns this job. Ownership decides chat-side
@@ -277,16 +323,18 @@ async def api_crons(request: web.Request) -> web.Response:
                     _redacted_grant_map(j.secret_env_pending) if _owner_view else None
                 ),
                 "secret_env_pending_ts": (j.secret_env_pending_ts or None) if _owner_view else None,
-                "last_result": _r(j.last_result or "") or None,
+                "last_result": _result_text(j.last_result or "") or None,
                 # When `last_result` was produced (epoch), so a notification can
                 # tell whether the job's result is still the one it carries.
                 "last_result_ts": j.last_result_ts or None,
-                "last_error": _r(j.last_error or "") or None,
+                "last_error": _result_text(j.last_error or "") or None,
                 "is_running": live[j.id][1],
                 "running_since": live[j.id][2],
             }
             for j in jobs
         ]
+        if job_id is not None:
+            return json.dumps(data[0])
         return json.dumps(
             {
                 "jobs": data,

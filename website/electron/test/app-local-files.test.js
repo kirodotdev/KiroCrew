@@ -78,3 +78,41 @@ test("open-image reports the system viewer refusing", async () => {
 test("the image list is the one the shell's windows have always used", () => {
   assert.deepStrictEqual([...IMAGE_EXTS], [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
 });
+
+test("a UNC path is refused before any file-system call", async () => {
+  const touched = [];
+  const tripwire = {
+    statSync: (p) => {
+      touched.push(["stat", p]);
+      throw new Error("tripwire");
+    },
+    realpathSync: (p) => {
+      touched.push(["realpath", p]);
+      throw new Error("tripwire");
+    },
+  };
+  const calls = [];
+  const d = { ...deps({}, calls), fs: tripwire };
+  for (const p of [
+    "\\\\attacker.example\\share\\cat.png",
+    "//attacker.example/share/cat.png",
+    "\\\\?\\UNC\\attacker.example\\share\\cat.png",
+    "/\\attacker.example\\share\\cat.png",
+  ]) {
+    assert.strictEqual(revealLocalFile(d, p), false, p);
+    assert.strictEqual(await openLocalImage(d, p), false, p);
+  }
+  assert.deepStrictEqual(touched, []);
+  assert.deepStrictEqual(calls, []);
+});
+
+test("a local Windows drive path still reveals and opens", async () => {
+  const calls = [];
+  const d = deps({ "C:\\Users\\me\\pic.png": "file" }, calls);
+  assert.strictEqual(revealLocalFile(d, "C:\\Users\\me\\pic.png"), true);
+  assert.strictEqual(await openLocalImage(d, "C:\\Users\\me\\pic.png"), true);
+  assert.deepStrictEqual(calls, [
+    ["reveal", "C:\\Users\\me\\pic.png"],
+    ["open", "C:\\Users\\me\\pic.png"],
+  ]);
+});

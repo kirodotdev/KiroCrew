@@ -40,6 +40,7 @@ from kiro_crew.dashboard.session_activity import (
     session_work_pending,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.tracing import work as trace_work
 from kiro_crew.validation import WORK_LEDGER_READ_SCHEMA, ValidationError, validate_tool_args
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
@@ -132,6 +133,7 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     )
     remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, shown)
     rows: list[dict[str, Any]] = []
+    flagged: list[dict[str, Any]] = []
     for item in shown:
         row = _row_with_flags(
             state,
@@ -142,6 +144,7 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             board=key,
             remote_live=remote_live.get(item.item_id),
         )
+        flagged.append(row)
         if item.worker_instance_id or item.retired_bindings:
             row.update(await asyncio.to_thread(_remote_row_fields, key, item))
         if compact:
@@ -180,6 +183,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
+    if len(shown) == len(items):
+        # The whole board: its health goes on the turn reading it (patrol counts).
+        trace_work.note_board_health(getattr(state, "sessions", None), key, flagged)
     if published_only:
         return web.json_response(
             _published_payload(

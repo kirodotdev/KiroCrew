@@ -27,6 +27,31 @@ function renderBar(overrides: Partial<typeof defaults> = {}) {
 }
 
 describe('SearchBar', () => {
+  it('bounds the undocked pill and lets the input shrink without shrinking its buttons', () => {
+    renderBar({ term: 'needle', scopeLimited: true })
+    const input = screen.getByRole('combobox')
+    expect(input.parentElement).toHaveClass('max-w-[calc(100%-2rem)]')
+    expect(input).toHaveClass('min-w-0', 'flex-1', 'basis-[180px]', 'max-w-[180px]')
+    expect(input).not.toHaveClass('w-[180px]')
+    for (const button of screen.getAllByRole('button')) {
+      expect(button).toHaveClass('shrink-0')
+    }
+    expect(screen.getByText('No results in loaded history')).toHaveClass('min-w-0')
+    expect(screen.getByText('No results in loaded history')).not.toHaveClass('truncate')
+  })
+
+  it('keeps the docked layout unchanged', () => {
+    render(<SearchBar {...defaults} docked />)
+    const input = screen.getByRole('combobox')
+    expect(input.parentElement?.className).toBe('flex items-center gap-1.5 w-full text-[13px]')
+    expect(input).toHaveClass('flex-1', 'min-w-0')
+    expect(input).not.toHaveClass('basis-[180px]', 'max-w-[180px]')
+    for (const button of screen.getAllByRole('button')) {
+      expect(button).not.toHaveClass('shrink-0')
+    }
+    expect(screen.queryByRole('button', { name: 'Close (Esc)' })).not.toBeInTheDocument()
+  })
+
   it('renders input with placeholder', () => {
     renderBar()
     expect(screen.getByPlaceholderText('Find in chat…')).toBeInTheDocument()

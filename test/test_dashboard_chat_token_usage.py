@@ -949,6 +949,19 @@ class TestPinnedModelWithheld:
         slot.record_served_model(None)
         assert slot.to_dict()["served_model"] == ""
 
+    def test_engine_promoted_model_is_carried_and_forgotten_with_the_session(self):
+        """Like `served_model`, it describes the session, so a teardown drops it."""
+        slot = _ChatSlot("s1")
+        assert slot.to_dict()["engine_promoted_model"] == ""
+        slot._engine_promoted_model = "model-x"
+        assert slot.to_dict()["engine_promoted_model"] == "model-x"
+        # An armed reset starts the next turn fresh, so the slot list hides the promotion.
+        slot._pending_reset_history_key = "s1"
+        assert slot.to_dict()["engine_promoted_model"] == ""
+        slot._pending_reset_history_key = None
+        slot.forget_session_model_state()
+        assert slot.to_dict()["engine_promoted_model"] == ""
+
     def test_verdict_is_reported_only_for_the_model_it_was_computed_for(self):
         """Re-pinning must invalidate the verdict without anyone remembering to.
 

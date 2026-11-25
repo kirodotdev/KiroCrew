@@ -208,16 +208,62 @@ class TestFolderAuditOrigin:
         assert any("not-a-known-component" in r.getMessage() for r in caplog.records)
 
 
+def _agent_socket_request(headers: dict[str, str] | None = None, *, internal: bool = True):
+    """A request as token auth leaves it after the agent-socket capability check.
+
+    The agent socket carries no ``X-Internal-Secret`` (``agent_ipc`` refuses one);
+    token auth admits the verified capability and sets ``request["internal_auth"]``.
+    ``internal=False`` is the browser: the same headers, never marked internal.
+    """
+    from aiohttp.test_utils import make_mocked_request
+
+    request = make_mocked_request("POST", "/api/chat/folders", headers=headers or {})
+    if internal:
+        request["internal_auth"] = True
+    return request
+
+
+class TestAgentSocketOrigin:
+    """An agent on an enforced backend reaches the dashboard over the agent socket,
+    which never carries the secret. Reading "no secret" as "the browser" made every
+    such call the person, so person-only gates opened for the agent."""
+
+    def test_agent_socket_call_is_mcp_with_its_caller(self) -> None:
+        from kiro_crew.dashboard.token_auth_callers import request_origin
+
+        request = _agent_socket_request({"X-Internal-Caller": "kirocrew-dashboard"})
+        assert request_origin(request) == ("mcp", "kirocrew-dashboard")
+
+    def test_agent_socket_call_without_caller_is_unknown_internal(self) -> None:
+        from kiro_crew.dashboard.token_auth_callers import request_origin
+
+        assert request_origin(_agent_socket_request()) == ("mcp", "unknown-internal")
+
+    def test_forged_caller_without_internal_auth_is_still_dashboard(self) -> None:
+        from kiro_crew.dashboard.token_auth_callers import request_origin
+
+        request = _agent_socket_request({"X-Internal-Caller": "kirocrew-dashboard"}, internal=False)
+        assert request_origin(request) == ("dashboard", "dashboard")
+
+    def test_agent_socket_call_is_not_the_person(self) -> None:
+        from kiro_crew.dashboard.mate_subfolder_delete import is_person_browser
+
+        agent = _agent_socket_request({"X-Internal-Caller": "kirocrew-dashboard"})
+        assert is_person_browser("", agent) is False
+        assert is_person_browser("", _agent_socket_request(internal=False)) is True
+
+
 class TestKnownCallerRatchet:
     def test_known_internal_callers_exact_list(self) -> None:
         """RATCHET: adding an internal caller is a conscious, reviewed edit.
 
         An unlisted internal caller fails loudly (``unknown-internal`` + warning). Each
         listed one validates through ``request_origin`` and has its own audit test:
-        ``test_crew_log_routes_unit_door_audit.py`` and ``test_mcp_debug.py``.
+        ``test_crew_log_routes_unit_door_audit.py``, ``test_mcp_debug.py`` and
+        ``test_cron_tool_chat_folder.py``.
         """
         assert _KNOWN_INTERNAL_CALLERS == frozenset(
-            {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug"}
+            {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug", "kirocrew-cron"}
         )
 
     def test_crew_log_server_name_is_a_known_caller(self) -> None:

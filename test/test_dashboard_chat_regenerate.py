@@ -15,6 +15,7 @@ from redaction_structured_cases import github_classic
 from kiro_crew.dashboard.chat_utils import app_inject_row
 from kiro_crew.dashboard.session_deliver import cron, origin_row
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.testing.wait import await_until
 
 # A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
 # are kept visible as identifiers).
@@ -830,3 +831,95 @@ class TestRegenerateAndVariants:
                     assert statuses == [200, 409], f"Expected one 200 and one 409, got {statuses}"
         finally:
             release.set()
+
+
+# ── A stored alternation placeholder row ──
+
+PLACEHOLDER = (
+    "(No assistant response was recorded for the preceding turn. This "
+    "placeholder was inserted automatically to preserve message "
+    "alternation — it is not a reply the assistant produced.)"
+)
+
+
+class TestRegenerateWithAStoredPlaceholder:
+    @pytest.mark.asyncio
+    async def test_regenerate_replaces_the_real_reply_before_a_placeholder_row(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "real reply A")
+        slot.append("nudge", "Patrol check: anything new?", "msg msg-nudge", meta={"nudge": {}})
+        slot.append("assistant", PLACEHOLDER)
+        slot.drain()
+        captured: list[dict] = []
+        ran = asyncio.Event()
+
+        async def _capture(*a, **kw):
+            captured.extend(list(slot._pending_variants))
+            ran.set()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200, await resp.json()
+                await await_until(ran, what="the regenerated turn's run")
+        assert [v["content"] for v in captured] == ["real reply A"]
+
+    @pytest.mark.asyncio
+    async def test_regenerate_reruns_a_turn_whose_only_reply_is_a_placeholder_and_keeps_no_variant(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "one")
+        slot.append("assistant", "real reply B1")
+        slot.append("user", "two")
+        slot.append("assistant", PLACEHOLDER)
+        slot.drain()
+        calls: list[tuple] = []
+        captured: list[dict] = []
+        ran = asyncio.Event()
+
+        async def _capture(*a, **kw):
+            calls.append(a)
+            captured.extend(list(slot._pending_variants))
+            ran.set()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200, await resp.json()
+                await await_until(ran, what="the regenerated turn's run")
+        assert [a[2] for a in calls] == ["two"]
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_regenerate_refuses_automated_turn_reply_when_a_cron_turn_s_only_reply_is_a_placeholder(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "one")
+        slot.append("assistant", "real reply B1")
+        _role, cls, meta = origin_row(cron("daily-report"))
+        slot.append("inject", CRON_TEXT, cls, meta=meta)
+        slot.append("assistant", PLACEHOLDER)
+        slot.drain()
+        before = copy.deepcopy(slot.messages)
+        run_chat = AsyncMock()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run_chat):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                body = await resp.json()
+
+        assert resp.status == 400, body
+        assert body["code"] == "automated_turn_reply"
+        run_chat.assert_not_called()
+        assert slot.messages == before

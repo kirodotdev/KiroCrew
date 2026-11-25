@@ -151,8 +151,10 @@ class Refusal:
             raise ValueError(f"only a host refusal carries a deny cause (rung={self.rung!r})")
 
     @classmethod
-    def host(cls, rung: str, reason: str, cause: str) -> Refusal:
-        return cls("host", rung, reason, cause)
+    def host(
+        cls, rung: str, reason: str, cause: str, meta: Mapping[str, object] = EMPTY
+    ) -> Refusal:
+        return cls("host", rung, reason, cause, meta)
 
     @classmethod
     def person(cls, rung: str) -> Refusal:
@@ -655,7 +657,8 @@ class HookGate:
     def judge(self, ask: Ask) -> Refusal | Hit | None:
         result = self._consult(ask.event)
         if result.action == TOOL_DENY:
-            return Refusal.host("hook_deny", result.reason or "", DENY_CAUSE_POLICY)
+            meta = {"rule_id": result.tier} if result.tier else EMPTY
+            return Refusal.host("hook_deny", result.reason or "", DENY_CAUSE_POLICY, meta)
         if result.action != TOOL_AUTO_APPROVE:
             return None
         if identity_grant_covers_child(result, ask.event):
@@ -708,6 +711,7 @@ class SpecHooks:
                 mcp_server=event.mcp_server_name,
                 harness_tool_id=event.harness_tool_id,
                 acp_session_id=sid if self._spec.hooks and isinstance(sid, str) and sid else None,
+                raw_tool_params=getattr(event, "raw_tool_params", None),
                 **self._identity,
             )
         if reason is None:
@@ -933,6 +937,7 @@ class SubagentRows:
 
     def refusal(self, ask: Ask, refusal: Refusal) -> dict[str, Any]:
         error, reason = _SUBAGENT_REFUSALS[refusal.rung]
+        meta = {"reason": reason, **refusal.meta} if reason else dict(refusal.meta)
         return {
             "session_key": ask.session_key,
             "source": self.source,
@@ -941,7 +946,7 @@ class SubagentRows:
             "outcome": "denied" if error else "rejected",
             "request_id": ask.request_id,
             "error": error,
-            "metadata": {"subagent_id": self.subagent_id, "reason": reason} if reason else None,
+            "metadata": {"subagent_id": self.subagent_id, **meta} if meta else None,
         }
 
     def approval(self, ask: Ask, settled: Settled) -> dict[str, Any]:
@@ -1024,8 +1029,9 @@ class TaskrunnerRows:
         }
         if error:
             row["error"] = error
-        if reason:
-            row["metadata"] = {"reason": reason, **refusal.meta}
+        meta = {"reason": reason, **refusal.meta} if reason else dict(refusal.meta)
+        if meta:
+            row["metadata"] = meta
         return row
 
     def approval(self, ask: Ask, settled: Settled) -> dict[str, Any]:

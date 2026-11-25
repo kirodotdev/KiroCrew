@@ -44,6 +44,7 @@ vi.mock('../providers/adapters/acp', () => ({ clearCachedModels: vi.fn() }))
 
 import { api, ApiError } from '../api/client'
 import { probe, status } from './KiroPrerequisiteGateTestUtils'
+import { noteSignInCommand } from '../api/signInCommand'
 
 // The Pod remedy block is real nested YAML. Matched on the code element's exact
 // text: RTL's default matcher collapses whitespace, which would hide a lost
@@ -257,6 +258,37 @@ describe('KiroPrerequisiteGate', () => {
     expect(footer.className).toContain('env(safe-area-inset-bottom)')
   })
 
+  it.each([
+    { label: 'a workload pod', workload: true, kind: 'no_backend', backend: 'kiro', shown: true },
+    { label: 'a host that is not a workload pod', workload: false, kind: 'no_backend', backend: 'kiro', shown: false },
+    { label: 'a workload pod with a transient failure', workload: true, kind: 'transient', backend: 'kiro', shown: false },
+    // An enforced harness stays blocked with no backend whatever the opt-in.
+    { label: 'a workload pod whose configured agent the opt-in cannot unblock', workload: true, kind: 'no_backend', backend: 'codex', shown: false },
+  ])('the sandbox screen names the unsandboxed setting only for $label with no backend', async ({ workload, kind, backend, shown }) => {
+    // A container image with kiro-cli reaches this screen before any agent picker.
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: backend } })
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: kind,
+      sandbox_backend_available: false,
+      unsandboxed_exec_permitted: false,
+      container_boundary_hint: workload,
+      sandbox_blocked_backends: ['codex'],
+    }))
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+    await screen.findByRole('heading', { name: 'The agent sandbox could not be started' })
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
+    if (!shown) {
+      await waitFor(() => expect(screen.queryByTestId('workload-pod-no-sandbox')).toBeNull())
+      return
+    }
+    expect(await screen.findByTestId('workload-pod-no-sandbox')).toHaveTextContent('Kubernetes Restricted pod')
+    expect(screen.getByText('kirocrew config set agent.sandbox_allow_unsandboxed_exec true', { selector: 'code' })).toBeInTheDocument()
+  })
+
   it('tells an installed-but-signed-out CLI to sign in via Kiro CLI', async () => {
     // Any Kiro CLI that runs is usable regardless of install source, so this
     // state must show the sign-in instruction and the exact command — and no
@@ -448,6 +480,28 @@ describe('KiroPrerequisiteGate', () => {
       expect(screen.getByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
     } finally {
+      banner.remove()
+    }
+  })
+
+  it("names a container gateway's own sign-in command in the re-auth body", async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      platform: 'gateway',
+      setup_allowed: false,
+    }))
+    const banner = document.createElement('div')
+    banner.id = 'mc-session-expired'
+    document.body.prepend(banner)
+    // What the banner names too, so the two surfaces still give one instruction.
+    noteSignInCommand('docker exec kirocrew kirocrew token')
+    try {
+      renderWithProviders(
+        <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      )
+      expect(await screen.findByText(/predates the configured owner/))
+        .toHaveTextContent('Run docker exec kirocrew kirocrew token in a terminal')
+    } finally {
+      noteSignInCommand(undefined)
       banner.remove()
     }
   })
@@ -1177,7 +1231,7 @@ describe('KiroPrerequisiteGate', () => {
     )
 
     expect(
-      await screen.findByText('Kiro CLI is installed but could not be verified'),
+      await screen.findByRole('heading', { name: 'The agent sandbox could not be started' }),
     ).toBeInTheDocument()
     expect(screen.getByText(/provides no OS-level sandbox/)).toBeInTheDocument()
     // The technical reason names the failing step, so it is shown verbatim.
@@ -1522,7 +1576,7 @@ describe('KiroPrerequisiteGate', () => {
 
     expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
     expect(
-      screen.queryByText('Kiro CLI is installed but could not be verified'),
+      screen.queryByText('The agent sandbox could not be started'),
     ).not.toBeInTheDocument()
   })
 

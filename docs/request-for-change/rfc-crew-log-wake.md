@@ -3,8 +3,8 @@ title: Crew log wake -- a worker's write pulls the conductor's tick forward
 status: implemented
 author: Raymond Chen, with kirocrew-lead
 created: 2026-10-01
-last-audited: 2026-10-06
-audited-at: ea7e91c8e6
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [15691, 12781]
 tracking-issues: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew log wake -- a worker's write pulls the conductor's tick forward
 
-- Status: implemented. [#15691](https://github.com/kirodotdev/KiroCrew/pull/15691) merged on the [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781) wake gate. This document shipped INSIDE its implementing pull request:
+- Status: implemented. [#15691](https://github.com/kirodotdev/KiroCrew/pull/15691) merged on the [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781) wake gate; the wake is `src/kiro_crew/conductor_wake.py` calling `fire_now` (checked at `fc89562d69`). This document shipped INSIDE its implementing pull request:
   the repository takes no standalone RFC pull requests, so `doc-pr` is null and
   the implementation is the one named in `implementation-prs`.
 - Builds on [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3

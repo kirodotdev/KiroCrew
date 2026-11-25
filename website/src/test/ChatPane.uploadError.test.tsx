@@ -280,6 +280,8 @@ describe('ChatPane upload — a refused upload is surfaced, not silent (#5707)',
           const banner = await screen.findByTestId('chat-pane-upload-error')
           expect(banner).toHaveTextContent("Couldn't load the upload size limit, so the server checks each file instead.")
           expect(banner).not.toHaveTextContent('HTTP 502')
+          // Theme overlays and the guide panel keep clear of the composer's notices.
+          expect(banner.closest('[data-guide-keep-clear]')).not.toBeNull()
         } else {
           expect(screen.queryByText(/size limit/i)).not.toBeInTheDocument()
         }

@@ -49,6 +49,11 @@ unchanged; do not transliterate it into Devanagari (not `किरोक्र�
 
 Checked by `glossary.test.ts`.
 
+The generic noun *crew* (a crew, the crew, crews) is `क्रू`, and so is the Settings tab
+`रिमोट क्रू`; `crewNounNative.test.ts` checks the lowercase noun. A capitalised `Crew` stays
+Latin only where the English source capitalises it as the name of this install (`this Crew`,
+`Crew memory`).
+
 ---
 
 ## 4. Register and tone
@@ -103,6 +108,7 @@ This is a known limitation — Hindi cannot address an unknown-gender user witho
 | changed values address the reader as तुम, never आप | `hiStyle.test.ts` (`I18N_BASE_REF`) |
 | the Kiro CLI setup screen (`components.kiroPrerequisiteGate`) addresses the reader as तुम throughout | `hiStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
+| the generic noun crew is `क्रू`, never Latin `crew` | `crewNounNative.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no full-width alphanumerics | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

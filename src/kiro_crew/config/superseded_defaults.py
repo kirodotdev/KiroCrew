@@ -302,8 +302,8 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#6651",
         new_default_display="unset (automatic: 25s desktop / 90s managed service)",
     ),
-    # 0 means as many panes as crews registered. A stored 5 evicts the 6th crew,
-    # which at the pane looks like a connection flapping on tab switch.
+    # 0 means automatic, which now also resolves to 5 (the five most recently
+    # opened Crews, SSH and relay together), so a stored 5 behaves the same.
     #
     # REPORT-ONLY: plausible values are about 1..10, so an operator with five crews
     # who types 5 stores exactly the old default.
@@ -312,7 +312,7 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=5,
         new_default=0,
         changed_in="#7248",
-        new_default_display="0 (automatic: as many as are registered)",
+        new_default_display="0 (automatic: the 5 most recently opened)",
     ),
     # A stored False withdraws session control from every ordinary agent. Crew
     # members and the owner-tab Conductor keep a creator-fenced dispatch bypass
@@ -560,6 +560,23 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default_display='"auto" (600 on a machine with 16 GiB or less)',
         note="a stored number, 3600 included, is kept as your choice; auto picks by memory size",
         applies=_small_memory_host_applies,
+    ),
+    # Remote Crew went from off to on by default. Old full saves wrote false on
+    # every install, so most upgraded installs still store it without having chosen it.
+    #
+    # REPORT-ONLY: false is also the owner's way to keep this gateway from opening
+    # SSH or SSM tunnels to other hosts, and adopting would start doing that without
+    # consent. The report says how to turn it on; the owner decides.
+    SupersededDefault(
+        dotted_key="instances.enabled",
+        old_default=False,
+        new_default=True,
+        changed_in="#39300",
+        note=(
+            "this setting lets this gateway connect to remote crews over SSH or SSM; "
+            "to turn it on, run `kirocrew config set instances.enabled true`, then "
+            "restart the gateway"
+        ),
     ),
 )
 

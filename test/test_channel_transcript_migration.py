@@ -12,6 +12,7 @@ from kiro_crew.channel_transcript_migration import (
     _orphan_target_stem,
     migrate_channel_transcripts,
 )
+from kiro_crew.chat_attachments import attachments_dir
 from kiro_crew.history import ConversationLog
 
 CHANNEL_STEM = "slack_1785370133.085469"
@@ -784,3 +785,103 @@ class TestConsolidationOffset:
             "head being sliced",
             "orphan newer",
         ]
+
+
+CRON_STEM = "cron_0a1b2c3d"
+CRON_COPY_STEM = f"dashboard_{CRON_STEM}"
+CRON_RUN = [
+    _msg("user", "[cron] run 1", "2026-11-06T09:00:00+00:00"),
+    _msg("assistant", "report 1", "2026-11-06T09:00:05+00:00"),
+]
+LATER_RUN = [
+    _msg("user", "[cron] run 2", "2026-11-07T09:00:00+00:00"),
+    _msg("assistant", "report 2", "2026-11-07T09:00:05+00:00"),
+]
+TYPED_IN_COPY = [
+    _msg("user", "typed after the drift", "2026-11-06T10:00:00+00:00"),
+    _msg("assistant", "answer", "2026-11-06T10:00:05+00:00"),
+]
+
+
+class TestCronDriftCopy:
+    """A cron chat's drifted ``dashboard_cron_<id>`` copy folds back into ``cron_<id>``."""
+
+    @staticmethod
+    def _pair(
+        tmp_path: Path, copy_meta: dict | None = None, copy_rows=None, cron_meta=None
+    ) -> tuple[Path, Path]:
+        cron = tmp_path / f"{CRON_STEM}.jsonl"
+        copy = tmp_path / f"{CRON_COPY_STEM}.jsonl"
+        own_link = {"linked_session_key": "cron:0a1b2c3d"}
+        _write(cron, own_link if cron_meta is None else cron_meta, CRON_RUN + LATER_RUN)
+        rows = CRON_RUN + TYPED_IN_COPY if copy_rows is None else copy_rows
+        _write(copy, {"closed": True, "title": "My cron chat", **(copy_meta or {})}, rows)
+        return cron, copy
+
+    def test_a_closed_copy_merges_its_own_turns_once_and_is_removed(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        _, copy = self._pair(tmp_path)
+
+        # The copy's tab ran under ``dashboard:cron_0a1b2c3d``, so the session map
+        # claims that slot name; the rows, not the map, decide.
+        assert migrate_channel_transcripts(log, dashboard_slots=frozenset({CRON_STEM})) == 1
+
+        assert not copy.exists()
+        assert [m["content"] for m in log.read_messages(CRON_STEM)] == [
+            "[cron] run 1",
+            "report 1",
+            "typed after the drift",
+            "answer",
+            "[cron] run 2",
+            "report 2",
+        ]
+        meta = log.get_metadata(CRON_STEM)
+        assert meta["linked_session_key"] == "cron:0a1b2c3d"
+        assert meta["title"] == "My cron chat"
+        assert not meta.get("closed")
+        assert [row["key"] for row in log.list_sessions()] == [CRON_STEM]
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "unrelated chat sharing the stem",
+            "cron run file, not the job's own chat",
+            "tab still open",
+            "private tab",
+            "owns images",
+            "owns reply threads",
+        ],
+    )
+    def test_a_copy_that_is_not_provably_safe_is_left_alone(self, tmp_path, case):
+        log = ConversationLog(base_dir=tmp_path)
+        own_rows = [_msg("user", "my own chat", "2026-11-06T09:00:00+00:00")]
+        copy_meta = {
+            "tab still open": {"closed": False},
+            "private tab": {"memory_mode": "incognito"},
+        }.get(case)
+        cron, copy = self._pair(
+            tmp_path,
+            copy_meta=copy_meta,
+            copy_rows=own_rows if case == "unrelated chat sharing the stem" else None,
+            cron_meta={"cron_run": "ephemeral"} if case.startswith("cron run file") else None,
+        )
+        if case == "owns images":
+            attachments_dir(tmp_path, CRON_COPY_STEM).mkdir()
+        if case == "owns reply threads":
+            threads = log.threads_sidecar_path(CRON_COPY_STEM)
+            threads.parent.mkdir(parents=True, exist_ok=True)
+            threads.write_text("{}", encoding="utf-8")
+        before = (cron.read_bytes(), copy.read_bytes())
+
+        assert migrate_channel_transcripts(log) == 0
+        assert (cron.read_bytes(), copy.read_bytes()) == before
+
+    def test_a_deleted_cron_transcript_is_not_brought_back(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        cron, copy = self._pair(tmp_path)
+        cron.unlink()
+        before = copy.read_bytes()
+
+        assert migrate_channel_transcripts(log) == 0
+        assert not cron.exists()
+        assert copy.read_bytes() == before

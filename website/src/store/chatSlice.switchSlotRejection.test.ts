@@ -15,7 +15,7 @@ import { configureStore, type Middleware } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
+import chatReducer, { captureForkOrigin, createSlot, switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
 import { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
@@ -755,6 +755,32 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(n).toHaveLength(1)
     expect(n[0].payload).toMatchObject({ name: 'Alive session', kind: 'failed' })
     expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('names an untitled session the way its Sessions row does, not the backend placeholder (Bug Bash row 59)', async () => {
+    detail.mockRejectedValue(apiError(502, 'Bad Gateway'))
+    const { store, actions } = makeRecordingStore([{ key: 'fresh', title: 'New Session…' }])
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'fresh', announceOnMissing: true })).unwrap())
+    expect(goneNotices(actions)[0].payload).toMatchObject({
+      name: i18nT('pages.artifactDetailPage.untitled_session'),
+      kind: 'failed',
+    })
+  })
+
+  it('a chat the user creates clears the last switch failure notice (Bug Bash row 59)', async () => {
+    detail.mockRejectedValue(apiError(502, 'Bad Gateway'))
+    const { store } = makeRecordingStore([{ key: 'alive', title: 'Alive session' }])
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).not.toBeNull()
+    // New is clicked after the failure: its origin is taken as it starts.
+    store.dispatch(createSlot.pending('req-new', undefined))
+    const o = captureForkOrigin(store.getState())
+    store.dispatch(createSlot.fulfilled({ key: 'new-one' } as never, 'req-new', undefined, {
+      originActiveSlot: o.activeSlot, originActiveSlotMoves: o.moves, originActiveSlotAutoMoves: o.autoMoves,
+      originActiveSlotRequestMoves: o.requestMoves, originRequestSeq: o.seq, originRequestBurst: o.burst, activate: true,
+    }))
+    expect(store.getState().chat.activeSlot).toBe('new-one')
+    expect(store.getState().chat.switchSlotGone).toBeNull()
   })
 
   it('an announced status-less failure notifies with failure copy and keeps the serialized-error shape', async () => {

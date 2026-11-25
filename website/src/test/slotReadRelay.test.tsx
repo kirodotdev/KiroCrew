@@ -27,10 +27,11 @@ import { store as globalStore } from '../store'
 import chatReducer, { setActiveSlot, clearMessages, switchSlot } from '../store/chatSlice'
 import dashboardReducer, { addSlotOptimistic, removeSlotOptimistic, updateSlot, markSlotRead, markSlotUnread, remoteSlotRead, restoreUnreadSince, restoreUnreadBadges, MANUAL_UNREAD } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
-import { bindSlotReadSender, emitSlotRead, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
+import { bindSlotReadSender, emitSlotRead, flushSlotRead, noteUnsavedRowTs, resendSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
 import { sharedItem } from './unreadStorageTestUtils'
 import { flushSharedUnread } from '../store/dashboard/unread'
+import { queuedReads } from '../lib/readOutbox'
 
 /** Flip jsdom's document.hidden and fire the visibilitychange the hook listens for. */
 const setDocumentHidden = (v: boolean) => {
@@ -163,6 +164,15 @@ describe('slotReadRelay module throttle', () => {
     expect(sent).toEqual(['k1', 'k2', 'k1'])
     vi.advanceTimersByTime(1_000)
     expect(sent).toEqual(['k1', 'k2', 'k1', 'k2'])  // k2 trailing untouched
+  })
+
+  it('a read gesture covers an unsaved row; a resent kept read does not', () => {
+    const sent: Array<[string, string | undefined]> = []
+    bindSlotReadSender((s, ts) => sent.push([s, ts]))
+    noteUnsavedRowTs('k1', '2026-01-01T00:00:05Z')
+    resendSlotRead('k1', '2026-01-01T00:00:01Z')
+    emitSlotRead('k1', '2026-01-01T00:00:01Z')
+    expect(sent).toEqual([['k1', '2026-01-01T00:00:01Z'], ['k1', '2026-01-01T00:00:05Z']])
   })
 })
 
@@ -596,6 +606,15 @@ describe('slot_read over the dashboard socket', () => {
     expect(frames.some(f => f.slot === BACKGROUND && f.read_ts === '2026-01-01T00:00:01Z')).toBe(false)
   })
 
+  it('switchSlot relays the fetched server row\'s ts when the sidebar last_ts is older', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({ messages: [{ role: 'assistant', content: 'r', ts: '2026-01-01T00:00:07Z', meta: { mid: 'm1' } }], running: false, has_more: false, total: 1, queue: [] } as never)
+    const { ws } = mount()
+    testStore.dispatch(addSlotOptimistic({ key: BACKGROUND, last_ts: '2026-01-01T00:00:01Z' } as never))
+    await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+    expect(sentReadFrames(ws).map(f => JSON.parse(f).read_ts)).toContain('2026-01-01T00:00:07Z')
+  })
+
   it('the hub relay carries this window\'s own unread count, manual reminders included', () => {
     // Opus advisory (head 146de09ba): the shared record omits sentinels, so
     // relaying ITS key count under-reports the hub chip. The reducers relay
@@ -668,7 +687,7 @@ describe('hidden-tab reveal relay (single store end-to-end)', () => {
 
   function mountOnSingleton() {
     const hook = renderHook(() => useWebSocket(), { wrapper: singleStoreWrapper })
-    const ws = WS_INSTANCES[0]
+    const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
     act(() => { ws.simulateOpen() })
     return { ...hook, ws }
   }
@@ -728,5 +747,55 @@ describe('hidden-tab reveal relay (single store end-to-end)', () => {
     // reveal reads the slot's own post-flush last_ts, which the reducer keeps
     // monotonic, so the relay carries the newest arrival's ts.
     expect(sentReadFrames(ws)).toEqual([JSON.stringify({ type: 'slot_read', slot: ACTIVE, read_ts: '2026-09-10T00:00:05Z' })])
+  })
+
+  describe('gateway read times over the dashboard socket', () => {
+    const EPOCH = '2026-11-13T08:00:00+00:00'
+    const READ = '2026-11-13T10:00:00+00:00'
+    const REPLY = '2026-11-13T11:00:00+00:00'
+    const listed = (extra: Partial<ChatSlot> = {}): ChatSlot => ({
+      key: BACKGROUND, title: BACKGROUND, messages: 2, running: false,
+      last_read_ts: READ, read_epoch: EPOCH, unread_ts: REPLY, last_ts: REPLY, ...extra,
+    } as ChatSlot)
+
+    beforeEach(() => {
+      localStorage.clear()
+      globalStore.dispatch(setActiveSlot(null))
+    })
+
+    afterEach(() => {
+      if (globalStore.getState().dashboard.unreadSlots.includes(BACKGROUND)) globalStore.dispatch(markSlotRead(BACKGROUND))
+      globalStore.dispatch(removeSlotOptimistic(BACKGROUND))
+    })
+
+    it('the first slot list badges a reply that arrived while no window was open, and a relayed read keeps it clear against the older saved read', () => {
+      const { ws } = mountOnSingleton()
+      act(() => { ws.simulateMessage({ type: 'slots', data: [listed()] }) })
+      expect(globalStore.getState().dashboard.unreadSlots).toContain(BACKGROUND)
+      act(() => { ws.simulateMessage({ type: 'slot_read', data: { slot: BACKGROUND, read_ts: REPLY } }) })
+      act(() => { ws.simulateMessage({ type: 'slots', data: [listed({ title: 'again' })] }) })
+      expect([globalStore.getState().dashboard.unreadSlots.includes(BACKGROUND), queuedReads()[BACKGROUND], sentReadFrames(ws)]).toEqual([false, undefined, []])
+    })
+
+    it('a read made while the socket was down is kept, sent once by the next socket, and confirmed only by the stored echo', () => {
+      const first = mountOnSingleton()
+      first.ws.readyState = MockWebSocket.CLOSED
+      emitSlotRead(BACKGROUND, REPLY)
+      flushSlotRead(BACKGROUND)
+      act(() => { first.ws.simulateMessage({ type: 'slots', data: [listed()] }) })
+      expect(globalStore.getState().dashboard.unreadSlots).not.toContain(BACKGROUND)
+      expect(sentReadFrames(first.ws)).toEqual([])
+      first.unmount()
+      _resetSlotReadRelayForTest()
+      const { ws } = mountOnSingleton()
+      const frame = JSON.stringify({ type: 'slot_read', slot: BACKGROUND, read_ts: REPLY })
+      expect(sentReadFrames(ws)).toEqual([frame])
+      act(() => { ws.simulateMessage({ type: 'slots', data: [listed({ title: 'again' })] }) })
+      expect(sentReadFrames(ws)).toEqual([frame])
+      act(() => { ws.simulateMessage({ type: 'slot_read', data: { slot: BACKGROUND, read_ts: REPLY } }) })
+      expect(queuedReads()).toEqual({ [BACKGROUND]: REPLY })
+      act(() => { ws.simulateMessage({ type: 'slot_read', data: { slot: BACKGROUND, read_ts: REPLY, stored: true } }) })
+      expect(queuedReads()).toEqual({})
+    })
   })
 })

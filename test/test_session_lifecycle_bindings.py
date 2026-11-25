@@ -92,7 +92,11 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "close_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "destroy": ("function", True, "90a6b2cda311", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
-    "discard_conversation": ("function", True, "69405409fda2", "teardown"),
+    "discard_conversation": ("function", True, "882e8ae87fe9", "teardown"),
+    # Added confirm_teardown (bool) and unconfirmed_handle_out (list | None):
+    # confirm_teardown=True makes shared-KAS close failures visible to callers
+    # (trust-revocation path), unconfirmed_handle_out receives the runtime handle
+    # for a later retry.
     "drain_active_turns": ("function", True, "5944c6af44b2", "fleet"),
     "drain_all_providers": ("function", True, "ea01599e24e7", "fleet"),
     "end_children_for": ("function", True, "958babeb61c8", "parent_end"),

@@ -3,8 +3,8 @@ title: Remote crews in the chat sidebar — per-machine groups and session owner
 status: partial
 author: zejiangg
 created: 2026-10-03
-last-audited: 2026-10-06
-audited-at: 9bf943b0f9
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 16489
 implementation-prs: [16756, 16757]
 tracking-issues: [6180, 7445, 10618, 10826, 14585]

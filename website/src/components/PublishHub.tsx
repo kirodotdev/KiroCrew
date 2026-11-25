@@ -27,6 +27,7 @@ import { toApiError } from '../api/apiError'
 import { deploySiteIdFor, findLiveSite, isPublicWebDeploy, publishNoticeKey, readPublishOutcome } from '../lib/publishHelpers'
 
 import { i18nT } from '../i18n/t'
+import { apiTransport } from '../api/apiTransport'
 interface UnifiedProvider {
   id: string
   label: string
@@ -505,7 +506,7 @@ export function PublishHub({
       if (previewIdentity.profile) payload.expected_profile = previewIdentity.profile
       if (previewIdentity.region) payload.expected_region = previewIdentity.region
       if (overrideScan) payload.override_scan = true
-      const r = await fetch(endpoint, {
+      const r = await apiTransport.request(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
         body: JSON.stringify(payload),

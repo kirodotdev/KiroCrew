@@ -222,9 +222,15 @@ _ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 _BANNER_DETAIL_MAX_CHARS = 200
+#: An IAM denial is one AWS sentence that names the action, the resource to grant
+#: and the policy gap, about 330 characters with the CLI's own prefix; cut at 200
+#: it loses the resource. Still a fixed bound on proxy-controlled text.
+_SSM_DENIAL_DETAIL_MAX_CHARS = 400
 
 
-def _sanitize_banner(text: str, *, anchor: str | None = None) -> str:
+def _sanitize_banner(
+    text: str, *, anchor: str | None = None, limit: int = _BANNER_DETAIL_MAX_CHARS
+) -> str:
     """ANSI-strip + credential/exfil-redact untrusted ssh stderr before it is
     surfaced in status/logs, capped at ``_BANNER_DETAIL_MAX_CHARS``. The banner
     is external, proxy-controlled text, so it is a redacted secondary detail
@@ -247,15 +253,15 @@ def _sanitize_banner(text: str, *, anchor: str | None = None) -> str:
     # run ahead of it can shorten a `?token=<long>` query below that threshold
     # and leave the destination and payload parameters on the wire.
     cleaned = redact(cleaned)
-    if len(cleaned) <= _BANNER_DETAIL_MAX_CHARS:
+    if len(cleaned) <= limit:
         return cleaned
     if anchor:
         hit = cleaned.lower().find(anchor)
         if hit >= 0:
-            start = hit + len(anchor) // 2 - _BANNER_DETAIL_MAX_CHARS // 2
-            start = max(0, min(start, len(cleaned) - _BANNER_DETAIL_MAX_CHARS))
-            return cleaned[start : start + _BANNER_DETAIL_MAX_CHARS]
-    return cleaned[:_BANNER_DETAIL_MAX_CHARS]
+            start = hit + len(anchor) // 2 - limit // 2
+            start = max(0, min(start, len(cleaned) - limit))
+            return cleaned[start : start + limit]
+    return cleaned[:limit]
 
 
 def _build_ssh_tunnel_argv(

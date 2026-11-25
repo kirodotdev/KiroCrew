@@ -3,6 +3,8 @@
 Stop classes and the stop-reason classifier, the tool-call, tool-call-update and
 tool-result event kinds, the stop reasons of a turn the backend did not finish, the
 structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts, the
+runtime error family a refused session start raises, the
+reasons the handle auto-rejected a sub-agent's permission request, the
 native-child marker, the notice a harness reports for the person, the mark a dashboard
 turn's stream draws background work under and the background cards its harness still
 runs (and loses) are backend
@@ -56,13 +58,20 @@ from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_NOT_RESUMABLE,
     AcpRequestTimeout,
+    AcpRuntimeError,
     AcpScopeAdmissionTimeout,
+)
+from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_MISSING_SECURITY_CONTEXT,
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
 )
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
 from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
+    EVENT_SUBAGENT_ACTIVITY,
+    EVENT_SUBAGENT_LIST,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     STATUS_EXTENSION_VERSION,
@@ -88,8 +97,12 @@ __all__ = [
     "is_runtime_death",
     "is_sandbox_init_failure",
     "is_user_worded_failure",
+    "AUTO_REJECT_MISSING_SECURITY_CONTEXT",
+    "AUTO_REJECT_STRANDED_BETWEEN_TURNS",
     "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
+    "EVENT_SUBAGENT_ACTIVITY",
+    "EVENT_SUBAGENT_LIST",
     "EVENT_TOOL_CALL",
     "EVENT_TOOL_CALL_UPDATE",
     "EVENT_TOOL_RESULT",
@@ -110,7 +123,11 @@ __all__ = [
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
+    "AcpError",
     "AcpRequestTimeout",
+    # The runtime family outside ``AcpError``: a session start the backend
+    # refuses (a KAS engine that cannot be fetched) raises it.
+    "AcpRuntimeError",
     "AcpScopeAdmissionTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",

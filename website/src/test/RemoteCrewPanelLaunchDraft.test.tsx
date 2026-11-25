@@ -50,7 +50,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const PREFLIGHT_OK = {
   reachable: true, account: '1234•••7890', arn: 'arn:aws:iam::x:user/dev',
@@ -231,6 +231,41 @@ describe('RemoteCrewPanel launch draft', () => {
     expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('subnet-bbbb')
   })
 
+  it('keeps the subnet of a launch refused after an earlier launch was accepted', async () => {
+    const message = 'subnet subnet-0123abcd has no verified internet egress route (NAT or internet gateway).'
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch)
+      .mockResolvedValueOnce(RUNNING_JOB)
+      .mockRejectedValueOnce(new ApiError(400, message, JSON.stringify({ error: message, code: 'invalid_subnet' })))
+    // The first setup has finished, so a second launch is offered.
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc123456789def0' })
+    const u = userEvent.setup()
+    const first = renderWithProviders(<RemoteCrewPanel />)
+
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    const subnet = await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })
+    await u.type(subnet, 'subnet-0123abcd')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).not.toBeDisabled())
+    await u.click(screen.getByRole('button', { name: /^Launch$/ }))
+    expect(await screen.findByText(/Launched\. Its progress is shown below/)).toBeInTheDocument()
+    // Only the Region changes, so the same subnet goes out again and is refused.
+    const region = screen.getByRole('textbox', { name: 'Region' })
+    await u.clear(region)
+    await u.type(region, 'eu-west-1')
+    await u.tab()
+    await waitFor(() => expect(api.cloudPreflight).toHaveBeenLastCalledWith(undefined, 'eu-west-1'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).not.toBeDisabled())
+    await u.click(screen.getByRole('button', { name: /^Launch$/ }))
+    await waitFor(() => expect(subnet).toHaveAttribute('aria-invalid', 'true'))
+    expect(api.cloudLaunch).toHaveBeenCalledTimes(2)
+    first.unmount()
+
+    renderWithProviders(<RemoteCrewPanel />, { store: first.store })
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('subnet-0123abcd')
+  })
+
   it('keeps the draft in memory only: nothing in browser storage, and a fresh tab starts empty', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
     const u = userEvent.setup()
@@ -331,6 +366,15 @@ describe('instancesSlice launch draft', () => {
     expect(reducer(held, dropLaunchedCrewDraft({ ...a, subnet_id: 'subnet-b' })).crewForms.launch).toEqual(a)
     expect(reducer(held, dropLaunchedCrewDraft({ ...a, identity: { ...a.identity, region: 'eu-west-1' } })).crewForms.launch).toEqual(a)
     expect(reducer(held, dropLaunchedCrewDraft({ subnet_id: 'subnet-a', identity: null })).crewForms.launch).toEqual(a)
+  })
+
+  it('keeps a changed sign-in toggle and treats an absent toggle as on', () => {
+    const off = { ...a, signinOnLaunch: false }
+    const held = reducer(undefined, setCrewLaunchDraft(off))
+    expect(reducer(held, dropLaunchedCrewDraft(a)).crewForms.launch).toEqual(off)
+    expect(reducer(held, dropLaunchedCrewDraft({ ...off })).crewForms.launch).toBeNull()
+    const legacy = reducer(undefined, setCrewLaunchDraft(a))
+    expect(reducer(legacy, dropLaunchedCrewDraft({ ...a, signinOnLaunch: true })).crewForms.launch).toBeNull()
   })
 
   it('drops nothing for a launch sent with no draft while one is held', () => {

@@ -17,6 +17,7 @@ import sys
 from importlib.util import module_from_spec, spec_from_file_location
 
 import pytest
+from conftest_floor_guards import floor_guard
 
 
 def _load_git_maintenance_helpers():
@@ -109,7 +110,7 @@ def _git_vars_to_strip() -> frozenset[str]:
     return (_GIT_LOCATION_VARS - {"GIT_CEILING_DIRECTORIES"}) | {"GIT_CONFIG_PARAMETERS"}
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _git_location_unset(_floor_monkeypatch, _git_global_config) -> None:
     """Remove the stripped git variables for a test whose environment regained them.
 
@@ -120,7 +121,7 @@ def _git_location_unset(_floor_monkeypatch, _git_global_config) -> None:
         _floor_monkeypatch.delenv(name, raising=False)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _git_maintenance_off(_floor_monkeypatch, _git_global_config) -> None:
     """Re-add the maintenance entries for a test whose environment lost them.
 

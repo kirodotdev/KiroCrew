@@ -59,6 +59,7 @@ def schemas() -> list[dict[str, Any]]:
                             "text",
                             "webapp",
                             "dashboard",
+                            "canvas",
                         ],
                         "description": (
                             "Artifact kind. Optional — inferred from the content "
@@ -74,7 +75,13 @@ def schemas() -> list[dict[str, Any]]:
                             "To put your own page LIVE, use the dashboard_save tool "
                             "instead: it writes this package for you and makes it "
                             "the page your Dashboard tab draws, as a version a "
-                            "rollback can undo."
+                            "rollback can undo. kind='canvas' is a whiteboard: "
+                            "content is a JSON Canvas 1.0 document "
+                            "(https://jsoncanvas.org/spec/1.0/), an object with "
+                            "'nodes' (text and group nodes with id, x, y, width, "
+                            "height) and 'edges' (fromNode/toNode ids). Content the "
+                            "canvas reader cannot parse opens as unreadable and is "
+                            "never saved over."
                         ),
                     },
                     "source": {
@@ -249,6 +256,7 @@ def schemas() -> list[dict[str, Any]]:
                             "text",
                             "webapp",
                             "dashboard",
+                            "canvas",
                         ],
                         "description": "Filter by kind.",
                     },

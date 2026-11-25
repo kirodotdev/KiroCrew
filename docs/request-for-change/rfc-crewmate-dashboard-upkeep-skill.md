@@ -3,8 +3,8 @@ title: Crewmate dashboard upkeep -- per-field upkeep text served by dashboard_fi
 status: partial
 author: Raymond Chen, with kirocrew-worker
 created: 2026-10-11
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [19069]
 tracking-issues: [19481]

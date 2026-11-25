@@ -162,6 +162,7 @@ class TestMemoryTuningPlumbing:
         "cli_server.py",
         "cli_commands_learn.py",
         "cli_commands_memory.py",
+        "memory_import_text.py",
         # `kirocrew consolidate` hands its pass the default store.
         "cli_knowledge.py",
         "dashboard/handlers/memory_services.py",

@@ -545,6 +545,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         JSONRPC_PARSE_ERROR,
         JsonRpcEnvelopeError,
         McpTextContent,
+        TextWithImage,
         build_tool_response,
         validate_api_body,
         validate_jsonrpc_request,

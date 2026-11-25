@@ -585,11 +585,8 @@ class TestClientSeam:
         from kiro_crew import model_registry
 
         substitute = "global.anthropic.claude-sonnet-4-6[1m]"
-        monkeypatch.setattr(
-            model_registry,
-            "_ADVERTISED_MODELS",
-            {"claude_code": ["global.anthropic.claude-opus-5[1m]", substitute]},
-        )
+        # The pin is not advertised, so the retry adopts the substitute.
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {"claude_code": [substitute]})
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = AcpClient(
             work_dir=tmp_path,
@@ -1292,6 +1289,37 @@ class TestClientSeam:
         assert "foo" in _by_name(params["mcpServers"])
         options = params["_meta"]["claudeCode"]["options"]
         assert options.get("strictMcpConfig", False) is worker
+        assert killed == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["new", "load"])
+    @pytest.mark.parametrize(
+        ("key", "strict"),
+        [("subagent:abc123", True), ("dashboard_chat-1", False), ("cron:nightly", False)],
+        ids=["subagent", "chat", "cron"],
+    )
+    async def test_a_spawned_subagent_mounts_only_the_wire_array(
+        self, tmp_path, agents_dir, monkeypatch, path, key, strict
+    ):
+        """A ``spawn_run`` sub-agent keeps the user's, the project's and plugins' servers out.
+
+        Its spec's ``tools`` allowlist filters the wire array, so a server the
+        spec does not grant must not arrive through the harness's own config.
+        """
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        client = self._seeded(
+            tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, session_key=key
+        )
+        if path == "load":
+            client._resume_session_id = "s-old"
+        sent, killed = self._adapter_transport(client, monkeypatch, started_mode="default")
+
+        await client._initialize_session()
+
+        params = dict(sent)["session/load" if path == "load" else "session/new"]
+        assert "foo" in _by_name(params["mcpServers"])
+        options = params["_meta"]["claudeCode"]["options"]
+        assert options.get("strictMcpConfig", False) is strict
         assert killed == []
 
     def test_a_side_read_only_session_keeps_the_exclusions_restrictions(self, tmp_path, agents_dir):

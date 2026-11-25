@@ -52,6 +52,8 @@ vi.mock('../api/client', () => {
       updateInstance: vi.fn(),
       instanceStatus: vi.fn(),
       patchConfig: vi.fn(),
+      // The Settings card reads the stored warm-set cap; an empty config is automatic.
+      kirocrewConfig: vi.fn(async () => ({})),
       cloudLaunches: vi.fn(),
       cloudPreflight: vi.fn(),
       cloudProvisioners: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock('../utils/clipboard', () => ({
 
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
+import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
 
 const CLOUD_INSTANCE: InstanceView = {
   id: 'kc1',
@@ -572,7 +575,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     // An absent cap falls back to the default rather than advertising "up to 0".
-    expect(await screen.findByText(/Up to 10 stay warm at once/i)).toBeInTheDocument()
+    expect(await screen.findByText(new RegExp(`Up to ${WARM_SET_CAP_AUTO_CEILING} stay warm at once`, 'i'))).toBeInTheDocument()
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Delete Kiro Crew Cloud/ }))
@@ -848,7 +851,8 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
+    // The setup card's button: the My Crews row behind the modal offers it too.
+    await u.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: /Show the sign-in code/ }))
     await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-run'))
   })
 
@@ -862,8 +866,9 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
-    expect(await screen.findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
+    // The setup card's button: the My Crews row behind the modal offers it too.
+    await u.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: /Show the sign-in code/ }))
+    expect(await within(screen.getByRole('dialog')).findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
   it('shows a failed launch with its step detail and no dead Cancel', async () => {

@@ -64,6 +64,44 @@ def test_every_shipped_case_bites_on_its_base_and_passes_on_its_reference():
     assert tasks.check_cases(tasks.find_cases(SUITE, "all", [])) == []
 
 
+def test_a_build_commit_starts_no_background_git_maintenance(tmp_path):
+    # A detached `git maintenance run --auto` holds objects/maintenance.lock while the
+    # build's local clone copies objects/, and removes it mid-copy.
+    repo, trace = tmp_path / "repo", tmp_path / "trace.log"
+    env = {**tasks._base_env(), "GIT_TRACE": str(trace)}
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for cmd in (
+        ["git", "init", "-q", str(repo)],
+        ["git", "-C", str(repo), *ident, "commit", "-q", "--allow-empty", "-m", "base"],
+    ):
+        subprocess.run(cmd, check=True, env=env, timeout=default_timeout())
+    assert "maintenance run" not in trace.read_text()
+
+
+def test_a_reference_push_starts_no_background_git_maintenance(tmp_path, monkeypatch):
+    origin, repo, trace = tmp_path / "origin.git", tmp_path / "repo", tmp_path / "trace.log"
+    case = SimpleNamespace(path=tmp_path / "case")
+    (case.path / "ref").mkdir(parents=True)
+    env = tasks._base_env()
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for cmd in (
+        ["git", "init", "-q", "--bare", f"--initial-branch={tasks.TASK_BRANCH}", str(origin)],
+        ["git", "clone", "-q", str(origin), str(repo)],
+        ["git", "-C", str(repo), *ident, "commit", "-q", "--allow-empty", "-m", "base"],
+    ):
+        subprocess.run(cmd, cwd=tmp_path, check=True, env=env, timeout=default_timeout())
+    env.update(
+        GIT_TRACE=str(trace),
+        GIT_AUTHOR_NAME="t",
+        GIT_AUTHOR_EMAIL="t@example.invalid",
+        GIT_COMMITTER_NAME="t",
+        GIT_COMMITTER_EMAIL="t@example.invalid",
+    )
+    monkeypatch.setattr(tasks, "_base_env", lambda: env)
+    tasks.apply_reference(case, repo, origin)
+    assert "maintenance run" not in trace.read_text(encoding="utf-8")
+
+
 def test_check_names_a_case_whose_base_already_passes(tmp_path):
     case_dir = _case_copy(tmp_path)
     shutil.copy(case_dir / "ref" / "attach_names.py", case_dir / "base" / "attach_names.py")
@@ -223,6 +261,14 @@ def test_a_run_env_keeps_only_its_homes_base_keys_and_its_arm_sign_in(tmp_path):
         (ArmOutcome("done", cost=31.0, cost_unit="credits"), True, 1, "", ("FAILED", "spend_cap")),
         (ArmOutcome("done", cost=3.5, cost_unit="usd"), True, 1, "", ("FAILED", "spend_cap")),
         (ArmOutcome("done", cost=30.0, cost_unit="credits"), True, 1, "", ("PASSED", "")),
+        # Cost unknown (chats left open), but what was counted is already over the cap.
+        (
+            ArmOutcome("done", cost=None, cost_floor=31.0, cost_unit="credits"),
+            True,
+            1,
+            "",
+            ("FAILED", "spend_cap"),
+        ),
         (ArmOutcome("incomplete"), True, 1, "", ("FAILED", "incomplete")),
         (ArmOutcome("done"), False, 1, "", ("FAILED", "hidden_check")),
         (ArmOutcome("done"), True, 1, "", ("PASSED", "")),
@@ -292,6 +338,8 @@ def test_summary_counts_pass_k_per_case_and_leaves_void_runs_out_of_the_medians(
     assert (cc["cases"], cc["cases_pass_k"], cc["runs_with_asks"]) == (3, 1, 1)
     assert (cc["median_wall_s"], cc["median_cost"], cc["cost_unit"]) == (20.0, 1.0, "usd")
     assert "| claude-code | simple | 7 | 4 | 1 | 2 | 1 | 1/3 |" in tasks.format_summary(rows)
+    # The columns are medians, as the JSON fields say.
+    assert "| median wall s | median cost | median idle s |" in tasks.format_summary(rows)
     # A batch that stopped before all of a case's runs leaves it incomplete.
     assert tasks.summarize(records, {"a": 5, "b": 3, "c": 2})[0]["cases_pass_k"] == 0
 
@@ -333,7 +381,6 @@ signal_dir = {str(signal_dir)!r}
 if mode in ("fix", "fix_slow", "server"):
     shutil.copy({str(S1 / "ref" / "attach_names.py")!r}, "attach_names.py")
     subprocess.run(["git", "commit", "-qam", "fix"], check=True)
-    subprocess.run(["git", "push", "-q", "origin", "trunk"], check=True)
 if mode == "fix_slow":
     while not os.path.exists(os.path.join(signal_dir, "sampled")):
         time.sleep(0.05)
@@ -379,12 +426,16 @@ def _run_claude(tmp_path, monkeypatch, mode, caps=None):
     return record, root, out
 
 
-def test_a_claude_run_that_pushes_the_fix_passes_and_leaves_one_result(tmp_path, monkeypatch):
+def test_a_claude_run_that_commits_the_fix_passes_and_leaves_one_result(tmp_path, monkeypatch):
     record, root, out = _run_claude(tmp_path, monkeypatch, "fix_slow")
     assert (record["verdict"], record["reason"], record["asks"]) == ("PASSED", "", 0)
+    # Refused tools and an unknown cost's floor are kept on the record, apart from asks.
+    assert (record["denials"], record["cost_floor"]) == ([], None)
     assert (record["cost"], record["cost_unit"]) == (0.25, "usd")
+    assert record["credentials"] == "eval-only"
     assert record["check"]["pass"] is True
-    # Sampled while the arm still ran, so the idle time covers part of its sleep after the push.
+    # The agent only committed: the runner synced trunk to the origin the check judged.
+    # Sampled while the arm still ran, so the idle time covers part of its sleep after it.
     assert 0 < record["idle_after_done_s"] <= record["wall_s"]
     saved = json.loads((out / "runs" / record["run_id"] / "result.json").read_text())
     assert saved == record
@@ -493,7 +544,11 @@ def test_a_crew_run_is_judged_before_its_gateway_stops(tmp_path, monkeypatch):
     assert record["agent"] == {"name": "c", "source": "default", "configured": ""}
     assert (record["cost"], record["cost_unit"]) == (2.0, "credits")
     assert seen["config"] == {
-        "agent": {"sandbox": "strict", "sandbox_allow_unsandboxed_exec": False}
+        "agent": {
+            "sandbox": "strict",
+            "sandbox_allow_unsandboxed_exec": False,
+            "kiro_hooks_autoimport": False,  # no ~/.kiro/hooks/*.sh script is imported
+        }
     }
     env = json.loads((tmp_path / "env.json").read_text())
     assert env["KIROCREW_PORT"] == "4321" and env["KIRO_API_KEY"] == "k"
@@ -595,6 +650,95 @@ def test_an_eval_home_around_or_inside_the_suite_is_refused(where, capsys):
     args = _parse(["run", "--suite", str(SUITE), "--harness", "codex", "--eval-home", str(home)])
     assert cli_commands_eval._run_eval_tasks(args) == 2
     assert "must not contain or sit inside the case suite" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the hook is a POSIX script")
+def test_the_runner_syncs_the_committed_branch_whatever_the_agent_set(tmp_path):
+    """No arm pushes: the runner fetches trunk into origin, from origin's side, hooks off."""
+    case = tasks.load_case(S1)
+    repo, origin, elsewhere = tmp_path / "repo", tmp_path / "origin.git", tmp_path / "x.git"
+    tasks.build_repo(case, repo, origin)
+    env = {"PATH": os.environ["PATH"], **tasks._base_env()}
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run(["git", "init", "-q", "--bare", str(elsewhere)], check=True, env=env)
+    shutil.copy(S1 / "ref" / "attach_names.py", repo / "attach_names.py")
+    for cmd in (
+        [*git, "commit", "-qam", "fix"],
+        # The agent points its remote elsewhere: the sync must not follow it.
+        ["git", "remote", "set-url", "origin", str(elsewhere)],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True, env=env, capture_output=True)
+    marker = tmp_path / "hook-ran"
+    hook = origin / "hooks" / "reference-transaction"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    assert tasks.run_check(case, origin)["pass"] is False  # committed, not yet synced
+    assert tasks.sync_task_branch(repo, origin) is True
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, env=env, capture_output=True, encoding="utf-8"
+    ).stdout.strip()
+    synced = subprocess.run(
+        ["git", "--git-dir", str(origin), "rev-parse", f"refs/heads/{tasks.TASK_BRANCH}"],
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    assert synced == head
+    assert tasks.run_check(case, origin)["pass"] is True
+    assert not marker.exists()  # origin's hooks are off for the sync
+    refs = subprocess.run(
+        ["git", "--git-dir", str(elsewhere), "for-each-ref"],
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    assert refs.stdout == ""  # nothing went where the agent pointed
+    # A repo without the branch is not an error that ends the batch.
+    assert tasks.sync_task_branch(tmp_path / "missing", origin) is False
+    # The agent deletes trunk after a sample synced a passing commit: the run's own
+    # check fails instead of grading the earlier snapshot still in origin.
+    dirs = SimpleNamespace(repo=repo, origin=origin)
+    subprocess.run(["git", "checkout", "-q", "-b", "other"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "branch", "-q", "-D", "trunk"], cwd=repo, check=True, env=env)
+    verdict = tasks._synced_check(case, dirs)
+    assert verdict["pass"] is False and "could not be synced" in verdict["notes"][0]
+
+
+def test_a_crew_run_keeps_every_chat_transcript_and_agent_record(tmp_path):
+    dirs = tasks.RunDirs(tmp_path / "r")
+    sessions, agents = dirs.crew / "sessions", dirs.crew / "subagents" / "a1"
+    sessions.mkdir()
+    agents.mkdir(parents=True)
+    root = sessions / "dashboard_chat-1-1.jsonl"
+    root.write_text('{"role": "user"}\n')
+    (sessions / "dashboard_chat-2-2.jsonl").write_text('{"role": "tool"}\n')  # a worker
+    (agents / "result.txt").write_text("done\n")
+    secret = tmp_path / "outside.txt"
+    secret.write_text("not the run's")
+    if sys.platform != "win32":
+        (sessions / "link.jsonl").symlink_to(secret)
+    tasks._copy_transcript(json.dumps({"transcript": str(root)}) + "\n", dirs)
+    assert (dirs.out / "transcript.jsonl").read_text() == '{"role": "user"}\n'
+    kept = dirs.out / "crew"
+    assert (kept / "sessions" / "dashboard_chat-2-2.jsonl").read_text() == '{"role": "tool"}\n'
+    assert (kept / "subagents" / "a1" / "result.txt").read_text() == "done\n"
+    if sys.platform != "win32":
+        assert (kept / "sessions" / "link.jsonl").is_symlink()  # copied as a link, not read
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privilege on Windows")
+def test_a_link_the_agent_left_at_the_log_destination_is_replaced_not_followed(tmp_path):
+    dirs = tasks.RunDirs(tmp_path / "r")
+    (dirs.crew / "sessions").mkdir()
+    (dirs.crew / "sessions" / "security_policy.json").write_text('{"planted": true}')
+    target = tmp_path / "victim"
+    target.mkdir()
+    (target / "security_policy.json").write_text('{"real": true}')
+    (dirs.out / "crew").symlink_to(target)
+    tasks._copy_transcript("", dirs)
+    assert (target / "security_policy.json").read_text() == '{"real": true}'
+    assert not (dirs.out / "crew").is_symlink()
+    assert (dirs.out / "crew" / "sessions" / "security_policy.json").is_file()
 
 
 def test_a_submission_that_raises_its_own_limit_still_fails_the_check(tmp_path):
@@ -846,3 +990,103 @@ def test_a_transcript_link_the_agent_plants_writes_no_other_file(tmp_path):
     assert victim.read_text() == "keep me"
     copied = dirs.out / "transcript.jsonl"
     assert not copied.is_symlink() and copied.read_text() == '{"role": "user"}\n'
+
+
+# ---------- --use-operator-credentials ----------
+def _as_operator(*names):
+    import copy
+
+    out = []
+    for name in names:
+        arm = copy.copy(ARMS[name])
+        arm.operator_credentials = True
+        out.append(arm)
+    return out
+
+
+def test_operator_credentials_skip_the_eval_user_checks_and_ask_each_sign_in(monkeypatch, tmp_path):
+    from kiro_crew import sandbox
+
+    mine = tmp_path / "me"
+    (mine / ".ssh").mkdir(parents=True)  # the operator's own credentials are the point
+    theirs = tmp_path / "alice"
+    theirs.mkdir()
+    _fake_users(monkeypatch, _pw("me", 4000, mine), [_pw("alice", 4242, theirs)])
+    monkeypatch.setattr(sandbox, "detect_backend", lambda mode="auto": "bwrap")
+    chat, conductor, cc = _as_operator("crew-chat", "crew-conductor", "claude-code")
+    asked = []
+    for arm, answer in ((chat, ""), (conductor, ""), (cc, "")):
+        monkeypatch.setattr(
+            arm, "operator_check", lambda env, a=arm, r=answer: asked.append(a.name) or r
+        )
+    monkeypatch.setattr(cc, "unavailable", lambda: "")
+    not_built = _as_operator("kiro-cli-v3", "codex")  # `--harness all` includes them
+    assert tasks.preflight([chat, conductor, cc, *not_built], {}) == []
+    assert asked == ["crew-chat", "claude-code"]  # one `kiro-cli whoami` for both Crew arms
+    monkeypatch.setattr(cc, "operator_check", lambda env: '`claude -p "say ok"` failed')
+    assert tasks.preflight([cc], {}) == ['claude-code: `claude -p "say ok"` failed']
+    # Without the flag, the eval-user checks are exactly as before.
+    assert tasks.preflight([ARMS["codex"]], {}) == [
+        f"{mine}/.ssh exists: run the eval as a dedicated user with no credentials",
+        f"alice's home {theirs} is readable by the eval user",
+    ]
+
+
+def test_operator_credentials_keep_the_runners_env_and_home_but_a_run_data_home(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import kiro_cli
+
+    # The binary preflight checked is pinned for the run, even when only the
+    # operator's own KIROCREW_KIRO_BIN (dropped with the other KIROCREW_* keys) names it.
+    monkeypatch.setattr(
+        kiro_cli, "resolve_kiro_cli", lambda environ=None: environ.get("KIROCREW_KIRO_BIN")
+    )
+    (cc,) = _as_operator("claude-code")
+    dirs = tasks.RunDirs(tmp_path / "r")
+    source = {
+        "PATH": "/bin",
+        "HOME": "/me",
+        "AWS_PROFILE": "p",
+        "KIROCREW_PORT": "9",
+        "KIROCREW_KIRO_BIN": "/opt/kiro/kiro-cli",
+        "PYTHONPATH": "src",
+    }
+    assert tasks.run_env(dirs, cc, source) == {
+        "PATH": "/bin",
+        "HOME": "/me",
+        "AWS_PROFILE": "p",
+        "PYTHONPATH": os.path.abspath("src"),  # children start in other directories
+        "KIROCREW_KIRO_BIN": os.path.abspath("/opt/kiro/kiro-cli"),
+        "KIROCREW_HOME": str(dirs.crew),
+        "KIRO_HOME": str(dirs.kiro),
+        "TMPDIR": str(dirs.tmp),
+    }
+    # A relative override is pinned absolute: the gateway starts in the run's home.
+    relative = {**source, "KIROCREW_KIRO_BIN": "bin/kiro-cli"}
+    pinned = tasks.run_env(tasks.RunDirs(tmp_path / "r2"), cc, relative)["KIROCREW_KIRO_BIN"]
+    assert pinned == os.path.abspath("bin/kiro-cli")
+
+
+def test_operator_credentials_from_the_command_line_print_the_risk_and_swap_copies(
+    tmp_path, monkeypatch, capsys
+):
+    seen = {}
+    monkeypatch.setattr(tasks, "preflight", lambda arms, env: seen.update(arms=arms) or ["no"])
+    args = _parse(
+        [
+            "run",
+            "--suite",
+            str(SUITE),
+            "--harness",
+            "crew-chat,claude-code",
+            "--use-operator-credentials",
+            "--eval-home",
+            str(tmp_path / "h"),
+        ]
+    )
+    assert cli_commands_eval._run_eval_tasks(args) == 3
+    chat, cc = seen["arms"]
+    assert chat.operator_credentials and cc.operator_credentials
+    assert not ARMS["claude-code"].operator_credentials  # the shared instances are untouched
+    assert tasks.OPERATOR_RISK_LINE in capsys.readouterr().err

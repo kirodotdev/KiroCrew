@@ -3,8 +3,8 @@ title: MCP Session Trace as the Lifecycle Event Log's First Emitter
 status: draft
 author: Ray Xu (buluoray)
 created: 2026-09-01
-last-audited: 2026-09-01
-audited-at: 1ee69f225
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: []
 tracking-issues: []

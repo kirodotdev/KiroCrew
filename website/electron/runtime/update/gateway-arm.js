@@ -17,6 +17,8 @@
  * is not the same thing as a gateway holding nothing.
  */
 
+const { linkTokenIsStale } = require("../../link-token-age");
+
 const DEFAULT_TIMEOUT_MS = 3000;
 
 function createGatewayArm({
@@ -30,10 +32,14 @@ function createGatewayArm({
   // The arm poll runs every 30s, and every lookup of the credential chain is a
   // fresh mint (a local-secret link, or `ssh <host> kirocrew token` for a remote
   // crew) that takes one of the gateway's 50 link-nonce slots. One credential is
-  // reused until the gateway refuses it, as crew-companion and mochi already do.
+  // reused until the gateway refuses it or, for a link token, until it nears the
+  // gateway's 300 s window (../../link-token-age.js), as crew-companion and
+  // mochi do.
   let cachedAuth = null;
+  let cachedAuthAt = 0;
   async function resolveAuth(force) {
-    if (!force && cachedAuth) return cachedAuth;
+    if (!force && cachedAuth && !linkTokenIsStale(cachedAuth, cachedAuthAt, Date.now())) return cachedAuth;
+    cachedAuthAt = Date.now();
     let auth = null;
     try { auth = fetchGatewayAuth ? await fetchGatewayAuth() : null; } catch { auth = null; }
     cachedAuth = auth && auth.value ? auth : null;

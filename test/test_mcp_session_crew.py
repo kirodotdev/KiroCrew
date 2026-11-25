@@ -73,6 +73,30 @@ def test_create_sends_only_the_crew_fields_and_renders_the_key():
     assert "`chat-77`" in out and "crew `lab`" in out and "`worker`" in out
 
 
+def _bound_create(**reply: Any) -> str:
+    resp = {"target": "chat-77", "work_item_id": "it_0000abcd", **reply}
+    return tools.run_crew_create({"crew": "lab", "work_item": "it_0000abcd"}, _ctx(_Client(resp)))
+
+
+def test_a_bound_create_ends_with_the_patrol_outcome():
+    """M4: a bound worker's reports are pulled on the patrol tick, so the reply says
+    whether one runs, and how to arm one when none does."""
+    armed = _bound_create(patrol="armed", patrol_reason="no-loop")
+    assert armed.endswith(" patrol=armed (no-loop)")
+    refused = _bound_create(patrol="refused", patrol_reason="user-stopped", patrol_note="Arm one.")
+    assert refused.endswith(" patrol=refused (user-stopped). Arm one.")
+    silent = _bound_create()
+    assert (
+        'patrol=unknown. No patrol runs on your session. Arm one yourself with monitor_start watch="work-ledger"'
+        in silent
+    )
+
+
+def test_a_plain_crew_create_says_nothing_about_a_patrol():
+    out = tools.run_crew_create({"crew": "lab"}, _ctx(_Client({"target": "chat-77"})))
+    assert "patrol=" not in out
+
+
 def test_create_reports_a_failed_rename():
     client = _Client({"target": "chat-77", "crew": "inst", "title_error": "rename failed"})
     out = tools.run_crew_create({"crew": "inst"}, _ctx(client))

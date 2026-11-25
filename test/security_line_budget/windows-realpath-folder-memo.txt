@@ -1,0 +1,2 @@
++54
+The Windows branch of the batch realpath in _child_realpath keeps one realpath answer per folder for a build: a missing leaf is its parent's memoized answer joined with the leaf, so a rebuild stops calling realpath once per protected path. Two helpers and a batch memo threaded through both callers.

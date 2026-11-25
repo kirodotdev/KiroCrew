@@ -193,11 +193,12 @@ async def _handle_voice(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open voice config modal with current TTS settings."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
     from kiro_crew.slack.handler import (
         _vc,  # circular import: handler.py imports events.py for command dispatch
     )
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
         await respond("❌ Missing trigger_id — cannot open modal.")
         return
@@ -223,6 +224,88 @@ async def _handle_voice(
 
 register_slash_command("dashboard", _handle_dashboard, "get a dashboard access link")
 register_slash_command("agent", _handle_agent, "switch the active agent")
+
+
+async def _handle_bot(
+    orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
+) -> None:
+    """List the Crew Bots. A thread is put on one by ``!bot <name>`` sent in that thread.
+
+    Slack does not run a slash command typed inside a thread, and its payload names no
+    thread, so this command cannot switch one. It answers where a person looks first.
+    """
+    from kiro_crew.slack.handler import (  # circular import: handler.py imports events.py for command dispatch
+        bots_text,
+        resolve_bot_name,
+    )
+
+    typed = args.strip()
+    if typed and await asyncio.to_thread(resolve_bot_name, typed) is None:
+        await respond(f"❌ Unknown Bot `{typed}`. Crew Bots: {await asyncio.to_thread(bots_text)}")
+        return
+    pick = f"`!bot {typed}`" if typed else "`!bot <name>`"
+    await respond(
+        f"Crew Bots: {await asyncio.to_thread(bots_text)}\n"
+        f"Slack does not run slash commands in a thread. To put a thread on a Bot, "
+        f"send {pick} in that thread. `!bot off` goes back."
+    )
+
+
+async def _handle_conductor(
+    orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
+) -> None:
+    """Start a Conductor thread here: post the goal as a new parent message, then make
+    that message's thread a Conductor thread (``kiro_crew.slack.conductor_thread``).
+
+    Slack does not run a slash command typed inside a thread and names no thread, so
+    an existing thread is made one with ``!conductor`` sent in it. Owner only, by
+    identity; every refusal is ephemeral and posts nothing.
+    """
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import published_goal
+    from kiro_crew.slack import conductor_thread, slash_context  # local: see its docstring
+    from kiro_crew.slack.code_channels.binding import live_config, thread_conductor_on
+
+    goal = args.strip()
+    channel, team = slash_context.room.get()
+    if not is_owner(caller_id):
+        await respond("⛔ Owner-only command.")
+        return
+    if not thread_conductor_on(live_config(orch)):
+        await respond(f"❌ {conductor_thread.OFF_TEXT}")
+        return
+    if not goal:
+        await respond("Usage: `/kirocrew conductor <goal>`")
+        return
+    slack = orch.slack
+    if not channel or slack is None:
+        await respond("❌ Slack did not say where the command was typed.")
+        return
+    # Refused before the parent message is posted, so a refusal leaves nothing behind.
+    why, _room = await conductor_thread.refusal(
+        slack, channel, "", caller_id, "", in_thread=True, new_thread=True
+    )
+    if why:
+        conductor_thread._audit(caller_id, "denied", f"channel={channel}", why)
+        await respond(f"❌ {why}")
+        return
+    try:
+        parent = await slack.post_message(channel, f"Conductor: {published_goal(goal)}")
+    except Exception:
+        logger.debug("conductor parent message not posted", exc_info=True)
+        parent = ""
+    if not parent:
+        await respond("❌ I can't post here. Invite me to the channel, or use my DM.")
+        return
+    started, text = await conductor_thread.start(
+        slack, channel, parent, caller_id, goal, team_id=team, in_thread=True
+    )
+    await respond(text if started else f"❌ {text}")
+
+
+register_slash_command(
+    "conductor", _handle_conductor, "start a Conductor thread here (`!conductor` in a thread)"
+)
+register_slash_command("bot", _handle_bot, "list Crew Bots (`!bot <name>` in a thread switches it)")
 register_slash_command("voice", _handle_voice, "configure TTS voice settings")
 
 
@@ -272,6 +355,7 @@ async def _handle_yolo(
             f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
+        from kiro_crew import kept_grants
         from kiro_crew.slack.handler import (
             disable_yolo,  # circular import: handler.py imports events.py for command dispatch registration
         )
@@ -286,7 +370,10 @@ async def _handle_yolo(
         )
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
-        await respond("🔴 YOLO mode *OFF* — tools require approval.")
+        reply = "🔴 YOLO mode *OFF* — tools require approval."
+        if not await kept_grants.settle():  # the answer waits for the disk
+            reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
+        await respond(reply)
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.
@@ -321,6 +408,8 @@ async def _handle_config(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open config modal (owner-only) — users and channels."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
+
     if not is_owner(caller_id):
         await respond("⛔ Only the owner can change config.")
         return
@@ -358,7 +447,7 @@ async def _handle_config(
         "blocks": blocks,
     }
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
         await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
@@ -442,6 +531,8 @@ async def _handle_channel_cmd(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open modal showing tracked channels with per-channel activation mode."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
+
     if not is_owner(caller_id):
         await respond("⛔ Only the owner can manage tracked channels.")
         return
@@ -459,7 +550,7 @@ async def _handle_channel_cmd(
     agent_names = await asyncio.to_thread(_get_agent_names)
     modal = channels_modal(channels, agent_names=agent_names)
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
         await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
@@ -634,6 +725,10 @@ async def _handle_restart(
                 ),
                 timeout=5.0,
             )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Dashboard state save before restart did not finish within 5.0s; restarting without it"
+        )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
     # The exit skips the gateway's _shutdown, where the cron service stops: stop
@@ -808,8 +903,13 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     entry = SLASH_REGISTRY.get(sub_cmd)
     if entry is not None:
         handler, _ = entry
-        # Stash trigger_id so modal-opening handlers can use it
-        orch._last_trigger_id = payload.get("trigger_id", "")  # type: ignore[attr-defined]
+        from kiro_crew.slack import slash_context  # local: see its docstring
+
+        # For this command's handler task alone (``slash_context``).
+        slash_context.trigger_id.set(payload.get("trigger_id", ""))
+        slash_context.room.set(
+            (str(payload.get("channel_id") or ""), str(payload.get("team_id") or ""))
+        )
         _spawn(handler(orch, caller_id, args, _respond))
         return
 

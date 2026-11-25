@@ -26,7 +26,7 @@ from kiro_crew.validation import (
     MAX_CRON_MESSAGE,
     MAX_MEDIUM_STRING,
     MCP_CRON_SCHEMAS,
-    SPAWN_STEER_SCHEMA,
+    SPAWN_RUN_SCHEMA,
     ValidationError,
     validate_tool_args,
 )
@@ -82,8 +82,8 @@ class TestMcpSchemas:
         """Control: the shared MAX_MEDIUM_STRING cap was not raised globally."""
         with pytest.raises(ValidationError):
             validate_tool_args(
-                {"agent_id": "a1", "message": "y" * (MAX_MEDIUM_STRING + 1)},
-                SPAWN_STEER_SCHEMA,
+                {"task": "t", "cwd": "/" + "y" * MAX_MEDIUM_STRING},
+                SPAWN_RUN_SCHEMA,
             )
 
 

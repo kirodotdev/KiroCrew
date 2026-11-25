@@ -504,27 +504,58 @@ def probe_agent_spec_dead_paths(ctx: ProbeContext) -> dict[str, Any]:
 
     # The same directory the other spec probes read; report-only, so no rebuild.
     report = check_dead_paths(agents_dir=kiro_agents_dir(), repair=_report_only)
-    dead = [
+    dead: list[dict[str, Any]] = [
         {"spec": r.spec, "managed": r.managed, "server": d.server, "where": d.where, "path": d.path}
+        | ({"source": str(d.source)} if d.source else {})
         for r in report.results
         for d in r.dead
     ]
     unreadable = [r.spec for r in report.unreadable]
-    if not dead and not unreadable:
+    # The default agent's rebuild leaves out a server whose program it cannot find,
+    # so its spec holds no dead path for it: the rebuild's own record names it.
+    from kiro_crew.mcp_dropped_servers import load_dropped
+
+    dropped = [{"server": name, "program": rec["command"]} for name, rec in load_dropped().items()]
+    if not dead and not unreadable and not dropped:
         return finding(pid, OK, "Every MCP command and path in the agent specs exists.")
     steps = []
-    if any(d["managed"] for d in dead):
+    user_files = sorted({d["source"] for d in dead if "source" in d})
+    if user_files:
+        # The rebuild copies these from the user's file as written, so a restart
+        # writes them back; removing a server also needs a clean rebuild.
+        steps.append(f"Correct the path in {', '.join(user_files)}, then restart the gateway.")
+        steps.append(
+            "To stop using the server instead, delete it from that file, then run "
+            "`kirocrew setup --agent-only --clean`."
+        )
+    if any(d["managed"] and "source" not in d for d in dead):
         steps.append("Restart the gateway; it rewrites the specs it manages.")
     if any(not d["managed"] for d in dead):
         steps.append("Reinstall the MCP server or package that wrote the other specs.")
     if unreadable:
         steps.append("Fix or remove the unreadable spec files.")
+    summary = []
+    if dead or unreadable:
+        summary.append(
+            "An agent spec points an MCP server at a command or path that no longer exists; "
+            "that server fails to start."
+        )
+    if dropped:
+        summary.append(
+            "The default agent left out these MCP servers because their program is not on "
+            "this computer: " + ", ".join(d["server"] for d in dropped)
+        )
+        steps += [
+            "Install each left-out server's program, or set its full path as the server's "
+            "command on the MCP Servers page, then start a new chat with the default agent.",
+            "A program found only through the server's own env PATH, or under a Node "
+            "version installed after the gateway started, needs a gateway restart.",
+        ]
     return finding(
         pid,
         PROBLEM,
-        "An agent spec points an MCP server at a command or path that no longer exists; "
-        "that server fails to start.",
-        {"dead": dead, "unreadable": unreadable},
+        " ".join(summary),
+        {"dead": dead, "unreadable": unreadable, "dropped": dropped},
         _steps(*steps),
     )
 

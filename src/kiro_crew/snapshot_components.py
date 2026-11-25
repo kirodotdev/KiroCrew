@@ -44,8 +44,49 @@ _HOST_LOCAL_PATHS: frozenset[tuple[str, ...]] = frozenset({("crew-teams", ".lock
 
 
 def _is_host_local(rel_parts: tuple[str, ...]) -> bool:
-    """Is the data-home-relative path *rel_parts* this host's own runtime state?"""
-    return tuple(rel_parts) in _HOST_LOCAL_PATHS or is_host_local_store_state(rel_parts)
+    """Is the data-home-relative path *rel_parts* this host's own runtime state?
+
+    Besides the fixed paths and ``memory_stores/``'s host-local half, that covers the
+    pre-event-log activity files in ``members/<slug>/`` (``eventlog/service.py``'s legacy
+    names). The event log folds them in as TRUSTED rows until a marker under the fenced
+    ``crew-log/`` leaf says the fold is done, and that marker does not ride; the folder is
+    agent-writable, so carrying them would let a restored host import rows an agent wrote
+    as trusted history.
+
+    Every component is compared as the name a filesystem would open: NTFS writes
+    ``a::$DATA`` to ``a``, Win32 trims trailing dots and spaces, and macOS and Windows
+    compare case-insensitively, so ``Memory_Stores/.member-api-key`` is the signing key
+    there. Matching more spellings only keeps more out, which is the safe direction.
+    """
+    parts = tuple(p.split(":", 1)[0].rstrip(". ").casefold() for p in rel_parts)
+    if (
+        len(parts) == 3
+        and parts[0] == "members"
+        and parts[2]
+        in {
+            "activity.jsonl",
+            "activity.jsonl.1",
+            "activity.jsonl.migrated",
+            "activity.jsonl.migrated.1",
+        }
+    ):
+        return True
+    return parts in _HOST_LOCAL_PATHS or is_host_local_store_state(parts)
+
+
+def _may_hold_host_local(rel_parts: tuple[str, ...]) -> bool:
+    """Can the extracted DIRECTORY *rel_parts* hold a path :func:`_is_host_local` matches?
+
+    Lets a strip of an extracted bundle descend only where a match is possible, so a deep
+    working tree (``workspace/``, ``artifacts/``) is never walked for nothing. Names are
+    compared the way :func:`_is_host_local` compares them.
+    """
+    parts = tuple(p.split(":", 1)[0].rstrip(". ").casefold() for p in rel_parts)
+    if not parts or parts[0] == MEMORY_STORES_DIR_NAME:
+        return True
+    if parts[0] == "members":
+        return len(parts) <= 2
+    return any(path[: len(parts)] == parts and len(path) > len(parts) for path in _HOST_LOCAL_PATHS)
 
 
 def _never_ships(member_name: str) -> bool:
@@ -161,15 +202,18 @@ COMPONENTS: dict[str, ComponentSpec] = {
     # config.json: `config.local.json` is the overlay `config set --local` and
     # `save()` keep overlay-owned values in (so they exist NOWHERE else),
     # `ui-prefs.json` is the host backup of the browser-held Settings
-    # (`ui_prefs.py`), and `notification_settings.json` holds the Settings >
-    # Notifications mutes and priorities (`notifications/settings.py`). A bundle
-    # without them restores an install whose settings read as reset.
+    # (`ui_prefs.py`), `notification_settings.json` holds the Settings >
+    # Notifications mutes and priorities (`notifications/settings.py`), and `mcp.json`
+    # holds the servers added on the MCP Servers page
+    # (`dashboard/handlers/mcp_config_files.py`). A bundle without them restores an
+    # install whose settings read as reset.
     "config": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
         help=(
             "config.json, config.local.json, session_map.json, hooks.json, "
             "ui-prefs.json (dashboard browser settings), notification_settings.json "
-            "(notification mutes and priorities), project_dir, workspace_dir"
+            "(notification mutes and priorities), mcp.json (servers added on the MCP "
+            "Servers page), project_dir, workspace_dir"
         ),
         files=(
             "config.json",
@@ -178,12 +222,15 @@ COMPONENTS: dict[str, ComponentSpec] = {
             "hooks.json",
             "ui-prefs.json",
             "notification_settings.json",
+            "mcp.json",
             "project_dir",
             "workspace_dir",
         ),
         # `project_dir` names the checkout the gateway runs `ensure-node.sh` from at boot;
         # a bundle that also carries `workspace/` could supply pointer and tree together.
-        host_local=("project_dir",),
+        # `workspace_dir` roots every session work directory, outbox and upload root;
+        # `session_map.json` holds the folder a resumed session starts in.
+        host_local=("project_dir", "session_map.json", "workspace_dir"),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
@@ -237,6 +284,20 @@ COMPONENTS: dict[str, ComponentSpec] = {
         policy=SecretPolicy.UNRESOLVED,
         help="uploads/ directory (files uploaded through the dashboard and apps)",
         trees=("uploads",),
+    ),
+    # Each Bot's own folder (`member_space.MEMBERS_DIR_NAME`): its briefing and its
+    # Dashboard tab. The Bot's definition rides in `config`, its memory in `memory` and
+    # its team in `crew-teams`; without this a restored Bot comes back with no briefing
+    # and no dashboard. Its rules and DM binding (`member-records/`) and its event log
+    # (`crew-log/`) are in no component, and the legacy activity files here never ride
+    # (`_is_host_local`). Literal rather than imported: the members facade is
+    # not on the snapshot path, and a test pins the two.
+    "members": ComponentSpec(
+        # UNRESOLVED: a briefing and a dashboard are files a Bot writes for itself, and
+        # either can hold a token it was handed.
+        policy=SecretPolicy.UNRESOLVED,
+        help="members/ directory (each Bot's briefing and Dashboard tab)",
+        trees=("members",),
     ),
 }
 
@@ -314,6 +375,8 @@ _DERIVED_INDEXES: frozenset[str] = frozenset({"memory_index.db"})
 # Listed rather than derived, because "ends in .json" is not the property that matters:
 # what matters is that a consumer treats an unreadable file as empty instead of as an
 # error. A component file added here is validated before it can be installed.
+# `mcp.json` is not listed: it is hand-edited and its reader accepts comments
+# (`user_json.load_mcp_servers`), which this strict JSON check would refuse.
 COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
     {
         "crons.json",
@@ -324,6 +387,14 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
         "ui-prefs.json",
         "notification_settings.json",
     }
+)
+
+#: Those files whose stores read them through a helper that drops one leading UTF-8
+#: byte-order mark (`read_config_text`, `loads_user_json`, the hook store's `json.loads` of
+#: the raw bytes), so a restore accepts the mark there too. `crons.json` and `ui-prefs.json`
+#: keep it refused: their file readers read such a file as empty.
+_BOM_TOLERANT_JSON_OBJECTS: frozenset[str] = frozenset(
+    {"config.json", "config.local.json", "hooks.json", "notification_settings.json"}
 )
 
 
@@ -355,8 +426,15 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
         "hooks.json",
         "ui-prefs.json",
         "notification_settings.json",
+        "mcp.json",
     }
 )
+
+#: Files a MERGE deliberately never installs from the bundle, even when this install has
+#: no copy. Kept beside the component tables so the pre-flight validator and the merge
+#: driver cannot disagree about whether one of these files can reach a live consumer.
+_MERGE_NEVER_INSTALLS_FILES: frozenset[str] = frozenset({"config.local.json"})
+
 
 #: Flat component files whose own store reader is stricter than "a JSON object". An
 #: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
@@ -364,6 +442,8 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
 #: later save fail -- so an installed one is held to the same reader the dashboard
 #: import uses. Keyed by file name; the value names the validator.
 _FLAT_DOCUMENT_VALIDATORS: dict[str, str] = {
+    "config.json": "config_document",
+    "config.local.json": "config_document",
     "ui-prefs.json": "ui_prefs",
     "notification_settings.json": "notification_settings",
 }
@@ -413,14 +493,26 @@ _WHOLE_TREE_COMPONENTS: tuple[str, ...] = (
     "crew-teams",
     "artifacts",
     "uploads",
+    "members",
 )
+
+
+#: Component trees whose ROOT may be a link this product follows on purpose.
+#: `member_folder._open_folder` supports a ``members`` that is a link
+#: (``members_is_link``), so a host set up that way is not an unsafe one. Staging records
+#: the linked root as skipped rather than refusing the whole snapshot, and a replace whose
+#: bundle does not carry the tree leaves it alone. A bundle never follows the link: the
+#: archive is uploaded, and a link would ship whatever it names.
+_LINKABLE_TREE_ROOTS: frozenset[str] = frozenset({"members"})
 
 
 #: Components a MERGE does not restore, so it says so rather than importing them by halves.
 #: The reason is the DATA's shape, not unfinished work, and :func:`_do_merge` states it at
-#: the refusal. Replace restores both completely, which is why this is a mode restriction
-#: and not a gap in the component.
-_REPLACE_ONLY_COMPONENTS: tuple[str, ...] = ("artifacts", "uploads")
+#: the refusal. Replace restores them completely, which is why this is a mode restriction
+#: and not a gap in the component. A Bot's folder is keyed by a slug two machines can
+#: share for different Bots, and its files describe each other (the welcome markers, the
+#: activity log), so filling in whichever files the live folder lacks would mix two Bots.
+_REPLACE_ONLY_COMPONENTS: tuple[str, ...] = ("artifacts", "uploads", "members")
 
 
 # Databases this product owns that live INSIDE a component tree rather than at the top

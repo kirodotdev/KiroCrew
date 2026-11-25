@@ -3,8 +3,8 @@ title: Pluggable speech providers
 status: implemented
 author: iamwhatever
 created: 2026-10-22
-last-audited: 2026-11-06
-audited-at: 7ecc6c93b0
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 22983
 implementation-prs: [22997]
 tracking-issues: [22982]

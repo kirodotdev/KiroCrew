@@ -18,12 +18,14 @@ import contextlib
 import functools
 import gc
 import logging
+import operator
 import sys
 import threading
 import time
 import warnings
 
 import pytest
+from conftest_floor_guards import floor_guard
 
 
 def _join_install_receipt_workers() -> None:
@@ -284,7 +286,7 @@ def _stop_leaked_exporter(thread) -> None:
         )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_leaked_telemetry_exporter():
     """Fail the test that leaves an OTel exporter thread alive, then clean up.
 
@@ -346,7 +348,7 @@ def _live_embed_evictors() -> set:
     return {t for t in threading.enumerate() if t.name == _EMBED_EVICTOR_THREAD and t.is_alive()}
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_leaked_embed_evictor():
     """Fail the test that leaves an embedding model's idle evictor running, then stop it.
 
@@ -387,7 +389,7 @@ def _no_leaked_embed_evictor():
 # ── the logging record factory goes back after every test ─────────────
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_log_record_factory():
     """Put ``logging``'s record factory back, so one test cannot rewrite every later record.
 
@@ -449,7 +451,7 @@ def _restore_log_record_factory():
 # ── the CLI log queue listener goes back after every test ────────────
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_log_queue_listener():
     """Stop the ``QueueListener`` a test leaves running, so no later test inherits it.
 
@@ -489,12 +491,12 @@ def _restore_log_queue_listener():
     starts it once per process and never undoes it. The damage is to OTHER tests, so
     stopping it propagating is the whole job.
 
-    HANDLERS stay untouched, the boundary ``_restore_logger_levels`` below draws and for
-    its reasons. The ``_CliLogQueueHandler`` left on the ``kiro_crew`` logger therefore
-    outlives the listener it fed, holding an unattended queue; it is the same handler
-    accumulation that fixture already records as a separate defect, and
-    ``test_cli_logging.py``'s ``_pristine_logging`` is what absorbs it today by clearing
-    both handler lists at setup.
+    HANDLERS stay untouched here, the boundary ``_restore_logger_levels`` below draws and
+    for its reasons. The ``_CliLogQueueHandler`` left on the ``kiro_crew`` logger therefore
+    outlives the listener it fed, holding an unattended queue but no file, and
+    ``test_cli_logging.py``'s ``_pristine_logging`` is what absorbs it by clearing both
+    handler lists at setup. The file handler a SHORT-LIVED command attaches directly is
+    what ``_restore_cli_log_file_handlers`` below takes off.
 
     The restore target is what the test INHERITED, so a higher-scoped fixture that starts
     a listener for a whole class or module is not torn out from under its second test --
@@ -519,10 +521,41 @@ def _restore_log_queue_listener():
     cli._LOG_QUEUE_LISTENER = before
 
 
+# ── the CLI's gateway.log append handlers come off after every test ────
+
+
+@floor_guard
+def _restore_cli_log_file_handlers():
+    """Close and detach every ``_AppendOnlyLogFileHandler`` a test attached.
+
+    ``_setup_cli_logging`` (a short-lived command) and ``mcp_entry._setup_logging`` attach
+    one, once per process in production. A test driving the real ``cli.main()`` leaves one
+    writing a ``gateway.log`` under its deleted ``tmp_path``, so every later ``kiro_crew``
+    record on the worker prints ``--- Logging error ---`` to stderr. Only that class and
+    only what the test added: no list is written back (pytest's per-phase root handler)
+    and no module global records it, so neither reason ``_restore_logger_levels`` gives
+    for leaving handlers alone applies. ``cli_log_files`` is read through ``sys.modules``
+    after the test, which may be the first on the worker to import it.
+    """
+    loggers = (logging.getLogger(), logging.getLogger("kiro_crew"))
+    inherited = [logger.handlers[:] for logger in loggers]
+    yield
+    cli_log_files = sys.modules.get("kiro_crew.cli_log_files")
+    if cli_log_files is None:
+        return
+    append_only = cli_log_files._AppendOnlyLogFileHandler
+    for logger, before in zip(loggers, inherited):
+        for handler in logger.handlers[:]:
+            if isinstance(handler, append_only) and handler not in before:
+                logger.removeHandler(handler)
+                with contextlib.suppress(Exception):
+                    handler.close()
+
+
 # ── the hooks system's process-wide dispatcher goes back after every test ──
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_hooks_integration_globals():
     """Put ``hooks_integration._lifecycle_dispatcher`` / ``_route_registry`` back.
 
@@ -588,7 +621,7 @@ _BOOT_WIRED_GLOBALS: tuple[tuple[str, str], ...] = (
 )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_boot_wired_globals():
     """Put back the module globals production wires once at boot (``_BOOT_WIRED_GLOBALS``).
 
@@ -637,7 +670,60 @@ def _logger_levels() -> dict[str, tuple[int, bool]]:
     return snapshot
 
 
-@pytest.fixture(autouse=True)
+class _LoggerCensus:
+    """The ``Logger`` objects of one ``loggerDict``, as of one reading of it."""
+
+    __slots__ = ("logger_dict", "keys", "values", "names", "loggers")
+
+    def __init__(self, logger_dict: dict) -> None:
+        # One C-level copy, as ``_logger_levels`` takes: a thread a test left running
+        # can create a logger while a Python-level loop walks the live dict.
+        items = list(logger_dict.items())
+        self.logger_dict = logger_dict
+        self.keys = [name for name, _ in items]
+        self.values = [obj for _, obj in items]
+        loggers = [(name, obj) for name, obj in items if isinstance(obj, logging.Logger)]
+        self.names = [name for name, _ in loggers]
+        self.loggers = [obj for _, obj in loggers]
+
+    def current(self) -> bool:
+        """Whether ``loggerDict`` is this dict and holds these entries, in this order."""
+        logger_dict = logging.Logger.manager.loggerDict
+        # By identity, never ``==``: an entry replaced by an object that compares equal
+        # to the one it replaced is still a different logger to read.
+        return (
+            logger_dict is self.logger_dict
+            and len(logger_dict) == len(self.values)
+            and all(map(operator.is_, logger_dict.values(), self.values))
+            and list(logger_dict) == self.keys
+        )
+
+
+#: The last census taken, reused for as long as it is current.
+_LOGGER_CENSUS: _LoggerCensus | None = None
+
+
+def _logger_census() -> _LoggerCensus:
+    """The census of the live ``loggerDict``: the last one if still current, else a new one."""
+    global _LOGGER_CENSUS
+    census = _LOGGER_CENSUS
+    if census is None or not census.current():
+        census = _LOGGER_CENSUS = _LoggerCensus(logging.Logger.manager.loggerDict)
+    return census
+
+
+def _put_logger_levels_back(before: dict[str, tuple[int, bool]]) -> None:
+    """Restore every live logger to *before*; a name missing from it goes to pristine."""
+    for name, after in _logger_levels().items():
+        level, disabled = before.get(name, _PRISTINE_LOGGER)
+        if after == (level, disabled):
+            continue
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        logger.disabled = disabled
+
+
+@floor_guard
 def _restore_logger_levels():
     """Put every logger's level and ``disabled`` flag back after each test.
 
@@ -674,24 +760,37 @@ def _restore_logger_levels():
     back during teardown, re-attaching the setup phase's handler and dropping the one the
     teardown phase is capturing through.
 
-    The handlers ``_setup_cli_logging`` leaves on ``kiro_crew`` do accumulate -- each open
-    on a ``gateway.log`` under a ``tmp_path`` the next test deletes -- but that is a
-    separate defect from this one, and it is not what empties ``caplog``.
-    ``test_cli_logging.py``'s own ``_pristine_logging`` fixture is what absorbs it today,
-    by clearing both handler lists at setup rather than by trusting its inheritance.
+    The file handlers ``_setup_cli_logging`` leaves on ``kiro_crew`` -- each writing a
+    ``gateway.log`` under a ``tmp_path`` the next test deletes -- are a separate defect
+    from this one, and not what empties ``caplog``. ``_restore_cli_log_file_handlers``
+    above takes them off: by class, and only the ones the test added, which neither
+    reason here reaches.
 
-    Measured cost: ~30us per snapshot at ~450 live loggers, so ~60us per test.
+    The levels are read through ``_logger_census``: the list of live ``Logger`` objects,
+    kept while ``loggerDict`` holds the same entries, so a test that leaves every level
+    as it found it costs two list reads on each side and no per-name work. Anything
+    else -- a changed level, a logger created or replaced during the test -- goes
+    through ``_put_logger_levels_back`` with the same "before" mapping a full
+    snapshot would have produced.
     """
     before_disable = logging.Logger.manager.disable
-    before = _logger_levels()
+    census = _logger_census()
+    levels = [logger.level for logger in census.loggers]
+    disabled = [logger.disabled for logger in census.loggers]
+    root = logging.getLogger()
+    root_before = (root.level, root.disabled)
     yield
-    for name, after in _logger_levels().items():
-        level, disabled = before.get(name, _PRISTINE_LOGGER)
-        if after == (level, disabled):
-            continue
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.disabled = disabled
+    root = logging.getLogger()
+    unchanged = (
+        _logger_census() is census
+        and [logger.level for logger in census.loggers] == levels
+        and [logger.disabled for logger in census.loggers] == disabled
+        and (root.level, root.disabled) == root_before
+    )
+    if not unchanged:
+        before = dict(zip(census.names, zip(levels, disabled)))
+        before[""] = root_before
+        _put_logger_levels_back(before)
     if logging.Logger.manager.disable != before_disable:
         logging.disable(before_disable)
 
@@ -783,7 +882,7 @@ def close_skill_indexes_built_this_test() -> int:
     return len(open_indexes)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _close_skills_loaders_the_test_opened(_isolate_kirocrew_home, _record_skill_search_indexes):
     """Close every ``SkillsLoader`` this test built, wherever it was built.
 

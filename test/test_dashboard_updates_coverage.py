@@ -1036,6 +1036,27 @@ class TestExternallyManagedCheck:
         assert updates._last_update_check > 0
 
     @pytest.mark.asyncio
+    async def test_the_running_checkout_is_checked_without_a_project_dir(
+        self, monkeypatch, tmp_path
+    ):
+        # A gateway started outside its clone: the tree git compares is the one the
+        # capability judged, the checkout the package runs from.
+        proj = _git_proj(monkeypatch, tmp_path)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability._source_checkout_root", lambda: Path(proj)
+        )
+        checked: list[str] = []
+
+        async def _record(root: str, _capability) -> None:
+            checked.append(root)
+
+        monkeypatch.setattr(updates, "_check_git_checkout", _record)
+        await updates._do_update_check()
+
+        assert checked == [proj]
+
+    @pytest.mark.asyncio
     async def test_a_second_caller_awaits_the_shared_check(self, monkeypatch):
         calls: list[str] = []
         started = asyncio.Event()
@@ -1088,7 +1109,7 @@ class TestAnUnexpectedCheckFailureKeepsTheInstallsShape:
             "kiro_crew.platform.update_governance.update_required", lambda _v: False
         )
 
-        def _boom():
+        def _boom(**_kw):
             raise RuntimeError("openssl verify blew up")
 
         monkeypatch.setattr(updates, "derive_capability", _boom)

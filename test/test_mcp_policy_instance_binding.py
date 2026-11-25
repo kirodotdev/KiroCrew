@@ -45,7 +45,7 @@ import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from test_mcp_gateway_claim import _register
@@ -226,9 +226,28 @@ def _control_plane_key(name: str = "kirocrew-core") -> PoolKey:
     return PoolKey.from_register(frame)
 
 
+@contextlib.contextmanager
+def _environ(env: dict[str, str], *, exclusive: bool = False):
+    """Run with *env* in ``os.environ``, set and restored one key at a time.
+
+    ``patch.dict(os.environ)`` empties the whole environment before refilling it on
+    exit (and on entry with ``clear=True``). A thread that resolves the data home in
+    that gap finds no ``KIROCREW_HOME`` and memoizes the operator's real one, which
+    the teardown floor then blames on this test. ``exclusive`` also removes every
+    variable *env* does not name, except ``KIROCREW_HOME``.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        if exclusive:
+            for name in set(os.environ) - set(env) - {"KIROCREW_HOME"}:
+                mp.delenv(name)
+        for name, value in env.items():
+            mp.setenv(name, value)
+        yield
+
+
 def _resolve_in(env: dict[str, str]) -> tuple[int, str]:
     """Which port a backend spawned with *env* dials, through the real chain."""
-    with patch.dict(os.environ, env, clear=True):
+    with _environ(env, exclusive=True):
         return resolve_client_port_src(None)
 
 
@@ -1909,7 +1928,7 @@ class TestInstanceIsolation:
         urlopen = MagicMock(return_value=_policy_response(["blocked"]))
         monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
-        with patch.dict(os.environ, {**env, "KIROCREW_SESSION_KEY": "dashboard:chat-1-1"}):
+        with _environ({**env, "KIROCREW_SESSION_KEY": "dashboard:chat-1-1"}):
             policy = mcp_shared._resolve_tool_policy()
 
         assert policy.unresolved == "" and policy.excluded == {"blocked"}

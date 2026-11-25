@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, EyeOff, GitBranch, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
+import { Code2, EyeOff, GitBranch, Globe, KeyRound, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -36,6 +36,9 @@ import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../..
 import { safeHref } from '../../utils/safeHref'
 import { sourceLabel, type RegistryApp } from './types'
 import { desktopCapabilityLine, knownDesktopCapabilities } from './desktopCapabilities'
+import { browserVerbLine, knownBrowserVerbs } from './browserVerbs'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_APP_BROWSER_SDK } from '../../utils/previewFlags'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
 export const APP_EXECUTION_DENIED = 'app_execution_denied'
@@ -81,6 +84,10 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   desktop?: DesktopRequest
   /** The `permissions.desktopCapabilities`: what its desktop windows may ask the desktop app for. */
   desktopCapabilities?: string[]
+  /** The `permissions.browser` verbs: what it may do on its own slots' browser tabs. Install approves none. */
+  browser?: string[]
+  /** The `permissions.kiroOperations` names: the Kiro operations the gateway calls for it as you. */
+  kiroOperations?: string[]
   /** The app declares `permissions.webhookSource`: it takes inbound webhooks under its own name. */
   webhookSource?: boolean
   /**
@@ -677,6 +684,9 @@ export default function TrustAppModal({
   const reachVerbs = (Array.isArray(app?.reachableByUserSessions) ? app.reachableByUserSessions : [])
     .filter(verb => verb === 'read' || verb === 'send')
   const desktopCaps = knownDesktopCapabilities(app?.desktopCapabilities)
+  const browserVerbs = knownBrowserVerbs(app?.browser)
+  const kiroOperations = Array.isArray(app?.kiroOperations) ? app.kiroOperations.filter(op => typeof op === 'string') : []
+  const browserPreview = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
   // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
   const localInstall = !app?._registry && app?.origin === 'local'
   const state = terminalState({ failed, granted, detail, detailCode })
@@ -911,6 +921,38 @@ export default function TrustAppModal({
                 <p key={cap} className="text-text leading-relaxed">{desktopCapabilityLine(cap)}</p>
               ))}
               <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.desktop_capabilities_note')}</p>
+            </div>
+          )}
+          {/* `permissions.browser` (rfc-app-sdk-browser.md): listed so the owner knows what the app
+              will ask for. Installing approves none of it; the app's page does. */}
+          {browserVerbs.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-browser-verbs">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Globe size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.browser_heading')}</span>
+              </div>
+              {browserVerbs.map(verb => (
+                <p key={verb} className="text-text leading-relaxed">{browserVerbLine(verb)}</p>
+              ))}
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.browser_note')}</p>
+              {!browserPreview && (
+                <p className="text-muted leading-relaxed" data-testid="trust-browser-preview-off">{i18nT('components.appstore.trustAppModal.browser_preview_off')}</p>
+              )}
+            </div>
+          )}
+          {/* `permissions.kiroOperations`: listed so the owner knows what the app will ask for. Installing approves none of it; the app's page does. */}
+          {kiroOperations.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-kiro-operations">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <KeyRound size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.kiro_operations_heading')}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {kiroOperations.map(op => (
+                  <code key={op} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{op}</code>
+                ))}
+              </div>
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.kiro_operations_note')}</p>
             </div>
           )}
           {/* The Kiro Crew endpoints the manifest declares beyond the app's own

@@ -78,6 +78,12 @@ class _StubConn:
         "tenant_nonce",
         "stub_session_token",
         "identity_refused",
+        "register",
+        "captured_init",
+        "private_backend",
+        "describe_refusal",
+        "oversized_server",
+        "resource_holder",
     )
 
     def __init__(
@@ -112,6 +118,25 @@ class _StubConn:
         # an unnamed peer's per-tenant namespace. Independent of ``caller``,
         # which may be retargeted by a later claim-push while this stays put.
         self.tenant_nonce = tenant_nonce
+        #: The Register this connection was accepted with, minus its
+        #: ``stub_uuid`` and session token, and the ``initialize`` it sent. Kept
+        #: so ``describe-session`` can hand both to a resource-subscription
+        #: holder, which registers as the same caller on the same backend.
+        self.register: Optional[dict[str, Any]] = None
+        self.captured_init: Optional[dict[str, Any]] = None
+        #: Whether the daemon gave this connection a backend of its own, so a
+        #: holder registering with the same Register pins one more backend.
+        self.private_backend = False
+        #: Why ``describe-session`` cannot describe this connection: its
+        #: Register or ``initialize`` was over the retained-container bound, so
+        #: neither was kept. ``oversized_server`` names the server of a Register
+        #: that was not kept, so the refusal still reaches the right asker.
+        self.describe_refusal = ""
+        self.oversized_server = ""
+        #: Whether the Register named a resource-subscription holder. Read from
+        #: the Register before an oversized one is dropped, so a holder is
+        #: never taken for the session's own stub.
+        self.resource_holder = False
 
 
 #: Live stub connections indexed by every ancestor PID of the kiro-cli

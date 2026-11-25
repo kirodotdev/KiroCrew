@@ -86,6 +86,51 @@ def test_an_enforced_harness_gets_a_pickup_on_kirocrew_core_only(bound, backend)
     assert entry.runtime_pid() == _RESPAWNED_PID
 
 
+@pytest.mark.parametrize("backend", ["codex", "opencode", "goose", "pi"])
+@pytest.mark.parametrize(
+    "name, verb",
+    [
+        ("kirocrew-cron", "mcp-cron"),
+        ("kirocrew-dashboard", "mcp-dashboard"),
+        ("kirocrew-panel", "mcp-panel"),
+    ],
+)
+def test_an_enforced_harness_gets_a_pickup_on_every_other_crew_server_it_starts(
+    bound, backend, name, verb
+):
+    """Their tools reach the gateway as core's do, so each direct launch needs one."""
+    element = {"name": name, "command": "kirocrew", "args": [verb], "env": []}
+    (out,) = _issue([element], backend=backend)
+    assert len(_env(out)[PICKUP_ENV]) == 64
+    (entry,) = bound._pickups.values()
+    assert entry.server == name and entry.session_token == "tok"
+
+
+def test_every_crew_server_an_enforced_array_starts_is_a_pickup_server():
+    """The control plane every session mounts, and the two a member session appends.
+
+    A server left out answers ``internal_secret_missing`` to every call under the mask,
+    while the servers beside it in the same session work.
+    """
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+    from kiro_crew.members import MEMBER_DISPATCH_SERVER, MEMBER_PANEL_SERVER
+
+    started = {*CONTROL_PLANE_SERVERS, MEMBER_DISPATCH_SERVER, MEMBER_PANEL_SERVER}
+    assert ipc_pickup.PICKUP_SERVERS == started
+
+
+def test_a_broker_stub_for_the_dashboard_gets_no_pickup(bound):
+    stub = {
+        "name": "kirocrew-dashboard",
+        "command": sys.executable,
+        "args": ["-m", STUB_MODULE, "--server", "kirocrew-dashboard"],
+        "env": [],
+    }
+    (out,) = _issue([stub])
+    assert PICKUP_ENV not in _env(out) and GATEWAY_PID_ENV not in _env(out)
+    assert not bound._pickups
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -130,13 +175,46 @@ def test_the_caller_array_is_not_mutated(bound):
 
 
 def test_the_runtime_session_path_issues_the_pickup():
-    """Sessions are built by the runtime's mirrored projection, so issuance is there."""
+    """Create and resume issue on the array they send, after the member appends."""
     import inspect
 
-    from kiro_crew.acp import runtime_session_setup
+    from kiro_crew.acp import runtime_session_create, runtime_session_load, runtime_session_setup
 
-    source = inspect.getsource(runtime_session_setup._mirrored_session_mcp)
+    for fn in (runtime_session_create.create_session, runtime_session_load.load_session):
+        assert "_with_runtime_ipc_pickups(self, mcp_servers, stub_token)" in inspect.getsource(fn)
+    source = inspect.getsource(runtime_session_setup._with_runtime_ipc_pickups)
     assert "with_ipc_pickups(" in source and "session_token=stub_token" in source
+
+
+@pytest.mark.parametrize("server", sorted(ipc_pickup.PICKUP_SERVERS))
+def test_every_pickup_server_redeems_its_pickup_before_it_serves(monkeypatch, server):
+    """An issued pickup nobody redeems leaves every one of that server's tools refused.
+
+    Through the server's own ``run`` function, which the full CLI calls; a server that
+    answers its first two requests early redeems in its declaration's step as well,
+    since that listing already reads the tool policy from the gateway.
+    """
+    import importlib
+
+    from kiro_crew import history_search, mcp_entry
+
+    command = "mcp-" + server[len("kirocrew-") :]
+    module_name, entry = mcp_entry.SLIM_SERVERS[command]
+    module = importlib.import_module(module_name)
+    calls: list[str] = []
+    monkeypatch.setattr(agent_ipc_client, "redeem_at_startup", lambda _port: calls.append("redeem"))
+    monkeypatch.setattr(module, "run_mcp_stdio_loop", lambda *_a, **_k: calls.append("serve"))
+    # kirocrew-core's run also installs its segmenter; not what this test is about.
+    monkeypatch.setattr(history_search, "register_cjk_segmenter", lambda _words: None)
+    getattr(module, entry)()
+    assert calls == ["redeem", "serve"]
+    declared = mcp_entry.EARLY_ANSWERS.get(command)
+    if declared is not None:
+        calls.clear()
+        step = getattr(importlib.import_module(declared[0]), declared[1]).before_first_request
+        assert step is not None, f"{server} lists before its handlers load, unredeemed"
+        step()
+        assert calls == ["redeem"]
 
 
 # --- the server side ---------------------------------------------------------------

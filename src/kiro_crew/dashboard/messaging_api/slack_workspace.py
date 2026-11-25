@@ -78,8 +78,11 @@ async def api_slack_pins(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"channel={channel} action={action}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels"}, status=403
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
+            status=403,
         )
 
     try:
@@ -182,8 +185,11 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"channel={channel} action={action}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels"}, status=403
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
+            status=403,
         )
 
     try:
@@ -413,8 +419,10 @@ async def api_slack_history(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=resources,
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels", "code": "channel_not_tracked"},
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
             status=403,
         )
     # The inbound gate's channels policy too: a channel it refuses is read by no one.
@@ -487,6 +495,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     """
     from kiro_crew import slack_manifest
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers._update_announce import https_url
     from kiro_crew.slack.features import manifest_features
 
     try:
@@ -522,5 +531,10 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "create_url": create_url,
             "command": command or slack_manifest.slash_command(alias),
             "features": [f for f in slack_manifest.FEATURES if f in features],
+            # The setup wizard's link to this organization's own guide: only a
+            # bounded https:// URL (the shared check), and the dashboard checks
+            # again before it renders one.
+            "org_guide_url": https_url(getattr(getattr(cfg, "slack", None), "setup_guide_url", ""))
+            or None,
         }
     )

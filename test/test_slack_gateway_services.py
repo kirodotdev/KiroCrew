@@ -188,8 +188,15 @@ class TestNotifyNudgeExpired:
             )
             state = MagicMock()
             GatewayOrchestrator._notify_nudge_expired(self._orch(state), loop)
-            _args, _kwargs = state.notify.call_args
-            body = _args[2]
+            if expect_no_action:
+                # A merge needs nothing from the user: a passive payload on the bus.
+                state.notify.assert_not_called()
+                payload = state.notification_bus.push.call_args.args[0]
+                assert payload.priority == "passive"
+                body = payload.body
+            else:
+                state.notification_bus.push.assert_not_called()
+                body = state.notify.call_args.args[2]
             assert ("No action needed" in body) is expect_no_action, (outcome, body)
             if not expect_no_action:
                 assert "reopen" in body.lower(), body

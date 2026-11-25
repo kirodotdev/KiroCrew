@@ -44,7 +44,6 @@ class TestDashboard:
             start_time=0.0,
         )
         assert state.sessions.count == 3
-        assert state.messages_received == 0
 
     def test_state_init_with_slack_client(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

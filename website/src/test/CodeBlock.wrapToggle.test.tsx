@@ -13,11 +13,12 @@
 // 4. Prose blocks wrap by default, but can be unwrapped if desired.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import { CodeBlock } from '../components/CodeBlock'
 import { i18next } from '../i18n/all'
 import { __resetStagingForTests } from '../components/pierreStaging'
+import { __resetCodeWrapForTests } from '../hooks/useCodeWrap'
 
 const pierreCalls: Array<{ options?: { overflow?: string } }> = []
 vi.mock('../pierre', () => ({
@@ -44,6 +45,7 @@ function stubPierreSurfaceHeight(height: number) {
 describe('CodeBlock: line-wrap toggle', () => {
   beforeEach(() => {
     __resetStagingForTests()
+    __resetCodeWrapForTests()
     pierreCalls.length = 0
     vi.mocked(copyCode).mockClear()
   })
@@ -191,5 +193,84 @@ describe('CodeBlock: localized names', () => {
     } finally {
       await i18next.changeLanguage(previous)
     }
+  })
+})
+
+// Issue #36860: the last Wrap choice is one chat setting every code block follows.
+describe('CodeBlock: the wrap choice is remembered for every code block', () => {
+  beforeEach(() => {
+    __resetStagingForTests()
+    __resetCodeWrapForTests()
+  })
+
+  const wrapState = (container: HTMLElement) => container.querySelector('pre')!.className.includes('whitespace-pre-wrap')
+
+  it('applies a press on one block to the blocks on screen and to the next one rendered', () => {
+    const first = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+    const second = render(<CodeBlock code={LONG_CODE} lang="sh" complete={false} />)
+
+    fireEvent.click(within(first.container).getByTestId('code-block-wrap-toggle'))
+
+    expect(wrapState(first.container)).toBe(true)
+    expect(wrapState(second.container)).toBe(true)
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}').codeWrap).toBe('wrap')
+    first.unmount()
+    second.unmount()
+    // A later render (a new session, or after a reload) starts from the stored choice.
+    const later = render(<CodeBlock code={LONG_CODE} lang="py" complete={false} />)
+    expect(wrapState(later.container)).toBe(true)
+    expect(later.getByTestId('code-block-wrap-toggle')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('makes a prose block follow a stored choice not to wrap', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ codeWrap: 'nowrap' }))
+    const { container } = render(<CodeBlock code={LONG_CODE} lang="markdown" complete={false} />)
+
+    expect(wrapState(container)).toBe(false)
+  })
+
+  it('keeps each block on its own default for a missing or unknown stored value', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ codeWrap: 'sideways' }))
+    const code = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+    const prose = render(<CodeBlock code={LONG_CODE} lang="markdown" complete={false} />)
+
+    expect(wrapState(code.container)).toBe(false)
+    expect(wrapState(prose.container)).toBe(true)
+  })
+
+  it('still wraps, and says the choice lasts only until a reload, when the storage refuses it', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage disabled') })
+    try {
+      const { container, getByTestId } = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+
+      fireEvent.click(getByTestId('code-block-wrap-toggle'))
+
+      // The press works as it does on main; only keeping it across a reload fails.
+      expect(wrapState(container)).toBe(true)
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't save the line wrap choice in this browser. It applies until you reload.")
+      // No hand-off: the block may sit beside an unsaved draft the notice cannot see.
+      expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+      // A second block mounted now follows the same in-memory choice.
+      const { container: later } = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+      expect(wrapState(later)).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      setItem.mockRestore()
+    }
+  })
+
+  it('takes a saved press after a refused one on every mounted block', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage disabled') })
+    const { container: first } = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+    const { container: second } = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+    fireEvent.click(within(first).getByTestId('code-block-wrap-toggle'))
+    expect(wrapState(second)).toBe(true)
+    // Storage recovers: a press on the other block is saved and must reach both.
+    setItem.mockRestore()
+    fireEvent.click(within(second).getByTestId('code-block-wrap-toggle'))
+    expect(wrapState(first)).toBe(false)
+    expect(wrapState(second)).toBe(false)
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}').codeWrap).toBe('nowrap')
   })
 })

@@ -38,6 +38,7 @@ from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.archive_config_vetting import config_document_refusal
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
@@ -64,7 +65,12 @@ from kiro_crew.history import (
     _safe_key,
     memory_mode_from_header_line,
 )
-from kiro_crew.home_path_rewrite import archive_home, rewrite_staged_paths, this_home
+from kiro_crew.home_path_rewrite import (
+    _read_path_file,
+    archive_home,
+    rewrite_staged_paths,
+    this_home,
+)
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.notifications.settings import ChannelSettings, parse_imported_settings
@@ -94,6 +100,12 @@ from kiro_crew.portability_archive import (
     logger,
     manifest_is_memory_only,
 )
+from kiro_crew.portability_export import (
+    MAX_RECORDED_APPS,
+    apps_not_set_up,
+    recorded_apps,
+    unbundled_apps,
+)
 from kiro_crew.portability_templates import (
     AGENT_TEMPLATE_SECRET_PLACEHOLDER,
     AGENT_TEMPLATES_DIR,
@@ -118,7 +130,7 @@ from kiro_crew.portability_vetting import (
     _top_manifest,
     validate_import_zip,
 )
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.snapshot import (
     _DB_SIDECAR_GLOBS,
     COMPONENTS,
@@ -129,12 +141,15 @@ from kiro_crew.snapshot import (
     _core_file_not_installed,
     _do_replace,
     _install_core_file_if_absent,
+    _is_host_local,
+    _may_hold_host_local,
     _merge_crons,
     _merge_memory,
     _merge_named_stores,
     _merge_notifications,
     _refuse_corrupt_source_databases,
     _staging_is_pinned,
+    host_local_installable,
 )
 from kiro_crew.staging import IMPORT_STAGING_DIRNAME, staging_dir
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
@@ -200,6 +215,81 @@ def _move_home_paths(snap: Path, summary: dict) -> frozenset[str]:
     return rewrite.cleared_chats
 
 
+def _workspace_dir_verdict(staged: Path, mc: Path) -> tuple[Path | None, str | None]:
+    """The folder the archive's workspace_dir may install, or why it may not (pure check)."""
+    if staged.is_symlink() or not staged.is_file():
+        return None, "the saved folder is not a plain file"
+    home = this_home()
+    value = _read_path_file(staged)
+    if home is None:
+        return None, "this install's home is unknown"
+    if not value.startswith("/") or "\0" in value or ".." in PurePosixPath(value).parts:
+        return None, "the saved folder is not a plain absolute path"
+    resolved, home_real = Path(os.path.realpath(value)), Path(os.path.realpath(home))
+    try:
+        str(resolved).encode("utf-8")
+    except UnicodeEncodeError:
+        return None, "the folder name is not valid UTF-8"
+    if resolved == home_real or not resolved.is_relative_to(home_real):
+        return None, "it is not a folder inside this home"
+    if Path(os.path.realpath(mc)).is_relative_to(resolved):
+        return None, "it is the data home or a folder holding it"
+    if is_sensitive_canonical_path(str(resolved)):
+        return None, "it is a protected folder"
+    return resolved, None
+
+
+def _plan_workspace_dir(snap: Path, mc: Path, summary: dict) -> Path | None:
+    """Before a replace swaps anything, decide whether the archive's workspace_dir installs.
+
+    The replace leaves ``workspace_dir`` alone (it is host-local), but the import has
+    already moved the archive's saved folder under this home, so an ordinary folder there
+    is carried over. ``workspace_dir`` roots every session folder, so it must not be the
+    home itself, the data home or a folder holding it, a protected folder, or anything
+    outside this home; then the live copy stays and the summary says so. Decided here so
+    nothing that can refuse runs after the replace has committed.
+    """
+    staged = snap / "workspace_dir"
+    if not os.path.lexists(staged):
+        return None
+    try:
+        resolved, why = _workspace_dir_verdict(staged, mc)
+    except (OSError, ValueError):
+        resolved, why = None, "the saved folder could not be checked"
+    if resolved is not None:
+        # The path that was checked, not the raw value: a link swapped in after the
+        # check is then not followed when the folder is used.
+        return resolved
+    kept = "; this install's copy is kept" if os.path.lexists(mc / "workspace_dir") else ""
+    summary["items"].append(f"workspace_dir (not installed: {why}{kept})")
+    return None
+
+
+def _stage_workspace_dir_verdict(
+    snap: Path, mc: Path, resolved: Path | None, summary: dict
+) -> None:
+    """Make the staged workspace_dir match the import preflight verdict."""
+    staged = snap / "workspace_dir"
+    if platform_compat.is_link_or_junction(staged):
+        platform_compat.unlink_link_or_junction(staged)
+    elif staged.is_dir():
+        shutil.rmtree(str(staged))
+    else:
+        staged.unlink(missing_ok=True)
+    if resolved is None:
+        return
+
+    value = str(resolved)
+    quote = '"' if '"' not in value else "'"
+    if quote in value:
+        kept = "; this install's copy is kept" if os.path.lexists(mc / "workspace_dir") else ""
+        summary["items"].append(
+            f"workspace_dir (not installed: its path contains both quote characters{kept})"
+        )
+        return
+    staged.write_text(f"{quote}{value}{quote}\n", encoding="utf-8")
+
+
 def _skip_setting(summary: dict, label: str, why: str) -> None:
     summary["items"].append(f"{label} (skipped: {why})")
     summary.setdefault("refused_merges", []).append(label)
@@ -255,7 +345,12 @@ def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
                 atomic_write(src, json.dumps({"channel_settings": channels}, indent=2))
                 vetted[name] = (channels, dropped)
             else:
-                vetted[name] = _read_archive_object(src)
+                document = _read_archive_object(src)
+                if name in ("config.json", "config.local.json"):
+                    why = config_document_refusal(document)
+                    if why:
+                        raise _SettingsRefused(f"the archive's {name} is unsafe: {why}")
+                vetted[name] = document
             # Replace installs the STAGED file's mode (`_backup_and_copy` copies it
             # from the source fstat), and the extractor creates every staged file at
             # the umask default -- typically group/world-readable. The config writer
@@ -794,15 +889,15 @@ def apply_import_zip(
             if size_problem is not None:
                 raise ValueError(size_problem)
             session_mtimes = _read_session_mtimes(zf)
+            top_manifest: object = None
             if not memory_only:
                 # The same one manifest the validator read decides the scope; a file
                 # elsewhere that happens to be named MANIFEST.json is content. With no
                 # manifest at all nothing declares memory only (the validator is what
                 # requires one); two at the top are still refused.
                 top = _top_manifest(infos, required=False)
-                memory_only = top is not None and manifest_is_memory_only(
-                    _read_member_json(zf, top)
-                )
+                top_manifest = None if top is None else _read_member_json(zf, top)
+                memory_only = top is not None and manifest_is_memory_only(top_manifest)
             if memory_only and mode != "merge":
                 raise ValueError("A memory-only import is merge only")
             for info in infos:
@@ -889,6 +984,19 @@ def apply_import_zip(
         # removed from the extraction here, and reported.
         vetted_settings = _vet_archive_settings(snap, summary)
 
+        # Before either branch as well: the archive's agent config under ``workspace/``
+        # (``.claude/``, ``.mcp.json``, ``.kiro/`` ...) must not govern the next agent
+        # session, so Merge never adds it and Replace stages this install's own copy. The
+        # CLI restore applies the same rule. Imported here, not at module level: the
+        # facade binds only the names `test_portability_facade` lists.
+        from kiro_crew.snapshot import _hold_back_agent_config
+
+        held_config, _notes = _hold_back_agent_config(
+            snap, mc, None, mode, allow_unpinned=not staging_pinned
+        )
+        if held_config:
+            summary["held_agent_config"] = [f"workspace/{name}" for name in held_config]
+
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
             for excluded_name in EXPORT_EXCLUDE:
@@ -924,6 +1032,8 @@ def apply_import_zip(
             # channel in between would publish its pre-import copy over the restored
             # file. The notification store also re-reads its file before letting go.
             # Taken in one fixed order, ui-prefs then notifications.
+            workspace_dir = _plan_workspace_dir(snap, mc, summary)
+            _stage_workspace_dir_verdict(snap, mc, workspace_dir, summary)
             with contextlib.ExitStack() as swap_guard:
                 if "ui-prefs.json" in vetted_settings:
                     swap_guard.enter_context(ui_prefs.replacing_file())
@@ -933,7 +1043,11 @@ def apply_import_zip(
                         vetted_settings["notification_settings.json"],
                     )
                     swap_guard.enter_context(channel_settings.replacing_file(channels))
-                _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+                token = host_local_installable.set(frozenset({"workspace_dir"}))
+                try:
+                    _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+                finally:
+                    host_local_installable.reset(token)
             summary["items"].append("full replace")
             if "ui-prefs.json" in vetted_settings:
                 summary["ui_prefs_restored"] = True
@@ -1095,6 +1209,16 @@ def apply_import_zip(
         summary["missing_agent_templates"] = missing
     if more:
         summary["missing_agent_templates_more"] = more
+    # No archive carries an app: name the ones the other machine had that this one
+    # has not set up. A memory-only import names none.
+    apps, apps_more, apps_unlisted = apps_not_set_up(None if memory_only else top_manifest)
+    if apps:
+        summary["missing_apps"] = apps
+    if apps_more:
+        summary["missing_apps_more"] = apps_more
+    if apps_unlisted:
+        # Past the archive's list, so nothing here checked them: counted, never named.
+        summary["missing_apps_unlisted"] = apps_unlisted
     return summary
 
 
@@ -1170,12 +1294,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_for_export,
         _keep_store_for_export,
         _manifest_entry_size,
+        _named_apps,
         _open_contained_file,
         _open_verified,
         _plan_sessions,
         _session_candidates,
         _session_manifest_base,
         _SessionOrder,
+        _set_up_here,
         _sqlite_logical_size,
         _wal_checkpoint,
         _walk_contained,

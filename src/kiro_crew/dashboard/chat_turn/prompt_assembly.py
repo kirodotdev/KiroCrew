@@ -23,6 +23,7 @@ from kiro_crew.context import (
     prepare_store_vectors,
     reserve_memory_prefetch,
 )
+from kiro_crew.context_assembly.turn import recall_query
 from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs, slot_steering_principal
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
@@ -631,6 +632,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
     _is_synthetic = turn._is_synthetic
     _jev_route_text = turn._jev_route_text
     _provider_has_history = turn._provider_has_history
+    turn._slim_resume_pending = _context_is_new and _provider_has_history
     _request_prefix_context = turn._request_prefix_context
     _responsive_recovery = turn._responsive_recovery
     _synthetic_recovery_turn = turn._synthetic_recovery_turn
@@ -732,6 +734,20 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             _current_replay_message=_current_replay_message,
             reset_out=_conversation_reset,
         )
+        # Whether text this message's sender did not write reaches the prompt (see
+        # its use below). A cold start's replay is built from the log and the slot's
+        # live tail, so it can hold rows from anyone, a queued or cancelled reply
+        # included; which rows it took is not traced, so any replay counts. So does a
+        # responsive recovery transcript: an interrupted request, possibly the owner's,
+        # that ``_turn_dispatch_gates`` prepends to this turn.
+        _carries_other_text = bool(compressed) or bool(_responsive_recovery)
+        # Save the person's message for the linked-channel mirror before anything
+        # below prepends to it: the cancelled-turn preamble, queued gateway notices
+        # (sub-agent failures, a session restart), the sender line and pending
+        # context are the model's, and a long one would push the person's words
+        # past the mirror's length cut.
+        _user_msg_for_mirror = message
+        turn._user_msg_for_mirror = _user_msg_for_mirror
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but everything BEFORE the cancel is preserved.
         # Re-inject just the cancelled turn (user prompt + partial assistant)
@@ -739,6 +755,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # duplicating older history. Flag lives on the session (set by
         # SessionManager.stop_turn), consumed one-shot here. Use getattr
         # for prev_turn_cancelled so test doubles don't raise on access.
+        # A cold start's replay (the first-turn debt stays armed after a
+        # cancel) is built from the transcript and already holds the stopped
+        # turn, so the preamble is built against the replay and left out when
+        # the replay carries the stopped request.
         _session = getattr(state.sessions, "_sessions", {}).get(session_key)
         if _session is not None and getattr(_session, "prev_turn_cancelled", False):
             _session.prev_turn_cancelled = False
@@ -755,10 +775,12 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     build_cancelled_turn_preamble,
                     state.context_builder.conversation_log,
                     session_key,
+                    replay=compressed or "",
                 )
                 if preamble:
                     message = preamble + "\n\n" + message
                     turn.message = message
+                    _carries_other_text = True
         # A turn that CONTINUES an interrupted one, on a session this turn
         # natively resumed (session/load). kiro-cli logs a prompt only once it
         # is answered, so the turn cut off by the process dying is missing
@@ -802,10 +824,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             if fresh:
                 message = "\n\n".join(fresh) + "\n\n" + message
                 turn.message = message
-        # Save raw user message before context/persona prepend for Slack
-        # mirror — avoids leaking injected context to the linked thread.
-        _user_msg_for_mirror = message
-        turn._user_msg_for_mirror = _user_msg_for_mirror
+                _carries_other_text = True
         # Shared Crew: tell the agent who sent this message (prompt only).
         from kiro_crew.shared_crew.attribution import sender_line
 
@@ -831,6 +850,15 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         if _ctx_prefix:
             message = _ctx_prefix + message
             turn.message = message
+            _carries_other_text = True
+        if _carries_other_text:
+            # Text this message's sender did not write now rides the turn (queued
+            # context, a cancelled turn's preamble, sub-agent notices), so its tool
+            # prompts go back to the owner alone (``slack.turn_requester``).
+            # Imported here: this body runs on the chat runner module's globals.
+            from kiro_crew.slack.turn_requester import forget_turn_requester
+
+            forget_turn_requester(slot)
         # The message that started the Slack thread this session joined
         # (``chat_slack._seed_thread_parent``), handed to build_message as the
         # fenced ``[SLACK THREAD CONTEXT — UNTRUSTED DATA]`` block, the same block
@@ -860,6 +888,22 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     "thread_parent_text": _parent_text,
                     "include_channel_history": False,
                 }
+        # A reply typed in the linked thread names that thread on every turn, as
+        # a Slack-born turn does (``slack/handler_runtime/turn.py``), so the
+        # agent can read the thread with the Slack tools. Only for the thread the
+        # words came from; a dashboard-typed turn is not inside a Slack thread.
+        if (
+            not _thread_parent_kwargs
+            and _turn_runtime_source(turn) == "slack"
+            and slot._slack_linked
+            and slot._slack_thread_ts
+            and slot._slack_channel in turn._directive_source_channels
+        ):
+            _thread_parent_kwargs = {
+                "channel_id": slot._slack_channel,
+                "thread_ts": slot._slack_thread_ts,
+                "include_channel_history": False,
+            }
         # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
         # name (e.g. "default"), so build_message's is_custom check
         # correctly identifies kirocrew sessions and enables skills.
@@ -975,8 +1019,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # folder tree rather than from a value cached on the slot, so a
         # folder edit or a re-file reaches the chats already inside it at
         # their next session-start context with no cache to invalidate.
-        # For a template chat only the two turns that carry session-start
-        # context read the tree (a fresh provider session, or a reinjection
+        # For a template chat only the turns that send folder steering read
+        # the tree (a new or resumed provider session, or a reinjection
         # after compaction); warm turns never touch it. A V2 MEMBER chat is
         # different: build_message rebuilds the member's essentials
         # envelope on EVERY turn, and that envelope declares itself the
@@ -994,7 +1038,6 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             slot,
             execution_context,
             context_is_new=_context_is_new,
-            provider_has_history=_provider_has_history,
             needs_reinjection=_needs_reinjection,
         ):
             _folder_snapshot = await state.read_folders(
@@ -1031,15 +1074,21 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     raise
                 # The builder keeps essentials and reports unavailable learned memory.
                 logger.info("Member learned memory unavailable for context preparation")
-        # Every session-start build starts its message's embedding here, just
+        # Every session-start build starts its recall query's embedding here, just
         # ahead of itself, so the build joins it and waits within its deadline. A
         # pre-warmed session gets its only early embed here; after the cold-start embed in
         # `_turn_admit` (turn_admission), the same text is a cache hit or joins that inference.
+        _user_range = user_text_span(
+            _user_prepend_offset,
+            user_typed_len,
+            quick_prompt=_is_quick_prompt,
+            prompt_expanded=prompt_expanded,
+        )
         if _context_is_new and not _provider_has_history and not is_slash:
             await _prewarm_startup_query(
                 state,
                 slot,
-                message,
+                recall_query(message, _user_range),
                 memory_store=memory_store,
                 execution_context=execution_context,
             )
@@ -1095,12 +1144,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # why the member identity travels separately.
                 member=slot.agent if slot.mode == "member" and slot.agent else "",
                 execution_context=execution_context,
-                user_text_range=user_text_span(
-                    _user_prepend_offset,
-                    user_typed_len,
-                    quick_prompt=_is_quick_prompt,
-                    prompt_expanded=prompt_expanded,
-                ),
+                user_text_range=_user_range,
                 user_span_out=_user_span,
                 needs_reinjection=_needs_reinjection,
                 steering_dirs=_folder_steering_dirs,
@@ -1258,11 +1302,21 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # Re-arming here (run from _run_chat's finally, the one block on EVERY exit
     # path) makes the next turn rebuild the member section; the rules read inside
     # stays fail-closed until the user repairs or clears the file.
+    #
+    # A slim resume rides it too: its prompt re-sent the lessons and steering a
+    # compacted restored history may have lost, and the next turn is warm, so
+    # a resume that never landed would leave the session without them.
     rearm_reinjection(
         state.sessions,
         session_key,
-        consumed=turn._needs_reinjection or turn._member_session_start_pending,
-        landed=turn._turn_landed,
+        consumed=(
+            turn._needs_reinjection
+            or turn._member_session_start_pending
+            or turn._slim_resume_pending
+        ),
+        # A slash command's prompt is its own text, so a resume that ran one
+        # delivered none of the owed blocks, landed or not.
+        landed=turn._turn_landed and not (turn._slim_resume_pending and turn.is_slash),
     )
     rollback_skill_bodies(state.context_builder, session_key, landed=turn._turn_landed)
     if (

@@ -3,11 +3,13 @@
  * kinds this build can draw count, the dialog is the lazy modal, and any
  * navigation — or a refresh that leaves nothing drawable — closes it.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useMobileConnect, MobileConnectDialog } from '../components/mobileConnect'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { refreshOnce, __resetRefreshOnceForTests } from '../api/refreshOnce'
 
 vi.mock('../components/MobileConnectModal', () => ({
   default: ({ kinds, onClose }: { kinds: string[]; onClose: () => void }) => (
@@ -76,5 +78,35 @@ describe('useMobileConnect', () => {
     vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
     const { result } = renderHook(() => useMobileConnect('k'), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.hasRenderableMobileConnect).toBe(true))
+  })
+})
+
+describe('useMobileConnect, a first read refused because the sign-in ran out', () => {
+  // The spy an earlier test left on `api.mobileConnectMethods` would carry its calls into the counts below.
+  beforeEach(() => { vi.restoreAllMocks() })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    __resetRefreshOnceForTests()
+    vi.restoreAllMocks()
+  })
+
+  it('reads the methods once more after the renewal that refusal started has answered', async () => {
+    let renewed: (status: number) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { renewed = status => resolve(new Response('{}', { status })) })))
+    const methods = vi.spyOn(api, 'mobileConnectMethods')
+      // What `checkSessionExpired` does on that 403: start the renewal, hand the refusal back.
+      .mockImplementationOnce(() => { void refreshOnce(); return Promise.reject(new ApiError(403, 'Token required', '', true)) })
+      .mockResolvedValue({ methods: [{ id: 'a', kind: 'login_link' }] } as never)
+    // The owner check reads through `fetch` too; it must not take the renewal's answer.
+    vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
+    const { result } = renderHook(() => useMobileConnect('k'), { wrapper: wrapper() })
+    await waitFor(() => expect(methods).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    // Held: a second read sent now would carry the same lapsed sign-in.
+    expect(methods).toHaveBeenCalledTimes(1)
+
+    await act(async () => { renewed(200) })
+    await waitFor(() => expect(result.current.hasRenderableMobileConnect).toBe(true))
+    expect(methods).toHaveBeenCalledTimes(2)
   })
 })

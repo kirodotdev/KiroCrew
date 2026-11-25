@@ -279,7 +279,7 @@ edge came from a process recycle (`reset`) or a `destroy`, or whose fold could
 not be read -- the state a patrol re-dispatches. A history-only row is `unknown`:
 its metadata proves the session was created, but does not claim whether it
 finished or was lost. Splitting `closed` from `lost` is what resolves the
-completed-versus-lost conflation #14213 named; the split reads the lifecycle the
+completed-versus-lost conflation; the split reads the lifecycle the
 status fold already projects, adding no new crew-log vocabulary. The persisted
 field is already read by the member ownership boundary in
 session-control authorization, so using it for an informational roster row asks
@@ -307,7 +307,7 @@ write the line), so the candidate is kept on the creation-record terms
 (`_creation_parent`) names the caller. A record naming another creator drops it;
 no record to check it against (the crew log off or unseeded, or a session it does
 not cover) drops it and makes `history` `incomplete`, because the caller may have
-created it (#14843). The person's own tab is not fenced and lists the claim as
+created it. The person's own tab is not fenced and lists the claim as
 before.
 
 **Delivery has two authorization moments, and both are enforced.** An idle target
@@ -330,7 +330,7 @@ never saw — a retargeted mirror, a thread bound beside it — drops, while a r
 that has since gone away (the thread unlinked, the mirror cleared) is a narrowing
 that admits, because every room the delivery can still reach was admitted. The re-check is not specific to this module — a human-typed message into a
 busy session drains through the same path — which is why it lives at the drain
-rather than in each caller (#5911).
+rather than in each caller.
 
 **A dropped queued delivery is reported to its SENDER, not only its target.**
 `session_send` answers `started: false` when a busy target queues the message,
@@ -419,11 +419,45 @@ after it lands. The result names the outcome: `steered` for an injection,
 
 A harness that can drop a steer it accepted (`steer_needs_loss_recovery`:
 codex, claude, goose, pi and opencode) takes a peer's steer only when
-`agent.peer_steer_loss_recovery` is on; otherwise the steer arm answers
-unavailable and the message queues. With the key on, the peer's steer is held
+`agent.peer_steer_loss_recovery` is on; otherwise the send-time steer arm answers
+unavailable and the gateway holds the message as a pending steer
+(`dashboard/deferred_steer.py`). The stream loop retries it at each tool boundary
+of the same turn; the held attempt skips the key's refusal, marks the steer
+delivered before the injection (`slot._deferred_steer_delivered`), and the turn's
+teardown requeue skips a marked steer. A marked steer the Claude Code client only
+buffered behind an open tool call, then dropped unwritten or had refused
+(`held_steers_unsent`), loses its mark when the turn releases its client: the
+teardown queues it and its receipt reads `queued@<time>`, and a hard stop tells its
+sender it will not run. On the Claude Code and Codex paths it is
+therefore injected at most once and never queued back; on the Goose, request and
+concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
+ended is reported False and can run once more from the queue. A turn that ends
+first hands the unmarked held steers to the queue, and the next turn starts in the
+same hand-off. They join the HEAD of the queue, ahead of messages queued meanwhile and
+in send order, as an unconsumed steer does; a held steer that a boundary of a later
+turn finds is queued at the head too. A held steer that a later re-check
+refuses, at a boundary (the gate refuses the sender, or the key resolves to another
+session) or when its turn ends and the queue fallback refuses it, reads
+`refused@<time>`, and its sender gets one `SEND_DISCARD_REFUSED_STEER` notice that
+it was not delivered and will not run; a steer a hard stop discarded first keeps the
+stop's one notice. With the key on, the peer's steer is held
 as the composer's is: it counts as delivered only when its turn ends cleanly,
 and the turn's teardown otherwise requeues it as a queue card that runs as the
 next turn, so it can run twice.
+
+While the key is off, a held peer steer injected into one of those harnesses can
+still be dropped by the harness: its sender is told it may not have run and its
+receipt reads `unconfirmed@<time>`, and the delivered mark
+that stops a second run also stops a retry. A save writes each held steer that
+is not marked delivered into the saved queue (`deferred_steer.saved_queue_entries`)
+as the plain queued peer send the teardown would make of it, at the head in send
+order, so a gateway restart hands it back as that queue card; a marked steer is
+left out, so a restart never runs it twice. The live slot keeps its held list, and
+a hold starts the queue write as a queued send does. Admission
+closes at the start of each turn hand-off, so a steer sent while a turn ends is
+queued for the next turn instead of held. A running target whose client cannot
+steer (`supports_steer` false) queues the steer as a plain send; a target whose
+turn has published no client yet holds it.
 
 Two properties keep the steer arm from being a hole in the queued arm's checks.
 The delivery happens NOW rather than later, which removes the queue's waiting
@@ -636,7 +670,7 @@ carries that line.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation (#6118). No dispatcher spec grants a folder verb or passes
+part of creation. No dispatcher spec grants a folder verb or passes
 `folder`: conductor and Bot guidance creates workers without it
 (rfc-crewmate-workers-under-the-crewmate.md, Design 6). Filing is
 part of creation rather than a second call (`chat_folder_move_session`), because a
@@ -739,7 +773,7 @@ member's folder list adds that home folder and its ancestors, the path its own
 `[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
 
 A Bot is the exception, and keeps everything it creates in ONE folder of its
-own (`dashboard/mate_folders.py`, #25935). Its home folder is a top-level folder
+own (`dashboard/mate_folders.py`). Its home folder is a top-level folder
 owned by `member:<store>` and marked `mate_home`; it is created on first use under
 the folder-store lock (one per store, however many creates race), named with the
 Bot's display name, and renamed when that changes: by the agent-update route on
@@ -774,8 +808,7 @@ The home is also closed to everyone else, the person included, refused
 the Bot may create a folder or chat in its subtree, file a chat into it or out of it, move a
 folder into it, or edit or delete a folder inside it (`home_owner_of`,
 `refuses_write_into`). The one exception is the person's delete of an EMPTY
-folder inside the home, never the home itself (`delete_empty_bot_subfolder`,
-#37434), from the person's browser only: no child folder, no live session and
+folder inside the home, never the home itself (`delete_empty_bot_subfolder`), from the person's browser only: no child folder, no live session and
 no saved cron job filing into it, checked inside the folder-store callback that
 removes the row, and no archived session, counted first; anything else is
 `folder_not_empty` (409). An app or member caller, and any internal request (an
@@ -794,7 +827,8 @@ and `session_revive` refuse a named folder in another Bot's home
 in a Bot's home the forker does not own (the person's Fork, or `session_fork`
 by anyone but that Bot) is left unfiled (`inherited_folder`), a scheduled job
 is saved with a chat folder there only when it runs on that Bot's store (the
-cron create and update routes refuse it `mate_home_locked` (403) and record the
+cron create and update routes refuse it `mate_home_locked` (403), the `cron_add` /
+`cron_update` tools refuse it the same way, and each records the
 denial in the security event log, the Schedule form offers such a folder only
 for a job that runs as that Bot, and the tab placement re-checks it at run time and records a refusal
 the same way), and the name lookups that adopt an existing
@@ -918,7 +952,9 @@ the spawn endpoint's own check (`messaging_api/spawn.py` `_requested_backend`),
 so a pick that is unknown, not selectable under governance, not installed, or
 installed after the gateway started is refused with that endpoint's codes
 (`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
-listing the backends that can start), and with no session made. An enabled
+listing the backends that can start), and with no session made. A `kiro`
+pick runs on KAS where a Bot's Kiro CLI pin would ([harness-parity](harness-parity.md)
+H1). An enabled
 `agent.acp_failover` chain may move it to a later member, and the reply says so
 (`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
 `backend_with_crew`. `model` is judged against the pick (`model_rejected`), an
@@ -936,8 +972,16 @@ reset and compaction successors keep it through `allocation_identity`, and each
 reader that works out a session's harness before it exists (selection
 capabilities, the model checks, slash commands, the app-agent host check, the
 autocompact hint, the warm brief wake, request_server, session transfer) passes
-the same pick. A live session found on another harness at turn start (a hard
-Stop's respawn starts with no identity) is reset onto the pick. The precedence is
+the same pick. A live session found on another harness at turn start
+(`_live_session_off_slot_backend`) is reset onto the pick, and one that runs
+another agent than the turn resolved (its agent twin,
+`_live_session_off_slot_agent`, both in `chat_turn/model_fallback.py`) is reset
+onto that agent: both arm `arm_model_switch_reset`, so an idle live session is
+replaced before the claim and the conversation resumes, while a busy one, or one
+with attached sub-agent runs, serves this turn and the armed retry replaces it
+at the next idle point. The agent twin leaves alone a turn that resolved no agent, a
+live session whose provider names no agent, and a crew member's session, whose
+provider names the template `prepare_runtime` picked. The precedence is
 the gate's: `spawn_run(backend=...)` > this pick > the Bot's own harness pin
 (`agents.<crew>.acp_backend`) > the member-DM route > `agent.acp_backend`. A
 `spawn_run` from such a session with no `backend` of its own, and not selecting
@@ -990,7 +1034,7 @@ two routes answer them differently:
 | `count_user_session` | `True` — a human request-layer session for the pulse survey | `False` — an agent-made session is not one (`test_session_pulse_session_count` sweeps for the literal, so the core takes it as a parameter and the only literal `True` stays in `chat_fork.py`) |
 | `jev_route_allowed` | `is_owner_dashboard_request` | `False` — arming a second routed session is the owner's own click, which no agent caller made; the child keeps the parent's pinned `model` |
 | SEL operation | `chat.slot_fork` | `session_control.fork`, on the core's rows and on this module's own `_audit` row (`session_fork`), so the two entry points stay distinguishable |
-| Sidebar pin (`stamp`) | `_inherit_pin(source.slot)` copies the parent's `pinned` onto the child before its birth save, so the fork stays beside its parent in the pinned group; the response carries `pinned` | Never pinned: `pinned` marks a session as human-owned |
+| Sidebar pin (`stamp`) | `_inherit_pin(source.slot)` copies the parent's `pinned` onto the child before its birth save, so the fork stays beside its parent in the pinned group; the response carries `pinned`. With `dashboard.fork_inherits_pin` off (default on), no stamp is passed and the fork starts unpinned | Never pinned: `pinned` marks a session as human-owned |
 
 The core's refusals are `web.json_response` objects — that is the module's
 refusal shape and its coded sites are what the error-code ratchet
@@ -1234,7 +1278,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller is channel-linked (`linked_session_key` set) | 403 | The exfiltration direction: a linked caller's conversation IS a channel thread, so a read would hand a private dashboard transcript to that channel's readers. `CHANNEL_AGENT_BLOCKED_TOOLS` keys on the agent identity; a linked slot is a second route to the same surface. **Two exceptions:** a `cron:<job_id>` link, which names the job's own run transcript and republishes to nobody; and a 1:1 DM whose only human is the configured owner (`owner_dm_refusal` answering `""`) — see "Owner-DM channel callers" below |
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
-| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`), or whose own store the caller runs on: a Bot's worker, a template record that keeps the Bot's id and store (`_store_s_crewmate`), so its own child runs where it does. A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace (#19230) was refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members created before #19230 (workspace `default`) were not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
+| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`), or whose own store the caller runs on: a Bot's worker, a template record that keeps the Bot's id and store (`_store_s_crewmate`), so its own child runs where it does. A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace would be refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members on workspace `default` would not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
 | Named agent does not resolve to a configured one | 403 | The resolver falls back to the default agent, which passes the workspace check because it is the caller's own default -- so no boundary is crossed, but the created session would store and advertise a name that is not what answers. `ResolvedBindings.requested_resolved` states that contract for callers that store the requested name. Refused rather than rewritten to the effective agent: nothing exists yet, so a corrected name costs one retry, whereas an existing slot keeps its stored name verbatim so a momentarily stale resolution cannot permanently rebind it |
 | Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`: an owner-rooted chain is admitted; a cron-, channel- or member-rooted chain, or a broken one, is fenced). Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
 | Caller changes history key, agent or memory store during creation | 400 | `caller_memory_changed`; the live caller must still match the identity checked before awaited preparation |
@@ -1243,8 +1287,8 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is incognito or temporary | 403 | Never addressable, matching `list_sessions` |
 | Target is app-scoped | 403 | App sessions are the app's, not a peer's. **Exception:** see "App sessions the owner's chats may reach" below |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
-| Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (#14068; pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. Whether a dashboard-born session mirroring to the owner's OWN DM is that contained audience was left open by #14084 and is decided by #15288: it is, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
-| Target is in another workspace | 403 | Workspaces are the memory boundary |
+| Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. A dashboard-born session mirroring to the owner's OWN DM is that contained audience, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
+| Target is in another workspace | 403 | Workspaces are the memory boundary. When the ownership fence also refuses the caller, the one refusal names the fence's reason too, and the code stays `workspace_mismatch`: a workspace fix cannot clear the fence |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
 
@@ -1331,9 +1375,23 @@ session, and the owner's Conductor while `agent.session_control` is off, see
   `not_creator` with the switch off or on. With the switch on, the giver can take the
   session back by handing it to itself while it still manages the new manager; with
   it off, no fenced caller can.
-- A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
-  compares `_created_by`, so the new manager is refused `worker_not_owned` while the
-  giver can still bind. Tracked in #19103.
+- `bind: true` also moves the right to bind the session to ledger items: the record
+  carries `"bind": true` and `_refuse_unowned_worker` admits only
+  `session_managers.bind_holder`. Only its current holder may pass it (403
+  `not_bind_holder`); a session that conducts moves only under a ledger at least one
+  level above its own (409 `depth_exceeded`, also at the bind). The caller's own open
+  item for it closes `abandoned` on the caller's board unless it waits on a person
+  (an open `ask`, or the Board's `names_person`: a `blocked`/`question` report naming
+  a person-wait reason that no `decide` or steer has answered since), judged again
+  under the board lock in `release_on_handoff`'s `before_write`, so a report that
+  lands during the handoff keeps it open. A bind holds `HANDOFF_LOCK` through its
+  write, and so does a `goal` or `create` that opens the caller's first ledger,
+  whose depth comes from the binding such a bind rewrites; each takes it before
+  any board lock. The depth check reads ledgers by slot key, which names the same
+  ledger as the slot's `effective_session_key` for every slot a handoff admits: a
+  channel-linked target or recipient is refused `linked_session_target` first. A
+  plain handoff, a chain take-back or a hand-back on close writes no flag, so the
+  right returns to the creator.
 - A fenced caller adopting a Bot's DM slot is refused `not_creator`, since no
   fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
@@ -1482,7 +1540,7 @@ dispatching callers as well.
 
 #### The strict-internal surface admits a crew member in either spelling, not every scoped caller
 
-The five routes sit behind `_require_internal`, which first refuses anything
+Every session-control route sits behind `_require_internal`, which first refuses anything
 without a valid `X-Internal-Secret`. On the authenticated branch,
 `_private_caller_refusal` captures the caller's canonical execution scope once
 off-loop through `internal_memory_scope`, without opening learned memory:
@@ -1510,8 +1568,8 @@ or replace the creator-ownership checks in `session_control.py`.
 #### The owner's own tab keeps the owner's reach
 
 A scopeless (owner / Global-V1) caller gets no verdict from the gate above, and
-`_caller_is_ownership_fenced` deliberately leaves a tab the person opened unfenced
-(#14342). From that tab, `session_send`, `session_read_message`, `session_stop` and
+`_caller_is_ownership_fenced` deliberately leaves a tab the person opened unfenced.
+From that tab, `session_send`, `session_read_message`, `session_stop` and
 `session_close` reach a same-workspace session it did not create; every refusal in
 the table above still applies. The fence follows authority, and that tab's
 authority is the person's own dashboard session: working across the tabs they
@@ -1944,7 +2002,7 @@ per-agent server assignment).
 A cron job's own slot (`cron-<job_id>`, minted at run start by
 `ensure_cron_slot` so identity exists while the turn runs — with
 `inject_cron_result_to_dashboard` as the idempotent delivery-time fallback
-creator, #8336) is admitted to the surface even though nobody
+creator) is admitted to the surface even though nobody
 is watching it, so a scheduled run can enumerate work and dispatch a session per
 item. Three refusals had to move for that, and one deliberately did not:
 
@@ -2002,12 +2060,12 @@ owner", and nothing legitimate is refused by it because a cron whose job is gone
 not running.
 
 A job whose `session_key` names a session that is no longer open also refuses with
-`cron_owner_unverifiable` (#8335). Its `_app` lived only on that slot, because
+`cron_owner_unverifiable`. Its `_app` lived only on that slot, because
 `cron_add` records the caller in `session_key` and never writes `created_by`, so
 allowing it would let an app create a cron, close its session, and have the job
 dispatch a persistent non-app session this gate can no longer recognise.
 
-**A person's job outlives its tab** (#8449). When a managed `cron_add` runs,
+**A person's job outlives its tab.** When a managed `cron_add` runs,
 `POST /api/crons/tools` has already verified the caller and holds the live slots, so
 it asks `is_person_tab`: is the caller's slot live, `SlotOrigin.USER` and without
 `_app`? The check is positive on purpose: a cron's own tab and every session
@@ -2147,7 +2205,7 @@ that could dispatch nothing. Two shapes reach that audience: the channel-born DM
 session itself, and a **dashboard-born session whose outbound mirror is that DM**
 — a conductor tab the operator linked to their own phone, whose words come from the
 dashboard and whose readers are exactly the mirror's. Refusing the second while
-admitting the first (#15288, the question #14084 left open) cut a dashboard
+admitting the first would cut a dashboard
 conductor off from every worker it had dispatched the moment it was mirrored:
 `session_send`, `session_read_message`, `session_create` and every `work_ledger_*`
 call refused, with the fleet's workers still running and nothing able to seed,
@@ -2298,7 +2356,11 @@ facts, and any it cannot establish answers **false**.
    DM whose pairing a gateway restart dropped, until the DM is re-opened or its
    peer writes into it. That is `MIRROR_PEER_NOT_ON_RECORD`, the counterpart of
    `ORIGIN_NOT_ON_RECORD`: it names both causes and states the remedy for the DM
-   it may be and for nothing else. Every other outcome is the roster clause's own
+   it may be and for nothing else. With exactly one allow-listed user, the gateway
+   re-opens that user's DM once Discord is READY (`discord.gateway._reopen_owner_dm`,
+   the `create_dm_channel` call the connect row makes), so a restart drops the
+   owner's pairing only until then and a conductor whose tab or Bot thread mirrors
+   to that DM keeps reaching its workers. Every other outcome is the roster clause's own
    refusal: a DM the transport DOES place, with a peer the roster does not name as
    its sole owner — a stranger's DM, or the owner's DM on a roster that names two
    people — refuses with the same words the channel-born shape uses.
@@ -2385,8 +2447,8 @@ delivery and retains the binding by design (see [session](session.md)), and with
 the predicate in place an owner needs neither it nor an unlink to conduct — from
 the DM or from the tab mirrored to it.
 
-Related fold: the ledger's bind ownership check compares `_created_by` (the
-creator's **slot** key, as `session_create` stamps it) against the conductor
+Related fold: the ledger's bind ownership check compares the bind holder (`_created_by`, the
+creator's **slot** key as `session_create` stamps it, unless a handoff moved it) against the conductor
 **session** key's resolved slot (`caller_slot_key`), because a channel-born
 conductor is keyed `discord:…:genN` while its slot is that key folded to the
 filename charset — a string comparison refused every worker such a conductor
@@ -2470,7 +2532,9 @@ is a code channel's. Every other caller meets exactly the refusals above.
   `read`, `summary`, `broadcast`, `fork`, or `retry` / `continue` / `reload` / `set_model`;
 - *turn author* -- on a channel-origin or channel-narrowed turn, every Slack author routed into
   the slot (`note_channel_sender`, from `maybe_route_linked_thread`) is the owner by identity
-  (the handler's `is_owner`, not the allow-list) now. The clause governs who DRIVES the session; third-party text it reads
+  (the handler's `is_owner`, not the allow-list), or the shared user who opened that channel
+  and is listed and Slack-confirmed now (`shared_refusal.opener_admitted`, read without the
+  confirmation cache's expiry, so a long turn keeps it). The clause governs who DRIVES the session; third-party text it reads
   as content (the origin thread the first turn carries as fenced untrusted data, files, issues)
   is bounded by reach, not by authorship.
 
@@ -2532,6 +2596,27 @@ card's save path (config lock, `validate_code_settings` with its overlay 409s,
 `_LockedSectionWrite` under `live.hold()`, SEL `slack.config.update` with `source=slack`, hot
 apply), then edits the notice to "Helper agents are on. Send your request again." It never re-runs the
 refused call; the conductor's next turn dispatches.
+
+**Conductor threads** (the thread-conductor RFC, [#41214](https://github.com/kirodotdev/KiroCrew/pull/41214),
+part A; nothing starts one yet). A Conductor thread is one thread of an ordinary channel or DM
+bound to a dashboard slot, kept in the store's `thread_bindings` table (keyed `<channel>:<anchor>`,
+`Binding.thread` true, with `team_id`, `room` and `ended_at`); a channel can hold many, and
+`bindings` stays code channels only. *Identity* reads both tables with the same cross-check, and the
+store's `session_keys` (so `code_channel_root`), the anchor guard (`anchor_owner_by_ts`) and the
+shared-user refusals (`shared_user_refused_in(channel, thread_ts)`, `shared_user_refused_for_slot`)
+cover threads too. Its *switch* is `binding.thread_conductor_on`: `slack.thread_conductor is True`
+AND `THREAD_CONDUCTOR_RUNTIME_BUILT`, which part D (#41322, which also declares both config keys,
+default off) set true once Slack showed the thread's approval cards, Stop and resume, so the key
+alone turns the feature on (and the constant stays a kill switch); it needs no
+code-channel scope, and the degradation and torn-file readings apply as above. Its *channel state*
+adds: an ended thread refuses, and the room must be admitted -- the owner's DM (`room=im`, a `D` id,
+which skips the share and archive readings), a private channel whose fresh `conversations.info`
+reading still says `is_private` (`audience.channel_private`; unknown refuses and re-reads), or a
+public one only while `slack.thread_conductor_public_channels` is on. The thread's start opens its
+first turn itself, so `note_thread_conductor_start` records the owner (by `is_owner`) as its author;
+anyone else records nothing and the turn refuses. Ended threads move into `revoked` after
+`THREAD_ENDED_TTL_SECS` (`prune_ended_threads`), keeping their anchor fenced and their session key
+retired. Workers file beside the thread's slot (`code_channel_folder`) and inherit its posture.
 
 **What reaches the channel.** Ledger reads and record replies for an exempt caller are the
 published-fields projection only: the goal's first line (`published_goal`, at most 200
@@ -2678,7 +2763,7 @@ the cooperative stop fail to take. It is wrong for an RPC, where a client that g
 no response inside its 30s request timeout re-sends the same request — so on the
 button's semantics a timeout retry would silently get the destructive variant of a
 verb the caller asked for once, and the queued work would be gone with nothing
-saying a retry rather than a decision caused it (issue #5074).
+saying a retry rather than a decision caused it.
 
 `session_stop` therefore withholds the escalation for a call it cannot tell apart
 from a retry. `stop_retry.allow_escalation` records the first stop a caller makes
@@ -2801,7 +2886,7 @@ awaited re-check, by contrast, reopens exactly those windows. Any refusal aborts
 the close, rolls back the retired nudge loop, and surfaces as the guard's own
 status. This is the same "re-gate adjacent to the mutation, comparing identity not
 presence" discipline `create_session` uses for its slot allocation, and the same
-theme as the queued-drain re-check (#5911). The human ✕ path passes no check — the
+theme as the queued-drain re-check. The human ✕ path passes no check — the
 person owns the tab and closes it unconditionally.
 
 ## Reviving is the mirror of closing, authorized from the metadata line
@@ -2815,12 +2900,15 @@ one set of refusal codes. The revived slot is idle — nothing runs until a
 `session_send` — and the reply carries its live key so every other verb can
 address it. A `folder_id` files it as part of the same call, after the revive
 has landed and only after the folder's existence was confirmed BEFORE anything
-was revived, so a refused filing leaves history untouched.
+was revived, so a refused filing leaves history untouched. A filing refused after
+the revive puts the session back into its own folder only while that folder still
+exists; one deleted meanwhile leaves it unfiled.
 
 **There is no live slot to authorize against, so the target-side checks read
 the persisted metadata line instead** — the same fields `authorize_target` reads
 off a live slot (`workspace`, `app`, `linked_session_key` / `channel_origin`,
-`memory_mode`, `created_by`), in the same order, raising the same codes. The
+`memory_mode`, `created_by`), in the same order, raising the same codes (a
+workspace refusal names the fence's reason too when the fence also refuses). The
 caller-side checks are literally shared: `authorize_target` and `revive_session`
 both call `refuse_caller_identity` (key-only refusals, before the target is
 resolved, so a refused caller learns nothing) and `refuse_caller_surface` (the
@@ -2939,10 +3027,10 @@ Wave 1 of [rfc-conductor-remote-dispatch.md](../../request-for-change/rfc-conduc
 
 Each call is checked in this order, and each refusal has its own code:
 
-1. **Switch.** `work_ledger.remote_dispatch` (default `false`, read per call) off refuses `remote_dispatch_disabled` before anything else. `agent.session_control` off then refuses `session_control_disabled`, as it does for every local verb. Off, the dashboard MCP server's `tools/list` is byte-for-byte the table's own; on, it adds a `crew` property to exactly these five schemas. The validator schemas accept `crew` either way, so the gateway, not an unknown-field error, answers a call that carries it.
+1. **Switch.** `work_ledger.remote_dispatch` (default `false`, read per call) off refuses `remote_dispatch_disabled` before anything else. `agent.session_control` off then refuses `session_control_disabled`, as it does for every local verb. Off, the dashboard MCP server's `tools/list` is byte-for-byte the table's own; on, it adds a `crew` property to exactly these five schemas. The validator schemas accept `crew` either way, so the gateway, not an unknown-field error, answers a call that carries it. A stray `requires` on `session_create` with the switch off is refused: alone, by the tool with `requires is taken only with crew or work_item`; with `work_item` and no `crew`, by the tool with `work_item is taken only with crew` (nothing is sent to the gateway); with `crew`, by the gateway with `remote_dispatch_disabled` (403).
 2. **Owner-only caller.** The declared key is owner-minted (`is_owner_minted_session_key`, the `dashboard` namespace; `owner_only`); the shared agent-caller resolver (`handlers/guide.py` `_resolve_agent_caller`) admits it with its own codes; the slot was not opened on another caller's behalf (`_created_by` / `_lineage_minted`) and is not a crew member's thread (`owner_only`); the session is a conductor mode chat, judged by the predicate the conductor mode agent lock uses (`crew_mode.slot_is_crew_mode_root`), so a plain chat on any other agent is refused (`conductor_mode_only`); the session is not bound to a private member store (`private_memory`); the session is not the bound worker of any work-ledger item here, read through the same binding `work_brief` resolves and refused when it cannot be read (`crew_caller_is_worker`), which keeps dispatch one level deep: a session another gateway's conductor opens here is bound to its mailbox item once the peer side binds at create (RFC wave 2), and a nested conductor is a bound worker too; and finally the running turn must be one the owner sent (`crew_owner_unverifiable`). That last arm, `owner_unverifiable_reason`, is the crew-read gate's slot check (`handlers_instances_crew_reads._slot_refusal`): the turn carries `_turn_owner_sent` and the slot was not opened on another caller's behalf. A dashboard login a messaging channel minted for someone else fails it, and so does a turn the person did not send (a loop wake, a `session_send`, a sub-agent completion). The earlier arms refuse first, so each refusal still names the rule a caller fails.
 
-   **The patrol-wake exception (wave 4, maintainer decision by buluoray on #26651).** Two wave 4 paths are NOT held to the owner-sent arm: the pull `work_ledger_read` runs for a remote item, and the decide forward a recorded `decide` on a remote item sends. Both may run on a turn the owner did not send, such as a patrol wake, because the conductor's own patrol is what drives them. Their reach is the one remote item bound on the caller's own ledger: the pull reads only that item's crew and slot, and the forward PATCHes only that slot's `work-item`. Both run only with `work_ledger.remote_dispatch` on, which defaults to off. This is a deliberate exception, not a precedent: any later crew-scoped read still applies the owner-sent arm above.
+   **The patrol-wake exception (wave 4, maintainer decision).** Two wave 4 paths are NOT held to the owner-sent arm: the pull `work_ledger_read` runs for a remote item, and the decide forward a recorded `decide` on a remote item sends. Both may run on a turn the owner did not send, such as a patrol wake, because the conductor's own patrol is what drives them. Their reach is the one remote item bound on the caller's own ledger: the pull reads only that item's crew and slot, and the forward PATCHes only that slot's `work-item`. Both run only with `work_ledger.remote_dispatch` on, which defaults to off. This is a deliberate exception, not a precedent: any later crew-scoped read still applies the owner-sent arm above.
 3. **Crew.** An exact id wins over any name; a name resolves only when one crew carries it (`crew_unknown`, `crew_ambiguous`, `crew_invalid`).
 4. **Target fence.** send/read/stop/close reach only a peer slot this caller's slot created with `session_create(crew=)` on that same crew (`crew_target_not_dispatched`). The record lives in gateway memory, at most 64 slots per caller (`crew_dispatch_limit`), and a close forgets the slot. It does not survive a hub restart. An open item on the caller's own ledger bound to that slot on that crew (`worker_session_key` + `worker_instance_id`, wave 4) also admits the slot, and that pair does survive a restart.
 5. **Version.** The crew's `major.minor` must match this hub's (`crew_version_mismatch`); a disconnected crew answers `proxy_peer_not_connected`.
@@ -2952,7 +3040,7 @@ A crew read returns each row's `index` and a `next_since`, like the local read, 
 
 Every send carries `turn_origin: "agent"` (`dashboard/agent_origin.py`), so the crew runs it as an agent's turn that holds no person-only right. Outgoing message and title text passes the exfiltration-URL then the credential redactor; an incognito or temporary caller is refused `ephemeral_caller`.
 
-A crew create takes only `title`, `agent`, `agent_kind`, `model` and `work_item` (`crew_field_unsupported` for anything else). `agent_kind` takes the local create's one value, `template`, and rides the peer create so a same-named crew member there is not selected; any other value is refused `invalid_agent_kind`, and a kind with no `agent` `agent_kind_requires_agent`, before any peer call. Without it the peer resolves `agent` name-first, a bare `kirocrew-worker` included. `memory_mode` is always this hub's `dashboard.default_memory_mode`. An omitted `agent` sends none, so the crew applies its own default. A crew create without `work_item` arms no patrol.
+A crew create takes only `title`, `agent`, `agent_kind`, `model`, `work_item` and `requires` (`crew_field_unsupported` for anything else; `_CREATE_FIELDS`). `requires` is read on this hub only (below) and never sent to the peer. `agent_kind` takes the local create's one value, `template`, and rides the peer create so a same-named crew member there is not selected; any other value is refused `invalid_agent_kind`, and a kind with no `agent` `agent_kind_requires_agent`, before any peer call. Without it the peer resolves `agent` name-first, a bare `kirocrew-worker` included. `memory_mode` is always this hub's `dashboard.default_memory_mode`. An omitted `agent` sends none, so the crew applies its own default. A crew create without `work_item` arms no patrol.
 
 ### Wave 4: a crew worker born bound, its reports pulled on read
 
@@ -2966,13 +3054,15 @@ Each crew is read once per pull with `POST api/chat/work-items/pull` (`dashboard
 
 With the switch on, the hub also runs that pull with no model turn on each work-ledger patrol tick (`autonudge_service/firing.py` `_pull_remote_reports`, bound by the gateway to `dashboard/handlers/remote_puller.py` `pull_on_patrol`): at the start of the tick, before the person-wait hold and the probe read the ledger, it pulls the loop's own board once, only when that board holds an open crew-bound item or a retired slot still to close (`work_ledger.board_has_open_remote`) and its cache is not flagged dirty (a dirty board waits for a rebuild). A board with only local items makes no peer call. The pull is cut off at 10 s, so an unreachable crew delays only its own conductor's tick, and a failed pull never fails the tick. A board a read is already pulling is skipped. Nothing pulls between ticks: there is no background task. A filing the crew log refuses is retried for the same peer snapshot (stamp and worker fields) only after 10 minutes (`remote_ingest.UNRECORDED_RETRY_SECS`), on a read too; a changed snapshot is filed at once. A pulled report is filed exactly as on a read, so the hold and the probe gate see a remote `done`, `question`, `blocked` or `reply` on that same tick (its crew-log push may also arm a tick, which pulls again and finds nothing new). The person-wait hold (`probes/work_ledger.py` `person_wait_fingerprint`) applies to a board with a remote item only while every remote item's last pull is fresh (`work_ledger.remote_pull_fresh`: connected, slot list read, no error, at most two patrol intervals old, `work_ledger.REMOTE_PULL_FRESH_SECS`); a stale or failed pull, or the switch off, lets the patrol run.
 
-A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pending_approval`, `remote_error` and `remote_reports_skipped` (compact rows too; `null` when the work fold cannot be read). Its `stale`, the Crew board's and the work-ledger probe's stall wake all answer liveness from that stored record through `work_ledger.item_liveness`, never from this gateway's slot table; with no pull yet it reads neither running nor closed. A recorded `decide` on a remote item then PATCHes `api/chat/slots/{s}/work-item {decision}` (scrubbed); the reply carries `remote_decide` `{ok}` or `{ok: false, code}`, and the local decision stands either way. The whole forward (its per-item lock, the settled read and the PATCH) is bounded at 10 s (`DECIDE_DEADLINE_SECS`), under the record tool's 30 s wait, and past it answers `crew_decide_timeout`. The pull and the forward run on a patrol wake too; see the patrol-wake exception under the owner-only caller rule. With the switch off none of this runs and a board with no remote item reads and records exactly as before.
+A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pending_approval`, `remote_error` and `remote_reports_skipped` (compact rows too; `null` when the work fold cannot be read). Its `stale`, the Crew board's and the work-ledger probe's stall wake all answer liveness from that stored record through `work_ledger.item_liveness`, never from this gateway's slot table; with no pull yet it reads neither running nor closed. A stored `running` counts only while the record's `crew_state` is `connected` or `connecting` and the last pull that reached the crew is at most `work_ledger.REMOTE_PULL_FRESH_SECS` old (`work_ledger_remote._crew_seen_recently`, the same age bound `remote_pull_fresh` uses). A crew that goes down keeps its last answers, so without this bound a worker last seen running there would never read quiet and not running; with it, the item goes stale. A recorded `decide` on a remote item then PATCHes `api/chat/slots/{s}/work-item {decision}` (scrubbed); the reply carries `remote_decide` `{ok}` or `{ok: false, code}`, and the local decision stands either way. The whole forward (its per-item lock, the settled read and the PATCH) is bounded at 10 s (`DECIDE_DEADLINE_SECS`), under the record tool's 30 s wait, and past it answers `crew_decide_timeout`. The pull and the forward run on a patrol wake too; see the patrol-wake exception under the owner-only caller rule. With the switch off none of this runs and a board with no remote item reads and records exactly as before.
 
 ### Wave 5: the hub picks the crew
 
 With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. On Windows that reading is always missing (`resource_status._read_load_per_cpu` reads `os.getloadavg`, which Windows lacks), so no Windows crew is skipped or refused for CPU load: the peer gate's one `cpu` refusal there is the execution cap (running agents at or above `adaptive_exec_cap()`). The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
 
-Requires (audit D2): the create may carry `requires: {"tags": [...], "logins": [...]}`, parsed by `remote_placement.parse_requires` before any crew is probed. Each name is 1-32 of `a-z0-9_-` with a letter, at most 16 per list, logins only a tool `git_gateway.readiness_tool` names (`az`, `gh`, `glab`); anything else, or another key, is `requires_invalid` (400). A crew whose headroom lacks a required word in `tags`, or does not report exactly `valid` for a required login in `logins`, is filtered out before ranking, whatever its room. When no crew that answered meets `requires` and none that meets it was only short on room, the reply is `crew_requirements_unmet` (503) naming what each crew lacked, and the item stays open and unbound. When a crew meets it but has no room, the reply stays `crew_none_available`, and its message adds what the other crews lacked. A named `crew=` create with `requires` reads that crew's headroom first (`remote_placement.check_crew_requires`) and is refused `crew_requirements_unmet` when it lacks any, or when its headroom cannot be read. `requires` is never forwarded to the peer. The peer's headroom carries `tags` (`work_ledger.remote_dispatch_tags`, same word shape, others dropped, and a tag the credential redactor would change dropped too) and, on `GET api/chat/headroom` only, `logins` (left out, with no login check run, when the read carries `logins=0`: the hub sends `logins=1` for an item whose `requires.logins` is set and for a `crew_list` call with `logins: true`, and `logins=0` for every other placement and `crew_list` read, so a hub that predates the query still gets `logins` and a peer that predates it ignores it; `remote_dispatch_headroom.peer_logins`: `git_gateway.login_status` per host, the probe `git_readiness` runs, keyed by `git_gateway.readiness_tool`; `signed_in` is `valid`, `not_signed_in` is `expired`, other answers absent, `unknown` while a first check runs; none while `git_gateway.lending_refusal` answers, a gate read on every request; each host cached 120 s, refreshed on its own, at most 3 s wait). A required login reported `unknown` is named `still checking; retry shortly` in the refusal. The redaction sink row "Crew tags a peer advertises to a dispatching hub" covers the tags. `crew_list` (`remote_crew_list._tags`, `_logins`) shows both per row: `tags` re-held to the same word shape (`work_vocab.coerce_dispatch_tags`, which stops at 16 so a long peer list costs one pass), and, only when called with `logins: true`, `logins` as a known tool mapped to `valid`, `expired` or `unknown`, any other key or word dropped; `logins` is `null` otherwise, and a peer whose reply carries no `logins` object is named `logins` in `unread`.
+Requires (audit D2): the create may carry `requires: {"tags": [...], "logins": [...]}`, parsed by `remote_placement.parse_requires` before any crew is probed. Each name is 1-32 of `a-z0-9_-`, not starting with `_` or `-`, with a letter, at most 16 per list, logins only a tool `git_gateway.readiness_tool` names (`az`, `gh`, `glab`); anything else, or another key, is `requires_invalid` (400). A crew whose headroom lacks a required word in `tags`, or does not report exactly `valid` for a required login in `logins`, is filtered out before ranking, whatever its room. When no crew that answered meets `requires` and none that meets it was only short on room, the reply is `crew_requirements_unmet` (503) naming what each crew lacked, and the item stays open and unbound. When a crew meets it but has no room, the reply stays `crew_none_available`, and its message adds what the other crews lacked. A named `crew=` create with `requires` reads that crew's headroom first (`remote_placement.check_crew_requires`) and is refused `crew_requirements_unmet` when it lacks any, or when its headroom cannot be read. `requires` is never forwarded to the peer. The peer's headroom carries `tags` (`work_ledger.remote_dispatch_tags`, same word shape, others dropped, and a tag the credential redactor would change dropped too) and, on `GET api/chat/headroom` only, `logins` (left out, with no login check run, when the read carries `logins=0`: the hub sends `logins=1` for an item whose `requires.logins` is set and for a `crew_list` call with `logins: true`, and `logins=0` for every other placement and `crew_list` read, so a hub that predates the query still gets `logins` and a peer that predates it ignores it; `remote_dispatch_headroom.peer_logins`: `git_gateway.login_status` per host, the probe `git_readiness` runs, keyed by `git_gateway.readiness_tool`; `signed_in` is `valid`, `not_signed_in` is `expired`, other answers absent, `unknown` while a first check runs; none while `git_gateway.lending_refusal` answers, a gate read on every request; each host cached 120 s, refreshed on its own, at most 3 s wait). A required login reported `unknown` is named `still checking; retry shortly` in the refusal. The redaction sink row "Crew tags a peer advertises to a dispatching hub" covers the tags. `crew_list` (`remote_crew_list._tags`, `_logins`) shows both per row: `tags` re-held to the same word shape (`work_vocab.coerce_dispatch_tags`, which stops at 16 so a long peer list costs one pass), and, only when called with `logins: true`, `logins` as a known tool mapped to `valid`, `expired` or `unknown`, any other key or word dropped; `logins` is `null` otherwise, and a peer whose reply carries no `logins` object is named `logins` in `unread`.
+
+Unread crews (audit D2): a placement refusal `crew_requirements_unmet` also names each connected crew whose version or headroom read failed, timed out or answered non-2xx (or not an object), as `<name> could not be checked`, after what the others lacked (`remote_placement._candidate` answers `_UNREAD` for it). Such a crew counts as lacking nothing, so it never changes which refusal is given: a qualifying crew short on room still answers `crew_none_available`, whose text is unchanged. A crew that is not connected is not named, and a named `crew=` create keeps its own refusal (`check_crew_requires`).
 
 Reservations: each open item on any ledger here bound to a worker on that crew (`work_ledger.open_remote_bindings`, a `done` worker kept open included) and each work-item create to that crew still in flight on this hub (placed, or named with `crew=`) reserve one estimate. The choice and the in-flight count are taken under one lock, so two dispatches at once never both rank the same crew first. The hub picks the crew whose scarcer of memory and disk, after reservations and counted in estimates, is largest (ties by instance id). A `crew_busy` reply moves on to the next crew, and so does a 409 `duplicate_item` (that crew already holds a worker for this item, for example from a create whose reply was lost; it made nothing, and placement leaves that worker alone). A placed reply names each crew skipped this way under `skipped`, and `crew_none_available` names them too. The 15 s limit is best effort: once 15 s have passed since placement began, no new crew is tried. A create already started (its config load, board-lock wait and peer POST included) runs to the end, so it can outlast the tool's 30 s wait and bind after the caller gave up; the next `work_ledger_read` shows the binding. A probe that fails in any way skips that crew; any other refusal ends the placement, because that create may have reached the peer. With no crew left the reply is `crew_none_available` (503) and the item stays open and unbound. A retry must come from a turn the owner sends: like every `crew=` call, placement refuses a patrol or loop wake (`crew_owner_unverifiable`). A placed reply carries `placed: true` and the crew it chose. With the switch off the create route never enters this path.
 
@@ -3008,7 +3098,7 @@ The owning conductor can retire a binding itself: `work_ledger_record action=ret
 
 Only the current binding is read. Ingest pulls only the pair the item holds, so a report a retired worker files later, `done` included, is never applied. The retire drops the slot from the in-memory dispatch record (no peer call), so `send`, `read` and `stop` reach only the current binding and refuse a retired slot without reading the history (`crew_target_retired` when the history names it, else `crew_target_not_dispatched`), and the slot stops counting against its caller's crew-session cap. A retire that does not land puts the slot back for every caller that held it. Evict, write and restore run under the cap lock (`remote_dispatch_routes.cap_lock`), which a `session_create(crew=)` also takes for its cap check and for its record, so the cap never reads a record a retire is still settling. A `session_close(crew=)` of a retired slot is admitted only when the history can be read and holds it. When a retired binding's crew reads `connected` again, the read starts one close of the old slot (its own task, so it never delays the read): a best-effort `PATCH api/chat/slots/{slot}/work-item` with `trust: false` first, so a slot whose close then fails holds no Trust grant, then `DELETE api/chat/slots/{slot}`; a 2xx, or a 404 `slot_not_found`, records `destroy` and the entry reads `destroyed`. A failed close (a timeout, a refusal, a version skew, or a `destroy` that did not record) leaves the entry `retired`, still close-only, and backs off: the first sweep or read past the wait tries again, the wait starting at `remote_ingest.CLOSE_RETRY_SECS` (60 s) and doubling up to `CLOSE_RETRY_MAX_SECS` (1 h). There is no timer of its own, and a crew that is not connected costs no try. The backoff is in memory, so a hub restart tries every slot at once. The owner's `session_close(crew=)` still closes it and records `destroy` too.
 
-Closing a remote item (RFC §5c): after a write that closes a crew-bound item, the record route (`work_ledger_conductor._close_remote_item`, then `remote_ingest.close_remote_item`) records a `retire` on the CLOSED item with reason `owner_closed` or `item_closed` (operation `work_ledger_record.close`; the store admits these two reasons only on a closed item and every other reason only on an open one; the schema never offers them to a conductor), then sends `PATCH trust: false` to the pair the item held, then starts the close (`_schedule_closes`). `owner_closed` means the close ran in a turn that passes the `session_close(crew=)` gate (`agent.session_control` and `authorize_remote_dispatch`, verb `item_close`; any refusal or error reads as not the owner): the slot is deleted as soon as its crew reads connected. Any other reason (`item_closed`, and any reason not in `_CLOSE_AT_ONCE_REASONS`) is closed only when a full slot-list read shows the slot neither running nor waiting on an approval and the peer's `GET .../work-item` says `status: done`, or the list does not hold the slot (`_slot_idle_and_done`); a check that does not pass counts as a failed close and backs off. The entry is the same `retired` history entry a retire leaves, so `close_pending`, the boot and patrol sweep, `holds_retired_slot` and `destroy` all apply, across a hub restart. A wake-turn close writes a `denied` audit row for `item_close` (the gate's own refusal); the close itself is `ok`.
+Closing a remote item (RFC §5c): after a write that closes a crew-bound item, the record route (`work_ledger_conductor._close_remote_item`, then `remote_ingest.close_remote_item`) records a `retire` on the CLOSED item with reason `owner_closed` or `item_closed` (operation `work_ledger_record.close`; the store admits these two reasons only on a closed item and every other reason only on an open one; the schema never offers them to a conductor), then sends `PATCH trust: false` to the pair the item held, then starts the close (`_schedule_closes`). When the retire did not record and the peer did not take that PATCH, no sweep will send it again, so `_resend_revoke` resends it in memory with the failed-close backoff until the peer takes it or `REVOKE_RESEND_SECS` (24 h, the ceiling on a grant's lifetime) passes; a hub restart drops the resend and the grant ends at its TTL. `owner_closed` means the close ran in a turn that passes the `session_close(crew=)` gate (`agent.session_control` and `authorize_remote_dispatch`, verb `item_close`; any refusal or error reads as not the owner): the slot is deleted as soon as its crew reads connected. Any other reason (`item_closed`, and any reason not in `_CLOSE_AT_ONCE_REASONS`) is closed only when a full slot-list read shows the slot neither running nor waiting on an approval and the peer's `GET .../work-item` says `status: done`, or the list does not hold the slot (`_slot_idle_and_done`); a check that does not pass counts as a failed close and backs off. The entry is the same `retired` history entry a retire leaves, so `close_pending`, the boot and patrol sweep, `holds_retired_slot` and `destroy` all apply, across a hub restart. A wake-turn close writes a `denied` audit row for `item_close` (the gate's own refusal); the close itself is `ok`.
 
 The read row of an item with retired bindings adds `redispatch_due` (open and unbound), `retired_crews` and `close_pending` (its retired slots not yet closed), compact rows included. The redispatch is the conductor's own `session_create(work_item=)`, so it needs a turn the owner sent, as every crew create does: a patrol wake shows `redispatch_due` and cannot place. Placement skips every crew in `retired_crews`, and its reply carries `previous_branch`, the retired worker's last pushed branch, for the seed; the conductor names a new branch, so two workers never push to one. The peer half (replacing a closed worker on the same crew, removing an empty `hub:` mailbox list) is wave 8b.
 

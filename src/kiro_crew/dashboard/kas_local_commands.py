@@ -422,6 +422,11 @@ async def _inspect_usage_text() -> tuple[str, str]:
     if used is None or not plan:
         if usage.get("reason") == "signin_required":
             return "No credit reading: sign in again to see your credits.", "signin_required"
+        if usage.get("reason") == "plan_without_limit":
+            return (
+                "Kiro's usage service reports credits used but no credit limit for the "
+                "signed-in account, so there is no balance to show."
+            ), "plan_without_limit"
         return "No credit reading yet. Try `/usage` again in a few minutes.", "no_reading"
     line = f"Credits: {_amount(used)} of {_amount(plan)} used"
     pct = _number(usage.get("percentage"))

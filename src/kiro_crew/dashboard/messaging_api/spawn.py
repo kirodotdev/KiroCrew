@@ -243,6 +243,14 @@ def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
     return _backend_name(picked) if picked is not None else ""
 
 
+def _kiro_cli_pick(backend: str | None, available: list[str]) -> str | None:
+    """*backend*, moved onto KAS where a Bot's Kiro CLI pin runs there (one rule for every
+    requested backend: :func:`~kiro_crew.agent_sdk.backends.requested_kiro_pick`)."""
+    from kiro_crew.agent_sdk.backends import requested_kiro_pick
+
+    return requested_kiro_pick(backend, available)
+
+
 async def _requested_backend(
     raw: object,
 ) -> tuple[str | None, str | None, web.Response | None]:
@@ -279,6 +287,7 @@ async def _requested_backend(
     ]
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
     backend = by_name.get(raw) if isinstance(raw, str) else None
+    backend = _kiro_cli_pick(backend, available)
     if backend is not None and backend in available:
         return backend, None, None
 
@@ -389,8 +398,8 @@ async def _light_tier_pins(
     named_elsewhere: bool,
     execution: Any,
     backend: str | None,
-) -> tuple[str, str, str, str]:
-    """Fill a ``light`` spawn's unset model and effort: ``(model, effort, note, warning)``.
+) -> tuple[str, str, str, str, bool]:
+    """Fill a ``light`` spawn's unset model and effort: ``(model, effort, note, warning, lean)``.
 
     Applies only to a run the call marked ``light`` while ``agent.subagent_light_tier``
     is on, and fills only what the call left unset from the ``subagent_light`` role
@@ -403,22 +412,26 @@ async def _light_tier_pins(
     default backend, the one the pin was written for. Where it starts is resolved
     first, from the admitted *execution* and the run's own *backend* (``None`` for
     none), by the resolver allocation uses (``subagent_start_backend``); a start
-    backend that cannot be resolved keeps no model pin.
+    backend that cannot be resolved keeps no model pin. *lean* is True for a run the
+    same gates admit while ``agent.subagent_light_lean_context`` is on: the caller
+    then starts it without the lessons and memory blocks it did not name.
     """
     from kiro_crew.mate_worker import subagent_start_backend
     from kiro_crew.validation_parts.input_bounds import _MODEL_NAME_RE
 
     if cleaned.get("light") is not True:
-        return model, effort, "", ""
+        return model, effort, "", "", False
     try:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
     except Exception:
-        return model, effort, "", "light ignored: the configuration could not be read"
+        return model, effort, "", "light ignored: the configuration could not be read", False
     agent_cfg = cfg.agent
     if not agent_cfg.subagent_light_tier:
-        return model, effort, "", ""
+        return model, effort, "", "", False
     if named_elsewhere:
-        return model, effort, "", "light ignored: the run names its own agent, crew or backend"
+        ignored = "light ignored: the run names its own agent, crew or backend"
+        return model, effort, "", ignored, False
+    lean = agent_cfg.subagent_light_lean_context
     light_model = agent_cfg.role_models.get("subagent_light", "")
     light_effort = agent_cfg.role_efforts.get("subagent_light", "")
     pin_model = "" if model else light_model
@@ -444,7 +457,7 @@ async def _light_tier_pins(
         )
         if needed and not pin
     ]
-    if not (pin_model or pin_effort) and unset and not warning:
+    if not (pin_model or pin_effort) and unset and not warning and not lean:
         warning = f"light ignored: {' and '.join(unset)} {'is' if len(unset) == 1 else 'are'} unset"
     note = ""
     if pin_model or pin_effort:
@@ -456,7 +469,7 @@ async def _light_tier_pins(
             )
             if part
         )
-    return pin_model or model, pin_effort or effort, note, warning
+    return pin_model or model, pin_effort or effort, note, warning, lean
 
 
 def _app_bot_spawn_refusal(
@@ -591,6 +604,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "agent": body.get("agent", ""),
                 "max_turns": body.get("max_turns", 0),
                 "cwd": body.get("cwd", ""),
+                "isolate": body.get("isolate", ""),
                 "model": body.get("model", ""),
                 "reasoning_effort": body.get("reasoning_effort", ""),
                 "include_memory": body.get("include_memory", True),
@@ -777,7 +791,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
     reasoning_effort = cleaned.get("reasoning_effort") or ""
-    model, reasoning_effort, light_note, light_warning = await _light_tier_pins(
+    model, reasoning_effort, light_note, light_warning, light_lean = await _light_tier_pins(
         cleaned,
         model,
         reasoning_effort,
@@ -787,6 +801,15 @@ async def api_spawn(request: web.Request) -> web.Response:
     )
     if "light" in body and not isinstance(body["light"], bool):
         light_warning = "light ignored: it must be true or false"
+    if light_lean:
+        # A block the call named true stays; every other one is withheld, and the
+        # child is told by name what it lacks (``include_*`` below).
+        withheld = [g for g in ("memory", "lessons") if body.get(f"include_{g}") is not True]
+        for group in withheld:
+            cleaned[f"include_{group}"] = False
+        if withheld:
+            lean_note = f"lean context: withheld {', '.join(withheld)}"
+            light_note = "; ".join(part for part in (light_note, lean_note) if part)
     can_work = parent_work_supported(state, parent_session)
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
@@ -871,6 +894,8 @@ async def api_spawn(request: web.Request) -> web.Response:
             # what it did before.
             **({"failover_from": failover_from} if failover_from else {}),
             label=str(cleaned.get("label") or ""),
+            # Only when asked, so a spawn without it passes exactly what it did before.
+            **({"isolate": str(cleaned["isolate"])} if cleaned.get("isolate") else {}),
             approval_mode=approval_mode or None,
             silent=silent,
             batch_id=batch_id,

@@ -29,7 +29,7 @@ from kiro_crew import pinned_fs
 from kiro_crew import portability as _pf
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
-from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION, is_product_tree_database
+from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION, _caller_name, is_product_tree_database
 
 # Shared helpers are read as ``_pf.<name>`` at CALL time, never copied at import:
 # that keeps the import one-way, and keeps a
@@ -244,7 +244,7 @@ def _build_export_zip(
         "format": "zip",
         "created_at": _pf.datetime.now(_pf.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "hostname": socket.gethostname(),
-        "user": os.environ.get("USER", "unknown"),
+        "user": _caller_name(),
         # The importer moves the paths under this home to its own (`home_path_rewrite`).
         "home": str(Path.home()),
         "home_real": os.path.realpath(Path.home()),
@@ -254,6 +254,13 @@ def _build_export_zip(
         manifest["components"] = ["memory"]
     if include_agent_templates:
         manifest["agent_templates"] = bundled_templates
+    # The apps the export notice names, so the import can name the ones the other
+    # machine has not set up (`portability_export.apps_not_set_up`).
+    apps, apps_past_cap = ([], 0) if memory_only else _pf.recorded_apps()
+    if apps:
+        manifest["unbundled_apps"] = apps
+    if apps_past_cap:
+        manifest["unbundled_apps_past_cap"] = apps_past_cap
     if include_sessions:
         session_mtimes: dict[str, float] = {}
         # The writer judges each chat authoritatively under its lock (privacy +
@@ -461,13 +468,18 @@ def plan_export(
             "format": "zip",
             "created_at": created_at,
             "hostname": socket.gethostname(),
-            "user": os.environ.get("USER", "unknown"),
+            "user": _caller_name(),
             "home": str(Path.home()),
             "home_real": os.path.realpath(Path.home()),
             "contents": contents_summary,
         }
         if include_agent_templates:
             manifest_skeleton["agent_templates"] = bundled_templates
+        apps, apps_past_cap = _pf.recorded_apps()
+        if apps:
+            manifest_skeleton["unbundled_apps"] = apps
+        if apps_past_cap:
+            manifest_skeleton["unbundled_apps_past_cap"] = apps_past_cap
         session_order, sessions_skipped = _pf._plan_sessions(
             mc_real,
             prefix,

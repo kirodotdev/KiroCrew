@@ -193,6 +193,52 @@ def test_an_abandoned_cached_pass_leaves_no_refusal_state_behind(tmp_path):
     assert record.get("expected_launch"), "the stored refusal cannot be approved from the page"
 
 
+def test_a_changed_command_kept_wrapped_for_its_secret_stays_approvable(tmp_path):
+    """A ``secret://`` server stays wrapped while refused, so the target filter sees it too.
+
+    The filter drops the changed launch, but the rewrite already displayed it in full,
+    so the stored refusal still names it for approval. A target the rewrite never
+    captured keeps the refusal unapprovable.
+    """
+    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
+
+    mod = _approval_module()
+    assert mod is not None
+    stem = mod.target_stem("srv")
+    env = {"API_KEY": "secret://srv-key"}
+    approved = mod.LaunchApprovals()
+    approved.approved[stem] = {mod.launch_fingerprint(_APPROVED_CMD, [], env)}
+    pair = mod.launch_pair(
+        rewriter.hash_command(_APPROVED_CMD, []), mod.env_fingerprint(_expand_env_map(env))
+    )
+    approved.approved_pairs[stem] = {pair}
+    approved.approved_displays[stem] = {
+        pair: (mod._bounded_display_argv((_APPROVED_CMD, [])), mod._bounded_display_env(env))
+    }
+    store = tmp_path / "approvals.json"
+    mod._write(store, mod._document(approved, {}))
+    _write_agent(tmp_path / "agents", {"srv": {"command": _ATTACK_CMD, "args": [], "env": env}})
+
+    def boot(extra_targets):
+        approvals = mod.load_approvals(store)
+        target_env = {**_rewrite(tmp_path, frozenset({"srv"}), approvals), **extra_targets}
+        kept, dropped = mod.filter_target_env(target_env, approvals)
+        assert _targets_running(kept, _ATTACK_CMD) == [] and dropped == [stem]
+        assert mod.save_pass(approvals, path=store)
+        return json.loads(store.read_text())["refused"][stem]
+
+    record = boot({})
+    assert record["reason"] == mod.REFUSED_CHANGED
+    assert record["commands"] == [[_ATTACK_CMD]]
+    assert record["approved_commands"] == [[_APPROVED_CMD]]
+    assert record.get("complete") is not False
+    assert record.get("expected_launch"), "a fully displayed changed launch offers no Approve"
+
+    record = boot({"KIROCREW_MCP_TARGET_SRV__other": _target_spec(_ATTACK_CMD, "-c", "id")})
+    assert record["complete"] is False
+    assert "expected_launch" not in record
+
+
 def test_the_gateway_filter_drops_an_unapproved_target():
     mod = _approval_module()
     filt = getattr(mod, "filter_target_env", None)
@@ -1068,7 +1114,13 @@ def test_new_launch_is_refused_at_the_per_server_cap_and_expected_launch_survive
     refusal = document["refused"]["SRV"]
     assert refusal["reason"] == mod.REFUSED_TOO_MANY
     assert len(refusal["expected_launch"].split(",")) == cap
-    assert mod.refused_servers(store) == {}
+    # The dashboard shows it as over the cap, with nothing it could approve.
+    shown = mod.refused_servers(store)["srv"]
+    assert shown["reason"] == mod.REFUSED_TOO_MANY
+    assert shown["launch_cap"] == cap
+    assert len(shown["commands"]) == len(shown["envs"]) == cap
+    assert shown["complete"] is False
+    assert "expected_launch" not in shown
 
     record = document["servers"]["SRV"]
     record["fingerprints"] = [f"{index:0129d}" for index in range(cap * 2)]
@@ -1077,6 +1129,29 @@ def test_new_launch_is_refused_at_the_per_server_cap_and_expected_launch_survive
     loaded = mod.load_approvals(store)
     assert len(loaded.approved["SRV"]) == cap
     assert len(loaded.approved_pairs["SRV"]) == cap
+
+
+def test_a_launch_repeated_after_the_cap_keeps_the_cap_as_the_reason():
+    mod = _approval_module()
+    assert mod is not None
+    cap = mod._MAX_SERVER_LAUNCHES
+    env_hash = mod.env_fingerprint({})
+    approvals = mod.LaunchApprovals()
+
+    def admit(arg: str) -> bool:
+        return approvals.admit(
+            "srv",
+            mod.launch_fingerprint(_APPROVED_CMD, [arg], {}),
+            launch=(_APPROVED_CMD, [arg]),
+            env={},
+            derived_env_hash=env_hash,
+        )
+
+    assert not any(admit(str(index)) for index in range(cap + 1))
+    assert approvals.refused["SRV"] == mod.REFUSED_TOO_MANY
+    # A later agent declaring a launch the pass already retained, in file order.
+    assert not admit("0")
+    assert approvals.refused["SRV"] == mod.REFUSED_TOO_MANY
 
 
 def test_operator_approval_refuses_a_launch_set_over_the_per_server_cap(tmp_path):

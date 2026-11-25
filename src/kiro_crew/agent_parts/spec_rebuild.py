@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         _skip_unreadable_main_spec,
         _spec_hold_open,
         _spec_path_is_safe,
+        _strip_legacy_denied_commands,
         agent_spec_candidates,
         agent_spec_path,
         agent_state,
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
         fork_refresh,
         guide_platform,
         kiro_agents_dir_path,
+        loads_user_json,
         logger,
         managed_mcp,
         mcp_aliases,
@@ -127,6 +129,14 @@ _rebuild_answer_generation: int | None = None
 #: half-written rebuild may have overtaken. Set by :func:`_tracks_rebuild_outcome`,
 #: cleared by the next rebuild that completes.
 _rebuild_incomplete: bool = False
+
+
+#: The spec path the last completed ``rebuild_agent_config`` wrote, with the MCP config
+#: files as that rebuild found them before merging (``mcp_sources.sources_fingerprint``).
+#: :func:`ensure_agent_materialized` rebuilds before a default-agent session when the
+#: files on disk differ from it. ``None`` until a rebuild completes in this process; with
+#: nothing to compare against, the spec on disk is kept.
+_mcp_sources_read: tuple[Path, tuple[tuple[str, bytes | None], ...]] | None = None
 
 
 #: Serializes the read-rebuild-record sequence of :func:`reproject_for_ceiling_change`
@@ -636,7 +646,7 @@ def rebuild_agent_config(
     # grant is derived, so a profile edit that lands mid-rebuild still reads as a move.
     # Published only once the rebuild completes (below); a rebuild that raises is marked
     # by ``_tracks_rebuild_outcome`` instead, so a seed taken over it projects nothing.
-    global _rebuild_answer_generation, _rebuild_incomplete
+    global _rebuild_answer_generation, _rebuild_incomplete, _mcp_sources_read
     answer_generation = _answer_generation_after_profile_poll()
     path = kiro_agents_dir_path() / AGENT_FILENAME
 
@@ -678,11 +688,15 @@ def rebuild_agent_config(
     # auto-approve grant on the name for whatever is bound there next.
     _app_owned_at_start = mcp_sources._app_owned_mcp_keys()
 
+    # The bytes the base copy was parsed from, compared again under the spec lock.
+    base_raw_out: list[bytes | None] = []
     if not clean and path.exists():
         # Existing config — preserve user customizations, only refresh
         # security-critical and dynamic fields.
         try:
-            config, fresh_install = _load_existing_config(path, gated_off=gated_off)
+            config, fresh_install = _load_existing_config(
+                path, gated_off=gated_off, _raw_out=base_raw_out
+            )
         except _AgentSpecUnreadable as exc:
             return _skip_unreadable_main_spec(
                 path, exc, refresh_forks, clean=clean, wrote_out=_wrote_out, held_out=_held_out
@@ -722,6 +736,10 @@ def rebuild_agent_config(
     # See docs/architecture/mcp.md. CC global is kept only as a gap-filler so
     # the Claude Code provider can be re-enabled later without rework; it must
     # not shadow a Kiro-global entry.
+    #
+    # The files are fingerprinted BEFORE the merge reads them, so an edit landing
+    # while this rebuild runs still differs at the next session start.
+    sources_read = mcp_sources.sources_fingerprint()
     sources = mcp_sources.merge_mcp_sources(config)
 
     # Resolve MCP commands to absolute paths and validate.
@@ -862,6 +880,7 @@ def rebuild_agent_config(
             if _held_out is not None:
                 _held_out.append(False)
             return declined if declined is not None else path
+        _carry_concurrent_spec_edits(path, config, base_raw_out[0] if base_raw_out else None)
         try:
             default_spec_commit.write_default_spec(
                 path,
@@ -881,7 +900,8 @@ def rebuild_agent_config(
                     key: command
                     for key, command in resolved.unresolved_commands.items()
                     if mcp_server_alias(key) not in config["mcpServers"]
-                }
+                },
+                unused_own=mcp_sources.unused_own_entries(config, sources, mounted),
             )
         except _AgentSpecUnreadable as exc:
             # The commit re-reads the spec inside its write lock
@@ -908,6 +928,7 @@ def rebuild_agent_config(
 
     _rebuild_answer_generation = answer_generation
     _rebuild_incomplete = False
+    _mcp_sources_read = (path, sources_read)
     _invalidate_projection_if_answer_moved(answer_generation)
 
     if _wrote_out is not None:
@@ -920,6 +941,65 @@ def rebuild_agent_config(
         # model applier must not read a held conductor spec as a refused rebuild.
         _held_out.append(conductor_held)
     return path
+
+
+def _carry_concurrent_spec_edits(path: Path, config: dict, base_raw: bytes | None) -> None:
+    """Carry into *config* what another writer committed to *path* since the base read.
+
+    The rebuild reads its base copy long before it takes ``agents_spec_lock``, so
+    a locked read-merge-writer (the agent-detail PATCH, fork/publish, the fork
+    refresh) can commit in between. Called with the lock held, just before the
+    write: when the file still holds *base_raw* byte for byte nothing changes.
+    Otherwise every top-level key this rebuild left as the base had it takes the
+    file's current value (or is dropped when the other writer removed it); a key
+    the rebuild derived itself, or one every rebuild derives afresh, stays as
+    derived. A carried ``allowedTools`` goes through the ceiling pass again and a
+    carried ``toolsSettings`` loses the retired ``deniedCommands`` /
+    ``autoAllowReadonly`` again, so carrying can never widen a grant.
+    """
+    if base_raw is None:
+        return
+    try:
+        fresh_raw = _read_existing_spec(path)
+    except _AgentSpecUnreadable:
+        return
+    if fresh_raw is None or fresh_raw == base_raw:
+        return
+    try:
+        base = loads_user_json(base_raw.decode("utf-8"))
+        fresh = loads_user_json(fresh_raw.decode("utf-8"))
+    except ValueError:
+        return
+    if not isinstance(base, dict) or not isinstance(fresh, dict):
+        return
+    # Every rebuild derives these afresh (the PreToolUse hooks, the prompt URI, the
+    # managed server commands, the mcp.json merge it pins off), so another writer's
+    # value is never carried for them, even when this rebuild derived what the base
+    # already held.
+    rebuild_derived = ("hooks", "prompt", "mcpServers", "includeMcpJson", "useLegacyMcpJson")
+    absent = object()
+    carried: list[str] = []
+    for key in dict.fromkeys([*base, *fresh]):
+        if key in rebuild_derived:
+            continue
+        was = base.get(key, absent)
+        now = fresh.get(key, absent)
+        if now == was or config.get(key, absent) != was:
+            continue
+        if now is absent:
+            config.pop(key, None)
+        else:
+            config[key] = now
+        carried.append(key)
+    if not carried:
+        return
+    if "allowedTools" in carried:
+        auto_approve.final_ceiling_pass(config)
+    if "toolsSettings" in carried:
+        _strip_legacy_denied_commands(config)
+    logger.info(
+        "rebuild of %s kept a concurrent edit to: %s", path.name, ", ".join(map(str, carried))
+    )
 
 
 def _lineage_unreadable_refusal(agent: str, exc: BaseException) -> str:
@@ -1166,9 +1246,12 @@ def ensure_agent_materialized(agent: str | None) -> bool:
     left to the caller's graceful set_mode fallback rather than being guessed at.
 
     A present file is rebuilt too when a server the last rebuild dropped because
-    its program was not found (``mcp_dropped_servers``) has that program back.
-    Nothing else re-runs the rebuild between gateway starts and config changes,
-    so the server would stay out of every session until a restart.
+    its program was not found (``mcp_dropped_servers``) has that program back,
+    and when an MCP config file the rebuild merges changed since the last rebuild
+    in this process wrote it (``_mcp_sources_read``) -- a server added to
+    ``~/.kiro/settings/mcp.json`` by hand or by ``kiro-cli mcp add``, say.
+    Nothing else re-runs the rebuild for either, so the server would stay out of
+    every session until a sync or a restart.
 
     Returns ``True`` when the managed default file is present (already, or after
     a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
@@ -1191,14 +1274,26 @@ def ensure_agent_materialized(agent: str | None) -> bool:
                 for name, rec in mcp_dropped_servers.load_dropped().items()
                 if shutil.which(expand_spec_args([rec["command"]])[0], path=mcp_search_path(""))
             ]
-            if not found:
+            last_read = _mcp_sources_read
+            if found:
+                logger.info(
+                    "MCP server(s) %r dropped at the last rebuild now have their program; "
+                    "rebuilding %s before spawn",
+                    found,
+                    agent_file,
+                )
+            elif (
+                last_read is not None
+                and last_read[0] == agent_file
+                and last_read[1] != mcp_sources.sources_fingerprint()
+            ):
+                logger.info(
+                    "An MCP config file changed since the last rebuild; rebuilding %s "
+                    "before spawn",
+                    agent_file,
+                )
+            else:
                 return True
-            logger.info(
-                "MCP server(s) %r dropped at the last rebuild now have their program; "
-                "rebuilding %s before spawn",
-                found,
-                agent_file,
-            )
         else:
             logger.warning(
                 "Managed agent config %s missing — regenerating before spawn "

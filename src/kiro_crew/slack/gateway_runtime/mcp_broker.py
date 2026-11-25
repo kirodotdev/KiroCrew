@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         load_approvals,
         logger,
         maintenance_executor,
+        pin_gateway_part,
         resolve_prefetch,
         rewrite_agents,
         rewrite_kwargs,
@@ -164,6 +165,9 @@ async def _init_mcp_gateway(
         # comes from agent-writable files, and gatewayd execs it outside
         # the sandbox. See ``mcp_gateway.launch_approval``.
         approvals = await asyncio.to_thread(load_approvals)
+        # One gateway PATH part for this pass, later rebuilds and gatewayd, so
+        # a live PATH change cannot make them fold a declared PATH differently.
+        await asyncio.to_thread(pin_gateway_part)
 
         # rewrite_agents() walks ~/.kiro/agents, parses every JSON spec and
         # rewrites the overlay — pure-sync file I/O. The target filter is
@@ -349,6 +353,73 @@ def _mark_mcp_broker_ready(
             )
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+    # Holders for stored MCP resource subscriptions restore once ``run`` marks the
+    # gateway ready, after ``start_dashboard`` and its open-tab restore have
+    # returned, so the startup closure check reads a final ``open_slots_restored``.
+    # On a gateway with no dashboard restore, or with an unknowable open-tab
+    # registry, the flag stays False and every dashboard key is kept: absence is
+    # never closure. With the default-off switch, even the module import stays
+    # off the boot path. Here rather than at the boot start, so a broker a retry
+    # brings up later holds them too.
+    cfg_gw = self._cfg.mcp_gateway
+    if cfg_gw.resource_subscriptions.enabled:
+        ready = getattr(self, "_mcp_launch_approval_ready", None)
+        if ready is None:
+            ready = asyncio.Event()
+            self._mcp_launch_approval_ready = ready
+
+        async def _start_resource_subscriptions() -> None:
+            await ready.wait()  # type: ignore[union-attr]  # narrowed above
+            from kiro_crew.dashboard.resource_wakes import ResourceWakeDispatcher
+            from kiro_crew.mcp_gateway.resource_subscriptions import (
+                EventSink,
+                ResourceSubscriptionService,
+                start_active_service,
+            )
+
+            # The service's events become session wakes. Same task, so the
+            # dispatcher exists only with the switch on and stops with the broker.
+            dispatchers: list[ResourceWakeDispatcher] = []
+
+            def _wake_sink(service: ResourceSubscriptionService) -> EventSink:
+                dispatcher = ResourceWakeDispatcher(service, lambda: self.dashboard_state)
+                dispatchers.append(dispatcher)
+                return dispatcher.handle
+
+            async def _session_is_closed(session_key: str) -> bool:
+                from kiro_crew.dashboard.session_owners import session_closure_recorded
+
+                return await session_closure_recorded(
+                    self.dashboard_state,
+                    session_key,
+                    f"resource subscription restore for {session_key}",
+                )
+
+            try:
+                await start_active_service(
+                    lambda: manager.socket_path,
+                    lambda: (live.snapshot() or self._cfg).mcp_gateway.resource_subscriptions,
+                    _wake_sink,
+                    session_is_closed=_session_is_closed,
+                    backends_shared=lambda: (live.snapshot() or self._cfg).mcp_gateway.enabled,
+                    backend_spawn_wait_secs=cfg_gw.spawn_queue_wait_secs,
+                )
+                # Held until the broker stops this task.
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("mcp-gateway: resource subscriptions did not start")
+            finally:
+                for dispatcher in dispatchers:
+                    await dispatcher.close()
+
+        subscription_task = asyncio.create_task(
+            _start_resource_subscriptions(), name="mcp-resource-subscriptions-start"
+        )
+        self._mcp_resource_subscription_task = subscription_task
+        self._background_tasks.add(subscription_task)
+        subscription_task.add_done_callback(self._background_tasks.discard)
     # App installs and enables write agent specs after this rewrite; this is
     # how they reach the overlay without a restart. The hook lives exactly as
     # long as the broker: ``_stop_mcp_broker`` clears it.
@@ -553,6 +624,19 @@ async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
     from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
 
     set_overlay_refresher(None)
+    subscription_task = getattr(self, "_mcp_resource_subscription_task", None)
+    self._mcp_resource_subscription_task = None
+    if subscription_task is not None:
+        if not subscription_task.done():
+            subscription_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await subscription_task
+        from kiro_crew.mcp_gateway.resource_subscriptions import stop_active_service
+
+        try:
+            await stop_active_service()
+        except Exception:
+            logger.exception("mcp-gateway: resource subscription holders did not stop cleanly")
     managers = (self._mcp_gateway_pending, self._mcp_gateway_manager)
     self._mcp_gateway_pending = None
     self._mcp_gateway_manager = None
@@ -570,7 +654,11 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     flag in-process (start/stop the broker), no gateway restart.
 
     Reloads config so it acts on the value the handler just wrote.
-    Returns ``{enabled, running, ping_ok}``.
+    Returns ``{enabled, running, ping_ok, restart_required}``.
+    ``restart_required`` is true while a marked server (``stub_servers``) is
+    not in the set the broker serves. That server is served from the next
+    gateway start, so sharing that is not live for it is waiting for that
+    restart, not failing.
 
     The flag governs backend SHARING, not the broker's existence: a routed
     server needs its stub either way. So turning sharing off restarts the
@@ -591,6 +679,8 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
 
     self._cfg = KiroCrewConfig.load()
     serving = self._mcp_stub_servers_started
+    configured = frozenset(self._cfg.mcp_gateway.stub_servers)
+    restart_required = bool(configured - serving)
     # The same lock as the app-install overlay refresh: a refresh that read the
     # old broker's inputs must not publish over the overlays this restart writes.
     lock = getattr(self, "_mcp_overlay_refresh_lock", None)
@@ -624,45 +714,81 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     # pending change taking effect early on an unrelated sharing edit. When
     # the two agree the refresh is a no-op for the overlay, so the guard only
     # ever suppresses the disagreeing case.
-    if self.sessions is not None and frozenset(self._cfg.mcp_gateway.stub_servers) == serving:
+    if self.sessions is not None and configured == serving:
         await self.sessions.refresh_defaults()
-    if mgr is None:
-        return {"enabled": enabled, "running": False, "ping_ok": False}
-    running = bool(mgr.is_running)
-    ping_ok = bool(running and await mgr.ping())
-    return {"enabled": enabled, "running": running, "ping_ok": ping_ok}
+    running = ping_ok = False
+    if mgr is not None:
+        running = bool(mgr.is_running)
+        ping_ok = bool(running and await mgr.ping())
+    return {
+        "enabled": enabled,
+        "running": running,
+        "ping_ok": ping_ok,
+        "restart_required": restart_required,
+    }
 
 
-async def _apply_mcp_stub(self: GatewayOrchestrator) -> dict:
-    """Dashboard callback: record a stub change for the NEXT gateway start.
+async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = False) -> dict:
+    """Dashboard callback: apply a stub change now, with no gateway restart.
 
-    Deliberately leaves the running broker alone, because there is nothing
-    useful to do to it. A session's MCP toolset is fixed at ``session/new``,
-    so no running session can adopt a new stub set however the broker is
-    cycled; the change only ever matters to sessions created later, and the
-    next start builds their routing from this config.
+    A routed server's target lives in the daemon's process environment, set at
+    spawn (``daemon.launch.env_target_resolver``), and the agent overlays are
+    written with it (``_init_mcp_gateway``). The two must agree: a new session
+    that routes a server through the stub while the daemon holds no target for
+    it gets nothing. So a changed set restarts the BROKER, not the gateway: the
+    same stop-then-start the sharing switch runs (``_apply_mcp_gateway_enabled``),
+    with the configured set instead of the served one, then the provider factory
+    is refreshed so new sessions read the new overlays.
 
-    Restarting to shorten that wait still destroys work: the drain gives
-    in-flight tool calls ``DRAIN_SECS`` to finish and then cancels them.
-    The stub re-attaches to the replacement daemon afterwards, so those
-    servers are not lost for the session's life -- but a cancelled call
-    is still a cancelled call, and the restart buys the running session
-    nothing, because its toolset was fixed at ``session/new``.
-
-    Rewriting the agent specs without restarting is worse still: a new
-    session would route a server through the stub while the running daemon
-    has no target for it, and an unknown target is a TERMINAL rejection in
-    ``stub.py``, not a fallback. The spec rewrite and the daemon's routing
-    environment are built together at startup and must stay that way, so
-    this callback persists intent only and reports that a restart is needed.
+    What the broker restart costs the chats already attached to it: their
+    in-flight routed calls get ``DRAIN_SECS`` and are then failed with a
+    retryable error, and each stub for a retained target re-attaches to the new
+    daemon (``stub.py``'s reconnect loop), except one holding a live resource
+    subscription. A removed target cannot reconnect either. Every broker restart
+    resets open chats through the same path as ``POST /api/sessions/restart``,
+    including additions and approved launches, so subscribed stubs are replaced.
+    Busy chats reset when their turn ends. The result reports ``sessions_reset``.
+    Starting the first broker only refreshes defaults: no attached stub is lost.
+    An unchanged set restarts only when the press approved a launch
+    (``launch_approved``).
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
     self._cfg = KiroCrewConfig.load()
+    configured = frozenset(self._cfg.mcp_gateway.stub_servers)
+    lock = getattr(self, "_mcp_overlay_refresh_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        self._mcp_overlay_refresh_lock = lock
+    async with lock:
+        serving = frozenset(getattr(self, "_mcp_stub_servers_started", frozenset()) or ())
+        running = self._mcp_gateway_manager is not None or self._mcp_gateway_pending is not None
+        # A launch approval can replace the daemon's target even if its name
+        # was already routed. A pure re-apply must leave attached calls alone.
+        changed = configured != serving or (bool(configured) and launch_approved)
+        if changed:
+            if running:
+                await self._stop_mcp_broker()
+            self._mcp_stub_servers_started = frozenset()
+            if configured:
+                await self._init_mcp_gateway(stub_servers=configured)
+    mgr = self._mcp_gateway_manager
+    if self.dashboard_state is not None:
+        self.dashboard_state._mcp_gateway_manager = mgr
+    sessions_reset = 0
+    if changed and self.sessions is not None:
+        if (running or serving - configured) and self.dashboard_state is not None:
+            from kiro_crew.dashboard.handlers.sessions import reset_sessions
+
+            sessions_reset = await reset_sessions(self.dashboard_state)
+        else:
+            await self.sessions.refresh_defaults()
+    applied = not configured or mgr is not None
     return {
-        "applied": False,
-        "restart_required": True,
-        "stub_servers": sorted(self._cfg.mcp_gateway.stub_servers),
+        "applied": applied,
+        "restart_required": not applied,
+        "stub_servers": sorted(configured),
+        "sessions_reset": sessions_reset,
     }
 
 

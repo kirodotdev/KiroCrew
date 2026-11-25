@@ -168,6 +168,34 @@ async def reproject_claimed_session(
     return claimed
 
 
+async def reproject_person_turn(
+    sessions: Any,
+    session_key: str,
+    agent_id: str,
+    claimed: tuple[Any, bool, bool],
+    claim: Callable[[], Awaitable[tuple[Any, bool, bool]]],
+    pending: Callable[[], Awaitable[bool]],
+) -> tuple[Any, bool, bool]:
+    """A person's claim of a scheduled-kind ``cron:`` batch, re-projected for them.
+
+    Called with the lease held, *claim* claiming under the person mark, and only
+    while no sub-agent work is *pending* (``kas_project_hooks.person_turn_reprojects``).
+    Never refuses the turn: a re-projection that does not land runs it as projected.
+    """
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
+
+    if await person_turn_reprojects(claimed[0], agent_id, pending):
+        logger.info(
+            "%s: re-projecting the scheduled run's session for a person's turn", session_key
+        )
+        await sessions.reset(session_key)
+        claimed = await claim()
+        adopt = getattr(sessions, "adopt_turn", None)
+        if callable(adopt):
+            adopt(session_key)
+    return claimed
+
+
 class UnattendedClaim(NamedTuple):
     """:func:`reproject_unattended_claim`'s answer."""
 
@@ -191,6 +219,8 @@ async def reproject_unattended_claim(
     claimed: tuple[Any, bool, bool],
     claim: Callable[[], Awaitable[tuple[tuple[Any, bool, bool], Any]]],
     token: ClaimToken,
+    *,
+    scheduled: bool = False,
 ) -> UnattendedClaim:
     """A cron or channel claim, re-projected when its KAS batch is stale.
 
@@ -207,8 +237,18 @@ async def reproject_unattended_claim(
     session is still recorded and every other claim on the key waits for this
     turn (``SessionManager.open_replay_gap``); the caller closes it after its
     release. A reset or claim that raises closes the gap here.
+
+    *scheduled* (a scheduled cron fire) also re-projects a batch a person's turn
+    projected that recorded withholding what the scheduled turn auto-approves
+    (``kas_project_hooks.scheduled_turn_reprojects``); the re-claim is scheduled-kind.
     """
+    from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
     from kiro_crew.agent_sdk.spec_hooks import _MAX_REPROJECTIONS, hook_projection_stale
+
+    async def _stale(provider: Any) -> bool:
+        if await hook_projection_stale(provider, agent_id):
+            return True
+        return scheduled and scheduled_turn_reprojects(provider)
 
     opened = False
     superseded = False
@@ -225,11 +265,12 @@ async def reproject_unattended_claim(
 
     try:
         for _ in range(_MAX_REPROJECTIONS):
-            if not await hook_projection_stale(claimed[0], agent_id):
+            if not await _stale(claimed[0]):
                 break
             logger.info(
                 "agent %r: the claimed session auto-approves a capability a PreToolUse "
-                "hook now covers; re-projecting it before the turn runs",
+                "hook now covers, or was projected for another turn kind; "
+                "re-projecting it before the turn runs",
                 agent_id,
             )
             if not opened:
@@ -257,7 +298,7 @@ async def reproject_unattended_claim(
             # every other claim, so the caller's recapture is this turn's.
             expect = fresh_entry if fresh_entry is not None else _NO_FENCE
         else:
-            still_stale = await hook_projection_stale(claimed[0], agent_id)
+            still_stale = await _stale(claimed[0])
     except BaseException:
         # The caller learns of no re-projection, so it closes no gap: this does.
         closer = getattr(sessions, "close_replay_gap", None)

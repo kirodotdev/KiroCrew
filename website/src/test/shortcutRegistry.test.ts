@@ -62,13 +62,15 @@ describe('shortcutRegistry — table invariants', () => {
   it('every default and alias chord is a valid chord (a modifier that is not Shift), and the bare-key entries are exactly these', () => {
     // A bare key would fire mid-typing from the global handler, so only an entry
     // whose own handler gates it may carry one, and each is pinned to its exact
-    // chord: bare Escape stops speech from a capture-phase listener, and bare
+    // chord: bare Escape stops speech from a capture-phase listener and stops
+    // the running turn from the message box's own key gate, and bare
     // Up/Down move through the notification feed only while one of its rows has
     // focus, and Tab / Shift+Tab indent a list line only from the composer's
     // own key handler. None of them can be stored or rebound, so each is
     // code-dispatched.
     const bareKeyChords = new Map<string, Chord>([
       ['stop-speaking', { key: 'Escape' }],
+      ['stop-turn', { key: 'Escape' }],
       ['notification-prev', { key: 'ArrowUp' }],
       ['notification-next', { key: 'ArrowDown' }],
       ['list-indent', { key: 'Tab' }],

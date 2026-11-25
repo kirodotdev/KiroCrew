@@ -6,8 +6,9 @@ import { i18nT } from '../i18n/t'
 import { fireConductorModeEffect } from '../lib/conductorModeEffect'
 
 interface CrewModeChipProps {
-  /** Turns this chat into a conductor mode chat. */
-  onTurnOn: () => void
+  /** Turns this chat into a conductor mode chat. A promise is a switch that asks
+   *  first: it resolves `true` once the person confirmed and the switch started. */
+  onTurnOn: () => void | Promise<boolean>
   /** the chip is a toggle. While conductor mode is on and no message is
    *  sent yet it shows pressed, and a click turns it off again. */
   pressed?: boolean
@@ -38,8 +39,12 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
   const click = () => {
     if (busy) return
     if (pressed) { onTurnOff?.(); return }
-    fireConductorModeEffect(ref.current?.getBoundingClientRect() ?? null)
-    onTurnOn()
+    // The effect announces a switch that started: after a confirm, only once
+    // the person said yes, from where the chip was when it was pressed.
+    const rect = ref.current?.getBoundingClientRect() ?? null
+    const started = onTurnOn()
+    if (started) void started.then(ok => { if (ok) fireConductorModeEffect(rect) })
+    else fireConductorModeEffect(rect)
   }
   return (
     <Glass

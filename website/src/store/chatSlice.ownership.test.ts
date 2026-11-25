@@ -167,7 +167,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['composerCards', composerCards, ['FOLDER_SUGGESTION_MAX_TURNS', 'capturePendingAskId', 'isAnsweredQuestionEnding', 'pendingQuestionFor', 'shouldResolveAskOnSend']],
   ['mcpApps', mcpApps, ['mcpAppKey']],
   ['subagents', subagents, [
-    'isActiveSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
+    'isActiveSubagent', 'isChipSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
     'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount',
   ]],
   ['workflows', workflows, ['WORKFLOW_TERMINAL_STATUSES', 'isTerminalWorkflowStatus', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys']],
@@ -175,7 +175,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['side', side, ['beginSideQueueEdit', 'finishSideQueueEdit', 'forgetSideSteerSubmittedText', 'noteSideQueueCancelWaiting', 'noteSideQueueDroppedByClose', 'queueEditBroadcastAt', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'setSideQueueEditDraft', 'takeSideQueueDroppedByClose', 'takeSideQueueDroppedByResyncThenClose', 'takeSideSteerDroppedByClose', 'takeSideQueueEditForClose']],
   ['selectors', selectors, [
     'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSlotMessages',
-    'selectPendingTurn', 'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
+    'selectPendingTurn', 'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectSlotTurnRunning', 'selectTrailingSendUnconfirmed',
     'selectResumeInterrupted', 'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
   ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'setSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],

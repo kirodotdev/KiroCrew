@@ -1,7 +1,7 @@
 import { api } from '../../api/client'
 import { apiErrorCode } from '../../api/apiError'
 import modelTokensRaw from '../../model_tokens.json'
-import { markModelsDegraded, markModelsAuthRequired, modelHealthKey } from '../modelListHealth'
+import { markModelsDegraded, markModelsAuthRequired, markModelsCold, modelHealthKey } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -244,6 +244,12 @@ interface RawModel {
    *  gateway/kiro-cli predating the field simply omits it, and we render no
    *  badge rather than inventing a price (see ModelInfo.rateMultiplier). */
   rate_multiplier?: number
+  /** Set on the one `auto` row of a cold answer: no session has recorded this
+   *  account's list yet (`models_kas_bundle._cold_response`). */
+  cold?: boolean
+  /** The account hid this model from its Kiro model picker; the row stays listed
+   *  (`models_kas_bundle._picker_row`). */
+  hidden_by_account?: boolean
 }
 
 /** The window a /api/models row reports, or 0 when it reports none. */
@@ -333,20 +339,6 @@ export class AcpAdapter implements ProviderAdapter {
       const c = (await api.kirocrewConfig()) as KirocrewAgentConfig
       const m = c?.agent?.model || ''
       return m === 'auto' ? '' : m
-    } catch {
-      return ''
-    }
-  }
-
-  /** KiroCrew's configured default reasoning effort (Settings → Chat). '' means
-   *  no default, i.e. the model picks its own. A per-slot override outranks it,
-   *  matching ConfigLoader._acp()'s `reasoning_effort_override or default`.
-   *  `readConfig` supplies the gateway config body from the caller's shared
-   *  `['kirocrewConfig']` query, avoiding a second GET at boot. */
-  async resolveDefaultEffort(readConfig: () => Promise<unknown>): Promise<string> {
-    try {
-      const c = (await readConfig()) as KirocrewAgentConfig
-      return c?.agent?.reasoning_effort || ''
     } catch {
       return ''
     }
@@ -518,13 +510,18 @@ export class AcpAdapter implements ProviderAdapter {
           description: m.description || '',
           contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
           rateMultiplier: rowMultiplier(m),
+          ...(m.hidden_by_account === true ? { hiddenByAccount: true } : {}),
         }
       })
       // The account moved while this was in flight: the list (and its health) may be the
       // old account's, and the request that replaced it owns both.
       if (configured && account !== seenAccount()) return result
-      if (configured) writeCachedModels(result, account) // remember this good live list for next hiccup
-      markModelsDegraded(health, false) // live success → self-heal can stop polling
+      // A cold answer is shown, but it is not this account's list: never the
+      // last-good one, and the page keeps reading, with no failure notice.
+      const cold = models.some((m: RawModel) => m.cold === true)
+      if (configured && !cold) writeCachedModels(result, account) // remember this good live list for next hiccup
+      markModelsDegraded(health, false)
+      markModelsCold(health, cold)
       return result
     } catch (err) {
       // Transient backend failure (503 / network): NOT live — keep polling.

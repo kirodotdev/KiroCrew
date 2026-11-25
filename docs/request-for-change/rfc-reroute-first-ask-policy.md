@@ -3,9 +3,9 @@ title: One reroute-first ask policy for every crew kind
 status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-15
-last-audited: 2026-11-15
-audited-at: 0fc6bc69d6
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 37623
 implementation-prs: [37609]
 tracking-issues: [37606]
 supersedes: []

@@ -1,0 +1,5 @@
++14
+The rm floor's fd-prefix check (`rm_floor._pull_trailing_fd_prefix`) reads only the
+segment's last word, walking back from its end to the last blank instead of joining the
+whole segment and searching it with a regex at every redirection, so a line of many
+`<<` stays linear. The regex it replaces is removed; the answers are unchanged.

@@ -269,7 +269,7 @@ Detection, not prevention. For a resume that writes, the window is the gap betwe
 file's stat and its rename. For a resume that only reads, it is the gap between the
 re-read that precedes its session and that session's files moving, plus however long
 the map write takes to become visible in the file this reads — bounded by
-`SessionMap._FLUSH_DEBOUNCE_SECS`. Either way what lands in that gap lands in the
+`session_map._FLUSH_DEBOUNCE_SECS`. Either way what lands in that gap lands in the
 trash — fully restorable, with destruction still needing a second explicit `empty`.
 
 ## What is reclaimable
@@ -357,8 +357,8 @@ still refuses, and `live` only chooses which reason is shown.
 
 The split between the two read endpoints is a cost boundary, not a taste.
 
-A row needs a title, which `list_sessions()` takes from the transcript's first
-metadata line, cached on mtime. A session that never got a title falls back to a
+A row needs a title, which `list_sessions_indexed()` answers from the listing
+index built over each transcript's first metadata line. A session that never got a title falls back to a
 **bounded re-read** — up to the first 21 lines, looking for the first user message —
 also cached on mtime. So a list costs roughly one `readline()` per titled session
 and a short bounded scan per untitled one. A detail needs the first message,
@@ -406,7 +406,7 @@ session's space both unreclaimable *and* invisible; the fix is that uids stop be
 display text, not that rows disappear.
 
 `dashboard/handlers/session_storage.py` is registered in `_REDACTION_SINKS`
-(`security_posture_sinks_gateway.py`). The registry is a ratchet — adding a redactor call without
+(through `_GATEWAY_SINKS` in `security_posture_sinks_gateway.py`). The registry is a ratchet — adding a redactor call without
 registering the module fails
 `test_every_redactor_call_site_is_a_registered_sink_or_allowlisted`.
 `TestTranscriptContentIsRedacted` covers both surfaces, and
@@ -808,8 +808,10 @@ The removal never unlinks a regular file it does not recognise: callers reach it
 the unlisted-file guard has passed, so a regular file appearing there is unaccounted-for
 data and the batch is reported as kept instead. A link recorded by the scan IS removed,
 because removing a link destroys nothing, and leaving one would make a batch holding it
-impossible to empty for good. Where the platform supports neither `openat` nor
-`O_NOFOLLOW` (Windows) the batch is renamed to an unguessable staging name, verified there,
+impossible to empty for good. A link the guard sees gets this far only when the manifest
+names it or it points at neither a regular file nor a directory (a broken one included).
+Where the platform supports neither `openat` nor `O_NOFOLLOW` (Windows) the batch is
+renamed to an unguessable staging name, verified there,
 and removed by `_sweep_staged`, and progress degrades to one report per batch — a smoother
 bar is not worth a weaker delete. The sweep walks `platform_compat.PinnedDirectory`, the
 same shape as `artifacts_disk._rmtree`: each directory is held still while it is emptied, a
@@ -899,7 +901,9 @@ entry a removal can take by NAME: `pinned_fs.unlink_verified` compares the scann
 and POSIX has no atomic "unlink if this inode", so admitting a link admits that two-syscall
 window - plant one, let the approval pass it, put a file at that name in between, and the removal
 deletes the file. Neither of these removals was asked for, so they refuse; `empty_trash` still
-clears such a batch on the user's own say-so, through an approval that does remove links.
+clears such a batch on the user's own say-so, through an approval that does remove links,
+when its guard passes the link (one the manifest names, or one to neither a regular file nor
+a directory, a broken one included).
 
 Where the platform has no `openat`/`O_NOFOLLOW`, these two paths remove the batch through
 `rename-verify-remove` instead: `_stage_batch_by_name` renames it aside inside the trash root,
@@ -1014,7 +1018,9 @@ and out-of-store cases.
 
 ## APIs
 
-All four mutations are gated on `_is_restricted_session` and audited through the
+Every route answers only the owner and an admitted Shared Crew teammate: any other
+dashboard session gets 403 `owner_only` (`require_owner_for_dashboard_caller`). All four
+mutations are also gated on `_is_restricted_session` and audited through the
 SEL. Every non-2xx body carries a machine-readable `code`.
 
 | Method | Path | Purpose |
@@ -1303,6 +1309,19 @@ user's "empty this batch" is consent for nothing while destroying something. Suc
 batch is skipped and logged rather than deleted, so `freed_bytes` under-reports
 instead of the trash over-deleting. `TestEmptyTrashApproval` and
 `test_restore_never_deletes_a_file_the_manifest_omits` cover both directions.
+
+A link to a directory counts as an entry too. Both walks list one with the directories
+rather than the files, so the scan reads it from that list (by `lstat` through the `fwalk`
+descriptor, and through `platform_compat.is_link_or_junction()` on the `os.walk` fallback,
+which is the Windows branch where a junction is not a symlink; `os.walk` still descends into
+a junction, which only reports what is under it as unlisted too). One no manifest entry
+names keeps the batch, as an unlisted file does, until an operator removes it. A link to a
+regular file is already a file to the scan; a broken link and a real subdirectory still
+count as nothing. `test_an_unlisted_link_to_a_directory_keeps_the_batch` pins both
+branches. The descriptor re-read on the delete path holds links to the approval
+(`BatchIdentity.links`), not to the manifest: with no approval, a link that arrives after
+this scan is removed as a link and never descended into, which
+`test_deletes_only_what_the_manifest_names` pins.
 
 All three now also re-establish the answer through the descriptor they remove by, not only
 by path. The by-path read is a pre-screen that produces the user-facing count; the pinned

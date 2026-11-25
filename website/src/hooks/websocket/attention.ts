@@ -6,7 +6,8 @@
  *  that drive them. */
 import { store } from '../../store'
 import { isChatPath } from '../notificationBanner'
-import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
+import { bindReadCover, bindSlotReadSender, emitSlotRead, flushSlotRead, newerTs, noteShownHere } from '../../lib/slotReadRelay'
+import { queueRead } from '../../lib/readOutbox'
 import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
@@ -35,6 +36,10 @@ export function crewWorkerRoot(slot: string): string {
   const root = crewRootOf(slots.find(s => s.key === slot))
   return root && slots.some(s => s.key === root) ? root : ''
 }
+
+// A conductor's approval card shows its crew members' pending prompts, so its read covers them.
+bindReadCover(conductor => store.getState().dashboard.slots.reduce<string | undefined>(
+  (ts, s) => (s.pending_approval && crewRootOf(s) === conductor ? newerTs(ts, s.last_agent_ts || undefined) : ts), undefined))
 
 /** True when this window is rendering the active slot's transcript: the chat
  *  routes (the root path serves ChatPage too) plus the popout and embed chat
@@ -128,13 +133,15 @@ export function attendArrival(
   reconnecting: boolean,
   onOffScreen: (slot: string) => void,
 ): void {
-  if (slot && !isSlotOnScreen(slot) && !reconnecting) {
-    onOffScreen(slot)
-  }
-  else if (slot && !reconnecting && !document.hidden && document.hasFocus() && isSlotRenderedVisibly(slot)) {
-    const readTs = ts || slotLastTsOf(store.getState().dashboard, slot)
-    emitSlotRead(slot, readTs)
-  }
+  if (!slot || reconnecting) return
+  if (!isSlotOnScreen(slot)) onOffScreen(slot)
+  else recordShown(slot, ts || slotLastTsOf(store.getState().dashboard, slot))
+}
+
+/** A row of *slot* this window renders at server time *ts*: relayed as a read when visible and focused, else kept as shown here. */
+export function recordShown(slot: string, ts: string | undefined): void {
+  if (!document.hidden && document.hasFocus() && isSlotRenderedVisibly(slot)) emitSlotRead(slot, ts)
+  else if (isSlotOnScreen(slot) && isSlotRenderedVisibly(slot)) noteShownHere(slot, ts)
 }
 
 /* Slot-focus intent signal (resume prefetch). The hook instance owns the
@@ -230,9 +237,9 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
     composeSentAt.set(slot, now)
     sendFocus(slot)
   })
-  // Read-relay sender rides the same socket with the same best-effort
-  // contract; slotReadRelay owns the per-slot throttle and the watermark.
+  // `sendIfOpen` drops a read while the socket is down, so the read outbox keeps each until confirmed.
   bindSlotReadSender((slot: string, readTs?: string) => {
+    queueRead(slot, readTs)
     socket.sendIfOpen(readTs ? { type: 'slot_read', slot, read_ts: readTs } : { type: 'slot_read', slot })
   })
   // Tracks the store's view (crewmate thread or activeSlot), not pane focus:

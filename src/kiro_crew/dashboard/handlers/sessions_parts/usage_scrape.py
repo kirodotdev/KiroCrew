@@ -18,6 +18,7 @@ import os
 import re
 
 from kiro_crew.cloud.login_target import parse_whoami_output
+from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.kiro_cli import chat_agent_engines_at, pin_kiro_cli
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
@@ -307,6 +308,160 @@ def _whoami_agreement(before: dict[str, object], after: dict[str, object]) -> st
 #: Unavailable-marker ``reason`` for a sign-in whose whoami names its provider
 #: and no user (see :func:`_account_type_only`).
 _REASON_ACCOUNT_UNPROVEN = "account_unproven"
+
+#: Pill ``reason`` for an auth-class usage failure: no live credential could be
+#: read, or the API refuses the one that was. The remedy is a fresh sign-in.
+_REASON_SIGNIN_REQUIRED = "signin_required"
+#: Pill ``reason`` when the usage API answered with a used amount and no credit
+#: limit for the account (:attr:`kiro_usage_api.UsageResult.plan_without_limit`),
+#: so there is no balance to show.
+_REASON_PLAN_WITHOUT_LIMIT = "plan_without_limit"
+
+
+def _unavailable_reason(
+    api_result: kiro_usage_api.UsageResult, *, same_account: bool
+) -> str | None:
+    """Pick the pill's ``reason`` for a refresh that ends without a reading.
+
+    An auth-class ``auth_state`` (no live credential was readable, or the API
+    rejected the one that was) reports ``signin_required``: the free API was
+    never answered about this account, and the ``/usage`` scrape needs the same
+    sign-in, so the one remedy is signing in again. An answer that reports no
+    credit limit reports ``plan_without_limit``, but only when ``same_account``
+    (the caller proved the account signed in now is the one the API read about):
+    unlike "sign in again", it describes that account. Anything else reports no
+    reason -- a spurious "sign in again" on a working sign-in would be the same
+    class of defect in the other direction.
+
+    This is a message only; the scrape decision does not consult it. An empty
+    candidate list does NOT prove kiro-cli cannot authenticate, because kiro-cli
+    may authenticate from a store this module does not enumerate (see
+    :func:`_identity_matches_account`), so the scrape still runs and its own
+    outcome decides what the pill shows.
+    """
+    if api_result.auth_state in (
+        kiro_usage_api.AUTH_NO_CREDENTIAL,
+        kiro_usage_api.AUTH_REJECTED,
+    ):
+        return _REASON_SIGNIN_REQUIRED
+    if api_result.plan_without_limit and same_account:
+        return _REASON_PLAN_WITHOUT_LIMIT
+    return None
+
+
+def _credential_rejected(api_result: kiro_usage_api.UsageResult) -> bool:
+    """True when the API refused a credential it was shown, not when none was read.
+
+    Rides the ``signin_required`` marker as ``credential_rejected`` so the
+    dashboard can tell a failed sign-in from a missing one.
+    """
+    return api_result.auth_state == kiro_usage_api.AUTH_REJECTED
+
+
+#: Pill ``reason`` when the sessions run on a ``KIRO_API_KEY`` while kiro-cli's own
+#: login is a different identity. Neither ``whoami`` nor ``/usage`` reports the key's
+#: account in that state (kiro-cli answers both from its stored login), so any
+#: balance read here would belong to the login and not to the credits being spent.
+_REASON_API_KEY = "api_key"
+
+
+def _kiro_api_key_configured() -> bool:
+    """Whether a ``KIRO_API_KEY`` is set for the Kiro sessions this gateway spawns.
+
+    Looks where the spawn paths do: the process environment first (the ``.env``
+    line is propagated into it at boot, and live), then the data home's ``.env``
+    itself, which is where a Docker install keeps it after the entrypoint scrubs
+    the environment. An unreadable ``.env`` answers ``False``, as the spawn paths'
+    own read does. Blocking file IO; call off the event loop.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    if (os.environ.get(CRED_KIRO_API_KEY) or "").strip():
+        return True
+    try:
+        return bool(read_env_file_credential(CRED_KIRO_API_KEY).strip())
+    except Exception:  # noqa: BLE001 - an unreadable .env proves no key
+        logger.debug("could not read KIRO_API_KEY from .env for the usage meter", exc_info=True)
+        return False
+
+
+def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> bool:
+    """True only when ``identity`` provably describes the account billed for the credits.
+
+    ``fetch_usage_limits`` tries several candidate credentials (IDE cache first,
+    then the kiro-cli store) and keeps whichever the API accepted, while
+    ``kiro-cli whoami`` always reports kiro-cli's own identity. With two
+    different accounts signed in those are different accounts — showing one's
+    email above the other's overage would misattribute a bill.
+
+    The ONLY accepted proof is a matching profile ARN on both sides. In
+    particular, "there was just one credential we could read" is NOT proof:
+    kiro-cli may authenticate from a store this module does not enumerate (e.g.
+    a platform-specific app-data path), so a lone readable credential does not
+    establish that whoami used it.
+
+    Consequence: accounts with no profile ARN at all (individual / Builder ID)
+    cannot be proven THIS way. Under-reporting an identity is a cosmetic gap;
+    mislabelling whose overage bill this is, is not. That is why the ARN match is
+    required here -- but it is not the only same-account proof available: see
+    :func:`_arnless_email_fields`, which carries the email proof the ARN check
+    structurally cannot apply to an account that has no ARN.
+    """
+    whoami_arn = identity.get("_profile_arn")
+    return isinstance(api_arn, str) and isinstance(whoami_arn, str) and api_arn == whoami_arn
+
+
+def _arnless_email_fields(
+    api_arn: object, api_email: object, identity: dict[str, object]
+) -> dict[str, object]:
+    """The whoami identity fields to attach to an ARN-less reading, tied to the bill.
+
+    The ARN match in :func:`_identity_matches_account` is the proof for an
+    account that has a profile ARN, and it rejects every account that does not --
+    an individual / Builder ID account, which reports no ARN on either side. This
+    names that account instead, and only when the name provably belongs to the
+    credential that was billed.
+
+    The tie is ``api_email``: the e-mail GetUsageLimits returned for the token it
+    actually read (``isEmailRequired``, requested on the ARN-less path in
+    :func:`kiro_crew.dashboard.handlers.kiro_usage_api.fetch_usage_limits`). That
+    is the billing account's own address, so attaching a whoami e-mail only when
+    it EQUALS ``api_email`` ties the displayed identity to the credential that
+    supplied the numbers -- not to a whoami that merely stayed unchanged across
+    the read.
+
+    That extra tie matters because the before/after whoami bracket
+    (:func:`_whoami_agreement`) proves whoami did not change during the read, NOT
+    that the credential :func:`...kiro_usage_api.fetch_usage_limits` selected
+    belongs to that whoami account. On the ARN-less path that credential is
+    chosen by SOURCE ANCHORING -- it must come from kiro-cli's own store
+    (``from_cli_store``) -- which narrows but does not uniquely pin the account:
+    a host with two trusted kiro-cli stores (the Windows Local and legacy Roaming
+    locations) can rank a still-valid token from the signed-out account first, so
+    the numbers can be one account's while whoami names another. Requiring the
+    billed e-mail to match closes that gap; if source anchoring were ever widened
+    (e.g. re-admitting an IDE cache), this equality check would still refuse a
+    mismatch rather than mislabel the bill.
+
+    Returns exactly ``email`` and the ``account_type`` the provider badge renders
+    from (never ``start_url`` or the private ``_profile_arn``), or ``{}`` to
+    attach nothing -- when the account has an ARN (:func:`_identity_matches_account`), when whoami
+    carries no e-mail, when the API returned no billed e-mail, or when the two
+    differ. An ARN-less reading that attaches nothing still publishes its numbers
+    alone, exactly as before this change.
+    """
+    if api_arn is not None:
+        return {}
+    whoami_email = identity.get("email")
+    if not (isinstance(whoami_email, str) and whoami_email):
+        return {}
+    if not (isinstance(api_email, str) and api_email and api_email == whoami_email):
+        return {}
+    fields: dict[str, object] = {"email": _redact_strings(whoami_email)}
+    account_type = identity.get("account_type")
+    if isinstance(account_type, str) and account_type:
+        fields["account_type"] = _redact_strings(account_type)
+    return fields
 
 
 def _account_type_only(identity: dict[str, object]) -> bool:

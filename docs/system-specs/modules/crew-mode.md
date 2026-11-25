@@ -5,7 +5,7 @@ agent template plus a workspace, a memory store, a model and a reasoning effort,
 and it carries free-text `triggers` that decide whether the orchestrator may
 route work to it. The selection path is the `select_crew` MCP tool.
 
-This spec used to own a second thing spelled *crew*: **Crew Mode**, the
+A second thing spelled *crew* is **Crew Mode**, the
 `"crew"` chat-slot mode whose control plane (`crew_chat.py`) fanned one
 session's topics out to sub-sessions. It is retired — see
 [Retired: Crew Mode](#retired-crew-mode) — in favour of the Crew Members page
@@ -39,6 +39,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | **The person closing a conductor closes its workers.** When `DELETE /api/chat/slots/{slot}` closes a conductor mode root or a Bot thread with no app token, the open sessions it still manages after its own close (`session_managers.holder`) close too, down the line, each archived to history, but only one that was in the conductor's tree just before that close (its stamped row names the conductor as `crew_root` or `mate_root`, read in one pass with no await before the close) or was opened while the line was closing; the response names them in `closed_workers` and any that stayed open in `failed_workers`. A session handed up or back by the conductor's own hand-back stays open, as does one that left the tree (`session_release`, an adoption elsewhere), which moves the tree edge and not the manager record, as do a plain chat's sessions and every close by an agent, an app or the idle sweep | `chat_api/slot_lifecycle.py` (`api_chat_slot_delete`), `chat_api/conductor_close.py` (`_conductor_line`, `_close_managed`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | A conductor mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
+| **A person's fork of a conductor mode root is a normal chat.** `POST /api/chat/slots/{slot}/fork` on a root copies the transcript as any fork does, onto the default template with conductor mode off: a top-level chat with no `crew_root`, ledger or Board of its own, which the person may turn conductor mode on in like any chat with messages. The root, its ledger, its Board and its workers are not touched, and its lock stands. Every other fork keeps the parent's agent, and so does a root whose default agent is a conductor; an agent's `session_fork` is unchanged | `dashboard/chat_fork_conductor.py` (`conductor_root_fork_template`), `dashboard/chat_fork.py` (`fork_slot`'s `to_template`) |
 | `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown wherever conductor mode is, so in every build but LTS) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
 | `dashboard.auto_open_conductor_board` (default on; Settings → Chat → Side panel → **Auto-Open Board in Side Panel**, shown wherever conductor mode is, so in every build but LTS) decides the first entry to a conductor mode root: on, the side panel opens with the Board tab (`workers`) in front, unless the chat has a saved panel choice (`mc-activity-open:<slot>`) or the page is in its phone form; off, the chat is entered like any other chat, closed unless Keep side panel open is on. The entry waits for the dashboard config read and is decided once, so a change during the visit opens nothing; a failed read counts as on. Turning conductor mode on (`turnOnCrewMode`) and the welcome page's Board button open the Board either way | `pages/chat/page/crewModeSwitch.ts` (the enter-root effect), `pages/chat/page/pageEnvironment.ts` (`autoOpenConductorBoard`) |
 | A Slack code channel's session born on a conductor (with `slack.code_channel_defaults.conductor_mode` on, where conductor mode is offered, it is born on `agent.crew_mode_agent`, over the code-channel default agent and the folder's agent) is a conductor mode root by its agent but carries no `crew_mode_agent` stamp, so the helper agents it dispatches stay filed in the channel's folder (the stamp is what moves a root's workers out of folders). A missing or malformed value, or the LTS edition, reads as off | `slack/code_channels/binding.py` (`resolve_session_spec`), `slack/features.py` (`code_channel_conductor_agent`) |
@@ -185,8 +186,8 @@ lists more than one kind: a header that separates nothing is chrome, and the hin
 contrasts a template against a Bot the list must then be showing. The folded
 rows keep their `selection_kind`. `AgentSelector` (the shared roster picker) always
 renders its rows flat; the schedule job form splits the kinds itself with a **Runs
-as** switch (Custom agent / Bot) and hands the selector one kind at a time
-(#18772). A template pick stores the bare template name -- the backend's name-first
+as** switch (Custom agent / Bot) and hands the selector one kind at a time.
+A template pick stores the bare template name -- the backend's name-first
 resolution runs an unaliased template on `default_workspace` and Global memory, so
 no cron contract changes. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
@@ -230,12 +231,10 @@ the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
 template pick as a template pick and a later name-only pick retracts it) and the list
 projection exposes it, so a same-name member and template are distinct sessions. A
 local switch publishes the name and kind together and writes them to history in one
-operation. Remote create, switch and adopt carry the kind across the gateway boundary
-and mirror the same pair locally. A successful local metadata write makes that pair
-restart-safe on either machine. If the peer commits but the local metadata write
-fails, the response says `local_persistence: pending`, the live slot stays aligned
-with the peer, and the dirty-slot flush retries the local record; until that retry
-lands, a local restart can restore the prior pair. A
+operation; a history write that fails rolls the selection back and answers 503
+`history_unavailable` (`chat_api/agent_switch.py`), so a restart never restores a pair
+that was not saved. A remote dispatch create carries the kind across the gateway
+boundary (`handlers/remote_dispatch_routes.py`, `agent_kind` `""` or `"template"`). A
 member DM thread's pin covers the namespace too: the same name picked as a template
 is refused like any other re-bind (`409 member_thread_agent_pinned`).
 Request and error contract: [learn-cron-dashboard](learn-cron-dashboard.md) → Chat.
@@ -357,17 +356,40 @@ Both list tools, MCP servers, skills and resources, partitioned by each
 capability row's `state` (`inherited` → Comes with, `local` → Added to). The
 **Resources** group holds every `resources` entry the worker loads that is not
 a skill (a `file://` document or glob, such as the base's steering glob or a
-file an add copied in), named by its path. An added row that names
+file an add copied in), named by its path, and every knowledge-base object, named
+`<type>:<name>`; an add copies such an object as written and the worker spec
+carries it (`agent-spec-fields.md`, Resources). An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
-op. A name in the file's own `skills` list counts as stored: an add copies that
-list as written, so an entry can outlive the agent that listed it, and a
+op. A refused Remove says why under the band, never as the code: a
+`stale_revision` re-reads the view and asks for Remove again, and any other code
+reads as the sentence Add abilities shows for it (`workerKitErrors.ts`). A
+name in the file's own `skills` list counts as stored: an add copies that list
+as written, so an entry can outlive the agent that listed it, and a
 `skills` remove drops the named entry from the list along with any catalog skill
 of that key, leaving every other entry (`mate_capabilities._drop_listed_skills`).
 The view flags every `skills` row the list names `listed`, and lists a name
 with no catalog row as a row of its own, so a capabilities card can name it.
 The card's snapshot keeps the flag, and a removal of a `listed` row has no Undo
 (`listed_skill_entry`), because a `set` writes catalog skills only and would not
-put the list entry back. Approvals are configured in the
+put the list entry back. The Added band's **Tool settings** group lists each
+tool whose `toolsSettings` entry the file adds beyond the worker base
+(`mate_spec_policy.without_held`), one row per tool naming, in words, the tool
+and the keys it sets: the terminal tool (any kiro-cli spelling of `shell`) reads
+**Terminal**, `deniedCommands` reads *blocked commands* and `allowedCommands`
+*allowed commands*; any other tool or key shows as the file names it. Its
+**Remove** confirm names the row in the same words ("Remove “Terminal: blocked
+commands”?"), says that what the settings allowed goes back to the Bot's
+approvals, and that the removal is saved at once.
+Its **Remove** sends a `toolsSettings` `remove` op, which only this in-place
+path accepts: it takes that tool's whole entry out of the file
+(`mate_capabilities._drop_tools_settings`), so the worker's next session carries
+none of it, limits and grants alike: for the terminal tool no `deniedCommands`
+and no `spec-unjudged-denies` hold. An entry the upgrade move or its startup
+repair carried (`mate_restriction_carry.carry_restrictions`) is listed the same
+way; once removed nothing writes it back, since the repair checks a Bot once
+(`policy_checked`). The route is the owner's alone, and a
+capabilities card that names `toolsSettings` is refused at validation, so no
+agent lifts a limit this way. Approvals are configured in the
 **Approvals** section, never here. The Bot's
 **behavior directions** appear with **Remove**, which clears its single directions
 slot. **Add abilities** sits on the same page, under the bands
@@ -378,8 +400,10 @@ other half: it manages the shared templates themselves — "custom agents" in ev
 user-facing string, the agents a chat or a Bot copies abilities from — the files
 under `~/.kiro/agents/` a chat or a Bot runs. The tab sits flat in the pane like
 the Bots tab: no card, no title row (the rail tab and the page title
-already say "Custom agents"), one toolbar row with the filter on the left and
-the **New custom agent** primary button on its right (the Skills tab's rhythm),
+already say "Custom agents"), one toolbar row with the filter on the left (it
+matches a row's name, description, package, source and the names of the MCP
+servers its spec lists, ignoring case) and the **New custom agent** primary
+button on its right (the Skills tab's rhythm),
 then the list and detail panes. The roster on the Bots tab likewise shows
 no page-level private-memory notice and no "New sessions use" default picker
 any more; the default Bot is still marked by its badge on the card / row (a
@@ -936,11 +960,11 @@ Duplicate affordance, so the three duplicate entry points read as one flow.
 A crew name with a character that needs percent-encoding (a space becomes
 `%20`) never rides a URL path from the dashboard. A path-normalising reverse
 proxy decodes `%20` back to a bare space, the request-line delimiter, and
-answers 502 before the gateway sees the request (#19976). The record update
-takes the name in the body instead (`PUT /api/agents`, #19981). Every other
+answers 502 before the gateway sees the request. The record update
+takes the name in the body instead (`PUT /api/agents`). Every other
 crew route that names the crew in its path also answers under a base64url
 twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
-`[A-Za-z0-9_-]` (#20083): `DELETE`, `GET`/`POST .../avatar`,
+`[A-Za-z0-9_-]`: `DELETE`, `GET`/`POST .../avatar`,
 `GET`/`PUT .../capabilities`, `POST .../capabilities/preview`,
 `POST .../capabilities/detach`, `GET`/`PUT .../worker-kit` and
 `POST .../worker-kit/preview`.
@@ -993,7 +1017,10 @@ too. Either failure shows the pane's load error (`crewEditorNext.load_error`)
 as a block notice, never as the code or as `deadline exceeded`. A read past
 either deadline says it ran out of time and names the likely causes, many added
 abilities or a slow or unreachable drive (`load_error_timed_out`); any other
-`capabilities_unavailable` points at the gateway log (`load_error_details`). The
+`capabilities_unavailable` points at the gateway log (`load_error_details`);
+any other refusal reads as the sentence Add abilities shows for the same code
+(`workerKitErrors.ts`), so a Bot file that no longer parses (`invalid_spec`)
+says to fix or restore that file. The
 notice carries **Try again**, which reads the capabilities again, and **Ask the
 agent**, which runs through the editor's leave guard (`leaveGate`): over unsaved
 panes it raises the editor's discard confirm and hands off only once the user
@@ -1340,7 +1367,7 @@ A crew lives only in `config.json` under `agents.<name>`. It is not a kiro-cli
 agent file: `kiro_agent` points at one. A **session** is started from three
 things -- a template, a folder and a memory store -- and a Bot pick is the
 shorthand that fills all three from its row. `resolve_agent_bindings` turns the
-selection into `ResolvedBindings`, in this order (#18328):
+selection into `ResolvedBindings`, in this order:
 
 1. the named crew, when it is a key of `config.agents` and the stated namespace
    is not `template`: its template, workspace, memory store and model pin;
@@ -1564,7 +1591,7 @@ proposed goal exactly as one created on the Bots page does (see the goal
 welcome below); the `/members?create=1&name=<encoded-name>&goal=<encoded-goal>`
 link to an editable UI draft remains for a user who wants to fill it in; opening a draft
 never creates a member or starts a schedule.
-An app's proposal of a Bot from a `.crewmate` bundle is a `crewmate.import` card, raised only through `ctx.crewmate` ([app-kit-platform §8a](app-kit-platform.md#8a-ctxcrewmate-proposes-only-the-owners-press-creates)). Its create pins `approval_mode: "normal"` in the same write and sends no `first_greeting`; its evidence and Undo are `crewmate.create`'s (`change_card_catalog.CREWMATE_CREATING_KINDS`).
+A Bot made from a Bot file (a `.kirobot` file, an older `.crewjam` or `.crewmate` one, or an app's bundle) is a `crewmate.import` card: an app raises one only through `ctx.crewmate` ([app-kit-platform §8a](app-kit-platform.md#8a-ctxcrewmate-proposes-only-the-owners-press-creates)), and the owner raises one with Import from file or with Make a copy on a Bot's Profile card, which hands that Bot's export straight to the same import. Its create pins `approval_mode: "normal"` in the same write and sends no `first_greeting`; its evidence and Undo are `crewmate.create`'s (`change_card_catalog.CREWMATE_CREATING_KINDS`).
 Creating a Bot is never a first-run chapter: neither the end of the tour nor
 a Bots visit opens anything by itself, and the page's New Bot card is
 the one place a Bot is created on the Bots page.
@@ -1650,7 +1677,7 @@ first Bot (key `mate`), while no message has been exchanged with it
 welcome is the first look at the page); else the Bot the user last OPENED
 in this browser (`mc-members-last-member`, written on every open the user made
 -- click, link, or the page's own default open; sending a message is not
-required, #19341) if it is still on the roster, hidden rows included;
+required) if it is still on the roster, hidden rows included;
 else the conversation holding the newest message (greatest `last_active_ts`,
 whoever sent that message; ties keep roster order; a roster with no stamps keeps
 its first row). The built-in `default` Bot is a row like any other here. A
@@ -1793,6 +1820,12 @@ DM binding and never makes one, so the slot key, its monitor loops, the work led
 the crew log stay bound. A thread with queued messages or unconsumed steers answers 409
 `slot_queue_pending` before anything is stopped, and again if one arrives during a stop
 wait: a soft stop keeps them, and they would then run on the old conversation.
+A held entry (`is_held_queue_entry`: restored after a restart and not chosen) does not
+refuse it, because it never runs on its own; a restored entry the person chose still
+does. After a `cleared` outcome the route drops each held entry whose user row is
+already in the transcript (`row_already_written`), since its cancel is refused and
+nothing else removes it; the row stays, and the `queue_cancel` frame carries no content.
+A `queued` clear drops nothing, and a held entry with no written row stays queued.
 Otherwise it runs existing paths in order: `stop_slot_turn` on a running turn, a second
 `stop_slot_turn` when the turn has not ended within the wait (its hard-kill escalation,
 which frees a stuck process), then the typed `/clear` path
@@ -1869,12 +1902,17 @@ per-session element cannot express, so the session mount
 element and every Bot call would refuse `identity_unattested`.
 
 Whether the Bot's sessions load those tools
-(`member_mate_tools.binding_has_mate_tools`, read from the spec they run) picks
-the wording Crew writes for it. With them, the identity sentence, the first
-welcomes and the goal nudges name `update_self`, `set_goal`, `set_key_results`
-and `set_check_ins`; without them, they name no Bot tool, have the Bot
-write proposed goals, milestones and check-ins in the chat, and point the user at
-the Bot page and its Goals tab. A spec that cannot be read keeps the
+(`member_mate_tools.binding_has_mate_tools`, read from the spec they run, and
+true as well for a spec without the server when the Bot's chat runs on a
+backend that mounts it there, `acp/member_goal_mount.py` and on KAS
+`acp/kas_member_goal_tools.py`) picks the wording Crew writes for it. With
+them, the identity sentence, the first welcomes and the goal nudges name
+`update_self`, `set_goal`, `set_key_results` and `set_check_ins`; without
+them, they name no Bot tool. The identity sentence and the first welcomes
+then say plainly that this chat cannot save a goal and that picking KAS as
+Agent harness under Settings on the Profile tab gives it the tool; the goal
+nudges have the Bot write proposed milestones and check-ins in the chat and
+point the user at the Goals tab. A spec that cannot be read keeps the
 with-tools wording.
 
 The primary New Bot action (the header **+** menu's one row, the empty
@@ -1995,13 +2033,15 @@ hidden, the roster says so and names the search. A row from an older gateway
 that carries no `has_dm_message` is listed, and a `default` row that carries no
 `has_user_dm_message` keeps the `has_dm_message` rule. The header count and the filter
 tallies count the listed rows plus any hidden row the search reaches. So that
-count is not read as the whole crew (#21852), the list ends with one muted line
+count is not read as the whole crew, the list ends with one muted line
 naming the Bots the rule hides by the label their row shows, the ones the
 user made first (origin Mine, or created on the dashboard) and then in roster
 order: all of them when there are up to three (`hidden_named_hint`), else the
-first three and a count of the rest (`hidden_more_hint`), saying that the count
-above leaves them out (`member-hidden-hint`); the form that names every hidden
-Bot also says the search finds them. The line is drawn only
+first three and a count of the rest as the last item of the same list
+(`hidden_more_count` inside `hidden_more_hint`, so each language places one
+conjunction), saying that the count above leaves them out
+(`member-hidden-hint`); the form that names every hidden Bot also says the
+search finds them. The line is drawn only
 while no search is typed, no filter narrows the list, and at least one row is
 listed (the every-row-hidden case already has its own line).
 Before any of the landing rules, a bare visit opens Bot while no message has been exchanged with it (`resolveMateLanding`:
@@ -2021,18 +2061,17 @@ first `DOCK_MATES_LIMIT` (3, in `website/src/lib/dockMates.ts`) behind the same
 is draggable, so a Bot starred late (sorted to the bottom) can be dragged into
 the top three. As with the Apps list's active app, the open Bot's row stays on
 screen while the group is folded, as a row that cannot be dragged or dropped
-on. The group sits between the rail's fixed top block
-and its Apps header, outside both, and shares the room left over with the app
-list: on a short window the app list gives up its room first (a far larger
-shrink weight) down to one row, then the group shrinks down to its header and
-one row, and each scrolls inside its share, so neither the installed apps nor
-the rail's footer is pushed off. While Bots are docked, the app list fades its
-bottom edge whenever apps sit below its fold (not during an app drag), as the
-group does, so a list cut to one row does not read as complete. The phone
-rail beside the chat and Bots drawers shows the same Bots as tiles AFTER the app tiles in its Apps scroller
-(`DockMatesTiles`), behind a divider and with no "N more" tile (plus the open
-Bot's tile when it sits past the three), so they never spend that rail's app
-floor (`APPS_FLOOR_PX`); the tiles are not draggable.
+on. The group sits between the rail's primary rows and its Apps header and
+does not scroll on its own: everything above the rail's bottom block (Agent
+Capabilities, Settings, the community row) is ONE scroll region, so the menu
+row, the primary rows, this group and the Apps list scroll together and the
+bottom block stays pinned (#34398). That region fades its bottom edge whenever
+rows sit below its fold, except during a Bot or app drag, whose ghost the fade
+would dim. The phone rail beside the chat and Bots drawers shows the same Bots
+as tiles AFTER the app tiles (`DockMatesTiles`), with no "N more" tile (plus
+the open Bot's tile when it sits past the three); that rail follows the same
+rule, one scroll region above a pinned Settings and Search. The tiles are not
+draggable.
 Dragging a row renumbers the whole starred list 1..n and writes every row,
 one `PUT /api/agents/{name}` with `star_order` each, because a cached value can
 be stale (another device, an unstar); unstarring on the roster zeroes the
@@ -2059,6 +2098,26 @@ person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
 is not starred, so a re-star lands at the bottom. While a docked Bot's chat is
 open its dock row is the lit one, not the Bots page row.
+On the expanded desktop rail each docked Bot's row carries a "..." menu
+(`website/src/shell/nav/mateRowMenu.tsx`), the twin of an installed app's rail
+row menu, with exactly two items
+([decision](../../decisions/2026-11-13-a-sidebar-bot-rows-menu-carries-profile-and-remove-from-the-sidebar.md)).
+**Profile** (the card's own `pages.membersPage.profile_tab` label) navigates
+through `useGuardedLeave` to `/members?member=<name>` with the
+`OpenMateSessionsState` carrier (`website/src/lib/crewMode.ts`) naming
+`tab: 'profile'`, plus `leaveGranted` when the ask was answered; the Bots page
+opens the card on the tab the carrier names (Sessions when it names none or one
+the card lacks) through the schedule-draft guard, which it skips for a
+`leaveGranted` carrier (that question was just answered), then clears the
+state, so a reload does not reopen it. **Remove from the sidebar** is the
+dock's own optimistic unstar (`starred: false`, `star_order` zeroed, refetch on settle); a
+failure puts the row back and shows its `ErrorNotice` beside the rail, and focus
+moves to the next docked row, else the previous, else the rail's Bots row. The
+trigger is a sibling of the row inside a `group/approw` wrapper, revealed on
+hover or focus and always drawn where there is no hover; it and the open menu
+stop the presses a drag starts from, and it is not drawn mid-drag or on the
+drag ghost. The collapsed rail, the phone drawer and the phone tiles carry no
+row menu.
 
 Deleting a Bot is available on this page: the Bot's edit controls
 open `CrewEditorModal` in place, and its Danger pane deletes the
@@ -2191,7 +2250,7 @@ in the thread header: the closed Glass chip stacks up to three faces and ends in
 a chevron. The page's name (`pages.membersPage.title`, "Mates") is the
 chip's accessible name and slides into view on hover, keyboard focus or while
 the list is open (a `grid-cols-[0fr]` to `[1fr]` column, cut under reduced
-motion); it is not drawn at rest, and neither is the roster count (#19045):
+motion); it is not drawn at rest, and neither is the roster count:
 what the page is and how big the crew is are not what a reader comes to this
 corner for. The action ("Switch mate") is the tooltip.
 Its popover lists the roster's own population, not every Bot: the rows
@@ -2262,10 +2321,10 @@ every time and each ask adds a denial row to the security event log.
 
 Because a bare `/members` reopens a Bot, the folded roster is the desktop
 norm, so the switcher also carries the live per-crewmate signals the roster column
-used to. The page hands it the same `signalsOf` resolver its roster status filters
+would. The page hands it the same `signalsOf` resolver its roster status filters
 read (`MemberSignals`: running / needsYou / unread / patrolling / goal) and the
 same `automationOf`, so a cue here can never disagree with the filter that counts
-it. Each popover row IS the roster row (#24687): both render `CrewmateRowBody`
+it. Each popover row IS the roster row: both render `CrewmateRowBody`
 (`website/src/pages/members/CrewmateRowBody.tsx`), so what a state looks like is
 decided once. Before that the two rows were hand-written twice and had drifted
 (the switcher's unread dot was accent while the roster's was `ok`, its second line
@@ -2317,7 +2376,7 @@ thread open) are the same `CrewmateRowBody` read through the same `signalsOf`
 resolver, so the full roster, the folded switcher and the status filter never
 disagree about who is parked on a question, on watch, or holding a goal.
 
-Unread is also the one signal drawn OUTSIDE the closed chip (#19045). Under it,
+Unread is also the one signal drawn OUTSIDE the closed chip. Under it,
 in the header's floating band, hangs one small Glass pill per Bot with an
 unread message who is not the open one (`crewmate-switcher-unread-pill`, roster
 order): the face with the accent unread dot on its corner, then the display
@@ -2329,9 +2388,10 @@ pill goes. Past `UNREAD_PILLS` (4) the rest fold into one "+N" pill
 whose rows carry the same dot, so nothing is lost to the cap (the "+N" pill
 bumps the page's `openRequest` counter, which the chip reads to open its list).
 No unread, no column. The column (`CrewmateUnreadColumn`, exported beside the
-chip) hangs from the thread header's bottom edge, absolutely (`absolute left-3
-top-full -mt-2`, the header's own `py-2` pulled back so the first pill sits a
-gap under the chip): it adds NOTHING to the header's measured height, so the
+chip) hangs from the switcher chip's bottom edge, absolutely (`absolute left-3
+top-[calc(0.5rem+42px)]`, the header's own `py-2` plus the 42px chip, so the
+first pill sits right under the chip; not the header's bottom edge, which the
+taller identity stack pushes well below the chip): it adds NOTHING to the header's measured height, so the
 thread's top inset stays the chip row's and the conversation keeps scrolling up
 under the band — and under these Glass pills — the way it scrolls under the
 identity pill. Pills float over the text; they never push it. Each pill sits in
@@ -2357,28 +2417,56 @@ while the pane's top edge stays glass. The pane pays for the band with its
 scroller's top padding — `ChatPane`'s `topInset`, the header's measured height
 (`useMeasuredHeight`, never a constant) plus the pane's own 12px — so at scroll
 top nothing hides under the pill (a Bot's chat draws no pinned-prompt band,
-#18346, so nothing else hangs under it). Whatever can sit between the header and the pane (notices, the
+so nothing else hangs under it). Whatever can sit between the header and the pane (notices, the
 greeting cards) stays in flow in a measured inner box wrapped by an outer box that is padded
 below the header by that height only while the inner box has a height (no
 `empty:hidden`: a `display:none` child measures 0 but is not `:empty`), and while that box has a height the pane's inset is 0: a card
 with controls is never under the glass, and the pane is under the header only
 when it is the thing directly below it. The row and its cells pass input through
 (`pointer-events-none`); only the controls catch it, so a wheel beside the pill
-reaches the transcript. It sits at z-20 — above the pane's own chrome (its
+reaches the transcript. Its cells align to the top (`items-start`): the
+identity stack is taller than the chips beside it, and centring would push the
+switcher and the panel opener down to its middle. It sits at z-20 — above the pane's own chrome (its
 dock), below the floating Profile card (z-30), whose scrim covers it. No hairline under it.
 
-The identity pill shows the Bot's face (with its loop mark), its name and
-its activity line at rest, and ends in the chevron. The words never fold away
+The identity pill is a stack: the Bot's face (with its loop mark,
+52px; 36px in the phone bar) on top, resting on a Glass name chip whose top
+edge it overlaps by 4px. The chip holds the name and the activity line,
+centred. The whole stack is the one button. In the phone shell bar it leaves
+the bar's grid (`fixed`, centred on the viewport, an empty cell holding the
+middle column), keeps its face inside the 42px bar and hangs its chip below it.
+There it is capped to the viewport's width less 6rem a side
+(`max-w-[calc(100vw-12rem)]`), so a long name or activity line truncates
+instead of reaching the side controls, and the button passes input through
+(`pointer-events-none`) with only the face and the chip catching it. The bar's
+two side cells (the drawer toggle; the channel chip and panel opener) sit above
+the stack (`relative z-40`, passing input through to their controls only), so
+where a long chip still reaches a side control the control takes the tap. The
+shell's phone offline strip (`mobile-offline-strip`, z-40, the same stacking
+context) paints over the hanging chip while it shows, so the phone's only
+offline message is never hidden behind the stack;
+the transcript's inset is how far the measured stack reaches past the bar. The
+bar's stacking context (the shell header, z-45) paints the stack over every
+page overlay that opens under the bar, so the whole stack steps out while
+one is on screen: the floating Profile card (whose face is already hidden for
+the card), the side panel sheet, and the roster drawer (open or mid-slide).
+It steps out as `opacity-0` with its face and chip no longer catching taps
+(`pointer-events-none`), not as `invisible`: the button stays focusable and in
+the accessibility tree, so a keyboard user who opened Profile from it keeps
+focus there and can press it again to close the card. The words never fold away
 (#19045): this pill is how the reader knows which Bot the page is talking
 to, and a face alone does not say that. The loop mark (`CrewLoopIndicator`, "On
 watch") is a solid accent ring with one dot orbiting it; under reduced motion
 the ring stays and a still dot replaces the orbit. It never uses the green of
 the working presence dot.
 
-The centred identity pill opens `CrewProfilePanel`, not the editor. It ends in a
-small `ChevronRight` (decorative, `aria-hidden`): the one visible sign that this
-Glass chip is a door, since the switcher chip beside it is another Glass chip
-with faces in it. The pill is a toggle, as its `aria-expanded` says: with Profile
+The centred identity pill opens `CrewProfilePanel`, not the editor. Its name
+chip carries a small `ChevronRight` (decorative, `aria-hidden`), the visible sign
+that the stack is a door. It sits absolutely at the chip's right edge, centred
+on the chip's height, inside the chip's padding, so it never takes width from
+the name, which stays centred. At rest it is hidden and it fades in on the
+stack's hover or keyboard focus (owner, 2026-11-19). A phone has no hover, so there
+the face and chip carry the cue alone. The pill is a toggle, as its `aria-expanded` says: with Profile
 already open a press CLOSES it through the same schedule-draft guard as the
 card's own close control (`requestCloseProfile`). It must not re-open on the
 default tab: `profile.tab` is part of the card's React key, so a card the reader
@@ -2478,7 +2566,11 @@ Settings row carries the `members.settings` find_ui location and is the
 `members.settings` reveal scope (state `crewmate_settings_closed`); the card's
 Profile tab carries `members.profile-tab` (a `Tablist` `segments` marker) and is
 the `members.profile-tab` scope (state `crewmate_profile_tab_closed`), since the
-card opens on Sessions and the row lives on Profile; the Permissions row carries
+card opens on Sessions and the row lives on Profile; the Sessions tab, first on
+the rail, carries `members.sessions-tab` and is that scope (state
+`crewmate_profile_sessions_tab_closed`), and the Bot's own switch on it
+(`BotSessionListSwitches`) carries `members.bot-sessions-switch`, described rather
+than quoted because its label names the Bot; the Permissions row carries
 `members.permissions` (its accessible name is the label alone; the value is its
 description), reached by a guide through the card, its Profile tab and then the
 Settings row, and sits with its page in a `GuideTrustRootRegion`, so no guide
@@ -2577,8 +2669,9 @@ continue" with the gateway's reason; a turn starting retires it. An error card
 with a remedy of its own (a context overflow, a repeated session start, a
 refused feature request, a refused app agent) withholds Resume from the composer
 too, through the one predicate `newestErrorOwnsRecovery` that ChatPage reads. A
-sign-in error (`auth_required`) is not one of them: the press works once the
-sign-in lands, so the composer keeps Resume and only its placeholder changes,
+sign-in error (`auth_required`, or `kiro_cli_sign_in` for kiro-cli's own
+sign-in) is not one of them: the press works once the sign-in lands, so the
+composer keeps Resume and only its placeholder changes,
 to "Last turn needs a sign-in -- follow the message above, then press Resume or
 send your message again" (`authRequiredIsNewest`, read by ChatPage, `ChatPane`
 and a crew's window). That chat's sidebar row reads "Turn interrupted · Sign
@@ -2607,10 +2700,15 @@ Profile uses the shared `Tablist` component with `labels="active"`: all four tab
 carry Lucide icons and accessible labels, while only the selected tab paints its
 word. The tabs are, in strip order, **Sessions**, **Schedules**, **Goals**, and
 **Profile** (the work first, the identity card last). The card opens on Sessions
-unless the opener names a tab (`openProfile(tab)`; today only the quiet-chat link
-calls it, and it asks for Sessions too). No
+unless the opener names a tab (`openProfile(tab)`: the quiet-chat link and a mate
+session's breadcrumb ask for Sessions; the side panel's send badge and the sidebar
+bot row menu ask for Profile). No
 tab carries a count, and there is no placeholder tab for a view that does not
-exist yet.
+exist yet. When the side panel is an overlay (a phone, or a window too narrow to
+dock it), the send badge closes the overlay before it opens the card: the overlay
+sits above the thread column the floating card opens in. The badge carries a
+Dismiss button that hides it on every bot's tab for good on that browser
+(`mc-dashboard-card-send-badge-dismissed`); the switch itself stays on Profile.
 
 **Profile** shows only the face and name in its head. Its body carries the crew
 description (two lines with a pushed full-text page); when the registry read fails,
@@ -2692,7 +2790,7 @@ words the schedule rows' countdowns use, so ja reads `次回は13 分後`), and
 the open-item count from the masked crew-board read (`GET /api/crew-board`,
 omitted while unread or when the slot owns no ledger, a 404 that is not
 retried). A stopped patrol replaces last/next with one phrase: "You paused
-it" (`manual` / `user_stop`), "Hit its 7 days time limit" (`runtime_budget`,
+it" (`manual` / `user_stop`), "Hit its time limit of 7 days" (`runtime_budget`,
 the limit in short unit words too), "Hit its check limit" (`cycle_cap`),
 "Stopped while waiting for your approval" (`approval_stalled` /
 `approval_stall`), "Its chat was closed" (`session_close`), and the plain
@@ -2734,7 +2832,13 @@ interval and, while it is on, "Each run uses credits. · up to 12 runs a day"
 (the daily bound, `wakesPerDay`), and its switch at the right (a switch state,
 never "Running", which read as work in progress beside the Bot's Idle);
 while it is on the interval picker (`HEARTBEAT_INTERVALS`, each option naming
-its daily bound) shows under the line. With no goal the switch is disabled and
+its daily bound) shows under the line, and under it **Only between**: two
+whole-hour pickers, the start (00:00 to 23:00) and the end (the hours after the
+start, up to 24:00), 00:00 to 24:00 by default. A start at or past the end moves
+the end to the hour after it, so the window is never empty, and the daily bound
+on the line and on each interval option counts only the wakes inside the window
+(`wakesPerDay(interval, from, to)`: 08:00 to 20:00 hourly reads "up to 12 runs a
+day"). With no goal the switch is disabled and
 the row says "Set a goal to turn these on.", as the check-ins do. The row reads
 and writes the goal record's `schedules` (`useMemberGoals`,
 `PUT /api/members/{slug}/goals/schedules`, one gateway-owned cron per switch,
@@ -2805,8 +2909,27 @@ with the Bot's `GET .../crew-workers` answer, which adds closed sessions, the
 ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). While
 the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
 Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
-`crew_mode.list_view`). There is no switch to keep them listed; a stored
-`show_sessions_in_list` value is ignored. The tab keeps its name (a recorded decision), but its empty
+`crew_mode.list_view`), unless a switch keeps them listed. Two switches do:
+**Show all bots in my Sessions** (`dashboard.show_bot_sessions_in_list`, in
+Settings > Chat > Sessions and at the top of every Bot's Sessions list) lists
+every Bot's sessions, and while it is on no Bot's own switch applies; while it is
+off, **Show {name} in my Sessions** (the Bot's `show_sessions_in_list`, at the top
+of that Bot's Sessions list, on by default) decides for that Bot. The server folds the two into
+one stamp on the Bot thread's row (`bot_sessions_listed`,
+`crew_mode.mate_lists_sessions`), which `list_view` and `crewModeView`
+(`mateThreadsHidingSessions`) read; a Bot's own switch reads on and cannot be
+pressed while the global one is on (`BotSessionListSwitches`). A listed session
+sits in its Bot's home folder, so the Sessions list groups them by Bot, and it
+opens like any other row. A session's wait still reaches the
+person as a wait: while it waits on a tool approval or a question, the Bots
+roster marks the Bot as needing you (`mateNeedsYouByKey`), the side panel's
+Sessions tab counts it, and All Dashboards shows a card on the Bot thread that
+opens the Bot's Profile on Sessions (`mateWaitingThreads`, `MateChatNotice`), and
+the Command Bar's Needs You lifts the Bot thread with the Answer pill and a row
+that opens the Bot on the Bots page (`useCommandBarOverlayRootRows`); a Bot
+thread's own approval or question reads as any session's. The
+session's own alerts are unchanged, and its unread stays on its own key, out of
+the counts; the Bot thread's unread mark is the Bot's own messages. The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a Bot would "drive sessions", so the box says session, chat or
 driving nowhere. The
@@ -2817,7 +2940,7 @@ line saying the list fills here and is empty now — under an illustration
 built only from the brand mascot assets (`ghost-poses` pose-7 as the
 Bot, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
 workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
-is an opacity, never a recolour, and reads on both palettes (#23003). Rows are grouped as the Crew panel groups them (approval, working,
+is an opacity, never a recolour, and reads on both palettes. Rows are grouped as the Crew panel groups them (approval, working,
 "Waiting on <mate>" for `with_conductor`, waiting, done), with Done folded. A click
 opens that session in the side panel's **Sessions** tab (below), revealing the
 panel; a docked Profile column closes behind the schedule-draft question. The list counts only
@@ -3020,8 +3143,22 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   Bot's tools: every Bot's chat holds `set_goal` (a Bot on its
   own file chats on the conductor, which the gateway builds with
   `kirocrew-mate` whatever the template carried; `member_mate_tools`
-  `PLATFORM_PROVIDED`), so a chat that cannot write the goal down is a defect
-  in that chat, never a state this tab routes around. The Bot's no-tools
+  `PLATFORM_PROVIDED`). A Bot bound to an agent of the user's own
+  (`kirocrew agent update --kiro-agent`, or the agent field) chats on that
+  agent (`mate_worker.member_chat_agent`), so its own DM session gains
+  `kirocrew-mate` there, never in the file on disk. On KAS the projected spec
+  gains the server, its `tools` ref and the `_MATE_AUTO_GRANTS`
+  (`acp/kas_member_goal_tools.py`) and the KAS hoist gives it the session's
+  identity; on every other backend that mounts the crew panel
+  (`ACP_BACKENDS_MEMBER_PANEL`) the session array gains a
+  `members.member_mate_session_server` element (`acp/member_goal_mount.py`),
+  withheld like the panel when the server or one of its tools is switched
+  off. Kiro Crew's own default agent, the conductor and a Bot's own file are
+  left alone, as is a spec that already mounts the server. So a chat that cannot write the goal down is a defect
+  in that chat, never a state this tab routes around; the no-tools prompts
+  (another harness, or a switched-off server) say the chat cannot save a goal
+  and that picking KAS as Agent harness under Settings on the Profile tab gives
+  it the tool, and never send the user to this tab to add one. The Bot's no-tools
   prompts name the Schedules tab for the Heartbeat
   (`context_assembly/member._NO_MATE_TOOLS_IDENTITY`, `goal_setup`,
   `mcp_mate`'s `set_check_ins` description). The former **Add something {name} should track** row is
@@ -3206,7 +3343,15 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   "Heartbeat (each run uses credits)", whose value when it turns on always
   names how often and the daily bound, the default too ("On, every 1 hr (up to
   24 runs a day)"), and "Every 1 hr (up to 24 runs a day)" for a changed
-  interval (`member_goals.wakes_per_day`: 48, 24, 12 or 6); the tool's description names each
+  interval (`member_goals.wakes_per_day`: 48, 24, 12 or 6 over the whole day, and
+  the wakes inside the Heartbeat's active hours when it has them, read off the
+  snapshot's `heartbeat_hours` (`change_card_catalog_kinds.HEARTBEAT_HOURS_KEY`) or
+  the goal card's `heartbeat.hours` -- the window is the Schedules tab's, never a
+  card field, so it is in neither `schedules` (the fields an Undo puts back) nor
+  what the conflict checks compare: `comparable_state` drops it for a check-ins
+  card, as it drops the whole `heartbeat` key for a goal card, so a window moved
+  between preview, apply and Undo refuses neither, and a card stored before the
+  window existed still undoes); the tool's description names each
   wake's credit cost too). One formatter writes the interval everywhere:
   `member_goals.interval_label` ("30 min", "1 hr", "2 hr", "4 hr") on the
   card, in the wake prompt and, through `interval_choices` /
@@ -3314,7 +3459,26 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   as 60), and its one schedule (`goal-heartbeat:<slug>`, removed with the
   Bot by `crew_removal._remove_goal_check_ins` like the others) runs on the
   clock's marks (`goal_reminder.cron_expr_for`: `*/30 * * * *`, `0 * * * *`,
-  `0 */2 * * *`, `0 */4 * * *`), never at the shared time of day.
+  `0 */2 * * *`, `0 */4 * * *`), never at the shared time of day. Its active
+  hours (`member_goals_hours.active_hours`), `active_from` (a whole hour, 0-23)
+  up to but not including `active_to` (1-24), in the zone the schedule runs in
+  (the record's timezone when it names one, else the gateway's default zone:
+  the host's unless one is configured), narrow that expression's hour field:
+  08:00 to 20:00 gives `*/30 8-19 * * *`,
+  `0 8-19 * * *`, `0 8-19/2 * * *` or `0 8-19/4 * * *`, so outside them no
+  wake is scheduled. The 2- and 4-hour steps count from the start (09:00 to
+  20:00 every 2 hr runs at the odd hours). A one-hour window is still a range
+  (`0 8-8/4 * * *`): a bare hour would get the cron store's daily jitter. The
+  whole day, 0 to 24 and the default, keeps the expressions above byte for
+  byte, so a Heartbeat without active hours keeps its schedule and run
+  history. A value that is not a whole hour in range, or a start not before
+  the end once the change is applied, is refused `invalid_active_hours`
+  (`member_goals_hours.hours_error`), and a
+  stored pair that is not a window reads as the whole day. The window does not
+  cross midnight, has no weekdays, and `set_check_ins` does not carry it: it is
+  set on the Schedules tab (decided 2026-11-13, docs/decisions). A host that
+  sleeps through a tick does not replay it: only a tick at most ten minutes
+  late runs late, once (`cron_service.schedule._skipped_cron_minute`).
   The floor and the default are a cost choice: each wake is a full model turn
   over the Bot's whole context, and a provider's prompt cache lives
   minutes, so no interval on the list finds the previous wake's cache warm and
@@ -3333,7 +3497,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   an unreadable card store counts as no card), the prompt drops new milestones
   from its next steps and says the card already waits on the user, so a wake
   does not propose a second card.
-  Changing the interval replaces that schedule. On the check-ins page the switch
+  Changing the interval or the active hours replaces that schedule. On the check-ins page the switch
   carries the line that each run uses credits with that interval's daily bound,
   and the interval picker shows under it while it is on, each option naming its
   own bound ("Every 1 hr · up to 24 runs a day"). Only the owner's schedules route and an applied
@@ -3343,8 +3507,14 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   the same skips (thread cannot be loaded, a turn running
   or queued, switch off, no goal), checking the thread again after the
   off-loop tools check, and dispatches one hidden turn
-  (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`)
-  built by `goal_reminder.heartbeat_prompt` from the current record. Right
+  (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`,
+  `mirror_reply_only=True`: a thread or channel linked to the chat gets only the
+  wake's final reply, so a quiet wake posts nothing there)
+  built by `goal_reminder.heartbeat_prompt` from the current record; its cadence
+  sentence names the active hours when there are any
+  (`goal_reminder.active_hours_line`: "a wake every 1 hr between 08:00 and 20:00"),
+  because the gap across the quiet hours is what the Bot plans a hand-off
+  against. Right
   under the progress block, the prompt asks for `nothing_to_do` at once, with
   no text before it, when nothing can move forward. The rest of the prompt
   is written as principles: look at the goals, milestones and open work-ledger
@@ -3445,6 +3615,10 @@ goal, never as `description` (the `POST /api/agents` step sends none). The goal
 is its own apply step after the create (`CREWMATE_CREATE_GOAL_STEP`): a `PUT
 .../goals/long-term` with `expected: ""`, its path segment filled from the
 `member_id` step 0 returned and its `member` from step 0's `name`. Its optional
+`model` rides the step 0 body, so the Bot is pinned when it is made and the
+create route's own model check judges it: an id the account cannot serve fails
+step 0 (`invalid_model`) and no Bot exists. The card shows it as a read-only
+Model row; omitted, `""` and `auto` send no pin. Its optional
 `schedule` is the Bot's work schedule and follows as the last step
 (`CREWMATE_CREATE_SCHEDULE_STEP`), unchanged: the same job name and message, never
 a goal check-in. A failed step stops the plan, so a goal write that fails leaves
@@ -3515,7 +3689,11 @@ either ends the walk, so every question asked before it clears. It reads the
 same rows and parser the sidebar's question badge reads
 (`slot.sidebar_messages`, the bounded tail a restored thread holds before its
 window loads) and the change-card store, so a gateway wake, which writes no row
-and presses no card, keeps an item, and so does a card that only expired.
+and presses no card, keeps an item, and so does a card that only expired. A
+waiting card expires and leaves the list when another card in the thread applies
+the same change, or a repeated proposal finds it already made (history.md "Card
+rows"); a failed card that expires this way stops counting as the person's
+answer, as it does at its 24 h expiry.
 
 **A Bot's own record as folds.** Two facts a page about a Bot's
 work needs are recorded into its own DM session log by the gateway, as
@@ -3534,15 +3712,18 @@ slots to learn which thread it is, and a retired question looks its slot up by k
 that expires writes nothing to that log, so each record arms one timer per thread
 for its soonest open card's `expires_at` that reads the list again as a retired
 question does (after 60 s instead when a card is past its expiry but still open, or
-the append that emptied the list has not committed); the timer does not survive a
-gateway restart. The list
+the append that emptied the list has not committed). A timer does not survive a
+gateway restart, so once the restore has put the tabs back each thread idle since
+learns the session it last logged into (its newest crew-log unit, read off the
+loop) and has its list read again as a retired question does, which drops a card
+that expired while the gateway was down and arms the timer for the next one. The list
 reads the change-card store, and the settle runs on the serving loop, so each
 settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
 thread); when warming fails nothing is recorded, so the last complete list stands
 rather than one missing the store's pending cards, and the cold store is never read on the loop (`test/test_crewmate_feed_cold_store.py`).
 A goal
-write while the thread has no live session (a milestones press between turns, a
-write after a restart) is held in `crewmate_feed._held_goals`, newest wins, and
+write before the feed knows the thread's session (no turn logged yet, or a
+restart still restoring the tabs) is held in `crewmate_feed._held_goals`, newest wins, and
 recorded on the thread's next growth, when its session is known. An
 entry is appended only when its snapshot differs from the last one this
 process recorded for that thread, so the check's own append records nothing.
@@ -3577,11 +3758,11 @@ it. Files is the standard SidePanel browser scoped
 to the workspace rule above, labelled **Workspace** on this page's strip (the
 Profile card's word for the same directory; `SidePanel.viewTitles` changes the
 title only, the tab id stays `files`). The browser's own header carries the same
-`viewTitles` word, so tab and header agree (#28031). Dashboard and Files are the only
+`viewTitles` word, so tab and header agree. Dashboard and Files are the only
 STANDING tabs. Side Chat remains available dynamically through selection Ask
 and the plus menu; it is not a standing entry — and the plus menu offers
 Terminal, Browser and app-contributed tabs, bound to the member's slot
-once the thread is confirmed (#25378). Withheld outright are the
+once the thread is confirmed. Withheld outright are the
 transcript-fed views (Changes / Issues / Links / Pins, plus the session
 Summary), Subagents, Workflows and Git (a Bot hands its work to workers), the
 diagnostics group (Logs / Context / Crew log), the chat page's Command Center,
@@ -3591,8 +3772,7 @@ tab on the chat page that has no place in this page's Dashboard, Sessions + File
 artifact DOCUMENT: `SidePanel.isWithheld` ties every document tab (file, diff,
 folder, artifact) to `'files'`, which this page withholds only while the
 thread is unconfirmed, so an artifact opened from a reply link gets its own
-tab here while the Artifacts list stays off the strip (#18320; before that
-rule an artifact tab was keyed to `'artifacts'` and so appeared and vanished
+tab here while the Artifacts list stays off the strip (an artifact tab keyed to `'artifacts'` would appear and vanish
 in one frame).
 
 SidePanel's resting width on this page is 60% of the row after the live navigation
@@ -3817,7 +3997,7 @@ subagent run or a cron job that picked a synced Bot persists an execution
 record of exactly the removed shape: `selection_kind == "member"`, no
 `member_id`, the `default` store, and `selection_name == template_id`. After
 the row is gone that record names a member that no longer exists, and every
-reader that checks the kind used to refuse it -- a resumed or forked chat
+reader that checks the kind would refuse it -- a resumed or forked chat
 (`Crew Member '<name>' is unavailable`), a continued subagent (`selected member
 is unavailable`), and the prompt builder's member lookup.
 
@@ -3929,7 +4109,13 @@ The `denied_command` change-card kind was not used for this: it adds or toggles 
 user deny rule, a settings change, while this is the person running one command. Item 5 says a suggested reply (an `[OPTIONS:]` chip) offers only
 what the Bot can then do, never asks it for a card (a card that fits is
 raised directly, since the card is the question), and carries no internal word
-(card, worker, helper, a tool name such as `propose_change`).
+(card, worker, helper, a tool name such as `propose_change`); nothing else the Bot
+writes to the user says worker, helper, session or dispatch either. Item 2 tells
+the Bot that to the user it is one Bot: its workers are part of it, so work a
+worker does is the Bot's own, and it never tells the user it cannot do a task or
+that someone else must, but says it will handle it and reports the result. That
+rule covers work a worker can do: a task a rule blocks, or one only the user can
+supply something for, is still said plainly, as items 1 and 3 say.
 `worker.principles` tells the worker to report a blocked command with the exact
 command in a code block rather than look for a way around it. The refusal
 itself also says this to any session: the `pipe-to-shell` category has its own
@@ -3964,7 +4150,11 @@ unchanged.
 What is hidden: rows with role `nudge`, `inject`, `subagent`, `tool`,
 `tool_call`, `tool_result`, `thinking`; and an `assistant` row that is not
 speech — invisible-only content (the bare U+200B the model is instructed to
-answer a quiet turn with, `isHiddenInvisibleAssistantRow`), a gateway system
+answer a quiet turn with, `isHiddenInvisibleAssistantRow`), a row whose only
+content is something this chat does not draw (the content-less row
+`_attach_file_changes` writes for a quiet turn that only changed files, since
+the chat draws no file chips, or a reply that is only a `[STEERING steer-…]`
+note, since it draws no Steered chip), a gateway system
 notice written under the assistant role (compaction, session reload), or an
 injected workflow completion. A turn that ends without addressing the user is
 therefore a turn whose final assistant text is empty: the model's own silence
@@ -3986,7 +4176,7 @@ an error row), and the live `streaming` row. No `tool` row is drawn, a
 `spawn_run` launch included: a Bot's chat runs on its conductor, which
 hands work to worker sessions and starts no sub-agents ("Conductor and
 worker" below), so delegated work shows as those sessions in the sidebar
-(the 2026-10-17 crewmate-chat decision entry, shipped in PR #22444).
+(the 2026-10-17 crewmate-chat decision entry).
 Runtime `notice` rows and
 compaction status cards are hidden rather than removed from history. When the
 filter leaves NOTHING to draw although the transcript is not empty (a patroller
@@ -4002,12 +4192,12 @@ opened), not "chats", so it does not contradict a chat that just said the
 Bot has not spoken. Not "sessions" either: the RFC's vocabulary table keeps
 that word out of user copy. The composer of a Bot's chat
 addresses the Bot by name ("Message <name>…"), not the product. The
-composer floats over the transcript like the main chat's (#18279; the dock
+composer floats over the transcript like the main chat's (the dock
 layout in
 [page-layout](../../../website/docs/page-layout.md#decided-the-transcript-scrolls-under-the-composer-glass)),
 so the conversation scrolls under the glass. The
 pinned-prompt banner (Settings → Chat → pin last prompt) is never drawn in a
-Bot's chat (#18346): `ChatPane` turns the pin off when handed a `crewmate`,
+Bot's chat: `ChatPane` turns the pin off when handed a `crewmate`,
 whatever the setting says. The banner exists for long agent runs in the main
 chat, where the question scrolls out of sight while the answer streams; a DM
 with a colleague has short turns, the user's bubble is one row back, the
@@ -4042,14 +4232,14 @@ draw the turn's progress rows either; the working indicator is a TYPING
 BUBBLE — three bouncing dots in the Bot's own gray bubble (the same
 `.message-bubble.crewmate-bubble` fill, corners and measure as its messages,
 so a theme restyling those restyles this), the iMessage sign that a reply is
-being typed (#19997) — with ONE status line under it naming what the Bot
+being typed — with ONE status line under it naming what the Bot
 is doing right now, both rendered by `CrewmateLiveActivity` in the footer
 column. The chat page's ghost-pose carousel (`ChatFooter`) is NOT mounted in a
 Bot chat: `ChatPane` draws one or the other, never both, so a DM reads as
 a conversation and not as a loader, and only one thing moves. The dots are
 decorative (`aria-hidden`); the caption is the live region. The dots are the
 `TypingDots` glyph; the thread panel's "is replying" row keeps its own smaller
-pulsing dots, a status row outside this surface (maintainer ruling on #20032). The
+pulsing dots, a status row outside this surface (a maintainer ruling). The
 bubble folds by height (it stays mounted) while the reply's text is actively
 arriving — that streaming bubble already carries the caret, and dots under it
 read as a second reply coming — and while the caption reads `stopping` or
@@ -4075,7 +4265,7 @@ label while the call runs (`data-activity=tool`), the indicator's own
 (`thinking`), the pill's other phase words otherwise (`writing`, `working`,
 `delegated`, and — since no footer is mounted to say them — `compacting` and
 `stopping`); and the line goes with the turn. The chat line, and only the chat line, HOLDS each reading
-(`components/chat/useHeldActivity.ts`; #18527): a tool call often returns in
+(`components/chat/useHeldActivity.ts`): a tool call often returns in
 tens of milliseconds, so painting the raw reading made titles flash past a
 line that mostly said "Thinking…". Every step stays at least 600ms
 (`HOLD_STEP_MS`); a finished tool's title stays 1.5s
@@ -4101,7 +4291,7 @@ the Bot works. Transcript rows mounting and unmounting above the
 indicator hopped it by a row on every step, and the "hasn't said anything yet"
 hint stays hidden while the Bot is live for the same reason. The one step
 that never names itself in the chat line, even in flight, is the
-`nothing_to_do` call (#16429; the line reads "Thinking…"): matched inside
+`nothing_to_do` call (the line reads "Thinking…"): matched inside
 the hook on the tool log entry's trusted identity (`tool_name` +
 `mcp_server`, the `QUIET_END_*` constants `store/chat/selectors.ts` defines,
 imported through the `store/chatSlice` facade), never on its title — the
@@ -4204,13 +4394,12 @@ and the reply-thread panel's separate reply endpoint retain their behavior.
 How it is drawn: the Bot's messages form **runs**. A message carries NO
 author line — no avatar, no name, no time row — and no avatar gutter: the chat
 is a 1:1 thread with one speaker besides the user, and the DM header's identity
-chip already names that speaker (#16617 retired the per-run author line #15167
-had made redundant); for assistive tech each message row is a `group`
+chip already names that speaker, so a per-run author line would be redundant; for assistive tech each message row is a `group`
 labelled with the Bot's name, which draws nothing. Every message is its
 own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the full
 text column, left-aligned; the user's bubble opposite is filled with the theme
 ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
-`UserMessage`), the iMessage pairing #17839 chose, so colour tells the two
+`UserMessage`), the iMessage pairing, so colour tells the two
 speakers apart before alignment does. The `user` entry that carries the tone is
 emitted by `createTranscriptRenderers` whenever the host passes `crewmate` (or
 asks to hide the steer badge). The Bot surface hides the Steered chip
@@ -4281,7 +4470,11 @@ worker it dispatched, the session it is answering about — as a `/chat?sid=…`
 link, a bare slot key, or a short name (`chat-1380`). In this chat those behave
 exactly as they do on the single-chat page: a plain click switches to that
 session, a key chip is an affordance, and an unresolvable one stays muted text
-with its href intact (the #9914 rule). There is no second resolver — the
+with its href intact. A key of another shape, such as a cron-born session's
+title-derived key (`_nightly-report-…`, possibly ending in `...`), resolves only
+as the exact key of an OPEN session (`rosterKeyFrom`); a `chat-…` span never
+takes that path, so a short name keeps its write-time pin and ambiguity refusal,
+and a closed session of another shape is not probed. There is no second resolver — the
 markdown renderer's own `SessionActionCtx` does the work on both surfaces, and it
 gates on (`onSessionOpen` AND `sessions`), so what changed is only who supplies
 them. `ChatPane` takes the triple as optional props and hands it to
@@ -4312,8 +4505,8 @@ both open the way they do on the single-chat page: in the side panel docked to
 this page, as a Files document tab or an Artifacts document tab against the DM
 slot (`usePanelDocumentActions`, the chat page's own implementation, bound to
 `confirmedSlot`; in overlay mode the panel reveals itself after the open). The
-pane never resolves either itself: `ChatPane` takes `onFileOpen` (#9487,
-#14458) and `onArtifactOpen` (#18320) as optional props and hands them to
+pane never resolves either itself: `ChatPane` takes `onFileOpen` and
+`onArtifactOpen` as optional props and hands them to
 `ChatMessageList`, whose per-row `MessageRenderContext` carries them to every
 assistant row — the SDK default and the Bot bubble both go through
 `renderAssistantBubble`, which passes them to `AssistantMessage` and so to the
@@ -4323,14 +4516,14 @@ an artifact link stays a plain `target="_blank"` anchor to the standalone view
 — which is right for a side chat or an embedded chat and was wrong for the DM,
 where the artifact a Bot just made opened in another browser tab, or
 nowhere at all when the shell swallows the popup. The split-view pane still passes neither,
-for the reason #3300 records (its dock is `activeSlot`-keyed while pane focus
-is not).
+because its dock is `activeSlot`-keyed while pane focus
+is not.
 
 **A document in the member's side panel takes inline comments.** The side
 panel owner (`useMembersPageSidePanel`) hands the panel `onSubmitComments` and
 `connected`, as the chat page does, so a markdown file tab offers the selection
 comment composer and the comment list, and an artifact tab its submit-to-chat
-bar (#20081). The send lives in `useMemberDocumentComments`
+bar. The send lives in `useMemberDocumentComments`
 (`website/src/hooks/`): Submit sends the batch the panel formats into the DM
 through the chat-core transport (`sendTurn`), carrying the composer's busy-send
 decision for that slot (`slotBusySteer`).
@@ -4384,7 +4577,12 @@ the writer records which data home wrote each file (`~/.kiro/mates/owners.json`)
 and never replaces one another instance wrote. The owner check and both writes
 run under one cross-process lock (`mates/owners.lock`), so two instances
 writing one name at once cannot both pass the check
-(`test/test_mate_owned_config.py`). So a Bot's first chat, the goal-setup turn included, is
+(`test/test_mate_owned_config.py`). A file with no entry at all was written
+before the record existed. The first owner check records it for this data home,
+once and under the same lock, when this instance's `config.json` binds it
+(`agents[<id>]` has a `member_id` and `kiro_agent` is `<id>`); a file no binding
+names, or one checked while the config cannot be read, stays unowned
+(`mate_config.crewmate_file_on_record`, `test/test_mate_owner_record_backfill.py`). So a Bot's first chat, the goal-setup turn included, is
 already on the conductor. A name the set does not know at all (a file another
 process wrote) is rescanned before the answer off the loop. On the loop a rescan
 is scheduled and the answer is two file stats, never a directory scan
@@ -4434,7 +4632,10 @@ parts:
   `spawn_status`, `spawn_release`, `spawn_list`, and `task_run` and
   `workflow_run`, which start work of their own;
   `mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS`) in `excludedTools`, which both
-  engines subtract from the session's tool list. Every other built-in stays,
+  engines subtract from the session's tool list, and the `kas_subagents`
+  preview never mounts KAS's own sub-agent tool on it, in any session
+  (`kas_engine_subagents.hands_work_to_sessions`, which leaves out every
+  conductor `crew_mode.conductor_agents` names too). Every other built-in stays,
   `execute_bash`, `fs_write` and `code` included (RFC amendment 2026-10-23): a
   quick command or a small edit it does itself, longer work goes to a worker.
   Only a session with a member key, the Bot's own thread, can get the session
@@ -4546,7 +4747,8 @@ parts:
   not `armed` or `existing (active-work-ledger)`, with `watch="work-ledger"`,
   `gate` left at its default (never `gate:false`), and no `interval_secs`,
   `max_cycles` or `max_runtime_secs` (a work-ledger patrol takes none from the
-  model and runs every 300 s), and, when every item is terminal or the user says stop, ONE final
+  model and runs every 300 s), and, when every item is terminal and nothing is
+  queued, or the user says stop, ONE final
   report to the user before `autonudge_stop` in a later step. Those
   rules, and the verdict and close rules beside them, are not the Bot's
   own text: each is a placeholder filled from the root conductor's shared rules
@@ -4624,6 +4826,24 @@ parts:
   (`mate_worker_kit`) writes a template's selectors for such a server into the
   file the same way and lists them in its preview. A file that copies the base
   adds nothing.
+  **An enabled app's server launches as the gateway registers it now:** for a
+  server the file adds that an installed, enabled app declares
+  (`mcp_sources._app_owned_mcp_keys`) and the agent config lists now
+  (`bridges.registered_app_mcp_servers`, the entry an add copies), the worker takes
+  that entry and keeps only the file's own `autoApprove`, `disabled` and
+  `disabledTools` (`mate_worker._use_registered_app_launch_lines`), so an upgrade
+  that replaces the app's install leaves no worker on a deleted path. A launch
+  line set by hand in the file for such a server is not used. Every other server
+  the file adds (the user's own, a registry install, one copied from an old agent,
+  a disabled app's, an HTTP app server whose backend is down, an app server whose
+  declared name has a `/`, because the alias it is mounted under can be another
+  server's) keeps the launch line the file recorded, and the file is never
+  rewritten. One residue: a server the user routes through the shared MCP broker
+  gets its stub from the file's own line (`mate_overlays`), so while that line's
+  old target still exists the stub starts it; once the target is gone, no stub is
+  made and the worker starts the registered entry, except for a server whose env
+  names a `secret://` reference: it stays wrapped
+  (`rewriter_env._must_stay_wrapped`), so it does not start.
   **A whole-server switch-off is a restriction, not an addition:** a file entry
   for a server the base declares that reads as muted (`mcp_cleanup.mcp_entry_is_muted`:
   any `disabled` but absent or `false`) is carried by name
@@ -4668,7 +4888,10 @@ parts:
   worker is refused, naming it. A host that applies none of the three
   (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
   that sets any (`resolve_worker_spec(refuse_spec_policy=True)`). Every other
-  field (`tools` for built-ins, `model`) is ignored. Crew fires the worker
+  field (`tools` for built-ins, `model`) is ignored; a file whose `model` is not
+  empty or `auto` logs one warning per Bot and value
+  (`crewmate_harness.note_unread_file_model`), naming the Bot's Model and Worker
+  model settings, which are what its sessions run on. Crew fires the worker
   session's merged spec's hooks on KAS (`spec_hooks._agent_spec` with the
   session key, via `mate_worker.mate_service_scope_spec`), on a chat turn and on
   a sub-agent or task-runner turn alike (`spec_hooks.provider_session_key` reads
@@ -4719,10 +4942,10 @@ parts:
   (`slot_guards._record_explicit_agent_selection`), so a session switched off the
   worker template leaves the Bot's backend too. The pin is that record, so the worker
   follows its Bot's backend for its whole life. It runs on a backend in
-  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, codex; harness-parity.md),
+  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, codex, pi; harness-parity.md),
   its spec carried the way a member chat's
   saved spec is -- KAS through its per-session projection, the mirrored hosts
-  through the session MCP projection, which reads the worker's own spec by the
+  and pi through the session MCP projection, which reads the worker's own spec by the
   session (`acp.session_mcp._crewmate_worker_spec`). kiro-cli reads `--agent` off
   disk and cannot find the worker spec, so it is not in the set. `session_create` refuses a
   hand-off whose worker would run anywhere else (`capability_harness_unsupported`,
@@ -4750,9 +4973,9 @@ both, or it lands on the parity allowlist with a reason. The rules both need
 interval band, the final report before the stop, acceptance by `accept_eval.py`, close,
 reading the `goal-conductor` skill before acting on a goal and again after a
 compaction, and the long-task and
-team rules every turn needs: the item budget, one owner per file and one
-integrator per output, merging two lines, reusing a finished worker only for the
-next step of its own line, the plan reviewer, the `pr_merged` bar,
+team rules every turn needs: the item budget, no split by default, one owner per
+artifact and one integrator per output, merging two lines, reusing a finished
+worker only for the next step of its own line, the plan reviewer, the `pr_merged` bar,
 the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
@@ -4908,6 +5131,12 @@ walk (Windows), where that descriptor-bound removal refuses, the empty folder is
 removed by a guarded `os.rmdir` of that same folder while `os.lstat` still shows
 it is a directory (never a link or junction) whose `(dev, ino)` is the one made,
 so the next turn builds the worktree as on POSIX.
+
+The same module also makes the worktree an isolated `spawn_run` worker runs in
+(`isolate: "worktree"`; `make_run_worktree`, `remove_run_worktree`): detached,
+beside the repository as `<repo>-wt-<run id>` rather than under a Bot's
+workspace, with no branch, and maps it back to the repository in `source_path`.
+Its rules are in [subagent](subagent.md), *Isolated runs: a worktree of their own*.
 
 **A worker reports back on its own** (`dashboard/mate_thread_wakes.py`), so the
 conductor dispatches and ends its turn. Every top-level turn end calls
@@ -5088,7 +5317,10 @@ write `allowedPaths` is carried whole even when an entry of it is one Crew
 cannot read, since that entry grants nothing and the call asks. A
 `deniedCommands` list is carried whole too. When an entry of it is one neither
 KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
-can judge, such as a regex with `|` inside a group, the worker's projection
+can judge, such as a repeated group `(a|b)+` (a group alternation KAS receives one
+glob per branch, `kas_deny_alternatives`, so it is judged; a top-level `a|b` travels
+as one glob per branch too but still counts here, since those globs are narrower
+than its regex), the worker's projection
 records those entries under the Crew-only `_crewShellUnjudgedDenies` key
 (`kas_spec_denies.with_unjudged_denies`, set for `kirocrew-mate-worker` only),
 the session handle stamps them on its own agent's requests
@@ -5102,7 +5334,11 @@ same spec keeps asking, as before. The preview and the kit view return those
 entries as `unenforced_denies`, and the pane names them as written, in code font,
 under one sentence saying this Bot refuses every command that is not read-only;
 the finished add adds where to see the list again (this section), and the
-section shows it while the file holds one. Owner decision:
+section shows it while the file holds one, naming the control that lifts it in
+the words its row shows: **Remove** on the terminal's blocked commands under
+**Tool settings**, in the Abilities section's Added band, with the config file
+only as a second way. It names no file key, and never says the control is above:
+the same pane shows after an enroll, outside the Abilities section. Owner decision:
 `docs/decisions/2026-11-13-a-bots-worker-carries-the-agents-tool-grants.md`
 (`test/test_mate_worker_carries_tools_settings.py`).
 Every gate-readable deny that KAS does not carry travels in the same worker
@@ -5126,10 +5362,15 @@ definite matches. On a Bot's worker (`kirocrew-mate-worker`) the session-start
 notice (`spec_keys_notice`) says the worker refuses those commands unless they
 are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
 session keeps the old wording.
+A named bundle (`policies`) beside the agent's `rules` is left behind and the
+rules are carried, as the upgrade path reads it: KAS refuses a block that names
+a bundle, and a bundle only expands into allow rules, so leaving it narrows.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
-one tool's entry), and `template_policy_backend_unsupported` when the
+one tool's entry, `permissions (<why>)` with KAS's own reason for a block it
+would refuse whole, `kas_tool_view.permissions_block_refusal`), and
+`template_policy_backend_unsupported` when the
 Bot's worker backend (`mate_worker.crewmate_worker_backend`) is not KAS. An apply that changes the file's hooks, permissions or tool settings
 reloads the Bot's live workers onto it (`crewmate_worker_reload`, a busy
 one at its turn end), since a live KAS session keeps the batch it registered.
@@ -5289,14 +5530,53 @@ ladder (`slack/handler_runtime/permission_ladder.py`), the channel transports'
 `messaging.driver.TurnDriver` (which asks its decider inside `held_call`), agent channels (`channel.py`), the shared ladder
 `tool_permission.settle` (sub-agents, the task runner) and the background approver
 (`slack/gateway_runtime/turn_approvals._interactive_approval`) skip every
-auto-approve rung for a held call and ask a person, or refuse with no one to ask. A
+auto-approve rung for a held call and ask a person, or refuse with no one to ask.
+A held `subagent` limit also makes Crew's own spawns ask, at spawn admission: every
+spawn admitted there whose parent is the Bot's session (`spawn_run`, `spawn_sub_agents`,
+`spawn_continue`, `/api/spawn`; the Bot found as the tool gates find it) skips YOLO,
+`approval_mode="auto"`, Trust and `hooks.auto_approve_subagent_spawn`, and its approval
+prompt is a held call, so only a person answers it (`mate_held_rules.held_spawn_limits`;
+[subagent](subagent.md), Spawn flow). A
 call is placed under a capability by the tool the harness stamped on it
 (`toolName`, KAS's `toolId`, claude's built-in; a qualified id such as
 `claude#WebFetch` is read under the kiro-cli names `agent_sdk.spec_hooks.spec_hook_tool_names`
 gives it) and its ACP kind; a `fetch` call
 whose tool was not told falls under `web_search` as well as `web_fetch`. A
 call whose capability cannot be told falls under every
-held restriction; every other call behaves as before. The governance ceiling still
+held restriction; every other call behaves as before. A restriction is held as
+narrowly as Crew can read it (`mate_held_scope`): a hook whose matcher, folded through
+kiro-cli's own aliases (`useAws` and `aws` are `use_aws`), names a known built-in no
+capability covers (only `use_aws` today) is recorded as `tool:<kiro-cli name>` and
+holds that tool's calls only, and strips only that tool's pre-approval in any
+spelling (a `toolsSettings` entry on such a tool still holds every call, since a
+harness with no such tool reaches what it limits through the shell); a `permissions` deny or ask on `fs_read`/`fs_write` with only a `match`
+list, and a read or write `toolsSettings` entry whose one limiting key is
+`deniedPaths`, keep those `paths` when every one is absolute after `~` (no variable,
+no glob character Crew does not read). Such a limit holds only the calls of that
+capability whose target, as written or through any link, is the folder each pattern
+starts in (the path itself, or the folder before its first wildcard), lies below it,
+or is a folder above it; the call's own folder anchors a relative params target when
+the shared extractor permits it. That holds more than a glob matches, never less.
+Targets come from the shared `edit_target_candidates` extractor: params paths, every
+`patchText` file header and the diff block; an unanchored or truncated result stays held,
+and so does a read with an Image entry (`image_paths`, or `paths` in kiro-cli's agent
+engine) or a batch entry that names no scanned path, since the extractor does not read those.
+A matcher that is a tag, a case variant, an
+unknown name or more than one tool, a rule or setting that limits more than paths or
+names a relative path, and a call whose target cannot be told (no path, a variable, a
+relative path with no folder, a cut-short scan, a link resolution that stalls, a
+Windows path with no drive) are
+held as before. Records an earlier release wrote wider are narrowed once at
+startup from the old agent (`mate_held_rescope.rescope_held_limits`, ledger key
+`held_scope_rechecked`); the recorded text must itself name the same tool in its
+hook matcher or every candidate path of the same capability. A recorded
+`toolsSettings` text names only its tool, so its paths are read from the old agent's file.
+It never widens a record, and a Bot whose old agent cannot be read keeps its record
+and is tried again. A dashboard card a held limit raised carries a notice naming
+the limit (`mate_held_rules.card_notice`, with each complete text redacted at the
+call site before truncation, and the final notice redacted too), so
+a person under Trust can tell why it asked; it points to no list, since no dashboard
+surface shows held limits yet (#40596). The governance ceiling still
 governs the merged worker spec. A Bot an earlier release moved without its old
 agent's restrictions gets the same carry at startup
 (`mate_policy_repair.restore_dropped_policy`, run from `migrate_existing_crewmates`
@@ -5311,15 +5591,21 @@ call (`NO_CALL`) never makes the Bot ask, so the chat notice names it apart as o
 that no longer runs, and it alone owes no bell note (`mate_held_rules.held_sentence`,
 `asks_for`). Nothing clears a hold: a save of
 the Bot's approval mode does not, since an `auto` cron's approval does not depend
-on that mode (#37277 tracks Kiro Crew's own sub-agent tools; a control to review
-and release held rules is #37321). Every read-modify-write of
+on that mode (a control to review and release held rules is #37321). Every read-modify-write of
 `migrated.json` runs under `mate_ledger_lock.ledger_lock` (a thread lock plus a
 `migrated.json.lock` file lock, since two gateways with their own data homes can
 share one Kiro home), so one writer cannot erase a hold another records. A Bot whose repoint fails stays on its old agent, which still
 enforces its own limits, so the hold the move recorded for it is cleared again,
 only when the entry still carries the `member_id` it was recorded under
 (`mate_held_rules.drop_held`); the next start that moves it holds them again. A repaired Bot is
-checked once (`migrated.json` `policy_checked`). The two loosenings are cured
+checked once (`migrated.json` `policy_checked`). A `permissions` block that names a
+bundle (`policies`) beside its `rules` is read as those rules alone: KAS expands a
+bundle into allow rules on its own side, so leaving it behind only narrows, and
+each rule is carried or held under its own capability (`mate_held_rules._pieces`).
+An earlier release held such a whole block under every capability (`ANY`), so one
+deny in it made every call of the Bot ask, Trust included; a Bot held on every call
+is checked once more (`migrated.json` `held_every_call_rechecked`), and a hold that
+read no longer needs is dropped after its deny is written into the file. The two loosenings are cured
 first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
@@ -5654,6 +5940,16 @@ kiro-cli that lacks its engine.
   whose `member_id` `mate_worker.note_worker_session` records beside the worker
   key. No other session (a template chat, a sub-agent, a cron turn not on the
   worker) takes the pin.
+- **A chat running the Bot elsewhere says so once.** The pin is that Bot's own
+  chat and its workers. A dashboard chat running the Bot through the agent picker,
+  a folder default or a new chat on it keeps its own harness; when the Bot's own
+  chat runs another one (`pinned_backend`, its landing rules included), turn
+  admission gives one `notice` row (`member_harness_notice`, token
+  `member_harness_elsewhere`) naming both harnesses, claimed once per chat and
+  per pair on the session's metadata line, and nothing about the selection
+  changes. A pin this gateway cannot start gives none. Agent channels, Slack
+  channels bound to a Bot and cron turns are not told
+  (`docs/decisions/2026-11-22-a-chat-running-a-bot-on-another-harness-says-so-once.md`).
 - **Fails closed, before the gate.** A pin this gateway cannot start (not
   registered, denied by policy, unservable on this host, including one that was
   selectable when it was saved) raises `CrewmateHarnessUnavailable`
@@ -5663,18 +5959,22 @@ kiro-cli that lacks its engine.
   argument, so the gate only ever sees a confirmed pin and never raises
   (harness-parity H17, the one exception to H3). Displays that name the pin as
   stored read `crewmate_stored_pin`, which never raises.
-- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS under the
-  same rule as a stored `agent.acp_backend: kiro` (`CrewBackendPin.resolve` calls
-  `kiro_cli_pick_backend()` when `agent.kas_bundle` is off), for the DM chat and
-  the workers alike, while the stored value still reads `kiro`
+- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS on
+  kiro-cli's help verdict, without the v3 start a stored `agent.acp_backend: kiro`
+  waits for (`CrewBackendPin.resolve` calls `kiro_cli_listed_backend()` when
+  `agent.kas_bundle` is off), for the DM chat and the workers alike, while the
+  stored value still reads `kiro`
   (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`).
 - **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
   harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
   (`selectable_backends()`, which the `agent_backend` governance scope narrows)
   AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩
-  `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6: KAS, Claude Code, Codex; never pi or
+  `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6 and 5.4: KAS, Claude Code, Codex, Pi; never
   deepseek), judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
-  `kiro_cli_pick_backend()` moves it there). A stored pin outside that list is
+  `kiro_cli_listed_backend()` moves it there), and that this host's session start
+  does not refuse (`tool_gate.sandbox_floor_refusal`: an enforced harness whose
+  credential mask cannot apply here is refused with the launch's own sentence).
+  A stored pin outside that list is
   unchanged: one this gateway can start runs the Bot on KAS with an error
   (`CrewBackendPin.checked`), and one it cannot start refuses as above. It judges `model` and `worker_model` against the harness
   the record will hold, re-judging the stored pins when the harness changes.
@@ -6147,9 +6447,9 @@ its own standing thread. What remains, and why:
 - **The autonudge crew/member boundary keeps its vocabulary.** `autonudge_authz`
   still lists `"crew"` beside `"member"` in the modes that refuse an outside
   arm. With no slot able to carry the mode the entry is unreachable, and it is
-  left in place rather than re-litigating a security boundary in a removal PR.
+  left in place rather than re-litigating a security boundary.
 
-The sidebar's create menu no longer carries the entry that used to create a
+The sidebar's create menu carries no entry that creates a
 crew-mode session: `/members` is reached from its rail item.
 
 ## Conductor mode in the dashboard: the person's lists
@@ -6196,19 +6496,21 @@ the unfiled crew members and the stamps all stay.
 |---|---|
 | The one client filter is `crewModeView(rows, rootsOnly?)`: drop every `crew_root` row whose root is a row of the same list; `rootsOnly` keeps the roots alone. A crew member whose root is closed keeps its row -- no Crew panel lists it, the server keeps its stamp, and its own approval or question must still reach the person -- so the sidebar, All Dashboards and the Command Bar's Needs You show it and its approval as any chat's. `selectPersonSlots` is the memoized store read of it. The `crew_root` drop went live with the Crew panel (the side panel's Crew tab), which lists a root's crew members; the part before wired every person-facing list through this one function with the drop inert, so no list ever lost a row it could not reach elsewhere | `website/src/lib/crewMode.ts`, `website/src/store/personSlots.ts` |
 | Neither a close nor the page's own pick lands on a crew member: `deleteSlot` leaves `crew_root` rows out of both landing sets (the sidebar's displayed order and recency), and the chat page's auto-open reads `autoOpenRows`, so a first visit or a close with only crew members left creates an ordinary chat. A crew member opened on purpose stays open | `store/chatSlice.ts`, `lib/crewMode.ts`, `pages/chat/useChatPageSessionController.ts` |
-| `website/src/lib/crewMode.ts`, `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx`, `website/src/pages/chat/command-center/ConductorModeCrewPanel.tsx`, `website/src/components/crew/` | The dashboard's conductor mode helpers (`runsConductor`, `withoutConductors`, `crewModeView`, `agentCycleTarget`, the worker groups), the side panel's Crew tab (shown as conductor mode) with its Status \| List switch, and the crew marks: badge, breadcrumb, turn-on effect, the labelled turn-on control, then one coloured bolt with no visible mode name in the active composer and before the Sessions title. Before the first message the composer keeps the labelled, pressed chip as the way off. Both read-only bolts reveal their name on hover, keyboard focus and touch. Only the Sessions bolt guards presses (`stopRowGestures`). It stops the four the row acts on: mousedown (mouse drag), touchstart (touch drag), click (switch) and auxclick (open as tab). So a long press on it never arms the row's touch drag while the same hold on its title still lifts the row. It also cancels the default of a touch or pen pointerdown and of a touch or pen `contextmenu` without stopping them, because Radix's `ContextMenuTrigger` skips a `defaultPrevented` event: a 700ms hold or an Android long press on the bolt opens no row context menu and does not lift the row, the same hold on the title still lifts the row (its 250ms touch drag disables the trigger, so no menu follows), and a mouse right-click on the bolt still opens the menu. Its pointerdown, pointerup, mouseup and dblclick bubble: the tip's own handlers run, a document pointerdown closer still sees the press, and rename needs no stop because the row opens it only on a double-click inside `[data-session-title]`. The composer bolt stops nothing, so pressing it closes an open attach menu (a document mousedown closer) or filtered dropdown (`useFilteredDropdown`, document pointerdown and click) like any press outside that menu; the composer's says the plain status "This chat runs in conductor mode" and names no action. The Sessions bolt is a 24px box placed out of the 20px title line (`absolute` at its static position over the title's `indent-6`), so a conductor root row is a plain row's height, and its tip opens below, clear of the Sessions search. Its touch target stays inside that real 24x24 box, with no `mc-touch-hit` expansion into the adjacent title; the isolated composer bolt keeps the 44px coarse-pointer expansion. Exact-point hit-testing on visible title text reaches the row rather than bolt help; the capture harness also checks a native touch on the title. The positioned content column clips horizontally only (`overflow-x-clip`), leaving the bolt's vertical overhang and full focus ring visible even on a root with no meta or status height; long titles and tags still clip, and the bolt adds no row height. Touch pointerup opens each bolt's tip directly (`useInstantTip({ openOnTouchRelease: true })`, the bolt's own option, not `openOnTap`, whose consumers keep opening from the replayed hover/focus before their click), so a first no-focus tap and a retap after scrolling both work without mouse replay or another focus event. Replayed mouseleave keeps the hint open, while blur, Escape, an anchor-moving scroll or capture-phase pointerdown outside the current anchor closes it. `website/scripts/capture-25851-crew-mode-row.mjs` pins the four corner hits, full focus ring and horizontal clipping on a no-status root, the touch paths, the tips, the pressed chip idle and hovered, a mouse press on the composer bolt closing the open attach menu, and an 800ms native touch on the Sessions bolt that neither lifts the row nor paints its context menu while a 400ms one on the title lifts it, on the built SPA |
+| `website/src/lib/crewMode.ts`, `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx`, `website/src/pages/chat/command-center/ConductorModeCrewPanel.tsx`, `website/src/components/crew/` | The dashboard's conductor mode helpers (`runsConductor`, `withoutConductors`, `crewModeView`, `agentCycleTarget`, the worker groups), the side panel's Crew tab (shown as conductor mode) with its Status \| List switch, and the crew marks: badge, breadcrumb, turn-on effect, the labelled turn-on control, then one coloured bolt with no visible mode name in the active composer (a Split View pane's too, a crew member's naming its role) and before the Sessions title. Before the first message the composer keeps the labelled, pressed chip as the way off; a Split View pane has no chip row, so it keeps the bolt. Both read-only bolts reveal their name on hover, keyboard focus and touch. Only the Sessions bolt guards presses (`stopRowGestures`). It stops the four the row acts on: mousedown (mouse drag), touchstart (touch drag), click (switch) and auxclick (open as tab). So a long press on it never arms the row's touch drag while the same hold on its title still lifts the row. It also cancels the default of a touch or pen pointerdown and of a touch or pen `contextmenu` without stopping them, because Radix's `ContextMenuTrigger` skips a `defaultPrevented` event: a 700ms hold or an Android long press on the bolt opens no row context menu and does not lift the row, the same hold on the title still lifts the row (its 250ms touch drag disables the trigger, so no menu follows), and a mouse right-click on the bolt still opens the menu. Its pointerdown, pointerup, mouseup and dblclick bubble: the tip's own handlers run, a document pointerdown closer still sees the press, and rename needs no stop because the row opens it only on a double-click inside `[data-session-title]`. The composer bolt stops nothing, so pressing it closes an open attach menu (a document mousedown closer) or filtered dropdown (`useFilteredDropdown`, document pointerdown and click) like any press outside that menu; the composer's says the plain status "This chat runs in conductor mode" and names no action. The Sessions bolt is a 24px box placed out of the 20px title line (`absolute` at its static position over the title's `indent-6`), so a conductor root row is a plain row's height, and its tip opens below, clear of the Sessions search. Its touch target stays inside that real 24x24 box, with no `mc-touch-hit` expansion into the adjacent title; the isolated composer bolt keeps the 44px coarse-pointer expansion. Exact-point hit-testing on visible title text reaches the row rather than bolt help; the capture harness also checks a native touch on the title. The positioned content column clips horizontally only (`overflow-x-clip`), leaving the bolt's vertical overhang and full focus ring visible even on a root with no meta or status height; long titles and tags still clip, and the bolt adds no row height. Touch pointerup opens each bolt's tip directly (`useInstantTip({ openOnTouchRelease: true })`, the bolt's own option, not `openOnTap`, whose consumers keep opening from the replayed hover/focus before their click), so a first no-focus tap and a retap after scrolling both work without mouse replay or another focus event. Replayed mouseleave keeps the hint open, while blur, Escape, an anchor-moving scroll or capture-phase pointerdown outside the current anchor closes it. `website/scripts/capture-25851-crew-mode-row.mjs` pins the four corner hits, full focus ring and horizontal clipping on a no-status root, the touch paths, the tips, the pressed chip idle and hovered, a mouse press on the composer bolt closing the open attach menu, and an 800ms native touch on the Sessions bolt that neither lifts the row nor paints its context menu while a 400ms one on the title lifts it, on the built SPA |
 | The Crew tab's list has two sources. The slot store's own rows -- every open slot stamped `crew_root` for the root, a peer's left out -- are shaped as list rows (`liveCrewWorkers`: state to status and group, lineage from `created_by`) and are always in, so a crew member the person's lists leave out is reachable from the tab whether or not the gateway serves `GET /api/chat/slots/{root}/crew-workers`. That route adds what the store has not (closed crew members, the ledger item, the summary, the server's own group) and its rows win where both name a key (`mergeCrewWorkers`). A 404 on a crew route (an older gateway, or the part that serves it has not landed) is NO DATA, not a failure (`crewRouteNotServed`): the list, the sidebar row's crew summary and the Timeline say nothing is wrong and hand nothing to the agent -- the list shows the open crew members or "No crew yet", the Timeline one muted line that this gateway has no timeline yet -- and the route is not polled again. A read that fails for a real reason still says so. The route is re-read when the slot store says the crew moved (`useCrewWorkersPush`: a crew row's state, title or `parent` from the lineage push, or the `crew_work` of the root or of a sub-conductor, which the gateway follows for any crew member that dispatched another), one coalesced re-read per burst, with a 60 s poll for what no push carries; the gateway keeps each root's closed workers, their titles and every ledger store's facts until the session tree, the live keys or that store's change mark moves (`crew_workers._root_cache`) | `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx`, `src/kiro_crew/dashboard/handlers/crew_workers.py` |
 | A PEER's crew members stay rows in the federated session list (`sessionSources.ts`): a local crew member leaves the list because its root's Crew panel lists it, but a peer's root opens in the crew window, which has no such panel, and the panel reads this gateway's slots and routes, so for a peer's crew member the list is the one way in. The rows keep their `crew_root` / `crew_mode_root` stamps for the marks | `website/src/pages/chat-sidebar/sessionSources.ts`, `website/src/hooks/useInstanceSessions.ts` |
 | What a hidden crew member (its root open) owes the person rides on its root. The Command Bar's Needs You lifts a conductor mode root whose workers wait on a tool approval with the Approve pill and the count (`crewWaitingApprovals` over the FULL slot set, the count the fleet page's command center uses); the root's own approval, when it has one, reads as any session's. The sessions view still lists no crew member | `website/src/components/commandBar/CommandBarOverlay.tsx`, `website/src/components/commandBar/CommandBarOverlayRootRows.tsx` |
 | Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`; an idle worker whose own bounded loop will wake it, `ledger_wake.worker_looping` sent as `looping`, is `working`, and so is its milestone, its goal-board card and, when every open item loops, its conductor's row: "N running", no new word), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
-| **The Status view cuts no text.** Every Status text wraps, a long word (a SHA, a path) included, with no ellipsis, line clamp or tooltip standing in for it. The Overview shows the goal's whole first sentence (`goalSentence`, parentheticals removed), the goal's whole own "Done when" sentence (`goalDoneWhen`, ending at a sentence end, never inside a number such as "0.63 s", or where `Plan:` starts) and, when the goal text has a `Changed:` part, its last entry as **Latest change** (`latestChange`): an entry starts with its time at the start of the part, a line or after a ";", and one that carries a date also says how long ago it was ("Latest change, 2d ago: ...", the entry's own stamp in the `title`), so a goal the main chat never re-planned reads as old. No `Changed:` entry, no line. The line reads only the goal text: nothing is stored for it and the conductor's prompts are unchanged. A milestone's right column is the time since its last report, a running turn's too (the spinner says it runs). The done fold reads only "N done", folded or open. The Recap's milestone sentence counts running milestones ("87 of 94 done; 7 running.") instead of naming them; waiting, stuck and quiet ones are still named | `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `website/capture/conductor-mode-board-long.tsx` |
-| **When a run is done.** The gateway sends the part only it holds as `run` on the root's `crew_work` (once its board has an item) and on `GET /api/crew-board` (`dashboard/conductor_mode_run.py`): with items and no active loop on the conductor's slot, `settled` is `done` when every item is closed and `stopped` when some are open, else `""`, and the board read also keeps a new goal that has created no item yet (the header's `goal_items_used` is 0) unsettled; `at_limit` marks a patrol that ended at its time or budget bound, and `patrol_on` whether the loop is on. Nothing is stored, so a new goal, a re-armed patrol or a new item leaves it on the next read. A stop the conductor made and one a person made both record `USER_STOP`, so no surface says who stopped a run. The Status view's Overview opens with one line (`conductorModeRunState`): **Paused**, **Waiting for you** (anything under Needs your input), **Working** (a turn or a milestone running, or an unsettled board with milestones whose patrol is on; a new goal waiting on its first milestone with no patrol and nothing running draws no line), then the verdict's **Done** or **Stopped**, each with one sentence and no numbers, and no control of its own: the panel's Back row stays the one way back to the main chat. No line says a final report exists: a stop at a limit or by a person sends none, and the board cannot tell them apart. No milestone and nothing running: no line. A rejected or abandoned milestone is `not_done` (a muted ✕, "Not done · failed its check" / "Not done · dropped"), stays among the open rows and is not counted in "X of Y". The Sessions row reads **Done** only when `run.settled` is `done` (a root with no ledger keeps the every-crew-member-done rule); a stopped run keeps the row's usual line. Known limit: the row's `run` comes from the work fold, which keeps no goal start, so a new goal with no item yet still shows the previous goal's Done on the row until its first item | `src/kiro_crew/dashboard/conductor_mode_run.py`, `dashboard/crew_work.py`, `dashboard/handlers/work_ledger_board.py`, `lib/conductorModeRun.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
+| **The Status view cuts no text.** Every Status text wraps, a long word (a SHA, a path) included, with no ellipsis, line clamp or tooltip standing in for it. The Overview shows the goal's whole first sentence (`goalSentence`, parentheticals removed), the goal's whole own "Done when" sentence (`goalDoneWhen`, ending at a sentence end, never inside a number such as "0.63 s", or where `Plan:` starts) and, when the goal text has a `Changed:` part, its last entry as **Latest change** (`latestChange`): an entry starts with its time at the start of the part, a line or after a ";", and one that carries a date also says how long ago it was ("Latest change, 2d ago: ...", the entry's own stamp in the `title`), so a goal the main chat never re-planned reads as old. No `Changed:` entry, no line. The line reads only the goal text: nothing is stored for it and the conductor's prompts are unchanged. A milestone's right column is the time since its last report, a running turn's too (the spinner says it runs). The done fold reads only "N done", folded or open. An accepted milestone whose session works again (a comment on a doc it made wakes it) leaves the fold while it works: it reads **Running**, without its summary (that is its done report), or **Needs you** while it waits on an approval, and returns to the fold when the session goes idle. Dropped milestones (closed as `abandoned`) fold the same way into one "N dropped" row below the open ones, folded by default; a rejected one stays in the open list, and the header still counts every milestone. The Recap's milestone sentence counts running milestones ("87 of 94 done; 7 running.") instead of naming them; waiting, stuck and quiet ones are still named | `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `website/capture/conductor-mode-board-long.tsx` |
+| **When a run is done.** The gateway sends the part only it holds as `run` on the root's `crew_work` (once its board has an item) and on `GET /api/crew-board` (`dashboard/conductor_mode_run.py`): with items and no active loop on the conductor's slot, `settled` is `done` when every item is closed and `stopped` when some are open, else `""`, and the board read also keeps a new goal that has created no item yet (the header's `goal_items_used` is 0) unsettled; `at_limit` marks a patrol that ended at its time or budget bound, and `patrol_on` whether the loop is on. Nothing is stored, so a new goal, a re-armed patrol or a new item leaves it on the next read. A stop the conductor made and one a person made both record `USER_STOP`, so no surface says who stopped a run. The Status view's Overview opens with one line (`conductorModeRunState`): **Paused**, **Waiting for you** (anything under Needs your input), **Working** (a turn or a milestone running, or an unsettled board with milestones whose patrol is on; a new goal waiting on its first milestone with no patrol and nothing running draws no line), then the verdict's **Done** or **Stopped**, each with one sentence and no numbers, and no control of its own: the panel's Back row stays the one way back to the main chat. No line says a final report exists: a stop at a limit or by a person sends none, and the board cannot tell them apart. No milestone and nothing running: no line. A rejected or abandoned milestone is `not_done` (a muted ✕, "Not done · failed its check" / "Not done · dropped") and is not counted in "X of Y"; a rejected one stays among the open rows, and an abandoned one sits in the "N dropped" fold. The Sessions row reads **Done** only when `run.settled` is `done` (a root with no ledger keeps the every-crew-member-done rule); a stopped run keeps the row's usual line. Known limit: the row's `run` comes from the work fold, which keeps no goal start, so a new goal with no item yet still shows the previous goal's Done on the row until its first item | `src/kiro_crew/dashboard/conductor_mode_run.py`, `dashboard/crew_work.py`, `dashboard/handlers/work_ledger_board.py`, `lib/conductorModeRun.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
 | While a crew member is on screen, the Crew tab opens with a **Back to main chat** row (`CrewPanelBack`, above both views); it reads **Open main chat** while the root is closed, and then reopens the root from its saved transcript before opening it. Desktop keeps the side panel open on the root; a phone lands on the chat. A failed reopen shows the inline notice under the row (`commandCenter.worker_reopen_failed`, with the agent hand-off). The row takes its label and action from `useCrewBack`, the one place a Back comes from; the worker view's breadcrumb (`CrewWorkerBreadcrumb`) uses the same `useCrewBack` on its root crumb, so clicking the main chat's name does what the row does, and its sub-team lead crumb opens that member the way its Crew tab row does (reopening a closed one first); the current member and its status stay plain text | `components/crew/useCrewBack.ts`, `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `components/crew/CrewWorkerBreadcrumb.tsx` |
 | While one of a root's crew members is the active chat, the sidebar marks the root's row as its parent: class `session-crew-parent`, `data-crew-parent`, and a screen-reader line (`components.crewMode.parent_row_hint`). `ChatSidebar` derives `crewParent` from the active slot's `crew_root`; `rowView` sets `isCrewParent` only when no crew window covers the pane, and the mark never makes the root the active row | `pages/ChatSidebar.tsx`, `pages/chat-sidebar/rows.ts`, `pages/chat-sidebar/SessionRow.tsx`, `styles/crew-mode.css` |
 | The List view draws the crew as ONE tree (`crewTree`): a finished member stays under its lead and is only styled (`data-done`, muted title). A top-level tree that is finished all through folds under one **Finished · N** row (N counts its members), folded by default. The open or folded choice is kept per browser in localStorage (`CREW_FINISHED_OPEN_KEY`, `mc-crew-workers-finished-open`). That fold hides its rows, the one on screen included; the Back row stays the way to the root | `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `pages/chat/command-center/CrewWorkerList.tsx` |
 | In the List view a member with a crew of its own has a chevron (`aria-expanded`). Top-level members start open, deeper ones folded, and the leads above the member on screen start open; a toggle is kept per browser in localStorage under its own key (`CREW_BOARD_EXPANDED_KEY`, `mc-crew-board-expanded`, a `{key: open}` object), never shared with the sidebar's. Every member with a crew shows its child count; folded, it also shows how many below it wait on an approval and how many run, with the sidebar's glyphs. While a search is set every match's lead is open and there are no chevrons; clearing it brings the stored choices back. Past six levels the rows stop stepping right and carry the level as `·N` (`CREW_MAX_INDENT_DEPTH`). With no crew under anyone the rows keep their plain layout, no chevron column | `pages/chat/command-center/ConductorModeCrewPanel.tsx` |
+| In the Status view a milestone closed without being accepted (`rejected` or `abandoned`, the "Not done" rows) has a **Hide** button (an eye-off icon and the word Hide; its accessible name is `components.crewMode.conductor_mode_ms_hide_hint`, which names the milestone). It only hides the row in this browser: the ids are kept in localStorage under `CONDUCTOR_MILESTONES_REMOVED_KEY` (`mc-conductor-milestones-removed`, a `{root: [item_id]}` object, pruned to the items still on the board), and the work ledger is not written, since a closed item takes no write. Only the row leaves the list: the Milestones count, the Recap and the Overview (the run line and "Done when") still count every item on the board, so hiding a row never makes the run read better than it went, and with every milestone hidden the Recap still says "0 of N done". A line under the list says **Hidden: N** and "Show again" brings them all back. An open or accepted item is never hidden, whatever the stored value says. Each write starts from what is stored then, so a row another tab hid is kept; when the write does not land (no usable browser storage) the change builds on what the panel already holds, so hiding a second row keeps the first hidden. When every milestone is hidden the list shows that line and not "No milestones yet.". Pressing Hide moves focus to "Show again" (never to another row's Hide), pressing "Show again" moves it to the Milestones heading, and the line is a `role="status"`. The Crew page still lists every item | `pages/chat/command-center/ConductorModeCrewPanel.tsx` |
 | The List view shows a search box (`CrewWorkerSearch`) from `CREW_WORKER_SEARCH_MIN` (6) crew members up, or while a query is set. It matches a member's title and task line, case-insensitive after NFKC normalization, so accents still count (`searchCrewWorkers`), finished members included. The query is kept per root for the browser tab in sessionStorage (`mc-crew-workers-search:<root>`), so opening a match keeps the search. No match shows one status line (`crew-search-empty`). Esc clears a typed query; on an empty box Esc is left to the panel. While a query is set, finished matches show unfolded and a toggle does not change the stored fold; clearing the query returns the Finished row to the stored choice. The Status view has no search | `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `lib/crewWorkers.ts` |
-| `withoutConductors(choices)` is the one filter a normal chat's agent picker and the Split View pane picker read their rows through: every conductor template left out, since the composer's conductor mode switch is the way onto one (Bots kept whatever their name). The part before wired both pickers through it with the rule inert; the part that added the switch turned it on in this one function. The agent chords (`agentCycleTarget`) skip every conductor whatever this filter does, so a chord never turns conductor mode on by accident. `useAgents` keys both picker memos on the catalog's conductor mode fields (`crewCatalogKey`), so a catalog read that changes only `agent.crew_mode_agent` re-filters the picker even when the roster is unchanged. A chat already on a conductor has no picker to mirror, so the chords do nothing there (the server refuses to move a conductor mode root) | `website/src/lib/crewMode.ts`, `website/src/hooks/useAgents.ts` |
+| `withoutConductors(choices)` is the one filter a normal chat's agent picker and the Split View pane picker read their rows through: every conductor template left out, since the composer's conductor mode switch is the way onto one, and with it the roster's copy of one: a member row that runs the conductor template of its own name and is not what the person's create path writes (`source` `kirocrew` with memory of its own), as the agents sync and the default-agent pick leave behind. Bots the person created are kept whatever their name. The part before wired both pickers through it with the rule inert; the part that added the switch turned it on in this one function. The agent chords (`agentCycleTarget`) skip every conductor, and its roster copy, whatever this filter does, so a chord never turns conductor mode on by accident. `useAgents` keys both picker memos on the catalog's conductor mode fields (`crewCatalogKey`), so a catalog read that changes only `agent.crew_mode_agent` re-filters the picker even when the roster is unchanged. The chords do nothing on a chat already on a conductor: a chord never takes a chat out of conductor mode, and where such a chat keeps its picker the picker button is reachable by keyboard. | `website/src/lib/crewMode.ts`, `website/src/hooks/useAgents.ts` |
+| While the default agent is itself a conductor (as when `agent.crew_mode_agent` names it; `conductorDefaultPicker`), a new conductor mode root keeps its agent picker after the conductor mode bolt, in the composer and as a Split View pane's agent label, until its first message (a transcript still loading, or one with older rows on the server, counts as one) and while no turn runs: it lists the agent templates only (the server refuses a Bot there with `409 crew_mode_locked`), picks in the `template` namespace, and once the switch lands drops the chat's Crew and Dashboard tabs. Only the main composer's pick also closes a side panel conductor mode opened, as the off chip does; a Split View pane's pick leaves the shared side panel as it is. An Incognito or Temporary chat on that agent keeps its usual picker | `website/src/lib/crewMode.ts`, `website/src/pages/chat/page/crewModeSwitch.ts`, `website/src/pages/ChatPage.tsx`, `website/src/components/ChatPane.tsx`, `website/src/components/useChatPanePickers.ts` |
 | A crew member's pending tool approval is decided only on its conductor's approval card (`crewApprovalDecidableHere`); every other surface in `CREW_APPROVAL_SURFACES` (the crew member's own composer in the main pane or a Split View pane, the conductor side panel's Approvals, All Dashboards' Needs you) shows it as information with a way to that card; when the conductor is closed, that way reopens it from its saved transcript first, since its key is no live slot. A crew member's approval always alerts the person (`docs/decisions/2026-10-29-crew-member-approvals-notify.md`): while its conductor is open the chime, unread mark, bell note, banner and OS toast point at the conductor, under the crew member's name, and the note offers no Approve or Reject (`crewWorkerRoot`); the conductor's row shows the wait even while it runs, unless the conductor itself owes the person a decision (`crewWaitingApprovals`). With the conductor closed there is no card to show it, so it alerts like any chat's. A session that is no crew member keeps its usual controls everywhere | `lib/crewMode.ts`, `pages/chat/page/ComposerDockView.tsx`, `components/ChatPane.tsx`, `pages/chat/command-center/model.ts`, `pages/chat/command-center/AttentionCard.tsx`, `hooks/websocket/approvals.ts`, `hooks/websocket/chatStream.ts`, `components/notifications/NotificationFeed.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
 | The chat page keeps TWO lists (`pages/chat/page/pageEnvironment.ts`): `chatPageSlots`, every chat-surface row with crew members included, which the page's active-slot rules read so a crew member opened from its root's Crew panel stays the active chat in the main pane; and `personChatPageSlots`, the same list through `crewModeView`, which the collapsed-sidebar flyout lists and the unread count counts (`surfaceUnreadKeys`). The global counts skip crew members the same way: the Sessions badge and the tab title (`selectUnreadByMode`) and the count relayed to the Instances hub (`relayedUnreadKeys`) leave out every crew member whose root is open (`crewMemberKeys`, the same rule as `crewModeView`), while its unread entry stays for its root's Crew panel. The sidebar component applies `crewModeView` at its own `slots` door, so no lane, the Broadcast dialog, the bulk model switch or any other reader of that collection sees a crew member; the Sessions page, Recents, the Command Bar, Send-to-session and Split View read `selectPersonSlots`. A crew member opened from its root's Crew panel is the active chat without a sidebar row; on a screen narrower than `CREW_WORKER_ROOMY_PX` the sessions list steps aside while it is open | `website/src/pages/ChatSidebar.tsx`, `website/src/pages/SessionsPage.tsx`, `commandPalette/providers/recentsProvider.ts`, `components/commandBar/CommandBarOverlay.tsx`, `components/SessionGridView.tsx`, `pages/chat/page/sessionsDrawer.ts`, `store/dashboardSlice.ts`, `store/dashboard/unread.ts` |
 | Recents' **Older** rows read the full History inventory as before (closed channel conversations and subagent transcripts belong there, and `/api/sessions` carries no crew signal yet, so a closed crew member is still an Older row until the history rows carry one); a LIVE crew member never comes back as an Older row, because the dedupe set is every live row | `recentsProvider.ts` |

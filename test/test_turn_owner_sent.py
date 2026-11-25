@@ -33,6 +33,7 @@ from chat_test_helpers import _make_app, _make_state
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
+from kiro_crew.stats import Stats
 
 NON_OWNER = "telegram:4242"
 
@@ -128,6 +129,35 @@ async def test_the_turn_keeps_the_owner_mark_only_for_a_user_sent_opener(
     )
     assert seen == [expected]
     assert slot._turn_owner_sent is False, "the mark ends with the turn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "counted"),
+    [
+        ({}, 1),
+        ({"_directive_channel_origin": True}, 0),
+        ({"_synthetic_recovery_turn": True}, 0),
+        ({"_turn_actor": "cron"}, 0),
+    ],
+    ids=["person", "channel", "runner-retry", "script-cron"],
+)
+async def test_only_a_person_sent_dashboard_turn_counts_as_a_message(
+    tmp_path, extra: dict, counted: int
+) -> None:
+    """A channel turn is counted at its transport; a runner retry and a cron send are not new."""
+    from test_acp_tool_identity import _stub_state
+
+    state = _stub_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    slot._titled = True
+    _one_turn(state, slot, [])
+    before = Stats().snapshot()
+
+    await cr._run_chat(state, slot, "hello", _directive_user_origin=True, **extra)
+    after = Stats().snapshot()
+    assert after["messages_admitted"] - before["messages_admitted"] == counted
+    assert after["messages_received"] == before["messages_received"], "no outcome is recorded"
 
 
 @pytest.mark.asyncio

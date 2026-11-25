@@ -3,8 +3,8 @@ title: Mate-owned agent config — a copied custom agent in its own folder
 status: implemented
 author: gjjnn
 created: 2026-10-16
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
 implementation-prs: [21463, 22037, 23010]
 tracking-issues: []

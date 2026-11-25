@@ -464,7 +464,12 @@ def test_forget_kas_grant_deletes_only_that_urls_entries(tmp_path):
 
     vault = SecretVault(tmp_path)
     digest = kas_connection_hash(STRIPE_MCP)
-    for name in (f"kiro.mcp.{digest}.tokens", f"kiro.mcp.{digest}.client", "kiro.mcp.other.tokens"):
+    for name in (
+        f"kiro.mcp.{digest}.tokens",
+        f"kiro.mcp.{digest}.client",
+        f"kiro.mcp.{digest}.kiro-path-client",
+        "kiro.mcp.other.tokens",
+    ):
         vault.set_sync(name, "v")
     asyncio.run(forget_kas_grant(STRIPE_MCP, store_root=tmp_path))
     assert vault.list_names() == ["kiro.mcp.other.tokens"]

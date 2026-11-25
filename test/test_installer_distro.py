@@ -1092,14 +1092,16 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
 
 
 def _session_processes(sid: int) -> str:
-    """Every process in the step's session with its group and state, for a failure report.
+    """Every process in the step's session with its parent, group and state, for a failure report.
 
-    `ps -g` reads a session id as a process group on BSD ps and as a session
-    on procps, so the listing is filtered here by the session column instead.
+    Membership is asked of the kernel with ``os.getsid``, never read from a ps
+    column: `ps -g` reads a session id as a process group on BSD ps, and BSD
+    ps's `sess` column is the kernel's session pointer, not an id, so on macOS
+    a filter on it matched nothing and reported a step still running as gone.
     """
     try:
         listing = subprocess.run(
-            ["ps", "-A", "-o", "pid=,pgid=,sess=,stat=,command="],
+            ["ps", "-A", "-o", "pid=,ppid=,pgid=,stat=,command="],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1107,8 +1109,38 @@ def _session_processes(sid: int) -> str:
         ).stdout
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"(ps unavailable: {exc})"
-    rows = [line for line in listing.splitlines() if line.split()[2:3] == [str(sid)]]
+    rows = [line for line in listing.splitlines() if _in_session(line, sid)]
     return "\n".join(rows) or "(no process left in the session)"
+
+
+def _in_session(ps_row: str, sid: int) -> bool:
+    """Whether the process a ps row names is in session ``sid`` (one that has exited is not)."""
+    try:
+        return os.getsid(int(ps_row.split(None, 1)[0])) == sid
+    except (IndexError, ValueError, OSError):
+        return False
+
+
+def test_the_session_listing_names_a_process_still_in_the_session() -> None:
+    """The interrupt test's failure report must see a step that is still running.
+
+    It is that test's only evidence of what kept the step alive, so a listing
+    that came back empty for a live session would send the triage the wrong way.
+    """
+    child = subprocess.Popen(
+        ["sleep", "30"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        listing = _session_processes(child.pid)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert [row.split()[0] for row in listing.splitlines()] == [str(child.pid)], listing
+    assert _session_processes(child.pid) == "(no process left in the session)"
 
 
 def _pid_alive(pid: int) -> bool:

@@ -73,6 +73,7 @@ elif '.event == "cross-referenced"' in program:
             "state": issue.get("state"),
             "author": (issue.get("user") or {}).get("login"),
             "created": issue.get("created_at"),
+            "body": issue.get("body"),
         }
         print(json.dumps(row, separators=(",", ":")))
 else:

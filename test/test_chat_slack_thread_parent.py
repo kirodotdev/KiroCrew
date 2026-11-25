@@ -504,10 +504,19 @@ def _linked_slot(state, *, thread_ts=THREAD_TS, key="thread-reply"):
     return slot
 
 
-async def _turn(state, slot, message):
+async def _turn(state, slot, message, **dispatch):
     slot.append("user", message)
-    await asyncio.wait_for(chat_runner._run_chat(state, slot, message), 30)
+    await asyncio.wait_for(chat_runner._run_chat(state, slot, message, **dispatch), 30)
     await finished(drain_background_tasks(state), "draining the background tasks")
+
+
+def _typed_in_slack(channel=CHANNEL):
+    """The stamps the Slack intercept puts on a reply typed in the linked thread."""
+    return {
+        "_directive_user_origin": True,
+        "_directive_channel_origin": True,
+        "_directive_source_channels": (channel,),
+    }
 
 
 class TestFirstTurnCarriesTheParent:
@@ -582,6 +591,71 @@ class TestFirstTurnCarriesTheParent:
         assert "channel_id" not in kwargs
         assert "thread_ts" not in kwargs
         assert "include_channel_history" not in kwargs
+
+
+class TestSlackTypedTurnsNameTheThread:
+    """A reply typed in the linked thread gets the thread's ids, as a Slack-born turn does.
+
+    ``slack/handler_runtime/turn.py`` passes ``channel_id`` and ``thread_ts`` on every
+    turn, so the prompt always holds a ``[SLACK THREAD CONTEXT]`` block naming the
+    thread. A linked dashboard slot passes the same ids for a turn typed in that thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_slack_typed_turn_gets_the_thread_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
+        monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
+        state = _turn_state(tmp_path)
+        slot = _linked_slot(state)
+
+        await _turn(state, slot, "fix it", **_typed_in_slack())
+        await _turn(state, slot, "and the other host?", **_typed_in_slack())
+
+        kwargs = state.context_builder.build_message.call_args.kwargs
+        assert kwargs.get("channel_id") == CHANNEL
+        assert kwargs.get("thread_ts") == THREAD_TS
+        assert kwargs.get("include_channel_history") is False
+        assert "thread_parent_text" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_turn_typed_in_another_channel_gets_no_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
+        monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
+        state = _turn_state(tmp_path)
+        slot = _linked_slot(state)
+
+        await _turn(state, slot, "fix it", **_typed_in_slack(channel=TRACKED))
+
+        kwargs = state.context_builder.build_message.call_args.kwargs
+        assert "channel_id" not in kwargs
+        assert "thread_ts" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_an_unlinked_slot_gets_no_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
+        monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
+        state = _turn_state(tmp_path)
+        slot = _linked_slot(state)
+        slot._slack_linked = False
+
+        await _turn(state, slot, "fix it", **_typed_in_slack())
+
+        kwargs = state.context_builder.build_message.call_args.kwargs
+        assert "channel_id" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_the_pending_parent_still_wins_on_the_first_turn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
+        monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
+        state = _turn_state(tmp_path)
+        slot = _linked_slot(state)
+        slot._pending_thread_parent = (CHANNEL, THREAD_TS, PARENT_TEXT)
+
+        await _turn(state, slot, "fix it", **_typed_in_slack())
+
+        kwargs = state.context_builder.build_message.call_args.kwargs
+        assert kwargs["thread_parent_text"] == PARENT_TEXT
+        assert kwargs["thread_ts"] == THREAD_TS
 
 
 def _channel_buffer() -> ChannelHistory:

@@ -12,7 +12,7 @@ nothing; each non-managed launch requires an explicit operator decision.
 
 This module binds the approval to CONTENT instead. For every approved server it
 records the launch fingerprints the operator accepted -- ``hash_command`` over
-the resolved command and args, and ``hash_declared_env`` over the declared env
+the resolved command and args, and ``hash_launch_env`` over the declared env
 -- in :data:`APPROVALS_LEAF` under the crew data home. That file is written only
 by gateway-side code (the dashboard stub toggle and rewrite-pass refusal
 recording), is write-protected from agent tools, and is read-only inside
@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any, Collection, Iterable, Mapping
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_declared_env
+from kiro_crew.mcp_gateway.hashing import gateway_path, hash_command, hash_launch_env
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +141,10 @@ def _coerced_env(env_pairs: Mapping[Any, Any] | None) -> dict[str, str]:
 def env_fingerprint(env_pairs: Mapping[Any, Any] | None) -> str:
     """Hash of the complete declared env block gatewayd may apply.
 
-    Secret-prefixed entries count too: private backends receive them.
+    Secret-prefixed entries count too: private backends receive them. The
+    gateway's own part of ``PATH`` does not (``hashing.hash_launch_env``).
     """
-    return hash_declared_env(_coerced_env(env_pairs))
+    return hash_launch_env(_coerced_env(env_pairs))
 
 
 def launch_pair(command_hash: str, derived_env_hash: str) -> str:
@@ -161,6 +162,18 @@ def launch_fingerprint(
 ) -> str:
     """``<command hash>:<env hash>`` for one launch."""
     return f"{hash_command(command, list(args))}:{env_fingerprint(env_pairs)}"
+
+
+def pin_gateway_part() -> None:
+    """Fix this process's gateway ``PATH`` part for the life of the MCP broker.
+
+    The broker calls it before its rewrite pass, so the pass, every later
+    agent-spec rebuild and the gatewayd it hands the part to fold one
+    composition. BLOCKING: the first read scans the well-known directories.
+    """
+    from kiro_crew.env import pin_gateway_spec_path
+
+    pin_gateway_spec_path(gateway_path())
 
 
 def _split(fingerprint: str) -> tuple[str, str]:
@@ -225,6 +238,10 @@ class LaunchApprovals:
     #: The approved pairs a stem held before this pass rebound any of them, so
     #: a save can tell whether the store moved underneath the pass.
     rebind_base: dict[str, frozenset[str]] = field(default_factory=dict)
+    #: Fingerprints admitted as an approved launch whose command only went
+    #: through ``env.saved_command_casing`` (stem -> fingerprint -> the
+    #: approved source fingerprint and pair it was admitted under).
+    casing_healed: dict[str, dict[str, tuple[str, str]]] = field(default_factory=dict)
     #: Additional redacted display argv found by the final target filter.
     refused_commands: dict[str, list[list[str]]] = field(default_factory=dict)
     #: Every approval identity and its redacted command/env displays seen this pass.
@@ -397,6 +414,40 @@ class LaunchApprovals:
         self.live_overflow.setdefault(stem, set()).add(identity)
         return _launch_displays(launch, env)
 
+    def _casing_repair_of_approved(
+        self,
+        stem: str,
+        fingerprint: str,
+        derived_env_hash: str,
+        launch: tuple[str, list[str]] | None,
+    ) -> tuple[str, str] | None:
+        """The approved fingerprint and pair *launch* repairs, or ``None``.
+
+        The approved spelling differs from the live command only in the case of
+        its extension, the repair maps it onto the live command, and its exact
+        pair, same args and env, is approved with a stored display. The repair
+        reads the spelling from the directory entry, so no agent chooses it.
+        """
+        if launch is None:
+            return None
+        from kiro_crew.env import saved_command_casing  # deferred: config.loader import path
+
+        command, args = str(launch[0]), [str(a) for a in launch[1]]
+        root, ext = os.path.splitext(command)
+        env_hash = _split(fingerprint)[1]
+        for spelling in {root + ext.upper(), root + ext.lower()} - {command}:
+            approved_hash = hash_command(spelling, args)
+            source = f"{approved_hash}:{env_hash}"
+            source_pair = launch_pair(approved_hash, derived_env_hash)
+            if (
+                source in self.approved.get(stem, ())
+                and self.admits_launch(stem, approved_hash, derived_env_hash)
+                and source_pair in self.approved_displays.get(stem, {})
+                and saved_command_casing(spelling) == command
+            ):
+                return source, source_pair
+        return None
+
     def admit(
         self,
         name: str,
@@ -439,6 +490,10 @@ class LaunchApprovals:
             and fingerprint in self.approved.get(stem, ())
             and not self.admits_launch(stem, command_hash, derived_env_hash)
         )
+        healed = None
+        if not (self.probe or managed or rebind):
+            healed = self._casing_repair_of_approved(stem, fingerprint, derived_env_hash, launch)
+        rebind = rebind or healed is not None
         additions: list[tuple[Mapping[str, Collection[Any]], Collection[Any]]] = []
         # A rebind is an approved launch, so like the exact one above it is not
         # counted against the display set; what it adds to the store stays capped.
@@ -468,22 +523,27 @@ class LaunchApprovals:
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
             return True
         if rebind:
-            self.rebind_base.setdefault(stem, frozenset(self.approved_pairs.get(stem, ())))
+            if healed is not None:
+                self.casing_healed.setdefault(stem, {})[fingerprint] = healed
+            else:
+                self.rebind_base.setdefault(stem, frozenset(self.approved_pairs.get(stem, ())))
+                self.rebound.setdefault(stem, {})[identity] = fingerprint
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
-            self.rebound.setdefault(stem, {})[identity] = fingerprint
             if display_complete and command_display is not None and env_display is not None:
                 self.approved_displays.setdefault(stem, {})[identity] = (
                     command_display,
                     env_display,
                 )
             logger.info(
-                "mcp launch approvals: %s keeps its approval; only a ${VAR} value "
-                "in its declared env changed",
+                "mcp launch approvals: %s keeps its approval; only %s changed",
                 _bounded_name(name),
+                "its command's extension case" if healed else "a ${VAR} value in its declared env",
             )
             return True
         self.names.setdefault(stem, _bounded_name(name))
-        self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
+        # A launch already retained before the cap was hit must not hide the cap.
+        if self.refused.get(stem) != REFUSED_TOO_MANY:
+            self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
         return False
 
     def refusal_displays(self, stem: str) -> tuple[list[list[str]], list[list[str]]]:
@@ -527,6 +587,11 @@ class LaunchApprovals:
         """Whether *command_hash* participates in an approved pair."""
         prefix = f"{command_hash}:"
         return any(pair.startswith(prefix) for pair in self.approved_pairs.get(stem, ()))
+
+    def saw_command(self, stem: str, command_hash: str) -> bool:
+        """Whether this pass recorded a launch of *command_hash* for *stem*."""
+        prefix = f"{command_hash}:"
+        return any(identity.startswith(prefix) for identity in self.launch_identities.get(stem, {}))
 
     def digest(self) -> list[Any]:
         """Stable summary folded into the rewriter's input fingerprint.
@@ -1014,6 +1079,8 @@ def _pairs_under(pairs: Iterable[str], command_hash: str) -> set[str]:
 
 #: Audit reason for a pair admitted because only a ``${VAR}`` value changed.
 REBIND_AUDIT_REASON = "approved launch, ${VAR} value changed"
+#: Audit reason for a pair admitted because only the PATHEXT casing repair moved.
+CASING_AUDIT_REASON = "approved launch, Windows command casing repaired"
 
 
 def _settle_rebinds(
@@ -1074,6 +1141,7 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
     with _STORE_LOCK:
         current = load_approvals(target)
         changed = False
+        withheld: dict[str, set[str]] = {}
         for stem, fps in approvals.captured.items():
             before = set(current.approved.get(stem, ()))
             before_pairs = set(current.approved_pairs.get(stem, ()))
@@ -1084,6 +1152,12 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
                 for pair in dropped
                 if approvals.rebound[stem][pair] not in before
             }
+            # A casing repair is written only while the store still approves its source.
+            for fp, (source, source_pair) in approvals.casing_healed.get(stem, {}).items():
+                if source not in before or source_pair not in before_pairs:
+                    withdrawn.add(fp)
+                    dropped.add(launch_pair(_split(fp)[0], _split(source_pair)[1]))
+            withheld[stem] = withdrawn
             fps = {fp for fp in fps if fp not in withdrawn}
             if not fps:
                 continue
@@ -1154,7 +1228,7 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
         if not changed:
             return False
         _write(target, _document(current, refused))
-    for reason, fingerprints in _captured_by_reason(approvals).items():
+    for reason, fingerprints in _captured_by_reason(approvals, withheld).items():
         logger.warning(
             "mcp launch approvals: recorded %d launch fingerprint(s) for %s (%s)",
             sum(len(v) for v in fingerprints.values()),
@@ -1164,17 +1238,23 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
     return True
 
 
-def _captured_by_reason(approvals: LaunchApprovals) -> dict[str, dict[str, set[str]]]:
+def _captured_by_reason(
+    approvals: LaunchApprovals, withheld: Mapping[str, set[str]]
+) -> dict[str, dict[str, set[str]]]:
     """Split what a pass captured by why it was admitted, for the audit line.
 
     A rebound fingerprint is an operator-approved declaration whose ``${VAR}``
-    expansion changed; every other captured fingerprint is a managed launch.
+    expansion changed, a casing-healed one an approved launch whose command the
+    PATHEXT casing repair rewrote; every other captured fingerprint is a managed launch.
+    A fingerprint in *withheld* (stem -> fingerprints the save did not write) is left out.
     """
     by_reason: dict[str, dict[str, set[str]]] = {}
     for stem, fps in approvals.captured.items():
         rebound = set(approvals.rebound.get(stem, {}).values())
-        for fingerprint in fps:
+        healed = approvals.casing_healed.get(stem, {})
+        for fingerprint in fps - withheld.get(stem, set()):
             reason = REBIND_AUDIT_REASON if fingerprint in rebound else "managed launch"
+            reason = CASING_AUDIT_REASON if fingerprint in healed else reason
             by_reason.setdefault(reason, {}).setdefault(stem, set()).add(fingerprint)
     return by_reason
 
@@ -1337,19 +1417,24 @@ def restore(snapshot: ApprovalSnapshot, path: Path | None = None) -> None:
 
 
 def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Display-safe refusal records keyed by server name."""
+    """Display-safe refusal records keyed by server name.
+
+    A ``too_many_launches`` record is display only: it shows the launches the
+    cap kept and the cap itself, and never an ``expected_launch``, because no
+    approval can cover a server past the cap.
+    """
     approvals = load_approvals(path)
     result: dict[str, dict[str, Any]] = {}
     for rec in approvals.stored_refused.values():
-        if rec.get("reason") == REFUSED_TOO_MANY:
-            continue
+        over_cap = rec.get("reason") == REFUSED_TOO_MANY
         commands, _cut_commands, _malformed_commands = _bounded_commands(rec.get("commands"))
         envs, _cut_envs, _malformed_envs = _bounded_envs(rec.get("envs"))
         result[str(rec["name"])] = {
             "reason": str(rec["reason"]),
             "commands": commands,
             "envs": envs,
-            "complete": rec.get("complete") is not False,
+            "complete": rec.get("complete") is not False and not over_cap,
+            **({"launch_cap": _MAX_SERVER_LAUNCHES} if over_cap else {}),
             **(
                 {"approved_commands": rec["approved_commands"]}
                 if rec.get("approved_commands")
@@ -1358,7 +1443,9 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
             **({"approved_envs": rec["approved_envs"]} if rec.get("approved_envs") else {}),
             **(
                 {"expected_launch": rec["expected_launch"]}
-                if isinstance(rec.get("expected_launch"), str) and rec["expected_launch"]
+                if not over_cap
+                and isinstance(rec.get("expected_launch"), str)
+                and rec["expected_launch"]
                 else {}
             ),
         }
@@ -1391,10 +1478,16 @@ def refused_share_records(
 def refused_shares(
     asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, str]:
-    """Refusal reason per share-list name, matched as :func:`refused_share_records` does."""
+    """Refusal reason per share-list name, matched as :func:`refused_share_records` does.
+
+    A ``too_many_launches`` name is left out: this feeds the notice that asks for an
+    approval, no approval clears a server over the cap, and its own MCP Management
+    row explains it.
+    """
     return {
         name: str(rec.get("reason", ""))
         for name, rec in refused_share_records(asked, refused).items()
+        if rec.get("reason") != REFUSED_TOO_MANY
     }
 
 
@@ -1472,7 +1565,10 @@ def filter_target_env(
             kept[key] = spec
             continue
         dropped.add(stem)
-        if parts:
+        # A launch this pass already refused carries its own display in the
+        # refusal record. Counting it again here would leave that record with
+        # nothing approvable, though it shows the whole launch.
+        if parts and not approvals.saw_command(stem, hash_command(parts[0], parts[1:])):
             display = _bounded_display_argv((parts[0], parts[1:]))
             commands = approvals.refused_commands.get(stem, [])
             if display not in commands and approvals._admission_allowed(

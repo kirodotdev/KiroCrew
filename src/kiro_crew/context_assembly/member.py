@@ -438,7 +438,7 @@ def build_member_section(
     goals = _read_goal_block(slug, member)
     from kiro_crew.member_mate_tools import binding_has_file_write, binding_has_mate_tools
 
-    has_mate_tools = binding_has_mate_tools(crew)
+    has_mate_tools = binding_has_mate_tools(crew, crew_key)
     # Layer-4 availability decides the briefing read and the wording of item 6 and
     # the placeholder: where the briefing read fails closed (Windows,
     # member_briefing_supported) the section says the layer is unavailable. A turn

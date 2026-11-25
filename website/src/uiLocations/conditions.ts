@@ -33,9 +33,9 @@ export const UI_CONDITIONS = {
   pointer_on_session_row: 'the pointer or keyboard focus is on a session row of this machine that is not being renamed (the control is drawn on that row)',
   // Shell and notifications
   terminal_enabled: 'the terminal is turned on in Settings',
+  not_macos: 'the dashboard is open on Windows or Linux, not on a Mac (where Cmd+C and Cmd+V already copy and paste)',
   topbar_search_shown: 'the Show search in the top bar setting is on (Settings → Display → View)',
   phone_connect_available: 'pairing a phone is available on this machine',
-  kiro_account_entry: 'the menu offers a Kiro account row (always when this installation runs on Kiro; with another backend, only once an account usage reading has arrived)',
   has_notifications: 'at least one notification is listed',
   has_unread_notifications: 'at least one notification is unread',
   notification_selected: 'a notification is open in the detail panel (select it in the list)',
@@ -105,6 +105,8 @@ export const UI_CONDITIONS = {
   terminal_not_popped_out: 'the terminal is docked in the dashboard, not popped out to its own window',
   terminal_docked_bottom: 'the terminal panel sits below the chat (the default)',
   terminal_docked_right: 'the terminal panel sits to the right of the chat, side by side with it',
+  // Customize > MCP Servers: the approval card above both views
+  mcp_launch_awaiting_approval: "an MCP server's launch waits for approval (it was listed in a config file by hand, or its command changed), so the page shows a card naming it",
 } as const
 
 export type UiConditionId = keyof typeof UI_CONDITIONS
@@ -124,6 +126,7 @@ export const UI_REVEAL_STATES = {
   crewmate_chat_open_phone: 'a Bot chat fills the phone screen, so the roster is behind it',
   crewmate_profile_closed: "the Bot's profile card is closed (pressing the Bot's name in the chat header opens it)",
   crewmate_profile_tab_closed: "the Bot's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
+  crewmate_profile_sessions_tab_closed: "the Bot's profile card is on another tab (its Sessions tab is the first one on the rail)",
   crewmate_settings_closed: "the Bot's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
   crewmate_panel_closed: "the Bot's side panel is closed (the Dashboard & files button in the chat header opens it)",
 } as const
@@ -153,6 +156,7 @@ export const UI_REVEAL_SCOPES = {
   'members.roster-phone': 'crewmate_chat_open_phone',
   'members.profile': 'crewmate_profile_closed',
   'members.profile-tab': 'crewmate_profile_tab_closed',
+  'members.sessions-tab': 'crewmate_profile_sessions_tab_closed',
   'members.settings': 'crewmate_settings_closed',
   'members.panel': 'crewmate_panel_closed',
 } as const satisfies Record<string, UiRevealState>

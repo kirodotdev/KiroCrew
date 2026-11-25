@@ -26,11 +26,6 @@ Caveats worth knowing before you copy one:
 
 - `01_review_changes.py` runs end to end against a stub agent. It is the closest
   of the three to a working script.
-- `02_loop_until_dry_bug_hunt.py` chains `.then(...)` onto a `ctx.agent(...)` call.
-  No such method exists on the coroutine or anywhere in `workflows/`, so that
-  `parallel` thunk raises, resolves to `None`, and the surrounding unpack fails
-  once a finder actually returns bugs. Treat the loop-until-dry and budget-guard
-  structure as the lesson, not that line.
 - `03_scheduled_triage_native.py` references `ctx.memory`, `ctx.cron` and
   `ctx.send_slack`. The shipped gateway wires the `nudge` port and the
   session-control ports (`open_session`, `send_to_session`, `set_session_mode`)
@@ -38,9 +33,6 @@ Caveats worth knowing before you copy one:
   script before exec with
   `where="validate"`. It documents the intended native-port surface, and it needs a
   host that wires those ports.
-- The two `ctx.budget.remaining()` early stops read a counter nothing currently
-  increments (see the Budget open question in the module spec), so on today's
-  engine that branch never fires.
-
-All three module docstrings say the DSL "is not implemented yet". That is out of
-date: `src/kiro_crew/workflows/` implements it.
+- The `ctx.budget.remaining()` early stop in `02_loop_until_dry_bug_hunt.py` reads
+  a counter nothing increments (see the Budget open question in the module spec), so
+  that branch never fires.

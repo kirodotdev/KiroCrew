@@ -91,7 +91,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
 
       - name: Comment which failing tests are red on main
         env:
@@ -137,11 +139,12 @@ jobs:
             exit 0
           fi
 
-          # Open pull requests that cross-reference the issue, for the fix line. The
+          # Pull requests that cross-reference the issue, with their bodies, for the
+          # fix line (the script keeps those whose body declares the issue). The
           # issue body's own copy of that line is editable and is not read.
           timeline_args=()
           if gh api "repos/$REPO/issues/$existing/timeline?per_page=100" --paginate \
-            --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at}' \
+            --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at, body: .source.issue.body}' \
             > "$work/timeline.ndjson" 2>/dev/null; then
             timeline_args=(--timeline "$work/timeline.ndjson")
           else

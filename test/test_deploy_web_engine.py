@@ -359,6 +359,32 @@ def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
     assert engine._aws(["s3", "ls"], "")[0] == "aws"
 
 
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_windows_aws_lookup_skips_the_drive_less_posix_dirs(monkeypatch, platform):
+    """On Windows ``/usr/local/bin`` resolves against the current drive."""
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("PATH", "")
+    probed: list[str] = []
+    checked: list[str] = []
+    monkeypatch.setattr(engine.shutil, "which", lambda _name, path: probed.append(path))
+    monkeypatch.setattr(
+        github_runner, "validate_provider_directory", lambda d: checked.append(d) or d
+    )
+
+    assert engine.resolve_aws_tool_bin_with_refusals("aws") == ("aws", ())
+    engine.refresh_aws_tool_trust()
+
+    if platform == "win32":
+        assert probed == []
+        assert checked == []
+    else:
+        brew, local = "/opt/homebrew/bin", "/usr/local/bin"
+        # The resolver probes each dir once, then the sweep once per tool.
+        assert probed == [brew, local, brew, brew, local, local]
+
+
 # --- the same minimal-PATH gap for session-manager-plugin -------------
 
 
@@ -763,6 +789,42 @@ def test_existing_refused_fallback_directory_warns_once(monkeypatch, tmp_path, c
     assert warnings == [
         f"not appending AWS tooling directory {fallback} to child PATH: directory trust refused"
     ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_a_refused_tool_warns_once_however_often_it_is_walked(monkeypatch, tmp_path, caplog):
+    """Every ssh spawn walks the plugin, so its refusal is logged once, not per spawn."""
+    fallback, empty_bin = tmp_path / "fallback", tmp_path / "e"
+    fallback.mkdir()
+    empty_bin.mkdir()
+    plugin = fallback / "session-manager-plugin"
+    plugin.write_text("#!/bin/sh\n")
+    plugin.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+    from kiro_crew import github_runner
+
+    def _refuse(_candidate):
+        raise ValueError("executable is owned by another user (uid 1501)")
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda candidate: candidate)
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+    caplog.set_level("WARNING", logger=engine.logger.name)
+
+    for _ in range(3):
+        engine.resolve_aws_tool_bin_with_refusals("session-manager-plugin")
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == engine.logger.name and record.levelname == "WARNING"
+    ]
+    assert warnings == [
+        f"refusing session-manager-plugin at {plugin}: failed provenance validation; "
+        "trying the remaining install dirs"
+    ]
+    assert engine._REFUSED_AWS_BIN_DIRS == {("session-manager-plugin", str(fallback))}
 
 
 def test_aws_spawn_env_excludes_a_never_checked_dir(monkeypatch, tmp_path):

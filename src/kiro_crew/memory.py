@@ -1780,7 +1780,8 @@ class MemoryStore:
                     floor = max(1, min(2, len(terms)))
                     cursor = conn.execute(
                         f"SELECT path, content, ({score}) AS hits FROM memory_fts "
-                        "WHERE hits >= ? ORDER BY hits DESC, path LIMIT ?",
+                        # Reverse path order: ties go to the newest dated history file.
+                        "WHERE hits >= ? ORDER BY hits DESC, path DESC LIMIT ?",
                         (*parameters, floor, limit),
                     )
                     matched = cursor.fetchall()
@@ -1796,10 +1797,27 @@ class MemoryStore:
                                 "path": path,
                                 "snippet": snippet,
                                 "rank": -hits / len(terms),
-                                "relevance": hits / len(terms),
                                 "snippet_truncated": start > 0 or len(content) > start + 1000,
                             }
                         )
+                    # Relevance describes the snippet a row returns, matched the way
+                    # its file was admitted, so "decided" still counts for "decide".
+                    shown = sqlite3.connect(":memory:")
+                    try:
+                        shown.execute(
+                            "CREATE VIRTUAL TABLE memory_fts USING fts5("
+                            "path, content, tokenize='porter unicode61')"
+                        )
+                        shown.executemany(
+                            "INSERT INTO memory_fts(rowid, content) VALUES (?, ?)",
+                            [(index, row["snippet"]) for index, row in enumerate(results, 1)],
+                        )
+                        for index, hits in shown.execute(
+                            f"SELECT rowid, ({score}) FROM memory_fts", parameters
+                        ):
+                            results[index - 1]["relevance"] = hits / len(terms)
+                    finally:
+                        shown.close()
                     return results
                 if not match:
                     return []

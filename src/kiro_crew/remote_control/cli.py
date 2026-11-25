@@ -4,7 +4,8 @@
 A running gateway notices the write within a few seconds and stops the relay
 (:mod:`kiro_crew.remote_control.guard`); no restart is needed for that. ``on``
 takes effect when Kiro Crew restarts, and is refused (exit 1, nothing written) on a
-build that locks the tunnel. ``status`` prints what the setting asks for.
+build that locks the tunnel. ``status`` prints what the setting asks for, or
+"can't start" with the reason when config keeps the relay from starting.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ _ACTIONS = (
 LOCKED_NOTICE = "Remote Control is managed by this build and cannot be turned on here."
 #: Status for a Crew that hosts only because its team key or workload identity is set.
 BY_DEFAULT_NOTICE = (
-    "On by default, because this Crew has a team key or a workload identity. "
+    "On by default, for this Crew's personal sign-in, team key or workload identity. "
     "To turn it off: kirocrew remote-control off"
 )
 
@@ -58,14 +59,20 @@ def _status(as_json: bool) -> int:
     requested = setting.requested()
     locked = setting.locked()
     by_default = requested and setting.by_default()
+    problem = setting.start_problem() if requested and not locked else None
     if as_json:
-        print(json.dumps({"requested": requested, "locked": locked, "by_default": by_default}))
+        state = {"requested": requested, "locked": locked, "by_default": by_default}
+        print(json.dumps({**state, "problem": problem} if problem else state))
         return 0
     if locked:
         print("Remote Control: off")
         print(LOCKED_NOTICE)
         return 0
-    print(f"Remote Control: {'on' if requested else 'off'}")
+    if problem:
+        print("Remote Control: can't start")
+        print(f"   {problem}")
+    else:
+        print(f"Remote Control: {'on' if requested else 'off'}")
     if by_default:
         print(f"   {BY_DEFAULT_NOTICE}")
     return 0

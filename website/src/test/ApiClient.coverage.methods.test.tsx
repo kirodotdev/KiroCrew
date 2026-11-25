@@ -638,6 +638,8 @@ describe('every api method issues one well-formed /api request', () => {
     updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
     chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
     sendChat: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
+    // `sessionsSearchMessages(params, signal)`: the query string is built from `params`.
+    sessionsSearchMessages: [{ q: 'sw-1', agent: 'sw-2', role: 'user', since: 1 }, CALLER_SIGNAL],
     spawnStatus: ['sw-1', { signal: CALLER_SIGNAL }],
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
     pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],

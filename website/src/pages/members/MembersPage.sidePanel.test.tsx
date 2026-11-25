@@ -180,13 +180,14 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend }: {
+  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend, onOpenProfileTab }: {
     target: { slug?: string; member?: string }
     displayName: string
     preview?: boolean
     onPreviewGone?: (gone: boolean) => void
     onAct?: (text: string) => void
     onSend?: (text: string) => Promise<unknown>
+    onOpenProfileTab?: () => void
   }) => (
     <div
       data-testid="crew-dashboard-stub"
@@ -205,6 +206,10 @@ vi.mock('./CrewDynamicDashboard', () => ({
         data-testid="crew-dashboard-stub-send"
         onClick={() => { if (onSend) void onSend('Approve the plan'); else onAct?.('Approve the plan') }}
       >send</button>
+      {/* The one-click-send badge's "change on Profile" press. */}
+      {onOpenProfileTab && (
+        <button type="button" data-testid="crew-dashboard-stub-profile" onClick={onOpenProfileTab}>profile</button>
+      )}
     </div>
   ),
 }))
@@ -405,14 +410,17 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-roster')).toHaveClass('hidden')
     expect(screen.getByTestId('crewmate-switcher')).toBeInTheDocument()
     // No count on the chip (issue #19045): the open list says how many. The
-    // unread column hangs from the header's bottom edge, absolutely, so it adds
-    // nothing to the header's measured height: the thread is never pushed down.
+    // unread column hangs from the switcher chip's bottom edge (the header's
+    // py-2 plus the 42px chip), absolutely, so it adds nothing to the header's
+    // measured height: the thread is never pushed down. Not from the header's
+    // bottom: the identity stack makes the header far taller than the chip.
     expect(screen.queryByTestId('crewmate-switcher-count')).toBeNull()
     const header = screen.getByTestId('member-thread-header')
     const slot = screen.getByTestId('crewmate-unread-column-slot')
     expect(header.contains(slot)).toBe(true)
-    expect(slot.className).toContain('absolute')
-    expect(slot.className).toContain('top-full')
+    expect(slot).toHaveClass('absolute', 'top-[calc(0.5rem+42px)]')
+    expect(slot).not.toHaveClass('top-full')
+    expect(screen.getByTestId('crewmate-switcher').className).toContain('h-[42px]')
   })
 
   it('the panel opener names itself in an instant tip on hover, not a delayed native title (issue #27335)', async () => {
@@ -767,6 +775,36 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(call[1]).toBe('member-oncall')
       expect(call[8]).toBe('dashboard_card')
       expect(readPaneDraft('member-oncall').text).not.toContain('Approve the plan')
+    })
+
+    it('on a phone, the badge press puts the overlay away so the Profile card it opens is on screen', async () => {
+      // The overlay is fixed above the thread column the floating card opens
+      // in; left up, the press opened a card behind it and looked dead.
+      const orig = window.matchMedia
+      try {
+        window.matchMedia = vi.fn().mockImplementation((q: string) => ({
+          matches: /max-width/.test(q),
+          media: q,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }))
+        setWindowWidth(390)
+        await renderPage([row({ bound: true, slot_key: 'member-oncall', dashboard_card_send: true })], 'kirocrew', { route: '/members?member=oncall' })
+        await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+        fireEvent.click(screen.getByTestId('member-panel-toggle'))
+        expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'overlay')
+        fireEvent.click(await screen.findByTestId('crew-dashboard-stub-profile', undefined, PANE_READY))
+        expect(await screen.findByTestId('crew-profile-modal')).toBeInTheDocument()
+        expect(await screen.findByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'profile')
+        await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      } finally {
+        window.matchMedia = orig
+        setWindowWidth(WIDE_WINDOW)
+      }
     })
   })
 
@@ -1375,12 +1413,21 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crew-profile-workspace')).toHaveTextContent('default')
   })
 
-  it('the identity pill carries a chevron, so it reads as a door and not as a second switcher chip', async () => {
+  it('the identity pill carries a chevron, revealed on hover or focus, so it reads as a door', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const pill = await screen.findByTestId('member-identity-pill')
     const chevron = within(pill).getByTestId('member-identity-pill-chevron')
     expect(chevron).toHaveAttribute('aria-hidden', 'true')
+    // Hidden at rest; the stack's hover or keyboard focus reveals it.
+    expect(chevron.getAttribute('class')).toContain('opacity-0')
+    expect(chevron.getAttribute('class')).toContain('group-hover:opacity-100')
+    expect(chevron.getAttribute('class')).toContain('group-focus-visible:opacity-100')
+    // Pinned to the chip's right edge, centred on its height, out of the
+    // name row, so it never takes width from the name.
+    expect(chevron).toHaveClass('absolute', 'top-1/2', '-translate-y-1/2')
+    expect(within(pill).getByTestId('member-title-row')).not.toContainElement(chevron)
+    expect(chevron).not.toHaveClass('lucide-inline')
     // Decorative: the pill's name stays the crewmate's.
     expect(pill).toHaveAccessibleName(/oncall/)
   })

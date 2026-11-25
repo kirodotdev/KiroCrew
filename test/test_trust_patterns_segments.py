@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import pytest
 from trust_patterns_helpers import (
     _extract_base_command,
     _legacy_title_command,
     _matches_trusted_pattern,
 )
 
-from kiro_crew.trust_patterns import redirect_outside_grant
+from kiro_crew import platform_compat
+from kiro_crew.trust_patterns import (
+    base_trust_patterns,
+    redirect_outside_grant,
+    split_command_segments,
+)
 
 
 class TestMatchesTrustedPatternPiped:
@@ -207,6 +215,37 @@ class TestMatchesTrustedPatternQuoted:
         # for genuinely unquoted pipes — an unmatched segment still denies.
         patterns = {"cat /etc/*"}
         assert _matches_trusted_pattern("Running: cat /etc/hosts | rm -rf /", patterns) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "a\\" ; calc ; echo \\"b"',
+            'dir "C:\\x\\" ; calc',
+            'dir "C:\\x\\" & calc',
+            'echo "x\\"; calc; echo "y"',
+            'echo \\"\'"; calc; echo "\'"',
+            "echo \\'\"'; calc; echo '\"'",
+            'echo \\"; calc; echo \\"',
+        ],
+    )
+    def test_on_windows_a_backslash_the_shells_read_apart_leaves_no_segments(self, command):
+        """kiro-cli runs PowerShell there, where a backslash escapes nothing; another
+        harness runs bash, where it does. The two cut these lines differently."""
+        patterns = base_trust_patterns("dir") | base_trust_patterns("echo")
+        with patch.object(platform_compat, "IS_WINDOWS", True):
+            assert split_command_segments(command) is None
+            assert _matches_trusted_pattern(command, patterns) is None
+
+    def test_on_windows_a_backslash_both_shells_read_alike_keeps_its_grant(self):
+        patterns = base_trust_patterns("dir") | base_trust_patterns("curl")
+        with patch.object(platform_compat, "IS_WINDOWS", True):
+            assert _matches_trusted_pattern('dir "C:\\x\\"', patterns) == "dir *"
+            assert _matches_trusted_pattern('curl -d "{\\"a\\":1}" u', patterns) == "curl *"
+            assert split_command_segments('dir "C:\\x" ; calc') == (
+                'dir "C:\\x" ; calc',
+                ['dir "C:\\x"', "calc"],
+            )
+            assert _matches_trusted_pattern("dir C:\\x ; calc", patterns) is None
 
 
 class TestSplitterPlaceholderForgery:

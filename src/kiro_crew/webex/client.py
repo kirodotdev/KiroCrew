@@ -37,6 +37,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from kiro_crew.http_proxy import proxy_for_url
 from kiro_crew.messaging.split import truncate_utf8 as _truncate_utf8
 
 logger = logging.getLogger(__name__)
@@ -517,7 +518,7 @@ class WebexClient:
                 url,
                 data=form,
                 headers=self._headers(),
-                proxy=self._proxy,
+                proxy=self._proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
                 if not 200 <= resp.status < 300:
@@ -570,7 +571,7 @@ class WebexClient:
             async with session.head(
                 url,
                 headers=self._headers(),
-                proxy=self._proxy,
+                proxy=self._proxy_for(url),
                 allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
@@ -617,7 +618,7 @@ class WebexClient:
                 async with session.get(
                     url,
                     headers=self._headers(),
-                    proxy=self._proxy,
+                    proxy=self._proxy_for(url),
                     allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=300),
                 ) as resp:
@@ -740,7 +741,7 @@ class WebexClient:
 
         # heartbeat= keeps protocol-level ping/pong flowing so a dead
         # connection surfaces as an error instead of hanging silently.
-        async with session.ws_connect(ws_url, proxy=self._proxy, heartbeat=20) as ws:
+        async with session.ws_connect(ws_url, proxy=self._proxy_for(ws_url), heartbeat=20) as ws:
             auth_frame = {
                 "id": str(uuid.uuid4()),
                 "type": "authorization",
@@ -823,7 +824,7 @@ class WebexClient:
             async with session.get(
                 _U2C_CATALOG,
                 headers=self._headers(),
-                proxy=self._proxy,
+                proxy=self._proxy_for(_U2C_CATALOG),
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status != 200:
@@ -854,7 +855,7 @@ class WebexClient:
                 f"{self._device_base}/devices",
                 json=_DEVICE_PAYLOAD,
                 headers=self._headers(),
-                proxy=self._proxy,
+                proxy=self._proxy_for(self._device_base),
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status in (200, 201):
@@ -864,7 +865,7 @@ class WebexClient:
             async with session.get(
                 f"{self._device_base}/devices",
                 headers=self._headers(),
-                proxy=self._proxy,
+                proxy=self._proxy_for(self._device_base),
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 data = await resp.json(content_type=None)
@@ -1192,6 +1193,10 @@ class WebexClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
+    def _proxy_for(self, url: str) -> str | None:
+        """The forward proxy for *url*, or ``None`` when ``NO_PROXY`` lists its host."""
+        return proxy_for_url(self._proxy, url)
+
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Return the shared ClientSession, creating it once on demand.
 
@@ -1226,7 +1231,7 @@ class WebexClient:
                     url,
                     json=payload,
                     headers=self._headers(),
-                    proxy=self._proxy,
+                    proxy=self._proxy_for(url),
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     if resp.status == 429 and attempt == 0:

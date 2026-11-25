@@ -519,7 +519,12 @@ def antigravity_gate_params(params: dict[str, Any] | None, *, shell: bool) -> di
     targets.extend(p for p in _antigravity_named_paths(params) if p not in listed)
     if targets:
         prior = out.get("path")
-        kept = prior if isinstance(prior, list) else ([prior] if prior not in (None, "") else [])
+        if isinstance(prior, list):
+            kept = prior
+        elif prior not in (None, ""):
+            kept = [prior]
+        else:
+            kept = []
         kept_strs = {k for k in kept if isinstance(k, str)}
         merged = [
             *kept,

@@ -454,6 +454,29 @@ export function scanDocument(opts) {
     return v
   }
 
+  /**
+   * A run member's text, leaving out any `hidden` subtree inside it. A `hidden`
+   * child already ends a run (`isInline` is false for it), but `textContent`
+   * reaches one nested in an inline child: HoverTip's description copy, which
+   * would splice two neighbouring controls' hints into one "sentence".
+   */
+  const runText = n => {
+    if (n.nodeType === 3 || !n.querySelector('[hidden]')) return n.textContent || ''
+    const shown = n.cloneNode(true)
+    for (const h of shown.querySelectorAll('[hidden]')) h.remove()
+    return shown.textContent || ''
+  }
+
+  /**
+   * The `hidden` description copies `el`'s `aria-describedby` lists: how an
+   * in-page hint (HoverTip, useInstantTip) carries what a `title` did. The run
+   * walk leaves them out, so the attribute pass grades them and the clip check
+   * counts them, as both do a `title`.
+   */
+  const hiddenDescriptions = el => (el.getAttribute('aria-describedby') || '').split(' ')
+    .map(id => id && document.getElementById(id))
+    .filter(d => d && d.hidden && d.textContent.trim())
+
   for (const el of document.body.querySelectorAll('*')) {
     if (!visible(el) || inVirtualList(el) || isOpaque(el)) continue
 
@@ -462,7 +485,7 @@ export function scanDocument(opts) {
     let run = []
     const flush = () => {
       if (!run.length) return
-      const text = run.map(n => (n.nodeType === 3 ? n.textContent : n.textContent || '')).join('')
+      const text = run.map(runText).join('')
       run = []
       if (!text.trim()) return
       const graded = gradeRun(text, opts)
@@ -506,8 +529,9 @@ export function scanDocument(opts) {
 
     // Attribute prose is outside the text flow, so the run walk above cannot see
     // it. This is the class that hid ThinkingBlock's English title/aria-label.
-    for (const attr of TEXT_ATTRS) {
-      const v = el.getAttribute && el.getAttribute(attr)
+    const prose = TEXT_ATTRS.map(attr => [attr, el.getAttribute(attr)])
+      .concat(hiddenDescriptions(el).map(d => ['aria-describedby', d.textContent]))
+    for (const [attr, v] of prose) {
       if (!v || !v.trim()) continue
       if (mode !== 'pseudo') continue
       const graded = gradeRun(v, opts)
@@ -611,7 +635,9 @@ export function scanDocument(opts) {
 
     const clips = cs.overflowX === 'hidden' || cs.overflowX === 'clip'
     const ellipsis = cs.textOverflow === 'ellipsis'
-    const named = !!(el.title || el.getAttribute('aria-label') || el.closest('[title]'))
+    const control = el.closest('button, a, [role="button"]')
+    const named = !!(el.title || el.getAttribute('aria-label') || el.closest('[title]')
+      || (control && hiddenDescriptions(control).length))
 
     // The highest-value signature in this codebase, and it does not need the
     // element to be overflowing YET: an ellipsis on a flex child whose min-width

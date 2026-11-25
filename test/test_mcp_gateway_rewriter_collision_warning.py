@@ -1,15 +1,21 @@
-"""Regression tests: the env-key collision warning fires once per key.
+"""Regression tests: the env-key collision warning fires once per key, and only
+for two different server names.
 
 ``_collect_target_env`` runs on every rewrite pass (one call per agent spec,
 plus one per kept overlay), so a single ambiguous config — two distinct server
 names that normalize to one ``KIROCREW_MCP_TARGET_<SERVER>`` env key — would
 print the same WARNING line on every pass. The emitter latches each distinct
 normalized key at module level so the notice fires once per key per process.
+
+One server name that two agents declare with different args is no collision:
+each variant gets its own args-hashed key, so the pass stays quiet about it.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import sys
 
 import pytest
 
@@ -121,3 +127,83 @@ def test_reset_hook_lets_the_warning_fire_again(caplog):
         _collect_target_env(dict(servers), {})
         after = [r for r in caplog.records if _COLLISION_TEXT in r.getMessage()]
         assert len(after) == 1
+
+
+def test_one_name_with_different_args_across_agents_is_not_a_collision(caplog):
+    """Two agents declare ``demo`` with different args: each gets its own hashed
+    key, so the shared pass map keeps the bare-key fallback quiet."""
+    target_env: dict[str, str] = {}
+    owners: dict[str, str] = {}
+
+    with caplog.at_level(logging.DEBUG, logger=rewriter.logger.name):
+        _collect_target_env({"demo": _wrapped_entry("/opt/demo", "--mode=a")}, target_env, owners)
+        _collect_target_env({"demo": _wrapped_entry("/opt/demo", "--mode=b")}, target_env, owners)
+
+    assert not [r for r in caplog.records if _COLLISION_TEXT in r.getMessage()]
+    hashed = sorted(v for k, v in target_env.items() if k.startswith("KIROCREW_MCP_TARGET_DEMO__"))
+    assert hashed == ["/opt/demo --mode=a", "/opt/demo --mode=b"]
+    # The bare fallback stays first-wins.
+    assert target_env["KIROCREW_MCP_TARGET_DEMO"] == "/opt/demo --mode=a"
+
+
+def test_distinct_names_across_agents_still_warn_once_naming_both(caplog):
+    """``builder-mcp`` in one agent and ``builder_mcp`` in another share a key:
+    the shared pass map still sees two names, and the WARNING names both."""
+    target_env: dict[str, str] = {}
+    owners: dict[str, str] = {}
+
+    with caplog.at_level(logging.DEBUG, logger=rewriter.logger.name):
+        for _pass in range(2):
+            _collect_target_env(
+                {"builder-mcp": _wrapped_entry("/opt/a/builder", "--mode=a")}, target_env, owners
+            )
+            _collect_target_env(
+                {"builder_mcp": _wrapped_entry("/opt/b/builder", "--mode=b")}, target_env, owners
+            )
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and _COLLISION_TEXT in r.getMessage()
+    ]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    message = warnings[0].getMessage()
+    assert "KIROCREW_MCP_TARGET_BUILDER_MCP" in message
+    assert "'builder-mcp' and 'builder_mcp'" in message
+
+
+def test_full_and_cached_pass_stay_quiet_for_one_name_with_different_args(tmp_path, caplog):
+    """The rewrite pass itself, fresh and then from its cache, shares one map
+    across the agents, so ``demo`` declared by two agents with different args
+    logs no collision on either path."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    for name, mode in (("alpha", "--mode=a"), ("beta", "--mode=b")):
+        (agents / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "tools": ["@demo"],
+                    "mcpServers": {"demo": {"command": sys.executable, "args": ["demo.py", mode]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+    kwargs = dict(
+        source_dir=agents,
+        overlay_dir=tmp_path / "overlay" / "agents",
+        socket_path=tmp_path / "gw.sock",
+        work_dir=tmp_path / "work",
+        stub_servers=frozenset({"demo"}),
+    )
+
+    for cached in (False, True):
+        _reset_collision_warnings()
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger=rewriter.logger.name):
+            results, target_env = rewriter.rewrite_agents(**kwargs)
+        assert cached == any("serving cached overlays" in r.getMessage() for r in caplog.records)
+        assert results == {"alpha.json": 1, "beta.json": 1}
+        assert not [r for r in caplog.records if _COLLISION_TEXT in r.getMessage()]
+        hashed = [k for k in target_env if k.startswith("KIROCREW_MCP_TARGET_DEMO__")]
+        assert len(hashed) == 2

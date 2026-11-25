@@ -148,12 +148,12 @@ function measuredAtOtherWidth(el: HTMLTextAreaElement): boolean {
  *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
  *  so this function's only write to the live element is its FINAL height.
  *
- *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
- *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
- *  caret and IME state have to survive the swap), and `sr-only` is a 1px clip — a
- *  textarea one pixel wide reports a `scrollHeight` of the better part of a
- *  viewport, which this function would then clamp to `cap` and WRITE BACK as an
- *  inline height. That height outlives the parking (nothing re-measures until
+ *  `parked` is a hard precondition, not an optimisation. Voice hold mode keeps
+ *  the textarea mounted inside an `sr-only` box (value, caret and IME state have
+ *  to survive the swap), and `sr-only` is a 1px clip — a textarea one pixel wide
+ *  reports a `scrollHeight` of the better part of a viewport, which this function
+ *  would then clamp to `cap` and WRITE BACK as an inline height. That height
+ *  outlives the parking (nothing re-measures until
  *  `value` changes again), so a single voice round-trip left the composer stuck
  *  at the 140px ceiling with an empty box, on a surface whose only way to shrink
  *  it — the drag handle's double-click — does not exist under a finger. */
@@ -448,6 +448,11 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
 
   // Auto-resize textarea to fit content.
   const lastMeasuredValueRef = useRef(value)
+  // The first measurement after mount waits for the next frame: measuring
+  // reads layout, and inside the commit that mounts the composer (opening a
+  // session) that forces a layout of the whole page. The frame runs before
+  // the first paint, so the box is never drawn at the wrong height.
+  const firstMeasureRef = useRef(true)
   useEffect(() => {
     // A changed value here was set by the parent (the user's own edits already
     // followed the caret in handleInput); an unchanged one means the cap, the
@@ -455,7 +460,13 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     // in. See `applyHeight` for why only the former must not follow the caret.
     const valueChanged = lastMeasuredValueRef.current !== value
     lastMeasuredValueRef.current = value
-    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
+    const measure = () => {
+      if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
+    }
+    if (!firstMeasureRef.current) { measure(); return }
+    firstMeasureRef.current = false
+    const frame = requestAnimationFrame(measure)
+    return () => cancelAnimationFrame(frame)
   }, [value, prefillHint, manualHeight, textareaParked, boxMounted, inputRef, dragging])
 
   // A pre-filled prompt is read from its first line. When the seed REPLACES what
@@ -529,7 +540,11 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   // is NOT followed here — a placeholder only shows over an empty box, so there is
   // no line of the user's to keep in view, and this effect also runs on a
   // parent-driven value change, where snapping is what the seeded-prompt rule forbids.
+  // Skipped on mount: the value effect's first measurement (next frame) reads
+  // the placeholder too.
+  const placeholderMountRef = useRef(true)
   useEffect(() => {
+    if (placeholderMountRef.current) { placeholderMountRef.current = false; return }
     const el = inputRef.current
     if (el && !dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, false)
   }, [activePlaceholder, manualHeight, prefillHint, inputRef, dragging])

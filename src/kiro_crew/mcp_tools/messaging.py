@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -816,6 +817,12 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             "thread_ts": thread_ts,
             "channel": args.get("channel", ""),
             "description": desc,
+            # Where the outbox copy came from. Only the caller's own code channel
+            # reads it: there the file must come from the session's work dir, and
+            # the endpoint checks this path and its bytes itself.
+            # Anchored, not normalized: collapsing ``..`` lexically would name a
+            # different file than the one read when a component is a link.
+            "source_path": str(Path(os.path.expanduser(src)).absolute()),
         }
         slack_resp = mcp_core._post("/api/slack/upload-file", slack_body)
         slack_caption_note = ""

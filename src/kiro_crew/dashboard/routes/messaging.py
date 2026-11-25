@@ -23,6 +23,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/slack/config", handlers.api_slack_config_get)
     app.router.add_put("/api/slack/config", handlers.api_slack_config_save)
     app.router.add_post("/api/slack/reconnect", handlers.api_slack_reconnect)
+    app.router.add_get("/api/slack/owner-claim", handlers.api_slack_owner_claim_get)
+    app.router.add_post("/api/slack/owner-claim/start", handlers.api_slack_owner_claim_start)
+    app.router.add_post("/api/slack/owner-claim/cancel", handlers.api_slack_owner_claim_cancel)
+    app.router.add_post("/api/slack/owner-claim/confirm", handlers.api_slack_owner_claim_confirm)
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
     app.router.add_get("/api/slack/manifest/status", handlers.api_slack_manifest_status)
     app.router.add_get("/api/slack/code-channel-agents", handlers.api_slack_code_channel_agents)
@@ -39,6 +43,7 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/wecom/config", handlers.api_wecom_config_save)
     app.router.add_get("/api/feishu/config", handlers.api_feishu_config_get)
     app.router.add_put("/api/feishu/config", handlers.api_feishu_config_save)
+    app.router.add_post("/api/feishu/sdk/install", handlers.api_feishu_sdk_install)
     # Microsoft Teams: inbound Bot Framework webhook (self-authenticating via
     # JWT; exempt from the cookie gate) + read-only status for the settings UI.
     app.router.add_post("/api/messaging/teams", handlers.api_teams_activity)

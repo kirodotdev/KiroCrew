@@ -58,6 +58,9 @@ def _render_markdown(md: str) -> str:
 
     Escapes HTML first (untrusted-by-default), then re-introduces a safe subset.
     """
+    # inline() marks a code span as NUL<index>NUL; WORD JOINER (U+2060) stands in for NUL so
+    # text cannot pose as one, and the scan still sees the text split where the NUL split it.
+    md = md.replace("\x00", "\u2060")
     lines = md.splitlines()
     out: list[str] = []
     in_code = False

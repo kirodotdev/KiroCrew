@@ -5,7 +5,8 @@ The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
 The shared execution-prompt reader (``context_assembly.agent_spec``) takes KAS's
-prompt spelling, ``file://`` expansion and path check here too.
+prompt spelling, ``file://`` expansion and path check here too, and a script cron's
+MCP client (``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
 Application code may not import ``kiro_crew.acp``
 (``scripts/check_agent_sdk_boundary.py``), so this module is the one seam they
 reach those reads through.
@@ -117,6 +118,30 @@ def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]
     from kiro_crew.acp import session_mcp
 
     return session_mcp.session_mcp_disabled_tools(None, spec=spec)
+
+
+def unusable_disabled_tools(spec: dict[str, Any]) -> list[str]:
+    """Launched servers in *spec* whose ``disabledTools`` is set but malformed, sorted.
+
+    ``acp.kas_tool_limits.disabled_tool_exclusions``'s refusal list: a value that is
+    not a list of non-blank tool names carries no restriction, so a caller refuses
+    the server rather than launch it whole. Never raises.
+    """
+    from kiro_crew.acp import kas_tool_limits
+
+    return kas_tool_limits.disabled_tool_exclusions(spec)[1]
+
+
+def global_mcp_servers() -> dict[str, Any]:
+    """The ``mcpServers`` map of the user's global Kiro MCP settings, ``{}`` when unread.
+
+    ``acp.session_mcp._global_settings``, the file the dashboard's switch-offs land
+    in for a server a spec does not own. Blocking, and never raises.
+    """
+    from kiro_crew.acp import session_mcp
+
+    servers = session_mcp._global_settings().get("mcpServers")
+    return servers if isinstance(servers, dict) else {}
 
 
 def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
@@ -271,3 +296,39 @@ def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, b
     from kiro_crew.acp._dispatch import _workspace_call_arguments
 
     return _workspace_call_arguments(params, server, tool)
+
+
+def remote_bridge_url(url: str) -> str:
+    """*url* as KAS's header bridge dials it: a plain ``http`` loopback host in its
+    canonical spelling, userinfo dropped (``acp.kas_env_launch.bridge_url``)."""
+    from kiro_crew.acp import kas_env_launch
+
+    return kas_env_launch.bridge_url(url)
+
+
+def plain_http_headers_refused(url: str) -> bool:
+    """Whether headers bound for *url* are refused because they would travel in
+    cleartext: a plain ``http`` url to a host KAS does not accept (not loopback),
+    while the operator's ``agent.kas_refuse_plain_http_mcp_headers`` opt-in is on
+    (``acp.kas_env_launch.refuses_plain_http_headers``, off by default)."""
+    from kiro_crew.acp import kas_env_launch
+
+    return (
+        url.strip().lower().startswith("http://")
+        and not kas_env_launch.kas_accepts_url(url)
+        and kas_env_launch.refuses_plain_http_headers()
+    )
+
+
+def stamp_session_label(entry: dict[str, Any], label: str) -> dict[str, Any]:
+    """*entry* (an MCP server entry the caller owns) carrying *label* as its session label.
+
+    Drops the session-label marker and sets the label env var, the same spelling
+    every harness hands a server (``acp.session_label``). Mutates and returns *entry*.
+    """
+    from kiro_crew.acp.session_label import SESSION_LABEL_ENV, SESSION_LABEL_MARKER
+
+    entry.pop(SESSION_LABEL_MARKER, None)
+    env = entry.get("env")
+    entry["env"] = {**(env if isinstance(env, dict) else {}), SESSION_LABEL_ENV: label}
+    return entry

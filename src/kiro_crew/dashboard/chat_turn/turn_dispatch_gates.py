@@ -25,6 +25,7 @@ from kiro_crew.dashboard.recovery_replays import (
     cancel_notice_meta,
     replays_of,
 )
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
 from kiro_crew.members import DM_SLOT_MODE
@@ -555,6 +556,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # answer as much as to the echo — so it is one gate, not four. A turn the
     # agent started resolves it too: its reply is owed to the thread, and the
     # echo below skips it (``_prompt_typed_in_dashboard`` reads actor ``agent``).
+    # A Slack reconnect clears the client for its window: a linked turn waits for
+    # that attempt and mirrors through the client it publishes.
+    if (
+        not state.slack_client
+        and not _slash_withholds_mirror
+        and not slack_mirror_is_paused(state, session_key)
+        and all(state.sessions.get_slack_link(session_key))
+    ):
+        await wait_for_slack_reconnect(state)
     if (
         state.slack_client
         and not _slash_withholds_mirror
@@ -613,13 +623,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 # above Slack's own "Thinking completed" plan header for good.
                 # The stream opens on the first tool call instead, and the
                 # placeholder is deleted then, before the answer is posted, or
-                # at turn end, whichever comes first.
-                turn._mirror_thinking_ts = (
-                    await state.slack_client.post_message(
-                        _mirror_chan, _MIRROR_THINKING, _mirror_post_ts
+                # at turn end, whichever comes first. A Bot's Heartbeat wake
+                # (``_mirror_reply_only``) posts no placeholder: only its reply.
+                if not turn._mirror_reply_only:
+                    turn._mirror_thinking_ts = (
+                        await state.slack_client.post_message(
+                            _mirror_chan, _MIRROR_THINKING, _mirror_post_ts
+                        )
+                        or ""
                     )
-                    or ""
-                )
             except Exception:
                 logger.debug("Failed to mirror user message to Slack", exc_info=True)
             # The Slack leg is done: a cancel landing in the cross-surface leg

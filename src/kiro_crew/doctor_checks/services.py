@@ -456,15 +456,28 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     from kiro_crew.config import loader_credentials
     from kiro_crew.doctor_checks import confinement
 
-    creds = loader_credentials.resolve_env_credentials(
+    env_creds = loader_credentials.resolve_env_credentials(
         {k: v for k in loader_credentials.CREDENTIAL_KEYS if (v := os.environ.get(k, ""))}
     )
+    creds = env_creds
     creds_read = False
     with render._unreadable_skips_section(
         issues, "credentials", confined=confinement._doctor_vantage_confined
     ):
         creds = cfg.load_credentials()
         creds_read = True
+    if (
+        creds_read
+        and creds == env_creds
+        and render._known_confined(confinement._doctor_vantage_confined)
+    ):
+        # The agent sandbox masks the credentials file with an empty stand-in, so
+        # inside a sandbox a read that found nothing beyond the environment is no
+        # evidence that a credential is absent: it is reported like a denied read.
+        render._print_confined_skip(
+            "credentials", render._safe_display(os.fsdecode(cli_doctor.env_path()))
+        )
+        creds_read = False
     creds_unreadable = not creds_read
     _has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
     _local = cli_doctor.is_local_only(_host, _has_slack)
@@ -534,6 +547,23 @@ def _doctor_running_version(port: int, issues: list[str]) -> None:
         print(f"  running:     ⚠️  {running}, on disk {on_disk} (restart needed)")
         print(f"{render._INDENT}Fix: `kirocrew restart` (the gateway still runs the old code)")
         issues.append("gateway restart needed (running version differs from on-disk)")
+
+
+def _bundle_version_alignment() -> str:
+    """The ``version_alignment:`` line ``kirocrew doctor --bundle`` puts in ``versions.txt``.
+
+    ``kirocrew status``'s ``Version:`` text for the ``running:`` row's two readings,
+    with no age: ``/api/health`` carries no start time.
+    """
+    # In-function: a family binds no project module at module scope (the facade rule).
+    from kiro_crew.cli_server import _format_version_line
+    from kiro_crew.port_resolution import resolve_client_port
+    from kiro_crew.service import live_target
+
+    port = resolve_client_port(None)
+    return _format_version_line(
+        {"version": _running_gateway_version(port)}, live_target.selected_version()[0], None
+    )
 
 
 def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str]) -> None:

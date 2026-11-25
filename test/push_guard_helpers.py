@@ -4,8 +4,8 @@
 the script's path and loader (``_PG`` is one loaded copy for constants and pure
 helpers; a run loads a fresh one), the bounded runners (``_run_push_guard`` as a
 child, ``_inprocess`` in this process), the fixture git environment and ``_git``,
-the ``repo_pair`` fixture and its session template (built once per session in each
-module that binds it), the commit builders
+the ``repo_pair`` fixture and its session template (built once per worker and
+shared by every module that binds it), the commit builders
 (``_commit_tree``, ``_feature``, ``_land_on_main``, ``_bless``), the squash message
 helpers, the ``Popen`` spy and the hook installers. ``_no_inherited_git_c`` is
 autouse, so every test module binds it.
@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG, git_maintenance_off_entries
+from git_repo_templates import copy_repo, session_template
 from installer_test_helpers import run_bounded
 from skill_script_helpers import load_skill_script
 
@@ -141,11 +141,15 @@ def _repo_pair_template(tmp_path_factory) -> tuple[str, str]:
 
     Six git subprocesses (~1-1.6s) would otherwise be paid on every one of the ~40
     tests below. Session scope is safe because the template directories are
-    never handed to a test, only copied from via ``shutil.copytree`` -- so a
+    never handed to a test, only copied from via ``copy_repo`` -- so a
     test that pushes, branches, or clones ``work2`` off its own copy of
     ``origin_dir`` cannot reach another test's copy.
     """
-    root = tmp_path_factory.mktemp("push-guard-seed")
+    root = session_template(tmp_path_factory, _build_repo_pair)
+    return str(root / "work"), str(root / "origin.git")
+
+
+def _build_repo_pair(root: Path) -> None:
     origin_dir = str(root / "origin.git")
     clone_dir = str(root / "work")
 
@@ -163,8 +167,10 @@ def _repo_pair_template(tmp_path_factory) -> tuple[str, str]:
     _git(clone_dir, "add", "README.md")
     _git(clone_dir, "commit", "-m", "initial commit")
     _git(clone_dir, "push", "-u", "origin", "main")
-
-    return clone_dir, origin_dir
+    # The state a copy starts from: the URL spelled as a test passes it, and
+    # the ``ORIG_HEAD`` and reflog line a hard reset leaves.
+    _git(clone_dir, "remote", "set-url", "origin", origin_dir)
+    _git(clone_dir, "reset", "--hard", "HEAD")
 
 
 @pytest.fixture
@@ -176,22 +182,19 @@ def repo_pair(tmp_path, _repo_pair_template):
     so pushes, branches, and `work2` clones (which several tests create
     alongside this pair) never touch another test's copy.
     """
-    template_clone, template_origin = _repo_pair_template
-    origin_dir = str(tmp_path / "origin.git")
-    clone_dir = str(tmp_path / "work")
-    shutil.copytree(template_origin, origin_dir)
-    shutil.copytree(template_clone, clone_dir)
-    # The copied clone's remote still points at the TEMPLATE's origin path;
-    # repoint it at this test's own copy so pushes/fetches never reach (or
-    # mutate) the session template or another test's copy.
-    _git(clone_dir, "remote", "set-url", "origin", origin_dir)
-    # copytree resets every file's mtime, which invalidates git's cached
-    # index stat info and makes git see a false "unstaged changes" diff (e.g.
-    # git rebase refuses with "You have unstaged changes"). Nothing in the
-    # template is ever uncommitted, so resetting hard to HEAD is a no-op on
-    # content and forces git to re-stat every file against the real index.
-    _git(clone_dir, "reset", "--hard", "HEAD")
-    return clone_dir, origin_dir
+    return copy_repo_pair(_repo_pair_template, tmp_path)
+
+
+def copy_repo_pair(template: tuple[str, str], root: Path) -> tuple[str, str]:
+    """Copy a ``(clone, origin)`` template pair under *root*; the copy's own pair.
+
+    Both repos sit in one directory, so one ``copy_repo`` of it points the
+    copied clone's remote at the copied origin and re-reads its index: no push
+    or fetch in the copy can reach the template or another test's copy.
+    """
+    template_clone, template_origin = template
+    copy_repo(Path(template_clone).parent, root)
+    return str(root / Path(template_clone).name), str(root / Path(template_origin).name)
 
 
 def _commit_tree(clone_dir: str, files: dict[str, str | None], message: str) -> None:

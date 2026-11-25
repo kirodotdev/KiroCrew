@@ -21,6 +21,7 @@ answers with the owner's object, and a write reaches every owner that binds the 
 
 from __future__ import annotations
 
+import bisect
 import contextvars
 import hashlib
 import hmac
@@ -45,6 +46,7 @@ from kiro_crew.credential_patterns import (  # noqa: F401
     AWS_KEY_ID,
     TOKEN_PARAMETER,
 )
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE_RANGES
 from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
 # ``kiro_crew.security`` imports this name from here.
@@ -434,6 +436,35 @@ def redact_credentials(
     return _splice(text, spans), warnings
 
 
+def redact_credentials_and_spans(
+    text: str, spans: list[tuple[int, int]], replacement: str
+) -> tuple[str, list[str]]:
+    """:func:`redact_credentials`, also masking the caller's *spans* of *text*.
+
+    Both span sets are positioned against the SAME original text, then merged
+    where they overlap and written once, so a caller span can never cut a
+    credential into pieces the scanners cannot recognise. A merged region
+    (or a caller-only span) becomes *replacement*; a credential-only span keeps
+    its own tag.
+    """
+    plan, warnings, _rules = _credential_redaction_plan(text)
+    merged: list[_RedactionSpan] = []
+    group_end = -1
+    caller_group = False
+    items = [(s, e, t, False) for s, e, t in plan] + [(s, e, replacement, True) for s, e in spans]
+    for start, end, tag, caller in sorted(items, key=lambda item: (item[0], -item[1])):
+        if merged and start < group_end:
+            old_start, _old_end, old_tag = merged[-1]
+            caller_group = caller_group or caller
+            group_end = max(group_end, end)
+            merged[-1] = (old_start, group_end, replacement if caller_group else old_tag)
+        else:
+            merged.append((start, end, tag))
+            group_end = end
+            caller_group = caller
+    return (_splice(text, merged) if merged else text), warnings
+
+
 class CredentialMatch(NamedTuple):
     """One credential placeholder the redactor wrote, described for a record.
 
@@ -511,7 +542,71 @@ def _credential_redaction_plan(
     # Lazy: the detectors' seam imports this module's tags.
     from kiro_crew.security.redaction_structured import compat
 
-    return compat.credential_plan(text, defer_token_param, token_param_prefixes)
+    plan = compat.credential_plan(text, defer_token_param, token_param_prefixes)
+    if not isinstance(text, str) or text.isascii() or not _IGNORABLE_RE.search(text):
+        return plan
+    view = _IGNORABLE_RE.sub("", text)
+    if not view:
+        return plan
+    view_plan = compat.credential_plan(view, defer_token_param, token_param_prefixes)
+    if view_plan[2].get(0) == REDACTION_UNAVAILABLE_RECORD:
+        return [(0, len(text), REDACTION_UNAVAILABLE_TAG)], view_plan[1], view_plan[2]
+    return _with_view_plan(text, plan, view_plan)
+
+
+#: A run of Unicode ``Default_Ignorable_Code_Point`` characters (U+200B, U+00AD, U+FEFF,
+#: ...), drawn as nothing. One inside a credential stops every rule from matching while
+#: the text still reads as the credential, so the plan also reads the text with them
+#: removed (:func:`_with_view_plan`).
+_IGNORABLE_RE = re.compile(
+    "[" + "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in DEFAULT_IGNORABLE_RANGES) + "]+"
+)
+
+
+def _with_view_plan(
+    text: str,
+    plan: tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]],
+    view_plan: tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]],
+) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
+    """*plan* (of *text*) joined with *view_plan* (of *text* without ignorables).
+
+    Each view span is moved back onto *text*, so it covers the ignorable characters
+    inside it. Overlapping spans become one, written with the first one's tag and
+    rule. Every span of *plan* is kept: the view only adds redactions, since dropping
+    a character can also join a credential to the text after it.
+    """
+    spans, warnings, rules = plan
+    # A view offset at or past ``view_at[i]`` follows ignorable run i, with
+    # ``shift[i]`` characters removed before it.
+    view_at, shift, removed = [], [], 0
+    for run in _IGNORABLE_RE.finditer(text):
+        view_at.append(run.start() - removed)
+        removed += run.end() - run.start()
+        shift.append(removed)
+
+    def to_text(offset: int) -> int:
+        i = bisect.bisect_right(view_at, offset)
+        return offset + (shift[i - 1] if i else 0)
+
+    items: list[tuple[int, int, str, tuple[str, str] | None, str | None]]
+    items = [(s, e, tag, rules.get(s), None) for s, e, tag in spans]
+    for (s, e, tag), view_warning in zip(view_plan[0], view_plan[1]):
+        items.append((to_text(s), to_text(e - 1) + 1, tag, view_plan[2].get(s), view_warning))
+    merged: list[_RedactionSpan] = []
+    merged_rules: dict[int, tuple[str, str]] = {}
+    groups: list[list[str | None]] = []
+    for start, end, tag, rule, warning in sorted(items, key=lambda i: (i[0], -i[1], i[4] or "")):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), merged[-1][2])
+            groups[-1].append(warning)
+            continue
+        merged.append((start, end, tag))
+        groups.append([warning])
+        if rule is not None:
+            merged_rules[start] = rule
+    # A view hit no span of *plan* overlaps is a new redaction, with its warning.
+    added = [group[0] for group in groups if None not in group]
+    return merged, list(warnings) + [w for w in added if w is not None], merged_rules
 
 
 #: The ``(rule, label)`` and text of a whole-text placeholder: the detectors could not run.
@@ -534,10 +629,25 @@ REDACTION_UNAVAILABLE_TAG = "[REDACTED: redaction unavailable]"
 # carries a ``(?!/)`` guard so a one-letter URI scheme (``x://host``) is never
 # mistaken for a drive; longer schemes (``https:``) are already refused by the
 # ``(?<![A-Za-z])`` lookbehind on the drive letter itself.
+#
+# Windows also prints a host path in spellings with no drive-letter colon: the
+# Cygwin ``/cygdrive/c/...``, the MSYS / Git Bash ``/c/Users/...``, and a UNC
+# ``\\host\share\...`` (which covers ``\\wsl$\...``, ``\\wsl.localhost\...`` and
+# ``\\?\UNC\...``). Each branch keeps the same refuse-to-start-mid-token
+# lookbehind. The MSYS branch also needs one of the POSIX roots after the
+# letter, so ``/a/b`` in prose is left alone; the UNC branch needs a share name
+# after the host, so an escaped ``\\d+\\s`` (two backslashes in a row) is never
+# taken for a path.
+_POSIX_ROOTS = (
+    r"(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+)
 _LOCAL_PATH_RE = re.compile(
     r"(?:"
-    r"(?<![\w:/])/(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+    rf"(?<![\w:/])/{_POSIX_ROOTS}"
     r"|(?<![A-Za-z])[A-Za-z]:(?:\\|/(?!/))"
+    r"|(?<![\w:/])/cygdrive/[A-Za-z]/"
+    rf"|(?<![\w:/])/[A-Za-z]/{_POSIX_ROOTS}/"
+    r"|(?<![\w\\])\\\\[^\s\\/'\"<>|]+\\[^\s\\/'\"<>|]+"
     r")"
     r"[^\s'\"<>|]*"
 )

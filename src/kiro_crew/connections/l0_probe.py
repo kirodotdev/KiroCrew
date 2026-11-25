@@ -48,6 +48,7 @@ from typing import Any, Sequence, TypedDict, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
+from yarl import URL
 
 from kiro_crew.connections import l0_drift
 from kiro_crew.connections.l0_record import ObservedBaseline, RecordError, record_baselines
@@ -62,6 +63,7 @@ from kiro_crew.connections.registry import (
     stale_l0_baselines,
     utc_today,
 )
+from kiro_crew.http_proxy import resolve_proxy
 
 DEFAULT_CONCURRENCY = 4
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -203,8 +205,14 @@ def _authorization_metadata_url(issuer: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
+class _MetadataResponseError(ValueError):
+    def __init__(self, url: str, detail: str) -> None:
+        super().__init__(f"{url} {detail}")
+        self.detail = detail
+
+
 async def _get_json(
-    session: aiohttp.ClientSession, url: str, timeout_seconds: float
+    session: aiohttp.ClientSession, url: str, timeout_seconds: float, *, proxy: URL | None = None
 ) -> dict[str, Any]:
     """GET a JSON metadata document under a hard size bound.
 
@@ -221,12 +229,13 @@ async def _get_json(
         allow_redirects=False,
         auto_decompress=False,
         timeout=timeout,
+        proxy=proxy,
     ) as response:
         if response.status != 200:
-            raise ValueError(f"{url} returned HTTP {response.status}, expected 200")
+            raise _MetadataResponseError(url, f"returned HTTP {response.status}, expected 200")
         encoding = response.headers.get("Content-Encoding", "").strip().lower()
         if encoding not in ("", "identity"):
-            raise ValueError(f"{url} returned unsupported Content-Encoding {encoding!r}")
+            raise _MetadataResponseError(url, "returned unsupported Content-Encoding")
 
         # Bounded read: an endpoint we do not control must not be able to stream
         # an arbitrarily large body into the runner.
@@ -238,14 +247,43 @@ async def _get_json(
                 break
             body.extend(chunk)
             if len(body) > _MAX_METADATA_BYTES:
-                raise ValueError(f"{url} exceeded the {_MAX_METADATA_BYTES}-byte limit")
+                raise _MetadataResponseError(url, f"exceeded the {_MAX_METADATA_BYTES}-byte limit")
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-            raise ValueError(f"{url} did not return JSON: {error}") from error
+            raise _MetadataResponseError(url, "did not return JSON") from error
     if not isinstance(payload, dict):
-        raise ValueError(f"{url} returned a non-object JSON document")
+        raise _MetadataResponseError(url, "returned a non-object JSON document")
     return cast(dict[str, Any], payload)
+
+
+async def _get_probe_json(
+    session: aiohttp.ClientSession, url: str, timeout_seconds: float
+) -> dict[str, Any]:
+    try:
+        proxy = await asyncio.to_thread(resolve_proxy, url)
+    except (OSError, ValueError):
+        raise ValueError("metadata proxy lookup failed") from None
+    if proxy is None:
+        return await _get_json(session, url, timeout_seconds)
+
+    try:
+        proxy_url = URL(proxy)
+        if proxy_url.scheme not in ("http", "https") or not proxy_url.raw_host:
+            raise ValueError
+    except ValueError:
+        raise ValueError("invalid metadata proxy URL") from None
+
+    # Client errors can include a request URL or proxy headers. Report a fixed
+    # diagnostic for proxied failures before the probe records the error.
+    try:
+        return await _get_json(session, url, timeout_seconds, proxy=proxy_url)
+    except _MetadataResponseError as error:
+        raise ValueError(error.detail) from None
+    except asyncio.TimeoutError:
+        raise ValueError("metadata request through proxy timed out") from None
+    except (aiohttp.ClientError, OSError, ValueError):
+        raise ValueError("metadata request through proxy failed") from None
 
 
 def _resource_matches(resource: object, mcp_url: str) -> bool:
@@ -378,7 +416,7 @@ async def probe_provider(
     advertised: str | None = None
     for candidate in _resource_metadata_urls(provider["mcp_url"]):
         try:
-            metadata = await _get_json(session, candidate, timeout_seconds)
+            metadata = await _get_probe_json(session, candidate, timeout_seconds)
             advertised = _read_resource_metadata(metadata, provider["mcp_url"])
             checks["protected_resource_metadata"] = True
             # A later candidate succeeding means the earlier miss was the
@@ -410,9 +448,8 @@ async def probe_provider(
 
     if checks["protected_resource_metadata"]:
         try:
-            metadata = await _get_json(
-                session, _authorization_metadata_url(committed_issuer), timeout_seconds
-            )
+            issuer_url = _authorization_metadata_url(committed_issuer)
+            metadata = await _get_probe_json(session, issuer_url, timeout_seconds)
             dcr, pkce = _read_authorization_metadata(metadata, committed_issuer)
             checks["authorization_server_metadata"] = True
             observed = {

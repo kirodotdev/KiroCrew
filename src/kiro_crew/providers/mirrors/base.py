@@ -93,8 +93,8 @@ RESOURCES_NO_READER = (
 #: the one backend Crew applies ``toolsSettings`` on, through ``permissions`` rules
 #: and the gate tiers that read the spec's shell and write allowlists
 #: (``acp/kas_agents.py``); the same tiers run on every backend's permission
-#: requests, and of the mirrored sessions only claude's are handed its allowlists
-#: (``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``). The field's
+#: requests, and of the mirrored sessions only claude's and opencode's are handed its
+#: allowlists (``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``). The field's
 #: ``subagent.availableAgents`` is the exception, read by Crew's spawn gate on every
 #: backend (``subagent_parts/agent_policy.py``).
 TOOLS_SETTINGS_GATE_CHANNEL = (
@@ -217,8 +217,10 @@ class SessionProjection:
     """The harness built-ins this session keeps, ``None`` for all of them.
 
     A client obligation the array cannot carry: claude takes it as the session's
-    ``tools`` option. Set only for a crewmate worker whose worker spec (base plus
-    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``).
+    ``tools`` option. Set for a crewmate worker whose worker spec (base plus
+    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``),
+    and for a named agent whose spec Crew does not write and whose ``tools`` list
+    leaves out a built-in (``claude_worker_tools.claude_agent_builtin_tools``).
     """
 
 

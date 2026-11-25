@@ -98,7 +98,8 @@ describe('useWebSocket quiet reconnect through the relay', () => {
     return hook
   }
 
-  it.each([4401, 1012])('a %i close reconnects at once without ever showing offline', (code) => {
+  // 1000: a proxy that ends a long-held socket and forwards no close code.
+  it.each([4401, 1012, 1000])('a %i close reconnects at once without ever showing offline', (code) => {
     const { unmount } = openFirst()
     act(() => { WS_INSTANCES[0].simulateClose(code) })
     expect(testStore.getState().dashboard.connected).toBe(true)

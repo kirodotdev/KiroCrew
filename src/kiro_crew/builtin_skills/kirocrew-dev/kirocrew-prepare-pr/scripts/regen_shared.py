@@ -35,7 +35,6 @@ import fnmatch
 import importlib.util
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 
@@ -135,6 +134,13 @@ def _git_lines(root, *args):
     return None if rc != 0 else [line for line in out.splitlines() if line.strip()]
 
 
+def _git_paths(root, *args):
+    """Paths from a ``git diff --name-only`` run with ``-z``. Line output C-quotes a
+    non-ASCII name, and the quoted spelling matches no input pattern."""
+    rc, out, _ = run(["git", "-C", root, *args, "-z"])
+    return None if rc != 0 else [path for path in out.split("\0") if path.strip()]
+
+
 def baseline_paths(root, relpath):
     """Paths named by a baseline file: the last token of each non-comment line."""
     try:
@@ -197,15 +203,14 @@ def _argv(entry):
 
 def run_entry(root, entry):
     """Run one generator. Returns (error message or None, files it rewrote)."""
-    argv = _argv(entry)
-    # Launch the path `which` found, not the bare name: with no shell, Windows only
-    # finds `npm.cmd` through the full path (`npm` alone is WinError 2).
-    tool = shutil.which(argv[0])
-    if tool is None and os.path.isfile(argv[0]):
-        tool = argv[0]
-    if tool is None:
+    # Launch the full path PATH's absolute entries give, not the bare name: with no
+    # shell, Windows only finds `npm.cmd` through the full path (`npm` alone is
+    # WinError 2), and a bare `shutil.which` would also search the current directory.
+    argv, refused = _tool_argv.resolve(_argv(entry))
+    if refused and refused[0] == _tool_argv.RC_NOT_FOUND:
         return "{}: tool `{}` not found on PATH".format(entry["name"], entry["argv"][0]), []
-    argv[0] = tool
+    if refused:
+        return "{}: {}".format(entry["name"], refused[2]), []
     before = untracked_or_modified(root)
     if before is None:
         return "git status failed in {}".format(root), []
@@ -269,12 +274,12 @@ def regen(root, base, entries):
         return 2, ["ERROR: no merge base between origin/{} and HEAD".format(base)]
     mb = merge_base[0]
     # --no-renames lists both sides of a rename, so a baseline row for the old path is found.
-    mine = _git_lines(root, "diff", "--name-only", "--no-renames", mb + "..HEAD")
-    theirs = _git_lines(root, "diff", "--name-only", "--no-renames", mb + "..origin/" + base)
+    mine = _git_paths(root, "diff", "--name-only", "--no-renames", mb + "..HEAD")
+    theirs = _git_paths(root, "diff", "--name-only", "--no-renames", mb + "..origin/" + base)
     if mine is None or theirs is None:
         return 2, ["ERROR: git diff failed"]
     # A worktree edit counts as this branch's: the author may regenerate before committing.
-    dirty = _git_lines(root, "diff", "--name-only", "--no-renames", "HEAD") or []
+    dirty = _git_paths(root, "diff", "--name-only", "--no-renames", "HEAD") or []
     mine = sorted(set(mine) | set(dirty))
 
     applicable = []

@@ -18,8 +18,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
-from kiro_crew.messaging import approval
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
+from kiro_crew.messaging import approval, session_trust
 from kiro_crew.messaging.approval import (
     APPROVE,
     DENY,
@@ -47,8 +47,10 @@ SESSION = "whatsapp:kirocrew:direct:447700900000"
 @pytest.fixture(autouse=True)
 def _clean_registry():
     reset_for_tests()
+    session_trust.clear_trusted_sessions()
     yield
     reset_for_tests()
+    session_trust.clear_trusted_sessions()
 
 
 def event(request_id: str = "req-1", title: str = "bash") -> SimpleNamespace:
@@ -108,7 +110,9 @@ class TestRegistry:
         open_approval(SESSION, "r1")
         assert deliver_verdict(SESSION, DENY) == RECEIPT_DENIED
         open_approval(SESSION, "r2")
-        assert deliver_verdict(SESSION, TRUST) == RECEIPT_TRUSTED
+        assert deliver_verdict(SESSION, TRUST, sessions=_Sessions()) == RECEIPT_TRUSTED
+        open_approval(SESSION, "r3")
+        assert deliver_verdict(SESSION, TRUST) == RECEIPT_APPROVED, "no manager, no grant"
 
     async def test_sessions_do_not_see_each_others_requests(self):
         open_approval("whatsapp:a", "req-1")
@@ -211,6 +215,13 @@ class _Sessions:
         self.policy = policy
 
 
+class _FailingSessions(_Sessions):
+    """A manager whose approval-policy write fails, as a full disk would."""
+
+    def set_approval_policy(self, key: str, policy: str) -> None:
+        raise OSError("disk full")
+
+
 @pytest.mark.asyncio
 class TestSessionTrust:
     async def test_trust_is_recorded_as_the_session_approval_policy(self):
@@ -222,9 +233,56 @@ class TestSessionTrust:
         decider = TextReplyApprovalDecider(SESSION, sessions=sessions, timeout_s=5.0)
         task = asyncio.create_task(decider(event()))
         await asyncio.sleep(0)
-        deliver_verdict(SESSION, TRUST)
+        assert deliver_verdict(SESSION, TRUST, sessions=sessions) == RECEIPT_TRUSTED
+        # Written by the reply itself, before the decider resumes: the receipt
+        # just said "Trusted", so the grant it names must already exist.
+        assert sessions.writes == [(SESSION, "auto")]
+        assert not task.done()
         assert await task is True
         assert sessions.writes == [(SESSION, "auto")]
+
+    async def test_a_trust_whose_policy_write_fails_answers_approved(self):
+        """The receipt follows the grant. A "Trusted" receipt over a failed write
+        would promise that later tools run without asking while they still ask,
+        so this one tool is approved, the reply says so, and no half grant stays.
+        """
+        open_approval(SESSION, "req-1")
+        decider = TextReplyApprovalDecider(SESSION, timeout_s=FALLBACK_TIMEOUT_SECS)
+        task = asyncio.create_task(decider(event()))
+        await asyncio.sleep(0)
+        assert deliver_verdict(SESSION, TRUST, sessions=_FailingSessions()) == RECEIPT_APPROVED
+        assert await task is True
+        assert session_trust.is_session_trusted(SESSION) is False
+        assert SESSION not in session_trust._trusted_sessions
+
+    async def test_a_failed_trust_resolves_the_request_as_approve(self):
+        entry = open_approval(SESSION, "req-1")
+        deliver_verdict(SESSION, TRUST, sessions=_FailingSessions())
+        assert entry.future.result() == APPROVE
+
+    async def test_a_trust_typed_while_the_timeout_notice_posts_is_expired(self):
+        """The window is closed once ``expired`` is set, even while the notice is
+        still being posted: a Trust landing then must not become standing
+        authority for later tools while this tool itself is denied.
+        """
+        announced = asyncio.Event()
+        release = asyncio.Event()
+
+        async def on_timeout() -> None:
+            announced.set()
+            await release.wait()
+
+        sessions = _Sessions()
+        open_approval(SESSION, "req-1").on_timeout = on_timeout
+        decider = TextReplyApprovalDecider(SESSION, sessions=sessions, timeout_s=0)
+        task = asyncio.create_task(decider(event()))
+        await await_until(announced, what="the timeout notice to start")
+        assert deliver_verdict(SESSION, TRUST, sessions=sessions) == RECEIPT_EXPIRED
+        release.set()
+        assert await await_until(task, what="the decider to deny") is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
+        assert sessions.writes == []
+        assert session_trust.is_session_trusted(SESSION) is False
 
     async def test_trusted_reads_the_policy_back(self):
         decider = TextReplyApprovalDecider(SESSION, sessions=_Sessions(policy="auto"))

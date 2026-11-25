@@ -20,6 +20,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
     clear_nonces,
 )
 
+from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.token_auth import (
     _api_pattern_matches,
     _app_owns_path,
@@ -141,6 +142,39 @@ async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
     req = _make_request(path="/api/sessions", query={"token": token})
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
+
+
+@pytest.mark.asyncio
+async def test_app_token_refused_on_a_held_back_entry_is_told_how_to_fix_it(monkeypatch) -> None:
+    """The middleware's refusal body names the held-back entry and the approval step."""
+    import json
+    import time
+
+    import kiro_crew.dashboard.token_auth as _ta
+    from kiro_crew.dashboard.app_scope_refusal import GrantFacts
+
+    stamp = time.time()
+    # The scope check pins a not owner-enabled app to an empty allowlist first.
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+    monkeypatch.setattr(_ta, "_app_perms_cache", {"file-explorer": (stamp, ("/api/sessions",))})
+    facts = GrantFacts(
+        label="File Explorer",
+        declared=("/api/sessions", "/api/memory/*"),
+        held_back=("/api/memory/*",),
+    )
+    monkeypatch.setattr(_ta, "_app_grant_facts", {"file-explorer": (stamp, facts)})
+    mw = token_auth_middleware()
+    token = generate_token("file-explorer", app="file-explorer")
+    req = _make_request(path="/api/memory/search", query={"token": token})
+
+    resp = await mw(req, _ok_handler)
+
+    assert resp.status == 403
+    body = json.loads(resp.body)
+    assert body["code"] == "app_permission_not_approved"
+    assert body["pending_approval"] == ["/api/memory/*"]
+    assert "/apps/detail/file-explorer" in body["error"]
+    assert "Approve new permissions" in body["error"]
 
 
 @pytest.mark.asyncio
@@ -374,7 +408,7 @@ async def test_a_v1_route_without_a_credential_is_refused_with_the_crew_api_erro
         "error": {
             "type": "authentication_error",
             "code": "invalid_token",
-            "message": "Token required",
+            "message": f"Token required {CREDENTIAL_HINT}",
             "param": None,
             "request_id": "req_noauth1",
         }
@@ -407,7 +441,7 @@ async def test_an_app_token_on_an_owner_route_is_refused_as_owner_only(monkeypat
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware()
     token = generate_token("file-explorer", app="file-explorer")
-    req = _make_request(path="/v1/crew/owner/bots", query={"token": token})
+    req = _make_request(path="/v1/crew/owner/bots", headers={"Authorization": f"Bearer {token}"})
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
     error = json.loads(resp.body)["error"]
@@ -424,13 +458,22 @@ async def test_an_app_token_out_of_scope_on_an_api_route_keeps_the_flat_refusal(
     import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
+    monkeypatch.setattr(_ta, "_app_perms_cache", {})
+    monkeypatch.setattr(_ta, "_app_grant_facts", {})
     mw = token_auth_middleware()
     token = generate_token("file-explorer", app="file-explorer")
     resp = await mw(_make_request(path="/api/members", query={"token": token}), _ok_handler)
     assert resp.status == 403
+    # The dashboard's flat body, not the Crew API envelope and not ``owner_only``. No
+    # owner-enable marker exists for the app here, so the prime records it as off.
     assert json.loads(resp.body) == {
-        "error": "app token not permitted for this endpoint",
-        "code": "forbidden",
+        "error": (
+            'App "file-explorer" cannot call /api/members while it is turned off. To fix '
+            "this, the dashboard owner opens the app's page (Apps, Library, then Details "
+            'on file-explorer, or /apps/detail/file-explorer) and clicks "Enable".'
+        ),
+        "code": "app_disabled",
+        "pending_approval": [],
     }
 
 

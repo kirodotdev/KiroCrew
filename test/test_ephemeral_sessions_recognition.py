@@ -817,6 +817,71 @@ class TestArchivedRestrictedSessionRecovery:
             )
             assert resp.status == 403, await resp.text()
 
+    def _write_cron_pair(self, tmp_path, job_id: str, current: object, legacy: object) -> None:
+        """``cron_<id>.jsonl`` plus the pre-rename ``dashboard_cron-<id>.jsonl``."""
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        for stem, mode in ((f"cron_{job_id}", current), (f"dashboard_cron-{job_id}", legacy)):
+            header = {"_type": "metadata"}
+            if mode is not None:
+                header["memory_mode"] = mode
+            (sess_dir / f"{stem}.jsonl").write_text(_json.dumps(header) + "\n", encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_cron_with_legacy_transcript_in_same_mode_keeps_its_mode(
+        self, tmp_path, monkeypatch
+    ):
+        """A persistent cron with a leftover ``dashboard_cron-<id>.jsonl``
+        beside its ``cron_<id>.jsonl`` reads persistent and its learn_add lands."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.cron._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        self._write_cron_pair(tmp_path, "f3933807", "persistent", "persistent")
+        assert _probe_persisted_session("f3933807") == (True, "persistent")
+
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "persistent cron keeps learning", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:f3933807"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    @pytest.mark.parametrize(
+        ("current", "legacy"),
+        [
+            ("persistent", "incognito"),
+            ("incognito", "persistent"),
+            ("persistent", "temporary"),
+            ("persistent", "bogus"),
+        ],
+    )
+    def test_cron_pair_that_disagrees_or_fails_to_parse_stays_unknown(
+        self, tmp_path, monkeypatch, current, legacy
+    ):
+        """Agreement is the only way out of ambiguity: one restricted or
+        unreadable file in the pair keeps the mode unknown (denied)."""
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        self._write_cron_pair(tmp_path, "c1", current, legacy)
+        assert _probe_persisted_session("c1") == (True, None)
+
+    def test_cron_pair_both_incognito_reads_incognito(self, tmp_path, monkeypatch):
+        """Agreement on a restricted mode returns that mode, so the caller's
+        restricted-session refusal still fires on the real reason."""
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        self._write_cron_pair(tmp_path, "c2", "incognito", "incognito")
+        assert _probe_persisted_session("c2") == (True, "incognito")
+
     def test_colon_slot_name_cannot_escape_sessions_dir(self, tmp_path, monkeypatch):
         """A colon is rejected: on Windows it yields a drive-relative escape.
 

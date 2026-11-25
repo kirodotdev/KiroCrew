@@ -100,6 +100,8 @@ class _ChatTurn:
     _recovery_echo_owed: "bool"
     _card_origin: "bool"
     _prompt_on_channel: "bool"
+    _mirror_reply_only: "bool"
+    _slack_voice: "tuple[str, str, bool] | None"
     _turn_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
@@ -160,6 +162,9 @@ class _ChatTurn:
     # The web term an organisation's ``ask`` rule names for this request, or ""
     # (``web_ask_rule.needs_person``); set with ``_deny_override``.
     _web_ask: "str"
+    # No auto-approve answers this request: a card's turn, a held Bot limit or an
+    # organisation's web ``ask``; set with ``_web_ask``.
+    _no_auto_approve: "bool"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
@@ -207,7 +212,15 @@ class _ChatTurn:
     _mirror_stream_tried: "bool"
     _mirror_thinking_ts: "str"
     _mirror_echo_posted: "bool"
+    _mirror_owner_told: "bool"
     _msg: "str"
+    # Whether this turn's native cards are KAS engine sub-agents (``dashboard.engine_subagent_cards``);
+    # ``None`` until the turn's first roster reads it.
+    _engine_children: "bool | None"
+    # The task each engine dispatch named, by its call id, for its approval card.
+    _engine_dispatch_tasks: "dict[str, str]"
+    # The opaque key this turn's engine cards carry (``engine_subagent_cards.engine_turn_key``).
+    _engine_turn_key: "str"
     _native_card_output: "dict[str, list[str]]"
     _native_card_output_len: "dict[str, int]"
     _native_child_tc: "set[str]"
@@ -258,6 +271,7 @@ class _ChatTurn:
     _undelivered_watch: "Any"
     _session_stop_gen_at_entry: "int"
     _shell_tool_calls: "set[str]"
+    _slim_resume_pending: "bool"
     _span_base_len: "int"
     _span_probe: "str"
     _prompt_segments: "tuple[Any, ...]"
@@ -304,6 +318,7 @@ class _ChatTurn:
     _turn_lands: "bool"
     _turn_model: "str"
     _turn_msg_boundary: "int"
+    _turn_native_activity: "bool"
     _turn_priority: "StartPriority"
     _turn_project: "str"
     _turn_refusal: "RefusalInfo | None"
@@ -394,6 +409,8 @@ class _ChatTurn:
         _recovery_echo_owed: "bool",
         _card_origin: "bool",
         _prompt_on_channel: "bool" = False,
+        _mirror_reply_only: "bool" = False,
+        _slack_voice: "tuple[str, str, bool] | None" = None,
         _turn_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
@@ -433,6 +450,8 @@ class _ChatTurn:
         self._recovery_echo_owed = _recovery_echo_owed
         self._card_origin = _card_origin
         self._prompt_on_channel = _prompt_on_channel
+        self._mirror_reply_only = _mirror_reply_only
+        self._slack_voice = _slack_voice
         self._turn_actor = _turn_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed

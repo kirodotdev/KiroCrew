@@ -411,8 +411,10 @@ async def _restart_changed_channels(
 
 async def channel_restarts_settled(self: GatewayOrchestrator) -> None:
     """Wait for every in-flight channel restart the applier scheduled."""
-    while self._channel_restart_tasks:
-        await asyncio.gather(*list(self._channel_restart_tasks), return_exceptions=True)
+    # Only the running tasks: a finished one leaves the set on a later loop pass,
+    # and gathering only finished tasks never yields (3.12+), so this would spin.
+    while pending := [task for task in self._channel_restart_tasks if not task.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def restart_channel(
@@ -659,6 +661,12 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
             "or run `kirocrew restart`, to apply the new Slack token or owner.",
             ", ".join(slack_cred_keys),
         )
+        # A credential any writer (the CLI included) changed away from what an
+        # open owner-claim window pinned closes it; a re-save of the same
+        # tokens (this notice arriving after the window opened) does not.
+        claim = getattr(self.dashboard_state, "slack_owner_claim", None)
+        if claim is not None:
+            claim.recheck_soon("credential_change")
     slack_paths = change.under("slack")
     if slack_paths and "slack" in new.degraded_sections:
         # Deferred, not dropped: the watcher retries these paths once the

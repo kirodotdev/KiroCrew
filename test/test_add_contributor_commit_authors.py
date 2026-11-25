@@ -400,3 +400,31 @@ def test_commit_only_contributor_is_still_credited():
     commit = _commit_logins(_merged([["original-contributor", "preserved-coauthor"]]))
     assert "original-contributor" in commit
     assert "preserved-coauthor" in commit
+
+
+def test_a_failed_name_lookup_credits_the_login_alone(tmp_path):
+    """A non-2xx ``gh api users/<login>`` still prints its error body on stdout
+    and exits non-zero; the record must carry the login, never that body."""
+    m = re.search(r"(: >/tmp/records\.jsonl\n.*?done </tmp/logins\.txt)\n", SCRIPT, re.DOTALL)
+    assert m, "record-building loop not found in the collect step"
+    work = tmp_path / "tmp"
+    work.mkdir()
+    (work / "logins.txt").write_text("ghost\nnamed\n", encoding="utf-8")
+    (work / "known.txt").write_text("", encoding="utf-8")
+    not_found = (
+        '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+    )
+    # Stand-in for `gh api users/<login> --jq ...`, answering as the real CLI does.
+    fake_gh = (
+        'gh() { case "$2" in '
+        f"users/ghost) printf '%s' '{not_found}'; return 1;; "
+        "users/named) echo 'Display Name';; "
+        "esac; }\n"
+    )
+    script = "set -euo pipefail\n" + fake_gh + m.group(1).replace("/tmp/", f"{work}/")
+    subprocess.run(["bash", "-c", script], check=True, capture_output=True)
+    records = (work / "records.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(r) for r in records] == [
+        {"login": "ghost", "name": "ghost"},
+        {"login": "named", "name": "Display Name"},
+    ]

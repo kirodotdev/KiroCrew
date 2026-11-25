@@ -3,8 +3,8 @@ title: Conductor rolling reset -- a conductor drops its chat after a turn that c
 status: superseded
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-19
-last-audited: 2026-10-19
-audited-at: c3f2b27de7
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 22088
 implementation-prs: []
 tracking-issues: [22082]

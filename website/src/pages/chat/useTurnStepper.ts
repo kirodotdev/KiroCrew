@@ -1,4 +1,4 @@
-import { type Dispatch, type RefObject, type SetStateAction, useEffect, useRef, useState } from 'react'
+import { type RefObject, useEffect, useRef, useState } from 'react'
 
 import type { ChatSection } from '../../hooks/useChatNavigation'
 import { i18nT } from '../../i18n/t'
@@ -18,12 +18,9 @@ export interface UseTurnStepperOptions {
   landingInset: () => number
   /** The pinned-prompt jump: glide the transcript to a turn's prompt. */
   jump: (displayIdx: number) => void
-  /** The transcript's jump highlight (`highlightTs`): the landed prompt's row flashes the ring a pinned-message jump draws. */
-  setHighlightTs?: Dispatch<SetStateAction<string | null>>
+  /** The jump owner's step flash (`useJumpMark`'s `markStep`): the landed prompt's row flashes the ring a pinned-message jump draws. */
+  flash?: (ts: string) => void
 }
-
-/** How long the landed prompt keeps the jump highlight: the length of its `msg-highlight` fade. */
-const LANDED_HIGHLIGHT_MS = 2000
 
 function mountedRows(scroller: HTMLElement): MountedRow[] {
   const rows: MountedRow[] = []
@@ -55,22 +52,23 @@ function mountedRows(scroller: HTMLElement): MountedRow[] {
  *
  * The landed prompt flashes the transcript's jump highlight, so a sighted reader
  * sees where the step went even when the transcript could not scroll (the last
- * prompts of a chat all fit on screen).
+ * prompts of a chat all fit on screen). The jump owner (`useJumpMark`) holds that
+ * flash and its expiry, so a step replaces an earlier jump's mark instead of
+ * sitting beside it.
  *
  * The keystroke is claimed whenever the transcript has turns, including a step
  * past either end that has nowhere to go, so a Mac browser does not scroll a
  * page for it instead.
  */
-export function useTurnStepper({ active, turns, windowed, scrollerRef, landingInset, jump, setHighlightTs }: UseTurnStepperOptions): string {
+export function useTurnStepper({ active, turns, windowed, scrollerRef, landingInset, jump, flash }: UseTurnStepperOptions): string {
   const [announcement, setAnnouncement] = useState('')
   // Read at keypress: registering once per activation keeps the stepper off the
   // per-token rebuild of `turns` while a reply streams.
-  const latest = useRef({ turns, windowed, landingInset, jump, setHighlightTs })
-  latest.current = { turns, windowed, landingInset, jump, setHighlightTs }
+  const latest = useRef({ turns, windowed, landingInset, jump, flash })
+  latest.current = { turns, windowed, landingInset, jump, flash }
   // `ChatSection.id` of the turn the last step landed on. By id, not display
   // index, so older history loading in above it does not move the reference.
   const landedRef = useRef<string | null>(null)
-  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!active) return
@@ -88,7 +86,7 @@ export function useTurnStepper({ active, turns, windowed, scrollerRef, landingIn
     document.addEventListener('wheel', forget, passiveCapture)
     document.addEventListener('touchstart', forget, passiveCapture)
     const unregister = registerTurnStepper((dir) => {
-      const { turns: list, windowed: partial, landingInset: inset, jump: go, setHighlightTs: highlight } = latest.current
+      const { turns: list, windowed: partial, landingInset: inset, jump: go, flash: highlight } = latest.current
       const scroller = scrollerRef.current
       if (!scroller || list.length === 0) return false
       const stops = list.map(turn => turn.displayIdx)
@@ -110,16 +108,7 @@ export function useTurnStepper({ active, turns, windowed, scrollerRef, landingIn
       const turn = list[n]
       landedRef.current = turn.id
       go(turn.displayIdx)
-      const ts = turn.ts
-      if (highlight && ts) {
-        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
-        highlight(ts)
-        // Clears only its own highlight: another jump may have set one since.
-        highlightTimerRef.current = setTimeout(() => {
-          highlightTimerRef.current = null
-          highlight(current => (current === ts ? null : current))
-        }, LANDED_HIGHLIGHT_MS)
-      }
+      if (highlight && turn.ts) highlight(turn.ts)
       setAnnouncement(i18nT('pages.chatPage.turn_minimap_active', {
         position: i18nT(partial ? 'pages.chatPage.turn_minimap_meta_position_windowed' : 'pages.chatPage.turn_minimap_meta_position', { n: n + 1, count: list.length }),
         prompt: turn.label,
@@ -133,8 +122,6 @@ export function useTurnStepper({ active, turns, windowed, scrollerRef, landingIn
       document.removeEventListener('wheel', forget, passiveCapture)
       document.removeEventListener('touchstart', forget, passiveCapture)
       forget()
-      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
-      highlightTimerRef.current = null
       setAnnouncement('')
     }
   }, [active, scrollerRef])

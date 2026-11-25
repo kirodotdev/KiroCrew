@@ -55,10 +55,6 @@ const EXPECTED: Record<string, Expect> = {
     placements: [shell('menu', ['shell.terminal-more'], TERMINAL_OPEN)],
   },
   'shell.connect-phone': { kind: 'button', labelKey: 'app.connect_your_phone', source: APP_SRC, en: 'Connect your phone', zh: '连接手机', placements: railAndMenu('phone_connect_available') },
-  'shell.kiro-account': {
-    kind: 'button', labelKey: 'components.kiroAccountModal.kiro_account', source: APP_SRC, en: 'Kiro Account', zh: 'Kiro 账户',
-    placements: [shell('menu', ['shell.mobile-menu'], [...MENU_GATES, cond('kiro_account_entry')])],
-  },
   'shell.report-problem': {
     kind: 'button', labelKey: 'app.report_issue', aliasKeys: ['app.report_a_problem_with_diagnostics'], source: RAIL_SRC, en: 'Report issue', zh: '反馈问题',
     placements: [

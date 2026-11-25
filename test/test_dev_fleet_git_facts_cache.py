@@ -22,9 +22,13 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import git_repo_templates
 import pytest
 
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, git_facts, repository, runtime
+from kiro_crew.testing.links import make_dir_link
+
+repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
 
 
 def _env():
@@ -79,16 +83,21 @@ class Repo:
 
     def __init__(self, tmp_path):
         self.main = tmp_path / "main"
-        self.main.mkdir()
-        _sh(self.main, "init", "-q", "-b", "main")
-        _commit(self.main, "one")
-        _sh(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
         self.feat = tmp_path / "feat"
-        _sh(self.main, "worktree", "add", "-q", "-b", "feat", str(self.feat))
-        _commit(self.feat, "two")
         self.even = tmp_path / "even"
-        _sh(self.main, "worktree", "add", "-q", "-b", "even", str(self.even))
-        for checkout in (self.main, self.feat, self.even):
+
+    @staticmethod
+    def build(root):
+        """Make the three checkouts under ``root``; ``repo`` copies them per test."""
+        r = Repo(root)
+        r.main.mkdir()
+        _sh(r.main, "init", "-q", "-b", "main")
+        _commit(r.main, "one")
+        _sh(r.main, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _sh(r.main, "worktree", "add", "-q", "-b", "feat", str(r.feat))
+        _commit(r.feat, "two")
+        _sh(r.main, "worktree", "add", "-q", "-b", "even", str(r.even))
+        for checkout in (r.main, r.feat, r.even):
             _settle(checkout)
 
     def move_base(self, oid=None):
@@ -101,8 +110,10 @@ class Repo:
 
 
 @pytest.fixture
-def repo(tmp_path, monkeypatch):
-    r = Repo(tmp_path)
+def repo(tmp_path, monkeypatch, repo_templates):
+    # The copy keeps the backdated file times, and its indexes are re-read
+    # against the copied files, so no checkout is racily clean.
+    r = Repo(repo_templates.copy(Repo.build, tmp_path))
     monkeypatch.setattr(repository, "_repo", lambda: str(r.main))
     return r
 
@@ -535,7 +546,7 @@ def test_symlinked_gitdir_outside_the_repo_is_refused(repo, tmp_path):
     shutil.copytree(gitdir, copy)
     (copy / "commondir").write_text(str(repo.main / ".git") + "\n")
     shutil.rmtree(gitdir)
-    _symlink_or_skip(str(copy), str(gitdir))
+    make_dir_link(gitdir, copy)
 
     assert _key_within(str(repo.feat)) is None
 

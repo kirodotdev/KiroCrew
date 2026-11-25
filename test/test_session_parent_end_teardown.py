@@ -356,12 +356,12 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
         from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
 
         class _Admission:
-            async def taskq_row_is_claimed_unstarted_async(self, agent_id):
-                # The teardown asks before falling back to the live reap. False means
+            async def taskq_unstarted_claim_generation_async(self, agent_id):
+                # The teardown asks before falling back to the live reap. None means
                 # "not claimed-and-unstarted", which keeps these doubles on the path they
                 # were written for: the row is reapable, and the store cancel lands first
                 # anyway.
-                return False
+                return None
 
             async def taskq_cancel_queued_async(self, agent_id, *, allow_admitted=True):
                 return {"_preassigned_id": agent_id}
@@ -497,9 +497,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
                 # ``admitted`` is off the accepted set.
                 return None
 
-            async def taskq_row_is_claimed_unstarted_async(self, agent_id):
+            async def taskq_unstarted_claim_generation_async(self, agent_id):
                 # What the probe answers for a row that is claimed and not started.
-                return True
+                return 1
 
         class _Manager:
             def __init__(self):
@@ -554,9 +554,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
             async def taskq_cancel_queued_async(self, agent_id, *, allow_admitted=True):
                 return None
 
-            async def taskq_row_is_claimed_unstarted_async(self, agent_id):
+            async def taskq_unstarted_claim_generation_async(self, agent_id):
                 # Started, so not claimed-and-unstarted: this row takes the live reap.
-                return False
+                return None
 
         class _Manager:
             def __init__(self):
@@ -621,9 +621,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
                 # A terminal row: there is no unstarted row left to cancel.
                 return None
 
-            async def taskq_row_is_claimed_unstarted_async(self, agent_id):
+            async def taskq_unstarted_claim_generation_async(self, agent_id):
                 # Not claimed-and-unstarted either -- it ran and finished.
-                return False
+                return None
 
         class _Manager:
             def __init__(self):

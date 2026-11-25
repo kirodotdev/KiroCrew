@@ -47,7 +47,7 @@ def create_skill(loader: SkillsLoader, name: str, content: str) -> bool:
             skill_dir.mkdir(parents=True, exist_ok=False)
         except FileExistsError:
             return False
-        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        _write_new_skill_md(skill_dir, content)
         loader._invalidate_iter_cache()  # so the new skill shows in list_skills() now
         logger.info("Created skill: %s", name)
         return True
@@ -73,6 +73,32 @@ def create_skill(loader: SkillsLoader, name: str, content: str) -> bool:
         return loader._create_skill_pinned(name, content, skill_dir, parent_fd)
     finally:
         os.close(parent_fd)
+
+
+def _write_new_skill_md(skill_dir: Path, content: str) -> None:
+    """Write ``SKILL.md`` into *skill_dir*, a directory the caller just made, by name.
+
+    On any failure the file and the directory are removed, each only if it is still
+    what this call made (the file by identity, the directory only while empty), and
+    the original exception is re-raised, so the name can be created again. The bytes
+    and mode match ``write_text``.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    ident: tuple[int, int] | None = None
+    try:
+        with (skill_dir / "SKILL.md").open("x", encoding="utf-8") as f:
+            info = os.fstat(f.fileno())
+            ident = (info.st_dev, info.st_ino)
+            f.write(content)
+    except BaseException:
+        # After the with: Windows refuses to unlink an open file.
+        if ident is not None:
+            with suppress(OSError):
+                sk.pinned_fs.unlink_verified_by_name(skill_dir, "SKILL.md", ident)
+        with suppress(OSError):
+            skill_dir.rmdir()
+        raise
 
 
 def _create_skill_pinned(

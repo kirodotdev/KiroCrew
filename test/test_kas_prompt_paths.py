@@ -81,6 +81,17 @@ def test_a_session_token_mapping_is_refused(agents):
     assert not is_unsafe_prompt_path((home / "notes" / name).resolve())
 
 
+def test_a_record_in_the_session_record_directory_is_refused(agents):
+    from kiro_crew.config.paths import config_dir
+
+    home = agents.parent.parent
+    name = f"session_token_{'a' * 64}.sig"
+    for data_home in (config_dir(), home / ".kiro" / "crew"):
+        with pytest.raises(KasAgentTranslationError, match="not an allowed location"):
+            _resolve(f"file://{data_home / 'session-tokens' / name}", agents)
+    assert not is_unsafe_prompt_path((home / "notes" / "session-tokens" / name).resolve())
+
+
 def test_a_symlinked_gh_config_dir_is_still_fenced(agents, tmp_path):
     # A dotfile manager links ~/.config/gh elsewhere; gh writes hosts.yml through
     # the link, so the resolved token file is outside the lexical anchor.

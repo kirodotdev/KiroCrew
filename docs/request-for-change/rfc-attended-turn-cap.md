@@ -3,8 +3,8 @@ title: Cap how many attended chat turns run at once, at the one dispatch every s
 status: draft
 author: kirocrew agent session, directed by jeeshofone
 created: 2026-11-02
-last-audited: 2026-11-02
-audited-at: d6d40e23a2
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 28633
 implementation-prs: []
 tracking-issues: [25055]

@@ -1288,6 +1288,33 @@ def _linux_available_mib() -> int:
     return 0
 
 
+#: The kernel's memory pressure-stall file (PSI), Linux 4.20 and later.
+_LINUX_MEMORY_PSI_PATH = "/proc/pressure/memory"
+
+
+def linux_memory_psi_full_avg10(path: str = _LINUX_MEMORY_PSI_PATH) -> float | None:
+    """The ``full avg10`` figure of the memory PSI file, or None when unreadable.
+
+    The share of the last 10 seconds in which every runnable task stalled on
+    memory. On a swapless host reclaim stalls begin while ``MemAvailable`` still
+    reads high, because it counts page cache the kernel is already fighting to
+    keep, so this sees the start of thrash earlier. None (an older kernel, macOS,
+    Windows, a malformed line) means "no reading", never "no pressure".
+    """
+    try:
+        with open(path, encoding="ascii") as handle:
+            for line in handle:
+                if not line.startswith("full "):
+                    continue
+                for field in line.split()[1:]:
+                    name, _, value = field.partition("=")
+                    if name == "avg10":
+                        return float(value)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return None
+
+
 def host_total_mib() -> int:
     """Total physical RAM in MiB, or 0 when it cannot be determined.
 

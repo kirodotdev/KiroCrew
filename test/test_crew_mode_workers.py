@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -662,8 +663,10 @@ async def test_each_row_says_where_its_worker_runs(_open_gate, monkeypatch):
             key("it_x"): remote("it_x", "inst-1", "Cancelled", terminal=True),
         },
     )
+    # "running" counts only from a crew pulled recently, so the working row is one.
+    fresh = {"crew_state": "connected", "ingested_at": datetime.now(timezone.utc).isoformat()}
     stored = {
-        "it_r": work_ledger.RemoteState(running=True),
+        "it_r": work_ledger.RemoteState(running=True, **fresh),
         "it_a": work_ledger.RemoteState(running=True, pending_approval=True),
         "it_x": work_ledger.RemoteState(running=True),
     }
@@ -923,6 +926,7 @@ async def test_a_held_steer_is_reported_queued_persisted_and_shown(_open_gate, m
         running=False,
         _app="",
         _queue=queue,
+        durable_source=lambda: list(queue),
         _acp_client=None,
         queue_append=_append,
     )

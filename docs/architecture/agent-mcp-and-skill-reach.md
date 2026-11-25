@@ -110,7 +110,11 @@ to custom agents, needs an explicit owner decision.
   file declares is callable only when the file's `tools` select it (`@server`,
   `@server/tool`, or `*`; `mate_worker.server_selectors`); one declared with no
   selector is mounted with no tool, and the capability catalog counts it as one
-  the worker lacks.
+  the worker lacks. An enabled app's server in that file (one whose declared name
+  has no `/`) launches with the line the gateway registers for it now, not the
+  line copied when it was added; every other server keeps the line its file
+  recorded
+  (`docs/system-specs/modules/crew-mode.md`, "Conductor and worker").
 - **How a new server or skill gets there.** Only by adding it to that mate:
   in chat, when the mate asks with `request_capabilities` and the user applies
   the card (`src/kiro_crew/mcp_mate.py`), or in the mate's **Abilities**

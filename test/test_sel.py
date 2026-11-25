@@ -1608,6 +1608,60 @@ class TestReadLastHash:
 
         assert log2.verify_integrity() == (3, 3)
 
+    def test_a_sibling_append_during_construction_does_not_break_the_chain(
+        self, sel_dir, monkeypatch
+    ):
+        """A record a sibling appends right after the constructor reads the tip.
+
+        The constructor must record the live log's identity BEFORE it reads the
+        tip, so that append leaves the identity older than the file and the first
+        append re-reads the tip. Read the other way round, the identity already
+        holds the sibling's record while the tip does not, and the first append
+        chains off a stale hash that verify reports as tampering.
+        """
+        sibling = SecurityEventLog(base_dir=sel_dir, sync=True)
+        for i in range(3):
+            sibling.log(_make_event(event_id=f"seed-{i}"))
+        SecurityEventLog._instance = None
+        real = SecurityEventLog._read_last_hash
+        fired: list[bool] = []
+
+        def tip_then_sibling_append(self, *args, **kwargs):
+            tip = real(self, *args, **kwargs)
+            if not fired:
+                fired.append(True)
+                sibling.log(_make_event(event_id="sibling"))
+            return tip
+
+        with monkeypatch.context() as mp:
+            mp.setattr(SecurityEventLog, "_read_last_hash", tip_then_sibling_append)
+            fresh = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert fired == [True]
+        fresh.log(_make_event(event_id="first-of-new-instance"))
+
+        assert fresh.verify_integrity() == (5, 5)
+
+    def test_construction_with_nothing_overlapping_reads_the_tip_once(
+        self, sel_dir, monkeypatch
+    ):
+        """No sibling write: the first append does not read the tip again."""
+        seed = SecurityEventLog(base_dir=sel_dir, sync=True)
+        seed.log(_make_event(event_id="seed"))
+        SecurityEventLog._instance = None
+        real = SecurityEventLog._read_last_hash
+        calls: list[bool] = []
+
+        def counting(self, *args, **kwargs):
+            calls.append(True)
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(SecurityEventLog, "_read_last_hash", counting)
+        fresh = SecurityEventLog(base_dir=sel_dir, sync=True)
+        fresh.log(_make_event(event_id="first-of-new-instance"))
+
+        assert len(calls) == 1
+        assert fresh.verify_integrity() == (2, 2)
+
     @pytest.mark.parametrize("sync", [True, False], ids=["pre-append-check", "descriptor-guard"])
     def test_a_failed_tip_reread_is_retried_by_the_next_append(self, sel_dir, monkeypatch, sync):
         """A re-read that raises must not leave the next append on the superseded tip.

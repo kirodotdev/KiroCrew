@@ -3,7 +3,8 @@
 A turn that ends on a tool result leaves the backend's history with no assistant
 message after it, and the backend fills that gap with a placeholder the model then
 repeats at the start of a later turn. Those words are not a reply: the live stream
-drops them. Rows an older build already stored are left as they are.
+drops them. A row an older build already stored keeps its place and goes out as
+the say-nothing reply.
 """
 
 from __future__ import annotations
@@ -234,3 +235,163 @@ class TestLiveStream:
         echoed = await _run("echo-tool-only", [_text(PLACEHOLDER)] + _tool() + [_END])
         assert plain[0] and plain[1], plain
         assert echoed == plain
+
+
+class _ScriptedProvider:
+    """Yields a fixed event script, like a backend mid-turn."""
+
+    def __init__(self, events: list[AcpEvent]) -> None:
+        self._events = events
+
+    async def stream(self, message: str):
+        for event in self._events:
+            yield event
+
+
+class TestCollectedTurns:
+    """The turns that collect text outside the dashboard runner and the channel
+    driver: ``stream_and_collect`` (cron, heartbeat, a thread wake, a reply thread)
+    and the native Slack turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("events", "expected"),
+        [
+            (
+                [_text(PLACEHOLDER[:30]), _text(PLACEHOLDER[30:]), _text("\n\nHere it is."), _END],
+                "Here it is.",
+            ),
+            (
+                [
+                    _text(PLACEHOLDER[:30]),
+                    _text(PLACEHOLDER[30:]),
+                    *_tool(),
+                    _text("Here it is."),
+                    _END,
+                ],
+                "Here it is.",
+            ),
+            ([_text(PLACEHOLDER), _END], ""),
+            (
+                [_text("(No assistant"), _text(" was needed here.) Done."), _END],
+                "(No assistant was needed here.) Done.",
+            ),
+            ([_text("(No assistant"), *_tool(), _END], "(No assistant"),
+            ([_text("(No assistant"), _END], "(No assistant"),
+        ],
+        ids=[
+            "words-after",
+            "then-tool",
+            "only",
+            "opens-like-it",
+            "prefix-held-to-a-tool-call",
+            "prefix-held-to-the-end",
+        ],
+    )
+    async def test_a_collected_turn_returns_and_streams_only_its_own_words(self, events, expected):
+        from kiro_crew.llm_helpers import stream_and_collect
+
+        chunks: list[str] = []
+        text = await stream_and_collect(
+            _ScriptedProvider(events),  # type: ignore[arg-type]
+            "q",
+            retry_transient=False,
+            on_chunk=chunks.append,
+        )
+        assert text == expected
+        assert "".join(chunks) == expected
+
+    @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "post"])
+    @pytest.mark.parametrize(
+        ("events", "kept"),
+        [
+            (
+                [_text(PLACEHOLDER[:30]), _text(PLACEHOLDER[30:]), _text("\n\nHere it is.")],
+                "Here it is.",
+            ),
+            (
+                [_text(PLACEHOLDER[:30]), _text(PLACEHOLDER[30:]), *_tool(), _text("Here it is.")],
+                "Here it is.",
+            ),
+            ([_text("(No assistant"), *_tool()], "(No assistant"),
+            ([_text("(No assistant")], "(No assistant"),
+        ],
+        ids=["words-after", "then-tool", "prefix-held-to-a-tool-call", "prefix-held-to-the-end"],
+    )
+    def test_a_native_slack_turn_posts_only_its_own_words(self, events, kept, streaming):
+        from slack_handler_helpers import FakeProvider, FakeSessionManager
+
+        from conftest import MockSlackClient
+        from kiro_crew.slack.handler import handle_message
+
+        slack = MockSlackClient()
+        slack._stream_enabled = streaming
+        asyncio.run(
+            handle_message(
+                slack, FakeSessionManager(FakeProvider(events)), "C1", "q?", None, "m1", "U1"
+            )
+        )
+        sent = repr(slack.actions)
+        assert "No assistant response" not in sent
+        assert kept in sent
+
+
+class TestStoredRow:
+    @pytest.mark.parametrize(
+        ("row", "want"),
+        [
+            ({"role": "assistant", "content": PLACEHOLDER}, True),
+            ({"role": "assistant", "content": PLACEHOLDER, "variants": []}, True),
+            ({"role": "assistant", "content": PLACEHOLDER, "meta": {"file_changes": []}}, True),
+            (
+                {
+                    "role": "assistant",
+                    "content": PLACEHOLDER,
+                    "variants": [{"content": PLACEHOLDER}, {"content": "A real answer."}],
+                },
+                False,
+            ),
+            (
+                {
+                    "role": "assistant",
+                    "content": PLACEHOLDER,
+                    "meta": {"file_changes": [{"path": "a.py"}]},
+                },
+                False,
+            ),
+            ({"role": "user", "content": PLACEHOLDER}, False),
+            ({"role": "assistant", "content": PLACEHOLDER + "\n\nHere is the answer."}, False),
+            ({"role": "assistant", "content": [{"type": "text", "text": PLACEHOLDER}]}, False),
+        ],
+        ids=[
+            "placeholder",
+            "empty-variants",
+            "empty-file-changes",
+            "with-variants",
+            "with-file-changes",
+            "user-row",
+            "words-after",
+            "structured",
+        ],
+    )
+    def test_a_stored_placeholder_row_is_an_assistant_row_of_only_the_placeholder(self, row, want):
+        from kiro_crew.messaging.alternation_echo import is_stored_echo_row
+
+        assert is_stored_echo_row(row) is want
+
+    def test_a_stored_placeholder_row_goes_out_as_the_say_nothing_reply_in_its_place(self):
+        from kiro_crew.dashboard.chat_utils import _prepare_messages
+
+        rows = [
+            {"role": "user", "content": "hi", "ts": "1"},
+            {"role": "assistant", "content": "real reply A", "ts": "2"},
+            {"role": "nudge", "content": "patrol", "ts": "3", "cls": "msg msg-nudge"},
+            {"role": "assistant", "content": PLACEHOLDER, "ts": "4"},
+        ]
+        out = _prepare_messages(rows, False, live_child="")
+        assert [(m["role"], m["content"], m["ts"]) for m in out] == [
+            ("user", "hi", "1"),
+            ("assistant", "real reply A", "2"),
+            ("nudge", "patrol", "3"),
+            ("assistant", "\u200b", "4"),
+        ]

@@ -471,6 +471,7 @@ class TestSpendUnit:
         out = usage_mod.cost_breakdown(7)
         assert out.get("unit") == "credits"
         assert out.get("credits") == 0.0
+        assert out.get("turns") == 1
 
     def test_credits_before_a_harness_switch_do_not_hold_the_window_at_zero(self, store):
         """The window before may predate a switch to a dollar-billed harness."""
@@ -482,6 +483,23 @@ class TestSpendUnit:
         assert out.get("unit") == "usd"
         assert out.get("credits") == pytest.approx(0.25)
         assert out.get("prior_credits") == 0.0
+        assert out.get("prior_turns") == 0
+
+    def test_dollar_turns_before_a_harness_switch_are_not_counted_as_free_credit_turns(
+        self, store
+    ):
+        """The reverse switch: free-looking turns would dilute the prior per-turn figure."""
+        store([
+            _dollar_row(slot="chat-1-1700000000", cost=0.40, age_days=10),
+            _dollar_row(slot="chat-1-1700000000", cost=0.05, age_days=9),
+            _row(slot="chat-3-1700000000", credits=4.0, age_days=8),
+            _row(slot="chat-2-1700000000", credits=5.0),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "credits"
+        assert out.get("prior_turns") == 1
+        assert out.get("prior_credits") == 4.0
+        assert out.get("prior_per_turn") == 4.0
 
     def test_a_subagent_credit_row_does_not_decide_the_unit(self, store):
         """A subagent row is left out of every figure, so it cannot pick the unit."""

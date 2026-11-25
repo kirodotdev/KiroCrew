@@ -159,7 +159,7 @@ def test_spawn_deferral_for_measured_low_memory_is_unchanged(kernel) -> None:
     mgr = _mgr()
     info, log = _spawn(mgr)
     assert info is not None and info.queued is True
-    assert _deferral_reason(mgr, info).startswith("low memory: 1.0 GB available")
+    assert _deferral_reason(mgr, info).startswith("low memory: 1.0 GB free")
     assert "cause" not in log.call_args[1]["metadata"]
     wait = mgr._queue_wait["sess-1"]
     assert wait["available_gb"] == 1.0 and "cause" not in wait
@@ -169,7 +169,7 @@ def test_stale_cause_does_not_leak_into_a_mocked_check(kernel, monkeypatch) -> N
     sa._memory_check_cause.value = sa.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
     mgr = _mgr()
     info, _log = _spawn(mgr, memory=(False, 3.0))
-    assert _deferral_reason(mgr, info).startswith("low memory: 3.0 GB available")
+    assert _deferral_reason(mgr, info).startswith("low memory: 3.0 GB free")
 
 
 def test_zero_floor_skips_the_guard(kernel) -> None:

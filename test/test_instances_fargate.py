@@ -563,6 +563,21 @@ class TestDiagnostics:
         assert "the aws CLI could not be started" in result.reason
         assert result.probes == [{"name": "task_exec_ready", "ok": False}]
 
+    def test_a_local_sandbox_refusal_is_its_own_reason_not_a_crash(self, monkeypatch):
+        """The hub's sandbox refusing ``aws`` is reported as itself, not blamed on the task."""
+        from kiro_crew.cloud import ssm as cloud_ssm
+        from kiro_crew.instances import diagnostics as d
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def fake(cluster, task_id, profile="", region=""):
+            raise SandboxUnavailableError("Sandbox backend unavailable", "no_backend", "eperm")
+
+        monkeypatch.setattr(cloud_ssm, "task_exec_readiness", fake)
+        result = asyncio.run(d.diagnose_instance_fargate(_ECS_TARGET, 5599))
+        assert result.code == d.UNKNOWN
+        assert result.reason == "Sandbox backend unavailable"
+        assert result.probes == [{"name": "task_exec_ready", "ok": False}]
+
     def test_no_forward_is_not_connected_and_a_dead_forward_is_tunnel_down(self, monkeypatch):
         from kiro_crew.instances import diagnostics as d
 

@@ -753,9 +753,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _workstreams_render,
         bind_slot=_workstreams_bind_slot,
         affects=WORKSTREAMS_TYPES,
-        # Two past the base: ``charged`` joined the state, then each item's ``reason``
-        # and ``answered``, which an older savepoint lacks, so it rebuilds.
-        state_version=_FOLD_STATE_VERSION_BASE + 2,
+        # Three past the base: ``charged`` joined the state, then each item's
+        # ``reason`` and ``answered``, then ``asked``; an older savepoint lacks them,
+        # so it rebuilds.
+        state_version=_FOLD_STATE_VERSION_BASE + 3,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
     ),

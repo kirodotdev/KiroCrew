@@ -37,10 +37,12 @@ MANIFEST.in, so a wheel-only build cannot observe an sdist regression at all.
 from __future__ import annotations
 
 import ast
+import configparser
 import io
 import os
 import re
 import runpy
+import struct
 import subprocess
 import sys
 import sysconfig
@@ -105,6 +107,58 @@ def test_every_platform_closure_names_a_libllama() -> None:
         ), f"{plat} declares no libllama entry"
 
 
+_DT_NEEDED, _DT_SONAME, _DT_RPATH, _DT_RUNPATH = 1, 14, 15, 29
+_SHT_DYNAMIC = 6
+_PUBLIC_GGML_NAMES = frozenset({"libggml.so.0", "libggml-base.so.0", "libggml-cpu.so.0"})
+
+
+def _elf_dynamic(path: Path) -> dict[int, list[str]]:
+    """The string-valued dynamic entries of an ELF64 little-endian file, by tag."""
+    data = path.read_bytes()
+    assert data[:6] == b"\x7fELF\x02\x01", f"{path.name} is not ELF64 little-endian"
+    (shoff,) = struct.unpack_from("<Q", data, 0x28)
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x3A)
+    sections = [struct.unpack_from("<IIQQQQII", data, shoff + i * shentsize) for i in range(shnum)]
+    dyn = next(s for s in sections if s[1] == _SHT_DYNAMIC)
+    strtab_off = sections[dyn[6]][4]
+    found: dict[int, list[str]] = {}
+    for off in range(dyn[4], dyn[4] + dyn[5], 16):
+        tag, val = struct.unpack_from("<qQ", data, off)
+        if tag == 0:
+            break
+        if tag in (_DT_NEEDED, _DT_SONAME, _DT_RPATH, _DT_RUNPATH):
+            start = strtab_off + val
+            found.setdefault(tag, []).append(data[start : data.index(b"\0", start)].decode())
+    return found
+
+
+def test_linux_ggml_libraries_carry_private_sonames() -> None:
+    """A public ggml soname makes the loader reuse a user's own ggml for ours, or
+    hand ours to theirs, whichever loads first in the process."""
+    linux_dirs = sorted(p for p in _REQUIRED_VENDORED_LIBS if p.startswith("linux_"))
+    assert linux_dirs
+    for plat in linux_dirs:
+        libs = _LIBS_SRC / plat
+        names = {p.name for p in libs.iterdir() if p.is_file()}
+        assert not names & _PUBLIC_GGML_NAMES, f"{plat} ships a public ggml file name"
+        for name in sorted(names):
+            dyn = _elf_dynamic(libs / name)
+            where = f"{plat}/{name}"
+            sonames = dyn.get(_DT_SONAME, [])
+            needed = dyn.get(_DT_NEEDED, [])
+            assert not set(sonames) & _PUBLIC_GGML_NAMES, f"{where} has a public soname"
+            assert not set(needed) & _PUBLIC_GGML_NAMES, f"{where} needs a public ggml"
+            if name.startswith("libggml"):
+                assert sonames == [name], f"{where} soname {sonames} is not its file name"
+                assert re.search(r"-[0-9a-f]{8}\.so\.0$", name), f"{where} is not hash-named"
+            for dep in needed:
+                if dep.startswith(("libggml", "libgomp")):
+                    assert dep in names, f"{where} needs {dep}, absent from {plat}"
+            if name.startswith(("libllama", "libggml")):
+                assert _DT_RPATH in dyn, f"{where} lost its DT_RPATH"
+            assert _DT_RUNPATH not in dyn, f"{where} carries DT_RUNPATH"
+
+
 def test_verify_reports_a_missing_lib(tmp_path: Path) -> None:
     """A dropped file must be REPORTED, not tolerated.
 
@@ -167,6 +221,31 @@ def test_package_data_declares_the_libs_explicitly() -> None:
         assert (
             f"_vendor/{_LIBS_DIR_NAME}/{plat}/*" in cfg
         ), f"setup.cfg [options.package_data] does not explicitly ship {plat}"
+
+
+def test_package_ships_a_notice_for_every_vendored_component() -> None:
+    """Each vendored library has a THIRD-PARTY-NOTICES entry, and that file ships.
+
+    NOTICE points readers to THIRD-PARTY-NOTICES, which setuptools' default
+    license patterns do not match, so setup.cfg names it beside the two files
+    those defaults covered.
+    """
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(_REPO_ROOT / "setup.cfg", encoding="utf-8")
+    shipped = cfg.get("metadata", "license_files", fallback="").split()
+    assert {"LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"} <= set(shipped)
+    notices = (_REPO_ROOT / "THIRD-PARTY-NOTICES").read_text(encoding="utf-8")
+    assert "\n### llama-cpp-python " in notices, "no entry for the vendored llama_cpp package"
+    entries = {
+        "gomp": "\n### GNU OpenMP runtime (libgomp)\n",
+        "ggml": "\n### llama.cpp and ggml (native libraries)\n",
+        "llama": "\n### llama.cpp and ggml (native libraries)\n",
+    }
+    for plat, libs in _REQUIRED_VENDORED_LIBS.items():
+        for lib in libs:
+            family = next((name for name in entries if name in lib), None)
+            assert family, f"{plat}/{lib} has no THIRD-PARTY-NOTICES entry"
+            assert entries[family] in notices, f"THIRD-PARTY-NOTICES has no entry for {plat}/{lib}"
 
 
 def test_windows_bundle_prunes_every_foreign_platform_dir() -> None:

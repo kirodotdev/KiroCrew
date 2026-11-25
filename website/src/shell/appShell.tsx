@@ -18,6 +18,7 @@ import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
   isAppDetailPath,
+  isMembersPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -44,6 +45,7 @@ import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
+import { noteSignInCommand } from '../api/signInCommand'
 import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
 import { safeSetItem } from '../utils/safeStorage'
@@ -62,8 +64,9 @@ import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
-import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
+import { useCrewAddressLink, useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import AppIcon from '../components/AppIcon'
 import AppNavStateIcon from './nav/AppNavStateIcon'
 import { useUpdateFlow } from './updates/updateFlow'
@@ -76,7 +79,7 @@ import { useRequestFeature } from './topbar/requestFeature'
 import { useShellKeyboard } from './shortcuts/shellKeyboard'
 import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { shortcutEntry } from '../lib/shortcutRegistry'
-import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
+import { ariaKeyshortcutsFor, useKeyboardLayout, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
 import { i18nT } from '../i18n/t'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -276,6 +279,8 @@ export function useAppShell() {
   // must not be advertised.
   const shortcutBindings = useShortcutBindings()
   const shortcutsEnabled = useShortcutsEnabled()
+  // Re-render once the keyboard layout loads: both focus-mode sentences name the chord's key.
+  useKeyboardLayout()
   const focusModeChordDef = (() => {
     if (!shortcutsEnabled) return null
     const entry = shortcutEntry('toggle-focus-mode')
@@ -898,7 +903,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
   // Feature previews live on the gateway; this keeps the browser cache of them in
   // step. Called beside the credit readout, which already reads ['kirocrewConfig'].
   usePreviewFlagServerSync()
@@ -943,8 +948,10 @@ export function useAppShell() {
   // would surface the dashboard with the previous session still on screen: the
   // window comes forward and the notification appears to have opened nothing.
   //
-  // A crew link (`kirocrew://chat?crew=`) is read HERE only, never off the URL.
+  // A crew link (`kirocrew://chat?crew=`) switches panes and connects only from
+  // HERE; the same route on the dashboard's own address only opens the crew window.
   const openCrewLink = useCrewDeepLink()
+  useCrewAddressLink()
   usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
   useEffect(() => {
     return subscribeNativeNavigate(path => {
@@ -980,11 +987,11 @@ export function useAppShell() {
         navigate(REMOTE_CREW_SETTINGS_PATH)
         return
       }
-      // An app detail link names an app installed in the local Crew. Over a
+      // An app detail or Bots page link names an app or Bot in the local Crew. Over a
       // Remote Crew pane a bare navigate would route the hidden local pane, so
       // bring the local Crew forward first, as a session link does: the leave
       // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && localCovered(appStore.getState())) {
+      if ((isAppDetailPath(path) || isMembersPath(path)) && localCovered(appStore.getState())) {
         dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry
@@ -1012,7 +1019,7 @@ export function useAppShell() {
     // behind this one via markBootNotificationsFetched() (see notificationsSlice).
     const disarmNotificationsFallback = armBootNotificationsFallback(() => dispatch(fetchNotifications()))
     // Fetch status immediately to sync YOLO state (WS status push is periodic)
-    api.status().then(s => { dispatch(sseStatus(s)); recordSessionStart(s) }).catch(() => {})
+    api.status().then(s => { dispatch(sseStatus(s)); noteSignInCommand(s.sign_in_command); recordSessionStart(s) }).catch(() => {})
     return disarmNotificationsFallback
   }, [dispatch])
   const { subscribeLogs, subscribeSubagents, forceReconnect } = useWebSocket()
@@ -1027,11 +1034,12 @@ export function useAppShell() {
   // the surface registry.
   const totalAttention = builtinAttention + Object.values(appBadges).reduce((a, b) => a + b, 0)
   // The active session's title, for the tab title below. A slot whose title
-  // is still its key has no real title yet (same rule as the chat popout).
+  // is its key or the backend placeholder has no real title yet (same rule
+  // as the chat popout).
   const activeSessionTitle = useAppSelector(s => {
     const key = s.chat.activeSlot
     const title = key ? slotRowByKey(s.dashboard.slots, key)?.title : undefined
-    return title && title !== key ? title : ''
+    return key && title && !isUntitledSession({ key, title }) ? title : ''
   })
 
   // Browser push notification on new notification — see src/hooks/useNativeNotification.ts
@@ -1073,10 +1081,10 @@ export function useAppShell() {
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
   // in App's shell grid; railWidthFor is the single source for both. An embed
-  // document draws no rail, so it publishes none (#37165).
+  // document and every pop-out window draw no rail, so they publish none.
   useEffect(() => {
-    setRailWidth(focusActive || isEmbed ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
-  }, [isMobile, effectiveCollapsed, focusActive, isEmbed])
+    setRailWidth(focusActive || isEmbed || isPopout ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
+  }, [isMobile, effectiveCollapsed, focusActive, isEmbed, isPopout])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
   // the search width is a function of the window and the two side groups split
   // the remainder. Each group re-lays-out its own contents with container
@@ -1109,10 +1117,13 @@ export function useAppShell() {
   })
   const tabLabel = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || titleLabel
   const tabProduct = instanceLabel ? i18nT('app.tab_title', { label: instanceLabel, productName: botName }) : botName
+  // A pop-out window titles itself (its frame under `pages/*PopoutFrame`), so
+  // the shell leaves its title alone there.
   useEffect(() => {
+    if (isPopout) return
     const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: tabProduct }) : tabProduct
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
-  }, [totalAttention, tabProduct, tabLabel])
+  }, [isPopout, totalAttention, tabProduct, tabLabel])
   // Name the history entry on screen for the Back/Forward arrows' history
   // menu (#17453): the session on chat, the page anywhere else, and nothing on
   // a route with no rail row, so that entry is left out of the list. Re-run on
@@ -1157,7 +1168,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,

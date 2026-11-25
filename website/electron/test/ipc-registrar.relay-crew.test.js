@@ -84,6 +84,7 @@ function harness({ opener, gatewayLocal = true, portOwner = "kirocrew", main = n
     open: handlers.get("relay-crew:open"),
     closeAll: handlers.get("relay-crew:close-all"),
     openPane: handlers.get("relay-crew:open-pane"),
+    prewarmPane: handlers.get("relay-crew:prewarm-pane"),
     paneBounds: handlers.get("relay-crew:pane-bounds"),
     paneOverlay: handlers.get("relay-crew:pane-overlay"),
     paneInactive: handlers.get("relay-crew:pane-inactive"),
@@ -217,6 +218,31 @@ test("relay-crew:open-pane checks the ID, the local-dashboard gate, the main win
     const r = harness({ main, ...options, opener: b });
     assert.deepEqual(await r.openPane(ev, ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" }, label);
     assert.deepEqual(b.calls, [], label);
+  }
+});
+
+test("relay-crew:prewarm-pane loads only from the main window's dashboard, never hands off, and never opens a Crew twice", async () => {
+  const main = mainWindow();
+  const wc = main._mcView.webContents;
+  const RECT = { x: 0, y: 48, width: 500, height: 400 };
+  const VIEWPORT = { width: 500, height: 400 };
+  const calls = [];
+  const opener = { open: async () => ({ ok: true }), prewarm: async (id, pane) => { calls.push([id, pane]); return { ok: true }; } };
+  const h = harness({ opener, main });
+  assert.deepEqual(await h.prewarmPane(from(wc), `${ID}.evil`, RECT, VIEWPORT), { ok: false, error: "INVALID_ENDPOINT" });
+  assert.deepEqual(await h.prewarmPane(from(wc), ID, RECT, VIEWPORT), { ok: true });
+  assert.deepEqual(calls, [[ID, { parent: main, dashboard: main._mcView, bounds: { x: 0, y: 96, width: 1000, height: 704 } }]]);
+  for (const [label, options, ev] of [
+    ["a local dashboard window that is not the main window", {}, from(otherWindow())],
+    ["the relay view", {}, from(relayView())],
+    ["no main window", { main: null }, from(wc)],
+    ["remote window", { gatewayLocal: false }, from(wc)],
+  ]) {
+    const refused = [];
+    const r = harness({ main, ...options, opener: { open: async () => ({ ok: true }), prewarm: async (id) => { refused.push(id); return { ok: true }; } } });
+    assert.deepEqual(await r.prewarmPane(ev, ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" }, label);
+    assert.deepEqual(refused, [], label);
+    assert.deepEqual(r.raised, [], `${label}: nothing came forward`);
   }
 });
 

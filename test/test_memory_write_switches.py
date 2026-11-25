@@ -140,7 +140,9 @@ class TestLessonExtractionSwitch:
         from kiro_crew.context import ContextBuilder
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
-        _write_config({} if enabled else {"lesson_extraction_enabled": False})
+        # Kind routing off: its default label call and stamp are not what this pins.
+        routing = {"kind_routing": "off"}
+        _write_config(routing if enabled else {**routing, "lesson_extraction_enabled": False})
         cons, vector_store = _lesson_consolidator()
         vector_store.algorithm_version = "v2"
         vector_store.consolidation_receipt.return_value = None

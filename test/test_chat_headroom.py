@@ -9,7 +9,9 @@ unchanged.
 
 from __future__ import annotations
 
+import itertools
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +21,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew import resource_status
 from kiro_crew import subagent as subagent_facade
+from kiro_crew import work_vocab
 from kiro_crew.config.section_builders import _build_work_ledger_config
 from kiro_crew.dashboard import remote_dispatch_headroom as headroom_mod
 
@@ -775,6 +778,44 @@ def test_config_tags_keep_only_plain_words(monkeypatch):
     _config_load(monkeypatch, remote_dispatch=True, remote_dispatch_tags="gpu")
     assert headroom_mod.remote_dispatch_settings().tags == ()
     assert _build_work_ledger_config({}).remote_dispatch_tags == []
+
+
+def test_the_tag_check_accepts_exactly_what_the_old_pattern_did():
+    # The pattern the check replaced, kept here as the oracle.
+    oracle = re.compile(r"(?=[a-z0-9_-]*[a-z])[a-z0-9][a-z0-9_-]{0,31}")
+    corpus = [
+        "",
+        "a",
+        "1",
+        "_",
+        "-",
+        "a" * 32,
+        "a" * 33,
+        "1" * 31 + "a",
+        "1" * 32,
+        "123",
+        "_a",
+        "-a",
+        "a_",
+        "a-",
+        "a-b_c",
+        "1a",
+        "A",
+        "aB",
+        "\u00e9",
+        "a\u00e9",
+        "a\u0661",  # an Arabic-Indic digit
+        "\uff41",  # a fullwidth a
+        "a\n",
+        "a.b",
+        "a b",
+        "a\x00",
+    ]
+    alphabet = ["a", "1", "_", "-", "A", "."]
+    corpus += ["".join(p) for n in (1, 2, 3) for p in itertools.product(alphabet, repeat=n)]
+    disagree = [t for t in corpus if work_vocab.is_dispatch_tag(t) != bool(oracle.fullmatch(t))]
+    assert disagree == []
+    assert work_vocab.is_dispatch_tag("a-b_c") and not work_vocab.is_dispatch_tag("-a")
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,8 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_identity
 from kiro_crew.dashboard import transcript_snapshot
 from kiro_crew.dashboard.chat_folders import _unhide_folder
+from kiro_crew.dashboard.chat_fork_conductor import conductor_root_fork_template
+from kiro_crew.dashboard.chat_fork_memory_mode import fork_child_memory_mode
 from kiro_crew.dashboard.chat_persistence import (
     DeleteWitness,
     _coerce_requested_mode,
@@ -143,12 +145,21 @@ def _fork_execution_context(
     return execution.with_mode(memory_mode)
 
 
-def _bind_fork_execution(source, child_key: str, execution, promote: bool = False) -> None:
+def _bind_fork_execution(
+    source,
+    child_key: str,
+    execution,
+    promote: bool = False,
+    to_template: str = "",
+    memory_mode: str = "",
+) -> None:
     from kiro_crew.execution_context import bind_session_execution, source_vouch_agrees
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     if _fork_execution_context(*source) != execution:
         raise UnknownMemoryStore("The fork source's execution changed")
+    if to_template:  # A conductor mode root's fork: chat_fork_conductor.
+        execution = execution.with_template(to_template, to_template)
     # The child's identity is copied from the source's own record, which the
     # source can write, so the fork never vouches on that record's word. It
     # carries own-store authority only when the gateway already vouches the source
@@ -156,9 +167,11 @@ def _bind_fork_execution(source, child_key: str, execution, promote: bool = Fals
     # could never open a worker on its own memory.
     # A promotion binds the child as persistent, so its metadata reads back as a
     # regular session. It changes only the memory mode, never the member or store
-    # the vouch compares.
+    # the vouch compares, and so does a fork asked to be more private (``with_mode``).
     if promote:
         execution = execution.promoted_to_persistent()
+    elif memory_mode:
+        execution = execution.with_mode(memory_mode)
     bind_session_execution(child_key, execution, vouch=source_vouch_agrees(source[0], execution))
 
 
@@ -400,13 +413,13 @@ async def api_chat_slot_fork(
     An optional ``prompt`` is returned so the frontend can send it.
 
     Body: ``{ at_message_index?: number, at_message_id?: string, prompt?: string,
-    mode?: string, direction?: "head"|"tail" }``
+    mode?: string, direction?: "head"|"tail", memory_mode?: string }``
 
     ``_promote_from_ephemeral`` is an internal-only, keyword-only escape
     hatch -- never reachable from an HTTP body -- and is the ONE consent-gated
-    exception to the mode-inheritance rule below (an ordinary fork always
-    inherits the parent's ``memory_mode``; this forces the child to
-    ``persistent`` regardless of the parent's). It is set exclusively by
+    exception to the mode rule below (an ordinary fork keeps the parent's
+    ``memory_mode`` or, through ``memory_mode``, a stricter one; this forces the
+    child to ``persistent`` regardless of the parent's). It is set exclusively by
     :func:`api_chat_slot_promote` (``POST .../promote``), which is itself a
     dashboard-only, human-initiated action with no MCP or CLI surface (see
     that function's docstring and
@@ -461,9 +474,9 @@ async def api_chat_slot_fork(
     # Restricted forks copy only the live conversation and inherit the parent's
     # mode before any row is copied. Neither branch persists restricted bodies,
     # and the request cannot loosen the inherited mode.
-    # An ordinary fork never LOOSENS the mode: the child inherits the parent's,
-    # and the request body carries no way to pick one. Promotion (below) is the
-    # one consent-gated exception.
+    # An ordinary fork never LOOSENS the mode: the child keeps the parent's, or a
+    # stricter one the body names (``chat_fork_memory_mode``). Promotion (below) is
+    # the one consent-gated exception.
     if _promote_from_ephemeral and slot.memory_mode == "persistent":
         # The dashboard only offers "Keep this chat" on an ephemeral slot; a
         # persistent slot reaching here has nothing to promote.
@@ -537,7 +550,8 @@ async def api_chat_slot_fork(
             },
             status=400,
         )
-    if direction == _FORK_DIRECTION_TAIL and not KiroCrewConfig.load().dashboard.tail_fork_enabled:
+    dash_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).dashboard
+    if direction == _FORK_DIRECTION_TAIL and not dash_cfg.tail_fork_enabled:
         # Server-side gate: tail-fork requested but disabled in config —
         # fall back to a normal head-fork rather than reject the request outright.
         # outcome="allowed" (not "denied"): the request still succeeds, just as a
@@ -575,6 +589,7 @@ async def api_chat_slot_fork(
         direction=direction,
         prompt=prompt,
         mode_override=mode_override,
+        memory_mode=body.get("memory_mode"),
         request_app=request_app,
         origin=request_slot_origin(request_app),
         # Human request-layer path: a person forking a conversation. The
@@ -588,11 +603,13 @@ async def api_chat_slot_fork(
         folder_principal=folder_principal(state, request),
         audit_caller=request_app or "dashboard",
         # A person forking a pinned session gets a pinned fork, so it stays
-        # beside its parent in the pinned group. Set through ``stamp`` so the
+        # beside its parent in the pinned group, unless
+        # ``dashboard.fork_inherits_pin`` is off. Set through ``stamp`` so the
         # pin rides the child's birth save. Agent ``session_fork`` children
         # never get it: pinned marks a session as human-owned.
-        stamp=_inherit_pin(source.slot),
+        stamp=_inherit_pin(source.slot) if dash_cfg.fork_inherits_pin else None,
         audit_operation=_operation,
+        to_template=await conductor_root_fork_template(source.slot, source.execution),
         _promote_from_ephemeral=_promote_from_ephemeral,
     )
     if isinstance(result, web.Response):
@@ -607,8 +624,8 @@ async def api_chat_slot_fork(
             "folder_id": result.slot.folder_id or None,
             "pinned": result.slot.pinned,
             "direction": result.direction,
-            # The mode the child was born with (always the parent's), so the tab
-            # can render the incognito/temporary badge before the slots refresh.
+            # The mode the child was born with (the parent's or a stricter one), so
+            # the tab can render the incognito/temporary badge before the slots refresh.
             "memory_mode": result.slot.memory_mode,
         }
     )
@@ -728,6 +745,8 @@ async def fork_slot(
     stamp: "Callable[[_ChatSlot], None] | None" = None,
     recheck: "Callable[[], None] | None" = None,
     reveal_folder: bool = True,
+    to_template: str = "",
+    memory_mode: object = None,
     _promote_from_ephemeral: bool = False,
 ) -> "ForkResult | web.Response":
     """Copy *source*'s transcript up to (or after) the fork point into a new slot.
@@ -767,12 +786,17 @@ async def fork_slot(
     the act rather than at the moment they were first read, across the
     suspensions this function takes for the transcript read and the memory bind.
 
+    ``to_template``, when given, replaces the parent's agent (``chat_fork_conductor``).
+
     ``reveal_folder`` says whether a hidden folder the child is filed into is
     un-hidden once the fork is acknowledged. The human route leaves it True: a
     person forking a session wants to see the child. ``session_control``'s
     agent fork passes True only when the agent named the folder, matching agent
     ``session_create``, so an agent fork that merely inherits a folder the user
     hid leaves that choice alone.
+
+    ``memory_mode`` is the caller's requested mode, unchecked: ``None`` keeps the
+    parent's, and ``chat_fork_memory_mode`` refuses a looser one before any read.
 
     Returns a :class:`ForkResult` on success. A refusal is returned as the
     finished ``web.Response`` -- this module's refusal shape, kept so its coded
@@ -783,6 +807,9 @@ async def fork_slot(
     slot = source.slot
     inherited_execution = source.execution
     source_memory_identity = source.identity
+    child_memory_mode = fork_child_memory_mode(source, memory_mode, audit_caller, audit_operation)
+    if isinstance(child_memory_mode, web.Response):
+        return child_memory_mode
     # Read disk FIRST (full history). Stable message IDs are resolved against this
     # complete corpus; the legacy index fallback also has to use the same chained
     # view the fully-loaded frontend renders. Without the chained read, an archived
@@ -1278,7 +1305,6 @@ async def fork_slot(
 
     try:
         inherited_store = inherited_execution.store.legacy_name
-        inherited_memory_mode = inherited_execution.memory_mode
         if not _source_identity_unchanged():
             raise UnknownMemoryStore("The fork source changed while its memory was verified")
     except (OSError, ValueError) as exc:
@@ -1300,7 +1326,7 @@ async def fork_slot(
     with state.suspend_slots_push():
         new_slot = state.get_or_create_slot(
             name=None,
-            agent=slot.agent,
+            agent=to_template or slot.agent,
             workspace=slot.workspace,
             model=slot.model,
             mode=fork_mode,
@@ -1308,14 +1334,14 @@ async def fork_slot(
             # registers the child's ``dashboard:`` key as restricted, and every memory
             # gate (lessons, consolidation, artifact registration) reads that
             # registry. A later assignment would leave a window where the child of
-            # an incognito parent is a persistent slot. The value is the one
-            # validated above, so the constructor cannot raise on it.
+            # an incognito parent is a persistent slot. The value is the parent's,
+            # or the stricter one validated above, so the constructor cannot raise.
             #
             # Promotion is the ONE deliberate exception to inheriting the parent's
             # mode: "Keep this chat" exists precisely to LOOSEN it, so the child is
             # forced to "persistent" here rather than carrying the ephemeral
             # parent's mode forward onto what is supposed to be the kept copy.
-            memory_mode="persistent" if _promote_from_ephemeral else inherited_memory_mode,
+            memory_mode="persistent" if _promote_from_ephemeral else child_memory_mode,
             app=request_app,
             origin=origin,
             count_user_session=count_user_session,
@@ -1328,6 +1354,13 @@ async def fork_slot(
                 bind = _bind_fork_execution
                 if _promote_from_ephemeral:
                     bind = partial(_bind_fork_execution, promote=True)
+                elif to_template or child_memory_mode != inherited_execution.memory_mode:
+                    # A conductor root's fork may also be asked to be more private.
+                    bind = partial(
+                        _bind_fork_execution,
+                        to_template=to_template,
+                        memory_mode=child_memory_mode,
+                    )
                 await drained_to_thread(
                     bind,
                     (*source_memory_identity[:4], source_memory_identity[6]),
@@ -1363,6 +1396,8 @@ async def fork_slot(
                 folder_principal=folder_principal,
                 promote=_promote_from_ephemeral,
             )
+            if to_template:  # The parent's namespace and app binding go with its agent.
+                new_slot.agent_kind, new_slot.app_agent_owner = "template", ""
             if stamp is not None:
                 stamp(new_slot)
         except Exception:

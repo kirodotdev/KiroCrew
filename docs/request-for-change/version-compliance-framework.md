@@ -4,8 +4,8 @@ kind: framework
 status: draft
 author: Kiro Crew contributors
 created: 2026-05-26
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: []
 tracking-issues: []

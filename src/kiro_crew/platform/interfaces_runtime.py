@@ -89,7 +89,9 @@ class TunnelProvider(Protocol):
 
         Edition-neutral primitives only (no import of ``kiro_crew.tunnel``): keys
         ``state`` (a ``TunnelState`` value string), ``url``, ``error``,
-        ``started_at``, ``connected_at``, ``reconnect_attempt``.  The Default
+        ``started_at``, ``connected_at``, ``reconnect_attempt``, and optionally
+        ``cannot_host_yet`` (the error is a wait on the Crew's own eligibility,
+        not a fault on the way to the tunnel).  The Default
         returns ``None`` so the stub ``TunnelManager`` keeps reporting its own
         local status (byte-identical standalone); a companion returns its live
         snapshot so ``/api/tunnel/status`` reflects the real tunnel.
@@ -485,10 +487,13 @@ class BrowserCredentialTarget:
 
     ``kind`` is always ``"kiro_chromium"`` when the provider is called (the core
     never asks for the person's own Chrome or Edge); ``headless`` says whether it
-    has a window; ``reason`` is ``"start"`` (a launch or relaunch) or
+    has a window; ``reason`` is ``"start"`` (a launch or relaunch),
     ``"source_changed"`` (an agent navigation found
     :meth:`BrowserCredentialProvider.fingerprint` or ``browser.credentials``
-    changed since the last apply).
+    changed since the last apply), ``"context"`` (a chat's new browser context),
+    ``"navigate"`` (the optional ``sign_in_for_origin`` is asked because the agent's
+    own navigate was sent to a sign-in host) or ``"renew"`` (the page sent itself
+    there, for example when the site's own sign-in ran out).
     """
 
     kind: str
@@ -504,7 +509,8 @@ class BrowserCredentialProvider(Protocol):
     session for its own sites supplies it here. WIRED:
     ``browser_harness.supervisor.HarnessSupervisor`` (the gateway, outside every
     sandbox) calls it at each start of Kiro's Chromium and before an agent
-    navigation when :meth:`fingerprint` or the settings changed, then writes the
+    navigation when :meth:`fingerprint` or the settings changed, or a cookie it
+    supplied has reached its ``expires``, then writes the
     cookies with CDP ``Storage.setCookies`` on the gateway's own connection to the
     browser -- never through the agent's ``browser`` tool -- before the daemon (and
     so any agent op) is up. Never called for the person's own Chrome or Edge.
@@ -527,6 +533,29 @@ class BrowserCredentialProvider(Protocol):
     A raise or a timeout is reduced to a fixed reason code and the browser starts
     without the cookies: never put a secret in an exception message, and never
     log a value yourself.
+
+    OPTIONAL ``sign_in_hosts() -> Sequence[str]`` and ``sign_in_for_origin(target,
+    origin, sign_in_url, *, site_cookies) -> Mapping[str, Any]``: not members of
+    this Protocol, so a provider without them (the public Default has neither)
+    still satisfies it; the gateway reads them with ``getattr``, and both must be
+    callable. v1 addition (no ``CONTRACT_VERSION`` bump). WIRED:
+    ``browser_harness.sign_in_guard``, on Kiro's Chromium with the same opt-in as
+    the cookies. ``sign_in_hosts()`` names the EXACT hosts of the sign-in service
+    the browser must never reach; answer it from memory. While it names one, the
+    gateway fails every request to those hosts and every redirect to them, so the
+    service never sets a cookie in the browser; the bulk :meth:`cookies` never sets
+    one there either. When a tab's main frame is sent there for a site, the gateway
+    calls ``sign_in_for_origin`` in a worker thread bounded at 15 s
+    (``budgets.SIGN_IN_PROVIDER_S``): *origin* is ``https://host[:port]`` of that
+    site, checked against both domain lists and the agent's request; *sign_in_url*
+    the intercepted URL, to hand to the signer as is; *site_cookies* the site's own
+    ``{"name", "value"}`` pairs for that host. Answer ``{"ok": True, "cookies":
+    [...]}`` with the cookies the SITE sets for that one origin (``domain`` absent
+    or exactly its host; any other is dropped), or ``{"ok": False, "reason": code,
+    "message": text}`` with ``code`` one of ``not_signed_in``,
+    ``device_check_failed``, ``signer_missing``, ``signer_timeout``, ``refused`` or
+    ``other``. Refuse a sign-in whose last hop is not *origin*'s host. A raise or a
+    timeout is a fixed code; never put a secret in an exception or the message.
 
     The agent must not be able to read whatever this provider reads from. The
     provider runs in the gateway, so its own files need no sandbox access; the
@@ -560,7 +589,9 @@ class BrowserCredentialProvider(Protocol):
         seconds) has passed, or with a control character or a non-boolean flag, is
         dropped, not the batch. Each is set as a SESSION cookie (``expires``
         removed, so nothing reaches the profile on disk and it is gone when the
-        browser closes). Raise
+        browser closes). The gateway remembers ``expires`` in memory and deletes
+        the cookie from the browser once it passes, and deletes one that a later
+        call that succeeded leaves out. Raise
         ``browser_harness.credential_files.CredentialSourceError`` for a missing or
         refused source: it becomes the status code, ``needs_refresh`` for a
         missing one.
@@ -899,6 +930,19 @@ class DashboardContributor(Protocol):
         region that sign-in would refuse. The form stays editable. ``{}`` (the
         Default) leaves the field empty. v1 method addition (no
         ``CONTRACT_VERSION`` bump); a contributor without it supplies nothing.
+        """
+        ...
+
+    def idc_sign_in_profiles(self) -> Dict[str, Dict[str, Any]]:
+        """IAM Identity Center start URLs that sign in with the edition's own form.
+
+        ``{start_url: {"scopes": [...], "grant_types": [...], "issuer_url": str,
+        "profile_arn": str}}``. WIRED: ``auth/login/endpoints.py`` asks it only while
+        the ``crew_client`` feature preview is on. Such a start URL registers its own
+        SSO-OIDC client with that form and takes the pinned profile ARN instead of
+        asking the control plane. While it is the stored sign-in, the usage poll
+        makes no call and no local KAS agent starts. ``{}`` (the Default) changes
+        nothing. v1 method addition (no ``CONTRACT_VERSION`` bump).
         """
         ...
 

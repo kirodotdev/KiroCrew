@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:f6f0c799c1970f554549309ab2591885500f7ac2d61a6b5700782c1ac5622b66"
+export const GUIDE_BUILD_DIGEST = "sha256:eec5f91025114e069e0c65f44ae6a99a2a57a81fabc8796b4fb03743c3ddad1d"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -74,11 +74,15 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
+  "mcp.review-approve",
   "mcp.servers-view",
+  "mcp.share-switch",
+  "mcp.sharing-view",
   "members.add-menu",
   "members.add-menu.import",
   "members.add-menu.new",
   "members.back",
+  "members.bot-sessions-switch",
   "members.dashboard-tab",
   "members.details",
   "members.edit",
@@ -90,6 +94,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.profile-tab",
   "members.roster-list",
   "members.schedule-tab",
+  "members.sessions-tab",
   "members.settings",
   "members.switcher",
   "members.switcher.import",
@@ -140,7 +145,6 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "sessions.show-all-older",
   "shell.connect-phone",
   "shell.focus-mode",
-  "shell.kiro-account",
   "shell.menu-search",
   "shell.mobile-menu",
   "shell.nav-toggle",
@@ -202,6 +206,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "state",
     "revealer": "members.back",
     "state": "crewmate_chat_open_phone"
+  },
+  "members.sessions-tab": {
+    "kind": "state",
+    "revealer": "members.sessions-tab",
+    "state": "crewmate_profile_sessions_tab_closed"
   },
   "members.settings": {
     "kind": "state",
@@ -1829,6 +1838,40 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "mcp.share-switch": {
+    "version": 2,
+    "label_key": "pages.mcpManagement.share_switch_label",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.share-switch",
+            "location": "mcp.share-switch",
+            "label_key": "pages.mcpManagement.share_switch_label"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.sharing-view": {
+    "version": 2,
+    "label_key": "pages.mcpPage.view_sharing",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.sharing-view",
+            "location": "mcp.sharing-view",
+            "label_key": "pages.mcpPage.view_sharing"
+          }
+        ]
+      }
+    ]
+  },
   "members.add-menu": {
     "version": 2,
     "label_key": "pages.membersPage.add_menu",
@@ -2226,6 +2269,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:members.schedule-tab",
             "location": "members.schedule-tab",
             "label_key": "pages.membersPage.schedules_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.sessions-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_sessions_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.sessions-tab",
+            "location": "members.sessions-tab",
+            "label_key": "pages.membersPage.profile_sessions_tab"
           }
         ]
       }

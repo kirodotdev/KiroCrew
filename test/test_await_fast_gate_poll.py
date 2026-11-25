@@ -47,15 +47,19 @@ exactly when unset:
 fast-gate.yml/runs?head_sha=`` responses, one per poll -- exactly how the real barrier
 reads a run that is not there yet, then is. The supersession reads (the gate run's
 jobs, the branch's run listing) and the cancel are answered from fixed files,
-and every call is logged so a test can assert which ones were made.
+and every call is logged so a test can assert which ones were made. A host without
+``jq`` gets a stand-in for the programs the empty-listing cases reach instead of a
+skip.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -93,6 +97,104 @@ def _page(*runs: dict) -> str:
     return json.dumps({"workflow_runs": list(runs)})
 
 
+# The jq programs the empty-listing cases reach, for a host without jq (exit 2 on any
+# other invocation); a host with jq runs the script's real programs.
+_FAST_GATE_JQ = r"""
+import json, re, sys
+
+args, flags, named, program = sys.argv[1:], set(), {}, None
+
+
+def fail():
+    sys.stderr.write("jq stand-in: unsupported invocation: %r\n" % (sys.argv[1:],))
+    sys.exit(2)
+
+
+while args:
+    a = args.pop(0)
+    if a == "--arg":
+        name = args.pop(0)
+        named[name] = args.pop(0)
+    elif a[:1] == "-" and a[1:].isalpha():
+        flags.update(a[1:])
+    elif program is None:
+        program = a
+    else:
+        fail()
+
+
+def emit(v):
+    print(v if "r" in flags and isinstance(v, str) else json.dumps(v, separators=(",", ":")))
+
+
+def select_latest(v):
+    runs = [r for r in v["workflow_runs"]
+            if r["head_branch"] == named["branch"]
+            and r["head_repository"]["full_name"] == named["repo"]]
+    return [max(runs, key=lambda r: r["id"]) if runs else None]
+
+
+def as_listing(v):
+    return [{"workflow_runs": [r for r in v if r["path"] == ".github/workflows/fast-gate.yml"
+                               and r["event"] == named["event"] and r["head_sha"] == named["sha"]]}]
+
+
+def check_run_ids(v):
+    ids = set()
+    for page in v:
+        for row in page["check_runs"]:
+            url = row["details_url"]
+            if "/" + named["repo"] + "/actions/runs/" in url:
+                rid = url.split("/actions/runs/")[1].split("/")[0]
+                if re.fullmatch("[0-9]+", rid):
+                    ids.add(rid)
+    return sorted(ids)
+
+
+def id_or_empty(v):
+    return [] if v is None else [v["id"]]
+
+
+FIELDS = {".id": ("id", None), ".status": ("status", None), ".html_url": ("html_url", None),
+          '.conclusion // ""': ("conclusion", ""), ".run_attempt // 1": ("run_attempt", 1)}
+
+
+def field(v):
+    key, default = FIELDS[program]
+    value = v.get(key)
+    return [default if value is None else value]
+
+
+shape = ("".join(sorted(flags)), sorted(named))
+if program is None:
+    fail()
+elif shape == ("c", ["branch", "repo"]) and "max_by(.id)" in program:
+    run = select_latest
+elif shape == ("cs", ["event", "sha"]) and "{workflow_runs:" in program:
+    run = as_listing
+elif shape == ("rs", ["repo"]) and ".check_runs[]?" in program:
+    run = check_run_ids
+elif shape == ("r", []) and program == ".id? // empty":
+    run = id_or_empty
+elif shape == ("r", []) and program in FIELDS:
+    run = field
+else:
+    fail()
+
+
+def inputs():
+    text, at = sys.stdin.read(), 0
+    while text[at:].strip():
+        value, at = json.JSONDecoder().raw_decode(text, len(text) - len(text[at:].lstrip()))
+        yield value
+
+
+for v in [list(inputs())] if "s" in flags else inputs():
+    for out in run(v):
+        emit(out)
+"""
+
+
 class _Harness:
     """A ``gh`` stub plus a fake clock, driving the script one poll at a time."""
 
@@ -106,6 +208,8 @@ class _Harness:
         group: str | None = None,
         cancel_fails: bool = False,
         rate_limit_reset: str | None = None,
+        check_runs: str = '{"check_runs": []}',
+        named_runs: dict[int, str] | None = None,
     ) -> None:
         self._dir = tmp_path
         # Each line of this file is one poll's `gh api ...` stdout, consumed in
@@ -134,6 +238,25 @@ class _Harness:
         rate_limit_file = tmp_path / "gh-rate-limit"
         if rate_limit_reset is not None:
             rate_limit_file.write_text(rate_limit_reset, encoding="utf-8")
+        # The commit's check-runs (default: none, so an empty listing still means
+        # no run) and the bare run reads they lead to, one file per run id
+        # (absent = the read fails).
+        check_runs_file = tmp_path / "gh-check-runs"
+        check_runs_file.write_text(check_runs, encoding="utf-8")
+        runs_dir = tmp_path / "gh-runs"
+        runs_dir.mkdir()
+        for rid, body in (named_runs or {}).items():
+            (runs_dir / str(rid)).write_text(body, encoding="utf-8")
+        if shutil.which("jq") is None:
+            program = tmp_path / "jq_stand_in.py"
+            program.write_text(_FAST_GATE_JQ, encoding="utf-8")
+            jq = tmp_path / "jq"
+            jq.write_text(
+                f'#!/usr/bin/env bash\nexec "{sys.executable}" -I "{program}" "$@"\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+            jq.chmod(0o755)
 
         # A `gh` that pops the next scripted response for a poll's listing. The
         # last line is reused once the list is exhausted, so a poll past the
@@ -162,6 +285,8 @@ class _Harness:
                     ;;
                   *"/jobs"*) fixed {jobs_file} jobs ;;
                   *"rate_limit"*) fixed {rate_limit_file} rate_limit ;;
+                  *"/check-runs"*) fixed {check_runs_file} check-runs ;;
+                  *"/actions/runs/"*) a="$*"; id="${{a##*/actions/runs/}}"; fixed "{runs_dir}/${{id%% *}}" run ;;
                   *"head_sha="*) ;;
                   *"fast-gate.yml/runs"*) fixed {group_file} listing ;;
                   *) echo "gh: unexpected call" >&2; exit 1 ;;
@@ -428,9 +553,44 @@ def _sleep_recorder(tmp_path: Path) -> tuple[Path, Path]:
     return rec, log
 
 
+def _advancing_sleep(tmp_path: Path) -> tuple[Path, Path]:
+    """An ``AWAIT_FG_SLEEP`` that logs each requested wait and moves the fake clock by it."""
+    log = tmp_path / "naps"
+    log.write_text("", encoding="utf-8")
+    clock = tmp_path / "clock"
+    rec = tmp_path / "advance-nap"
+    rec.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$1\" >> {log}\n"
+        f'echo "$(( $(cat {clock}) + $1 ))" > {clock}\n',
+        encoding="utf-8",
+    )
+    rec.chmod(0o755)
+    return rec, log
+
+
+def _script_number(name: str, script: Path = _SCRIPT) -> int:
+    """The one bare ``NAME=<digits>`` assignment a script makes: a production value, not a seam."""
+    found = re.findall(rf"^{name}=(\d+)$", script.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    assert len(found) == 1, f"{name} is assigned {len(found)} time(s) in {script.name}"
+    return int(found[0])
+
+
+_POLL = _script_number("POLL_INTERVAL")
+_PROBE_POLL = _script_number("PROBE_POLL_INTERVAL")
+# The wait a missing run and a failed read start from, shorter than either poll.
+_STARTUP_NAP = 10
+
+
+def _elapsed_at_exit(stdout: str, phrase: str) -> int:
+    found = re.search(rf"{phrase} (\d+)s", stdout)
+    assert found, stdout
+    return int(found.group(1))
+
+
 @needs_bash
 class TestThePollInterval:
-    def test_a_pending_run_is_polled_every_30s_and_a_missing_one_every_10s(
+    def test_a_pending_run_is_polled_at_the_interval_and_a_missing_one_sooner(
         self, tmp_path: Path
     ) -> None:
         # The listed-but-pending wait is the one that sets the barrier's REST
@@ -448,21 +608,104 @@ class TestThePollInterval:
         )
         proc = h.run(extra_env={"AWAIT_FG_SLEEP": str(rec)})
         assert proc.returncode == 0, proc.stdout
-        assert log.read_text(encoding="utf-8").split() == ["10", "30", "30"]
+        assert log.read_text(encoding="utf-8").split() == [
+            str(_STARTUP_NAP),
+            str(_POLL),
+            str(_POLL),
+        ]
+        assert _STARTUP_NAP < _PROBE_POLL <= _POLL
 
-    def test_the_last_pending_wait_never_oversleeps_the_total_budget(self, tmp_path: Path) -> None:
-        # The clock advances 25s per poll, so after the poll at 700s only 20s of
-        # the 720s budget is left: the wait shrinks to 20 instead of 30, and the
-        # next poll is the one that fails closed at the budget.
+    @pytest.mark.parametrize("tick", [13, 25, 59])
+    def test_no_pending_wait_oversleeps_the_budget(self, tmp_path: Path, tick: int) -> None:
+        # The fake clock moves `tick` seconds per poll and not at all across a
+        # wait, so the poll numbered k runs at k * tick. Each wait is the interval
+        # unless less than that is left of the budget, and then it is what is
+        # left: the poll after it is the one at the budget, never one interval on.
+        budget = 720
         rec, log = _sleep_recorder(tmp_path)
-        h = _Harness(tmp_path, [_page(_run(17, "in_progress", None))], tick=25)
-        proc = h.run(total_budget=720, extra_env={"AWAIT_FG_SLEEP": str(rec)})
+        h = _Harness(tmp_path, [_page(_run(17, "in_progress", None))], tick=tick)
+        # The STALL budget is put out of reach, so the clamp to it stays out of
+        # these waits and the one under test is the clamp to the deadline.
+        proc = h.run(
+            total_budget=budget, stall_budget=budget * 10, extra_env={"AWAIT_FG_SLEEP": str(rec)}
+        )
         assert proc.returncode == 1, proc.stdout
-        assert "still 'in_progress' after 725s" in proc.stdout
-        naps = log.read_text(encoding="utf-8").split()
-        assert naps[-1] == "20"
-        assert set(naps[:-1]) == {"30"}
-        assert len(naps) == 28
+        naps = [int(n) for n in log.read_text(encoding="utf-8").split()]
+        assert naps == [min(_POLL, budget - tick * k) for k in range(1, len(naps) + 1)]
+        assert naps and all(n > 0 for n in naps)
+        failed_at = _elapsed_at_exit(proc.stdout, "still 'in_progress' after")
+        assert failed_at == tick * (len(naps) + 1)
+        assert budget <= failed_at < budget + tick
+
+    @pytest.mark.parametrize("status", ["pending", "in_progress"])
+    def test_a_gate_that_never_reports_fails_at_the_budget_whatever_the_interval(
+        self, tmp_path: Path, status: str
+    ) -> None:
+        # Real waits this time: the clock moves by each wait the script asks for
+        # and by nothing else. The budget falls between two polls of a plain
+        # interval, and the exit still lands on it to the second, so the interval
+        # decides how many reads the wait costs and not how long a gate that never
+        # reports holds the job.
+        budget = 35 * _POLL + _POLL // 2
+        rec, _log = _advancing_sleep(tmp_path)
+        h = _Harness(tmp_path, [_page(_run(18, status, None))], tick=0)
+        proc = h.run(
+            total_budget=budget, stall_budget=budget * 10, extra_env={"AWAIT_FG_SLEEP": str(rec)}
+        )
+        assert proc.returncode == 1, proc.stdout
+        assert _elapsed_at_exit(proc.stdout, f"still '{status}' after") == budget
+        # One read per interval, and the one the clamp to the budget adds.
+        assert sum("head_sha=" in c for c in h.calls) == budget // _POLL + 2
+
+    def test_a_lagging_green_gate_is_released_at_the_stall_budget_not_an_interval_later(
+        self, tmp_path: Path
+    ) -> None:
+        # The STALL budget falls between two polls of a plain interval; the jobs
+        # read that releases a gate whose status lags its green jobs still happens
+        # on it to the second.
+        stall = 12 * _POLL + _POLL // 2
+        rec, _log = _advancing_sleep(tmp_path)
+        h = _Harness(
+            tmp_path,
+            [_page(_run(19, "in_progress", None))],
+            tick=0,
+            jobs=_jobs(("completed", "success", _LONG_DONE)),
+        )
+        (tmp_path / "clock").write_text(str(_CLOCK_LATER), encoding="utf-8")
+        proc = h.run(
+            stall_budget=stall, total_budget=stall * 3, extra_env={"AWAIT_FG_SLEEP": str(rec)}
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert _elapsed_at_exit(proc.stdout, "still reads 'in_progress' after") == stall
+
+    def test_the_probe_polls_at_its_own_interval(self, tmp_path: Path) -> None:
+        rec, log = _sleep_recorder(tmp_path)
+        h = _Harness(
+            tmp_path,
+            [
+                _page(_run(16, "queued", None)),
+                _page(_run(16, "in_progress", None)),
+                _page(_run(16, "completed", "success")),
+            ],
+            tick=1,
+        )
+        proc = h.run(
+            extra_env={"AWAIT_FG_SLEEP": str(rec), "SUPERSEDED_FILE": str(tmp_path / "proof")}
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert log.read_text(encoding="utf-8").split() == [str(_PROBE_POLL), str(_PROBE_POLL)]
+
+    def test_the_cancel_wait_covers_the_probe_finding_the_proof_and_the_cancel_landing(
+        self,
+    ) -> None:
+        # The barrier proves a supersession and waits CANCEL_WAIT. The probe is in
+        # another job on its own phase, so it reads the same proof up to one of its
+        # intervals later, and the cancel it then sends may take LAND_BUDGET to land.
+        # A wait shorter than the two together fails a superseded run closed that
+        # was about to be cancelled.
+        cancel_wait = _script_number("CANCEL_WAIT")
+        land = _script_number("LAND_BUDGET", _CANCEL_SCRIPT)
+        assert cancel_wait >= _PROBE_POLL + land, (cancel_wait, _PROBE_POLL, land)
 
 
 # A run whose status lags its jobs: every job is done and green, the run still
@@ -657,6 +900,168 @@ class TestARunWhoseStatusLagsItsJobs:
         _h, proc = self._lagging(tmp_path, "__FAIL__")
         assert proc.returncode == 1, proc.stdout
         assert "Could not read the jobs of Fast Gate run 16" in proc.stdout
+
+
+_FG_PATH = ".github/workflows/fast-gate.yml"
+
+
+def _check_runs(*run_ids: int) -> str:
+    """The commit's check-runs: one Actions job per run id, plus a check-run posted
+    through the API that links its own page and names no run."""
+    rows = [
+        {"details_url": f"https://github.com/{_HEAD_REPO}/actions/runs/{rid}/job/{rid}0"}
+        for rid in run_ids
+    ]
+    rows.append({"details_url": "https://example.com/report/1"})
+    return json.dumps({"total_count": len(rows), "check_runs": rows})
+
+
+def _named(rid: int, path: str = _FG_PATH, **extra: object) -> str:
+    fields: dict[str, object] = {"path": path, "event": "pull_request", "head_sha": _SHA}
+    fields.update(extra)
+    return json.dumps(_run(rid, "completed", "success", **fields))
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="runs the barrier poll under a POSIX bash",
+)
+class TestAnEmptyListingIsReadThroughTheCheckRuns:
+    """The head_sha listing can answer no runs for a commit whose runs exist, so
+    from the APPEAR budget on an empty listing is read through the commit's
+    check-runs before the barrier calls the run missing."""
+
+    def _check_run_calls(self, h: _Harness) -> list[str]:
+        return [c for c in h.calls if "/check-runs" in c]
+
+    def test_a_run_the_check_runs_name_releases_the_matrix(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page()],
+            tick=30,
+            check_runs=_check_runs(50, 51),
+            named_runs={50: _named(50), 51: _named(51, path=".github/workflows/ci.yml")},
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "Fast Gate passed" in proc.stdout
+        assert "https://github.com/x/actions/runs/50" in proc.stdout
+        assert h.writes() == [], h.writes()
+
+    @pytest.mark.parametrize(
+        "colliding",
+        [
+            {"head_branch": _BRANCH, "head_repository": {"full_name": "a-fork/KiroCrew"}},
+            {"head_branch": "someone/else"},
+        ],
+        ids=["fork-reusing-the-branch-name", "another-branch-on-this-head"],
+    )
+    def test_a_listing_naming_only_a_colliding_run_reads_the_check_runs(
+        self, tmp_path: Path, colliding: dict
+    ) -> None:
+        # The listing is not empty: it answers a run that shares this head and
+        # fails the identity filter, while omitting this commit's own run. For
+        # this job that is just as empty as no answer at all, so the fallback
+        # must still run -- keyed on the selector's verdict, not the listing's
+        # length.
+        h = _Harness(
+            tmp_path,
+            [_page(_run(99, "completed", "failure", **colliding))],
+            tick=30,
+            check_runs=_check_runs(50),
+            named_runs={50: _named(50)},
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "Fast Gate passed" in proc.stdout
+        assert "https://github.com/x/actions/runs/50" in proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+
+    @pytest.mark.parametrize(
+        "named",
+        [
+            {51: _named(51, path=".github/workflows/ci.yml")},
+            {51: _named(51, event="push")},
+            {51: _named(51, head_sha="1" * 40)},
+            {51: _named(51, head_branch="someone/else")},
+        ],
+        ids=["other-workflow", "other-event", "other-head", "other-branch"],
+    )
+    def test_check_runs_naming_no_fast_gate_run_keep_the_missing_verdict(
+        self, tmp_path: Path, named: dict[int, str]
+    ) -> None:
+        h = _Harness(tmp_path, [_page()], tick=30, check_runs=_check_runs(51), named_runs=named)
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" in proc.stdout
+        assert len(self._check_run_calls(h)) == 1, h.calls
+
+    @pytest.mark.parametrize("unreadable", ["run", "check-runs"])
+    def test_an_unreadable_named_run_is_unknown_never_missing(
+        self, tmp_path: Path, unreadable: str
+    ) -> None:
+        # Run 50 has no answer file, so its read fails; or the check-runs read fails.
+        check_runs = "__FAIL__" if unreadable == "check-runs" else _check_runs(50)
+        h = _Harness(tmp_path, [_page()], tick=60, check_runs=check_runs)
+        proc = h.run(appear_budget=120, total_budget=600)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        assert "Fast Gate listing unreadable" in proc.stdout
+        assert "check-runs read failed" in proc.stdout
+        polls = [c for c in h.calls if "head_sha=" in c]
+        assert len(polls) > 2, "the unreadable fallback must keep polling like a failed read"
+
+    def test_an_unreadable_named_run_ends_at_the_stall_budget(self, tmp_path: Path) -> None:
+        # A failed fallback read is a failed read: the STALL budget counts from the
+        # last listing read that answered, so it ends long before the TOTAL budget.
+        h = _Harness(tmp_path, [_page()], tick=60, check_runs=_check_runs(50))
+        proc = h.run(appear_budget=120, stall_budget=300, total_budget=2100)
+        assert proc.returncode == 1, proc.stdout
+        assert "Fast Gate listing unreadable" in proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        ended = re.search(r"Fast Gate listing unreadable after (\d+)s", proc.stdout)
+        assert ended and 300 <= int(ended.group(1)) < 2100, proc.stdout
+
+    def test_a_pending_named_run_walks_the_check_runs_once(self, tmp_path: Path) -> None:
+        # A run the check-runs name but that is still going keeps the poll
+        # under the TOTAL budget, and the listing stays empty the whole time.
+        # Walking the check-runs again on every one of those polls would spend
+        # one read per run the commit names, each time; the id is fixed for this
+        # commit, so later polls read that one run instead.
+        pending = json.dumps(
+            _run(50, "in_progress", None, path=_FG_PATH, event="pull_request", head_sha=_SHA)
+        )
+        h = _Harness(
+            tmp_path, [_page()], tick=60, check_runs=_check_runs(50), named_runs={50: pending}
+        )
+        proc = h.run(appear_budget=120, total_budget=600)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        assert len(self._check_run_calls(h)) == 1, h.calls
+        run_reads = [c for c in h.calls if "/actions/runs/50" in c and "/jobs" not in c]
+        assert len(run_reads) >= 3, h.calls
+
+    def test_no_check_runs_read_before_the_appear_budget(self, tmp_path: Path) -> None:
+        # Polls at elapsed 30 and 60 only retry; the poll at 90 reads the check-runs
+        # once, and finds nothing, which is the verdict.
+        h = _Harness(tmp_path, [_page()], tick=30)
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" in proc.stdout
+        polls = [i for i, c in enumerate(h.calls) if "head_sha=" in c]
+        reads = [i for i, c in enumerate(h.calls) if "/check-runs" in c]
+        assert len(polls) == 3 and len(reads) == 1, h.calls
+        assert reads[0] > polls[-1], h.calls
+
+    def test_a_listed_run_past_the_appear_budget_reads_no_check_runs(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_run(12, "in_progress", None)), _page(_run(12, "completed", "success"))],
+            tick=100,
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert self._check_run_calls(h) == [], h.calls
 
 
 # Shaped on a real eviction: the gate run for this commit waited in Fast Gate's
@@ -951,7 +1356,9 @@ class TestTheProductionDefaultsAreIntact:
         assert 'APPEAR_BUDGET="${APPEAR_BUDGET:-180}"' in text
         assert 'STALL_BUDGET="${STALL_BUDGET:-720}"' in text
         assert 'TOTAL_BUDGET="${TOTAL_BUDGET:-2100}"' in text
-        assert "POLL_INTERVAL=30\n" in text
+        # The two poll waits are plain assignments, so no environment reaches them.
+        assert _POLL > 0 and _PROBE_POLL > 0
+        assert "${POLL_INTERVAL:-" not in text and "${PROBE_POLL_INTERVAL:-" not in text
         assert "READ_RETRY_CAP=60\n" in text
 
     def test_the_clock_and_sleep_default_to_the_real_tools(self) -> None:

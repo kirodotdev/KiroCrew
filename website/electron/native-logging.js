@@ -169,6 +169,15 @@ const MAX_CARRY_BYTES = 1024 * 1024;
 /** The marker written in place of a value, as bytes. */
 const REDACTED_BYTES = Buffer.from("[REDACTED]", "ascii");
 
+/**
+ * Values that are already redacted, left exactly as they are: this module's own
+ * marker, and the `<redacted>` placeholder the app writes on purpose in place of
+ * a token (`frame-load-log.js`, `src/lib/paneLog.ts`). Rewriting either would
+ * report a change on a log with no credential in it and rewrite it on every
+ * rotation, and the marker would grow a `]` each pass.
+ */
+const ALREADY_REDACTED_VALUES = [Buffer.from("<redacted>", "ascii"), REDACTED_BYTES];
+
 /** Parameter names whose value is a credential, lowercase, as the matcher folds. */
 const TOKEN_PARAM_NAMES = ["token=", "access_token="];
 
@@ -191,8 +200,24 @@ function matchesNameAt(buffer, at, name) {
 }
 
 /**
+ * True when the value at `valueStart` is exactly one of {@link ALREADY_REDACTED_VALUES},
+ * ending at a value terminator or the end of `buffer`. Case-sensitive bytes, so
+ * `<redacted>abc` is still a credential value.
+ */
+function isAlreadyRedactedAt(buffer, valueStart) {
+  return ALREADY_REDACTED_VALUES.some((value) => {
+    const end = valueStart + value.length;
+    if (end > buffer.length) return false;
+    if (end < buffer.length && !VALUE_END_BYTES.has(buffer[end])) return false;
+    return buffer.subarray(valueStart, end).equals(value);
+  });
+}
+
+/**
  * Replaces credential VALUES byte-exactly and copies every other byte verbatim.
  * Returns the original buffer untouched when there was nothing to redact.
+ * A value that is already a placeholder is left as it is, so a second pass over
+ * its own output changes nothing.
  *
  * Bytes rather than a string regex because a log is bytes, not text. Decoding to a string and re-encoding would be lossy in exactly the
  * situation this module exists for: a crash truncates the file mid-write, the
@@ -233,15 +258,20 @@ function redactTokensInBuffer(buffer) {
       i = valueStart;
       continue;
     }
+    // No terminator before the end of the buffer: the value may continue in
+    // whatever bytes come next. Only the streaming pass can act on that, and it
+    // must even when this piece ends in a placeholder: the rest is not one.
+    endsInValue = valueEnd === buffer.length;
+    if (isAlreadyRedactedAt(buffer, valueStart)) {
+      i = valueEnd;
+      continue;
+    }
     pieces.push(buffer.subarray(copiedFrom, valueStart), REDACTED_BYTES);
     copiedFrom = valueEnd;
     changed = true;
-    // No terminator before the end of the buffer: the value may continue in
-    // whatever bytes come next. Only the streaming pass can act on that.
-    endsInValue = valueEnd === buffer.length;
     i = valueEnd;
   }
-  if (!changed) return { out: buffer, changed: false, endsInValue: false };
+  if (!changed) return { out: buffer, changed: false, endsInValue };
   pieces.push(buffer.subarray(copiedFrom));
   return { out: Buffer.concat(pieces), changed: true, endsInValue };
 }
@@ -538,7 +568,9 @@ function redactLargeLogByStreaming(filePath, sourceFd, { fs, log = () => {}, rel
       /* the temp may never have been created */
     }
     log(`native log streaming redaction not applied at ${filePath}: ${e && e.message}`);
-    return { scanned: true, redacted: false, skipped: "replace-failed" };
+    // `code` is the failed call's errno code (never its message, which holds the
+    // path), so the aborted rotation can say a full disk is a full disk.
+    return { scanned: true, redacted: false, skipped: "replace-failed", code: e && e.code };
   }
 }
 
@@ -633,12 +665,13 @@ function redactNativeLogSecrets(filePath, { fs, log = () => {} } = {}) {
         /* the temp may never have been created; nothing to clean up */
       }
       log(`native log redaction not applied at ${filePath}: ${e && e.message}`);
-      return { scanned: true, redacted: false, skipped: "replace-failed" };
+      // The errno code only, as in the streaming pass: read by the aborted rotation.
+      return { scanned: true, redacted: false, skipped: "replace-failed", code: e && e.code };
     }
     return { scanned: true, redacted: true, skipped: null };
   } catch (e) {
     log(`native log redaction failed at ${filePath}: ${e && e.message}`);
-    return { scanned: false, redacted: false, skipped: "error" };
+    return { scanned: false, redacted: false, skipped: "error", code: e && e.code };
   } finally {
     // Owned here for BOTH strategies: the streaming pass reads from this
     // descriptor and deliberately does not close what it did not open; it only
@@ -695,6 +728,25 @@ function createTightLogFile(logPath, { fs, log = () => {} } = {}) {
     }
   }
   return { created, tightened: tightenLogMode(logPath, { fs, log }) };
+}
+
+/**
+ * Why the Chromium file sink is off this launch, as one of a closed set of codes
+ * the crash notice translates (it never shows the raw errno or an English
+ * sentence built here, so every catalog can phrase the cause in its own words).
+ */
+const NATIVE_LOG_OFF_CAUSES = Object.freeze(["disk_full", "no_access", "in_use", "unreadable", "other"]);
+
+/**
+ * The cause code of a failed fs call, from its errno code only. Never from
+ * `e.message`: Node puts the full path there, and this code reaches the renderer.
+ */
+function causeFromFsError(e) {
+  const code = e && e.code;
+  if (code === "ENOSPC" || code === "EDQUOT") return "disk_full";
+  if (code === "EACCES" || code === "EPERM" || code === "EROFS") return "no_access";
+  if (code === "EBUSY") return "in_use";
+  return "other";
 }
 
 /**
@@ -788,7 +840,15 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
       // The file stays, token and all, so at least its mode has to be owner-only.
       // A chmod changes no byte of the evidence, so it is safe on this path.
       tightenLogMode(logPath, { fs, log });
-      return { rotated: false, blocked: true, previousPath: null, redacted: false };
+      return {
+        rotated: false,
+        blocked: true,
+        previousPath: null,
+        redacted: false,
+        // A failed temp write (ENOSPC, EROFS, ...) is mapped like a failed rename,
+        // so a full disk reads as one; "other" only when no errno code came back.
+        cause: redaction.skipped === "unreadable" ? "unreadable" : causeFromFsError(redaction),
+      };
     }
     // Overwrites any older generation, which is the point: two files, not N.
     // `renameSync` replaces an existing destination on Windows too (libuv
@@ -809,7 +869,13 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
     log(`native log rotate failed at ${logPath}: ${e && e.message}`);
     // Same as the aborted branch: the un-rotated file stays, so tighten its mode.
     tightenLogMode(logPath, { fs, log });
-    return { rotated: false, blocked: true, previousPath: null, redacted: redactedHere };
+    return {
+      rotated: false,
+      blocked: true,
+      previousPath: null,
+      redacted: redactedHere,
+      cause: causeFromFsError(e),
+    };
   }
 }
 
@@ -825,7 +891,7 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
  * @param {(opts: object) => void} [deps.startCrashReporter]
  * @param {object} [deps.fs]                 Injected for the rotate step.
  * @param {(msg: string) => void} [deps.log]
- * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, switches: string[], crashReporter: boolean, tightenLiveLog: () => boolean}}
+ * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, fileLogOffCause: string|null, switches: string[], crashReporter: boolean, tightenLiveLog: () => boolean}}
  *   `tightenLiveLog` must be called once the app is ready, i.e. after Chromium
  *   has opened `--log-file`. Calling it earlier is harmless but pointless.
  */
@@ -842,11 +908,12 @@ function initNativeLogging({
   let blocked = false;
   let previousPath = null;
   let redacted = true;
+  let cause = null;
 
   // Before the switches: Chromium opens this path during initialization, so the
   // previous generation has to be moved aside first or it is appended to (or
   // clobbered) instead of preserved.
-  if (fs) ({ rotated, blocked, previousPath, redacted } = rotateNativeLog(logPath, { fs, log }));
+  if (fs) ({ rotated, blocked, previousPath, redacted, cause } = rotateNativeLog(logPath, { fs, log }));
 
   // Chromium creates `--log-file` at the process umask (0644 on a normal macOS
   // install) and records the dashboard session token on every renderer console
@@ -918,11 +985,17 @@ function initNativeLogging({
       `kept=${blocked ? (redacted ? "redacted" : "UNREDACTED") : "none"} ` +
       `switches=${applied.join(",") || "none"} minidumps=${crashReporter}`
   );
+  // Read by the crash notice when the sink is off this launch, so the user knows
+  // the chromium.log they are asked to attach is from an earlier session. A code
+  // from `NATIVE_LOG_OFF_CAUSES`, never a sentence or a path: it crosses into the
+  // renderer, which phrases it in the user's language.
+  const fileLogOffCause = blocked ? (NATIVE_LOG_OFF_CAUSES.includes(cause) ? cause : "other") : null;
   return {
     logPath,
     previousPath,
     rotated,
     blocked,
+    fileLogOffCause,
     switches: applied,
     crashReporter,
     tightenLiveLog,
@@ -941,6 +1014,7 @@ module.exports = {
   tightenLogMode,
   openRegularFile,
   NATIVE_LOG_BASENAME,
+  NATIVE_LOG_OFF_CAUSES,
   NATIVE_LOG_PREVIOUS_BASENAME,
   SECRET_FILE_MODE,
   MAX_REDACT_BYTES,

@@ -215,6 +215,15 @@ describe('task dashboard input routing', () => {
     expect(screen.getByText(/Approval required/)).toHaveTextContent('Permission mode: Normal')
   })
 
+  it('styles an edit diff line by line without changing a character of it', () => {
+    const diff = '--- /p/a.ts\n+++ /p/a.ts\n@@ -1 +1 @@\n-old\n+new'
+    const { container } = renderWithProviders(<AttentionCard item={{ ...approval, approval: { ...approval.approval!, tool: 'Replace in File', tool_input: diff } }} title="Worker" />)
+    const preview = container.querySelector('pre')!
+    expect(preview.textContent).toBe(diff)
+    expect(Array.from(preview.querySelectorAll('[data-diff-line]')).map(el => el.getAttribute('data-diff-line')))
+      .toEqual(['old-header', 'new-header', 'hunk', 'del', 'add'])
+  })
+
   it('locks a double click and keeps a failed approval retryable', async () => {
     let reject!: (error: Error) => void
     const approve = vi.spyOn(api, 'decideApproval').mockReturnValue(new Promise((_resolve, no) => { reject = no }))

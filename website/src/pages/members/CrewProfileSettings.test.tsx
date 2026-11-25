@@ -830,14 +830,14 @@ describe('CrewProfileSettings harness', () => {
   })
 
   it('lists KAS models for a pin that runs on KAS', async () => {
-    readout({ acp_backend: 'pi', harness: 'kas', kas_pin_harnesses: ['pi', 'goose'] })
+    readout({ acp_backend: 'deepseek', harness: 'kas', kas_pin_harnesses: ['deepseek', 'goose'] })
     setup(member())
     await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kas'))
-    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('pi')
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('deepseek')
   })
 
   it('lists the floor models when policy sends the pin to the floor', async () => {
-    readout({ acp_backend: 'pi', harness: 'kiro', kas_pin_harnesses: ['pi'], kas_pin_landing: 'kiro' })
+    readout({ acp_backend: 'deepseek', harness: 'kiro', kas_pin_harnesses: ['deepseek'], kas_pin_landing: 'kiro' })
     setup(member())
     await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kiro'))
     expect(mockApi.harnessModels).not.toHaveBeenCalledWith('kas')
@@ -1057,10 +1057,10 @@ describe('CrewProfileSettings dashboard card send', () => {
 })
 
 describe('CrewProfileSettings sessions list', () => {
-  it('offers no switch for showing the Bot\'s sessions in the person\'s list', async () => {
+  it('offers no Sessions list switch: those sit in the Bot\'s Sessions list and Settings > Chat', async () => {
     setup(member({ show_sessions_in_list: true } as Partial<MemberRosterRow>))
     await screen.findByTestId('crew-profile-settings')
-    expect(screen.queryByRole('switch', { name: 'Show in my Sessions list' })).toBeNull()
+    expect(within(group()).queryByTestId('bot-session-list-switches')).toBeNull()
   })
 })
 

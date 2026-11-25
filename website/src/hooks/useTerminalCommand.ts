@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { addTab } from './useBottomTerminal'
-import { isTerminalEnabled, onTerminalReady, sendToTerminalSession, useTerminalEnabled } from '../utils/terminalRegistry'
+import { isTerminalAtLimit, isTerminalEnabled, onTerminalReady, sendToTerminalSession, useTerminalEnabled } from '../utils/terminalRegistry'
 import { bringBack } from '../utils/terminalPopout'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
@@ -145,13 +145,13 @@ export function useTerminalCommand(options: Options) {
       // Names its chat, so the gateway refuses a local shell if that chat now
       // runs on a Session Environment (another window may have bound it).
       const sessionId = addTab(snapshot.project || undefined, snapshot.slotId || undefined)
-      if (!sessionId) { finish(false, 'limit'); return }
       unsubscribe = onTerminalReady(
         sessionId,
         () => {
           if (!settled) finish(ownsDock() && sendToTerminalSession(sessionId, code, { preserveTrailingWhitespace: true }))
         },
-        () => finish(false),
+        // The gateway's ceiling is the one terminal limit left.
+        () => finish(false, isTerminalAtLimit(sessionId) ? 'limit' : 'failed'),
       )
     }
     if (latest.current.host === 'detached') {

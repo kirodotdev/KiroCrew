@@ -816,12 +816,12 @@ class TestRegisterPrunesUpgradedAwayResources:
         register_app("test-app")
         assert ghost_link.exists(), "register_app must not prune on the event loop"
 
-        # The off-loop boot reconcile is the one path that prunes. Ensure the app
-        # is enabled so reconcile processes it (it skips disabled apps).
+        # The off-loop boot reconcile is the one path that prunes. The gateway boot
+        # runs it per ENABLED, admitted app, so the app is enabled first.
         from kiro_crew.apps.manager import enable_app
 
         enable_app("test-app")
-        bridges_mod.reconcile_enabled_app_resources()
+        bridges_mod.reconcile_enabled_app_resources("test-app")
 
         assert not ghost_link.exists(), "a removed agent must be pruned by reconcile"
         after = _json.loads(bridges_mod._mcp_json_path().read_text(encoding="utf-8"))

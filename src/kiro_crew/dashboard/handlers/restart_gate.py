@@ -160,11 +160,33 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
         # pid), so the CLI can tell that a service restart would reach it.
         "service_managed": service_managed,
     }
+    named = getattr(census, "named_holders", None)
+    if not idle and callable(named) and _may_read_names(request):
+        answer["holders"], answer["holders_more"] = named()
     if identity is not None:
         answer["service_identity"] = identity
     if reason:
         answer["reason"] = reason
     return web.json_response(answer)
+
+
+def _may_read_names(request: web.Request) -> bool:
+    """Whether this caller is told WHICH sessions and jobs the counts are.
+
+    The secret proves the call came from inside, not who made it, so the
+    middleware derives the caller from the session it declares. A caller that
+    declares one (an app's script cron, an agent's tool call, a sub-agent) is
+    acting for that session and gets the counts alone. Only a caller with no
+    session and no app claim is told the names: the shape of the CLI on this
+    host, and the caller ``GET /api/crons`` already lists every job to.
+    """
+    app = request.get("app")
+    if (isinstance(app, str) and app) or request.get("is_dashboard_user") is False:
+        return False
+    try:
+        return not request.headers.get("X-Session-Key", "")
+    except Exception:
+        return False
 
 
 def _cancel_commit_hold(state: DashboardState) -> None:

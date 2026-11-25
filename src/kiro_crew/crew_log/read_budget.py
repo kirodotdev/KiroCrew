@@ -62,6 +62,7 @@ _INTERNAL_FILES: Final[frozenset[str]] = frozenset(
         "projection_session_memo.py",
         "checkpoint.py",
         "projection.py",
+        "projection_kernel.py",
         "contextlib.py",
     }
 )

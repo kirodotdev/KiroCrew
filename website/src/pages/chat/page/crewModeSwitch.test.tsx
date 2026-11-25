@@ -16,6 +16,8 @@ import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
 const mobile = vi.hoisted(() => ({ value: false }))
 vi.mock('../../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }))
+const askAppConfirm = vi.hoisted(() => vi.fn<(opts: { title: string; body?: unknown; confirmLabel: string; primary?: boolean }) => Promise<boolean>>())
+vi.mock('../../../lib/appConfirm', () => ({ askAppConfirm }))
 vi.mock('../../../hooks/usePanelTabs', async importOriginal => ({ ...await importOriginal<object>(), dropPanelViews: vi.fn() }))
 
 const plain = (key: string, agent = 'default'): ChatSlot => ({ key, agent, agent_kind: 'template', memory_mode: 'persistent', origin: 'user' } as unknown as ChatSlot)
@@ -318,6 +320,49 @@ describe('useCrewModeSwitch a new chat on a conductor default agent', () => {
   })
 })
 
+describe('useCrewModeSwitch leaving a conductor that is the default agent', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear(); vi.mocked(dropPanelViews).mockClear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  // A new chat born on the conductor, which is the default agent too.
+  const born = (hasUserMessage: boolean, slotHasMore = false, running = false, slotCursorKey = 'a') => {
+    const pending: Array<(ok: boolean) => void> = []
+    const switchAgent = vi.fn((_agent: string, _kind?: string) => new Promise<boolean>(resolve => { pending.push(resolve) }))
+    const store = createTestStore({ chat: { ...createTestStore().getState().chat, activeSlot: 'a', slotCursorKey, slotHasMore } })
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: { ...plain('a', 'kirocrew-conductor'), running }, defaultAgent: 'kirocrew-conductor', hasUserMessage, switchAgent, openView: () => {}, autoOpenBoard: true }), { wrapper })
+    return { hook, pending, switchAgent, store }
+  }
+
+  it('moves a new root onto the picked template, then drops its Crew and Dashboard tabs and the panel its entry opened', async () => {
+    const { hook, pending, switchAgent, store } = born(false)
+    expect(hook.result.current.turnOffCrewMode).toBeUndefined()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    act(() => { void hook.result.current.leaveCrewModeTo?.('other-template') })
+    expect(switchAgent).toHaveBeenCalledWith('other-template', 'template')
+    expect(dropPanelViews).not.toHaveBeenCalled()
+    await act(async () => { pending[0](true) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'])
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('offers no way off once the chat has a message', () => {
+    expect(born(true).hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+
+  it('offers no way off while the chat page has older rows, which the gateway counts as a message', () => {
+    expect(born(false, true).hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+
+  it('offers no way off while a turn runs, since the gateway switches no chat mid-turn', () => {
+    expect(born(false, false, true).hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+
+  it('offers no way off while the paging cursor still describes another chat', () => {
+    expect(born(false, false, false, 'b').hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+})
+
 describe('useCrewModeSwitch turning conductor mode on', () => {
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
@@ -373,5 +418,50 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     const { store, openView } = press()
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(openView).toHaveBeenCalledWith('workers')
+  })
+})
+
+describe('useCrewModeSwitch turning conductor mode on in a chat that has messages', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); askAppConfirm.mockReset(); localStorage.clear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  const render = (hasUserMessage: boolean) => {
+    const switchAgent = vi.fn(async (_agent: string, _kind?: 'member' | 'template') => true)
+    const store = createTestStore()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(
+      () => useCrewModeSwitch({ currentSlot: plain('a'), defaultAgent: 'default', hasUserMessage, switchAgent, openView: () => {}, autoOpenBoard: false }),
+      { wrapper },
+    )
+    return { hook, switchAgent }
+  }
+
+  it('asks first in a chat that has a user message', async () => {
+    askAppConfirm.mockResolvedValue(true)
+    const { hook, switchAgent } = render(true)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).toHaveBeenCalledTimes(1)
+    const opts = askAppConfirm.mock.calls[0][0]
+    expect(opts.title).toBe('Turn on conductor mode for this chat?')
+    expect(opts.confirmLabel).toBe('Turn on conductor mode')
+    // The ordinary primary action, not a destructive one.
+    expect(opts).toMatchObject({ primary: true })
+    expect(switchAgent).toHaveBeenCalledWith('kirocrew-conductor', 'template')
+  })
+
+  it('leaves the chat unchanged on Cancel', async () => {
+    askAppConfirm.mockResolvedValue(false)
+    const { hook, switchAgent } = render(true)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).toHaveBeenCalledTimes(1)
+    expect(switchAgent).not.toHaveBeenCalled()
+    expect(hook.result.current.crewModeSwitching).toBeNull()
+  })
+
+  it('switches at once in a chat with no message yet: it can still be turned off', async () => {
+    const { hook, switchAgent } = render(false)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).not.toHaveBeenCalled()
+    expect(switchAgent).toHaveBeenCalledWith('kirocrew-conductor', 'template')
   })
 })

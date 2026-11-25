@@ -295,6 +295,25 @@ posture. It prints the standing reminder instead, whenever
 ways to let agent commands through. See
 [Check the startup log](docker-troubleshooting.md#check-the-startup-log).
 
+<a id="a-team-crew-pod-the-container-is-the-boundary"></a>
+
+### A Shared Crew pod: the container is the boundary
+
+A Shared Crew deployed as a workload (`KIROCREW_WORKLOAD_IDENTITY=spiffe`) in a pod
+under the Kubernetes Restricted Pod Security Standard has no inner sandbox: the
+`RuntimeDefault` seccomp profile refuses user namespaces. To run its agent
+commands, set `agent.sandbox_allow_unsandboxed_exec=true` (or
+`KIROCREW_ALLOW_UNSANDBOXED=1` on the first run). The container is then the only
+boundary. Each agent process logs a `SECURITY` warning that it runs without
+OS-level isolation; once that choice is made, `agent.sandbox_allow_no_isolation=true`
+turns the warning into an info line.
+
+Use it only when the pod is the isolation unit: one Crew per pod, a read-only root
+filesystem, a narrow service account and no secrets mounted that the agent must not
+read. Agent commands can read every file the gateway can, the JWT-SVID file
+included. If the cluster allows a Localhost seccomp profile, Option A below brings
+the inner sandbox back and is the safer choice.
+
 ### Option A — Kiro Crew seccomp profile (recommended)
 
 The repo ships `docker/seccomp/kirocrew-seccomp.json`: the Docker default
@@ -488,10 +507,11 @@ prefix the build with `DOCKER_BUILDKIT=1`.
 ### Baking in the KAS engine (`BUNDLE_KAS`)
 
 The `agent.kas_bundle` route runs Kiro Crew's own pinned KAS engine instead of
-going through kiro-cli. By default the image does not carry that engine, and
-turning the route on needs `docker exec <container> kirocrew kas install` first,
-which downloads about 55 MB into the home volume. To build an image with the
-engine already inside:
+going through kiro-cli. By default the image does not carry that engine: when
+the gateway starts and finds none, it downloads it (about 55 MB) into the home
+volume, whatever `agent.kas_bundle` says. If that start-time download fails,
+the next chat that takes the route tries again, and `docker exec <container> kirocrew kas install`
+fetches it on demand. To build an image with the engine already inside:
 
 ```
 docker build -f docker/Dockerfile --build-arg BUNDLE_KAS=1 -t kirocrew:dev-kas .
@@ -511,17 +531,22 @@ every `docker exec` command see it. The backend reads it as a second root after
 the home volume's own `kirocrew kas install`, so an engine you install yourself
 still wins. `docker exec <container> kirocrew kas status` reports the baked copy
 as `(built into the app)`. On an image built without `BUNDLE_KAS=1` the
-directory exists but is empty, and nothing reads as built in. The route itself
-stays off until you turn it on:
+directory exists but is empty, and nothing reads as built in.
+
+The image is a packaged build, so with `agent.kas_bundle` unset it prefers the
+built-in engine: KAS chats run on it once you are signed in to Kiro Crew, and a
+container signed in only to kiro-cli stays on kiro-cli until then. If the first
+move to the engine fails, that chat runs on kiro-cli and new chats try the
+engine again after 10 minutes. A saved value always wins. To pin the route
+either way:
 
 ```
-docker exec <container> kirocrew config set agent.kas_bundle true
+docker exec <container> kirocrew config set agent.kas_bundle true   # or false for kiro-cli
 docker restart <container>
 ```
 
-`BUNDLE_KAS` defaults to `0` because the route is still in shadow testing
-(`agent.kas_bundle` defaults to `false`) and the extracted engine adds about
-370 MB to the image.
+`BUNDLE_KAS` defaults to `0` because the extracted engine adds about 370 MB to
+the image.
 
 ## Troubleshooting
 

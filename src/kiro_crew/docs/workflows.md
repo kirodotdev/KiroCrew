@@ -84,4 +84,4 @@ Seatbelt sandbox; turning the sandbox off is not a recovery path.
 
 - [Subagents](subagents.md): parallel fan-out when the work needs no phases or restarts
 - [Task runner](task-runner.md): autonomous multi-step execution from a spec file
-- [Dashboard](dashboard.md): the chat side panel and the Capabilities tabs
+- [Dashboard](dashboard.md): the chat side panel and the Customize tabs

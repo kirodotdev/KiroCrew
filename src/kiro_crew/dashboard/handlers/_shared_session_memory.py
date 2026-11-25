@@ -234,8 +234,8 @@ def _persisted_session_paths(slot_name: str) -> list["Path"]:
     """Every existing session transcript that *slot_name* could name.
 
     Returns more than one entry only when the key is genuinely ambiguous — see
-    :func:`_probe_persisted_session`, which treats that as unknown rather than
-    picking a winner.
+    :func:`_probe_persisted_session`, which treats that as unknown unless every
+    match gives the same readable mode, rather than picking a winner.
     """
     if (
         not slot_name
@@ -287,7 +287,8 @@ def _persisted_session_path(slot_name: str) -> "Path | None":
     Existence only. When more than one candidate exists the answer is still
     "yes, a session exists" — which is all the establish-vs-forged check needs.
     Anything making an AUTHORIZATION decision must use
-    :func:`_probe_persisted_session`, which refuses to guess between them.
+    :func:`_probe_persisted_session`, which refuses to guess between them: it
+    answers only when every match gives the same readable mode.
     """
     matches = _persisted_session_paths(slot_name)
     return matches[0] if matches else None
@@ -391,8 +392,15 @@ def _probe_persisted_session(slot_name: str) -> tuple[bool, str | None]:
     e.g. a legacy Slack thread at ``<ts>.jsonl`` and an archived dashboard slot
     named after that same ts at ``dashboard_<ts>.jsonl``. Taking the first
     candidate would let a *persistent* file answer for an *incognito* session and
-    permit the write. Existence stays true (a session really does exist), but the
-    mode is reported as ``None`` = unknown, which the caller denies on.
+    permit the write. When their modes differ, existence stays true (a session
+    really does exist), but the mode is reported as ``None`` = unknown, which the
+    caller denies on.
+
+    When every matching transcript records the SAME readable mode, that mode is
+    the answer: whichever session the key names, it is in that mode, so no file
+    can answer for a session in another mode. A persistent cron with a legacy
+    ``dashboard_cron-<id>.jsonl`` beside its ``cron_<id>.jsonl`` reads persistent.
+    Any disagreement, or any header that does not parse, stays unknown.
 
     Blocking I/O: hand this to a worker thread from an async caller
     (``await asyncio.to_thread(_probe_persisted_session, slot_name)``). It is a
@@ -401,6 +409,7 @@ def _probe_persisted_session(slot_name: str) -> tuple[bool, str | None]:
     matches = _persisted_session_paths(slot_name)
     if not matches:
         return False, None
-    if len(matches) > 1:
+    modes = {_read_memory_mode(path) for path in matches}
+    if len(modes) != 1:
         return True, None
-    return True, _read_memory_mode(matches[0])
+    return True, modes.pop()

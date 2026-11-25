@@ -20,6 +20,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -359,6 +360,58 @@ def test_a_failed_create_leaves_nothing_behind_so_a_retry_can_succeed(loader, mo
     assert (loader._dir / "halfmade" / "SKILL.md").read_text(encoding="utf-8") == "second try"
 
 
+def test_a_failed_by_name_create_leaves_nothing_behind_so_a_retry_can_succeed(loader, monkeypatch):
+    """The by-name floor rolls back the leaf and the directory it made, as the pinned
+    branch does.
+
+    A lone surrogate fails the encode after the exclusive open has created
+    ``SKILL.md``, which is the window ``write_text`` left an empty body in. The
+    ``os.write`` injection of the pinned test does not reach a text-mode write.
+    """
+    import kiro_crew.skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", False)
+
+    with pytest.raises(UnicodeEncodeError):
+        loader.create_skill("halfmade", "BODY \ud800")
+
+    assert not (loader._dir / "halfmade").exists(), "the directory the create made survived"
+    assert [p.name for p in loader._dir.iterdir()] == []
+    assert loader.create_skill("halfmade", "second try") is True
+    assert (loader._dir / "halfmade" / "SKILL.md").read_text(encoding="utf-8") == "second try"
+
+
+def test_the_by_name_rollback_does_not_delete_a_rivals_replacement_leaf(loader, monkeypatch):
+    """The by-name rollback removes the inode it created, not whatever holds the name.
+
+    The rival replaces our leaf after the failed write closed it, just before the
+    verified unlink runs: Windows refuses to replace a file that is still open. The
+    rival is created first and renamed over the name, so it can never reuse our inode.
+    """
+    import kiro_crew.skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", False)
+    real_unlink_verified = pinned_fs.unlink_verified_by_name
+    skill_dir = loader._dir / "rivalled"
+    swapped = []
+
+    def swap_the_leaf_then_unlink(parent, name, expect, **kwargs):
+        rival = parent / "rival.tmp"
+        rival.write_text("RIVAL", encoding="utf-8")
+        os.replace(rival, parent / name)
+        swapped.append(True)
+        return real_unlink_verified(parent, name, expect, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(pinned_fs, "unlink_verified_by_name", swap_the_leaf_then_unlink)
+        with pytest.raises(UnicodeEncodeError):
+            loader.create_skill("rivalled", "MINE \ud800")
+
+    assert swapped, "the rollback never reached the verified unlink"
+    # The directory removal is refused too: it is not empty.
+    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == "RIVAL"
+
+
 def test_update_replaces_content_and_returns_true(loader):
     assert loader.create_skill("edit", "before") is True
     assert loader.update_skill("edit", "after") is True
@@ -505,6 +558,91 @@ def test_delete_still_removes_a_skill_whose_skill_md_is_a_link(
     assert loader.delete_skill("linked-md") is True
     assert not skill_dir.exists()
     assert target.read_text(encoding="utf-8") == "shared"
+
+
+_root_ignores_modes = pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0, reason="root ignores read-only modes"
+)
+
+
+@_root_ignores_modes
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_delete_removes_a_skill_holding_read_only_entries(loader, monkeypatch, pinned):
+    """A read-only file (Windows) or directory (POSIX) inside the skill does not keep it."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    assert loader.create_skill("ro", "x") is True
+    scripts = loader._dir / "ro" / "scripts"
+    scripts.mkdir()
+    (scripts / "tool.py").write_text("print(1)\n", encoding="utf-8")
+    os.chmod(scripts / "tool.py", stat.S_IREAD)
+    os.chmod(scripts, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        assert loader.delete_skill("ro") is True
+        assert not (loader._dir / "ro").exists()
+    finally:
+        if scripts.exists():
+            os.chmod(scripts, stat.S_IRWXU)
+
+
+@_root_ignores_modes
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
+def test_a_by_name_delete_that_cannot_finish_keeps_the_skill_for_a_retry(loader, monkeypatch):
+    """On the by-name floor a subfolder entry that stays fails the delete before SKILL.md.
+
+    Windows keeps such an entry when another process holds a file open; a folder
+    nobody may list is the POSIX stand-in, since no retry can empty it either.
+    """
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", False)
+    assert loader.create_skill("held", "x") is True
+    locked = loader._dir / "held" / "scripts" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "tool.py").write_text("print(1)\n", encoding="utf-8")
+    os.chmod(locked, 0)
+    try:
+        for _attempt in range(2):
+            with pytest.raises(OSError, match="Cannot remove skill 'held'"):
+                loader.delete_skill("held")
+            assert (loader._dir / "held" / "SKILL.md").read_text(encoding="utf-8") == "x"
+    finally:
+        os.chmod(locked, stat.S_IRWXU)
+    # Once the entry can go, the same delete finishes.
+    assert loader.delete_skill("held") is True
+    assert not (loader._dir / "held").exists()
+
+
+def test_a_held_top_level_file_keeps_the_skill_for_a_retry(loader, monkeypatch):
+    """On the by-name floor (Windows) a top-level file held open fails the delete before SKILL.md.
+
+    A refused unlink stands in for the held file: Windows refuses it until the
+    holder lets go, whatever its read-only attribute.
+    """
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", False)
+    assert loader.create_skill("held", "x") is True
+    (loader._dir / "held" / "data.log").write_text("open\n", encoding="utf-8")
+    real_unlink = os.unlink
+
+    def held_unlink(path, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == "data.log":
+            raise PermissionError(errno.EACCES, "held open by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", held_unlink)
+    with pytest.raises(OSError, match="Cannot remove skill 'held'"):
+        loader.delete_skill("held")
+    assert (loader._dir / "held" / "SKILL.md").read_text(encoding="utf-8") == "x"
+    assert "held" in [s["name"] for s in loader.list_skills()]
+    # Once the holder lets go, the same delete finishes.
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    assert loader.delete_skill("held") is True
+    assert not (loader._dir / "held").exists()
 
 
 def test_delete_refuses_a_symlinked_skill_dir(loader, tmp_path):

@@ -278,7 +278,7 @@ async def test_outline_is_cut_to_its_budget_and_screenshot_hands_back_bytes(monk
             return {"ok": True, "url": "u", "title": "t", "snapshot": "x" * 50}
         return {"ok": True, "path": shown["path"]}
 
-    monkeypatch.setattr(PagePort, "_op", _op)
+    monkeypatch.setattr(PagePort, "_op_raw", _op)
     port = _port()
     out = await port.outline(budget=10)
     assert out["snapshot"] == "x" * 10 and out["truncated"] is True
@@ -310,7 +310,26 @@ async def test_a_link_planted_where_the_screenshot_was_is_never_followed(monkeyp
     async def _op(self: PagePort, verb: str, op: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "path": str(png)}
 
-    monkeypatch.setattr(PagePort, "_op", _op)
+    monkeypatch.setattr(PagePort, "_op_raw", _op)
+    assert (await _port().screenshot())["code"] == "screenshot_error"
+
+
+async def test_a_screenshot_folder_replaced_by_a_link_is_never_read_through(monkeypatch, tmp_path):
+    from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
+    from kiro_crew.testing.links import make_dir_link
+
+    home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
+    home.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    make_dir_link(home / SNAPSHOT_DIR_NAME, elsewhere)
+    (elsewhere / "shot.png").write_bytes(b"\x89PNG-bytes")
+    shown = str(home / SNAPSHOT_DIR_NAME / "shot.png")
+
+    async def _op(self: PagePort, verb: str, op: str, args: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "path": shown}
+
+    monkeypatch.setattr(PagePort, "_op_raw", _op)
     assert (await _port().screenshot())["code"] == "screenshot_error"
 
 

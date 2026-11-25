@@ -81,6 +81,36 @@ async def test_a_fresh_tab_gets_no_recycle_notice_while_a_used_tab_keeps_it(wire
     assert banners == ["t1", "t1", "used"]
 
 
+@pytest.mark.asyncio
+async def test_a_recycle_tells_the_agent_its_background_work_ended_on_the_next_prompt(wired):
+    """The person sees the recycle row, but a natively resumed session replays only
+    the harness's own transcript, which still shows the background work as started.
+    So the recycle also queues a notice for the agent's next prompt, through the same
+    queue the next turn drains. A fresh tab with no conversation gets none."""
+    from kiro_crew.dashboard.state_parts.injected_turns import SESSION_RESTARTED_NOTICE_PREFIX
+
+    state, fresh, on_recycled, _on_stuck, _banners = wired
+    used = state.get_or_create_slot("used")
+    used.append("user", "run it in the background", "msg msg-u", broadcast=False)
+    used.append("assistant", "started", "msg msg-a", broadcast=False)
+    _TABS["dashboard:used"] = "used"
+    try:
+        await on_recycled("dashboard:t1", reason="idle")
+        used._pending_subagent_failures.append("[Subagent completion event] r1 timed out")
+        await on_recycled("dashboard:used", reason="runtime process is gone")
+        await on_recycled("dashboard:used", reason="idle; its agent started background work")
+    finally:
+        _TABS.pop("dashboard:used")
+
+    assert fresh._pending_subagent_failures == []
+    # Another queued notice stays in place; two restarts before a turn queue one note.
+    queued, notice = used._pending_subagent_failures
+    assert queued == "[Subagent completion event] r1 timed out"
+    assert notice.startswith(SESSION_RESTARTED_NOTICE_PREFIX)
+    assert "runtime process is gone" in notice
+    assert "spawn_run" in notice
+
+
 def test_a_stuck_turn_posts_its_notice_into_the_tab(wired):
     _state, slot, _on_recycled, on_stuck, _banners = wired
     before = len(slot._messages)

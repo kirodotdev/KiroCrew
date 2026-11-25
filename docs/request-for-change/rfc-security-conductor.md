@@ -3,8 +3,8 @@ title: Security Conductor — proactive vulnerability discovery as a conductor u
 status: partial
 author: zejiangg
 created: 2026-09-07
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 9195
 implementation-prs: [9270, 9271, 9273, 9362, 9332, 9495, 9499, 9500, 9813]
 tracking-issues: []
@@ -20,7 +20,7 @@ independent verifier per finding, and an optional fixer lane behind a human gate
 operating procedure of record; this document carries the intent and the decisions.
 
 **Status.** M0 and M1 are on main. The agent is registered — `kirocrew-security-conductor` in
-`UNADVERTISED_AGENTS` (`src/kiro_crew/subagent_parts/agent_policy.py`) with its installer
+`UNADVERTISED_AGENTS` (`src/kiro_crew/subagent_parts/spawn_allowlists.py`) with its installer
 `_install_security_conductor_agent` in `src/kiro_crew/agent_materialization/conductor_agents.py`
 ([#9273](https://github.com/kirodotdev/KiroCrew/pull/9273)) — and the skill plus the first rules of
 engagement are on main as `src/kiro_crew/builtin_skills/security-conductor/SKILL.md` and
@@ -91,7 +91,7 @@ The pattern facts were measured at `e992b7771`; the shipped-state facts were re-
   `src/kiro_crew/agent_materialization/conductor_agents.py` (`_install_conductor_agent`,
   `_install_pipeline_conductor_agent`, `_install_security_conductor_agent`, plus
   `_install_ledger_conductor_agent` for the deprecated ledger-conductor alias), a filename constant each in `src/kiro_crew/agent_files.py`,
-  and roster hiding through `UNADVERTISED_AGENTS` in `src/kiro_crew/subagent_parts/agent_policy.py`, which carries four
+  and roster hiding through `UNADVERTISED_AGENTS` in `src/kiro_crew/subagent_parts/spawn_allowlists.py`, which carries four
   entries — `kirocrew`, `kirocrew-conductor`, `kirocrew-pipeline-conductor` and
   `kirocrew-security-conductor`.
 - "Never does the work itself" is already expressed as a spec property, not a prompt request:

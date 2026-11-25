@@ -342,6 +342,21 @@ def test_the_grant_leaks_to_no_other_caller_tool_or_page(call: ToolCall, app: st
 
 
 @pytest.mark.usefixtures("granted")
+@pytest.mark.parametrize(
+    ("op", "args"),
+    [
+        ("upload", {"ref": "e3", "path": "/home/u/report.pdf"}),
+        ("cdp", {"method": "Storage.getCookies"}),
+        ("js", {"expression": "1", "target_id": "F-other"}),
+    ],
+)
+def test_a_card_only_call_always_asks_even_on_the_apps_own_pages(op: str, args: dict) -> None:
+    verdict = _judge(_browser_call(op, **args))
+    assert verdict.tier != "app-browser-sites"
+    assert verdict.action != TOOL_AUTO_APPROVE
+
+
+@pytest.mark.usefixtures("granted")
 @pytest.mark.parametrize("session_key", ["subagent:abc123", "cron:job-1", "slack:1700.1", ""])
 def test_a_session_the_op_route_cannot_confine_keeps_its_card(session_key: str) -> None:
     """A subagent or channel session carries the app but no dashboard slot the route finds."""

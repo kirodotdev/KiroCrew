@@ -1469,7 +1469,7 @@ describe('WebPreviewPanel — native browser transport (desktop app)', () => {
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
     fireEvent.click(screen.getByTestId('browser-annotations-send'))
-    expect(await screen.findByTestId('browser-annotations-added')).toHaveTextContent(/nothing is sent until you send the message/)
+    expect(await screen.findByTestId('browser-annotations-added')).toHaveTextContent('Added to the message box')
   })
 })
 

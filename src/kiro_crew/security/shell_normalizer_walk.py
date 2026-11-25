@@ -274,19 +274,33 @@ _MESSAGE_FLAGS: "dict[tuple[str, ...], tuple[str, ...]]" = {
 }
 
 
-def _is_message_flag_command(text: str) -> bool:
-    """True when *text* is ONE simple ``git commit|tag`` or ``gh pr|issue
-    create|edit|comment`` command, its first word literally ``git``/``gh`` with no
-    global option before the subcommand, and every word holding a substitution
-    opener is the value of a message flag (``-m V``, ``-mV``, ``--message V``,
-    ``--message=V``; ``--body``/``-b``/``--title``/``-t`` for gh), with that value
-    exactly one bare single-quoted word."""
+def _message_flag_command_shape(text: str) -> "tuple[str, ...] | None":
+    """The message flags of ONE simple ``git commit|tag`` or ``gh pr|issue
+    create|edit|comment`` command (first word literally ``git``/``gh``, no global
+    option before the subcommand, no active separator), or ``None`` if *text* is not
+    one.
+
+    The program stores a message flag's value and never runs it, so at THIS level
+    only bash's own quoting decides which backtick in the value bash runs: an escaped
+    or single-quoted backtick is literal, a bare one inside double quotes is a live
+    substitution. An interpreter argument (``ruby -e``, ``bash -c``) is re-evaluated
+    one level down, so it is NOT one of these and its value is read quote-blind."""
     if any(step.active and step.char in ";&|(){}\n" for step in _iter_shell_chars(text)):
-        return False
+        return None
     words = _split_shell_words(text)
-    flags = _MESSAGE_FLAGS.get(tuple(words[:2])) or _MESSAGE_FLAGS.get(tuple(words[:3]))
+    return _MESSAGE_FLAGS.get(tuple(words[:2])) or _MESSAGE_FLAGS.get(tuple(words[:3]))
+
+
+def _is_message_flag_command(text: str) -> bool:
+    """True when *text* is a message-flag command (see
+    :func:`_message_flag_command_shape`) and every word holding a substitution opener
+    is the value of a message flag (``-m V``, ``-mV``, ``--message V``,
+    ``--message=V``; ``--body``/``-b``/``--title``/``-t`` for gh), with that value
+    exactly one bare single-quoted word -- so bash opens no substitution at all."""
+    flags = _message_flag_command_shape(text)
     if flags is None:
         return False
+    words = _split_shell_words(text)
     i = 3 if words[0] == "gh" else 2
     while i < len(words):
         word = words[i]
@@ -320,11 +334,51 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
     no ``#``, ``<<``, backslash or control byte (a newline, or a sentinel a caller
     masked in) and whose every quote closes. Any other text, including text with a
     live opener anywhere, gets the quote-blind openers for the whole text.
+
+    In a message-flag command (:func:`_message_flag_command_shape`, under
+    *raw_source*) THE shell quote/escape machine decides which backtick is a live
+    opener, not a re-derived rule. An escaped backtick (``\\```) is never an opener:
+    it is a literal backtick unquoted and inside double quotes, and reading it as
+    one pairs it with the next LIVE backtick as its closer, which hides the real
+    substitution after it. A single-quoted backtick is a literal too,
+    but only when the value is PROVED inert (:func:`_is_message_flag_command`, every
+    opener in one bare single-quoted word); a glued or stray single quote is not
+    proved and keeps the conservative quote-blind reading. A PAYLOAD (an interpreter
+    argument, an ``sh -c`` or ``eval`` body) is not a message command at all, so it
+    is read quote-blind: a backtick there may be live once the inner reader sees it
+    again, and skipping it would hide a self-restart.
     """
     if raw_source and not any(m in text for m in ("#", "<<", "$", "\\")):
         if not any(ch < " " for ch in text) and _only_single_quoted_openers(text):
             if _is_message_flag_command(text):
                 return []
+    # The quote-aware reading is used only where bash's quoting at THIS level fully
+    # decides liveness: no ``$`` (expansions, ``$'...'`` ANSI-C), ``#`` (comment) or
+    # ``<<`` (heredoc), each of which keeps the conservative quote-blind reading, as
+    # the top fast-path above requires. A backslash is fine -- the quote/escape
+    # machine models it, which is what lets a single-quoted value with a ``\``` in it
+    # still read as inert.
+    message_shaped = (
+        raw_source
+        and not any(m in text for m in ("#", "<<", "$"))
+        and _message_flag_command_shape(text) is not None
+    )
+    # Single-quoted backticks count as literal ONLY when the value is PROVED inert
+    # (``_is_message_flag_command``): every opener sits in one bare single-quoted
+    # message word. A glued or stray single quote (``-m '...''tail'``, ``-F ...``) is
+    # not proved, so it keeps the conservative quote-blind reading.
+    message_inert = message_shaped and _is_message_flag_command(text)
+    live_openers = (
+        {
+            step.offset
+            for step in _iter_shell_chars(text)
+            if step.char == "`"
+            and step.text == "`"  # unescaped: ``\``` is a literal backtick
+            and (step.state != 1 or not message_inert)  # single-quoted literal only if proved inert
+        }
+        if message_shaped
+        else None
+    )
     bodies: list[str] = []
     quote_at: "dict[int, tuple[int, bool]] | None" = None
     i = 0
@@ -338,13 +392,21 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
             bodies.append(text[i + 2 : end - 1] if proven else text[i + 2 :])
             i = end
             continue
-        if text[i] == "`":
+        if text[i] == "`" and (live_openers is None or i in live_openers):
             end, proven = _matching_close_backtick(text, i + 1)
-            bodies.append(text[i + 1 : end - 1] if proven else text[i + 1 :])
+            body = text[i + 1 : end - 1] if proven else text[i + 1 :]
+            if message_shaped:
+                # Inside backticks bash drops the backslash before ``\``, ``` and
+                # ``$`` before it runs the body, so ``\\`` + newline is a continuation.
+                body = _BACKTICK_BODY_ESCAPE_RE.sub(r"\1", body)
+            bodies.append(body)
             i = end
         else:
             i += 1
     return bodies
+
+
+_BACKTICK_BODY_ESCAPE_RE = re.compile(r"\\([\\`$])")
 
 
 # A shell removes ``backslash + newline`` while lexing (line continuation), so
@@ -353,6 +415,10 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
 # model the shell before tokenizing. Scoped to the floor's own tokenizer input
 # (NOT a catalog-wide rewrite of the matched text): it only shapes the argv the
 # self-protection predicates see, so it cannot over-block an unrelated rule.
+# This fold over-approximates on purpose: it drops the last ``\`` before any
+# newline, folding even an even backslash run bash would keep. That keeps the
+# self-restart views fail-closed, so a split ``kiro\<newline>crew restart`` in an
+# executable payload still reads as the restart it runs.
 _SHELL_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n")
 
 

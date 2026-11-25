@@ -585,6 +585,7 @@ class TestSafeReadFile:
         identity rather than only asserting that the refusal fires.
         """
         import os
+        import threading
 
         from kiro_crew import hooks
 
@@ -592,8 +593,14 @@ class TestSafeReadFile:
         f.write_bytes(b"payload")
         expected = os.stat(f)
         seen: list[os.stat_result] = []
+        real_check = hooks._opened_file_matches_validated_path
+        this_thread = threading.get_ident()
 
         def refuse(fd: int, path: str, **kwargs) -> bool:
+            # A process-wide daemon (the skill-view reaper) reads through this
+            # seam on its own schedule; only this test's own read is recorded.
+            if threading.get_ident() != this_thread:
+                return real_check(fd, path, **kwargs)
             seen.append(os.fstat(fd))
             return False
 
@@ -633,6 +640,7 @@ class TestSafeReadFile:
         stubbed refusal never firing rather than as a type mismatch.
         """
         import os
+        import threading
 
         from kiro_crew import platform_compat
 
@@ -640,9 +648,13 @@ class TestSafeReadFile:
         f.write_bytes(b"content")
         real = platform_compat.open_file_no_reparse
         seen: list[object] = []
+        this_thread = threading.get_ident()
 
         def record(path, **kwargs):
-            seen.append(path)
+            # A process-wide daemon (the skill-view reaper) opens through this
+            # seam on its own schedule; only this test's own open is recorded.
+            if threading.get_ident() == this_thread:
+                seen.append(path)
             return real(path, **kwargs)
 
         monkeypatch.setattr(platform_compat, "open_file_no_reparse", record)

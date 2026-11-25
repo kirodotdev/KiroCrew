@@ -21,6 +21,7 @@ const {
   getCloseAction,
   setCloseAction,
 } = require("./close-action");
+const { createCloseHideWiring } = require("./close-hide-notice");
 const { getTrayIcon, setTrayIcon } = require("./tray-icon");
 const { createMinimizeToTray } = require("./minimize-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
@@ -155,6 +156,7 @@ function createWindowLifecycle(options) {
     fetchRemoteToken,
     isQuitting = () => false,
     requestQuit,
+    stopsGatewayOnQuit = () => false, // a gateway this app started is running
     connectWindow,
     // Re-apply the launch port's managed-tunnel choice after a save here, so
     // ticking or un-ticking it takes effect without a relaunch.
@@ -652,17 +654,27 @@ function createWindowLifecycle(options) {
       getAppOrigin: () => windowBackendUrl,
       log: glog,
     });
+    // Only a window opened on a blob: (a widget's "Open in new tab") may load
+    // one; a window opened on a route runs the dashboard and keeps the strict guard.
+    const blobPopoutNavigationGuard = createNavigationGuard({
+      getAppOrigin: () => windowBackendUrl,
+      allowOwnBlob: true,
+      log: glog,
+    });
     const redirectGuard = createRedirectGuard({
       getAppOrigin: () => windowBackendUrl,
       log: glog,
     });
-    const armWindowOpen = (contents) => {
+    const armWindowOpen = (contents, guard) => {
       contents.setWindowOpenHandler(windowOpenHandler);
-      contents.on("will-navigate", navigationGuard);
+      contents.on("will-navigate", guard);
       contents.on("will-redirect", redirectGuard);
-      contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
+      contents.on("did-create-window", (child, details) => {
+        const openedOnBlob = typeof details?.url === "string" && details.url.startsWith("blob:");
+        armWindowOpen(child.webContents, openedOnBlob ? blobPopoutNavigationGuard : navigationGuard);
+      });
     };
-    armWindowOpen(view.webContents);
+    armWindowOpen(view.webContents, navigationGuard);
 
     // Do not leak the dashboard URL/token as a Referer (dashboardRequestHeaders).
     // This listener remains attached at the same per-window setup point; moving
@@ -1022,6 +1034,7 @@ function createWindowLifecycle(options) {
             fullScreenWatch ? fullScreenWatch.exitSettlingFor() : Infinity
           ),
         });
+        closeHide.noticeOnHide(); // once per install (close-hide-notice.js)
       },
       persist: () => {
         if (saveTimer) {
@@ -1088,10 +1101,14 @@ function createWindowLifecycle(options) {
     return true;
   }
 
+  const showFromTray = () => { showMainWindow({ focus: true }); }; // tray Show item and icon click
+  const closeHide = createCloseHideWiring({
+    app, Menu, Notification: electron.Notification, store, platform, log: glog, stopsGatewayOnQuit,
+    getMainWindow: () => mainWindow, getTray: () => tray, showMainWindow, onShow: showFromTray, onQuit: requestQuit,
+    onNewConnection: () => openNewConnectionWindow(), onOpenConfig: () => openPathHardened(shell, store.path),
+  });
+
   function createTray() {
-    const showFromTray = () => {
-      showMainWindow({ focus: true });
-    };
     const nightly = identityFamily(app.getVersion()) === "nightly";
     const iconFile = nightly && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
       ? "icon-nightly.png"
@@ -1113,15 +1130,7 @@ function createWindowLifecycle(options) {
     }
     tray = new Tray(icon);
     tray.setToolTip(app.name);
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: `Show ${app.name}`, click: showFromTray },
-      { type: "separator" },
-      { label: "New Connection Window…", click: () => openNewConnectionWindow() },
-      { type: "separator" },
-      { label: "Open Config File", click: () => openPathHardened(shell, store.path) },
-      { type: "separator" },
-      { label: "Quit", click: requestQuit },
-    ]));
+    closeHide.refreshTrayMenu();
     tray.on("click", showFromTray);
     return tray;
   }
@@ -1593,7 +1602,7 @@ function createWindowLifecycle(options) {
   // silently no-ops when clicked. Strict `=== true` matches the fail-closed
   // rule executeMenuItem uses.
   function menuItems(sender, id, senderIsLocal) {
-    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    if (!(IS_WINDOWS || LINUX_FRAMELESS) || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
@@ -1608,7 +1617,7 @@ function createWindowLifecycle(options) {
   // exit says so explicitly.
   function executeMenu(sender, id, index, senderIsLocal) {
     if (
-      !IS_WINDOWS
+      !(IS_WINDOWS || LINUX_FRAMELESS)
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
     ) return false;
@@ -1837,6 +1846,7 @@ function createWindowLifecycle(options) {
       set: setCloseActionAndLog,
     },
     syncTray,
+    refreshTrayMenu: closeHide.refreshTrayMenu, closeHideNavigation: closeHide.navigation,
     trayIcon: {
       get: () => getTrayIcon(store, { isMac: IS_MAC }),
       set: setTrayIconAndLog,

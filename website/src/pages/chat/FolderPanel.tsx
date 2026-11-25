@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ArrowRight, Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Folder, FolderCode, RotateCw, ExternalLink, ChevronDown, ChevronUp, MoreHorizontal, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
 import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import { useBranding } from '../../hooks/useBranding'
+import { isEmbeddedPane } from '../../lib/embedded'
+import { isElectron } from '../../lib/electron'
+import { REMOTE_EDITORS, remoteEditorUrl } from '../../utils/remoteEditorUrl'
 import ErrorNotice from '../../components/ErrorNotice'
 import { IconButton } from '../../components/ui'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import TruncatedText from '../../components/TruncatedText'
 import { pushNav, type NavState } from '../../components/WebPreviewPanel'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
@@ -398,9 +403,19 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   const reveal = useRevealFailure(cwd)
   // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
   // when the browser is on that same machine and the machine can open a file
-  // manager. Anywhere else the click could only copy the path, so the button is
+  // manager. Anywhere else the click could only copy the path, so the menu item is
   // hidden by the same gate every other file-location surface applies.
   const canReveal = useCanReveal()
+  // "Open in <editor>": this folder as a workspace in the viewer's own editor over
+  // the viewer's own SSH, once Settings → Display → Remote editor names an editor
+  // and a host. The folder link carries no `:line` suffix, which is what makes the
+  // editor open it as a folder (see remoteEditorUrl). Not gated on `directLocal`,
+  // which reads true through an `ssh -L` forward.
+  const { remoteEditor, remoteEditorHost } = useBranding()
+  const remoteEditorHref = remoteEditorUrl(remoteEditor, remoteEditorHost, cwd, 'dir')
+  const remoteEditorLabel = remoteEditorHref
+    ? t('components.markdownPanel.open_in_remote_editor', { editor: REMOTE_EDITORS[remoteEditor] })
+    : ''
 
   return (
     <DetailPanel
@@ -462,15 +477,43 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               </span>
             )}
           </button>
-          {canReveal && (
-            <button
-              onClick={() => { void revealOrOpen(cwd, 'reveal', reveal) }}
-              className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
-              title={revealLabel}
-              aria-label={revealLabel}
-            >
-              <ExternalLink size={14} />
-            </button>
+          {/* Refresh stays in the row; the rarer folder-level actions share one overflow
+              trigger so the row holds at most two buttons. Rendered only when it has an item. */}
+          {(canReveal || remoteEditorHref) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
+                  title={t('pages.chatPage.more_actions')}
+                  aria-label={t('pages.chatPage.more_actions')}
+                  data-testid="folder-panel-more"
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[190px]">
+                {canReveal && (
+                  <DropdownMenuItem onSelect={() => { void revealOrOpen(cwd, 'reveal', reveal) }}>
+                    <ExternalLink size={13} className="shrink-0 text-muted" />
+                    <span>{revealLabel}</span>
+                  </DropdownMenuItem>
+                )}
+                {/* The desktop app refuses an in-window navigation to an editor scheme, so
+                    there the link opens as a new window, which the desktop app confirms. */}
+                {remoteEditorHref && (
+                  <DropdownMenuItem asChild>
+                    <a
+                      href={remoteEditorHref}
+                      target={isElectron || isEmbeddedPane() ? '_blank' : undefined}
+                      data-testid="folder-panel-remote-editor"
+                    >
+                      <FolderCode size={13} className="shrink-0 text-muted" />
+                      <span>{remoteEditorLabel}</span>
+                    </a>
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       }

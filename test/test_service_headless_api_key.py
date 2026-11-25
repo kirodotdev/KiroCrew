@@ -16,6 +16,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _clear_sudo_user,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
 )
 
@@ -337,6 +338,7 @@ class TestHeadlessApiKeyWarning:
         with (
             patch.object(controller, "current_platform", return_value=plat),
             patch.object(getattr(controller, module), "install", installer),
+            patch.object(controller.linux, "enable_service_account_linger", return_value=None),
             patch.object(controller, "headless_auth_warning", return_value="Note: dropped key"),
         ):
             assert controller.install_service() == 0

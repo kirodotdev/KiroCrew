@@ -1,6 +1,6 @@
 {
   "name": "spec-builder",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "displayName": "Spec Builder",
   "description": "Spec-driven development inside Kiro Crew: turn a feature idea into Requirements → Design → Tasks with an embedded agent, review the markdown in-app, then hand the approved plan off to an autonomous execution session.",
   "author": "kirocrew",

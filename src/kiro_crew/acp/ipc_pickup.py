@@ -1,8 +1,8 @@
-"""Put an agent-socket pickup on ``kirocrew-core``'s element for an enforced harness.
+"""Put an agent-socket pickup on a Kiro Crew server's element for an enforced harness.
 
 An enforced harness (``tool_gate.is_enforced``: codex, opencode, goose, pi) runs
 under an OS credential mask that hides the gateway's internal secret from its whole
-process tree, so the ``kirocrew-core`` it launches has no credential and every
+process tree, so the Kiro Crew servers it launches have no credential and every
 gateway-backed tool is refused. The gateway's agent socket
 (:mod:`kiro_crew.dashboard.agent_ipc`) admits that server by a capability instead,
 redeemed from a one-time pickup that rides the server's own element ``env``.
@@ -24,14 +24,21 @@ from typing import Any
 
 from kiro_crew.agent_ipc_wire import BRIDGE_PICKUP_PREFIX, GATEWAY_PID_ENV, PICKUP_ENV
 from kiro_crew.agent_sdk.tool_gate import is_enforced
+from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.providers.mirrors.identity import with_env
 
 logger = logging.getLogger(__name__)
 
-#: The Kiro Crew server that redeems a pickup at startup (``agent_ipc_client``).
-PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core"})
+#: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``): every
+#: one an enforced harness's array starts directly. That is the control plane each
+#: session mounts, plus the session-control and crew-panel servers a member session
+#: appends. Each calls the gateway's internal routes, so a server missing here gets
+#: ``internal_secret_missing`` on every call.
+PICKUP_SERVERS: frozenset[str] = frozenset(
+    {*CONTROL_PLANE_SERVERS, "kirocrew-dashboard", "kirocrew-panel"}
+)
 
 
 def _launches_server_directly(element: dict[str, Any]) -> bool:

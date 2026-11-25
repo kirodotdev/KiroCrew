@@ -8,8 +8,8 @@ the child's memory, crew activity and folder steering (``prepare_child_context``
 records and the spawn event a restart and the panel read (``persist_spawn_records``), and
 the ``AgentSpawn`` and ``UserPromptSubmit`` hooks with their clock bookkeeping
 (``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``, except
-``spec_builtin_tools_notice``, the line naming what of a named agent's ``tools`` and
-``model`` a claude session does not apply, which needs only the session.
+``spec_builtin_tools_notice``, the line naming a named agent's ``model`` pin a claude
+session does not apply, which needs only the session.
 
 The turn body runs on ``kiro_crew.subagent``'s globals (``bind_component_globals``), and
 tests patch names there (``sel``, ``time``, ``_redact``, the session re-projection
@@ -728,7 +728,7 @@ async def spec_builtin_tools_notice(
     client: Any, info: SubagentInfo, session_key: str, *, fresh: bool
 ) -> str:
     """The block a spawn's new session's first prompt carries when its claude session
-    leaves the named agent's ``tools`` limit or ``model`` pin unapplied
+    leaves the named agent's ``model`` pin unapplied
     (``agent_sdk.spec_builtin_tools``).
 
     Only on a *fresh* session, so a continuation or a respawn does not repeat it.

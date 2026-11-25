@@ -16,11 +16,15 @@
  * word: only a lock reported free ("released") lets the apply run. A held lock,
  * a probe that cannot answer, or a missing probe all keep the arm.
  *
+ * Only a gateway identified as this bundle's carries `stopCommand`. For any
+ * other holder the app cannot tell what it is or whether that command would
+ * stop it, so it gets none and the notice says the holder is unidentified.
+ *
  * @param {object} deps
  * @param {() => Promise<boolean>} deps.isCurrentBundleGateway
  * @param {() => Promise<"bound"|"free"|"unknown">} deps.probePortBinding
  * @param {() => Promise<{verdict: string}>} deps.probeLockHolder
- * @param {string} deps.stopCommand shown when the apply is deferred
+ * @param {string} deps.stopCommand shown when this bundle's gateway defers the apply
  * @returns {() => Promise<{running: boolean, stopCommand: string}>}
  */
 function createStartupGatewayProbe({ isCurrentBundleGateway, probePortBinding, probeLockHolder = null, stopCommand }) {
@@ -28,10 +32,10 @@ function createStartupGatewayProbe({ isCurrentBundleGateway, probePortBinding, p
     if (await isCurrentBundleGateway()) return { running: true, stopCommand };
     let binding = "unknown";
     try { binding = await probePortBinding(); } catch { binding = "unknown"; }
-    if (binding !== "free") return { running: true, stopCommand };
+    if (binding !== "free") return { running: true, stopCommand: "" };
     let verdict = "unknown";
     try { verdict = probeLockHolder ? (await probeLockHolder()).verdict : "unknown"; } catch { verdict = "unknown"; }
-    return { running: verdict !== "released", stopCommand };
+    return { running: verdict !== "released", stopCommand: "" };
   };
 }
 

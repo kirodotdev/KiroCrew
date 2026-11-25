@@ -3,20 +3,19 @@
 A short, plain recap in the owner's language, in four parts: the goal, what needs
 the owner, what is being done now, and what comes after. Every state, count and
 time is the gateway's own read: the work ledger, the Board's "waits on you" test
-(``awaits_person``) and this welcome's live pull-request read. The why, each option
-with what it leads to and the pick are judgement, so they come only from the
-conductor's ``ask`` record on the item (``work_ask_record``). When exactly one item
-waits with no record, the thread's open ``[OPTIONS:]`` reply is quoted as its
-question, with that reply's time; otherwise an item waiting with no record points
-at its question by time. No model writes any of it, and nothing here says who
-wrote a record.
+(``awaits_person``, which needs the conductor's current ``ask`` record) and this
+welcome's live pull-request read. The why, each option with what it leads to and
+the pick are judgement, so they come only from that record (``work_ask_record``).
+An item whose worker names a person but that the conductor has not relayed yet is
+not waiting on the owner: it reads under "Being done now" as the main chat
+checking it. No model writes any of it, and nothing here says who wrote a record.
 
 :func:`render` returns markdown; every ledger string reaches it through *clean*.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any
 
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
@@ -39,7 +38,7 @@ _KEYS = (
     "waiting", "progress", "blocked", "question", "done", "started",
     "merged", "closed", "draft", "open", "conflicts", "failed", "pending", "passed",
     "not_read", "changes_requested", "approved", "review_required", "not_checked", "never",
-    "reply", "github", "tap_reply", "see_chat", "asked",
+    "reply", "github", "tap_reply", "see_chat", "checking",
 )  # fmt: skip
 # One "|"-separated row per language, in _KEYS order.
 _ROWS = {
@@ -50,42 +49,42 @@ _ROWS = {
     "|question card|change card|waiting on you|in progress|blocked|has a question"
     "|reported done|started, no report yet|merged|closed|draft|open|conflicts|{n} checks failed"
     "|{n} checks running|checks passed|checks not fully read|changes requested|approved"
-    "|review required|not read since {at}|not read|answered a follow-up|GitHub {at}|Tap an option below to reply.|See the question in this chat.|Asked at {at}",
+    "|review required|not read since {at}|not read|answered a follow-up|GitHub {at}|Tap an option below to reply.|See the question in this chat.|main chat is on it",
     "zh": "目标|需要你|现在不需要你做什么。|原因|推荐|见 {at} 的问题。"
     "|为什么要你处理、每个选项会怎样，还没写。|选项在下面的按钮里。|正在做|之后|计划|{at} 核实"
     "|问题卡片|变更卡片|等你处理|进行中|卡住了|有问题|报了完成|已开始，还没汇报|已合并|已关闭"
     "|草稿|开着|有冲突|{n} 项检查失败|{n} 项检查在跑|检查全过|检查没读全|要求修改|已批准|等审阅"
-    "|{at} 后没读到|没读到|回答了追问|GitHub {at}|点下面的选项，就是发出你的回复。|见对话里的问题。|{at} 问的",
+    "|{at} 后没读到|没读到|回答了追问|GitHub {at}|点下面的选项，就是发出你的回复。|见对话里的问题。|主聊天在处理",
     "ja": "目標|あなたの番|今あなたにお願いすることはありません。|理由|おすすめ"
     "|{at} の質問を見てください。|あなたが必要な理由と各選択肢の結果はまだ書かれていません。"
     "|選択肢は下のボタンにあります。|進行中の作業|この後|予定|{at} 確認|質問カード|変更カード"
     "|あなた待ち|進行中|止まっています|質問あり|完了報告|開始済み、報告はまだ|マージ済み"
     "|クローズ|ドラフト|オープン|競合あり|{n} 件のチェック失敗|{n} 件のチェック実行中"
-    "|チェック成功|チェック未読|修正依頼|承認済み|レビュー待ち|{at} から未読|未読|追加の質問に回答|GitHub {at}|下の選択肢を押すと、それがあなたの返信になります。|会話の中の質問を見てください。|{at} の質問",
+    "|チェック成功|チェック未読|修正依頼|承認済み|レビュー待ち|{at} から未読|未読|追加の質問に回答|GitHub {at}|下の選択肢を押すと、それがあなたの返信になります。|会話の中の質問を見てください。|メインチャットが対応中",
     "ko": "목표|확인 필요|지금은 하실 일이 없어요.|이유|추천|{at} 질문을 보세요."
     "|왜 필요한지, 각 선택지가 어떻게 되는지 아직 안 적혔어요.|선택지는 아래 버튼에 있어요."
     "|지금 하는 일|다음 계획|계획|{at} 확인|질문 카드|변경 카드|답변 대기|진행 중|막힘|질문 있음"
     "|완료 보고|시작함, 아직 보고 없음|병합됨|닫힘|초안|열림|충돌|검사 {n}개 실패|검사 {n}개 실행 중"
-    "|검사 통과|검사 다 못 읽음|변경 요청|승인됨|리뷰 필요|{at} 이후 못 읽음|못 읽음|추가 질문에 답함|GitHub {at}|아래 선택지를 누르면 그대로 답장이 보내져요.|대화 속 질문을 보세요.|{at} 질문",
+    "|검사 통과|검사 다 못 읽음|변경 요청|승인됨|리뷰 필요|{at} 이후 못 읽음|못 읽음|추가 질문에 답함|GitHub {at}|아래 선택지를 누르면 그대로 답장이 보내져요.|대화 속 질문을 보세요.|메인 채팅이 처리 중",
     "ru": "Цель|Нужно от вас|Сейчас от вас ничего не нужно.|Почему|Совет"
     "|См. вопрос в {at}.|Почему нужно ваше решение и к чему ведёт каждый вариант,"
     " ещё не записано.|Варианты — в кнопках ниже.|Делается сейчас|Дальше|план|проверено в {at}"
     "|карточка вопроса|карточка изменения|ждёт вас|в работе|застряло|есть вопрос|сдано"
     "|начато, отчёта нет|слит|закрыт|черновик|открыт|конфликты|упало проверок: {n}"
     "|идёт проверок: {n}|проверки прошли|проверки прочитаны не все|просят правки|одобрен"
-    "|ждёт ревью|не прочитано с {at}|не прочитано|ответил на уточнение|GitHub {at}|Нажмите вариант ниже, чтобы ответить.|См. вопрос в этом чате.|Вопрос в {at}",
+    "|ждёт ревью|не прочитано с {at}|не прочитано|ответил на уточнение|GitHub {at}|Нажмите вариант ниже, чтобы ответить.|См. вопрос в этом чате.|основной чат разбирается",
     "hi": "लक्ष्य|आपसे चाहिए|अभी आपको कुछ नहीं करना है।|क्यों|सुझाव"
     "|{at} का सवाल देखें।|आपकी ज़रूरत क्यों है और हर विकल्प से क्या होगा, अभी लिखा नहीं गया।"
     "|विकल्प नीचे के बटनों में हैं।|अभी चल रहा है|आगे|योजना|{at} पर जाँचा|सवाल कार्ड|बदलाव कार्ड"
     "|आपका इंतज़ार|चल रहा|अटका है|सवाल है|पूरा बताया|शुरू हुआ, रिपोर्ट नहीं|मर्ज हुआ|बंद|ड्राफ़्ट"
     "|खुला|टकराव|{n} जाँच विफल|{n} जाँच चल रही|जाँच पास|जाँच पूरी नहीं पढ़ी|बदलाव माँगे|मंज़ूर"
-    "|समीक्षा बाकी|{at} से नहीं पढ़ा|नहीं पढ़ा|आगे के सवाल का जवाब दिया|GitHub {at}|जवाब देने के लिए नीचे कोई विकल्प दबाएँ।|इस चैट में सवाल देखें।|{at} पर पूछा",
+    "|समीक्षा बाकी|{at} से नहीं पढ़ा|नहीं पढ़ा|आगे के सवाल का जवाब दिया|GitHub {at}|जवाब देने के लिए नीचे कोई विकल्प दबाएँ।|इस चैट में सवाल देखें।|मुख्य चैट देख रहा है",
     "bn": "লক্ষ্য|আপনার কাছে দরকার|এখন আপনার কিছু করার নেই।|কেন|পরামর্শ"
     "|{at}-এর প্রশ্নটি দেখুন।|কেন আপনাকে দরকার আর প্রতিটি বিকল্পে কী হবে, এখনও লেখা হয়নি।"
     "|বিকল্পগুলো নিচের বোতামে আছে।|এখন যা চলছে|এরপর|পরিকল্পনা|{at}-এ যাচাই|প্রশ্ন কার্ড"
     "|পরিবর্তন কার্ড|আপনার অপেক্ষায়|চলছে|আটকে আছে|প্রশ্ন আছে|শেষ জানিয়েছে|শুরু হয়েছে, রিপোর্ট নেই"
     "|মার্জ হয়েছে|বন্ধ|খসড়া|খোলা|দ্বন্দ্ব|{n}টি যাচাই ব্যর্থ|{n}টি যাচাই চলছে|যাচাই পাস"
-    "|যাচাই পুরো পড়া হয়নি|পরিবর্তন চাওয়া|অনুমোদিত|রিভিউ বাকি|{at} থেকে পড়া হয়নি|পড়া হয়নি|পরের প্রশ্নের উত্তর দিয়েছে|GitHub {at}|উত্তর দিতে নিচের একটি বিকল্প চাপুন।|এই চ্যাটে প্রশ্নটি দেখুন।|{at}-এ জিজ্ঞাসা",
+    "|যাচাই পুরো পড়া হয়নি|পরিবর্তন চাওয়া|অনুমোদিত|রিভিউ বাকি|{at} থেকে পড়া হয়নি|পড়া হয়নি|পরের প্রশ্নের উত্তর দিয়েছে|GitHub {at}|উত্তর দিতে নিচের একটি বিকল্প চাপুন।|এই চ্যাটে প্রশ্নটি দেখুন।|মূল চ্যাট দেখছে",
 }
 WORDS: dict[str, dict[str, str]] = {
     lang: dict(zip(_KEYS, row.split("|"), strict=True)) for lang, row in _ROWS.items()
@@ -170,29 +169,6 @@ def _current_ask(item: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return record if isinstance(record, Mapping) else None
 
 
-def _reply_ask(
-    item: Mapping[str, Any],
-    waiting: Sequence[Mapping[str, Any]],
-    clock: Callable[[float | None], str],
-) -> dict[str, Any] | None:
-    """The thread's open ``[OPTIONS:]`` reply as *item*'s ask, for the one item that
-    waits on the owner with no record: its question text and labels, quoted with
-    the reply's time. None when there is no such reply, its time does not parse,
-    or the item reported after it (that reply was about an earlier question)."""
-    entry = next((e for e in waiting if e.get("kind") == "options"), None)
-    asked = inputs.row_epoch(entry.get("asked_at")) if entry is not None else None
-    if entry is None or asked is None:
-        return None
-    reported = inputs.parse_epoch(item.get("last_report_at"))
-    if reported is not None and reported > asked:
-        return None
-    return {
-        "quote": entry.get("text"),
-        "quoted_at": clock(asked),
-        "options": [{"label": label} for label in entry.get("options") or []],
-    }
-
-
 def _task_word(item: Mapping[str, Any], words: Mapping[str, str]) -> str:
     status = item.get("status")
     return words[status] if status in _TASK_STATUSES else words["started"]
@@ -209,24 +185,16 @@ def _ask_lines(
     colon: str,
     since: str,
 ) -> list[str]:
-    """The record's why (or the quoted reply's question), each option with what it
-    leads to, and the pick, indented under its item; with nothing written, one line
-    pointing at the question from *since* (the item's report time, HH:MM)."""
+    """The record's why, each option with what it leads to, and the pick, indented
+    under its item; with nothing past its ``what``, one line pointing at the
+    question from *since* (the item's report time, HH:MM)."""
     pointer = words["see_question"].format(at=since) if since else words["see_chat"]
     if not isinstance(record, Mapping):
         return [f"  - {pointer}"]
     lines: list[str] = []
     why = clean(record.get("why"), _MAX_WHY)
-    quote = clean(record.get("quote"), _MAX_WHY)
     if why:
         lines.append(f"  - {words['why']}{colon}{why}")
-    elif record.get("quoted_at"):
-        at = str(record["quoted_at"])
-        lines.append(
-            f"  - {words['asked'].format(at=at)}{colon}{quote}"
-            if quote
-            else f"  - {words['see_question'].format(at=at)}"
-        )
     labels: list[str] = []
     for option in record.get("options") or []:
         if not isinstance(option, Mapping):
@@ -251,6 +219,7 @@ def render(
     items: Sequence[Mapping[str, Any]],
     awaits: Mapping[str, bool],
     waiting: Sequence[Mapping[str, Any]],
+    checking: Collection[str] = (),
     live: Sequence[Mapping[str, Any]],
     checked_at: str,
     clean: Callable[[object, int], str],
@@ -259,7 +228,10 @@ def render(
 ) -> str:
     """The welcome as markdown: goal, what needs you, being done now, comes after.
 
-    *awaits* is the Board's ``awaits_person`` per open item id; *waiting* the
+    *awaits* is the Board's ``awaits_person`` per open item id, which needs the
+    conductor's current ``ask`` record; *checking* the open item ids whose worker
+    names a person but that carry no current record yet: they read under "Being done
+    now" as the main chat checking them, never as waiting on you. *waiting* the
     thread's other open questions (question cards, change cards and a reply's
     ``[OPTIONS:]`` line); *live* this welcome's PR reads; *checked_at* the HH:MM
     the ledger was read; *clock* formats every other time (the digest render passes
@@ -276,13 +248,8 @@ def render(
     asked_labels: list[set[str]] = []
     doing: list[str] = []
     after: list[str] = []
-    waiting_ids = [str(i["item_id"]) for i in open_items if awaits.get(str(i["item_id"]))]
     for item in open_items:
         record = _current_ask(item)
-        # With one item waiting and no record of its own, the thread's open reply
-        # with choices is that item's question; a written record always wins.
-        if record is None and waiting_ids == [str(item["item_id"])]:
-            record = _reply_ask(item, waiting, clock)
         # The item's own name; the record's ``what`` names it only where it waits on
         # the owner, since a running or planned item is not that question.
         title = clean(item.get("title") or item.get("item_id"), _MAX_TITLE)
@@ -298,6 +265,9 @@ def render(
                 asked_labels.append(
                     {clean(o.get("label"), _MAX_LABEL) for o in record.get("options") or [] if isinstance(o, Mapping)}
                 )  # fmt: skip
+        elif str(item["item_id"]) in checking:
+            state = _join([words["checking"], pr, checked], language)
+            doing.append(f"- {title}{left}{state}{right}")
         elif item.get("worker_session_key") or item.get("status"):
             state = _join([_task_word(item, words), pr, checked], language)
             doing.append(f"- {title}{left}{state}{right}")

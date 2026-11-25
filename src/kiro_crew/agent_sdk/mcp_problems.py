@@ -12,7 +12,10 @@ so it needs no ACP import.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
+from collections import OrderedDict
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -248,3 +251,45 @@ def declared_mcp_not_ready_note(provider: Any) -> str:
     if not names:
         return ""
     return "MCP servers declared by the agent spec were not ready in this run: " + ", ".join(names)
+
+
+#: How many run keys (a cron job, a heartbeat task) keep the
+#: last not-ready note they printed. Past it the oldest key is forgotten, which
+#: costs that key one repeat of its note, never a missed new one.
+_LAST_NOTE_CAP = 1024
+_last_notes: OrderedDict[str, str] = OrderedDict()
+_last_notes_lock = threading.Lock()
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def declared_mcp_not_ready_change(provider: Any, run_key: str, *, record: bool = True) -> str:
+    """:func:`declared_mcp_not_ready_note`, only when it differs from *run_key*'s last run.
+
+    A scheduled run repeats on its own, so the same missing servers would
+    otherwise lead every result it sends. The note is printed when the set of
+    servers changes, including when it comes back after a clean run. Kept in
+    this process only: a gateway restart prints it once more. With *record*
+    false the run is not remembered: its result is not delivered, so the next
+    delivered one must still carry the note.
+    """
+    return declared_mcp_note_change(run_key, declared_mcp_not_ready_note(provider), record=record)
+
+
+def declared_mcp_note_change(run_key: str, note: str, *, record: bool = True) -> str:
+    """*note* when it differs from the last one recorded for *run_key*, else ``""``.
+
+    The store behind :func:`declared_mcp_not_ready_change`, for a caller that
+    records the note only once its result is stored (a cron agent sequence).
+    """
+    key, value = _digest(run_key), _digest(note)
+    with _last_notes_lock:
+        last = _last_notes.get(key)
+        if record:
+            _last_notes.pop(key, None)
+            _last_notes[key] = value
+            while len(_last_notes) > _LAST_NOTE_CAP:
+                _last_notes.popitem(last=False)
+    return note if note and value != last else ""

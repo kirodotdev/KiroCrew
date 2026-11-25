@@ -369,6 +369,7 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.loosening_provenance",
         "kiro_crew.config.migration",
         "kiro_crew.config.paths",
+        "kiro_crew.config.resolution",
         "kiro_crew.config.sections",
         "kiro_crew.config.validation",
         "kiro_crew.config.write_provenance",

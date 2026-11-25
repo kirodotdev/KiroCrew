@@ -32,7 +32,7 @@ from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
-ESSENTIAL_MAX_CHARS = 64_000
+ESSENTIAL_MAX_CHARS = 65_000
 _MAX_SOURCE_BYTES = ESSENTIAL_MAX_CHARS * 4
 #: Source label of the in-band notice that names guides left out of the envelope.
 ESSENTIAL_OMISSION_SOURCE = "essential-context#omitted"

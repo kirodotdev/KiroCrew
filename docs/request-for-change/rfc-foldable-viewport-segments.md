@@ -3,8 +3,8 @@ title: Fold-aware dashboard layout from the Viewport Segments and Device Posture
 status: draft
 author: jeeshofone
 created: 2026-11-03
-last-audited: 2026-11-03
-audited-at: ca98797739
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: []
 tracking-issues: []

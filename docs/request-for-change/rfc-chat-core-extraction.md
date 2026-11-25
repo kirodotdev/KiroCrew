@@ -3,8 +3,8 @@ title: Extract a chat core shared by every chat surface
 status: partial
 author: zezhexu
 created: 2026-08-22
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [5128, 5909, 8689, 8713, 8733, 9538, 9576, 9577, 9593, 9787, 10146, 14227, 20018, 20102, 20917, 21109, 21152, 31093]
 tracking-issues: ["#8651", "#9570"]

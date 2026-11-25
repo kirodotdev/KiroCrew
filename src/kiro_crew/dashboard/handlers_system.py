@@ -57,16 +57,22 @@ logger = logging.getLogger(__name__)
 def _resolve_tool(name: str, fallback: str) -> str:
     """The absolute path to run the system command *name* with.
 
-    ``shutil.which`` may fail when PATH is minimal (e.g. launched as a background
-    service), so the command's known location stands in when it finds nothing.
+    Looked up in the fixed system directories only, never on ``PATH``: the
+    gateway's ``PATH`` can lead with a directory the agent can write
+    (``~/.local/bin``), and these commands run in the gateway, outside the
+    sandbox, on every metrics poll. The command's known location stands in when
+    no system directory has it, so a missing tool fails the same way it did.
     """
-    return shutil.which(name) or fallback
+    return platform_compat.trusted_system_bin_quiet(name) or fallback
 
 
-# Absolute paths for macOS system commands, resolved once at import.
+# Absolute paths for the system commands the metrics read, resolved once at import.
 _SYSCTL = _resolve_tool("sysctl", "/usr/sbin/sysctl")
 _VM_STAT = _resolve_tool("vm_stat", "/usr/bin/vm_stat")
 _NETSTAT = _resolve_tool("netstat", "/usr/sbin/netstat")
+_PS = _resolve_tool("ps", "/bin/ps")
+# No fixed fallback: with no system ``pgrep`` the darwin child count reads 0.
+_PGREP = platform_compat.trusted_system_bin_quiet("pgrep")
 
 # Server-side network speed tracking (survives page refresh)
 _prev_net: dict[str, float] = {"rx": 0.0, "tx": 0.0, "ts": 0.0}
@@ -267,7 +273,7 @@ async def api_status(request: web.Request) -> web.Response:
     data.update(
         {
             "uptime_secs": int(uptime),
-            "messages_received": state.messages_received,
+            "messages_received": data["messages"],
             "cron": state.crons.status(),
             "stats": Stats().snapshot(),
             "stats_summary": Stats().summary(),
@@ -556,7 +562,7 @@ def _scan_mcp_processes() -> dict[str, object]:
             }
             try:
                 out = subprocess.check_output(
-                    ["ps", "-eo", "pid,command"],
+                    [_PS, "-eo", "pid,command"],
                     timeout=5,
                     text=True,
                     encoding="utf-8",
@@ -741,7 +747,7 @@ def _collect_system_metrics() -> dict[str, object]:
         if cpu_pct is None:
             try:
                 ps_cpu = subprocess.check_output(
-                    ["ps", "-A", "-o", "%cpu"], timeout=2, stderr=subprocess.DEVNULL
+                    [_PS, "-A", "-o", "%cpu"], timeout=2, stderr=subprocess.DEVNULL
                 ).decode()
                 total_cpu = sum(float(x) for x in ps_cpu.strip().splitlines()[1:] if x.strip())
                 cpu_pct = min(100.0, round(total_cpu / cores, 1))
@@ -830,9 +836,13 @@ def _collect_system_metrics() -> dict[str, object]:
     try:
         my_pid = os.getpid()
         if sys.platform == "darwin":
-            ps_out = subprocess.check_output(
-                ["pgrep", "-P", str(my_pid)], timeout=2, stderr=subprocess.DEVNULL
-            ).decode()
+            ps_out = (
+                subprocess.check_output(
+                    [_PGREP, "-P", str(my_pid)], timeout=2, stderr=subprocess.DEVNULL
+                ).decode()
+                if _PGREP
+                else ""
+            )
             child_pids = [p.strip() for p in ps_out.splitlines() if p.strip()]
         else:
             task_dir = Path(f"/proc/{my_pid}/task")
@@ -938,13 +948,6 @@ async def api_system(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
-async def _require_owner(request: web.Request, operation: str) -> web.Response | None:
-    """The shared owner gate, imported late: ``handlers`` imports this module."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    return await require_owner_dashboard_request(request, operation)
-
-
 def _reconciler(request: web.Request) -> Any:
     sessions = getattr(request.app["state"], "sessions", None)
     return sessions.runtime_reconciler() if sessions is not None else None
@@ -971,7 +974,10 @@ async def api_leaked_runtimes(request: web.Request) -> web.Response:
 
 async def api_leaked_runtimes_reclaim(request: web.Request) -> web.Response:
     """Owner-only, confirm-required: end the leaked runtimes once through the gated kill path."""
-    denied = await _require_owner(request, "leaked_runtimes.reclaim")
+    # Imported late: ``handlers`` imports this module.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "leaked_runtimes.reclaim")
     if denied is not None:
         return denied
     try:

@@ -64,7 +64,8 @@ export function ListDock({ field, shelf, children }: {
   shelf?: ReactNode
   children: ReactNode
 }) {
-  const [dockRef, height] = useMeasuredHeight<HTMLDivElement>()
+  // The session list's dock mounts with the chat page shell.
+  const [dockRef, height] = useMeasuredHeight<HTMLDivElement>(undefined, { firstFromObserver: true })
   return (
     <div
       className="relative flex-1 min-h-0 flex flex-col mt-2"

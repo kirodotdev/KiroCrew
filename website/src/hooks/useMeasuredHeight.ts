@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 
 const rectHeight = (node: HTMLElement) => node.getBoundingClientRect().height
 
@@ -46,6 +47,12 @@ const rectHeight = (node: HTMLElement) => node.getBoundingClientRect().height
  */
 export function useMeasuredHeight<T extends HTMLElement>(
   measure: (node: T) => number = rectHeight,
+  /** Take the first value from the observer's first delivery, after the
+   *  browser's own layout and before it paints (`flushSync` renders it in that
+   *  frame), instead of reading in the ref callback. For a node that mounts with
+   *  the page shell: there a read in the ref callback forces a layout of the
+   *  whole page inside the commit that mounts it. */
+  { firstFromObserver = false }: { firstFromObserver?: boolean } = {},
 ): [(node: T | null) => void, number] {
   const [height, setHeight] = useState(0)
   const nodeRef = useRef<T | null>(null)
@@ -54,13 +61,13 @@ export function useMeasuredHeight<T extends HTMLElement>(
   const observe = useCallback((node: T) => {
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        setHeight(measure(entry.target as T))
-      }
+      const apply = () => { for (const entry of entries) setHeight(measure(entry.target as T)) }
+      if (firstFromObserver) flushSync(apply)
+      else apply()
     })
     observer.observe(node)
     observerRef.current = observer
-  }, [measure])
+  }, [measure, firstFromObserver])
 
   const measuredRef = useCallback((node: T | null) => {
     observerRef.current?.disconnect()
@@ -70,9 +77,9 @@ export function useMeasuredHeight<T extends HTMLElement>(
       setHeight(0)
       return
     }
-    setHeight(measure(node))
+    if (!firstFromObserver || typeof ResizeObserver === 'undefined') setHeight(measure(node))
     observe(node)
-  }, [observe, measure])
+  }, [observe, measure, firstFromObserver])
 
   useEffect(() => {
     if (nodeRef.current && !observerRef.current) observe(nodeRef.current)

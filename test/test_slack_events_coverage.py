@@ -314,11 +314,18 @@ class TestHandleAgent:
 # /kirocrew voice
 
 
+def _set_trigger_id(trigger_id: str) -> None:
+    """Give this test's task the ``trigger_id`` ``_handle_slash`` gives a handler's task."""
+    from kiro_crew.slack import slash_context
+
+    slash_context.trigger_id.set(trigger_id)
+
+
 class TestHandleVoice:
     @pytest.mark.asyncio
     async def test_missing_trigger_id_reports(self):
         orch = _make_orch()
-        orch._last_trigger_id = ""
+        _set_trigger_id("")
         respond = AsyncMock()
         await ev._handle_voice(orch, "U_OWNER", "", respond)
         assert "Missing trigger_id" in respond.call_args[0][0]
@@ -327,7 +334,7 @@ class TestHandleVoice:
     @pytest.mark.asyncio
     async def test_opens_modal(self):
         orch = _make_orch()
-        orch._last_trigger_id = "T1"
+        _set_trigger_id("T1")
         respond = AsyncMock()
         await ev._handle_voice(orch, "U_OWNER", "", respond)
         orch.slack.views_open.assert_awaited_once()
@@ -337,7 +344,7 @@ class TestHandleVoice:
     @pytest.mark.asyncio
     async def test_views_open_failure_reports(self):
         orch = _make_orch()
-        orch._last_trigger_id = "T1"
+        _set_trigger_id("T1")
         orch.slack.views_open = AsyncMock(side_effect=RuntimeError("slack down"))
         respond = AsyncMock()
         await ev._handle_voice(orch, "U_OWNER", "", respond)
@@ -410,6 +417,24 @@ class TestHandleYolo:
         assert _audit_rows(_real_sel, "slack.yolo_mode") == [("U_OWNER", "allowed", "yolo_off", "")]
 
     @pytest.mark.asyncio
+    async def test_off_is_confirmed_only_once_its_record_is_gone_for_good(
+        self, _yolo_env, _mock_sel
+    ):
+        order: list[str] = []
+
+        async def _settled() -> bool:
+            order.append("durable")
+            return True
+
+        orch = _make_orch()
+        orch.dashboard_state = MagicMock()
+        respond = AsyncMock(side_effect=lambda *_a, **_k: order.append("confirmed"))
+        with patch("kiro_crew.slack.handler.disable_yolo", side_effect=lambda: order.append("off")):
+            with patch("kiro_crew.kept_grants.settle", _settled, create=True):
+                await ev._handle_yolo(orch, "U_OWNER", "off", respond)
+        assert order == ["off", "durable", "confirmed"]
+
+    @pytest.mark.asyncio
     async def test_renew_success_reports_minutes(self, _yolo_env, _real_sel):
         _yolo_env.renew.return_value = SimpleNamespace(renewed=True, ttl=1800)
         orch = _make_orch()
@@ -472,7 +497,7 @@ class TestHandleConfig:
     @pytest.mark.asyncio
     async def test_missing_trigger_id_reports(self):
         orch = _make_orch()
-        orch._last_trigger_id = ""
+        _set_trigger_id("")
         respond = AsyncMock()
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
             await ev._handle_config(orch, "U_OWNER", "", respond)
@@ -482,7 +507,7 @@ class TestHandleConfig:
     async def test_opens_modal_with_initial_channels(self):
         orch = _make_orch()
         orch._tracking_channels = {"C1"}
-        orch._last_trigger_id = "T9"
+        _set_trigger_id("T9")
         respond = AsyncMock()
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
             await ev._handle_config(orch, "U_OWNER", "", respond)
@@ -493,7 +518,7 @@ class TestHandleConfig:
     @pytest.mark.asyncio
     async def test_views_open_failure_reports(self):
         orch = _make_orch()
-        orch._last_trigger_id = "T9"
+        _set_trigger_id("T9")
         orch.slack.views_open = AsyncMock(side_effect=RuntimeError("nope"))
         respond = AsyncMock()
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
@@ -523,7 +548,7 @@ class TestHandleChannelCmd:
     async def test_missing_trigger_id_reports(self):
         orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_ALWAYS)})
         orch._tracking_channels = {"C1"}
-        orch._last_trigger_id = ""
+        _set_trigger_id("")
         respond = AsyncMock()
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
             await ev._handle_channel_cmd(orch, "U_OWNER", "", respond)
@@ -533,7 +558,7 @@ class TestHandleChannelCmd:
     async def test_opens_channels_modal(self):
         orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_ALWAYS)})
         orch._tracking_channels = {"C1"}
-        orch._last_trigger_id = "T3"
+        _set_trigger_id("T3")
         respond = AsyncMock()
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
             await ev._handle_channel_cmd(orch, "U_OWNER", "", respond)
@@ -546,7 +571,7 @@ class TestHandleChannelCmd:
     async def test_views_open_failure_reports(self):
         orch = _make_orch()
         orch._tracking_channels = set()
-        orch._last_trigger_id = "T3"
+        _set_trigger_id("T3")
         orch.slack.views_open = AsyncMock(side_effect=RuntimeError("nope"))
         respond = AsyncMock()
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
@@ -1357,7 +1382,9 @@ class TestHandleSlash:
         seen: list[tuple] = []
 
         async def _handler(o, caller, args, respond):
-            seen.append((caller, args))
+            from kiro_crew.slack import slash_context
+
+            seen.append((caller, args, slash_context.trigger_id.get()))
 
         ev.register_slash_command("zzcovsub", _handler, "coverage probe")
         try:
@@ -1372,8 +1399,25 @@ class TestHandleSlash:
                 await _drain(orch)
         finally:
             ev.SLASH_REGISTRY.pop("zzcovsub", None)
-        assert seen == [("U_OWNER", "alpha beta")]
-        assert orch._last_trigger_id == "TRIG"
+        assert seen == [("U_OWNER", "alpha beta", "TRIG")]
+
+    @pytest.mark.asyncio
+    async def test_overlapping_modal_commands_each_open_with_their_own_trigger_id(self):
+        orch = _make_orch()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            for trigger_id in ("TRIG-A", "TRIG-B"):
+                payload = {
+                    "command": "/kirocrew",
+                    "user_id": "U_OWNER",
+                    "text": "voice",
+                    "trigger_id": trigger_id,
+                }
+                await ev._handle_slash(orch, payload)
+            # No handler task has run yet, so the commands were handled at the same time.
+            orch.slack.views_open.assert_not_called()
+            await _drain(orch)
+        opened = [c.kwargs["trigger_id"] for c in orch.slack.views_open.await_args_list]
+        assert sorted(opened) == ["TRIG-A", "TRIG-B"]
 
     @pytest.mark.asyncio
     async def test_user_mention_fallback_refuses_multi_user(self):

@@ -1230,6 +1230,7 @@ def remove_sync(
     self._pulled_forward.discard(loop_id)
     self._pushed_ticks.discard(loop_id)
     self._pushed_running.discard(loop_id)
+    self._boot_replays.discard(loop_id)
     self._ledger_wake_streak.pop(loop_id, None)
     self._ledger_tick_fp.pop(loop_id, None)
     self._subject_wake_fp.pop(loop_id, None)

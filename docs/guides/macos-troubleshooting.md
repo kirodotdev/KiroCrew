@@ -237,9 +237,7 @@ The gateway spawns its bundled `kiro-cli-chat` with the
 environment it was started with, so the child has no proxy variables, tries to
 reach the model backend directly, and the proxy-only network blocks it.
 
-The app recovers this on its own
-([kirodotdev/KiroCrew#19821](https://github.com/kirodotdev/KiroCrew/issues/19821)):
-when the gateway environment carries none of the standard proxy variables, the
+The app recovers this on its own: when the gateway environment carries none of the standard proxy variables, the
 app reads the system proxy (System Settings → Network → Proxies, which GUI
 applications use directly) via `scutil --proxy` and injects
 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` for the gateway and every child.

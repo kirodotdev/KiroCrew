@@ -52,6 +52,7 @@ from kiro_crew.acp.runtime import (
     AcpRuntimeStdinStalled,
     AcpSessionHandle,
 )
+from kiro_crew.acp.session_handle_model_selection import kas_auto_judged_ids
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
@@ -73,6 +74,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import (  # noqa: F401 - session_provider_claim reads it here
@@ -144,6 +146,15 @@ class AcpSessionProvider(LLMProvider):
     #: The chat's agent-turn callback (``watch_agent_turns``), re-registered on
     #: each handle that replaces this session's. None: nothing watches.
     _agent_turn_callback: Callable[[], None] | None = None
+    #: Set to True by ``shutdown_shared`` when the session runs on a shared KAS
+    #: engine and ``session/close`` was not confirmed by the host (timeout or
+    #: refusal).  Read by ``discard_conversation(confirm_teardown=True)`` callers
+    #: (bot app stop) to treat an unconfirmed KAS close as a failure.
+    _kas_shutdown_unconfirmed: bool = False
+    #: Saved on an unconfirmed KAS close: the runtime to retry the remote close on.
+    _kas_unconfirmed_runtime: Any = None
+    #: Saved on an unconfirmed KAS close: the session_id to retry the remote close for.
+    _kas_unconfirmed_session_id: str | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -463,6 +474,15 @@ class AcpSessionProvider(LLMProvider):
         return [dict(a) for a in value if isinstance(a, dict)] if isinstance(value, list) else []
 
     @property
+    def kas_auto_judged_ids(self) -> list[str]:
+        """A copy of the ids a KAS ``set_model("auto")`` on this session is judged by.
+
+        ``session_handle_model_selection.kas_auto_judged_ids`` over the handle, for
+        the turn's settle step, which holds this provider rather than the handle.
+        """
+        return list(kas_auto_judged_ids(self._handle))
+
+    @property
     def kas_active_mode_id(self) -> str:
         """The last mode id KAS reported for this session, or ``""`` before any switch."""
         value = getattr(self._handle, "_last_kas_mode_id", "")
@@ -471,7 +491,9 @@ class AcpSessionProvider(LLMProvider):
     # Each reads the handle's field of the same name, ``""`` when it is not a str.
     kas_agent_prompt_notice = _handle_str("kas_agent_prompt_notice")
     kas_bundle_engine_version = _handle_str("kas_bundle_engine_version")
+    kas_relay_engine_version = _handle_str("kas_relay_engine_version")
     kas_untested_version_notice = _handle_str("kas_untested_version_notice")
+    kas_engine_fallback_notice = _handle_str("kas_engine_fallback_notice")
     kas_telemetry_notice = _handle_str("kas_telemetry_notice")
     kas_withheld_credentials_notice = _handle_str("kas_withheld_credentials_notice")
 
@@ -631,6 +653,7 @@ class AcpSessionProvider(LLMProvider):
             # the release after the kill, that fallback would be refused and the
             # leak it exists to prevent would become permanent.
             await self.release_runtime_lease()
+            killed = False
             try:
                 if self.memory_mode != "persistent":
                     try:
@@ -641,8 +664,15 @@ class AcpSessionProvider(LLMProvider):
                         )
                 else:
                     await self._runtime.kill(expected=True, reason="provider shutdown")
+                killed = True
             except Exception:
                 logger.debug("AcpSessionProvider.shutdown: runtime kill failed", exc_info=True)
+            # The kill returning is not evidence the app servers under it are gone:
+            # a descendant that left the process group survives it. Only a whole
+            # tree confirmed dead settles the close (``_sp_shared.teardown_confirmed``).
+            sid = getattr(self._handle, "session_id", None)
+            if not (killed and _sp_shared.teardown_confirmed(self._runtime, sid, killed=True)):
+                _sp_shared.note_unconfirmed_teardown(self, self._runtime, sid)
         else:
             # Session-sharing subagent: the runtime is SHARED with co-tenant
             # sessions (parent + sibling subagents), so we must NOT kill it.
@@ -670,6 +700,8 @@ class AcpSessionProvider(LLMProvider):
             # and the transcript unlink is the only thing that removes
             # `~/.kiro/sessions/cli/{sid}.json(+.jsonl)`, as the comment below
             # says. Nothing retries: every caller drops the provider afterwards.
+            # Before the first await, so a sharing decision made meanwhile sees it.
+            self._runtime.subagent_departed = True
             try:
                 if self._handle.is_turn_active and not self.turn_survives_disconnect:
                     try:
@@ -679,10 +711,19 @@ class AcpSessionProvider(LLMProvider):
                             "AcpSessionProvider.shutdown: session cancel failed", exc_info=True
                         )
             finally:
+                destroyed = False
                 try:
                     await self._handle.destroy()
+                    destroyed = True
                 except Exception:
                     logger.debug("AcpSessionProvider.shutdown: destroy failed", exc_info=True)
+                # Same judge as every other teardown branch (``teardown_confirmed``).
+                sub_sid = getattr(self._handle, "session_id", None)
+                if not (
+                    destroyed
+                    and _sp_shared.teardown_confirmed(self._runtime, sub_sid, killed=False)
+                ):
+                    _sp_shared.note_unconfirmed_teardown(self, self._runtime, sub_sid)
             # destroy() deletes the shared-subagent session transcript
             # (~/.kiro/sessions/cli/{sid}.json+.jsonl); no separate cleanup call
             # needed. cleanup_session() below remains for the LLMProvider API.
@@ -839,7 +880,8 @@ class AcpSessionProvider(LLMProvider):
         except AcpError as exc:
             if not emitted and await self._connection_failure_is_signed_out(exc):
                 raise AcpAuthRequired(
-                    host_auth.signed_out_message(self.backend), backend=self.backend
+                    host_auth.signed_out_message(self.backend, route=self._runtime.kas_spawn_route),
+                    backend=self.backend,
                 ) from exc
             # A masked codex can open its session and only fail the AWS
             # credential load at the turn; name the mask the way the start
@@ -915,8 +957,8 @@ class AcpSessionProvider(LLMProvider):
             return None
         return await self._guarded(call(command, params))
 
-    async def steer(self, message: str) -> bool:
-        """Forward a mid-turn steer to the session handle (kiro _session/steer).
+    async def steer(self, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
+        """Forward a mid-turn steer, and who wrote it, to the session handle (kiro _session/steer).
 
         A failed steer is ambiguous only when its OWN frame was left buffered:
         the session's outstanding prompt says nothing about a steer that was
@@ -924,12 +966,18 @@ class AcpSessionProvider(LLMProvider):
         delivered would make the next turn skip an instruction that never
         reached the backend.
         """
-        return await self._guarded(self._handle.steer(message), own_write_only=True)
+        return await self._guarded(self._handle.steer(message, origin=origin), own_write_only=True)
 
     @property
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the handle's last steer (0.0 if never steered)."""
         return float(getattr(self._handle, "last_steer_monotonic", 0.0) or 0.0)
+
+    @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """See ``AcpSessionHandle.held_steers_possibly_delivered``."""
+        value = getattr(getattr(self, "_handle", None), "held_steers_possibly_delivered", None)
+        return value if isinstance(value, frozenset) else frozenset()
 
     @property
     def supports_steer(self) -> bool:
@@ -1058,7 +1106,9 @@ class AcpSessionProvider(LLMProvider):
             # every runtime-touching call, so a literal here would misinform an
             # operator on any harness that does not sign in through kiro-cli.
             return AcpAuthRequired(
-                host_auth.signed_out_message(self._runtime.acp_backend),
+                host_auth.signed_out_message(
+                    self._runtime.acp_backend, route=self._runtime.kas_spawn_route
+                ),
                 backend=self._runtime.acp_backend,
             )
         # A stdin-stall death is the host's own verdict, never a throttle: the
@@ -1348,12 +1398,18 @@ class AcpSessionProvider(LLMProvider):
         on its own harness state (``ClaudeSharedSession``); every other session
         has none and reads ``""``, as ``LLMProvider`` does.
         """
+        return self._harness_state_text("settings_withheld_cause")
+
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """The clause for that withholding, off the same harness state, or ``""``."""
+        return self._harness_state_text("settings_withheld_reason", with_fix=with_fix)
+
+    def _harness_state_text(self, name: str, **kwargs: Any) -> str:
+        """The str this session's harness state answers to *name*, or ``""``."""
         handle = self._handle
         states = getattr(self._runtime, "_session_harness_states", None) or {}
-        read = getattr(
-            states.get(handle.session_id) if handle else None, "settings_withheld_cause", None
-        )
-        value = read() if callable(read) else ""
+        read = getattr(states.get(handle.session_id) if handle else None, name, None)
+        value = read(**kwargs) if callable(read) else ""
         return value if isinstance(value, str) else ""
 
     def advertised_commands(self) -> list[dict[str, str]]:
@@ -1454,7 +1510,13 @@ class AcpSessionProvider(LLMProvider):
         :attr:`backend` is: this provider fronts whichever backend the runtime
         spawned.
         """
-        return self._runtime.acp_backend in host_auth.backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file instead
+        # (``agent_sdk/kas_machine.py``), so a personal sign-out does not retire it.
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        return self._runtime.acp_backend in host_auth.backends_retired_by_host_logout() and not (
+            runs_machine_auth(self._runtime)
+        )
 
     def has_active_turn(self) -> bool:
         """True if a prompt turn is currently in progress.

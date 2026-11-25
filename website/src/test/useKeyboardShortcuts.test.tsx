@@ -58,6 +58,15 @@ describe('formatShortcut', () => {
     setPlatform('Win32')
     expect(formatShortcut({ id: 't', key: 'Tab', shift: true, group: 'actions' })).toBe('Shift + Tab')
   })
+
+  it('shows a bare Escape as Esc on every platform', () => {
+    const prev = navigator.platform
+    onTestFinished(() => setPlatform(prev))
+    setPlatform('MacIntel')
+    expect(formatShortcut({ id: 't', key: 'Escape', group: 'actions' })).toBe('Esc')
+    setPlatform('Win32')
+    expect(formatShortcut({ id: 't', key: 'Escape', group: 'actions' })).toBe('Esc')
+  })
 })
 
 describe('DEFAULT_SHORTCUTS', () => {

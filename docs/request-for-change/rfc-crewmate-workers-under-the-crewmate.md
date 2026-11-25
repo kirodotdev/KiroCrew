@@ -3,8 +3,8 @@ title: A crewmate's sessions live under the crewmate — out of the sidebar, in 
 status: partial
 author: iamwhatever
 created: 2026-10-31
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [26952, 28869, 28931, 30220]
 tracking-issues: []
@@ -138,6 +138,8 @@ flowchart TD
 ### 4. Approvals and unread reach the mate chat
 
 A hidden worker still needs the person for tool approvals and question cards. `CrewApprovalCards`, filtered by `mate_root`, shows in the mate chat on the Mates page. A worker's open question card shows there too; this is new, since Crew Mode does not route question cards to the root today (its worker refusal in `src/kiro_crew/dashboard/handlers/ask_question.py` is inert while `APPROVAL_ROUTING_LIVE` is `False`). A pending prompt badges the mate's row on the Mates roster, the way `crewWorkerRoot` badges a Crew Mode root, and counts skip hidden mate workers, the way `crewMemberKeys` does. This lands before hiding is turned on, or an approval could sit unseen.
+
+Unread here means the wait. A hidden worker's tool approval or question card reaches the person as a wait, not as an unread mark: the mate chat shows it, the Mates roster marks the mate as needing you, the mate's Sessions tab counts it, and All Dashboards shows a card on the mate thread that opens the mate's Sessions tab. The worker's own chime, bell note, banner and toast are unchanged. Its unread stays on its own key, and counts skip it, as they skip a crew member's; the mate thread's unread mark is the mate's own messages, so it never outlives a wait answered somewhere else.
 
 ### 5. Cleanup: the AI closes its own sessions
 

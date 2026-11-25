@@ -33,6 +33,7 @@ const BASE_DASH = {
   quick_send: false,
   session_grid: false,
   tail_fork_enabled: false,
+  fork_inherits_pin: true,
   link_previews: false,
   mcp_app_panel: false,
   folder_suggestions_enabled: true,
@@ -587,6 +588,14 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows Swipe to Open and Close Side Panel on by default and stores turning it off locally', async () => {
+    wrap('sidepanel')
+    const sw = await screen.findByRole('switch', { name: 'Swipe to Open and Close Side Panel' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() => expect(storedChat().sidePanelSwipe).toBe(false))
+  })
+
   it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {
     const label = 'Start New Chats in conductor mode'
     wrap('sessions')
@@ -628,6 +637,37 @@ describe('ChatPanel — Messages', () => {
     await waitFor(() =>
       expect(qc.getQueryState(['session-summary', 'chat-1'])?.isInvalidated).toBe(true)
     )
+  })
+
+  it('shows Since you left briefs right after Session summaries, on by default, and PATCHes it off', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Since you left briefs')
+    const switches = screen.getAllByRole('switch')
+    expect(switches.indexOf(sw)).toBe(switches.indexOf(screen.getByRole('switch', { name: 'Session summaries' })) + 1)
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(document.querySelector('[data-setting-key="dashboard.warm_task_brief"]')).toContainElement(sw)
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('dashboard.warm_task_brief', false)
+    )
+  })
+
+  it('reflects a stored-off Since you left briefs flag and turns it back on', async () => {
+    seedMc({ dashboard: { warm_task_brief: false } })
+    wrap('sessions')
+    const sw = await settledSwitch('Since you left briefs')
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('dashboard.warm_task_brief', true)
+    )
+  })
+
+  it('surfaces a failed Since you left briefs write', async () => {
+    rejectOnce(patchConfigMock)
+    wrap('sessions')
+    fireEvent.click(await settledSwitch('Since you left briefs'))
+    expect(await screen.findByText(/Failed to save Since you left briefs setting/)).toBeInTheDocument()
   })
 
   it('persists the folder-suggestions toggle', async () => {
@@ -759,6 +799,7 @@ describe('ChatPanel — Sessions', () => {
   it.each([
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],
+    ['Pin forks of pinned sessions', 'fork_inherits_pin', false],
     ['Restore Sessions', 'restore_sessions', true],
   ])('persists %s through the dashboard config', async (label, key, expected) => {
     wrap('sessions')
@@ -1344,6 +1385,32 @@ describe('ChatPanel — per-role reasoning effort', () => {
       expect(patchConfigMock).toHaveBeenCalledWith('agent.role_efforts.background', 'low')
     )
   })
+})
+
+describe('ChatPanel — Optimize prompt model and effort', () => {
+  it.each([
+    ['Optimize Prompt Model', 'claude-opus-4.8', 'agent.role_models.optimizer', 'claude-opus-4.8'],
+    ['Optimize Prompt Effort', 'High', 'agent.role_efforts.optimizer', 'high'],
+  ])('%s PATCHes its own config path', async (label, option, path, value) => {
+    // A reasoning-capable Background model, so the effort row is live unset.
+    seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+    wrap('composer')
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    await openSelect(label)
+    fireEvent.click(await screen.findByRole('option', { name: option }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(path, value))
+  })
+
+  it.each([['Optimize Prompt Model'], ['Optimize Prompt Effort']])(
+    '%s labels its unset value Same as Background',
+    async label => {
+      seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+      wrap('composer')
+      const opts = await openSelect(label)
+      expect(opts[0].textContent).toBe('Same as Background')
+      expect(screen.getByRole('combobox', { name: label })).toHaveTextContent('Same as Background')
+    }
+  )
 })
 
 describe('ChatPanel — About You and Power', () => {

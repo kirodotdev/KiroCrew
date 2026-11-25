@@ -45,6 +45,12 @@ class _FakeSlot:
         self._stop_escalated_card_id = None
         self._queue: list[dict] = []
         self._pending_steers: list[dict] = []
+        # A real slot carries the held-steer records from birth (slot_ladder): a hard
+        # kill discards held peer steers with the pending ones.
+        self._deferred_steers: list = []
+        self._deferred_steer_delivered: dict = {}
+        self._deferred_steer_injected: dict = {}
+        self._deferred_steer_receipts: dict = {}
         # A real slot carries both from birth (slot_ladder): a hard kill settles a
         # take-back still in flight before it discards the pending steers.
         self._steer_retract = None

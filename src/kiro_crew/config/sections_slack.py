@@ -168,8 +168,19 @@ class SlackSharedAccessConfig:
         metadata=_meta(
             "Shared Slack Users",
             "Slack member IDs (U... or W...) allowed to use the bot while shared access "
-            "is on. Each is checked with Slack before it is used: same workspace as the "
-            "bot, a person, not deactivated, not the owner.",
+            "is on. The owner's own ID is never shared. By default a listed ID is used "
+            "as written: Slack is not asked whether it is a bot, deactivated or in "
+            "another workspace (see verify_with_slack).",
+            tags=["slack"],
+        ),
+    )
+    verify_with_slack: bool = field(
+        default=False,
+        metadata=_meta(
+            "Verify Shared Users With Slack",
+            "Check each listed ID with Slack before it is used: same workspace as the "
+            "bot, a person, not deactivated. Needs the users:read bot scope. Off by "
+            "default: you keep the list right yourself.",
             tags=["slack"],
         ),
     )
@@ -209,6 +220,16 @@ class SlackConfig:
             # gateway answers every manifest-shaped name (``/kirocrew`` and
             # ``/kirocrew-<alias>``) whatever this says. This adds a custom name
             # and is the name help text shows; the Slack applier refreshes it.
+        ),
+    )
+    setup_guide_url: str = field(
+        default="",
+        metadata=_meta(
+            "Setup Guide URL",
+            "Your organization's own Slack setup guide (for example, how to get a "
+            "workspace you may install apps in). The Slack setup wizard links it on "
+            "its first step. https:// only; any other value is ignored. Empty = no link.",
+            tags=["slack"],
         ),
     )
     forward_to_agent_callback: str = field(
@@ -279,6 +300,15 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line after each reply. Turn it off for a '
+            "cleaner chat; choice buttons and the Link to Dashboard button still post.",
+            tags=["slack"],
+        ),
+    )
     dm_single_session: bool = field(
         default=False,
         metadata=_meta(
@@ -341,7 +371,9 @@ class SlackConfig:
         metadata=_meta(
             "Session Folder",
             "Optional sidebar folder for sessions that start on this channel. "
-            "Empty (the default) leaves them unfiled; any other value is the "
+            "Empty (the default) files them in a 'Slack' folder, created on "
+            "first use, while Show Slack Conversations In The Session List is "
+            "on, and leaves them unfiled while it is off; any other value is the "
             "folder name, created when these settings are saved and marked with "
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
@@ -349,19 +381,20 @@ class SlackConfig:
         ),
     )
     show_in_session_list: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Show Slack Conversations In The Session List",
             "List conversations that start in Slack (threads, DMs, channel "
-            "mentions) in the dashboard's session list. Off removes them from "
-            "the list only: they keep working in Slack, stay in History and "
-            "search, still raise approvals and notifications, and come back "
-            "when this is turned on again; nothing is closed or deleted. The "
-            "conversation open in the dashboard, and one waiting on an approval "
-            "or an answer, keep their rows. Sessions started "
-            "in the dashboard and linked to Slack, and Slack code channel "
-            "sessions with their helper agents, are always listed. On by "
-            "default; no restart.",
+            "mentions) in the dashboard's session list. Off (the default) "
+            "keeps them out of the list only: they keep working in Slack, stay "
+            "in History and search, and still raise approvals and "
+            "notifications; nothing is closed or deleted. The conversation "
+            "open in the dashboard, and one waiting on an approval or an "
+            "answer, keep their rows. On, and with no Session Folder set, new "
+            "ones are filed in a 'Slack' folder, created on first use. "
+            "Sessions started in the dashboard and linked to Slack, and Slack "
+            "code channel sessions with their helper agents, are always listed "
+            "and stay in their own folders. No restart.",
             tags=["slack"],
         ),
     )
@@ -414,6 +447,37 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    thread_conductor: bool = field(
+        default=False,
+        metadata=_meta(
+            "Conductor Threads",
+            "Let the owner turn one Slack thread into a Conductor thread: the "
+            "thread's own session may hand work to worker sessions, as a code "
+            "channel's does, without the code-channel scopes. Only turns the owner "
+            "drove, only workers it created itself, one level deep, filed beside it, "
+            "never above its approval mode. By default only the owner's DM with the "
+            "app and private channels; see thread_conductor_public_channels. Off by "
+            "default. Turning it on also shows the thread's worker approval cards, "
+            "its Stop button (`!stop`) and its restart resume in Slack, all owner-only. "
+            "A missing, unreadable or malformed value reads as off. Takes effect on "
+            "the next call; no restart.",
+            tags=["slack"],
+        ),
+    )
+    thread_conductor_public_channels: bool = field(
+        default=False,
+        metadata=_meta(
+            "Conductor Threads In Public Channels",
+            "Also admit Conductor threads in public channels. Every member of such a "
+            "channel can read what the thread shows: the workers' titles, states, "
+            "PRs and CI, and their approval cards. Off by default, which keeps "
+            "Conductor threads to the owner's DM with the app and private channels "
+            "(a channel made public later stops dispatching). Has no effect while "
+            "slack.thread_conductor is off. A missing or malformed value reads as "
+            "off; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channels: bool = field(
         default=False,
         metadata=_meta(
@@ -426,6 +490,27 @@ class SlackConfig:
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    slack_mcp: bool = field(
+        default=False,
+        metadata=_meta(
+            "Slack Tools For Your Agents",
+            "Let the same Slack app serve Slack's MCP server, so each person can "
+            "connect their agents to Slack as themselves. Adds "
+            "settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL "
+            "http://localhost:48106/callback to the generated app manifest, and "
+            "replaces its user scopes with the read-only ones Slack's MCP server "
+            "needs (search, history, channel and user lists, files, canvases, "
+            "lists); off, the manifest is unchanged. "
+            "PKCE cannot be turned off again in Slack without Slack support, the "
+            "app must stay internal (not publicly distributed), each person still "
+            "connects on the Slack card under Settings > Connections with the "
+            "app's Client ID and Client Secret, and Slack ends those "
+            "sign-ins after 30 days. The settings page shows this switch only "
+            "while Connections offers the Slack card, or while it is on. The "
+            "gateway runs nothing for it. Off by default; no restart.",
             tags=["slack"],
         ),
     )

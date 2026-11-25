@@ -343,7 +343,10 @@ def _run_installer(
         key,
         with_pipx=with_pipx,
         fail_with=fail_with,
-        extra_env=extra_env,
+        # These runs prove the pip arguments; the fake pip leaves no kirocrew to
+        # run `kas install`, which a first install fails on
+        # (test_installer_kas_default.py).
+        extra_env={"KIROCREW_INSTALL_KAS": "0", **(extra_env or {})},
         existing_pipx_venv=existing_pipx_venv,
         injected=injected,
         runpip_added=runpip_added,

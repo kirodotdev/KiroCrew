@@ -63,7 +63,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
 from kiro_crew.dashboard.session_activity import session_activity, session_execution_active
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.context import redact_via_context
-from kiro_crew.work_vocab import waits_on_person
+from kiro_crew.work_vocab import ask_is_current, waits_on_person
 
 logger = logging.getLogger(__name__)
 
@@ -374,14 +374,14 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
     return False
 
 
-def awaits_person(
+def names_person(
     item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
 ) -> bool:
-    """Whether *item* waits on the PERSON: its last report is ``blocked`` / ``question``
-    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), nobody has
-    answered it since (:func:`answered_since_report`), and its worker's turn is not
-    *running*. The one test behind the sidebar's crew count and the conductor mode Board's
-    Needs your input, so they agree.
+    """Whether *item*'s worker says it waits on a person: its last report is
+    ``blocked`` / ``question`` naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`),
+    nobody has answered it since (:func:`answered_since_report`), and its worker's
+    turn is not *running*. The worker's claim, before the conductor vets it: see
+    :func:`awaits_person` for whether the person owns it.
 
     A running turn means the worker moved on: the conductor messaged it or a loop
     woke it, and neither writes a ledger answer. A tool approval it waits on mid-turn
@@ -391,38 +391,44 @@ def awaits_person(
     )
 
 
-def item_awaits_person(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> bool:
-    """:func:`awaits_person` for one work-item payload on *slot_key*'s ledger, over
-    its own event tail: the warm welcome's reader, so it and this board agree. A
-    tail that cannot be read leaves the item's stamps to decide; a closed item
-    waits on nobody, as on the board. *running* is :func:`item_running`, read on
-    the loop beforehand; a remote item reads its stored record here. FILE I/O."""
+def awaits_person(
+    item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
+) -> bool:
+    """Whether *item* waits on the PERSON: its worker names one (:func:`names_person`)
+    AND the conductor relayed the question with a current ``ask`` record (the item
+    carries ``ask`` and no report follows the newest ``ask`` event in *events*,
+    :func:`~kiro_crew.work_vocab.ask_is_current`). Until the conductor records it,
+    the question is still the conductor's to vet. The one test behind every "needs
+    you" reader -- the Board's Needs your input, the sidebar's crew count, the
+    goal-board facts, the headless run and the warm welcome -- so they agree
+    (rfc-delayed-task-brief, section 3.11)."""
+    return bool(item.ask) and ask_is_current(events) and names_person(item, events, running=running)
+
+
+def item_person_state(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> str:
+    """One work-item payload on *slot_key*'s ledger, over its own event tail, as the
+    warm welcome reads it: ``"waits"`` when it :func:`awaits_person` (so the welcome
+    and this board agree), ``"checking"`` when its worker names a person but the
+    conductor has not relayed it with a current ``ask`` yet, else ``""``. A tail that
+    cannot be read leaves the item's stamps to decide its answer and counts its
+    record as not current (``"checking"``), so an old one never reads as waiting; a
+    closed item is neither, as on the board. *running* is :func:`item_running`,
+    read on the loop beforehand; a remote item reads its stored record here. FILE I/O."""
     if work_item_is_terminal(item.get("state")):
-        return False
+        return ""
+    readable = True
     try:
         tail = _tail_events(slot_key, str(item.get("item_id")), _MAX_EVENT_TAIL)
     except Exception:
         logger.debug("no event tail for a warm welcome item", exc_info=True)
-        tail = []
+        tail, readable = [], False
     stored = work_ledger.WorkItem.from_dict(dict(item))
     remote = work_ledger.remote_liveness(slot_key, stored)
     running = remote[0] if remote is not None else running
-    return awaits_person(stored, [event.to_dict() for event in tail], running=running)
-
-
-def ask_is_current(events: list[dict[str, Any]]) -> bool:
-    """Whether the item's ``ask`` record explains the question waiting now, by the
-    ledger's own event order (*events*, oldest first): no ``report`` was appended
-    after the newest ``ask`` event. Stamps have whole-second resolution and would
-    tie, so the order decides. A tail cut short of the ``ask`` event counts as
-    current only when it holds no report either."""
-    for event in reversed(events):
-        kind = event.get("kind")
-        if kind == "ask":
-            return True
-        if kind == "report":
-            return False
-    return True
+    events = [event.to_dict() for event in tail]
+    if not names_person(stored, events, running=running):
+        return ""
+    return "waits" if readable and awaits_person(stored, events, running=running) else "checking"
 
 
 def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
@@ -439,7 +445,7 @@ def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
 
 def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
     """Whether *item*'s local worker has a model turn in flight.
-    A remote item answers False here: :func:`item_awaits_person` reads its record
+    A remote item answers False here: :func:`item_person_state` reads its record
     off the loop. Memory reads."""
     stored = work_ledger.WorkItem.from_dict(dict(item))
     if stored.worker_instance_id:
@@ -533,6 +539,19 @@ async def own_worker_records(
         return await asyncio.to_thread(_own_worker_records_locked, slot_key)
 
 
+def _binds_back(slot_key: str, item: work_ledger.WorkItem) -> bool:
+    """Whether *item*'s worker is bound to *item* now: its one binding file names it.
+
+    A worker holds one binding, replaced on each bind, so an older item that still
+    names the worker is not what the worker is working on. FILE I/O.
+    """
+    worker = item.worker_session_key or ""
+    return bool(worker) and any(
+        work_ledger.read_binding(candidate) == (slot_key, item.item_id)
+        for candidate in dict.fromkeys((worker, session_ledger.ledger_key(worker)))
+    )
+
+
 def _own_worker_records_locked(
     slot_key: str,
 ) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
@@ -543,15 +562,7 @@ def _own_worker_records_locked(
         return None, []
     items = work_ledger.list_work_items(slot_key)
     for item in items:
-        worker = item.worker_session_key or ""
-        if not worker:
-            continue
-        bound = False
-        for candidate in dict.fromkeys((worker, session_ledger.ledger_key(worker))):
-            if work_ledger.read_binding(candidate) == (slot_key, item.item_id):
-                bound = True
-                break
-        if not bound:
+        if item.worker_session_key and not _binds_back(slot_key, item):
             item.worker_session_key = None
     for item in items:
         # A person's steer answers a worker's question as a decide does
@@ -606,15 +617,17 @@ def closed_items(slot_key: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _alive_of(state: DashboardState, worker_key: str) -> str:
+def _alive_of(state: DashboardState, worker_key: str, *, current: bool = True) -> str:
     """``running`` / ``idle`` / ``closed`` for a worker session key.
 
     Computed here and the key discarded, because the page may not have the key.
     An item never bound to a session is ``closed``: nothing is running for it.
+    An item that is not the worker's *current* one is at most ``idle``: the
+    worker's turn is for another item.
     """
     if not worker_key:
         return "closed"
-    if _slot_running(state, worker_key):
+    if current and _slot_running(state, worker_key):
         return "running"
     if _slot_open(state, worker_key) or _find_slot(state, worker_key) is not None:
         return "idle"
@@ -812,6 +825,19 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     )
 
     remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, items)
+    # A closed item keeps its worker's key after the worker is bound to a newer
+    # item, so the worker's busy turn says nothing about it unless the worker is
+    # still bound to it (a closed item asked to work again).
+    not_current = await asyncio.to_thread(
+        lambda: {
+            item.item_id
+            for item in items
+            if item.is_terminal
+            and item.worker_session_key
+            and not item.worker_instance_id
+            and not _binds_back(key, item)
+        }
+    )
     rows: list[dict[str, Any]] = []
     for item in items:
         row = item.to_dict()
@@ -841,6 +867,11 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["report_undelivered"] = undelivered.get(item.item_id)
         events = [event.to_dict() for event in event_tails[item.item_id]]
+        # The conductor's ask record only while it explains the question waiting now:
+        # a newer report is a new question it has not vetted, so the card must not
+        # show the old what/why/options beside it.
+        if row.get("ask") and not ask_is_current(events):
+            row.pop("ask")
         # Waits on the PERSON: the one test the sidebar's crew_work count uses too.
         row["awaits_person"] = not item.is_terminal and awaits_person(
             item, events, running=turn_running
@@ -852,7 +883,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
                 alive=(
                     _remote_alive(running, closed)
                     if item.worker_instance_id
-                    else _alive_of(state, worker_key)
+                    else _alive_of(state, worker_key, current=item.item_id not in not_current)
                 ),
                 outstanding=_is_outstanding(item, row["events"]),
                 terminal=item.is_terminal,

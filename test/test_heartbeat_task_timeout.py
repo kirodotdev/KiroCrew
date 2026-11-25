@@ -179,3 +179,59 @@ class TestHeartbeatTaskTimeout:
         await on_task("do a thing", "")
 
         assert orch.ctx_builder.build_message.call_args.kwargs.get("interactive") is False
+
+
+class TestHeartbeatTaskKeptWhenNotFinished:
+    """A timed-out or refused task is not finished, so it stays in HEARTBEAT.md."""
+
+    @pytest.mark.asyncio()
+    async def test_timed_out_task_is_kept_and_its_notice_says_so(self, monkeypatch):
+        from kiro_crew.heartbeat import _should_keep
+
+        orch, _sessions = _make_orchestrator()
+
+        async def _fast_wait_for(awaitable, timeout):
+            if asyncio.iscoroutine(awaitable):
+                awaitable.close()
+            raise asyncio.TimeoutError
+
+        monkeypatch.setattr(gw_mod.asyncio, "wait_for", _fast_wait_for)
+        on_task = await _capture_task(orch)
+        result = await on_task("watch the deploy", "")
+
+        assert _should_keep(result) is True
+        orch._deliver_result.assert_awaited_once()
+        delivered = orch._deliver_result.await_args.args[2]
+        assert "runs again next beat" in delivered
+        assert "HEARTBEAT_KEEP" not in delivered
+
+    @pytest.mark.asyncio()
+    async def test_task_refused_by_fair_admission_is_kept(self, monkeypatch):
+        import kiro_crew.shared_crew.turn_gate as turn_gate
+        from kiro_crew.heartbeat import _should_keep
+
+        orch, _sessions = _make_orchestrator()
+
+        async def _refuse(work, **kwargs):
+            work.close()
+            return None
+
+        monkeypatch.setattr(turn_gate, "run_admitted", _refuse)
+        on_task = await _capture_task(orch)
+
+        assert _should_keep(await on_task("watch the deploy", "")) is True
+        orch._deliver_result.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_finished_task_is_still_removed(self, monkeypatch):
+        from kiro_crew.heartbeat import _should_keep
+
+        orch, _sessions = _make_orchestrator()
+
+        async def _ok(*args, **kwargs):
+            return "done, all clear"
+
+        monkeypatch.setattr(gw_mod, "stream_and_collect", _ok)
+        on_task = await _capture_task(orch)
+
+        assert _should_keep(await on_task("watch the deploy", "")) is False

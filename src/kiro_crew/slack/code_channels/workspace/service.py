@@ -45,7 +45,7 @@ from kiro_crew.slack.code_channels.models import (  # noqa: F401 - publishing.ca
 from kiro_crew.slack.code_channels.workspace import folders, git_ops, publishing
 from kiro_crew.slack.code_channels.workspace.board_cache import BoardCache
 from kiro_crew.slack.code_channels.workspace.code_tab import CodeTab
-from kiro_crew.slack.code_channels.workspace.context_bar import BarState
+from kiro_crew.slack.code_channels.workspace.context_bar import PR_CI_UNREAD, BarState
 from kiro_crew.slack.code_channels.workspace.diff import (
     CLEAN,
     MASK_LINES,
@@ -163,14 +163,22 @@ def worktree_settled(record: WorkspaceRecord) -> bool:
 
 
 #: What a refresh publishes and so writes back; every other field is the bind's.
-_REFRESH_FIELDS = (
+#: The channel's own PR as the last read found it (``refresh_pr``).
+_PR_FIELDS = (
     "pr_number",
     "pr_url",
     "pr_state",
     "pr_ci",
     "pr_for",
     "pr_title",
+    "pr_review",
+    "pr_mergeable",
+    "pr_ci_read",
+)
+_REFRESH_FIELDS = (
+    *_PR_FIELDS,
     "resource_hash",
+    "pr_status_hash",
     "bar_hash",
     "diff_hash",
     "view_id",
@@ -188,17 +196,28 @@ def _pr_identity(repo: Any, branch: str) -> str:
 
 def _clear_pr(record: WorkspaceRecord) -> None:
     record.pr_number, record.pr_url, record.pr_state, record.pr_ci = 0, "", "", ""
-    record.pr_for = record.pr_title = ""
+    record.pr_for = record.pr_title = record.pr_review = record.pr_mergeable = ""
+    record.pr_ci_read = PR_CI_UNREAD
 
 
-#: What a rebind that re-adopts the same worktree keeps from the stored record.
-_ADOPTED_FIELDS = ("folder_id", "pointed_session", "view_id", "diff_hash", "diff_workers")
+#: What a rebind that re-adopts the same worktree keeps from the stored record (its
+#: PR too, until the next pass re-reads it: an unanswered read is no evidence it went).
+_ADOPTED_FIELDS = (
+    "folder_id",
+    "pointed_session",
+    "view_id",
+    "diff_hash",
+    "diff_workers",
+    "pr_status_hash",
+    *_PR_FIELDS,
+)
 #: What every replacement keeps, whatever tree it binds: the channel's diff tab
 #: (its id, and whether it was built with the board, which travels with it).
 #: The tab belongs to the channel, so a rebind to another repository (or to a
 #: folder with no worktree) must still be able to remove the tab the old tree's
 #: diff opened.
-_CHANNEL_FIELDS = ("view_id", "diff_workers")
+#: The channel's pr_status (what was sent) is the channel's too.
+_CHANNEL_FIELDS = ("view_id", "diff_workers", "pr_status_hash")
 
 #: Longest the archive's cleanup waits for a bind still cutting the worktree.
 _QUIET_WAIT_SECS = 120.0
@@ -686,6 +705,8 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
         #: See :class:`~.code_tab.CodeTab`: the withdraw backoff, and who was told.
         self._withdraw_wait: dict[str, tuple[float, float]] = {}
         self._withdraw_told: set[str] = set()
+        #: ``channel key -> whether the last pass's Code tab is up`` (``show_code_tab``).
+        self._diff_up: dict[str, bool] = {}
         #: Per channel whose owed Code tab the board's scope (or Off / Review)
         #: refuses: when the watch arms its next takedown pass, and the wait after.
         self._takedown_retry: dict[str, tuple[float, float]] = {}
@@ -1664,6 +1685,7 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
             if _activation_admits(binding):
                 # Asked again: the bar's work above takes seconds.
                 await self._publish_resource(record, binding)
+                await publishing.publish_pr_status(self, record, binding)
         except Exception:
             # The channel's own steps need git and gh; the board needs neither,
             # so their failure never keeps the board from going out.
@@ -1749,6 +1771,8 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                     current.diff_workers = current.diff_workers or record.diff_workers
                 self._channel_pr_read.pop(key, None)
                 self._sent_bar.pop(key, None)
+                # The channel's pr_status is what this pass last sent, whichever tree.
+                current.pr_status_hash = record.pr_status_hash
                 raced = True
             else:
                 # Someone else published while this pass ran (a turn start's

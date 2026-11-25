@@ -31,19 +31,13 @@ import SettingsSearch from './settings/SettingsSearch'
 import { Btn, CardFrameContext, ContentSkeleton } from '../components/ui'
 import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
-import ErrorBoundary from '../components/ErrorBoundary'
 import { AGENT_HARNESS_SETTINGS_TAB, isKiroSignInHighlight, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
+import { isKasEngineHighlight, KAS_ENGINE_PATH } from './developer/kasEngineLink'
 import { useKiroSignInOffered } from './developer/useKiroSignInOffered'
+import { useKiroAccountReading } from '../hooks/useKiroAccountReading'
 
 const AgentBackendTab = lazy(() =>
   import('./developer/AgentBackendTab').then(m => ({ default: m.AgentBackendTab })),
-)
-/**
- * Lazy: the Kiro sign-in card pulls in its OIDC chooser, which no other Settings
- * tab needs, so the chunk is fetched when the Kiro account tab is first opened.
- */
-const KiroSignInCard = lazy(() =>
-  import('./developer/KiroSignInCard').then(m => ({ default: m.KiroSignInCard })),
 )
 /** Subagent Settings + Warm Pool, beside the backend picker: both govern how agents run. */
 const AgentRunSettings = lazy(() =>
@@ -52,6 +46,10 @@ const AgentRunSettings = lazy(() =>
 /** Lazy: the Connections gallery (cards, connect flow, OAuth app parts) is
  *  only needed when that tab opens, so it stays out of the Settings chunk. */
 const ConnectionsPage = lazy(() => import('./connections/ConnectionsPage'))
+/** Lazy for the same reason: the MCP sign-ins switch is drawn only on the Connections tab. */
+const McpSignInsSection = lazy(() =>
+  import('./settings/McpSignInsSection').then(m => ({ default: m.McpSignInsSection })),
+)
 /** Lazy: the list-detail Secrets panel draws only behind the Secrets vault
  *  redesign preview. The default panel stays in this chunk, as it is on main. */
 const SecretsPanel = lazy(() =>
@@ -75,6 +73,10 @@ const PeoplePanel = lazy(() =>
 /** Lazy: the About tab (version, update flow, release notes) is only needed when that tab opens. */
 const AboutPanel = lazy(() =>
   import('./settings/AboutPanel').then(m => ({ default: m.AboutPanel })),
+)
+/** Lazy: the Kiro account tab (sign-in header, Credits card and their reads) is only needed when that tab opens. */
+const KiroAccountPanel = lazy(() =>
+  import('./developer/KiroAccountPanel').then(m => ({ default: m.KiroAccountPanel })),
 )
 import { SettingsCard } from '../components/settings'
 
@@ -104,11 +106,11 @@ function buildTabs() {
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
     // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
-    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus'] },
+    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus', 'lesson'] },
     // Kiro sign-in, on its own tab: the agent harness is one of several things
     // that run as this account (Team Crews and Shared Crews do too), so it is
     // reachable whichever harness is selected.
-    { key: 'kiro-account', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.kiroAccount.label'), icon: <UserRound size={16} />, description: i18nT('settings.tabs.kiroAccount.description') },
+    { key: 'kiro-account', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.kiroAccount.label'), icon: <UserRound size={16} />, description: i18nT('settings.tabs.kiroAccount.description'), ownHeader: true },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
     // The coding-agent switch used to be a
     // Developer-page tab, which the sidebar only shows in Developer Mode. First-run
@@ -281,12 +283,14 @@ export default function SettingsPage() {
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
   const sharedCrew = useSharedCrewCapabilities()
   const sharedCrewPreview = sharedCrewPreviewOn(sharedCrew.capabilities)
-  // The Kiro account tab exists while the build offers Kiro sign-in; an
-  // unanswered schema hides nothing, so a deep link never lands on a missing tab.
+  // The Kiro account tab exists while the build offers Kiro sign-in or there is
+  // a credit reading to show (the phone's only place for it); an unanswered
+  // schema hides nothing, so a deep link never lands on a missing tab.
   const kiroSignInOffered = useKiroSignInOffered() !== false
+  const { kiroUsageState, kiroAccountEntry } = useKiroAccountReading()
   const allTabs = buildTabs().filter(t =>
     (t.key !== 'webhooks' || webhooksPreview)
-    && (t.key !== 'kiro-account' || kiroSignInOffered)
+    && (t.key !== 'kiro-account' || kiroSignInOffered || kiroAccountEntry)
     && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
     && (t.key !== 'people' || sharedCrewPreview),
   )
@@ -329,10 +333,15 @@ export default function SettingsPage() {
   if (legacySignInTab === AGENT_HARNESS_SETTINGS_TAB && isKiroSignInHighlight(memorySelection.get('highlight'))) {
     return <Navigate replace to={KIRO_SIGN_IN_PATH} />
   }
+  // The engine switch used to sit in Developer > Feature previews; links to it
+  // there land on the KAS row's engine choice instead.
+  if (legacySignInTab === 'developer' && isKasEngineHighlight(memorySelection.get('highlight'))) {
+    return <Navigate replace to={KAS_ENGINE_PATH} />
+  }
 
   return (
     <SidePanelLayout
-      title={i18nT('pages.settingsPage.settings')}
+      title={i18nT('nav.account_and_settings')}
       tabs={tabs}
       paneOwnsHeader={memberMemoryView}
       basePath={SETTINGS_BASE_PATH}
@@ -362,16 +371,11 @@ export default function SettingsPage() {
           </div>
         )}
         {tab === 'overview' && <OverviewPanel />}
-        {tab === 'kiro-account' && (kiroSignInOffered && (
-          // Isolated so a throwing card cannot take the Settings page down with
-          // it. The default fallback, not `null`: the card is the whole tab, so
-          // a failure must show its error and Try Again rather than a blank pane.
-          <ErrorBoundary scope="settings-kiro-sign-in">
-            <Suspense fallback={<ContentSkeleton rows={6} />}>
-              <KiroSignInCard />
-            </Suspense>
-          </ErrorBoundary>
-        ))}
+        {tab === 'kiro-account' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <KiroAccountPanel signInOffered={kiroSignInOffered} usage={kiroUsageState} showCredits={kiroAccountEntry} />
+          </Suspense>
+        )}
         {tab === 'imports' && <ImportPanel />}
         {tab === 'agent' && (
           <Suspense fallback={<ContentSkeleton rows={6} />}>
@@ -416,6 +420,7 @@ export default function SettingsPage() {
             {connectionsUiPending
               ? <ContentSkeleton rows={6} />
               : <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
+            <McpSignInsSection />
           </Suspense>
         )}
         {tab === 'secrets' && (

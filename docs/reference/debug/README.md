@@ -34,7 +34,7 @@ tool listed in core would spend context in every request of every session foreve
 | Everything is slow and nothing is obviously wrong | `debug_threads` mode=`now` | Run-queue wait against GIL wait. High run-queue wait is a busy host; low run-queue wait beside high GIL wait is GIL contention |
 | One process is holding a lot of memory | `debug_processes` | On Linux, rss, thread states, fds and cwd per node, plus `cpu_pct` and `runq_wait_pct`. The rates are deltas against a baseline the route holds, so they arrive from the second read onward; a first read, or a gap under 1 s or over 300 s, returns them null with the reason in `degraded`. `gil_saturated_hint` is gated on `cpu_pct`. On macOS the snapshot carries pid and ppid only: state, threads, fds, cwd and cpu are null and every non-gateway node is `other`. `rss_kb` there is the libproc `phys_footprint`, which counts compressed and swapped pages and so reads higher than `ps` RSS; it is null for a node whose footprint could not be read. Read `roster.degraded` before concluding anything |
 | Sessions closed but processes are still alive | `debug_processes` `orphan_only=true` | The reaper's own orphan verdict, computed by the same function the reaper uses. Not run on macOS, where `orphans: 0` means unmeasured (`roster.degraded` says so) |
-| A hot path needs a profile, not a snapshot | `debug_threads` mode=`sample` `seconds=<n> hz=<n>` | Folded stacks over the window (at most 60 s, one sampling run at a time); `deep=true` returns the py-spy `--gil` command for an operator to run outside the gateway, when py-spy is on PATH; it does not run it |
+| A hot path needs a profile, not a snapshot | `debug_threads` mode=`sample` `seconds=<n> hz=<n>` | Folded stacks over the window (at most 60 s, one sampling run at a time, and only when the gateway runs with `KIROCREW_DEBUG=1`; otherwise the answer is a `refused` reason); `deep=true` returns the py-spy `--gil` command for an operator to run outside the gateway, when py-spy is on PATH; it does not run it |
 | The loop stalled and a dump was written | `debug_threads` mode=`dumps` | Lists the watchdog's faulthandler dumps; `read=<name>` returns one, scrubbed |
 | A file changed at a timestamp and nobody knows why | `debug_snapshots` `around=<ts> radius=5m` | The recorded series and event rows around that second |
 
@@ -54,13 +54,16 @@ these tools, the dashboard, or a pod — never from a shell.
 refusal. The user did not cancel anything. `debug_refusals` is what separates the
 cases, into five classes: `sensitive_path_match`, `unverifiable_path`,
 `denied_rule` (carrying its refusal-diagnostic id), `governance` (a profile
-ceiling) and `tool_policy_timeout`.
+ceiling) and `tool_policy_timeout`. A row that fits none of them is reported as
+`unclassified`.
 
 **A refusal is not a match.** The path gate resolves symlinks before comparing a
 path to the protected list, and that resolution has a time budget. When the budget
 runs out the call is refused fail-closed *without the path having been judged*. It
 is transient, it is not about your spelling, and a different reader or a different
-spelling meets the same budget. Wait ~30s and retry the identical call. A pathless
+spelling meets the same budget. Wait as long as the refusal says (a stalled prefix
+is refused for 30 s, doubling on each repeat stall up to 30 minutes) and retry the
+identical call. A pathless
 MCP tool such as `monitor_inspect` can be refused this way too, so a failed
 inspect call says nothing about a monitor's state. `debug_refusals` classes these as
 `unverifiable_path` and marks them `retryable`.
@@ -86,7 +89,8 @@ dispatch tree.
 
 `debug_refusals` is the one per-session view and takes the crew-log scope: your own
 rows, the rows of any session you spawned at any depth, and anything at all for the
-owner's tab.
+owner's tab. A caller in one of the classes below still reads its own rows: `self`
+narrows to them instead of widening to its spawn tree.
 
 Unattended (`cron:`, `taskrunner:`), app-scoped, incognito, temporary, and
 channel-linked or channel-mirrored callers get no host-wide view — including an
@@ -131,7 +135,7 @@ the accessor exists.
 A build that does not carry `kiro_crew.diag` cannot answer `debug_threads`,
 `debug_processes` or `debug_snapshots` at all. Those routes answer HTTP 501 with
 `{"error": "diag not available in this build", "code": "diag_unavailable"}` and the
-tools relay it verbatim, so
+tools relay that message verbatim under the code `diag_unavailable`, so
 "this build cannot answer" stays distinguishable from "the answer is nothing".
 `debug_gateway` reports the same absence in its `recorder` block, and it and
 `debug_refusals` answer on every build.

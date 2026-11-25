@@ -28,9 +28,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # and paths the runner created; none comes from the agent or the model.
         # The case's `build.sh`, run on a fresh empty directory before any agent.
         "eval/tasks.py::build_repo",
-        # `git add/commit/push` in a repo `build_repo` just made, for the
+        # `git add/commit` in a repo `build_repo` just made, for the
         # no-model `--check` gate only; no agent has touched that repo.
         "eval/tasks.py::apply_reference",
+        # `git -c core.hooksPath=/dev/null --git-dir <origin> fetch <repo> trunk:trunk`:
+        # fixed argv and two paths the runner created. It runs in the runner's own
+        # bare origin with hooks off, so no remote, push URL or hook the agent set in
+        # the repo decides where the branch goes; the agent's commits are only read
+        # as data, the same objects the hidden check (`_run_check`) then imports.
+        "eval/tasks.py::sync_task_branch",
         # This package's own gateway (`python -P -m kiro_crew gateway --port auto
         # --no-open --no-tunnel`) in the run's fresh data home; it sandboxes the
         # agents it spawns itself.
@@ -41,6 +47,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # it with its own strict sandbox; Claude Code's containment is the
         # dedicated eval OS user the preflight requires (RFC §4.1, §4.2, §11).
         "eval/tasks.py::drive_arm",
+        # `--use-operator-credentials` preflight (RFC §4.3): `kiro-cli whoami` or
+        # `claude -p "say ok"`, fixed argv, the operator's own env by their explicit
+        # choice, stdin DEVNULL, a time limit. Runs before any case or agent exists.
+        "eval/arms.py::_probe",
         # The case's hidden check (`python <suite>/hidden/check.py <origin>`).
         # Not routed on purpose: the check's child process imports the code the
         # agent pushed, by design, so a strict-sandbox route is a recorded
@@ -92,6 +102,28 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Gateway readiness uses fixed auth-status argv for a HOSTS entry, with
         # all three streams discarded. It reads no credential or guest cwd.
         "remote_session/git_gateway.py::login_status",
+        # Connected computers (local machine). asyncio.run drives the CLI's one
+        # revoke pass and the desktop host's stdio loop in-process; neither spawns.
+        "connected_computers/cli.py::_tell_remotes",
+        "connected_computers/desktop_host.py::run_desktop_host",
+        # The connector's tool servers. The argv is chosen on THIS computer: this
+        # interpreter, -I, the installed workspace_tools.py and the root the user
+        # picked in native consent, or an MCP server's command/args/env as the
+        # grant snapshotted it at consent. The remote gateway only names a kind,
+        # which selects among those entries; it supplies no path, argv, env or cwd,
+        # and agent input reaches the child only as MCP frames on its pipes. Each
+        # child already runs under confinement.wrap_off_loop (bwrap on the granted
+        # root, env built from nothing), which self_test proves holds;
+        # the gateway's own sandbox wrapper would replace that fence, not add one.
+        "connected_computers/connector.py::_spawn",
+        # That self-test's probe: this interpreter, -I -c with a fixed program; its
+        # argv tail is the JSON of witnesses this check created, cwd the granted
+        # root. stdin DEVNULL, no shell. Confined by the plan on the second run.
+        "connected_computers/confinement.py::_run_probe",
+        # OS keyring for the local grant key: secret-tool resolved from fixed system
+        # folders, with fixed verbs and a hashed account id; the key travels on
+        # stdin, never argv. No shell, no agent input.
+        "connected_computers/protected_store.py::_run",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has
@@ -572,6 +604,24 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         #     helper allowlist, never through argv; the children must reach the
         #     real browser and the loopback relay, so a sandbox would break them.
         "browser_harness/install.py::_run",
+        # ``sdk_extras.py::_lay_down`` (called by ``install_extra``) runs ``<sys.executable> -I -m
+        # pip install --target
+        # <data home>/extras/<extra>/.<tag>.partial --no-deps --require-hashes
+        # --only-binary :all: -r <shipped lock>``. Every token is a module constant, the
+        # shipped hash lock or a data-home path. Two callers, both gateway-owned: the
+        # owner's Install press (owner + local only) and the background install at
+        # gateway start for an enabled, credentialed Feishu channel
+        # (``feishu/gateway.py::_schedule_sdk_install``). Scrubbed PYTHON*/PIP_* env, with
+        # only the user's own index settings (``_configured_index_env``) passed back on
+        # the first attempt; a download failure there retries once against pypi.org.
+        # Not agent-influenced.
+        "sdk_extras.py::_lay_down",
+        # ``sdk_extras.py::_pip_config_list`` runs ``<sys.executable> -m pip config list``
+        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so the installer can
+        # find the index the user configured for pip. Same two gateway-owned callers
+        # as ``_lay_down``; only its index-url/extra-index-url/trusted-host/cert lines
+        # are used. Not agent-influenced.
+        "sdk_extras.py::_pip_config_list",
         "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
@@ -630,6 +680,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from the loop-less ``kirocrew config pending apply|discard``; the matched call
         # starts no child. The inputs are an operator-typed file name and version.
         "cli_config_pending.py::_resolve",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving ``CronHistoryStore``'s async readers
+        # from the loop-less, read-only ``kirocrew cron history``; the matched calls
+        # start no child. The inputs are an operator-typed job id and run id.
+        "cli_cron_history.py::cron_history",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
@@ -751,10 +806,24 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cli_server_update.py::_update",
         # `git ls-remote` for a checkout on no branch, split out of _update: the
         # same `git` the fetch runs, under the same env, after the same source-pin
-        # and exec-config checks. The argv is literals plus the three reviewed
-        # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
-        # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
-        "cli_server_update.py::_detached_upstream_branch",
+        # and exec-config checks. The argv is literals plus the refs asked about:
+        # the three reviewed primary branch refs, or the release tags
+        # `release_channel.release_refs` builds for `--release`; stdin=DEVNULL,
+        # 60s timeout. Pinned by the `checkout_on_no_branch` tests in
+        # test_cli_server_more_coverage.py and test_cli_update_release_tag.py.
+        "cli_server_update.py::_remote_refs_present",
+        # The release-tag probes for `kirocrew update --release`: `git rev-parse
+        # --verify HEAD^{commit}` and `git for-each-ref --points-at=HEAD` over
+        # refs/tags. Literal argv, the update's own git env, cwd the detected
+        # checkout, stdin=DEVNULL, 10s timeout, read-only. Pinned by
+        # test_cli_update_release_tag.py.
+        "cli_server_update.py::_head_oid",
+        "cli_server_update.py::_release_tag_checkout",
+        # `git rev-parse --is-shallow-repository`, which picks `--depth 1` for the
+        # `--release` fetch only on a shallow clone. Literal argv, the update's own
+        # git env, cwd the detected checkout, stdin=DEVNULL, 10s timeout,
+        # read-only. Pinned by test_cli_update_release_tag.py.
+        "cli_server_update.py::_is_shallow_clone",
         # The changed-path listing before the reset: `git diff --name-status -z
         # --no-renames HEAD <pinned commit>`. Literal flags plus the commit pinned
         # right after the fetch, the same `git` under the same env as the fetch and
@@ -981,11 +1050,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # it replaced the inline fetch spawns in _check_git_checkout and
         # _auto_apply_update.
         "platform/update_fetch.py::fetch_and_pin_upstream",
-        "instances/diagnostics.py::_run_ok",
-        "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",
-        "instances/token_mint.py::mint_remote_token",
-        "instances/token_mint.py::run_remote_kirocrew",
+        # The one ssh spawn behind the token mint, the remote run, the two
+        # diagnosis probes and the ssh tunnel: an argv built by token_mint's
+        # _build_ssh_argv or the tunnel's _build_argv, in a process group of its
+        # own so a ProxyCommand it leaves behind can be ended.
+        "instances/token_mint.py::spawn_one_shot_ssh",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` in the
         # desktop tunnel keeper's CLI entry point. The only child it creates is the
         # forward ``_SshTunnel.start`` spawns, listed just above.
@@ -999,6 +1069,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Messages.app through the operator's own Full Disk Access and
         # Automation grants, which a scrubbed-env sandbox strips.
         "imessage/rpc.py::start",
+        # The managed-environment lane's ssh: `ssh -T -o ... crew-sbx-<id> sh -s`, a
+        # fixed argv whose one variable, the alias, is checked against the lane's
+        # `crew-sbx-<id>` shape first; the script travels on stdin and is rendered by
+        # the lane from its closed list (managed_env/install.py, machine.py). No agent
+        # input reaches it, and it must reach the operator's ssh config and plugin.
+        "managed_env/remote.py::_default_runner",
         "mcp_gateway/backend.py::spawn_backend",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the one-shot
@@ -1014,6 +1090,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # kills identity-confirmed backend trees through the pinned kill helpers;
         # it launches nothing an agent chose.
         "mcp_gateway/daemon_control.py::stop_daemon",
+        # NOT a subprocess spawn either: the same ``asyncio.run`` match, driving
+        # the one-shot ``_recycle_async`` coroutine for ``kirocrew mcp reload``.
+        # It sends one recycle-server frame to the already-running daemon over
+        # the same local endpoint; no child process and no argv here.
+        "mcp_gateway/daemon_control.py::recycle_server",
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
@@ -1187,7 +1268,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "pod/provision.py::_manifest_path",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
-        "pod/runtime.py::recent_journal",
         # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in
         # place; Windows has no exec, so the CLI runs the same binary as a child
         # and returns its exit code. Argv is the pod venv's entry point plus a
@@ -1249,6 +1329,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
         # individually because _SPAWN_NAMES collects bare-name calls to it.
         "sandbox_rlimit.py::create_subprocess_limited",
+        # The gateway Unix loop's off-loop Popen: it builds, on a worker thread, the
+        # child an asyncio subprocess call already asked for, with that call's argv.
+        # The call sites are the ones this audit holds to the chokepoint.
+        "platform_compat_offloop_spawn.py::_posix_popen",
         # The synchronous siblings of the above, same reasoning: they wrap an argv
         # they are handed and cannot route on its behalf.
         "sandbox_rlimit.py::run_limited",

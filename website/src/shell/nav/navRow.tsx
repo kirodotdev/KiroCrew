@@ -1,4 +1,4 @@
-import { forwardRef, type ForwardedRef } from 'react'
+import { createContext, forwardRef, useContext, type ForwardedRef } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -15,11 +15,10 @@ import type { UiLocationId } from '../../uiLocations/descriptors'
 import type { AppRunState } from '../../appRunState'
 import { useNavTip } from './navTip'
 
-function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
+function BadgeIndicator({ count, collapsed, label, name }: { count: number; collapsed: boolean; label: string; name: string }) {
   if (count <= 0) return null
-  const ariaLabel = `${count} ${label}`
   return collapsed
-    ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={ariaLabel} />
+    ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={name} />
     // Expanded: IN FLOW, not `absolute right-2`. The row's other right-edge
     // occupant is the hover/focus shortcut hint, which is an in-flow span — so an
     // absolutely-positioned badge sat ON TOP of it and a row with an unread count
@@ -29,22 +28,21 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
     //
     // `title` names what the number IS, for sighted users: a bare pill beside a
     // bare bot glyph does not say what either counts, and the fix above makes the
-    // two reliably co-visible. It carries the LABEL ALONE, not `ariaLabel` — the
-    // label is a plural phrase, so "1 unread conversations" would be visibly
-    // wrong at count 1, and the count is already rendered in the pill an inch
-    // away. `aria-label` keeps the count because a screen reader gets no pill.
+    // two reliably co-visible. It carries the LABEL ALONE, not `name` — the
+    // label is a count-free plural phrase, and the count is already rendered in
+    // the pill an inch away. `aria-label` carries the count because a screen
+    // reader gets no pill.
     // The Settings rows' update dot likewise carries different title and aria strings.
-    : <span className="shrink-0 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" title={label} aria-label={ariaLabel}>{count}</span>
+    : <span className="shrink-0 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" title={label} aria-label={name}>{count}</span>
 }
 
 /** Sub-agent activity belongs in the expanded rail, where the bot icon and
  *  count communicate what is active. The collapsed rail omits it: a second
  *  anonymous dot competes with the unread badge without identifying a session,
  *  while the Sessions list provides the actionable per-session status. */
-function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
+function ActivityIndicator({ count, collapsed, label, name }: { count: number; collapsed: boolean; label: string; name: string }) {
   if (count <= 0 || collapsed) return null
-  const ariaLabel = `${count} ${label}`
-  return <span className="shrink-0 flex items-center gap-1 text-[11px] text-accent" role="status" title={label} aria-label={ariaLabel}>
+  return <span className="shrink-0 flex items-center gap-1 text-[11px] text-accent" role="status" title={label} aria-label={name}>
     {/* Size and spacing are main's. A 12px glyph was tried here to make the mark
         identify its own count at a glance, and a reader of the rendered frames
         still could not tell what it depicted -- so it bought nothing and cost the
@@ -151,14 +149,22 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
   const appName = navId.startsWith('app-') ? navId.slice(4) : navId
   const dynamicCount = surfaceHasBadgeSource ? 0 : (appBadges[appName] || 0)
   const builtinLabel = surface?.badgeLabelKey ? i18nT(surface.badgeLabelKey) : surface?.badgeLabel ?? i18nT('app.updates')
+  // The count goes inside a plural catalog string so each language picks its own
+  // form; a surface's own plain label has no forms, so it keeps the number glued.
+  const badgeName = (count: number) => {
+    if (surface?.badgeCountKey) return i18nT(surface.badgeCountKey, { count })
+    if (surface?.badgeLabelKey || surface?.badgeLabel) return `${count} ${builtinLabel}`
+    return i18nT('app.updates_count', { count })
+  }
   const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
   const activityLabel = surface?.activityLabel ?? i18nT('app.subagents_in_flight_fallback')
+  const activityName = surface?.activityLabel ? `${activityCount} ${activityLabel}` : i18nT('app.subagents_in_flight_count', { count: activityCount })
   return (
     <>
-      <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
+      <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} name={activityName} />
       <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
-      <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
-      <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
+      <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} name={badgeName(builtinCount)} />
+      <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} name={badgeName(dynamicCount)} />
     </>
   )
 }
@@ -167,6 +173,13 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
  *  right-edge geometry in a real browser — the one check that can see the
  *  badge-over-chord overlap this row's unit tests can only pin structurally
  *  (happy-dom computes no layout). Same seam `UpdateOverlay` is exported on. */
+/** What can move the rail's rows (their order and the rail's width), as one
+ *  string. A row's layout glide measures the row only when this changes, not on
+ *  every render: the shell re-renders the rail many times while a page opens,
+ *  and each measurement forced a layout of the whole page inside that task.
+ *  Undefined outside the rail, which keeps Framer's measure-every-render. */
+export const NavRowLayoutKey = createContext<string | undefined>(undefined)
+
 export const NavItem = forwardRef(function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed, touch, replace, caption, 'data-ui-location': uiLocationId }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
   /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
@@ -199,6 +212,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   // >4,000px of it). The desktop rail is framer-free motion-wise, so it keeps
   // the row-reorder glide that `layout` buys there.
   const isMobileRow = useIsMobile()
+  const layoutKey = useContext(NavRowLayoutKey)
   const iconEl = <span className={`app-icon-nav w-5 h-5 [&>*]:!w-5 [&>*]:!h-5 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip, pointerProps: tipPointerProps } = useNavTip<HTMLDivElement>(collapsed)
   // Derived from the shortcut registry by route, so a row with a bound panel
@@ -234,7 +248,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
     onClick?.(); (onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
   }
   return (
-    <motion.div layout={isMobileRow ? undefined : 'position'}
+    <motion.div layout={isMobileRow ? undefined : 'position'} layoutDependency={layoutKey}
       data-onboarding-nav={navId}
       // Forwarded, not a render site of its own: the site is the spread on <NavItem>.
       {...forwardUiLocation(uiLocationId, rowRef, forwardedRef)}

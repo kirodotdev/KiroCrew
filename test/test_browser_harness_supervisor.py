@@ -53,7 +53,7 @@ def test_the_hidden_leaves_are_spelled_the_same_in_every_fence() -> None:
 def test_the_supervisor_allowlist_matches_the_worker_allowlist() -> None:
     worker = {name: accepted for name, (_fn, accepted) in helper_worker._ALLOWLIST.items()}
     assert dict(supervisor.HELPERS) == worker
-    for forbidden in ("http_get", "browser_js", "browser_cdp", "run", "upload_file", "fill_input"):
+    for forbidden in ("browser_js", "browser_cdp", "run", "upload_file"):
         assert forbidden not in supervisor.HELPERS
 
 
@@ -84,7 +84,7 @@ async def test_call_refuses_an_unlisted_helper_or_argument_before_connecting(
 ) -> None:
     sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
     with pytest.raises(supervisor.HelperError):
-        await sup.call("http_get", url="https://example.invalid")
+        await sup.call("upload_file", path="/etc/hosts")
     with pytest.raises(supervisor.HelperError):
         await sup.call("goto", url="https://example.invalid", referrer="x")
     with pytest.raises(supervisor.HarnessNotInstalled):
@@ -450,7 +450,7 @@ def _fake_helpers() -> types.ModuleType:
         raise RuntimeError("Session with given id not found")
 
     mod.click_at_xy = boom  # type: ignore[attr-defined]
-    mod.http_get = lambda url: "never"  # type: ignore[attr-defined]
+    mod.upload_file = lambda path: "never"  # type: ignore[attr-defined]
     return mod
 
 
@@ -459,7 +459,9 @@ def test_the_worker_runs_only_allowlisted_helpers_with_allowlisted_arguments() -
     ok = helper_worker._handle(helpers, {"id": 1, "helper": "goto", "kwargs": {"url": "https://a"}})
     assert ok == {"id": 1, "ok": True, "result": {"frameId": "f", "url": "https://a"}}
     assert helper_worker._handle(helpers, {"id": 2, "ping": True})["result"] == {"pong": True}
-    denied = helper_worker._handle(helpers, {"id": 3, "helper": "http_get", "kwargs": {"url": "x"}})
+    denied = helper_worker._handle(
+        helpers, {"id": 3, "helper": "upload_file", "kwargs": {"path": "x"}}
+    )
     assert denied["ok"] is False and "not allowed" in denied["error"]
     extra = helper_worker._handle(
         helpers, {"id": 4, "helper": "goto", "kwargs": {"url": "x", "evil": 1}}

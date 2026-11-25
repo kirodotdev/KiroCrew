@@ -973,6 +973,7 @@ def generate_refresh_token(
     peer_key: str = "",
     owner_mint: bool = False,
     embed_parent_port: str = "",
+    embed_forward_port: str = "",
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -1038,6 +1039,11 @@ def generate_refresh_token(
         # CSP ``frame-ancestors`` parent; without it the framed pane goes blank
         # on its next load after the first refresh.
         payload_dict["embed_parent_port"] = embed_parent_port
+    if embed_forward_port:
+        # The pane's own forward port (``apps/pane_ports.py``), carried with the
+        # parent port it pairs with so a rotated session still binds the app web
+        # origin record to the port the hub minted for.
+        payload_dict["embed_forward_port"] = embed_forward_port
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -1165,13 +1171,25 @@ def refresh_token_embed_parent_port(token: str) -> str:
     decimal port in range is returned, the shape ``token_embed_parent_port``
     accepts, so a rotation never carries a claim the CSP reader would refuse.
     """
+    return _refresh_token_port_claim(token, "embed_parent_port")
+
+
+def refresh_token_embed_forward_port(token: str) -> str:
+    """A refresh chain's ``embed_forward_port`` claim, or ``""`` when it has none.
+
+    The same contract as :func:`refresh_token_embed_parent_port`.
+    """
+    return _refresh_token_port_claim(token, "embed_forward_port")
+
+
+def _refresh_token_port_claim(token: str, claim: str) -> str:
     try:
         payload = json.loads(_b64url_decode(token.split(".")[0]))
     except Exception:
         return ""
     if not isinstance(payload, dict):
         return ""
-    value = payload.get("embed_parent_port", "")
+    value = payload.get(claim, "")
     if isinstance(value, str) and value.isdigit() and 1 <= int(value) <= 65535:
         return value
     return ""

@@ -3,7 +3,8 @@
 * :mod:`~kiro_crew.remote_control.defaults` -- the one default value, a leaf module
   the config schema imports.
 * :mod:`~kiro_crew.remote_control.hosting` -- the one rule for whether this Crew
-  hosts: on, off, or unset, where only a team key or a workload identity hosts.
+  hosts: on, off, or unset, where a personal sign-in, a team key or a workload
+  identity hosts.
 * :mod:`~kiro_crew.remote_control.default_notice` -- the one-time log line and bell
   note when a Crew first hosts only because of that default.
 * :mod:`~kiro_crew.remote_control.setting` -- reads and writes

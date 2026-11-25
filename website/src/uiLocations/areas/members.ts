@@ -248,6 +248,46 @@ export const LOCATIONS = {
       ],
     }],
   },
+  // The profile card's Sessions tab, first on its rail and the one the card
+  // opens on: the sessions the bot is driving, under the two switches that
+  // list them in the user's own Sessions list.
+  'members.sessions-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my bot's sessions", 'sessions my bot opened', "what my bot's workers are doing"],
+      'zh-CN': ['bot 的会话', 'bot 打开的会话'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
+  // That tab's per-bot switch (BotSessionListSwitches): lists this one bot's
+  // sessions in the user's Sessions list. Its label carries the bot's name, so
+  // it is described rather than quoted; the global switch beside it is the
+  // Settings row `setting:chat.show-all-bots-in-my-sessions`.
+  'members.bot-sessions-switch': {
+    kind: 'toggle',
+    label: { from: 'description', attr: 'label', key: 'uiLocations.description.members_bot_sessions_switch' },
+    terms: {
+      en: [
+        'show this bot in my sessions', "show this bot's sessions in my sessions list", 'hide a bot from the sidebar',
+        "hide this bot's sessions", "bot's sessions missing from my sessions list", "show one bot's sessions in the sidebar",
+      ],
+      'zh-CN': ['在我的会话中显示这个 bot', '在侧边栏隐藏这个 bot', '这个 bot 的会话不显示', '在会话列表显示这个 bot 的会话'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+        { kind: 'shown_by', location: 'members.sessions-tab', when: 'crewmate_profile_sessions_tab_closed' },
+      ],
+    }],
+  },
   // The profile card's Settings row (CrewProfileSettings), on its Profile tab:
   // the door to the crewmate's own settings page (permission, model, worker
   // model, the dashboard lock). The card opens from the header pill

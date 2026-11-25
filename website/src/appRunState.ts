@@ -72,6 +72,17 @@ const RANK: Record<AppRunState, number> = { running: 3, error: 2, success: 1 }
 export const SUCCESS_WINDOW_MS = 90_000
 
 /**
+ * Kiro Crew paused *job* itself after failed runs: disabled, but not by the
+ * user and not a fired one-shot's park. An older gateway that omits
+ * `user_paused` reads as a plain pause. The Schedules tab and the Schedule
+ * page both label such a job "Paused after N failures" from this one test.
+ */
+export function isAutoPaused(job: CronJob): boolean {
+  return !job.is_running && !job.enabled && job.user_paused === false
+    && job.parked_after_run !== true && (job.consecutive_failures ?? 0) > 0
+}
+
+/**
  * Whether *job* is a health signal at all.
  *
  * A job the user paused is deliberately excluded, and that is not a judgement
@@ -94,7 +105,7 @@ export const SUCCESS_WINDOW_MS = 90_000
  * real, and hiding a run in progress because someone just paused the job would
  * make the indicator contradict the Schedule page.
  */
-function isHealthSignal(job: CronJob): boolean {
+export function isHealthSignal(job: CronJob): boolean {
   if (job.is_running === true) return true
   // A fired one-shot is parked with the user-pause flags. Its park is the run's,
   // not an opt-out, so its result still counts.

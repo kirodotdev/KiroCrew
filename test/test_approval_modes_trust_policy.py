@@ -209,16 +209,58 @@ def test_a_profile_may_not_deny_trust_only_the_policy_may():
 
 class TestThePickerList:
     def test_the_owner_rule_hides_trust(self):
+        # Approve for me follows Trust: KAS answers those calls, not Crew.
         _install(OWNER_RULE)
-        assert so_mod.cached_disabled_approval_modes() == ["trust", "yolo"]
+        assert so_mod.cached_disabled_approval_modes() == ["trust", "approve_for_me", "yolo"]
 
-    def test_all_three_hides_only_yolo(self):
+    def test_all_three_hides_yolo_and_the_unlisted_approve_for_me(self):
         _install(ALL_THREE)
-        assert so_mod.cached_disabled_approval_modes() == ["yolo"]
+        assert so_mod.cached_disabled_approval_modes() == ["approve_for_me", "yolo"]
 
-    def test_no_rule_hides_nothing(self):
+    def test_allowing_trust_does_not_allow_approve_for_me(self):
+        _install(ALL_THREE)
+        assert amp.session_mode_permitted("trust") is True
+        assert amp.session_mode_permitted("approve_for_me") is False
+        assert "approve_for_me" in so_mod.cached_disabled_approval_modes()
+
+    def test_a_rule_listing_approve_for_me_allows_it(self):
+        _install({"mode": "allow", "allow": ["normal", "trust", "approve_for_me"]})
+        assert amp.session_mode_permitted("approve_for_me") is True
+        assert "approve_for_me" not in so_mod.cached_disabled_approval_modes()
+
+    def test_composed_tiers_that_both_list_it_allow_it(self, monkeypatch):
+        from kiro_crew.platform.governance_parts.archetypes import _AndRuleset
+        from kiro_crew.safety_override_permits import _APPROVAL_MODES_SCOPE
+
+        def _control(rule):
+            ceiling = parse_policy(
+                {"version": 1, "boot": {"fail_closed": True}, "approval_modes": rule}
+            )
+            return ceiling.get(_APPROVAL_MODES_SCOPE)
+
+        both = _AndRuleset(
+            outer=_control({"mode": "allow", "allow": ["normal", "approve_for_me"]}),
+            inner=_control({"mode": "allow", "allow": ["normal", "trust", "approve_for_me"]}),
+        )
+        monkeypatch.setattr(amp, "_ceiling_control", lambda: both)
+        assert amp._ceiling_lists_approve_for_me() is True
+        one_omits = _AndRuleset(
+            outer=_control({"mode": "allow", "allow": ["normal", "approve_for_me"]}),
+            inner=_control({"mode": "allow", "allow": ["normal", "trust"]}),
+        )
+        monkeypatch.setattr(amp, "_ceiling_control", lambda: one_omits)
+        assert amp._ceiling_lists_approve_for_me() is False
+        none_lists = _AndRuleset(
+            outer=_control({"mode": "deny", "deny": ["yolo"]}),
+            inner=_control({"mode": "deny", "deny": ["trust"]}),
+        )
+        monkeypatch.setattr(amp, "_ceiling_control", lambda: none_lists)
+        assert amp._ceiling_lists_approve_for_me() is False
+
+    def test_no_rule_hides_only_approve_for_me(self):
+        # Approve for me is permitted only where a rule lists it by name.
         _install(None)
-        assert so_mod.cached_disabled_approval_modes() == []
+        assert so_mod.cached_disabled_approval_modes() == ["approve_for_me"]
 
 
 class TestAGrantMadeBeforeTheDeny:
@@ -428,12 +470,16 @@ class TestOtherEntryPoints:
     @pytest.mark.asyncio
     async def test_a_typed_trust_reply_approves_once_and_says_so(self):
         from kiro_crew.messaging import approval as ap
+        from kiro_crew.messaging import session_trust as st
 
         ap.reset_for_tests()
         _install(OWNER_RULE)
+        sessions = MagicMock()
         entry = ap.open_approval("whatsapp:1", "r1")
-        assert ap.deliver_verdict("whatsapp:1", ap.TRUST) == ap.RECEIPT_APPROVED
+        assert ap.deliver_verdict("whatsapp:1", ap.TRUST, sessions=sessions) == ap.RECEIPT_APPROVED
         assert await entry.future == ap.APPROVE
+        sessions.set_approval_policy.assert_not_called()
+        assert "whatsapp:1" not in st._trusted_sessions
         ap.reset_for_tests()
 
     def test_editing_a_saved_auto_job_still_saves(self):
@@ -798,17 +844,17 @@ def test_a_late_grant_under_a_deny_holds_nothing(tmp_path):
     assert slot._trust_reads is False, "a denied Reads write was never held"
 
 
-def test_a_typed_trust_grant_is_revoked_by_a_deny():
+@pytest.mark.asyncio
+async def test_a_typed_trust_grant_is_revoked_by_a_deny():
     """A text-reply Trust goes through the shared grant, so a deny revokes it."""
+    from kiro_crew.messaging import approval as ap
     from kiro_crew.messaging import session_trust as st
-    from kiro_crew.messaging.approval import TextReplyApprovalDecider
 
     _install(None)
+    ap.reset_for_tests()
     sessions = MagicMock()
-    decider = TextReplyApprovalDecider.__new__(TextReplyApprovalDecider)
-    decider._sessions = sessions
-    decider.session_key = "whatsapp:1"
-    decider._grant_session_trust()
+    ap.open_approval("whatsapp:1", "r1")
+    assert ap.deliver_verdict("whatsapp:1", ap.TRUST, sessions=sessions) == ap.RECEIPT_TRUSTED
     assert st.is_session_trusted("whatsapp:1") is True
     sessions.set_approval_policy.assert_called_with("whatsapp:1", "auto")
     _install(OWNER_RULE)

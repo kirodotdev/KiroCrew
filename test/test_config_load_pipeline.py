@@ -177,15 +177,15 @@ class TestBuildConfig:
             (section, f.name) for section, dto in _section_fields() for f in dataclasses.fields(dto)
         }
 
-    @pytest.mark.parametrize(
-        ("stamp", "expected"), [("nightly", True), ("stable", False), ("", False)]
-    )
-    def test_kas_bundle_takes_the_build_default(self, tmp_path, monkeypatch, stamp, expected):
+    @pytest.mark.parametrize("stamp", ["nightly", "stable", ""])
+    def test_kas_bundle_loads_off_when_unset_on_every_build(self, tmp_path, monkeypatch, stamp):
+        # The build's preference is a per-spawn route rule (acp.kas_build_default),
+        # never a loaded value: unset loads off on every build.
         from kiro_crew import build_channel
 
         monkeypatch.setattr(build_channel, "_BAKED_BUILD_CHANNEL", stamp)
         agent = loader.build_config(_document(tmp_path, {"agent": {}})).agent
-        assert agent.kas_bundle is expected
+        assert agent.kas_bundle is False
 
     def test_it_performs_no_config_file_io(self, tmp_path, monkeypatch):
         def refuse(*_args, **_kwargs):

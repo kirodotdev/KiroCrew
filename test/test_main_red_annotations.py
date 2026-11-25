@@ -22,6 +22,7 @@ included, so a watcher that files nothing has a read that failed, not a parse.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any
 
@@ -199,3 +200,57 @@ def test_extract_reads_each_job_once_from_a_folder_of_annotations_and_logs(
     assert mod.main(["names-test", str(tmp_path), "11"]) == 0
     assert mod.main(["names-test", str(tmp_path), "12"]) == 1
     assert mod.main(["names-test", str(tmp_path), "../11"]) == 1
+
+
+# ── A cleaned value is the same after another cleaning ───────────────────────
+
+ODD_TEXTS = [
+    "a" * 79 + " tail that is cut after a space",
+    "a" * 78 + "  \t tail",
+    "test/test_a.py::test_x[" + "p " * 100 + "]",
+    "trailing spaces   ",
+    "   leading and    inner   runs",
+    "\ttabs\tand\r\nline ends\n",
+    "unicode \u00e9\u4e2d\u6587 \U0001f600 and control \x07\x1b[31m",
+    "markdown `code` **bold** [link](http://x) <!-- c --> <b> @octocat #12",
+    "",
+    " ",
+    "x" * 500,
+]
+
+
+def _generated_texts() -> list[str]:
+    rng = random.Random(39701)
+    alphabet = "ab \t\n`<>-@#\u00e9\x07*_[]" + "c" * 6
+    return ["".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 400))) for _ in range(300)]
+
+
+@pytest.mark.parametrize("limit", [mod.MESSAGE_CHARS, 150, 200, 300, 1, 0])
+def test_cleaning_a_cleaned_text_changes_nothing_at_any_cut(limit: int) -> None:
+    for text in ODD_TEXTS + _generated_texts():
+        once = mod.clean(text, limit)
+        assert mod.clean(once, limit) == once, repr(text)
+        assert len(once) <= limit
+        assert once == once.strip() and "  " not in once
+        assert once.isascii() and "`" not in once
+        assert all(" " <= ch <= "~" for ch in once)
+
+
+def _annotation(nodeid: str, message: str) -> dict[str, Any]:
+    return {"annotation_level": "failure", "title": nodeid, "message": f"{nodeid} - {message}"}
+
+
+def test_what_the_record_gives_back_equals_what_a_run_gives_fresh() -> None:
+    """The issue body is written from a run and read by the next; the two must agree."""
+    url = "https://github.com/example/repo/actions/runs/900"
+    for index, text in enumerate(ODD_TEXTS + _generated_texts()):
+        nodeid = f"test/test_a.py::test_{index}"
+        fresh = mod.parse_annotations([_annotation(nodeid, text)])
+        assert list(fresh) == [nodeid]
+        state = mod.next_state(None, fresh, "a" * 40, 900, url)
+        assert mod.parse_state(mod.render_body(state, [], 5))["failures"] == fresh, repr(text)
+        log = mod.parse_failures(
+            f"FAILED {nodeid} - {text.splitlines()[0] if text.strip() else ''}"
+        )
+        state = mod.next_state(None, log, "a" * 40, 900, url)
+        assert mod.parse_state(mod.render_body(state, [], 5))["failures"] == log, repr(text)

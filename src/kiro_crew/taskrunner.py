@@ -214,6 +214,7 @@ class TaskRunner:
     start_background = _run_lifecycle.start_background
     delete_run = _run_lifecycle.delete_run
     cancel = _run_lifecycle.cancel
+    cancel_paused = _run_lifecycle.cancel_paused
     pause = _run_lifecycle.pause
     _ensure_resumable_workspace = _run_lifecycle._ensure_resumable_workspace
 
@@ -368,6 +369,7 @@ class TaskRunner:
         fresh: bool = False,
         workspace_dir: str = "",
         auto_approve: bool = False,
+        adopting: bool = False,
     ) -> str:
         self._require_workflow_ready()
         run = self._runs.get(task_id)
@@ -390,6 +392,11 @@ class TaskRunner:
         await self._reserve_start(task_id)
 
         try:
+            # An automatic adoption resumes only a run that is still waiting: one
+            # cancelled while the sweep ran an earlier run stays cancelled. The
+            # reservation above already refuses a cancel from here on.
+            if adopting and run.status not in ("paused", "planned"):
+                raise ValueError(f"Run {task_id} is no longer waiting (status={run.status})")
             # Optional per-run workspace override: only applied to a run that has NOT
             # begun yet (status "planned"). A resumed run (paused/cancelled/failed) keeps
             # its original work_dir, so re-targeting the folder can't orphan work already

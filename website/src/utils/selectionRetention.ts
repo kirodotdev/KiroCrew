@@ -2,12 +2,21 @@
 
 import type { RetainedVirtualRange } from '../hooks/virtualizer/types'
 
-function rowIndexFor(container: HTMLElement, node: Node | null): number | null {
+/** The transcript row holding `node`, or null when it sits on none. */
+function rowOf(container: HTMLElement, node: Node | null): HTMLElement | null {
   const element = node instanceof Element ? node : node?.parentElement
   const row = element?.closest<HTMLElement>('[data-display-index]')
-  if (!row || !container.contains(row)) return null
+  return row && container.contains(row) ? row : null
+}
+
+function displayIndexOf(row: HTMLElement): number | null {
   const index = Number(row.dataset.displayIndex)
   return Number.isInteger(index) && index >= 0 ? index : null
+}
+
+function rowIndexFor(container: HTMLElement, node: Node | null): number | null {
+  const row = rowOf(container, node)
+  return row ? displayIndexOf(row) : null
 }
 
 /** True when either native selection endpoint still belongs to `container`. */
@@ -15,13 +24,23 @@ export function selectionTouchesContainer(container: HTMLElement, selection: Sel
   return container.contains(selection.anchorNode) || container.contains(selection.focusNode)
 }
 
-/** One selection endpoint, by node and by row + character offset. */
+/** One selection endpoint, by node and by row + character offset.
+ *
+ * The row is held as its element, with the display index it carried. A page
+ * of older history renumbers every row, so the number alone would name an
+ * older message; the element survives a landing for every row but one, since
+ * rows are keyed by message identity (re-rendered, not remounted). */
 interface RowPoint {
   node: Node
   offset: number
+  el: HTMLElement
   row: number
   /** Characters of row text before the point; survives a re-render. */
   chars: number
+  /** Characters of row text after the point. A row drawn again as a new
+   *  element grew at its HEAD (the opening prompt landed in front of the
+   *  reply), so its tail is what still measures the point there. */
+  charsAfter: number
 }
 
 /** Where both endpoints of a selection last sat on transcript rows. */
@@ -35,34 +54,60 @@ function rowElement(container: HTMLElement, row: number): HTMLElement | null {
 }
 
 function rowPoint(container: HTMLElement, node: Node, offset: number): RowPoint | null {
-  const row = rowIndexFor(container, node)
-  const el = row === null ? null : rowElement(container, row)
-  if (row === null || !el) return null
-  const range = document.createRange()
+  const el = rowOf(container, node)
+  const row = el ? displayIndexOf(el) : null
+  if (!el || row === null) return null
+  const before = document.createRange()
+  const after = document.createRange()
   try {
-    range.setStart(el, 0)
-    range.setEnd(node, offset)
+    before.setStart(el, 0)
+    before.setEnd(node, offset)
+    after.setStart(node, offset)
+    after.setEnd(el, el.childNodes.length)
   } catch {
     return null
   }
-  return { node, offset, row, chars: range.toString().length }
+  return { node, offset, el, row, chars: before.toString().length, charsAfter: after.toString().length }
 }
 
-/** The live position for `p`: its own node if still mounted, else the same
- * character offset in its row's current text. */
-function resolvePoint(container: HTMLElement, p: RowPoint): [Node, number] | null {
-  if (p.node.isConnected && container.contains(p.node)) return [p.node, p.offset]
-  const el = rowElement(container, p.row)
-  if (!el) return null
+/** The row of `p` once its element is gone: drawn again as a new element (the
+ * topmost turn, when its opening prompt lands), it is found by number, moved
+ * by as far as `witness`, the selection's other row, moved. A landing moves
+ * both rows by the same count, a row redrawn in place by none. With no mounted
+ * witness there is nothing to measure by, and no row is chosen. */
+function redrawnRow(container: HTMLElement, p: RowPoint, witness: RowPoint): HTMLElement | null {
+  if (!container.contains(witness.el)) return null
+  const at = displayIndexOf(witness.el)
+  return at === null ? null : rowElement(container, p.row + (at - witness.row))
+}
+
+/** The point `chars` characters into the text of `el`. A point on the
+ * boundary between two text nodes keeps the side the endpoint was on: the
+ * start of the later node when it sat at the start of its own (`atStart`),
+ * else the end of the earlier one. A start at a reply's first character never
+ * lands at the end of the prompt before it. */
+function pointAtChars(el: HTMLElement, chars: number, atStart: boolean): [Node, number] {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
   let seen = 0
   let last: Text | null = null
   for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null) {
-    if (seen + n.data.length >= p.chars) return [n, p.chars - seen]
-    seen += n.data.length
+    const end = seen + n.data.length
+    if (atStart ? end > chars : end >= chars) return [n, chars - seen]
+    seen = end
     last = n
   }
   return last ? [last, last.data.length] : [el, 0]
+}
+
+/** The live position for `p`: its own node if still mounted, else the same
+ * character offset in its row's current text. A row drawn again as a new
+ * element is measured from its tail: it grew at its head. */
+function resolvePoint(container: HTMLElement, p: RowPoint, witness: RowPoint): [Node, number] | null {
+  if (p.node.isConnected && container.contains(p.node)) return [p.node, p.offset]
+  if (container.contains(p.el)) return pointAtChars(p.el, p.chars, p.offset === 0)
+  const el = redrawnRow(container, p, witness)
+  if (!el) return null
+  return pointAtChars(el, Math.max(0, (el.textContent ?? '').length - p.charsAfter), p.offset === 0)
 }
 
 /** Snapshot the endpoints when both sit on rows, else null. */
@@ -84,7 +129,10 @@ export function rowEndpoints(container: HTMLElement, selection: Selection): Sele
  *   unmounted above it walks it up to offset 0 of the scroller, so the
  *   selection grew to everything from the top of the chat.
  * The endpoint goes back to its own last position, by character offset in its
- * row if the old node is gone: never a row's start or the transcript's edge.
+ * row if the old node is gone: never a row's start or the transcript's edge,
+ * and never another message's row. A page of older history landing above
+ * renumbers the rows, so the row is its element while that is mounted, and
+ * otherwise its number re-based by the other endpoint's row (`redrawnRow`).
  * Only a selection that has already sat on rows (`last`) is touched, so a
  * fresh long-press is never rewritten. Returns whether the selection changed.
  */
@@ -99,13 +147,13 @@ export function restoreEndpointToTranscript(
   const anchorOnRow = rowIndexFor(container, anchorNode) !== null
   const focusOnRow = rowIndexFor(container, focusNode) !== null
   if (!anchorOnRow && focusOnRow) {
-    const at = resolvePoint(container, last.anchor)
+    const at = resolvePoint(container, last.anchor, last.focus)
     if (!at) return false
     selection.setBaseAndExtent(at[0], at[1], focusNode, focusOffset)
     return true
   }
   if (anchorOnRow && !container.contains(focusNode)) {
-    const at = resolvePoint(container, last.focus)
+    const at = resolvePoint(container, last.focus, last.anchor)
     if (!at) return false
     selection.setBaseAndExtent(anchorNode, anchorOffset, at[0], at[1])
     return true

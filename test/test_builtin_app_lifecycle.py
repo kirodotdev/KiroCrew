@@ -29,6 +29,7 @@ from kiro_crew.apps.routes import (
     handle_enable_app,
 )
 from kiro_crew.testing.synthetic_credentials import github_classic
+from kiro_crew.testing.wait import await_until
 
 # Synthetic builtin that drives the generic machinery.
 _TEST_BUILTIN = "test-svc"
@@ -397,7 +398,9 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
         seen, spy = self._probe()
 
         restart_fn = AsyncMock(return_value="ok")
+        sent: list = []
         state = type("S", (), {_TEST_RESTART_ATTR: restart_fn})()
+        state.broadcast_ws = lambda kind, data: sent.append((kind, data))
 
         with (
             patch("kiro_crew.apps.routes.get_app", return_value={
@@ -418,6 +421,8 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
             resp = await handle_disable_app(self._request(_TEST_BUILTIN, state))
 
         assert json.loads(resp.body)["ok"] is True
+        # An open app page reads its app once; this frame is how it learns.
+        assert [(k, d["app"], d["enabled"]) for k, d in sent] == [("app_state", _TEST_BUILTIN, False)]
         assert seen, "the config sync never ran"
         # Red-before with a bare `asyncio.to_thread`: False == True.
         assert seen["locked"] is True, (
@@ -437,7 +442,14 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
         seen, spy = self._probe()
 
         restart_fn = AsyncMock(return_value="ok")
+        sent: list = []
         state = type("S", (), {_TEST_RESTART_ATTR: restart_fn})()
+        from kiro_crew.apps.manager_install import app_lifecycle_lock
+
+        # Each frame with whether the app's lifecycle lock was held as it went out.
+        state.broadcast_ws = lambda kind, data: sent.append(
+            (kind, data, app_lifecycle_lock(_TEST_BUILTIN).locked())
+        )
 
         with (
             # `resources` deliberately not "gateway": the config sync is gated on
@@ -460,6 +472,10 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
             resp = await handle_enable_app(self._request(_TEST_BUILTIN, state))
 
         assert json.loads(resp.body)["ok"] is True
+        # Under the lock: a disable that waits on it cannot announce "off" first.
+        assert [(k, d["app"], d["enabled"], held) for k, d, held in sent] == [
+            ("app_state", _TEST_BUILTIN, True, True)
+        ]
         assert seen, "the config sync never ran"
         assert seen["locked"] is True
         assert seen["thread"] is not threading.current_thread()
@@ -495,6 +511,92 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
 
         assert not _get_config_lock().locked()
         assert json.loads(cfg.read_text(encoding="utf-8"))[_TEST_CFG_KEY]["enabled"] is False
+
+
+class TestAppStateFramesFollowTheLifecycleLock:
+    """A disable and an enable from two tabs announce ``app_state`` in commit order.
+
+    The disable is held at a point the test controls, inside its last step (ending
+    the app's live views, which comes right before its "off" frame). An enable starts
+    meanwhile. When the frames are sent under ``app_lifecycle_lock`` the enable waits
+    for the disable, so the tabs end on "on". When the disable announced after giving
+    the lock back, the enable ran through first and the late "off" won: red.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_late_off_never_follows_a_newer_on(self, tmp_path, register_test_builtin):
+        import asyncio
+        import contextlib
+
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": True}}))
+        sent: list = []
+        state = type("S", (), {_TEST_RESTART_ATTR: AsyncMock(return_value="ok")})()
+        state.broadcast_ws = lambda kind, data: sent.append((kind, data))
+        at_gate, gate = asyncio.Event(), asyncio.Event()
+        enable_waited: list[bool] = []
+        enable_at_lock = asyncio.Event()
+        real_lock = routes.app_lifecycle_lock
+
+        async def held_views_end(_state, _app):
+            at_gate.set()
+            await await_until(gate, what="the test to let the disable go on")
+
+        @contextlib.asynccontextmanager
+        async def spy_lock(name):
+            lock = real_lock(name)
+            if at_gate.is_set():  # the enable: is the disable still inside?
+                enable_waited.append(lock.locked())
+                enable_at_lock.set()
+            async with lock:
+                yield
+
+        def ok(message):
+            return type("R", (), {
+                "ok": True,
+                "to_dict": lambda self: {"ok": True, "name": _TEST_BUILTIN, "message": message},
+            })()
+
+        with (
+            patch("kiro_crew.apps.routes.get_app", return_value={
+                "name": _TEST_BUILTIN, "origin": "builtin", "resources": "",
+                "lifecycle": "locked", "enabled": True, "manifest": {},
+            }),
+            patch("kiro_crew.apps.routes.disable_app", return_value=ok("d")),
+            patch("kiro_crew.apps.routes.enable_app", return_value=ok("e")),
+            patch("kiro_crew.apps.routes.on_app_enable", AsyncMock(return_value=None)),
+            patch("kiro_crew.apps.routes.stop_app_backend"),
+            patch("kiro_crew.apps.routes.deregister_app"),
+            patch("kiro_crew.apps.routes.config_path", return_value=cfg),
+            patch("kiro_crew.apps.routes.sel"),
+            patch("kiro_crew.apps.routes.app_lifecycle_lock", spy_lock),
+            patch(
+                "kiro_crew.dashboard.handlers.browser_live.end_app_browser_views", held_views_end
+            ),
+        ):
+            req = TestBuiltinConfigSyncHoldsBothConfigLocks._request
+            disable = asyncio.create_task(handle_disable_app(req(_TEST_BUILTIN, state)))
+            enable = None
+            try:
+                await await_until(at_gate, what="the disable to reach its last step")
+                enable = asyncio.create_task(handle_enable_app(req(_TEST_BUILTIN, state)))
+                # No sleep: the enable reaches the lock; if it did not have to wait
+                # there, let it run to the end before the disable may go on.
+                await await_until(enable_at_lock, what="the enable to reach the lock")
+                if not enable_waited[0]:
+                    await await_until(enable, what="the enable that did not wait")
+                gate.set()
+                await await_until(asyncio.gather(disable, enable), what="both requests")
+            finally:
+                # A hang fails by name above; never leave a task running past the test.
+                for task in (disable, enable):
+                    if task is not None and not task.done():
+                        task.cancel()
+                await asyncio.gather(*(t for t in (disable, enable) if t), return_exceptions=True)
+
+        frames = [data for kind, data in sent if kind == "app_state"]
+        assert [f["enabled"] for f in frames] == [False, True]
+        assert frames[0]["seq"] < frames[1]["seq"] and frames[0]["boot"] == frames[1]["boot"]
 
 
 class TestBuiltinConfigDispatchRatchet:

@@ -63,6 +63,11 @@ export interface ChatPaneProps {
    *  in split view the grid sets it on the focused pane only, since the
    *  single-chat composer is not mounted there. */
   pushToTalk?: boolean
+  /** ⌘F / Ctrl+F opens Find in chat for this pane, the Sessions chat's find
+   *  bar over this transcript. Only the one pane a page's chat key belongs to
+   *  sets it (a Bot's chat on the Bots page): the key listens on the whole
+   *  document, and the Sessions chat answers it itself. False closes the bar. */
+  findInChat?: boolean
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
@@ -131,6 +136,13 @@ export interface ChatPaneProps {
    *  is a link that opens it, so the words that read as a destination are one;
    *  without it the line is plain text. Only meaningful with `crewmate`. */
   onOpenCrewWorkLog?: () => void
+  /** The host already knows, from data it holds at this render, that the
+   *  slot's transcript has messages (a roster row, a slot record). Only then
+   *  does the pane draw the transcript skeleton while its first page loads.
+   *  Default `false`: a chat that never talked, or one the host cannot vouch
+   *  for, opens exactly as before, with no placeholder that appears and then
+   *  vanishes. */
+  historyKnown?: boolean
   /** Reply threads on this pane's messages. Only a host presenting a
    *  crewmate's chat (the Members page) passes it; absent, the rows draw no
    *  thread footer and no "Reply in thread" action. */

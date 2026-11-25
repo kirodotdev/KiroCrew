@@ -912,6 +912,9 @@ def service_attachment(resolved: Path, expected_uid: int | None = None) -> str:
     tree = resolved.parent.parent
     if resolved.name != "kirocrew" or resolved.parent.name != "bin":
         return exact
+    managed = _managed_update_attachment(resolved, expected_uid)
+    if managed is not None:
+        return managed
     layout = wheel_engine.managed_venv_layout()
     prefix = f"{layout.legacy.name}-"
     if not tree.name.startswith(prefix):
@@ -925,6 +928,37 @@ def service_attachment(resolved: Path, expected_uid: int | None = None) -> str:
     if _substitutable_by_others(tree.parent, expected_uid=expected_uid) is not None:
         return exact
     return str(tree.parent / f"{prefix}*" / "bin" / "kirocrew")
+
+
+# A managed-update version folder: two to four dot-separated numbers.
+_MANAGED_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}")
+
+
+def _managed_update_attachment(resolved: Path, expected_uid: int | None) -> str | None:
+    """``<root>/tools/kirocrew/*/bin/kirocrew`` for a launcher in one version
+    folder of a managed update (``<root>/tools/kirocrew/<version>/bin/kirocrew``),
+    else ``None``.
+
+    The service starts the shared launcher, which execs the current version's
+    ``bin/kirocrew`` script (:func:`kiro_crew.service.common.service_attach_path`),
+    and an update adds the next version as a sibling folder. So the profile is
+    attached to that script in every version folder of THIS tool, and to no
+    other tool's: the literal ``kirocrew`` folder keeps the grant off every other
+    tool the same launcher dispatches. The same takeover check as the
+    ``crew-venv-*`` glob applies to ``<root>/tools/kirocrew``, since whoever can
+    create an entry there can create a matching folder.
+    """
+    version = resolved.parent.parent
+    tool = version.parent
+    if (
+        tool.name != "kirocrew"
+        or tool.parent.name != "tools"
+        or not _MANAGED_VERSION_RE.fullmatch(version.name)
+    ):
+        return None
+    if _substitutable_by_others(tool, expected_uid=expected_uid) is not None:
+        return None
+    return str(tool / "*" / "bin" / "kirocrew")
 
 
 # How the kernel reads each wildcard in an attachment: ``*`` and ``?`` stay

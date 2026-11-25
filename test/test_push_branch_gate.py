@@ -359,6 +359,28 @@ class TestGitPushEnforcement:
         ):
             assert "rule=git-publish-" in (is_denied(cmd) or ""), cmd
 
+    def test_a_feature_push_after_a_multi_line_message_on_one_line_stays_refused(
+        self, captured_sel_events
+    ) -> None:
+        """Every newline ends a segment, so a feature push written after a multi-line
+        quoted message on the same line is unverifiable (a stated residual), while the
+        one-line, -F and own-line forms pass and a push to main after a comment quote is read."""
+        cmd = f'git commit -q -m "fix: a\n\nbody line" && {PUSH} -q origin feature/x'
+        assert "rule=git-publish-target-unverifiable" in (
+            is_denied(cmd) or ""
+        ), "GH #35629: once this push is allowed, move it to the allowed forms below"
+        for cmd in (
+            f'git commit -q -m "fix: a" -m "body line" && {PUSH} -q origin feature/x',
+            f"git commit -q -F msg.txt && {PUSH} -q origin feature/x",
+            f'git commit -q -m "fix: a\n\nbody line"\n{PUSH} -q origin feature/x',
+        ):
+            assert is_denied(cmd) is None, cmd
+        for cmd in (
+            f'{PUSH} origin feature # "\n{PUSH} origin main\n# "',
+            f"{PUSH} origin feat # don't\n{PUSH} origin main\n# won't",
+        ):
+            assert "rule=git-publish-push-protected-branch-name" in (is_denied(cmd) or ""), cmd
+
     def test_an_unquoted_expansion_before_the_subcommand_is_unverifiable(
         self, captured_sel_events, monkeypatch
     ) -> None:
@@ -411,7 +433,7 @@ class TestGitPushEnforcement:
         assert len(allow) == 1
         assert allow[0].operation == "git_push"
 
-    @pytest.mark.timeout(10)
+    @pytest.mark.timeout(60)
     def test_redos_safe_on_pathological_input(self) -> None:
         """is_denied must not backtrack exponentially on whitespace-laden flags.
 
@@ -422,10 +444,14 @@ class TestGitPushEnforcement:
         executes grow linearly over three pump sizes, with the verdict "allowed"
         at each size.
 
-        The 10s ceiling is a lost-run bound owned by pytest-timeout's mark, not
+        The 60s ceiling is a lost-run bound owned by pytest-timeout's mark, not
         a SIGALRM armed in the body: the mark keeps the run-wide watchdog armed
-        through the assert and teardown, so a hang fails as ``Timeout >10.0s``
-        attributed to this test, with stacks.
+        through the assert and teardown, so a hang fails as ``Timeout >60.0s``
+        attributed to this test, with stacks. No check here reads the wall clock,
+        so the mark sizes the run and decides no verdict: CI's coverage shard
+        spends 5-8 s of wall clock in this body (``linux-pytest-progress-3``),
+        and 60 s, half the suite's ``--timeout=120``, is over seven times the
+        slowest of those runs.
         """
         _assert_scan_is_linear(
             lambda n: "git " + ("\t-! " * n) + "x", (100, 200, 300), denied=False

@@ -7,16 +7,20 @@ the op leaves the shim. The gateway (``browser_harness/ops.py``, through
 actually COMMITTED on, after every redirect: a public page that answers 302 to
 ``http://127.0.0.1:<port>/`` or a link-local address would otherwise be read back
 through a browser that may be the person's logged-in Chrome, one hop past the
-gate. DNS rebinding (a public name resolving to a private address) is the one
-residual neither check can see without resolving names, and stays documented.
+gate. The gateway also judges the URL an op asks to open, with one input only it
+has: the origins it trusts as itself (a tunnel, a tailnet name, ``dashboard.url``),
+so this dashboard is refused under those names as under its loopback port. DNS
+rebinding (a public name resolving to a private address) is the one residual
+neither check can see without resolving names, and stays documented.
 
 Imports nothing from the dashboard or ``mcp_core``, so the shim can import it
-without pulling the gateway in; the gateway's own port is a parameter.
+without pulling the gateway in; the gateway's own port and origins are parameters.
 """
 
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import unquote_to_bytes, urlsplit
 
@@ -144,11 +148,57 @@ def target_is_allowed_local(url: str, allowed: frozenset[str], gateway_port: int
     return port != gateway_port
 
 
-def url_allowed(url: Any, allowed_local: frozenset[str], gateway_port: int | None) -> bool:
-    """The navigate gate: public, or an operator-listed loopback origin (never the gateway's)."""
+def _browser_origin(url: str) -> str:
+    """``scheme://host[:port]`` of *url* as the browser reads it, or ``""``.
+
+    The host is decoded and folded as :func:`target_is_public` folds it (an IP in
+    any encoding to its canonical form) and a default port is dropped, so
+    ``HTTPS://Dash.Example.com.:443/x`` and ``https://dash.example.com`` are one
+    origin, as are ``http://134744072/`` and ``http://8.8.8.8/``.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:  # an unparsable entry or port names no origin
+        return ""
+    scheme = parts.scheme.lower()
+    host = parts.hostname or ""
+    if "%" in host and ":" not in host:
+        host = _percent_decoded_host(host) or ""
+    host = host.lower().rstrip(".")
+    try:
+        host = str(ipaddress.ip_address(canonicalize_ip(host)))
+    except ValueError:
+        pass  # a DNS name, compared as folded above
+    if scheme not in ("http", "https") or not host:
+        return ""
+    if ":" in host:
+        host = f"[{host}]"
+    if port is None or port == (443 if scheme == "https" else 80):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def url_allowed(
+    url: Any,
+    allowed_local: frozenset[str],
+    gateway_port: int | None,
+    own_origins: Iterable[str] = (),
+) -> bool:
+    """The navigate gate: public, or an operator-listed loopback origin (never the gateway's).
+
+    *own_origins* are the origins the gateway trusts as itself (its live
+    ``allowed_origins``). A public URL on one of them is this dashboard under another
+    name, refused like its loopback port; only the gateway knows them.
+    """
     if not isinstance(url, str):
         return False
-    return target_is_public(url) or target_is_allowed_local(url, allowed_local, gateway_port)
+    if target_is_allowed_local(url, allowed_local, gateway_port):
+        return True
+    if not target_is_public(url):
+        return False
+    origin = _browser_origin(url)
+    return all(_browser_origin(own) != origin for own in own_origins)
 
 
 __all__ = ["target_is_allowed_local", "target_is_public", "url_allowed"]

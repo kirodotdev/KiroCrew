@@ -275,6 +275,9 @@ class TurnBracket:
         self._ctx_builder = ctx_builder
         self._session_key = session_key
         self._consumed = False
+        self._resume_owed = False
+        self._resume_latest = False
+        self._fresh_latest = False
         self._landed = False
         self._compacted = False
         self._settled = False
@@ -285,6 +288,21 @@ class TurnBracket:
     def take_reinjection(self) -> bool:
         self._consumed = consume_reinjection(self._sessions, self._session_key)
         return self._consumed
+
+    def owe_resume(self, *, is_new: bool, resumed: bool) -> None:
+        """Record what this attempt's claim was.
+
+        A slim resume (``is_new`` and ``resumed``) re-sends the lessons and
+        steering a compacted restored history may have lost, and the next claim
+        is warm, so the debt is paid only when the attempt that lands is itself
+        the resume. A fresh start sends the full session-start context, which
+        pays any earlier resume's debt. A warm claim leaves the debt as it was.
+        """
+        self._resume_latest = bool(is_new and resumed)
+        if is_new and not resumed:
+            self._resume_owed = False
+        self._resume_owed = self._resume_owed or self._resume_latest
+        self._fresh_latest = bool(is_new and not resumed)
 
     async def take_cancelled_turn(self) -> str:
         """Read-and-clear ``prev_turn_cancelled``; return the restore to prepend, or ``""``.
@@ -344,8 +362,9 @@ class TurnBracket:
         rearm_reinjection(
             self._sessions,
             self._session_key,
-            consumed=self._consumed,
-            landed=self._landed,
+            consumed=self._consumed or self._resume_owed,
+            landed=self._landed
+            and (self._resume_latest or self._fresh_latest or not self._resume_owed),
             compacted=self._compacted,
         )
         rollback_skill_bodies(

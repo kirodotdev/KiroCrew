@@ -17,7 +17,6 @@ import {
   principalInitials,
   principalName,
   heldLinks,
-  isHereNow,
   distinctPeopleCount,
   personSource,
   soleSource,
@@ -304,15 +303,6 @@ describe('heldLinks: a link stays removable until its person is a member', () =>
 
   it('never lists an email invite', () => {
     expect(heldLinks([], [link({ kind: 'email', email: 'a@example.test' })])).toEqual([])
-  })
-})
-
-describe('isHereNow', () => {
-  it('counts an open tab or the viewer', () => {
-    const base: PeopleRow = { principal: { id: 'x', kind: 'human', display: { name: 'x', login: '', captured_at: null } }, sources: ['observed'] }
-    expect(isHereNow(base)).toBe(false)
-    expect(isHereNow({ ...base, is_viewer: true })).toBe(true)
-    expect(isHereNow({ ...base, live: { activity: 'idle', session_key: '', session_title: '' } })).toBe(true)
   })
 })
 

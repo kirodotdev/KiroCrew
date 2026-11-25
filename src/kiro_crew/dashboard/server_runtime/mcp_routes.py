@@ -178,6 +178,24 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
     app.router.add_patch("/api/lessons", handlers.api_lessons_update)
+    # MCP resource subscriptions (rfc-mcp-resource-subscriptions §4.9.3): feature-
+    # flagged, so the handlers module loads on first request, never at boot.
+    app.router.add_get(
+        "/api/resource-subscriptions",
+        _deferred("resource_subscriptions", "api_resource_subscriptions_list"),
+    )
+    app.router.add_post(
+        "/api/resource-subscriptions",
+        _deferred("resource_subscriptions", "api_resource_subscribe"),
+    )
+    app.router.add_post(
+        "/api/resource-subscriptions/remove",
+        _deferred("resource_subscriptions", "api_resource_unsubscribe"),
+    )
+    app.router.add_post(
+        "/api/resource-subscriptions/operator",
+        _deferred("resource_subscriptions", "api_resource_subscriptions_operator"),
+    )
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))
@@ -438,6 +456,9 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
+    from kiro_crew.dashboard import full_chat_waits
+
+    app.on_startup.append(full_chat_waits.startup_warm)
     # ``request_server`` (kirocrew-core): any template session asks for an MCP
     # server; MCP-only under the same strict "/api/cards/agent" prefix.
     for _method, _path, _name in (
@@ -501,6 +522,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
     app.router.add_get("/api/crons/history", handlers.api_cron_history_all)
     app.router.add_post("/api/crons/tools", handlers.api_cron_tools)
+    app.router.add_get("/api/crons/{job_id}", handlers.api_cron_get)
     app.router.add_delete("/api/crons/{job_id}", handlers.api_cron_delete)
     app.router.add_patch("/api/crons/{job_id}", handlers.api_cron_update)
     # Operator-only vault-secret grants. The "/api/crons" prefix above makes

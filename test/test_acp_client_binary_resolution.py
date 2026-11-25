@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from acp_client_helpers import _windows_cleanup_admission_passes_through  # noqa: F401
 from acp_client_helpers import _POSIX_EXEC_PATHS_ONLY, _stop_stderr_drain
 from spawn_test_helpers import strip_spawn_shim
 
@@ -685,6 +686,8 @@ class TestResolveKiroBinEnvOverride:
             "is_kiro_cli": True,
             "forward_ssh_auth_sock_out": [sys.platform != "win32"],
             **({} if sys.platform == "win32" else {"forward_ssh_auth_sock": True}),
+            # The session folder, whose project MCP files the wrap seals.
+            "project_folder": str(client._work_dir),
         }
         voice_guard.assert_called_once_with(client._work_dir)
         spawn_call = mock_exec.await_args

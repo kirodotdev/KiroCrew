@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -133,6 +134,18 @@ def test_a_long_name_is_kept_as_a_checksum_and_a_clipped_name(_rig) -> None:
         assert secret.startswith("secret=" + "N" * read_audit.MAX_NAME_CHARS + "...#")
         assert len(secret) < read_audit.MAX_NAME_CHARS + 30
     assert _rig.log.rows[0]["resources"] != _rig.log.rows[1]["resources"]
+
+
+def test_names_with_the_same_checksum_keep_their_own_rows(_rig) -> None:
+    # Same first 128 characters, same length, same CRC-32: still two names.
+    first = "v" * 130 + "SECRET-PROD-KEY!"
+    second = "v" * 130 + "000000000513oa6C"
+    assert len(first) == len(second) and first[:128] == second[:128]
+    assert zlib.crc32(first.encode()) == zlib.crc32(second.encode())
+    read_audit.note_reads((second,))
+    read_audit.note_reads((first,))
+    assert len(_rig.log.rows) == 2
+    assert len(read_audit._seen) == 2
 
 
 def test_a_bare_method_on_a_worker_thread_never_names_the_thread_pool(_rig) -> None:

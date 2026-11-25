@@ -541,12 +541,14 @@ class DiscordTransport(MessagingTransport):
 
     # -- Restart recovery of auto-created threads ---------------------------
     async def readmit_own_thread(self, thread_id: str, caller: str) -> bool:
-        """Re-admit a thread ``auto_thread`` opened before this process started.
+        """Re-admit a thread ``auto_thread`` opened outside this process's record.
 
-        An auto-created thread is admitted in memory only, so a restart forgets
-        it. Rather than persist that grant in a file local code could write,
-        the same decision is re-derived from Discord itself: the thread is
-        admitted again only when Discord reports that THIS bot opened it, as a
+        That is a thread opened before this process started, or the one a
+        thread create whose response was lost left behind. An auto-created
+        thread is admitted in memory only, so a restart forgets it. Rather than
+        persist that grant in a file local code could write, the same decision
+        is re-derived from Discord itself: the thread is admitted again only
+        when Discord reports that THIS bot opened it, as a
         public or announcement thread (the only kinds
         ``create_thread_from_message`` makes), under a channel that is in
         ``allowed_channel_ids`` right now. That is exactly the set of threads
@@ -664,7 +666,18 @@ class DiscordTransport(MessagingTransport):
                 created = await self._client.create_thread_from_message(
                     inbound.channel_id, inbound.message_id, title
                 )
-                if not created:
+                # ``""``: Discord already holds a thread for this message, at the
+                # message's id. It is adopted through the checks a restart uses,
+                # but not once that id is admitted: then this message was already
+                # dispatched, or a post in the new thread was admitted first.
+                # Refusing both keeps one message from being answered twice.
+                if (
+                    created == ""
+                    and inbound.message_id not in self._allowed_threads
+                    and await self.readmit_own_thread(inbound.message_id, inbound.user_id)
+                ):
+                    created = inbound.message_id
+                elif not created:
                     sel().log_api_access(
                         caller=inbound.user_id,
                         operation="discord_transport.receive",
@@ -672,37 +685,38 @@ class DiscordTransport(MessagingTransport):
                         source="discord",
                     )
                     return
+                else:
+                    # Authorize the thread transport-side FIRST: this is the set
+                    # ``receive`` itself checks for every subsequent message
+                    # (`elif inbound.channel_id not in self._allowed_threads` below).
+                    # The dispatcher's own copy (button interactions) is updated via
+                    # the callback right after.
+                    #
+                    # Audited because this is a GRANT, not a denial: a new authorized
+                    # disclosure boundary appears at runtime, readable by every member
+                    # who can view the thread, and every refusal on this path already
+                    # leaves a record. Without it the audit log shows the turns that
+                    # ran in the thread but never the decision that admitted it, so
+                    # reconstructing which surfaces the agent was reachable in means
+                    # inferring it from traffic.
+                    #
+                    # The set is deliberately unbounded: each entry is a thread an
+                    # ALREADY-approved user created, and evicting one would silently
+                    # stop answering in a conversation they are still holding: worse
+                    # than the memory, which is bounded in practice by that user's
+                    # own thread count.
+                    self._allowed_threads.add(created)
+                    sel().log_api_access(
+                        caller=inbound.user_id,
+                        operation="discord_transport.auto_thread",
+                        outcome="thread_authorized",
+                        source="discord",
+                        resources=f"channel={inbound.channel_id},thread={created}",
+                    )
+                    if self._on_thread_created is not None:
+                        self._on_thread_created(created)
                 thread_id = created
                 conversation_id = created
-                # Authorize the thread transport-side FIRST: this is the set
-                # ``receive`` itself checks for every subsequent message
-                # (`elif inbound.channel_id not in self._allowed_threads` below).
-                # The dispatcher's own copy (button interactions) is updated via
-                # the callback right after.
-                #
-                # Audited because this is a GRANT, not a denial: a new authorized
-                # disclosure boundary appears at runtime, readable by every member
-                # who can view the thread, and every refusal on this path already
-                # leaves a record. Without it the audit log shows the turns that
-                # ran in the thread but never the decision that admitted it, so
-                # reconstructing which surfaces the agent was reachable in means
-                # inferring it from traffic.
-                #
-                # The set is deliberately unbounded: each entry is a thread an
-                # ALREADY-approved user created, and evicting one would silently
-                # stop answering in a conversation they are still holding: worse
-                # than the memory, which is bounded in practice by that user's
-                # own thread count.
-                self._allowed_threads.add(created)
-                sel().log_api_access(
-                    caller=inbound.user_id,
-                    operation="discord_transport.auto_thread",
-                    outcome="thread_authorized",
-                    source="discord",
-                    resources=f"channel={inbound.channel_id},thread={created}",
-                )
-                if self._on_thread_created is not None:
-                    self._on_thread_created(created)
             elif inbound.channel_id not in self._allowed_threads:
                 # Only an approved sender can cost a REST lookup here, so
                 # background chatter in unrelated threads stays network-free.

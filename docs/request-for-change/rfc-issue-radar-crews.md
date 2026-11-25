@@ -4,10 +4,10 @@ status: partial
 revision: v1
 author: kirocrew agent session, directed by diwm
 created: 2026-08-08
-last-audited: 2026-10-06
-audited-at: 9348a25a34
-doc-pr:
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
+doc-pr: 2300
+implementation-prs: [2300]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -21,8 +21,11 @@ Status: partial — the crew ledger and its agent surface are implemented in
 Radar Crews UI under `website/src/apps/issue-radar/`; the two agent ledger tools
 are declared in the app's `app.json` `agentTools` block and served by
 `src/kiro_crew/apps/builtins/issue_radar/backend/agent_tools.py` (moved out of
-the core `mcp_tools/apps.py` by #33156). This audit did not re-classify every
-later phase of the RFC. The body below remains the historical
+the core `mcp_tools/apps.py` by #33156). The §15 client surface
+(`update_issue_comment` and `create_pull_request` in `github_client_writes.py`,
+`POST /issue/comment` in `crew_routes.py`) and the Phase 3 auto-merge path
+(`may_arm_auto_merge` in `crew_runtime_prompt.py`) are on main; no crew-level
+semaphore (§14, Phase 4) is. The body below remains the historical
 design record and differs from the shipped implementation where later safety
 work superseded a mechanism (for example, a scoped `SafetyOverride` replaces
 `slot._trust`).
@@ -452,11 +455,11 @@ fixtures via `scripts/lib/issue-radar-crews-fixtures.mjs`.
 ## 12. Identity
 
 **Avatars are Kiro ghosts.** The 24×28 bitmap already exists
-(`hooks/sceneText.ts:145` `KIRO_GHOST_PIXELS`), as does an 8-entry outfit table
+(`KIRO_GHOST_PIXELS` in `hooks/sceneText.ts`), as does an 8-entry outfit table
 that differentiates ghosts by hat, glasses and cape rather than body colour
-(`scenes/GhostScene.tsx:36`), and a canvas renderer for it
-(`useSceneInteraction.tsx:20` `MiniGhost`). The outfit is selected by a djb2 hash
-of the avatar seed — the same technique `WateringHoleScene.tsx:92` already uses to
+(`OUTFITS` in `scenes/GhostScene.tsx`), and a canvas renderer for it
+(`MiniGhost` in `useSceneInteraction.tsx`). The outfit is selected by a djb2 hash
+of the avatar seed — the same technique `pickAnimal` in `WateringHoleScene.tsx` already uses to
 keep an agent's species stable.
 
 DiceBear `pixel-art` (`components/CrewAvatar.tsx`) is deliberately *not* reused:

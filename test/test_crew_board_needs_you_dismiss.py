@@ -87,11 +87,15 @@ def _rows(item_id: str) -> list[dict]:
     return [{**item.to_dict(), "events": events}]
 
 
-async def _asks(text: str = "Pick a region.") -> None:
+async def _asks(text: str = "Pick a region.", *, relay: bool = True) -> None:
     status, _ = await _report(
         WORKER_A, {"status": "question", "summary": text, "reason": "needs_human"}
     )
     assert status == 200
+    # The conductor relays it: only a current ask record makes it the person's.
+    for item in wl.list_work_items(CONDUCTOR_A) if relay else ():
+        if item.status == "question":
+            wl.apply_ask_record(CONDUCTOR_A, item.item_id, what=text)
 
 
 def _newest_report(item_id: str) -> str:
@@ -115,6 +119,19 @@ async def _dismiss(item_id: str, report_id: str | None = None):
     request.json = _json
     response = await board.api_work_ledger_board_action(request)
     return response.status, json.loads(response.body.decode())
+
+
+@pytest.mark.asyncio
+async def test_the_goal_board_facts_count_a_question_only_once_it_is_relayed():
+    ids = await two_by_two()
+    await _asks(relay=False)
+
+    def facts() -> dict:
+        return board.with_worker_facts(_rows(ids["item_a"]), _state(running=False))[0]
+
+    assert facts()["awaits_person"] is False, "the main chat is still checking it"
+    wl.apply_ask_record(CONDUCTOR_A, ids["item_a"], what="Pick a region.")
+    assert facts()["awaits_person"] is True
 
 
 @pytest.mark.asyncio

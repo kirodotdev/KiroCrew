@@ -7,7 +7,7 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_delivery import attachment_meta
+from kiro_crew.dashboard.chat_delivery import MIRROR_REPLY_ONLY_META_KEY, attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         _RECOVERED_WAKE_KEY,
         _RECOVERY_TURN_META_KEY,
         _REPLAYS_COMPLETION_KEY,
+        _RESTORED_RETRY_KEY,
         TURN_ACTOR_META_KEY,
     )
     from kiro_crew.dashboard.chat_turn.recipient import (
@@ -172,6 +173,9 @@ def _queue_recovery(
         # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
         # waits on its retry either, so the retry starts BACKGROUND too.
         _recovery_meta[START_BACKGROUND_META_KEY] = True
+    if turn._mirror_reply_only:
+        # A recovery is a second turn of the same Heartbeat wake: it mirrors only its reply too.
+        _recovery_meta[MIRROR_REPLY_ONLY_META_KEY] = True
     if turn._card_origin:
         # A recovery is a second turn of the SAME card reply: it stays untrusted,
         # or a retry would run the page's words with the thread's auto-approval.
@@ -244,6 +248,13 @@ def _queue_recovery(
         for _entry in slot._queue:
             if _entry.get("id") == _recovery_qid:
                 _entry[_RECOVERED_WAKE_KEY] = turn._wake_cycle
+                break
+    if turn._turn_provenance_restored:
+        # A restored turn retried is still that turn: the `user` stamped above is
+        # only the fallback, so the retry keeps the restored mark too.
+        for _entry in slot._queue:
+            if _entry.get("id") == _recovery_qid:
+                _entry[_RESTORED_RETRY_KEY] = True
                 break
     if turn._is_refusal_retry_turn and index == 0 and _replays_this_turn:
         # A verbatim requeue of the refusal retry's own message REPLACES
@@ -330,7 +341,8 @@ def _record_terminal_directive(turn, kind: str, outcome: DirectiveOutcome, tcid:
     if not turn._terminal_directive_applied:
         turn._terminal_directive_applied = True
         turn._terminal_directive_kind = kind
-        turn._terminal_directive_text = outcome.text
+        # A Bot's Heartbeat wake mirrors only a real reply: no outcome line.
+        turn._terminal_directive_text = "" if turn._mirror_reply_only else outcome.text
 
 
 def _wt_maybe_cadence(turn) -> None:

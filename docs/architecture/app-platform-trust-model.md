@@ -15,8 +15,10 @@ When an app's executable surfaces are **admitted** and enabled, its in-process b
 
 The `AppContext` capability permissions (`permissions.cron`,
 `permissions.events`, `permissions.spawn`, `permissions.storage`,
-`permissions.jobs`, `permissions.proposeCrewmate`, `permissions.agentTurns` and
-`permissions.workerAutoApprove`) gate only which SDK objects `context.py` populates.
+`permissions.jobs`, `permissions.proposeCrewmate`, `permissions.agentTurns`,
+`permissions.chatSlots`, `permissions.workerAutoApprove`,
+`permissions.webhookSource` and `permissions.browser`) gate only which SDK
+objects `context.py` populates.
 A non-empty `permissions.mcpTools` scopes the app's OWN agents: when they are
 materialized, every host-managed (`kirocrew-*`) tool the app did not declare is
 added to the agent spec's `managedToolPolicy.exclude`, which the managed servers
@@ -357,6 +359,35 @@ privilege**: an app's loaded Python still runs with full gateway privileges (the
 warning above stands), but an app's own HTTP token cannot reach arbitrary
 gateway or sibling-app endpoints. Dashboard-user tokens (empty app claim) are never
 subject to this gate.
+
+### Owner dialogs an app page raises are guardrails, not boundaries
+
+Some SDK members ask the owner in the dashboard's own dialog before they send a
+change that widens what an app may do. `useBrowserSites().requestAdd` is one: it names
+the site and what the app's agent may then do there, and posts
+`/api/apps/<name>/browser-sites` only when the owner presses Allow. The gateway route
+accepts the change only from an owner dashboard session. It refuses a request that
+carries the app's own token, an internal caller (an agent's MCP tools and kiro-cli,
+including the app's own agent) and any other dashboard session: those callers are held
+off for real.
+
+An app's backend process is not held off. It can mint an owner token through the local
+owner mint (`/api/token/local`, admitted as a gateway-spawned backend, see
+`member_memory_auth.local_owner_bootstrap_provenance`), and that token carries no app
+claim, so the route accepts its `add` and no dialog is shown. That is the same reach a
+backend has over `/api/apps/<name>/enable` today. A real boundary against a hostile
+backend needs backends sandboxed away from the owner mint; that is separate work.
+
+An app page is not held off either. It runs in the same document as the dialog, with the owner's
+session, so its code could press the button or call the route directly. This is the
+same reach it already has over `/api/apps/<name>/enable`, which approves the app's own
+staged permissions, so the dialog gives an app page no power it lacked. It keeps an
+honest app from widening the owner's grants by accident, and it shows the owner every
+widening that goes through the SDK. A real boundary against a hostile page needs app
+pages isolated from the dashboard document (for example, a sandboxed frame with no
+access to the owner's session); that is separate future work. App Python loaded into
+the gateway process is not held off either: it runs with the gateway's privileges, as
+the first section says.
 
 ## Future work
 

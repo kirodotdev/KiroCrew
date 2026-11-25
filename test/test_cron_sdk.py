@@ -777,6 +777,9 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         hook = _dispatch(attended)
         assert hook["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
         assert hook["on_tool_approval"] is not None
+        # The gate's app-own-tools grant reads the job's host-written stamp from the
+        # run, in either mode; the agent half is what the client ran (a mock: none).
+        assert auto["app_run"] == hook["app_run"] == ("digest-app", "")
 
 
 # Property 4: Cron ownership enforcement on mutations

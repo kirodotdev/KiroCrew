@@ -36,7 +36,7 @@ Retraction belongs to ``session_pid._prune_stale_session_token_files`` rather th
 call at session teardown, and its lifecycle is worth stating exactly: it runs from
 ``cleanup_orphaned_sessions`` at startup and graceful shutdown, and from the session
 cleanup loop's periodic tick (``SessionCleanup._sweep_session_token_mappings``, at most
-``MAX_TICK_INTERVAL_SECS`` apart). A mapping goes once it is unrefreshed for the TTL, so
+once per ``SESSION_TOKEN_PRUNE_INTERVAL_SECS``). A mapping goes once it is unrefreshed for the TTL, so
 the bound on the directory is one file per session active within that window, whether
 or not the gateway has restarted.
 
@@ -114,9 +114,11 @@ import hashlib
 import hmac
 import logging
 import os
+import stat
 import threading
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.sel import sel_hmac_key_path
@@ -141,6 +143,11 @@ logger = logging.getLogger(__name__)
 #: effective key without touching the SEL root or the key file on disk.
 _SUBKEY_DOMAIN = b"kirocrew.session_token.sig.v1"
 
+#: The data-home directory that holds every mapping. Only the gateway writes here: the
+#: sandbox seals it read-only (``sandbox_leaves._CREW_READONLY_LEAVES``), so a sandboxed
+#: process can read a mapping but cannot create or replace one.
+SESSION_TOKEN_DIR = "session-tokens"
+
 
 def _sig_path(token: str, cfg: Path) -> Path:
     """The mapping file for *token*, named by ``sha256(token)``.
@@ -158,7 +165,7 @@ def _sig_path(token: str, cfg: Path) -> Path:
     # so a presented token can hold a lone surrogate, which a strict encode
     # refuses by raising. It encodes every other string exactly as plain UTF-8.
     digest = hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
-    return cfg / f"session_token_{digest}.sig"
+    return cfg / SESSION_TOKEN_DIR / f"session_token_{digest}.sig"
 
 
 def _derive_subkey(root: bytes) -> bytes:
@@ -299,12 +306,37 @@ def publish_session_token(token: str, session_key: str) -> None:
 MAPPING_WRITE_LOCK = threading.Lock()
 
 
+def _is_the_gateways_directory(directory: Path) -> bool:
+    """Whether *directory* is a real directory (never a link) owned by this user.
+
+    The data-home root is writable from a sandbox, so a sandboxed process can put a link or
+    a file at the directory's name before the gateway first creates it. ``lstat`` does not
+    follow; a link, a file or another owner's directory is refused rather than written through.
+    """
+    try:
+        info = os.lstat(directory)
+    except OSError:
+        return False
+    if platform_compat.is_link_or_junction(directory) or not stat.S_ISDIR(info.st_mode):
+        return False
+    getuid = getattr(os, "getuid", None)
+    return getuid is None or info.st_uid == getuid()
+
+
 def _write_mapping(path: Path, key: bytes | None, token: str, session_key: str) -> None:
     """Write (or, without a key, invalidate) one mapping. Caller holds the lock."""
     if key is None:
         _invalidate(path)
         return
     try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        if not _is_the_gateways_directory(path.parent):
+            logger.warning(
+                "not publishing an identity mapping: %s is not a real directory owned by the "
+                "gateway user; remove it and the next publication creates it",
+                path.parent.name,
+            )
+            return
         atomic_write(
             path,
             f"{_compute_sig(key, token, session_key)}\n{session_key}",
@@ -321,7 +353,9 @@ def _write_mapping(path: Path, key: bytes | None, token: str, session_key: str) 
         _invalidate(path)
         # Identity publication must never break a turn — the caller falls back to
         # whatever other source it has (the env var, the pid sidecar).
-        logger.debug("could not publish identity mapping", exc_info=True)
+        # Warning, not debug: the record directory is read-only inside a sandbox, so a
+        # publisher running there never succeeds; only the gateway can publish.
+        logger.warning("could not publish identity mapping", exc_info=True)
 
 
 def schedule_session_token_publish(token: str, session_key: str) -> None:

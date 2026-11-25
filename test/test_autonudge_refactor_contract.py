@@ -165,7 +165,7 @@ _BASE_REACHED_IMPORTS = frozenset(
 #: twelve hex digits of the SHA-256 of ``_signature_text`` -- every parameter, ``self``/``cls``
 #: included, with its kind, default and annotation, and the return annotation.
 _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
-    "__init__": ("method", "00c8ff5ae4ba"),
+    "__init__": ("method", "67b999495d71"),
     "_acquire_mutation_lock": ("method+async", "34bd8c98b4d6"),
     "_add_locked": ("method+async", "71d798975d9e"),
     "_add_monitor_locked": ("method+async", "243682becc96"),
@@ -1235,7 +1235,9 @@ _BOUND_AS = {"_serialize_loop": "LoopStore.serialize_loop"}
 
 #: The owner modules, in the order each may import the ones before it.
 _OWNER_ORDER = (
+    "boot_pacer",
     "model",
+    "memory_hold",
     "subject",
     "store",
     "maintenance",

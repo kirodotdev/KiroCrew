@@ -400,6 +400,42 @@ def test_the_codex_worker_capture_shows_the_crewmates_server_and_prompt_applied(
     assert title.startswith("[AGENT SYSTEM PROMPT] You are the worker.")
 
 
+def test_pi_worker_kit_is_proven_by_its_own_capture() -> None:
+    """The pi worker capture is cited, passes, and is off the allowlist, for the kit
+    set and for the prompt channel it rests on."""
+    rel = "pi/worker-kit-live.jsonl"
+    comments = gate.set_comments()
+    for name in ("ACP_BACKENDS_MATE_WORKER_KIT", "ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT"):
+        assert (name, "pi") not in gate.X_CAPTURE_ALLOWLIST
+        assert f"acp_frames/{rel}" in comments[name]
+    name = "ACP_BACKENDS_MATE_WORKER_KIT"
+    assert (name, "pi") not in gate.check_x_captures(gate.live_sets(), comments)
+    assert (name, "pi") in gate.check_x_captures(
+        gate.live_sets(), {**comments, name: comments[name].replace(rel, "pi/absent.jsonl")}
+    )
+
+
+def test_the_pi_worker_capture_shows_the_bots_server_and_prompt_applied() -> None:
+    """The Bot's server, reached through the per-session handoff, called once through
+    the gate and answered, and the reply the Bot's prompt asked for."""
+    rel = "pi/worker-kit-live.jsonl"
+    (call,) = _updates(rel, "tool_call")
+    assert call["title"] == "mcp__pixel_probe__probe_codeword"
+    (ask,) = _methods(rel, "session/request_permission")
+    assert '"mcp":{"server":"pixel-probe","tool":"probe_codeword"}' in (
+        ask["params"]["toolCall"]["rawInput"]["message"]
+    )
+    done = _updates(rel, "tool_call_update")[-1]
+    assert done["status"] == "completed"
+    assert done["rawOutput"]["details"] == {"server": "pixel-probe", "tool": "probe_codeword"}
+    assert done["rawOutput"]["content"][0]["text"] == "kumquat-17"
+    reply = [u["content"]["text"] for u in _updates(rel, "agent_message_chunk")]
+    assert reply == ["kumquat-17"]
+    note = _frames(rel)[0]["_meta"]["note"]
+    assert "composed ['pixel-probe']" in note
+    assert "with no session key composed []" in note
+
+
 def test_every_live_kas_capture_names_the_engine_version() -> None:
     """KAS is versioned apart from kiro-cli; a live capture records the engine's own."""
     import re

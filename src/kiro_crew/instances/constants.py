@@ -7,29 +7,21 @@ These are the defaults for the matching ``InstancesConfig`` fields in
 
 from __future__ import annotations
 
-# Maximum number of remote instances kept "warm" (iframe + tunnel + WebSocket live)
-# at once. Each is a full dashboard SPA; least-recently-used ones past the cap are
-# evicted and reconnected on demand.
+# Maximum number of remote Crews kept "warm" (pane loaded, connection live) at once,
+# SSH and relay together. Each is a full dashboard SPA; the dashboard keeps the most
+# recently opened ones warm and drops the rest, which reconnect on demand.
 #
-# ``WARM_SET_CAP_AUTO`` (0, the default) means "as many as are registered, up to
-# ``WARM_SET_CAP_AUTO_CEILING``", resolved per request by
-# ``kiro_crew.instances.warm_set.resolve_warm_set_cap``. Auto is the default because
-# at the pane an eviction looks exactly like a disconnect (unmount, re-mint, cold
-# boot), so a cap below the crews in use turns tab switching into an apparent flap.
-#
-# REGISTERED, not connected: a connected count races tunnel startup, and a crew that
-# connects just after the poll is evicted -- a different one on each restart.
+# ``WARM_SET_CAP_AUTO`` (0, the default) resolves to ``WARM_SET_CAP_AUTO_CEILING``
+# per request in ``kiro_crew.instances.warm_set.resolve_warm_set_cap``.
 WARM_SET_CAP_AUTO: int = 0
 DEFAULT_WARM_SET_CAP: int = WARM_SET_CAP_AUTO
 
-# Upper bound on the AUTO-resolved warm set: the registered count is user intent,
-# not a resource budget, so 30 crews would otherwise mount 30 SPAs in one renderer.
-# An EXPLICIT integer cap is honoured verbatim, even above this.
+# How many Crews the automatic cap keeps warm. An EXPLICIT integer cap is honoured
+# verbatim, above or below this.
 #
-# 10 is a product target (the fleet size Remote Crew is designed around), not a
-# measurement. The per-pane cost is CPU and worker threads rather than heap: each pane
-# polls and holds a WebSocket, and opening a diff spawns a highlighter worker pool.
-WARM_SET_CAP_AUTO_CEILING: int = 10
+# 5 is a product choice, sized by a measurement on a Linux desktop app: one warm
+# pane held about 138 MB PSS and 3% of a core idle, so ten held about 1.4 GB.
+WARM_SET_CAP_AUTO_CEILING: int = 5
 
 # First local loopback port for an SSH ``-L`` forward; the allocator counts up from
 # here. Clear of the default dashboard port, so a stock gateway's port is never first.
@@ -47,10 +39,13 @@ DEFAULT_SSH_COMPRESSION: bool = True
 DEFAULT_PROBE_INTERVAL_SECS: int = 10
 DEFAULT_PROBE_FAILURE_THRESHOLD: int = 3
 
-# Total timeout (secs) for one end-to-end liveness probe: `GET /api/health` through
-# the forward must return an HTTP response. A TCP connect alone passes on a zombie
-# forward (a session-manager-plugin holding the socket, relaying nothing). 4x the 1.0s
-# `_port_reachable` budget, so one slow round trip does not tear down a good tunnel.
+# Budget (secs) for one end-to-end liveness probe: `GET /api/health` through the
+# forward must return an HTTP response within it, or the probe is a miss. A TCP
+# connect alone passes on a zombie forward (a session-manager-plugin holding the
+# socket, relaying nothing). A missed probe's request stays open as long as its
+# answer could still count ((threshold - 1) x (interval + this) + this, 32s at the
+# defaults), and a late answer proves the forward, so a slow far end is not torn
+# down like a dead one.
 # Not user-tunable: the per-transport connect timeouts are the knob for a slow proxy.
 DEFAULT_PROBE_HEALTH_TIMEOUT_SECS: float = 4.0
 

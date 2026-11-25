@@ -98,6 +98,19 @@ def test_denied_tool_is_rejected_during_decomposition(audit_rows):
     provider.approve_tool.assert_not_awaited()
 
 
+def test_the_decomposition_refusal_row_names_the_rule_that_refused(audit_rows):
+    ctx = _ctx_with_hook(TOOL_DENY)
+    ctx.hooks.on_tool_call.return_value.tier = "deny-rules"
+
+    asyncio.run(
+        decompose("spec", _sessions_with(_provider_requesting_tool()), ctx=ctx, task_id="t1")
+    )
+
+    assert audit_rows() == [
+        ("execute_bash", "denied", "r1", "hook_deny", {**_DECOMPOSITION, "rule_id": "deny-rules"})
+    ]
+
+
 def test_allowed_tool_is_approved_during_decomposition(audit_rows):
     provider = _provider_requesting_tool()
     sessions = _sessions_with(provider)

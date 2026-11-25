@@ -921,6 +921,14 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
         return _owner_denial_response(request, "remote-crew session list is owner-only")
     state: DashboardState = request.app["state"]
     instance_id = request.match_info.get("id", "")
+    # An id naming no registered crew is the caller's mistake, not a peer that is
+    # down: answer 404 as the status and restart routes do, rather than the 503
+    # the tunnel lookup gives for a crew it has no forward to.
+    # No manager keeps its own 503 from read_peer_slots below.
+    has_manager = getattr(state, "instances_manager", None) is not None
+    if has_manager and await asyncio.to_thread(_registry(state).get, instance_id) is None:
+        _audit("chat_slots", "denied", request_id=instance_id, error="not found")
+        return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
     try:
         peer = await read_peer_slots(state, instance_id)
     except PeerSlotsUnavailable as e:

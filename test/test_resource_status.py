@@ -7,14 +7,17 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import importlib
 import re
 import shutil
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew import resource_status as rs
+from kiro_crew.testing.wait import await_until
 
 
 def _cfg(pressure: float, critical: float) -> SimpleNamespace:
@@ -42,6 +45,8 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     # A pressured probe also asks whether the agent slice binds; a host whose
     # slice is near its ceiling would otherwise reword every pressured line.
     monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: None, raising=False)
+    # A synthetic host reading in this file must not inherit the runner's cgroup view.
+    monkeypatch.setattr(rs, "_memory_limit_out_of_view", lambda: False, raising=False)
     # The pull tool also reads the spawn gate's own figure; pin it clear of any
     # floor so a tool case never turns on the CI host's free memory.
     monkeypatch.setattr(rs, "_read_spawn_floor_figure", lambda _min_gb: (32.0, ""))
@@ -53,6 +58,8 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
 _REAL_SLICE_PROBE = rs._read_agent_slice_tasks
 #: The genuine cost-log reader, bound the same way.
 _REAL_LEARNED_SETTLED = rs._read_learned_settled
+#: The genuine spawn-floor figure reader, bound the same way.
+_REAL_SPAWN_FLOOR_FIGURE = rs._read_spawn_floor_figure
 
 
 # ── _classify ────────────────────────────────────────────────────────────────
@@ -1409,6 +1416,30 @@ def test_an_unblocked_line_never_shows_a_gate_figure_below_the_bar(monkeypatch) 
         assert float(m.group(1)) >= float(m.group(2)), text
 
 
+@pytest.mark.parametrize("settled_gb, reading_gb", [(0.82, 2.46875), (0.823, 2.474)])
+def test_the_verdict_its_figure_and_the_floor_line_agree_near_the_bar(
+    monkeypatch, tmp_path, settled_gb: float, reading_gb: float
+) -> None:
+    """A host reading within 0.005 GB of the bar (2.47 GB, then 2.473 GB): the
+    verdict the gate's inline path takes, the comparison of the returned figure
+    its off-loop path makes and the floor line all give the same answer."""
+    import kiro_crew.subagent as sa
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemAvailable: {round(reading_gb * 1024 * 1024)} kB\n", encoding="utf-8")
+    real = sa.check_memory_available
+    monkeypatch.setattr(
+        sa, "check_memory_available", lambda min_gb: real(min_gb=min_gb, path=str(meminfo))
+    )
+    monkeypatch.setattr(rs, "_read_spawn_floor_figure", _REAL_SPAWN_FLOOR_FIGURE)
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": settled_gb})
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    ok, figure = real(min_gb=reading.min_start_gb, path=str(meminfo))
+    assert reading.available_gb == figure
+    assert ok == (figure >= reading.min_start_gb)  # what the off-loop gate path compares
+    assert reading.blocked == (not ok)
+
+
 def test_a_remote_caller_takes_no_reading_and_is_never_blocked(monkeypatch) -> None:
     """The gate prices a remote session's children without the floor
     (``remote_child``), so the tool must not report the floor as holding them."""
@@ -1465,3 +1496,70 @@ def test_tool_says_spawning_is_blocked_on_an_ample_posture(monkeypatch) -> None:
     assert "Subagent spawn floor: 4 GB must stay free after a start" in out
     assert "Guidance: new top-level subagents cannot start now" in out
     assert "ample headroom" not in out
+
+
+# ── container limit at or under the critical threshold: start-up notice ─────
+
+
+def _container_limit_notice_module() -> Any:
+    """The start-up notice module; a build without one fails the case, since that is the bug."""
+    try:
+        return importlib.import_module("kiro_crew.resource_status_container_limit")
+    except ImportError:
+        pytest.fail("no start-up notice names a container memory limit at the critical threshold")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit_gib", "pressure_gb", "critical_gb", "expect_warning"),
+    [
+        (2, None, None, True),  # defaults: critical 2.0 GB
+        (8, None, None, False),
+        (None, None, None, False),  # no finite limit
+        (2, 1.0, 2.0, True),  # raw critical, not the value clamped to pressure
+        (2, None, 0.0, False),  # critical tier disabled
+    ],
+)
+async def test_container_limit_at_critical_logs_one_startup_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    limit_gib: int | None,
+    pressure_gb: float | None,
+    critical_gb: float | None,
+    expect_warning: bool,
+) -> None:
+    """A 2 GiB limit under the default (or raw) critical threshold logs one warning
+    naming the limit and the three settings; a larger, absent or disabled one logs none."""
+    import logging
+
+    from kiro_crew import subagent
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    notice = _container_limit_notice_module()
+    limit = None if limit_gib is None else limit_gib * 1024**3
+    monkeypatch.setattr(subagent, "_container_cgroup_reading", lambda **_: (limit, 1.5))
+    cfg = KiroCrewConfig()
+    if pressure_gb is not None:
+        cfg.agent.resource_pressure_gb = pressure_gb
+    if critical_gb is not None:
+        cfg.agent.resource_critical_gb = critical_gb
+
+    with caplog.at_level(logging.WARNING, logger=notice.__name__):
+        notice.start_container_limit_notice(cfg)  # sync: returns before the read
+        task = notice._NOTICE_TASK
+        assert task is not None
+        await await_until(task, what="the container-limit notice task")
+
+    warnings = [r.getMessage() for r in caplog.records if r.name == notice.__name__]
+    if not expect_warning:
+        assert warnings == []
+        return
+    assert len(warnings) == 1
+    message = warnings[0]
+    assert "limit (2.0 GB)" in message
+    for setting in (
+        "agent.resource_critical_gb",
+        "agent.resource_pressure_gb",
+        "agent.spawn_min_memory_gb",
+    ):
+        assert setting in message

@@ -20,7 +20,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
-from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
+from kiro_crew.apps import (
+    agent_readonly_dirs,
+    credential_masks,
+    protected_app_state,
+)
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
@@ -154,6 +158,10 @@ def install_app(
     as the source of marketplace code; a local-folder grant would admit that.
     The install-time trust check then compares against the listing coordinate.
     """
+    # Imported here, not at module level: the MCP listing imports this module and
+    # its import budget has no room (test_mcp_listing_import_budget).
+    from kiro_crew.apps import protected_app_ui
+
     market_coordinate = ""
     if market_source:
         # Imported here so the manager facade's star import gains no new names.
@@ -285,6 +293,13 @@ def install_app(
             name=name,
             error=f"could not clear earlier memory consent for {name!r}: {exc}",
         )
+    # Browsing sites the owner added for an earlier install go too.
+    try:
+        protected_app_state.forget_owner_browser_sites(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not clear earlier browsing sites for {name!r}: {exc}"
+        )
 
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(
@@ -395,6 +410,11 @@ def install_app(
                 logger.info("Reinstalling %s into the folder its uninstall kept", name)
             shutil.rmtree(dest)
         _copy_app_tree(source, dest)
+        # The scripts the dashboard will run: copied from the source this install
+        # copies, never from the sandbox-writable tree (``protected_app_ui``).
+        protected_app_ui.discard(
+            protected_app_ui.record(name, source / "ui", source, allow_hardlinks=True)
+        )
         # The gateway's own root entries -- ``.app_secret`` and, when a preserved
         # directory is put back below, ``data`` -- are never the source's: a
         # source entry so named reaches the app directory verbatim only when the
@@ -435,6 +455,7 @@ def install_app(
         # Nothing preserved is inside `dest`: a restored `data/` IS a directory,
         # so the refusal only fires where none was put back.
         shutil.rmtree(dest, ignore_errors=True)
+        protected_app_ui.forget(name)
         sel().log_api_access(
             caller="app_install",
             operation="install",
@@ -447,6 +468,7 @@ def install_app(
         # Clean up partial install first
         if dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
+        protected_app_ui.forget(name)
         # Restore preserved data to the clean dest
         try:
             if _owned_data_dir(tmp_data):
@@ -499,9 +521,20 @@ def install_app(
     # The approved set is put back as it was rather than removed. An installed app
     # was refused above, so no prior record exists to lose, but an approved set can
     # outlive its record, and that set is restored byte for byte.
-    prior_grants_text = _approved_grants_snapshot(name)
+    try:
+        prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
+            error_code="app_install_approvals_unreadable",
+        )
     try:
         _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
+        if not manifest.ui.startup:
+            protected_app_state.write_startup_text(name, None)
         _write_installed(name, meta)
 
         # Generate and write app secret for token-based auth (App Kit §5.1)
@@ -513,6 +546,7 @@ def install_app(
         try:
             (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
             _restore_approved_grants(name, prior_grants_text)
+            protected_app_state.write_startup_text(name, prior_startup_text)
         except OSError as undo_exc:
             logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
         # The record's write asked for a refresh that may have read it; ask again.
@@ -536,12 +570,24 @@ def install_app(
         resources=f"name={name!r} version={manifest.version}",
     )
 
+    from kiro_crew.apps.startup_modules import withdrawal_notice
+
+    startup_notice = (
+        withdrawal_notice(name, "install")
+        if prior_startup_text is not None and not manifest.ui.startup
+        else ""
+    )
     refresh_app_config_keys()
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
+    from kiro_crew.apps.builtin_shadow import shadowed_builtin_notice
+
+    shadow_notice = shadowed_builtin_notice(name, meta)
     return AppResult(
         ok=True,
         name=name,
-        message=f"installed {name} v{manifest.version}",
+        message=f"installed {name} v{manifest.version}"
+        + startup_notice
+        + (f"; {shadow_notice}" if shadow_notice else ""),
         notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 
@@ -585,6 +631,10 @@ def update_app(
     new manifest neither holds back a grant nor adds ``sessionApproval``, so an
     adopted app keeps its ``enabled`` flag and every approved grant.
     """
+    # Imported here, not at module level: the MCP listing imports this module and
+    # its import budget has no room (test_mcp_listing_import_budget).
+    from kiro_crew.apps import protected_app_ui
+
     source = Path(source).expanduser().resolve()
     if not source.is_dir():
         return AppResult(ok=False, error=f"source is not a directory: {source}")
@@ -843,9 +893,12 @@ def update_app(
     # read refuses the update with nothing changed and no marker left behind.
     try:
         prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
     except (OSError, ValueError) as exc:
         return AppResult(
-            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
         )
     prior_owner_disabled = protected_app_state.owner_disabled(name)
     try:
@@ -853,6 +906,8 @@ def update_app(
     except OSError as exc:
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
     with _tree_swap(name), update_marker:
+        previous_ui: Path | None = None
+        ui_recorded = False
         try:
             if existing.enabled and not meta.enabled:
                 # Turned off for consent. Decided here, from the record read
@@ -894,7 +949,13 @@ def update_app(
             refusal = gateway_data_dir_obstruction(dest)
             if refusal:
                 raise InstalledTreeRefused(refusal)
+            # The scripts the dashboard will run: copied from the source this update
+            # installs, never from the sandbox-writable tree (``protected_app_ui``).
+            previous_ui = protected_app_ui.record(name, source / "ui", source, allow_hardlinks=True)
+            ui_recorded = True
             _write_approved_grants(name, approved_grants)
+            if not manifest.ui.startup:
+                protected_app_state.write_startup_text(name, None)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
             rollback_error = ""
@@ -917,11 +978,20 @@ def update_app(
                     _remove_any_shape(restored_secret)
                     shutil.move(str(tmp_secret), str(restored_secret))
                 _restore_approved_grants(name, prior_grants_text)
+                protected_app_state.write_startup_text(name, prior_startup_text)
                 protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 _write_installed(name, existing)
             except (OSError, shutil.Error, ValueError) as rollback_exc:
                 rollback_error = f"; rollback failed: {rollback_exc}"
                 logger.error("Failed to restore app %s after update error", name, exc_info=True)
+            if ui_recorded:
+                # Its own step, after the tree: a failure here never stops the tree
+                # and the record going back.
+                try:
+                    protected_app_ui.restore(name, previous_ui)
+                except (OSError, ValueError) as ui_exc:
+                    rollback_error += f"; UI script copy not restored: {ui_exc}"
+                    logger.error("Failed to restore app %s's UI script copy", name, exc_info=True)
             return AppResult(
                 ok=False,
                 name=name,
@@ -932,6 +1002,7 @@ def update_app(
             _remove_any_shape(retired)
         except OSError:
             logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
+        protected_app_ui.discard(previous_ui)
 
     # Ensure data directory exists
     app_data_dir(name)
@@ -953,6 +1024,13 @@ def update_app(
         manifest.version,
         source,
     )
+    from kiro_crew.apps.startup_modules import withdrawal_notice
+
+    startup_notice = (
+        withdrawal_notice(name, "update")
+        if prior_startup_text is not None and not manifest.ui.startup
+        else ""
+    )
     if session_control_widening is not None:
         sel().log_api_access(
             caller="app_update",
@@ -967,7 +1045,7 @@ def update_app(
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
                 f"disabled because this version newly requests {session_control_widening.words}"
-                " -- review it on the app page and enable again"
+                " -- review it on the app page and enable again" + startup_notice
             ),
             notice="session_approval_reconsent",
         )
@@ -985,11 +1063,11 @@ def update_app(
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
                 "this version requests new permissions, which stay off until you "
-                "approve them on the app page"
+                "approve them on the app page" + startup_notice
             ),
         )
     return AppResult(
         ok=True,
         name=name,
-        message=f"updated {name} v{old_version} -> v{manifest.version}",
+        message=f"updated {name} v{old_version} -> v{manifest.version}" + startup_notice,
     )

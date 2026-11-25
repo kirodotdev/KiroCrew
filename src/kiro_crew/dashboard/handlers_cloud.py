@@ -37,11 +37,19 @@ from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import launch_job as lj
 from kiro_crew.cloud import login as login_mod
+from kiro_crew.cloud import sizes
 from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud import ssm
-from kiro_crew.cloud.aws import AWSError, CloudActionDenied
+from kiro_crew.cloud.aws import AWSError, CloudActionDenied, service_error_code
 from kiro_crew.cloud.launch_engine import RealLaunchEngine
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError, target_from_whoami
+from kiro_crew.dashboard.cloud_launch_controls import (
+    _cancels,
+    _register_cancel,
+    _register_skip,
+    _release_cancel,
+    _release_skip,
+)
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
@@ -131,6 +139,43 @@ def _guard(
             status=400,
         )
     return None
+
+
+#: Lanes whose cloud routes are the machine owner's alone, as their own routes are: a
+#: Shared Crew teammate who passes the owner gate above is refused (403 ``owner_only``).
+#: The built-in EC2 lane is not listed and keeps the owner gate alone.
+_HOST_OWNER_ONLY_LANES = ("kiro_managed_env",)
+
+
+def _lane_hidden_from(request: web.Request, provider_id: str) -> bool:
+    """Is *provider_id* a host-owner-only lane this caller reached only as a teammate?"""
+    if provider_id not in _HOST_OWNER_ONLY_LANES:
+        return False
+    from kiro_crew.shared_crew.teammate_access import teammate_passes_owner_gate
+
+    return teammate_passes_owner_gate(request)
+
+
+def _already_running(request: web.Request, active: lj.LaunchJob, message: str) -> web.Response:
+    """409 for a running job; the job itself is left out when the caller may not read it."""
+    if _lane_hidden_from(request, active.provider_id):
+        return web.json_response({"error": message, "code": "launch_already_running"}, status=409)
+    return web.json_response(
+        {"error": message, "code": "launch_already_running", "job": active.to_dict()},
+        status=409,
+    )
+
+
+def _lane_owner_refusal(
+    request: web.Request, provider_id: str, operation: str
+) -> Optional[web.Response]:
+    """A refusal for a teammate on a host-owner-only lane, or None."""
+    if not _lane_hidden_from(request, provider_id):
+        return None
+    _audit(operation, "denied", error=f"teammate on lane {provider_id}")
+    return web.json_response(
+        {"error": "Only this Crew's owner can do this.", "code": "owner_only"}, status=403
+    )
 
 
 def _store(state: "DashboardState") -> lj.LaunchJobStore:
@@ -308,42 +353,6 @@ def _launch_lock(state: "DashboardState") -> LoopBoundLock:
     return lock
 
 
-def _cancels(state: "DashboardState") -> dict:
-    cancels = getattr(state, "cloud_launch_cancels", None)
-    if cancels is None:
-        cancels = {}
-        state.cloud_launch_cancels = cancels
-    return cancels
-
-
-#: Serialises the register/release pair on ``_cancels``. Registration happens on
-#: the event loop and release on a worker thread, so a compare-then-delete
-#: without it could still read one worker's event and delete the next one's.
-_CANCELS_GUARD = threading.Lock()
-
-
-def _register_cancel(state: "DashboardState", job_id: str, cancel: threading.Event) -> None:
-    with _CANCELS_GUARD:
-        _cancels(state)[job_id] = cancel
-
-
-def _release_cancel(state: "DashboardState", job_id: str, cancel: threading.Event) -> None:
-    """Drop the registered event for *job_id* only if it is still *cancel*.
-
-    A worker releases its event AFTER persisting its terminal result -- and the
-    restart route admits a new retry for the same job as soon as the file reads
-    terminal, registering a new event under the same id. An unconditional pop in
-    the finishing worker's ``finally`` therefore raced that registration and could
-    delete the NEW worker's event: a cancel then found nothing to set, wrote
-    CANCELLED, and the new worker overwrote it with its result -- the cancel was
-    silently ignored. Releasing only our own event closes that.
-    """
-    with _CANCELS_GUARD:
-        cancels = _cancels(state)
-        if cancels.get(job_id) is cancel:
-            del cancels[job_id]
-
-
 def _start_worker(
     state: "DashboardState", job: lj.LaunchJob, engine: Optional[lj.LaunchEngine] = None
 ) -> None:
@@ -356,15 +365,18 @@ def _start_worker(
     if engine is None:
         engine = _engine(state, job.provider_id)
     cancel = threading.Event()
+    skip = lj.SigninSkip()
     _register_cancel(state, job.id, cancel)
+    _register_skip(state, job.id, skip)
     # Claim the job for this process, so a later reap_orphans() does not mistake
     # a launch we are actively driving for one abandoned by a restart.
     store.adopt(job.id)
 
     def _run() -> None:
         try:
-            lj.run_launch(job, store, engine, cancel=cancel)
+            lj.run_launch(job, store, engine, cancel=cancel, skip_signin=skip)
         finally:
+            _release_skip(state, job.id, skip)
             _release_cancel(state, job.id, cancel)
 
     if getattr(state, "cloud_launch_sync", False):
@@ -601,6 +613,10 @@ async def api_cloud_launch_list(request: web.Request) -> web.Response:
     # grows with history and would stall the whole gateway on the event loop.
     store = await _astore(request.app["state"])
     jobs = await _in_executor(store.list)
+    from kiro_crew.shared_crew.teammate_access import teammate_passes_owner_gate
+
+    if teammate_passes_owner_gate(request):
+        jobs = [j for j in jobs if j.provider_id not in _HOST_OWNER_ONLY_LANES]
     _audit("launch_list", "success")
     return web.json_response({"jobs": [j.to_dict() for j in jobs]})
 
@@ -614,6 +630,8 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
     job = await _in_executor(store.get, request.match_info["id"])
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
+    if (refused := _lane_owner_refusal(request, job.provider_id, "launch_get")) is not None:
+        return refused
     _audit("launch_get", "success", request_id=job.id)
     return web.json_response(job.to_dict())
 
@@ -673,6 +691,8 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
     job = await _in_executor(store.get, request.match_info["id"])
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
+    if (refused := _lane_owner_refusal(request, job.provider_id, "launch_task")) is not None:
+        return refused
     if not job.instance_id:
         _audit("launch_task", "denied", request_id=job.id, error="no task recorded")
         return web.json_response(
@@ -741,8 +761,10 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key, subnet_id?, login_target?,
-    confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to that subnet.
+    Body: ``{provider_id?, profile, region, size_key, subnet_id?, instance_type?,
+    login_target?, confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to
+    that subnet; ``instance_type`` launches a type the Region offers instead of the
+    ``size_key`` tier (see ``handlers_cloud_instance_types``).
     ``confirm_recipient`` is the credential recipient the operator confirmed, required by any
     lane whose launch delivers a credential to something its own configuration names (the
     Fargate lane refuses an empty or stale one and names both values); the built-in EC2 lane
@@ -776,6 +798,12 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     # handler has no way to know what a lane's recipient looks like, and a check that
     # guessed would be a second rule to keep in step with the engine's.
     confirm_recipient = str(body.get("confirm_recipient") or "")
+    # Launch without the Kiro sign-in: a crew on another harness needs none.
+    skip_signin = body.get("skip_signin", False)
+    if not isinstance(skip_signin, bool):
+        return web.json_response(
+            {"error": "skip_signin must be true or false", "code": "invalid_body"}, status=400
+        )
     # The Kiro identity the crew signs in as — validated HERE, at the owner-only
     # HTTP boundary, before anything is persisted or reaches a remote shell.
     # An absent block is the Builder ID default (a pre-seam client body launches
@@ -803,7 +831,14 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     except ValidationError as e:
         _audit("launch_create", "denied", error=f"invalid subnet: {e}")
         return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+    from kiro_crew.dashboard.handlers_cloud_instance_types import check_requested_instance_type
+
+    instance_type, refused = await check_requested_instance_type(body, provider_id)
+    if refused is not None:
+        return refused
     provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
+    if (refused := _lane_owner_refusal(request, provider_id, "launch_create")) is not None:
+        return refused
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
         return web.json_response(
@@ -845,6 +880,37 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    tier = sizes.TIERS_BY_KEY.get(size_key)
+    if subnet_id and (instance_type or tier is not None):
+        # The same check ec2.deploy runs, here so a subnet the launch would refuse is
+        # reported under its field before anything is set up. Outside the launch lock:
+        # these are AWS calls, and holding it would stall cancel and the sign-in retry.
+        # An unknown size skips it; store.create below refuses that request. A custom
+        # type replaces the tier's, so the subnet's zone must offer that one.
+        subnet_type = instance_type or (tier.instance_type if tier else "")
+
+        def _check_subnet() -> None:
+            region = ec2.validate_region(str(body.get("region", "")) or lj._default_region())
+            profile = ec2.validate_profile(str(body.get("profile", "")))
+            ec2.resolve_explicit_subnet(subnet_id, profile, region, subnet_type)
+
+        try:
+            await _in_executor(_check_subnet)
+        except ValidationError as e:
+            _audit("launch_create", "denied", error=str(e))
+            return web.json_response(
+                {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
+            )
+        except AWSError as e:
+            # Only the subnet's own refusals go under its field: the check's own, or AWS
+            # naming the id. A credential, permission or network failure is the account's.
+            if e.stderr and not service_error_code(e.stderr).startswith("InvalidSubnetID"):
+                _audit("launch_create", "failure", error=str(e))
+                return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+            _audit("launch_create", "denied", error=f"invalid subnet: {e}")
+            return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+        except SandboxUnavailableError as exc:
+            return _sandbox_unavailable_response("launch_create", exc, "The subnet check")
     # One launch at a time. Without this a double-click or a retried request
     # creates two jobs with two tags and two CloudFormation stacks — two billed
     # instances, and the client cannot undo that after the fact. The check, the
@@ -873,13 +939,10 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
         active = next((j for j in existing if not j.terminal), None)
         if active is not None:
             _audit("launch_create", "denied", request_id=active.id, error="already running")
-            return web.json_response(
-                {
-                    "error": "a crew setup is already running; cancel it before starting another",
-                    "code": "launch_already_running",
-                    "job": active.to_dict(),
-                },
-                status=409,
+            return _already_running(
+                request,
+                active,
+                "a crew setup is already running; cancel it before starting another",
             )
         # Resolve the engine BEFORE the job exists: an id the provider lists but
         # cannot back must not leave a PENDING job file that a restart then reaps
@@ -922,6 +985,8 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     step_labels=dict(provisioner.step_labels or ()),
                     login_target=login_target,
                     subnet_id=subnet_id,
+                    skip_signin=skip_signin,
+                    instance_type=instance_type,
                 )
             )
         except KeyError as e:  # unknown size
@@ -945,6 +1010,8 @@ async def api_cloud_launch_cancel(request: web.Request) -> web.Response:
     job = await _in_executor(store.get, job_id)
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
+    if (refused := _lane_owner_refusal(request, job.provider_id, "launch_cancel")) is not None:
+        return refused
     # Under the launch lock: the restart route registers its cancel event and
     # persists RUNNING under this same lock, so a cancel cannot slip between those
     # two writes, find no event, and terminalize a job whose worker is about to
@@ -1083,6 +1150,8 @@ async def api_cloud_launch_signin(request: web.Request) -> web.Response:
     job = await _in_executor(store.get, request.match_info["id"])
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
+    if (refused := _lane_owner_refusal(request, job.provider_id, "launch_signin")) is not None:
+        return refused
     if job.status != lj.AWAITING_SIGNIN or not job.signin:
         if _unsigned_crew_may_be_reprobed(job):
             # Query off the loop, write on it under the lock. Both halves must
@@ -1241,6 +1310,10 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "not found", "code": "launch_job_not_found"}, status=404
             )
+        if (
+            refused := _lane_owner_refusal(request, job.provider_id, "launch_signin_restart")
+        ) is not None:
+            return refused
         if job.signin_detected:
             # A stale tab asking to restart a sign-in that another tab (or the
             # re-probe) has since confirmed. Admitting it would clear
@@ -1316,13 +1389,10 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
         )
         if active is not None:
             _audit("launch_signin_restart", "denied", request_id=job_id, error="already running")
-            return web.json_response(
-                {
-                    "error": "a crew setup or sign-in is already running; wait for it or cancel it",
-                    "code": "launch_already_running",
-                    "job": active.to_dict(),
-                },
-                status=409,
+            return _already_running(
+                request,
+                active,
+                "a crew setup or sign-in is already running; wait for it or cancel it",
             )
         try:
             engine = _engine(state, job.provider_id)
@@ -1469,6 +1539,8 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     # credentials could not describe a stack that was never meant to exist -- a
     # report that reads as a broken profile rather than a verb that does not apply.
     lane = _lane_of(jobs, tag)
+    if (refused := _lane_owner_refusal(request, lane, op)) is not None:
+        return refused
     if lane != BUILTIN_PROVISIONER_ID and op in ("stop", "start"):
         # These two are the EC2 lane's reversible pair: stop parks an instance and
         # keeps its disk, start brings the same disk back. A lane whose engine offers
@@ -1489,6 +1561,21 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
                     "these this lane can do"
                 ),
                 "code": "lane_cannot_pause",
+                "provisioner_id": lane,
+            },
+            status=409,
+        )
+    if lane in _HOST_OWNER_ONLY_LANES and op == "destroy":
+        # This lane deletes through its own route, by ledger id; the
+        # person removes the crew rows with the core Remove.
+        _audit(op, "denied", request_id=tag, error=f"lane {lane} deletes elsewhere")
+        return web.json_response(
+            {
+                "error": (
+                    f"Nothing was deleted: {tag} is a managed environment, deleted with "
+                    "POST /api/managed-environments/<id>/delete."
+                ),
+                "code": "lane_delete_elsewhere",
                 "provisioner_id": lane,
             },
             status=409,

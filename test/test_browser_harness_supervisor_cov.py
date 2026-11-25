@@ -789,9 +789,10 @@ async def test_the_port_launcher_clears_a_stale_port_file_and_reads_the_new_one(
 
 
 @pytest.mark.asyncio
-async def test_the_port_launcher_gives_up_when_chromium_exits_first(
+async def test_the_port_launcher_reports_the_exit_code_when_chromium_exits_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: list[Any]
 ) -> None:
+    """A browser that died is told apart from one that is only slow to open its port."""
     sup = HarnessSupervisor(tmp_path, base_env={})
     exited = _Proc(returncode=21)
 
@@ -803,8 +804,9 @@ async def test_the_port_launcher_gives_up_when_chromium_exits_first(
 
     sup._spawn = _spawn  # type: ignore[method-assign]
     monkeypatch.setattr(supervisor, "_devtools_ws_url", _no_url)
-    with pytest.raises(supervisor.BrowserUnavailable, match="did not open its debugging port"):
+    with pytest.raises(supervisor.BrowserUnavailable) as raised:
         await sup._launch_chromium_port(["chromium"], tmp_path)
+    assert str(raised.value) == "Kiro's Chromium exited with code 21"
     assert stopped == [exited]
 
 
@@ -1286,6 +1288,57 @@ async def test_no_start_launches_kiros_chromium_while_a_redownload_replaces_it(
     with pytest.raises(supervisor.BrowserUnavailable, match="being redownloaded"):
         await sup._start()
     assert sup.status()["detail"] == supervisor.CHROMIUM_REPLACING_DETAIL
+
+
+@pytest.mark.asyncio
+async def test_no_start_runs_while_the_harness_venv_is_being_reinstalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reinstall empties the venv in place: a start then would spawn a missing
+    interpreter, so it is refused with what is going on instead."""
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+    monkeypatch.setattr(
+        supervisor.install, "install_state", lambda home: _installed(home, python=Path("py"))
+    )
+    monkeypatch.setattr(sup, "runtime_dir", lambda: tmp_path / "run")
+    monkeypatch.setattr(sup, "_choose", lambda state: _choice("kiro_chromium"))
+
+    async def _must_not_spawn(*_a: Any, **_kw: Any) -> Any:
+        raise AssertionError("a start spawned during the harness reinstall")
+
+    monkeypatch.setattr(sup, "_spawn", _must_not_spawn)
+    monkeypatch.setattr(sup, "_launch_chromium", _must_not_spawn)
+    sup.installing_harness = True
+    with pytest.raises(supervisor.HarnessNotInstalled, match="being reinstalled"):
+        await sup._start()
+    assert sup.status()["detail"] == supervisor.HARNESS_REINSTALLING_DETAIL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", ["daemon", "worker"])
+async def test_an_interpreter_gone_at_spawn_reads_as_a_reinstall_not_an_errno(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    """The venv can be emptied between the install read and the spawn: the person
+    sees the reinstall, not ``[Errno 2] ... venv/bin/python``."""
+    sup = HarnessSupervisor(tmp_path, base_env={})
+    gone = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(
+        supervisor.install, "install_state", lambda home: _installed(home, python=gone)
+    )
+    sup._daemon_env = lambda url: {}  # type: ignore[method-assign]
+
+    async def _no_stray() -> None:
+        return None
+
+    sup._shutdown_stray_daemon = _no_stray  # type: ignore[method-assign]
+    with pytest.raises(Exception) as raised:
+        if which == "daemon":
+            await sup._start_daemon(gone, "http://relay")
+        else:
+            await sup._start_worker(_handle())
+    assert isinstance(raised.value, supervisor.HarnessNotInstalled), repr(raised.value)
+    assert "being reinstalled" in str(raised.value)
 
 
 def test_runs_kiro_chromium_reads_the_live_handle_not_the_configured_choice(

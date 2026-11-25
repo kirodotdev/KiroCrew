@@ -9,6 +9,9 @@ AWS.
 from __future__ import annotations
 
 import builtins
+import errno
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -367,6 +370,169 @@ class TestCredentialsSection:
         out = capsys.readouterr().out
         assert "vending MCP" in out
         assert "creds-agent" in out
+        assert issues == []
+
+
+def _refuse_stat(
+    monkeypatch, aws_dir: Path, error: OSError, names: tuple[str, ...] = ("config", "credentials")
+) -> None:
+    """Make ``os.stat`` refuse the named files under *aws_dir*, as the host does.
+
+    Staged at ``os.stat`` because ``Path.stat`` and ``Path.is_file()`` both reach it
+    on every platform.
+    """
+    real_stat = os.stat
+    refused = {os.fspath(aws_dir / name) for name in names}
+
+    def _stat(path, *args, **kwargs):
+        if not isinstance(path, int) and os.fspath(path) in refused:
+            # A fresh copy per raise, so no case inherits another's traceback.
+            raise type(error)(*error.args)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+
+def _is_file_as_python_314(self, *, follow_symlinks=True):
+    """``Path.is_file()`` as Python 3.14 answers it: ``False`` for any ``stat`` error.
+
+    Spelled through ``os.stat`` because 3.14's own route, ``os.path.isfile``, skips
+    ``os.stat`` on Windows.
+    """
+    try:
+        return stat.S_ISREG(os.stat(self, follow_symlinks=follow_symlinks).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
+class TestADotAwsTheHostWillNotCheck:
+    """A ``stat`` the host does not answer is named, never raised, never read as absent.
+
+    On macOS a sandbox tier that hides ``~/.aws`` refuses it (``EPERM``), and so does a
+    ``~/.aws`` this user lacks permission on (``EACCES``). Raised, it ends the whole
+    doctor run at this section; read as absent, it tells an operator who has a setup to
+    make one.
+    """
+
+    _REFUSALS = [
+        pytest.param(PermissionError(errno.EPERM, "Operation not permitted"), id="macos-sandbox"),
+        pytest.param(PermissionError(errno.EACCES, "Permission denied"), id="posix-mode-000"),
+        pytest.param(PermissionError(errno.EACCES, "Access is denied"), id="windows-acl"),
+        pytest.param(OSError(errno.EIO, "Input/output error"), id="io-error"),
+        pytest.param(OSError(), id="no-reason"),
+    ]
+
+    @pytest.mark.parametrize("error", _REFUSALS)
+    @pytest.mark.parametrize(
+        "is_file_swallows", [False, True], ids=["is_file-raises", "is_file-returns-false"]
+    )
+    def test_the_refusal_is_named_and_the_section_finishes(
+        self, fake_home, monkeypatch, capsys, error, is_file_swallows
+    ):
+        """Every supported interpreter gets the same answer.
+
+        ``Path.is_file()`` raises a refused ``stat`` on Python 3.12 and 3.13 and returns
+        ``False`` on 3.14; the second case runs that 3.14 form on whichever interpreter
+        runs the suite.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[default]\n", encoding="utf-8")
+        if is_file_swallows:
+            monkeypatch.setattr(Path, "is_file", _is_file_as_python_314)
+        _refuse_stat(monkeypatch, aws, error)
+        issues: list[str] = []
+        cli_doctor._doctor_credentials(issues)
+        out = capsys.readouterr().out
+        # The detail lines wrap at the doctor's width, so phrases are matched unwrapped.
+        flat = " ".join(out.split())
+        reason = error.strerror or type(error).__name__
+        assert f"could not check ~/.aws ({reason})" in out
+        assert "(None)" not in out
+        assert "run `kirocrew doctor` from your own terminal to see the AWS setup." in flat
+        assert "check the ownership and permissions of ~/.aws." in flat
+        assert "no ~/.aws config" not in out, "a refusal is not an absent setup"
+        assert "reporting the truth" not in flat, "nothing showed the host is unconfigured"
+        assert "rather than a missing setup" not in flat
+        assert "cannot READ credential files" in out
+        assert issues == []
+
+    @pytest.mark.parametrize(
+        ("present", "refused"), [("config", "credentials"), ("credentials", "config")]
+    )
+    def test_a_file_that_answers_decides_over_one_that_is_refused(
+        self, fake_home, monkeypatch, capsys, present, refused
+    ):
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / present).write_text("[default]\n", encoding="utf-8")
+        _refuse_stat(
+            monkeypatch,
+            aws,
+            PermissionError(errno.EPERM, "Operation not permitted"),
+            names=(refused,),
+        )
+        monkeypatch.setattr(cli_doctor, "_aws_profile_names", lambda: ["build"])
+        issues: list[str] = []
+        cli_doctor._doctor_credentials(issues)
+        out = capsys.readouterr().out
+        assert "could not check ~/.aws" not in out
+        assert "build" in out
+        assert "rather than a missing setup" in " ".join(out.split())
+        assert issues == []
+
+    def test_a_dot_aws_that_is_a_file_is_still_no_setup(self, fake_home, capsys):
+        """A ``~/.aws`` that is a file answers the question: nothing is configured under it.
+
+        The ``stat`` raises ``NotADirectoryError`` or ``FileNotFoundError``, depending on
+        the platform, and either keeps the "no ~/.aws config" verdict.
+        """
+        (fake_home / ".aws").write_text("not a directory\n", encoding="utf-8")
+        issues: list[str] = []
+        cli_doctor._doctor_credentials(issues)
+        out = capsys.readouterr().out
+        assert "no ~/.aws config" in out
+        assert "could not check" not in out
+        assert issues == []
+
+    def test_a_symlink_loop_is_named_not_read_as_no_setup(self, fake_home, monkeypatch, capsys):
+        """``Path.is_file()`` reads a looping link as no file on every interpreter.
+
+        A ``~/.aws/config`` that links to itself is a setup nobody can read, so the
+        section names the loop instead of telling its owner to configure one.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[default]\n", encoding="utf-8")
+        _refuse_stat(monkeypatch, aws, OSError(errno.ELOOP, "Too many levels of symbolic links"))
+        issues: list[str] = []
+        cli_doctor._doctor_credentials(issues)
+        out = capsys.readouterr().out
+        assert "could not check ~/.aws (Too many levels of symbolic links)" in out
+        assert "no ~/.aws config" not in out
+        assert issues == []
+
+    def test_a_mode_000_dot_aws_is_named_not_raised(self, fake_home, capsys, request):
+        """The kernel refuses the ``stat`` here, not a patch, for a user the mode binds.
+
+        Root reads through mode 000, and so does a host without POSIX modes, so the case
+        stands aside wherever the host still answers the ``stat`` itself.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[default]\n", encoding="utf-8")
+        aws.chmod(0)
+        request.addfinalizer(lambda: aws.chmod(0o700))
+        try:
+            os.stat(aws / "config")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this process still reads through a mode-000 directory")
+        issues: list[str] = []
+        cli_doctor._doctor_credentials(issues)
+        out = capsys.readouterr().out
+        assert "could not check ~/.aws" in out
         assert issues == []
 
 

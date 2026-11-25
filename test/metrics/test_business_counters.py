@@ -209,11 +209,15 @@ class TestCompactions:
 
         from kiro_crew.session_compaction import CompactionCoordinator
 
+        async def _aflush() -> None:
+            return None
+
         coordinator = CompactionCoordinator.__new__(CompactionCoordinator)
         stub = cast(Any, coordinator)
         stub._owner = SimpleNamespace(
             _recycling={"k": object()} if recycling else {},
             mark_needs_reinjection=lambda key: None,
+            _session_map=SimpleNamespace(aflush=_aflush),
         )
         # ``uncompactable_recycles`` is the set that tells a "nothing could compact
         # this" recycle apart from a "the compaction failed" one, which the callback

@@ -83,17 +83,18 @@ def _snapshot_memory_or_exit() -> None:
 _DETACHED_BRANCH_ORDER = ("main", "mainline", "master")  # wokeignore:rule=master
 
 
-def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
-    """The first primary branch origin has, for a checkout on no branch.
+def _remote_refs_present(
+    proj: str, fetch_env: dict[str, str], refs: list[str], what: str
+) -> set[str]:
+    """Which of *refs* origin has, asked with one ``git ls-remote``.
 
-    Asks the remote itself with ``git ls-remote``, the same way the fetch reaches
-    it, and only about the names in :data:`_DETACHED_BRANCH_ORDER`. Exits 1 with
-    the fix when origin has none of them or cannot be read.
+    Asks the remote itself, the same way the fetch reaches it, and only about
+    *refs*. Exits 1 when origin cannot be read; *what* names the refs in that
+    message (``"branches"``, ``"release tags"``).
     """
-    refs = [f"refs/heads/{name}" for name in _DETACHED_BRANCH_ORDER]
     try:
         result = subprocess.run(
-            # `--upload-pack` for the same reason as the fetch below.
+            # `--upload-pack` for the same reason as the fetch in `_update`.
             ["git", "ls-remote", "--upload-pack=git-upload-pack", "origin", *refs],
             cwd=proj,
             env=fetch_env,
@@ -106,14 +107,22 @@ def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git ls-remote timed out after %ss during update", exc.timeout
         )
-        print(
-            f"  ❌ Could not list origin's branches (git ls-remote timed out after {exc.timeout}s)"
-        )
+        print(f"  ❌ Could not list origin's {what} (git ls-remote timed out after {exc.timeout}s)")
         sys.exit(1)
     if result.returncode != 0:
-        print(f"  ❌ Could not list origin's branches:\n{result.stderr.strip()}")
+        print(f"  ❌ Could not list origin's {what}:\n{result.stderr.strip()}")
         sys.exit(1)
-    found = {line.split("\t", 1)[1].strip() for line in result.stdout.splitlines() if "\t" in line}
+    return {line.split("\t", 1)[1].strip() for line in result.stdout.splitlines() if "\t" in line}
+
+
+def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
+    """The first primary branch origin has, for a checkout on no branch.
+
+    Asks origin only about the names in :data:`_DETACHED_BRANCH_ORDER`. Exits 1
+    with the fix when origin has none of them or cannot be read.
+    """
+    refs = [f"refs/heads/{name}" for name in _DETACHED_BRANCH_ORDER]
+    found = _remote_refs_present(proj, fetch_env, refs, "branches")
     for name, ref in zip(_DETACHED_BRANCH_ORDER, refs):
         if ref in found:
             print(f"  ℹ  This checkout is on no branch; updating from origin/{name}.")
@@ -124,6 +133,112 @@ def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
     print("  Check out the branch to update from, then retry:")
     print("      git checkout -B <branch> origin/<branch>")
     sys.exit(1)
+
+
+def _is_release_tag(name: str) -> bool:
+    """Whether *name* is a tag :func:`~kiro_crew.release_channel.release_refs` produces."""
+    from kiro_crew.release_channel import release_refs
+
+    return name.startswith("v") and name in release_refs(name[1:])
+
+
+def _head_oid(proj: str, env: dict[str, str]) -> str:
+    """HEAD's commit OID, or ``""`` when it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+            cwd=proj,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _is_shallow_clone(proj: str, env: dict[str, str]) -> bool:
+    """Whether the checkout is a shallow clone; ``False`` when it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=proj,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _release_tag_checkout(proj: str, env: dict[str, str]) -> tuple[str, list[str]] | None:
+    """``(HEAD's OID, the release tags at HEAD)`` for a checkout detached at one, else ``None``.
+
+    A cloud crew launched from a packaged install is a depth-1 clone of one
+    release tag. HEAD can carry several (``v0.13.1-rc.2`` and ``v0.13.1`` on one
+    commit). Unreadable reads as ``None``: the update then does what it does for
+    any checkout on no branch.
+    """
+    head = _head_oid(proj, env)
+    if not head:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "for-each-ref", "--points-at=HEAD", "--format=%(refname:strip=2)", "refs/tags"],
+            cwd=proj,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    tags = [name for name in result.stdout.split() if _is_release_tag(name)]
+    return (head, tags) if tags else None
+
+
+def _release_update_tag(
+    proj: str, fetch_env: dict[str, str], release: str, head_tags: list[str]
+) -> str | None:
+    """The release tag ``kirocrew update --release`` moves a release-tag checkout to.
+
+    The first of ``release_refs(release)`` origin has. ``None`` when that tag is
+    not strictly newer than every release tag at HEAD: an update never moves to
+    an older release. Exits 1 when no tag maps onto *release* or origin has none
+    of them, before anything is fetched.
+    """
+    from kiro_crew.dashboard.handlers.updates_verdict import _is_newer
+    from kiro_crew.release_channel import release_refs
+
+    candidates = release_refs(release)
+    if not candidates:
+        print(f"  ❌ --release {release!r} names no release tag; nothing was changed.")
+        sys.exit(1)
+    found = _remote_refs_present(
+        proj, fetch_env, [f"refs/tags/{tag}" for tag in candidates], "release tags"
+    )
+    tag = next((t for t in candidates if f"refs/tags/{t}" in found), None)
+    if tag is None:
+        print(f"  ❌ origin has none of the release tags for {release!r}; nothing was changed:")
+        print(f"      {', '.join(candidates)}")
+        sys.exit(1)
+    if not all(_is_newer(tag[1:], at[1:]) is True for at in head_tags):
+        print(
+            f"\n✅ This checkout is already on release {tag} or a newer one ({', '.join(head_tags)})."
+        )
+        return None
+    print(
+        f"  ℹ  This checkout is on release {', '.join(head_tags)}; updating to release tag {tag}."
+    )
+    return tag
 
 
 def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[str] | None:
@@ -172,14 +287,16 @@ def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[s
         # On a case-insensitive filesystem the two spellings are one file; on a
         # case-sensitive one they are two, and the added spelling is the untracked one.
         try:
-            return os.path.samefile(root / path, root / twin)
+            return os.path.samestat(os.lstat(root / path), os.lstat(root / twin))
         except OSError:
             return False
 
     def _all_removed_below(directory: Path) -> bool:
         """Whether every file under *directory* is one the reset deletes."""
-        for here, _dirs, files in os.walk(directory):
-            for file_name in files:
+        for here, dirs, files in os.walk(directory):
+            # os.walk lists a symlink to a directory under dirs and never enters it.
+            links = [d for d in dirs if os.path.islink(os.path.join(here, d))]
+            for file_name in [*files, *links]:
                 if not _removed(Path(here, file_name).relative_to(root).as_posix()):
                     return False
         return True
@@ -205,7 +322,7 @@ def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[s
     return list(dict.fromkeys(found))
 
 
-def _update(force: bool = False) -> None:
+def _update(force: bool = False, release: str | None = None) -> None:
     """Update Kiro Crew — dispatches based on install layout.
 
     Three install layouts, three update paths:
@@ -218,7 +335,10 @@ def _update(force: bool = False) -> None:
       prompt only covers uncommitted edits. ``force=True`` (the ``--force``
       CLI flag) is the explicit opt-in that lets the reset discard them.
       An ahead-only checkout has nothing to pull and is reported as up to
-      date without resetting.
+      date without resetting. A checkout detached exactly at a release tag
+      moves to the release tag of *release* (``--release``) instead of
+      origin's primary branch, fetching only that tag and never an older
+      one; every other install ignores *release*.
     * **wheel / cli.sh** — fetch the release feed, compare versions, and
       re-run the installer if newer. This is the path that was missing and
       caused the ``KIROCREW_PROJECT_DIR not set`` error for cli.sh installs.
@@ -349,12 +469,38 @@ def _update(force: bool = False) -> None:
         sys.exit(1)
 
     fetch_ref = branch
-    if not branch:
+    fetch_opts: list[str] = []
+    # The OID HEAD had when a release-tag update started; "" on every other path.
+    release_head = ""
+    release_tag = ""
+    if (
+        release is not None
+        and not branch
+        and (at_release := _release_tag_checkout(proj, _git_env)) is not None
+    ):
+        release_head, head_tags = at_release
+        release_tag = _release_update_tag(proj, _fetch_env, release, head_tags) or ""
+        if not release_tag:
+            return
+        # Only that tag: origin's branches share no history with it. Depth 1 only
+        # on a shallow clone: on a complete one `--depth` would make it shallow.
+        # No leading `+`, so a local tag of that name is never overwritten (a
+        # clash fails the fetch); the tag written here is what lets the next
+        # update recognise the checkout.
+        fetch_opts = ["--depth", "1"] if _is_shallow_clone(proj, _git_env) else []
+        fetch_opts.append("--no-tags")
+        fetch_ref = f"refs/tags/{release_tag}:refs/tags/{release_tag}"
+    elif not branch:
         branch = _detached_upstream_branch(proj, _fetch_env)
         # Spelled as a full refspec: a detached clone (a tag, or `--single-branch`
         # of another branch) may map no fetch refspec to this branch, and a bare
         # name would then fill only FETCH_HEAD, leaving the pin below unresolved.
         fetch_ref = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+    # What every message below names as the upstream, and the ref the pin reads.
+    upstream = release_tag or f"origin/{branch}"
+    upstream_ref = f"refs/tags/{release_tag}" if release_tag else f"refs/remotes/origin/{branch}"
+    # Every printed retry repeats the release path's flag, or it would run the main path.
+    release_opt = f" --release {release}" if release_tag else ""
 
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
     print("  ⬇️  git fetch…")
@@ -363,7 +509,7 @@ def _update(force: bool = False) -> None:
             # `--upload-pack` beats every configured upload-pack (an env pin does
             # not: git takes the first value it reads, the repository's). The bare
             # name is what an ssh server accepts.
-            ["git", "fetch", "--upload-pack=git-upload-pack", "origin", fetch_ref],
+            ["git", "fetch", "--upload-pack=git-upload-pack", *fetch_opts, "origin", fetch_ref],
             cwd=proj,
             env=_fetch_env,
             stdin=subprocess.DEVNULL,
@@ -376,7 +522,7 @@ def _update(force: bool = False) -> None:
             "git fetch timed out after %ss during update", exc.timeout
         )
         print(f"  ❌ git fetch timed out after {exc.timeout:g}s and kept nothing it downloaded.")
-        print("  Run `kirocrew update` again to retry the fetch.")
+        print(f"  Run `kirocrew update{release_opt}` again to retry the fetch.")
         sys.exit(1)
     finally:
         # A killed fetch leaves its partial pack. The update check's reaper takes
@@ -397,7 +543,7 @@ def _update(force: bool = False) -> None:
     # took as the upstream.
     try:
         pin_result = subprocess.run(
-            ["git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}"],
+            ["git", "rev-parse", "--verify", f"{upstream_ref}^{{commit}}"],
             cwd=proj,
             env=_git_env,
             stdin=subprocess.DEVNULL,
@@ -409,11 +555,11 @@ def _update(force: bool = False) -> None:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git rev-parse timed out after %ss during update", exc.timeout
         )
-        print(f"  ❌ Could not resolve origin/{branch} (git rev-parse timed out)")
+        print(f"  ❌ Could not resolve {upstream} (git rev-parse timed out)")
         sys.exit(1)
     target = pin_result.stdout.strip()
     if pin_result.returncode != 0 or not target:
-        print(f"  ❌ Could not resolve origin/{branch}:\n{pin_result.stderr.strip()}")
+        print(f"  ❌ Could not resolve {upstream}:\n{pin_result.stderr.strip()}")
         sys.exit(1)
 
     # Check if there are new commits
@@ -471,15 +617,23 @@ def _update(force: bool = False) -> None:
           commits when there is nothing to update to.
         * ``"diverged"`` — ahead AND behind; resettable only under ``--force``.
         * ``"fast_forward"`` — behind and not ahead; nothing of its own to lose.
+          On a release-tag update this is the answer, uncounted, while HEAD is
+          still the commit the update started from, or ``"up_to_date"`` when the
+          tag is on that commit too: that commit is a release tag's own, which
+          the tag keeps reachable, and a depth-1 history cannot be counted. Once
+          HEAD has moved it is counted like any other, and a depth-1 history
+          reads as diverged.
         """
+        if release_head and _head_oid(proj, _git_env) == release_head:
+            return ("up_to_date" if target == release_head else "fast_forward"), 0, 0
         # Same env as the reset, so the guard judges the repository it resets.
         counts = count_divergence_sync(proj, target, env=_git_env)
         if isinstance(counts, DivergenceUnreadable):
             if counts.reason == UNREADABLE_UNPARSEABLE:
-                print(f"  ❌ Could not parse the commit counts against origin/{branch}:")
+                print(f"  ❌ Could not parse the commit counts against {upstream}:")
                 print(f"     {counts.detail!r}")
             else:
-                print(f"  ❌ Could not compare HEAD against origin/{branch}:")
+                print(f"  ❌ Could not compare HEAD against {upstream}:")
                 print(f"     {counts.detail}")
             return "unreadable", -1, -1
         ahead, behind = counts.ahead, counts.behind
@@ -490,7 +644,7 @@ def _update(force: bool = False) -> None:
         return "fast_forward", ahead, behind
 
     def _report_up_to_date(ahead: int) -> None:
-        suffix = f" ({ahead} local commit(s) ahead of origin/{branch})" if ahead else ""
+        suffix = f" ({ahead} local commit(s) ahead of {upstream})" if ahead else ""
         print(f"\n✅ Already up to date!{suffix}")
 
     verdict, ahead, behind = _divergence_verdict()
@@ -501,14 +655,14 @@ def _update(force: bool = False) -> None:
         return
     if verdict == "diverged":
         if not force:
-            print(f"  ⚠️  This checkout has diverged from origin/{branch}:")
-            print(f"      {ahead} local commit(s) not on origin/{branch}, {behind} behind.")
+            print(f"  ⚠️  This checkout has diverged from {upstream}:")
+            print(f"      {ahead} local commit(s) not on {upstream}, {behind} behind.")
             print("  A hard reset would discard the local commits. Reconcile instead:")
-            print(f"      git rebase origin/{branch}    (or: git merge origin/{branch})")
+            print(f"      git rebase {upstream}    (or: git merge {upstream})")
             print("  Or discard the local commits explicitly:")
-            print("      kirocrew update --force")
+            print(f"      kirocrew update{release_opt} --force")
             sys.exit(1)
-        print(f"  ⚠️  --force: discarding {ahead} local commit(s) not on origin/{branch}.")
+        print(f"  ⚠️  --force: discarding {ahead} local commit(s) not on {upstream}.")
 
     # Interpreter floor of the pinned revision, read from the commit itself. The
     # reinstall below would refuse it anyway, but only after the reset has moved
@@ -571,12 +725,25 @@ def _update(force: bool = False) -> None:
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
     if tracked_changes:
-        print("  ⚠️  Local tracked-file changes will be discarded:")
+        count = len(tracked_changes)
+        files = "1 file" if count == 1 else f"{count} files"
+        rerun = f"kirocrew update{release_opt}" + (" --force" if force else "")
+        print(f"  ⚠️  You have uncommitted changes in {files}. Updating will discard them:")
         for line in tracked_changes[:10]:
             print(f"      {line}")
-        resp = input("  Continue? [y/N] ").strip().lower()
+        if count > 10:
+            print(f"      … and {count - 10} more")
+        # The folder goes on a line of its own, not into a command: no one
+        # quoting keeps every legal path literal in sh, cmd.exe and PowerShell.
+        print("  Answer N to keep them. To keep them and still update, go to the checkout:")
+        print(f"      {proj}")
+        print("  and run there:")
+        print("      git stash")
+        print(f"      {rerun}")
+        print("      git stash pop")
+        resp = input("  Discard these changes and update anyway? [y/N] ").strip().lower()
         if resp != "y":
-            print("  Aborted.")
+            print("  Aborted. Your changes were kept; nothing was updated.")
             sys.exit(0)
 
     # Re-classify immediately before the reset. The verdict above is a
@@ -599,7 +766,7 @@ def _update(force: bool = False) -> None:
     if verdict == "diverged" and not force:
         print(f"  ⚠️  Refusing to reset: {ahead} local commit(s) appeared on HEAD while")
         print("      this update was waiting, which a hard reset would discard.")
-        print(f"      Reconcile with: git rebase origin/{branch}")
+        print(f"      Reconcile with: git rebase {upstream}")
         sys.exit(1)
 
     # Re-read the repo-named driver config right before the reset: the fetch and
@@ -628,7 +795,7 @@ def _update(force: bool = False) -> None:
         sys.exit(1)
 
     _snapshot_memory_or_exit()
-    print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
+    print(f"  🔄 git reset --hard {upstream} ({target[:12]})…")
     try:
         result = subprocess.run(
             ["git", "reset", "--hard", target],
@@ -660,11 +827,28 @@ def _update(force: bool = False) -> None:
     # lays down for the new release's pin (``release_apply``). Decided before the
     # kiro-cli pin so a host without kiro-cli prints the reason, not a PATH note.
     # Local import: this body runs on the ``cli_server`` facade's globals.
+    from kiro_crew import crewmate_harness
     from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.config import KiroCrewConfig
 
+    # No configured harness choice (main, crewmate, a Bot's pin, an enabled failover
+    # chain) spawns kiro-cli. An unreadable config reads as "one does", so the step
+    # keeps running as it did.
+    try:
+        no_kiro_cli_role = not crewmate_harness.kiro_cli_runs_anywhere(KiroCrewConfig.load())
+    except Exception:
+        no_kiro_cli_role = False
     if kas_bundle.kas_bundle_route():
         print(
             "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
+        )
+        kiro_cli_bin, unpinned_kiro_cli = None, False
+    elif no_kiro_cli_role:
+        # The self-update has no result this install reads, and a slow link makes
+        # it run to its 120 s timeout while the gateway is down.
+        print(
+            "  ℹ️  kiro-cli update skipped: no selected backend runs kiro-cli "
+            "(run `kiro-cli update` by hand if an agent spec pins it)."
         )
         kiro_cli_bin, unpinned_kiro_cli = None, False
     else:

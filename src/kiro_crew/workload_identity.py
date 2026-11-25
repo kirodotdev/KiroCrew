@@ -15,14 +15,16 @@ pod spec sets them), not anything an operator edits at runtime:
 ``KIROCREW_WORKLOAD_IDENTITY_SVID_FILE``
     The absolute path of the file the sidecar writes the JWT-SVID to.
 ``KIROCREW_WORKLOAD_IDENTITY_AUDIENCE``
-    The audience the JWT-SVID must name: the Kiro runtime URL.
+    The audience the JWT-SVID must name: the Kiro runtime URL for the Crew's
+    stage. Required: nothing public names that URL yet.
 ``KIROCREW_WORKLOAD_IDENTITY_PROFILE_ARN``
     The Kiro profile the Crew is registered under.
 
 While it is on, the KAS engine's token callback answers from the file
 (:mod:`kiro_crew.acp.kas_host_auth`), and nothing reads, renews or writes the
-person sign-in vault. The relay lease reads the same file through the file form
-of ``tunnel.relay_lease_credential``, with ``tunnel.relay_lease_token_type`` empty.
+person sign-in vault. The relay lease reads a file named by the file form of
+``tunnel.relay_lease_credential`` the same way (:func:`lease_bearer`), with the same
+claim checks, and sends it with no ``TokenType``.
 
 The JWT-SVID's signature is not checked here: the relying party checks it. Its
 claims are, so a sidecar that wrote the wrong token fails here with a reason. The
@@ -35,14 +37,15 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional
 
-from kiro_crew.bounded_read import bounded_read
+from kiro_crew.bounded_read import bounded_read_regular_file
 
 ENV_MODE = "KIROCREW_WORKLOAD_IDENTITY"
 ENV_SVID_FILE = "KIROCREW_WORKLOAD_IDENTITY_SVID_FILE"
@@ -58,6 +61,10 @@ KAS_PROVIDER = "Enterprise"
 MIN_REMAINING_SECONDS = 180.0
 #: The largest file read; a JWT-SVID is a few kilobytes.
 SVID_MAX_BYTES = 16 * 1024
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+#: The latest ``exp`` accepted: the last second of the year 9999 UTC, the last one
+#: the engine's ``expiresAt`` can be written as. A later one is a broken token.
+MAX_EXPIRES_AT = 253402300799.0
 
 _PROFILE_ARN_RE = re.compile(
     r"\Aarn:aws[a-z-]*:codewhisperer:[a-z0-9-]+:\d{12}:profile/[A-Za-z0-9]+\Z", re.ASCII
@@ -86,6 +93,11 @@ class Settings:
         if not os.path.isabs(svid_file):
             raise WorkloadIdentityError(f"{ENV_SVID_FILE} must be an absolute path")
         audience = (env.get(ENV_AUDIENCE) or "").strip()
+        if not audience:
+            raise WorkloadIdentityError(
+                f"{ENV_AUDIENCE} is not set: set it to the Kiro runtime URL the "
+                "JWT-SVID is issued for"
+            )
         if not audience.startswith("https://") or any(ch.isspace() for ch in audience):
             raise WorkloadIdentityError(f"{ENV_AUDIENCE} must be an https:// audience")
         profile_arn = (env.get(ENV_PROFILE_ARN) or "").strip()
@@ -119,8 +131,7 @@ def read_svid(settings: Settings, *, now: Optional[float] = None) -> Svid:
     of those may pass once the sidecar writes the file again.
     """
     try:
-        with open(settings.svid_file, "rb") as handle:
-            raw = bounded_read(handle, SVID_MAX_BYTES + 1)
+        raw = bounded_read_regular_file(settings.svid_file, SVID_MAX_BYTES + 1)
     except OSError as exc:
         raise WorkloadIdentityError(
             f"the JWT-SVID file could not be read ({type(exc).__name__})"
@@ -139,13 +150,26 @@ def read_svid(settings: Settings, *, now: Optional[float] = None) -> Svid:
     audiences = [audience] if isinstance(audience, str) else audience
     if not isinstance(audiences, list) or settings.audience not in audiences:
         raise WorkloadIdentityError("the JWT-SVID is not for the configured audience")
-    expires_at = claims.get("exp")
-    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
-        raise WorkloadIdentityError("the JWT-SVID has no expiry")
+    expires_at = _expiry(claims.get("exp"))
     stamp = time.time() if now is None else now
     if expires_at - stamp < MIN_REMAINING_SECONDS:
         raise WorkloadIdentityError("the JWT-SVID is expired or about to expire")
-    return Svid(token=token, subject=subject, expires_at=float(expires_at))
+    return Svid(token=token, subject=subject, expires_at=expires_at)
+
+
+def _expiry(value: object) -> float:
+    """The ``exp`` claim as a finite number of seconds, or the error naming it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkloadIdentityError("the JWT-SVID has no expiry")
+    try:
+        expires_at = float(value)
+    except OverflowError:
+        expires_at = math.inf
+    if not math.isfinite(expires_at):
+        raise WorkloadIdentityError("the JWT-SVID's expiry is not a finite time")
+    if expires_at > MAX_EXPIRES_AT:
+        raise WorkloadIdentityError("the JWT-SVID's expiry is past the year 9999")
+    return expires_at
 
 
 def _claims(token: str) -> dict:
@@ -156,7 +180,7 @@ def _claims(token: str) -> dict:
     try:
         decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
         claims = json.loads(decoded)
-    except (binascii.Error, ValueError):
+    except (binascii.Error, ValueError, RecursionError):
         raise WorkloadIdentityError("the JWT-SVID's claims do not parse") from None
     if not isinstance(claims, dict):
         raise WorkloadIdentityError("the JWT-SVID's claims do not parse")
@@ -173,10 +197,22 @@ def kas_access_token_answer(env: Optional[Mapping[str, str]] = None) -> dict:
     svid = read_svid(settings)
     return {
         "accessToken": svid.token,
-        "expiresAt": datetime.fromtimestamp(svid.expires_at, timezone.utc).isoformat(),
+        # From the epoch, not ``fromtimestamp``: Windows refuses times past 3000.
+        "expiresAt": (_EPOCH + timedelta(seconds=svid.expires_at)).isoformat(),
         "profileArn": settings.profile_arn,
         "provider": KAS_PROVIDER,
     }
+
+
+def lease_bearer(path: str, env: Optional[Mapping[str, str]] = None) -> str:
+    """The JWT-SVID in the file at *path*, checked as :func:`read_svid` checks it.
+
+    The relay lease's credential on a workload host: the same claims (``sub``,
+    ``aud``, ``exp``) as the engine's sign-in, so a token the engine would refuse
+    never goes to the lease service. Blocking file IO.
+    """
+    settings = replace(Settings.from_env(env), svid_file=os.path.expanduser(path))
+    return read_svid(settings).token
 
 
 def ready(env: Optional[Mapping[str, str]] = None) -> bool:

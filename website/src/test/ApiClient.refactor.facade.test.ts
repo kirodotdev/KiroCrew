@@ -77,7 +77,7 @@ describe('the blessed transport', () => {
     const install = vi.mocked(installApiTransport)
     expect(install).toHaveBeenCalledTimes(1)
     const [installed] = install.mock.calls[0]
-    expect(Object.keys(installed)).toEqual(['get', 'getWithSignal', 'post', 'put', 'del', 'patch', 'j', 'jNullable'])
+    expect(Object.keys(installed)).toEqual(['get', 'getWithSignal', 'post', 'put', 'del', 'patch', 'j', 'jNullable', 'request'])
     for (const helper of Object.values(installed)) expect(typeof helper).toBe('function')
   })
 })

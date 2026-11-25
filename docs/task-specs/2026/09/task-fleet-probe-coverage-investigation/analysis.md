@@ -1,6 +1,7 @@
 # Investigation: issue #7597 — `fleet_probe.py` at 14.8% failing the per-file coverage floor
 
-> Archived analysis; owning specs: [pipeline-conductor](../../../../system-specs/modules/pipeline-conductor.md) (`fleet_probe.py`) and [CI and the review gates](../../../../ci/ci-and-reviews.md#ciyml-correctness) (the per-file coverage floor).
+> Archived analysis; line links are pinned to commit `e5cab93868`, the tree this investigation read.
+> Owning specs: [pipeline-conductor](../../../../system-specs/modules/pipeline-conductor.md) (`fleet_probe.py`) and [CI and the review gates](../../../../ci/ci-and-reviews.md#ciyml-correctness) (the per-file coverage floor).
 ## Summary
 
 The disposition is **needs-investigation / likely duplicate of the CI coverage-arm
@@ -32,8 +33,8 @@ rate for a file that is in fact covered.
 - `class TestFleetProbe:` — `test/test_pipeline_conductor_agent.py::TestFleetProbe`
 - `_mod()` loads the real script via
   `load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")` —
-  `test/test_pipeline_conductor_agent.py:181`
-- `SKILL_DIR` is defined at `test/test_pipeline_conductor_agent.py:26` and resolves to
+  [`test/test_pipeline_conductor_agent.py` L181](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/test/test_pipeline_conductor_agent.py#L181)
+- `SKILL_DIR` is defined at [`test/test_pipeline_conductor_agent.py` L26](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/test/test_pipeline_conductor_agent.py#L26) and resolves to
   `src/kiro_crew/builtin_skills/pipeline-conductor`.
 
 The class holds **20** `test_*` methods (between lines 179 and 453), most of which
@@ -88,7 +89,7 @@ Control case (this is the decisive point): `credit_spend.py` lives in the **same
 `src/kiro_crew/builtin_skills/pipeline-conductor/scripts/` directory, is loaded by the
 **same** `load_skill_script` in the **same** test file:
 
-- `class TestCreditSpend:` — `test/test_pipeline_conductor_agent.py:453`
+- `class TestCreditSpend:` — [`test/test_pipeline_conductor_agent.py` L453](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/test/test_pipeline_conductor_agent.py#L453)
 - `_mod()` → `load_skill_script("credit_spend", SKILL_DIR / "scripts" / "credit_spend.py")`
 
 `credit_spend.py` is **not** present in `.github/coverage-baselines/backend.txt`
@@ -122,12 +123,12 @@ CI artifact**, not a code-coverage deficiency.
 `fleet_probe.py` is 453 lines and defines its module top level with real executable
 statements — imports plus module constants and a stack of `def` lines:
 
-- `PROTO` — `fleet_probe.py:88`
-- `DEFAULT_ERR_RES` — `fleet_probe.py:91`
-- `DEFAULT_BANNED_RES` — `fleet_probe.py:102`
-- `IDLE_TAG` — `fleet_probe.py:107`
-- `_FIRING` — `fleet_probe.py:108`
-- `_KEY_RE` — `fleet_probe.py:113`
+- `PROTO` — [`fleet_probe.py` L88](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L88)
+- `DEFAULT_ERR_RES` — [`fleet_probe.py` L91](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L91)
+- `DEFAULT_BANNED_RES` — [`fleet_probe.py` L102](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L102)
+- `IDLE_TAG` — [`fleet_probe.py` L107](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L107)
+- `_FIRING` — [`fleet_probe.py` L108](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L108)
+- `_KEY_RE` — [`fleet_probe.py` L113](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L113)
 
 34 statements out of 229 is very close to what executes from the **module top level
 alone** at import time: the `import` statements, the module-level constant
@@ -148,51 +149,51 @@ The truncation path is visible in `.github/workflows/ci.yml`:
 
 - Backend coverage runs **only on the 3.12 shards** — the pytest invocation passes
   `--cov=kiro_crew --cov=sage_lib` on 3.12 and `--no-cov` otherwise
-  (`ci.yml:692`); the 3.10 arm is trace-free by design (`ci.yml:655-657`).
+  ([`ci.yml` L692](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L692)); the 3.10 arm is trace-free by design ([`ci.yml` L655-657](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L655-L657)).
 - The suite is **sharded 4 ways** via pytest-split (`group: [1, 2, 3, 4]`,
-  `ci.yml:595` in the `backend-test` matrix). Each 3.12 shard folds the parallel data
+  [`ci.yml` L595](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L595) in the `backend-test` matrix). Each 3.12 shard folds the parallel data
   files its xdist workers wrote into a single `.coverage` in the "Stage shard coverage
-  data" step (`ci.yml:699-707`), renames it to `.coverage.<group>` (`ci.yml:707`), and
-  the "Upload shard coverage" step (`ci.yml:709-716`) publishes it as artifact
+  data" step ([`ci.yml` L699-707](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L699-L707)), renames it to `.coverage.<group>` ([`ci.yml` L707](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L707)), and
+  the "Upload shard coverage" step ([`ci.yml` L709-716](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L709-L716)) publishes it as artifact
   `coverage-shard-<group>`.
 - That staging step is where data can go missing **with nothing going red**. It runs
-  `coverage combine 2>/dev/null || true` (`ci.yml:705`), which discards both the stderr
+  `coverage combine 2>/dev/null || true` ([`ci.yml` L705](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L705)), which discards both the stderr
   and the exit status of the merge, and the guard that follows asserts only that the
   file **exists** — `test -f .coverage || { echo "::error::..."; exit 1; }`
-  (`ci.yml:706`). Nothing asserts that the merge consumed every worker's data file, so
+  ([`ci.yml` L706](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L706)). Nothing asserts that the merge consumed every worker's data file, so
   the guard separates "some data" from "no data" and never "all data" from "some data".
   A shard whose combine dropped one worker therefore stages a well-formed but
   **incomplete** `.coverage.<group>` and stays green.
-- The **`coverage-combine`** job (`ci.yml:973`) downloads `pattern: coverage-shard-*`
-  with `merge-multiple: true` (`ci.yml:1004-1005`) and then runs `coverage combine`
-  / `coverage xml` / `coverage report` (`ci.yml:1012-1014`). It has **no
+- The **`coverage-combine`** job ([`ci.yml` L973](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L973)) downloads `pattern: coverage-shard-*`
+  with `merge-multiple: true` ([`ci.yml` L1004-1005](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1004-L1005)) and then runs `coverage combine`
+  / `coverage xml` / `coverage report` ([`ci.yml` L1012-1014](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1012-L1014)). It has **no
   all-shards-present assertion**, and no per-shard size or content expectation either,
   so it cannot notice a shard that is present but thin.
 
 ### Why the shard wall is not the mechanism here
 
-`ci.yml:581-583` documents an adjacent failure, and it is tempting to reach for it:
+[`ci.yml` L581-583](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L581-L583) documents an adjacent failure, and it is tempting to reach for it:
 
 > "The slowest 3.12 shard runs ~29 minutes, so a 30-minute cap kills the job at the
 > coverage step with every test green and Coverage Gate then reds on the missing
 > shard artifact."
 
-(The cap is now 40 at `ci.yml:584`, per #7527 / #7552.) That path is real, but it
+(The cap is now 40 at [`ci.yml` L584](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L584), per #7527 / #7552.) That path is real, but it
 **cannot produce a per-file line-rate at all**, so it is not what happened here:
 
 - A shard killed at the wall makes the `backend-test` matrix job **fail**.
-  `fail-fast: false` (`ci.yml:588`) keeps its siblings running but does not change the
+  `fail-fast: false` ([`ci.yml` L588](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L588)) keeps its siblings running but does not change the
   matrix job's own result.
-- `coverage-combine` declares `needs: [backend-test, changes]` (`ci.yml:975`) and an
-  `if:` that does **not** use `always()` (`ci.yml:979`), so a failed `backend-test`
+- `coverage-combine` declares `needs: [backend-test, changes]` ([`ci.yml` L975](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L975)) and an
+  `if:` that does **not** use `always()` ([`ci.yml` L979](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L979)), so a failed `backend-test`
   leaves it **skipped** — no `coverage combine`, no `coverage.xml`.
 - The per-file backend check is gated on `if: needs.coverage-combine.result ==
-  'success'` (`ci.yml:1255`), and Coverage Gate fails closed on any other combine
-  result (`ci.yml:1173-1175`).
+  'success'` ([`ci.yml` L1255](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1255)), and Coverage Gate fails closed on any other combine
+  result ([`ci.yml` L1173-1175](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1173-L1175)).
 
 A wall death therefore reds Coverage Gate at its "Require upstream coverage jobs to
 have succeeded" step — `backend-test=failure` and `coverage-combine=skipped`, the job
-itself reached only because it carries `if: always()` (`ci.yml:1117`) — and never
+itself reached only because it carries `if: always()` ([`ci.yml` L1117](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1117)) — and never
 reports a number for any file. That the gate named `fleet_probe.py` at 14.8%, and that
 a healthy 91.68% overall was measured on the same run, both require
 `coverage-combine` to have **succeeded** — which means no shard died. The loss has to
@@ -217,7 +218,7 @@ Under this mechanism:
 The issue frames the gate as "effectively PR-only". That framing is imprecise and
 worth correcting before it becomes a fix aimed at the wrong line.
 
-- By **trigger**, the workflow is *not* PR-only. `ci.yml:3-7` fires on both:
+- By **trigger**, the workflow is *not* PR-only. [`ci.yml` L3-7](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L3-L7) fires on both:
 
   ```yaml
   on:
@@ -227,8 +228,8 @@ worth correcting before it becomes a fix aimed at the wrong line.
       branches: [main]      # ci.yml:6-7
   ```
 
-- The real gap is the **concurrency block** at `ci.yml:12-20`. `cancel-in-progress`
-  is `${{ github.event_name == 'pull_request' }}` (`ci.yml:20`) — false on `main`, so
+- The real gap is the **concurrency block** at [`ci.yml` L12-20](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L12-L20). `cancel-in-progress`
+  is `${{ github.event_name == 'pull_request' }}` ([`ci.yml` L20](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L20)) — false on `main`, so
   an in-flight main run is allowed to finish. But the concurrency *group* still
   permits only one **pending** run, and GitHub evicts that pending run when a newer
   one queues (a documented GitHub behavior, noted in the comment itself). With a
@@ -266,7 +267,7 @@ The disposition above is therefore reached by **static analysis**, which is
 conclusive in this case: the control case (`credit_spend.py`, same directory, same
 loader, same test file, unbaselined and passing) proves the load path does not defeat
 attribution, and the swallowed-exit-status staging step plus its existence-only guard
-(`ci.yml:705-706`) supply a concrete, already-filed mechanism (#7516 / #7517) for a
+([`ci.yml` L705-706](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L705-L706)) supply a concrete, already-filed mechanism (#7516 / #7517) for a
 truncated reading that leaves every job green.
 
 ## Recommendation
@@ -277,7 +278,7 @@ truncated reading that leaves every job green.
    `test/test_pipeline_conductor_agent.py::TestFleetProbe`), and do **not** extend
    `.github/coverage-baselines/backend.txt` (that would record a false rate for a
    covered file). The correct fix is in the **per-shard staging step**, not in
-   `coverage-combine`: at `ci.yml:705`, distinguish the benign no-op exit from a real
+   `coverage-combine`: at [`ci.yml` L705](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L705), distinguish the benign no-op exit from a real
    merge failure instead of discarding both (the step is documented as a no-op when
    pytest-cov already combined the shard, and in that case `coverage combine` exits
    non-zero with "No data to combine" — so the `|| true` cannot simply be dropped),
@@ -289,8 +290,8 @@ truncated reading that leaves every job green.
    rather than absent.
 
 2. **Track the sparse-main-coverage-verdict concern as its own CI-policy issue.** The
-   workflow already triggers on push to `main` (`ci.yml:3-7`); the true gap is the
-   concurrency-driven periodic verdicts on `main` (`ci.yml:12-20`). This is a policy
+   workflow already triggers on push to `main` ([`ci.yml` L3-7](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L3-L7)); the true gap is the
+   concurrency-driven periodic verdicts on `main` ([`ci.yml` L12-20](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L12-L20)). This is a policy
    change distinct from this diagnosis and worth a dedicated issue.
 
 ### Evidence index (file:line)
@@ -298,27 +299,27 @@ truncated reading that leaves every job green.
 | Claim | Location |
 | --- | --- |
 | `TestFleetProbe` class | `test/test_pipeline_conductor_agent.py::TestFleetProbe` |
-| `_mod()` loads real script | `test/test_pipeline_conductor_agent.py:181` |
-| `SKILL_DIR` definition | `test/test_pipeline_conductor_agent.py:26` |
-| Control case `TestCreditSpend` | `test/test_pipeline_conductor_agent.py:453` |
+| `_mod()` loads real script | [`test/test_pipeline_conductor_agent.py` L181](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/test/test_pipeline_conductor_agent.py#L181) |
+| `SKILL_DIR` definition | [`test/test_pipeline_conductor_agent.py` L26](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/test/test_pipeline_conductor_agent.py#L26) |
+| Control case `TestCreditSpend` | [`test/test_pipeline_conductor_agent.py` L453](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/test/test_pipeline_conductor_agent.py#L453) |
 | Loader: importlib, not in `sys.modules` | `test/skill_script_helpers.py` (`load_skill_script`) |
-| Coverage attributes by path | `setup.cfg:366-367` (`[coverage:paths] source = src/`) |
+| Coverage attributes by path | [`setup.cfg` L366-367](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/setup.cfg#L366-L367) (`[coverage:paths] source = src/`) |
 | `fleet_probe` absent from baseline | `.github/coverage-baselines/backend.txt` (no match) |
 | `credit_spend` absent from baseline | `.github/coverage-baselines/backend.txt` (no match) |
-| Module top-level constants | `fleet_probe.py:88,91,102,107,108,113` |
-| CI `on:` push + pull_request | `.github/workflows/ci.yml:3-7` |
-| CI concurrency (periodic main verdicts) | `.github/workflows/ci.yml:12-20` |
-| Shard-wall self-doc comment (ruled out as the mechanism) | `.github/workflows/ci.yml:581-583` |
-| `fail-fast: false` (a dead shard still fails the matrix job) | `.github/workflows/ci.yml:588` |
-| Coverage runs on 3.12 only | `.github/workflows/ci.yml:655-657,692` |
-| Shard split `group: [1, 2, 3, 4]` | `.github/workflows/ci.yml:595` |
-| Staging swallows the merge's exit status (`coverage combine 2>/dev/null \|\| true`) | `.github/workflows/ci.yml:705` |
-| Per-shard empty-coverage guard (`test -f .coverage \|\| exit 1`) | `.github/workflows/ci.yml:706` |
-| Stage shard coverage (guard + `mv .coverage`) | `.github/workflows/ci.yml:699-707` |
-| Shard uploads `.coverage.<group>` | `.github/workflows/ci.yml:709-716` |
-| `coverage-combine` job | `.github/workflows/ci.yml:973` |
-| Combine `needs: [backend-test, changes]`, `if:` without `always()` | `.github/workflows/ci.yml:975,979` |
-| Combine downloads `coverage-shard-*`, `merge-multiple`, no all-present assertion | `.github/workflows/ci.yml:1004-1014` |
-| Coverage Gate runs regardless (`if: always()`) | `.github/workflows/ci.yml:1117` |
-| Coverage Gate fails closed on a non-`success` combine | `.github/workflows/ci.yml:1173-1175` |
-| Per-file backend check gated on combine `success` | `.github/workflows/ci.yml:1255` |
+| Module top-level constants | [`fleet_probe.py` L88](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L88), [L91](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L91), [L102](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L102), [L107](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L107), [L108](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L108), [L113](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py#L113) |
+| CI `on:` push + pull_request | [`.github/workflows/ci.yml` L3-7](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L3-L7) |
+| CI concurrency (periodic main verdicts) | [`.github/workflows/ci.yml` L12-20](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L12-L20) |
+| Shard-wall self-doc comment (ruled out as the mechanism) | [`.github/workflows/ci.yml` L581-583](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L581-L583) |
+| `fail-fast: false` (a dead shard still fails the matrix job) | [`.github/workflows/ci.yml` L588](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L588) |
+| Coverage runs on 3.12 only | [`.github/workflows/ci.yml` L655-657](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L655-L657), [L692](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L692) |
+| Shard split `group: [1, 2, 3, 4]` | [`.github/workflows/ci.yml` L595](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L595) |
+| Staging swallows the merge's exit status (`coverage combine 2>/dev/null \|\| true`) | [`.github/workflows/ci.yml` L705](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L705) |
+| Per-shard empty-coverage guard (`test -f .coverage \|\| exit 1`) | [`.github/workflows/ci.yml` L706](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L706) |
+| Stage shard coverage (guard + `mv .coverage`) | [`.github/workflows/ci.yml` L699-707](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L699-L707) |
+| Shard uploads `.coverage.<group>` | [`.github/workflows/ci.yml` L709-716](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L709-L716) |
+| `coverage-combine` job | [`.github/workflows/ci.yml` L973](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L973) |
+| Combine `needs: [backend-test, changes]`, `if:` without `always()` | [`.github/workflows/ci.yml` L975](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L975), [L979](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L979) |
+| Combine downloads `coverage-shard-*`, `merge-multiple`, no all-present assertion | [`.github/workflows/ci.yml` L1004-1014](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1004-L1014) |
+| Coverage Gate runs regardless (`if: always()`) | [`.github/workflows/ci.yml` L1117](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1117) |
+| Coverage Gate fails closed on a non-`success` combine | [`.github/workflows/ci.yml` L1173-1175](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1173-L1175) |
+| Per-file backend check gated on combine `success` | [`.github/workflows/ci.yml` L1255](https://github.com/kirodotdev/KiroCrew/blob/e5cab9386871bc05fa4f8736611a5326b6586b0b/.github/workflows/ci.yml#L1255) |

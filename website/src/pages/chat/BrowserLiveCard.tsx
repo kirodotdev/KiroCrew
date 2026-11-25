@@ -59,8 +59,12 @@ const GROW_SETTLE_MS = 400
  * (the `@server/tool` form every MCP call arrives in) and a stamped name may carry
  * the server too. Both spellings are the one tool; a bare `browser` is kept for the
  * built-in shape and the fixtures. Any other MCP spelling a backend uses (an ACP
- * backend writes `mcp__server__tool`) is read by the shared `mcpIdentityFromTitle`. */
+ * backend writes `mcp__server__tool`) is read by the shared `mcpIdentityFromTitle`.
+ * opencode has no `_meta` identity and fuses the title as `kirocrew-core_browser`,
+ * so Crew's own server is accepted fused as well (issue #36264). The server half is
+ * spelled out, not a wildcard: another server's `open_browser` must never anchor this card. */
 const BROWSER_ROW_RE = /^(?:@(?:[\w.-]+\/)?)?browser(?:\s|$)/
+const FUSED_BROWSER_ROW_RE = /^kirocrew-core_+browser(?:\s|$)/
 const NAMESPACED_BROWSER_RE = /(?:^|\/|::|___)browser$/
 function namesBrowser(name: string): boolean {
   const mcp = mcpIdentityFromTitle(name)
@@ -72,7 +76,7 @@ export function isBrowserToolMessage(msg: ChatMessage): boolean {
   if (typeof trusted === 'string' && trusted) return namesBrowser(trusted)
   if (!isToolCallRow(msg.content)) return false
   const label = stripToolCallLead(msg.content)
-  if (BROWSER_ROW_RE.test(label)) return true
+  if (BROWSER_ROW_RE.test(label) || FUSED_BROWSER_ROW_RE.test(label)) return true
   const pill = label.match(/^(\S+)(?:\s|$)/)
   return !!pill && mcpIdentityFromTitle(pill[1])?.tool === 'browser'
 }

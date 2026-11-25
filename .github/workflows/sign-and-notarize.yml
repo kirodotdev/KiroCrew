@@ -87,6 +87,22 @@ name: Sign and Notarize macOS (reusable)
 #     downloadable. Un-notarized artifacts must never appear in the update
 #     feed for the same reason unsigned ones must not: clients would
 #     auto-update to a build Gatekeeper blocks.
+#
+# Split calls (`stage`). A caller that gates PUBLICATION on jobs of its own
+# (nightly.yml holds every publish behind platform-tests) cannot add a
+# `needs:` to a job inside this workflow, so a single call would hold
+# signing and notarization behind that gate too. On the nightly that put
+# about 80 minutes of signing + Apple notarization after the macOS test
+# suite, as the longest chain of the run. So such a caller makes two calls:
+# `stage: prepare` (sign + notarize, no public write, ungated) and
+# `stage: publish` (blockmap + publish, behind the gate and behind the
+# prepare call). The publish half still consumes only the gated artifact
+# the notarize job attaches AFTER the spctl gate, from the same run, so the
+# fail-closed property above holds across the split: a notarize job that
+# failed its gate attached nothing, so the publish half fails at its
+# download, and the caller's publish call also `needs:` its prepare call
+# so it never starts after a red one. Empty `stage` is the single call release.yml and
+# release-lts.yml make, byte-for-byte the chain it was.
 
 on:
   workflow_call:
@@ -122,6 +138,16 @@ on:
         required: false
         type: string
         default: ""
+      stage:
+        description: >-
+          Which half of the chain this call runs. Empty (the default) runs
+          all of it. `prepare` runs sign + notarize only: nothing reaches the
+          distribution bucket or the feed. `publish` runs blockmap + publish
+          only, reading the gated artifact a `prepare` call attached to the
+          SAME run. See "Split calls" in the header note.
+        required: false
+        type: string
+        default: ""
       promote:
         description: "Publish an already notarized candidate bundle without rebuilding"
         required: false
@@ -137,6 +163,16 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      notarized:
+        description: >-
+          'true' when this call's notarize job passed its gate and attached the
+          gated artifact to the run, else 'false' (signing not configured, a
+          failed gate, or a `publish`/promote call that does not notarize). A
+          `publish`-stage caller conditions on its prepare call's value, so an
+          unconfigured signer skips publication cleanly instead of failing at
+          a download of an artifact that was never made.
+        value: ${{ jobs.notarize.result == 'success' }}
     secrets:
       # Declared explicitly so callers pass exactly these four instead of
       # `secrets: inherit`. Mirrors publish-windows.yml.
@@ -166,7 +202,9 @@ permissions:
 jobs:
   sign:
     name: Sign with signing service (${{ inputs.channel }})
-    if: ${{ !inputs.promote }}
+    # A `publish`-stage call skips signing (and so notarize, which needs it):
+    # its bytes come from the same run's `prepare` call.
+    if: ${{ !inputs.promote && inputs.stage != 'publish' }}
     # `kirocrew-runners` larger-runner group, reached by LABEL inside a
     # repository conditional rather than by `group:`; see "Larger runners for
     # the review lanes and CodeQL" in docs/ci/ci-and-reviews.md. This is a
@@ -739,7 +777,9 @@ jobs:
     needs: notarize
     if: >-
       ${{ always() && inputs.write_feed && vars.CLI_DIST_BUCKET != '' &&
-          ((!inputs.promote && needs.notarize.result == 'success') ||
+          inputs.stage != 'prepare' &&
+          ((!inputs.promote && inputs.stage != 'publish' && needs.notarize.result == 'success') ||
+           (!inputs.promote && inputs.stage == 'publish' && needs.notarize.result == 'skipped') ||
            (inputs.promote && needs.notarize.result == 'skipped')) }}
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -803,11 +843,16 @@ jobs:
     needs: [notarize, blockmap]
     # Normal releases require a successful notarize job. Stable promotion
     # deliberately skips sign/notarize and may publish only the resolver's
-    # already-gated bundle. Explicit result checks preserve fail-closed status
-    # semantics even though the promotion branch has skipped dependencies.
+    # already-gated bundle. A `publish`-stage call also skips them and reads
+    # the gated artifact its run's `prepare` call attached (header note,
+    # "Split calls"); a `prepare`-stage call never publishes. Explicit result
+    # checks preserve fail-closed status semantics even though those
+    # branches have skipped dependencies.
     if: >-
       ${{ always() && inputs.write_feed && vars.CLI_DIST_BUCKET != '' &&
-          ((!inputs.promote && needs.notarize.result == 'success') ||
+          inputs.stage != 'prepare' &&
+          ((!inputs.promote && inputs.stage != 'publish' && needs.notarize.result == 'success') ||
+           (!inputs.promote && inputs.stage == 'publish' && needs.notarize.result == 'skipped') ||
            (inputs.promote && needs.notarize.result == 'skipped')) }}
     # Same group, same label spelling, and the same reason for it, as `sign`
     # above.

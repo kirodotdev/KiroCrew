@@ -29,7 +29,17 @@ export default function SessionGridLayout({
   ownsTopLeft?: boolean
 }) {
   if (node.type === 'leaf') {
-    return <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">{renderLeaf(node, ownsTopLeft)}</div>
+    // The `data-split-*` marks are where the sidebar's session drag finds the
+    // panes to drop on (SplitPaneDropZones).
+    return (
+      <div
+        data-split-leaf={node.id}
+        data-split-slot={node.kind === 'session' ? node.slot : undefined}
+        className="relative h-full w-full min-w-0 min-h-0 overflow-hidden"
+      >
+        {renderLeaf(node, ownsTopLeft)}
+      </div>
+    )
   }
   return <SplitContainer node={node} renderLeaf={renderLeaf} onResize={onResize} ownsTopLeft={ownsTopLeft} />
 }

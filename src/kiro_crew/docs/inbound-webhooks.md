@@ -527,7 +527,7 @@ The agent pushes a branch and opens a pull request, then calls:
 ```json
 {
   "hook_id": "review:pr-123",
-  "context_summary": "Opened PR #123 (fix/upload-limit) on kirodotdev/KiroCrew. Worktree /home/me/wt-upload-limit, branch fix/upload-limit, head 4f2b91a. Added a token-bucket limiter to api_file_upload. Pending: static analysis. When findings arrive, fix Critical/High in that worktree, amend the single commit, force-push with lease, and report what was left unfixed."
+  "context_summary": "Opened PR #123 (fix/upload-limit) on kirodotdev/KiroCrew. Worktree /home/me/wt-upload-limit, branch fix/upload-limit, head 4f2b91a. Added a token-bucket limiter to api_upload. Pending: static analysis. When findings arrive, fix Critical/High in that worktree, amend the single commit, force-push with lease, and report what was left unfixed."
 }
 ```
 
@@ -554,7 +554,7 @@ curl -X POST http://127.0.0.1:5476/api/hooks/agent \
   -H "Authorization: Bearer $KIROCREW_WEBHOOK_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-        "message": "Analysis complete on PR 123.\nHIGH src/kiro_crew/dashboard/handlers/files.py:212 unbounded read before limit check\nMEDIUM test/test_files.py:88 missing negative case",
+        "message": "Analysis complete on PR 123.\nHIGH src/kiro_crew/dashboard/file_api/desktop.py:212 unbounded read before limit check\nMEDIUM test/test_files.py:88 missing negative case",
         "sessionKey": "hook:review:pr-123",
         "name": "Review Bot",
         "timeoutSeconds": 1800

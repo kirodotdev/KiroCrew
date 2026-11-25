@@ -5,12 +5,13 @@ or spacing, or a rewording whose stored vector sits at cosine 0.95 or more. Each
 copy takes room in the capped rule block, so a copy can push a different rule out.
 ``memory.lesson_fold`` picks the mode:
 
-* ``off`` (default) -- nothing is read; the block is today's, byte for byte.
-* ``shadow`` -- the block is today's; the injection receipt records each
-  ``(leader, folded)`` id pair the fold would apply.
-* ``enforce`` -- each folded row is left out of the block before the budget is
+* ``off`` -- nothing is read; every copy stays in the block.
+* ``enforce`` (default) -- each folded row is left out of the block before the budget is
   applied, and the block says how many were folded and that ``learn_list`` shows
-  all. A folded row is not a budget omission and is not counted as one.
+  all. A folded row is not a budget omission and is not counted as one. The
+  injection receipt records each ``(leader, folded)`` id pair.
+
+``shadow`` is not one of these modes, so a stored one reads as the default.
 
 Rows are grouped with :func:`kiro_crew.memory_item_identity.same_item`, the one
 rule every stage uses: same scope and tier, then equal normalized text or stored
@@ -56,7 +57,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MODE_OFF: Final = "off"
-MODE_SHADOW: Final = "shadow"
 MODE_ENFORCE: Final = "enforce"
 
 #: Bump when what folds, or the visit order, changes, so receipts taken under the

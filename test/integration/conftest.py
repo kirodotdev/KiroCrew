@@ -137,6 +137,10 @@ cross-home flake three tests later.
      every app manifest the boot's spawns read, keyed on the home's paths.
    * ``apps.manager_records._recorded_names_cache`` -- the apps folder's
      recorded entry names that a boot's listings reuse, keyed on its path.
+   * ``apps.routes_proxy`` app-secret cache and its invalidation counts -- the
+     secret the reverse proxy signs each app's requests with, keyed by app name
+     only. A later home with an app of the same name would have its requests
+     signed with the earlier home's secret, which its backend refuses.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
      ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``, ``_MATERIALIZED_MEMO``,
      ``_MATERIALIZED_AGENTS_READY``) -- the declared names, file-name map,
@@ -314,8 +318,14 @@ from kiro_crew import (
     vector_memory_member,
 )
 from kiro_crew.acp import client as acp_client
-from kiro_crew.agent_sdk import host_auth
-from kiro_crew.apps import credential_masks, execution, hidden_sessions, manager_records
+from kiro_crew.agent_sdk import host_auth, kas_machine
+from kiro_crew.apps import (
+    credential_masks,
+    execution,
+    hidden_sessions,
+    manager_records,
+    routes_proxy,
+)
 from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -336,6 +346,7 @@ from kiro_crew.metrics import inventory_gauges
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
 from kiro_crew.platform import governance
+from kiro_crew.relay_client import provider as relay_provider
 from kiro_crew.security import paths as security_paths
 from kiro_crew.testing import fake_acp_backend
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, finished
@@ -815,6 +826,8 @@ def _reset_home_bound_globals() -> None:
     token_auth._app_perms_denied.clear()
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
+    # The machine token fence's config.json read, keyed on the home's file.
+    kas_machine._fence_config = None
     config_live.reset_for_tests()
     # The once-per-process boot ``.env`` record: a fresh boot in a different
     # home must not keep the prior home's credential map as its diff baseline,
@@ -836,6 +849,9 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     credential_masks.clear_cache()
     manager_records._recorded_names_cache.clear()
+    with routes_proxy._app_secret_lock:
+        routes_proxy._app_secret_cache.clear()
+        routes_proxy._app_secret_generation.clear()
     execution.invalidate_shipped_builtin_apps()
     vector_memory_member._IDENTITY_CACHE.clear()
     # Under the refresh lock, so a refresh still publishing finishes first and
@@ -854,10 +870,21 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     recall_pool._settings_cache = None
+    # The kept-grant boot state (verdict, recorders, the chats prompt writer): a
+    # second boot reads its own home's records, as a fresh process would.
+    from kiro_crew import kept_grants, kept_yolo
+    from kiro_crew.dashboard import chat_trust_restart
+
+    kept_grants._reset_for_tests()
+    kept_yolo._reset_for_tests()
+    chat_trust_restart._reset_for_tests()
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
     update_next_start._differs_memo = None
+    # The ingress a boot publishes for the relay provider belongs to that
+    # boot's app; the next boot publishes its own.
+    relay_provider.publish_gateway_ingress(None)
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.
@@ -916,6 +943,7 @@ def home_bound_globals_are_clear() -> bool:
         and token_auth._revoked_store_singleton is None
         and revocation_gen._gen is None
         and not token_auth._app_perms_cache
+        and not routes_proxy._app_secret_cache
         and crash_guard._CRASH_LOG is None
         and autonudge._INSTANCE is None
         and platform_context._ACTIVE is None

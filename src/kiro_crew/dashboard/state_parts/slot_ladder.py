@@ -25,7 +25,9 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_refusal_client_pick_epoch``, ``_refusal_fallback_attempted``,
 ``_refusal_fallback_candidate``, ``_refusal_fallback_primary``,
 ``_refusal_fallback_session_key``, ``_refusal_pick_gen``,
-``_session_not_found_retry_used``, ``_stale_recovery_exhausted_emitted``,
+``_deferred_flush_dirty``, ``_deferred_flush_task``, ``_deferred_steer_delivered``, ``_deferred_steer_injected``,
+``_deferred_steer_ended_gen``, ``_deferred_steer_receipts``, ``_deferred_steers``,
+``_session_not_found_retry_used``,``_stale_recovery_exhausted_emitted``,
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
 ``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
@@ -537,6 +539,16 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # the channel text. The peer path's per-token fences are not counted here.
     # Cleared with the fences at the turn's teardown.
     self._steer_audience_fence_holders = {}
+    # Peer steers that could not be injected at send time, retried at each tool
+    # boundary of the running turn (``dashboard.deferred_steer``), and the settled
+    # ones' receipts. The list is emptied by the turn's hand-off or a hard stop.
+    self._deferred_steers = []
+    self._deferred_steer_receipts = {}
+    self._deferred_steer_delivered = {}
+    self._deferred_steer_injected = {}
+    self._deferred_steer_ended_gen = -1
+    self._deferred_flush_task = None
+    self._deferred_flush_dirty = False
     # Validated attachment lists for a pending steer. Requeue moves them
     # to the queue entry; a consumption echo releases them after an accepted
     # steer has stamped its own row.

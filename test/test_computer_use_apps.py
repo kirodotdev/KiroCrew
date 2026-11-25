@@ -27,6 +27,7 @@ from __future__ import annotations
 import ast
 import inspect
 import plistlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -517,6 +518,31 @@ def test_the_plist_read_goes_through_the_HARDENED_helper(tmp_path: Path):
     source = inspect.getsource(apps_macos._read_info_plist)
     assert "safe_read_prefix" in source
     assert "open(" not in source, "a bare open() here is the check-then-open bug"
+
+
+def test_a_reader_that_cannot_import_says_so_and_still_denies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """An environment missing a dependency of ``kiro_crew.hooks`` (a stdlib-only venv
+    lacks ``yaml``) cannot import the hardened reader. Every bundle id then resolves
+    empty and every bundle-id rule stops matching, so the cause must be logged above
+    DEBUG rather than reported as one unreadable plist."""
+    exe = _make_bundle(tmp_path, "Normal", "com.acme.normal")
+    monkeypatch.setattr(macos_ffi, "executable_path", lambda pid: exe)
+    # A None entry makes ``from kiro_crew.hooks import ...`` raise ImportError.
+    monkeypatch.setitem(sys.modules, "kiro_crew.hooks", None)
+    caplog.set_level("DEBUG", logger=apps_macos.logger.name)
+
+    identity = apps_macos.resolve_identity(5154)
+
+    assert identity.resolved is False
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == apps_macos.logger.name and rec.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    assert "kiro_crew.hooks" in warnings[0].getMessage()
 
 
 def test_an_ordinary_bundle_plist_is_still_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

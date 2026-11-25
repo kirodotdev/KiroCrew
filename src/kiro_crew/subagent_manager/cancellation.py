@@ -919,14 +919,14 @@ class CancellationCoordinator(ManagerComponent):
                 # incarnation that owns it. That claimer reads the mark set above
                 # before and after its start write, and cancels the row instead of
                 # starting it (``claim_and_start``).
-                claimed_unstarted = (
-                    await self._manager._admission.taskq_row_is_claimed_unstarted_async(agent_id)
+                claimed_generation = (
+                    await self._manager._admission.taskq_unstarted_claim_generation_async(agent_id)
                 )
-                if claimed_unstarted:
-                    logger.info(
-                        "Teardown: leaving %s to its claimer -- the row is claimed and "
-                        "not started; the claimer reads the teardown mark and cancels it",
-                        agent_id,
+                if claimed_generation is not None:
+                    from kiro_crew.subagent_manager.parent_end_record import leave_to_claimer
+
+                    await leave_to_claimer(
+                        agent_id, parent_session_key, verb, attempt=claimed_generation
                     )
                 elif (late := self._manager._agents.get(agent_id)) is not None and not late.done:
                     # ``cancel`` only for a CONFIRMED live record. It reaches ``_unqueue``,

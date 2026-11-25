@@ -2,7 +2,9 @@ name: Rate-limit-aware gh
 description: >-
   Put a gh wrapper first on PATH for every later step of the job. It waits out
   a spent GitHub API rate limit, bounded, and retries only a call whose error
-  names a rate limit. Any other result passes through unchanged.
+  names a rate limit. Any other result passes through unchanged. It also adds
+  `gh-rate-limit-wait`, the same bounded wait as a command, for a step whose
+  API calls cannot be wrapped.
 
 # A job's token draws on the repository's shared installation rate limit,
 # which the rest of the CI fleet can spend. When it is spent, a single `gh`
@@ -27,6 +29,18 @@ description: >-
 # `gh` output (`gh run watch`) would see it all at once at the end. A call fed
 # on stdin (`--input -`, `--body-file -`) is not retry-safe: its retry would
 # read an empty stdin. Give such a call a file instead.
+#
+# A third-party action makes its API calls from its own process, where no
+# wrapper reaches. For those the action also installs `gh-rate-limit-wait
+# [floor]`. It reads the REST (`core`) bucket from `/rate_limit` and, when
+# fewer than `floor` requests remain (default 1, so only a spent bucket), sleeps
+# until the reset out of the same job-wide budget. It prints one word on
+# stdout: `ready` when it did not wait, `waited` when it did. It exits non-zero
+# only when the reset is past the budget, with an `::error::` that names the
+# rate limit as CI infrastructure. It never retries anything and never reports
+# on the action it guards: run it before the action, and again after a failed
+# attempt to learn whether a spent limit explains the failure (`waited`) or not
+# (`ready`, so the failure stands). A reading it cannot take counts as `ready`.
 #
 # The job's `timeout-minutes` must leave room for `max-wait` on top of its own
 # work. Put this step after the checkout and before the job's first `gh` call.
@@ -59,6 +73,50 @@ runs:
           cat <<'SHIM'
         set -uo pipefail
         case "$BUDGET" in '' | *[!0-9]*) BUDGET=1200 ;; esac
+        # Charges a wait of $1 seconds to the job-wide budget. Fails, charging
+        # nothing, when the budget does not hold it. Sets `waited` to the
+        # seconds already used.
+        charge_wait() {
+          waited="$(cat "$WAITED_FILE" 2> /dev/null || true)"
+          case "$waited" in '' | *[!0-9]*) waited=0 ;; esac
+          [ $((waited + $1)) -le "$BUDGET" ] || return 1
+          echo $((waited + $1)) > "$WAITED_FILE"
+        }
+        if [ "${0##*/}" = gh-rate-limit-wait ]; then
+          floor="${1:-1}"
+          case "$floor" in '' | *[!0-9]*) floor=1 ;; esac
+          verdict=ready
+          while :; do
+            now="$(date +%s)"
+            state="$("$REAL_GH" api rate_limit --jq '
+              .resources.core | "\(.remaining) \(.reset)"' 2> /dev/null)" || state=""
+            remaining="${state%% *}"
+            reset="${state##* }"
+            if ! [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]]; then
+              echo "::warning::The GitHub API rate limit could not be read; not waiting." >&2
+              break
+            fi
+            if [ "$remaining" -ge "$floor" ]; then
+              echo "GitHub API rate limit: ${remaining} REST requests remain (floor ${floor}); not waiting." >&2
+              break
+            fi
+            delay=$((reset - now + 5))
+            [ "$delay" -ge 5 ] || delay=5
+            if [ "$verdict" = waited ]; then
+              echo "::error::The GitHub API rate limit still has ${remaining} REST requests left (floor ${floor}) after waiting for its reset. This is CI infrastructure, not the code under test: re-run this job later." >&2
+              exit 1
+            fi
+            if ! charge_wait "$delay"; then
+              echo "::error::The GitHub API rate limit is spent (${remaining} REST requests left) and resets in ${delay}s, past what is left of this job's ${BUDGET}s wait budget (${waited}s used). This is CI infrastructure, not the code under test: re-run this job after the reset." >&2
+              exit 1
+            fi
+            echo "::warning::The GitHub API rate limit is spent (${remaining} REST requests left); waiting ${delay}s for the reset." >&2
+            sleep "$delay"
+            verdict=waited
+          done
+          echo "$verdict"
+          exit 0
+        fi
         out="$(mktemp)"
         err="$(mktemp)"
         trap 'rm -f "$out" "$err"' EXIT
@@ -82,14 +140,11 @@ runs:
             delay=60
           fi
           [ "$delay" -ge 5 ] || delay=5
-          waited="$(cat "$WAITED_FILE" 2> /dev/null || true)"
-          case "$waited" in '' | *[!0-9]*) waited=0 ;; esac
-          if [ $((waited + delay)) -gt "$BUDGET" ]; then
+          if ! charge_wait "$delay"; then
             cat "$err" >&2
-            echo "::error::The GitHub API rate limit is spent and resets in ${delay}s, past what is left of this job's ${BUDGET}s wait budget (${waited}s used). Failing the call without waiting." >&2
+            echo "::error::The GitHub API rate limit is spent and resets in ${delay}s, past what is left of this job's ${BUDGET}s wait budget (${waited}s used). This is CI infrastructure, not the code under test. Failing the call without waiting." >&2
             exit "$rc"
           fi
-          echo $((waited + delay)) > "$WAITED_FILE"
           echo "::warning::gh ${1:-} hit the GitHub API rate limit; waiting ${delay}s for the reset, then retrying." >&2
           sleep "$delay"
           retries=$((retries + 1))
@@ -97,4 +152,5 @@ runs:
         SHIM
         } > "$dir/gh"
         chmod +x "$dir/gh"
+        cp "$dir/gh" "$dir/gh-rate-limit-wait"
         echo "$dir" >> "$GITHUB_PATH"

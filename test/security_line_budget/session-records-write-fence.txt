@@ -1,0 +1,4 @@
++3
+The signed session records now live in a session-tokens directory under the data home. It joins
+the file-tool write fence (one leaf and a two-line comment in paths_lists) so an agent cannot
+create a record with a file tool; the sandbox seal alone covers shell writes only.

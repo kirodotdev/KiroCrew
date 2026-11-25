@@ -20,7 +20,7 @@ never the default page, never assumed by a prompt or a test, never required for
 a dashboard to be complete. A page that shows no tree at all is a correct page.
 
 Read the dispatch tree for three things any page you write will need. Where it binds
-a cell it uses `data-dashboard-field="roots"`; where it draws the tree it uses
+a cell it uses `data-dashboard-field="cycles"`; where it draws the tree it uses
 `window.kirocrew.subscribe('boards', draw)`. It builds every row by creating
 elements and setting `textContent`, because a board's goal is whatever a
 conductor wrote in the crew log, so a template string assigned to `innerHTML`

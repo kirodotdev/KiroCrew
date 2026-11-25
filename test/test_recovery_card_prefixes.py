@@ -122,12 +122,12 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
         # recovery, which is why it has its own pair rather than reusing the
         # posttoken labels above.
         "continued_by_you",
-        "resuming_the_interrupted_turn",
+        "sent_without_a_new_instruction",
         # The Stop-hook continuation card. Its own pair because the turn
         # completed: reusing an interruption label would report an event that
         # did not happen.
-        "continued_by_a_hook",
-        "hook_requested_continuing",
+        "hook_asked_for_another_turn",
+        "sent_after_the_previous_turn_ended",
         # The nudge-cap halt card. Surfaced when a Stop-hook run hits
         # agent.max_stop_hook_nudges; its own pair because no continuation
         # happened — the loop was force-stopped.

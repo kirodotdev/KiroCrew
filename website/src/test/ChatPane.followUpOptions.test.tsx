@@ -432,8 +432,8 @@ describe('ChatPane plan-shaped follow-ups', () => {
 })
 
 /** A discussion card's Start / No thanks, as GrillCard dispatches it. */
-function cardSend(text: string, slot: string) {
-  const detail: { text: string; slot: string; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
+function cardSend(text: string, slot: string, files?: string[]) {
+  const detail: { text: string; slot: string; files?: string[]; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, ...(files ? { files } : {}), result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
   act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
   return detail.result
 }
@@ -487,6 +487,29 @@ describe('ChatPane discussion-card sends (a deliberate press: sent whatever Quic
     await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g1']]))
     await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
     expect(composer().value).toBe('')
+  })
+
+  it('sends the card\'s own pictures with its text', async () => {
+    await renderPane('pane-f1')
+    expect(cardSend('Start the discussion\nQuestion: x', 'pane-f1', ['/up/a.png'])).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    const wire = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(wire).toContain('![image](/up/a.png)')
+    expect(wire).toContain('Start the discussion\nQuestion: x')
+    expect(composer().value).toBe('')
+  })
+
+  it('leaves a file staged in the chat box out of the card\'s send, and staged', async () => {
+    ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ paths: ['/up/staged.png'] })
+    await renderPane('pane-f2')
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [new File(['x'], 'staged.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(screen.getByRole('group', { name: '/up/staged.png' })).toBeTruthy())
+    expect(cardSend('Start the discussion\nQuestion: x', 'pane-f2', ['/up/a.png'])).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    const calls = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls[0][0]).toContain('![image](/up/a.png)')
+    expect(JSON.stringify(calls)).not.toContain('staged.png')
+    expect(screen.getByRole('group', { name: '/up/staged.png' })).toBeTruthy()
   })
 
   it('sends with Quick Send on, too', async () => {

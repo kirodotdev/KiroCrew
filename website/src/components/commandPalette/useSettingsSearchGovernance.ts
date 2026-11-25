@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../../api/client'
+import { api, type RemoteControlState, type SlackConfigData } from '../../api/client'
+import { REMOTE_CONTROL_QUERY_KEY } from '../../api/client/remoteAccess'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
@@ -69,14 +70,31 @@ export function useSettingsSearchGovernance(
   })
   const channelsOn = cfgQ.isSuccess
     && (cfgQ.data as { dashboard?: { channels_enabled?: unknown } } | undefined)?.dashboard?.channels_enabled === true
+  // The `['slack-config']` read Settings > Slack itself renders from, from cache
+  // only: it carries the server's own answer to whether Connections offers the
+  // Slack card (`slack_mcp_card`), which with the saved switch is the page's whole
+  // rule for drawing the Slack tools switch. Withheld only on a successful read
+  // that says neither; until the Slack page has been opened there is no answer.
+  const slackQ = useQuery<SlackConfigData>({ queryKey: ['slack-config'], queryFn: api.getSlackConfig, ...CACHED_ONLY })
+  const slackToolsShown = !slackQ.isSuccess
+    || slackQ.data?.slack_mcp_card === true
+    || slackQ.data?.slack_mcp === true
   // The `['instances']` read RemoteCrewPanel picks its branch by, from cache only:
   // the shell's tab bar already reads it at boot.
   const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), ...CACHED_ONLY })
   const remoteCrewsEnabled = instancesQ.isSuccess
     ? true
     : isInstancesDisabledError(instancesQ.error) ? false : undefined
+  // The `['remote-control']` read RemoteControlCard is drawn by. Owner-only, so a
+  // teammate's read is refused and the entry is not offered to them either.
+  const remoteControlQ = useQuery<RemoteControlState>({
+    queryKey: REMOTE_CONTROL_QUERY_KEY,
+    queryFn: () => api.remoteControl(),
+    ...(fetch ? FRESH_ENOUGH : CACHED_ONLY),
+  })
+  const remoteControlShown = remoteControlQ.isSuccess && (remoteControlQ.data.requested || remoteControlQ.data.running)
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown],
   )
 }

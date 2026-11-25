@@ -85,6 +85,9 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # The chat notice when the exclusion runs a requested ``auto`` in
         # ``default`` (_exclude_foreign_local_settings); "" otherwise.
         self.claude_mode_pinned_notice = ""
+        # Why this session's MCP array is withheld and what the person can do,
+        # set where the seed declines (``settings_withheld_reason``); None otherwise.
+        self._claude_tools_withheld_reason: tuple[str, str] | None = None
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating
@@ -119,7 +122,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # this process does not have one. Per instance and never reset -- a client
         # that re-spawns is the same owner across spawns.
         self._seed_owner = uuid.uuid4().hex
-        # The built-ins a crewmate worker keeps (``SessionProjection.builtin_tools``),
+        # The built-ins a crewmate worker or a named agent keeps (``SessionProjection.builtin_tools``),
         # carried as claude's ``tools`` option; None keeps the harness's preset.
         self._claude_worker_builtin_tools: tuple[str, ...] | None = None
         # Set when the claude backend's "Compacting..." notice is seen inside a
@@ -148,6 +151,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _foreign_settings_owner = _client_seed_ownership._foreign_settings_owner
     _foreign_settings_is_crew_seed = _client_seed_ownership._foreign_settings_is_crew_seed
     settings_withheld_cause = _client_seed_ownership.settings_withheld_cause
+    settings_withheld_reason = _client_seed_ownership.settings_withheld_reason
     _settle_claude_settings_seed_locked = _client_seed_ownership._settle_claude_settings_seed_locked
 
     @staticmethod
@@ -266,6 +270,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _retract_reseed = _client_claude_seed._retract_reseed
     _log_declined_share = _client_claude_seed._log_declined_share
     _render_claude_settings_payload = _client_claude_seed._render_claude_settings_payload
+    _substitution_retry_model = _client_claude_seed._substitution_retry_model
     _write_claude_local_settings = _client_claude_seed._write_claude_local_settings
     _reseed_after_capture = _client_claude_seed._reseed_after_capture
     _seed_session_settings = _client_claude_seed._seed_session_settings
@@ -339,6 +344,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _harness_session_mcp_servers = _client_claude_session._harness_session_mcp_servers
     _harness_session_meta = _client_claude_session._harness_session_meta
     _retry_after_model_substitution = _client_claude_session._retry_after_model_substitution
+    _reissue_naming_model = _client_claude_session._reissue_naming_model
     _local_settings_exclusion = _client_claude_session._local_settings_exclusion
     _note_worker_builtin_tools = _client_claude_session._note_worker_builtin_tools
     _ensure_served_default = _client_claude_session._ensure_served_default

@@ -174,6 +174,60 @@ def test_cli_member_capture_matches_the_plain_resolver(member_with_distinct_temp
     assert capture.store.store_id == plain.memory_store_name
 
 
+def _board_script() -> str:
+    path = config_dir() / "crons" / "board.py"
+    path.write_text("def run(ctx):\n    return None\n", encoding="utf-8")
+    return f"{path}:run"
+
+
+def test_cli_script_naming_a_bot_binds_the_job_to_it(member_with_distinct_template, capsys):
+    """``cron add --script ... --agent <Bot>`` stores a script job bound to the Bot.
+
+    The record door (``POST /api/agent-panel/dashboard/record``) reads the member from
+    the job's captured execution context, so that capture is what lets the script's
+    ``ctx.crew_log_append`` land on the Bot's page; ``cron list`` shows the binding.
+    """
+    _cron(_ns(agent="SampleMemberAgent", message="", script=_board_script()))
+
+    job = _only_job()
+    member_id = KiroCrewConfig.load().agents["SampleMemberAgent"].member_id
+    assert job.script.endswith("board.py:run")
+    assert job.agent_id == ""
+    assert job.member_id == member_id
+    capture = _capture(job)
+    assert capture.selection_kind == "member"
+    assert capture.member_id == member_id
+
+    capsys.readouterr()
+    _cron(argparse.Namespace(cron_action="list", folder=None))
+    assert f"bot: {member_id}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"agent": "plain-template"}, "is not a Bot"),
+        ({"script": "", "shell_command": "true"}, "cannot be combined with --command"),
+    ],
+    ids=["script+template", "command+bot"],
+)
+def test_cli_zero_token_job_refuses_an_agent_that_does_not_bind(
+    member_with_distinct_template, capsys, overrides, reason
+):
+    cfg = KiroCrewConfig.load()
+    cfg.agents["plain-template"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    cfg.save()
+    args = _ns(agent="SampleMemberAgent", message="", script=_board_script())
+    vars(args).update(overrides)
+
+    with pytest.raises(SystemExit) as exc:
+        _cron(args)
+
+    assert exc.value.code == 1
+    assert reason in capsys.readouterr().err
+    assert CronService(base_dir=config_dir()).list_jobs(include_disabled=True) == []
+
+
 # ── Shared resolver (used by all three create paths) ─────────────────────────
 
 

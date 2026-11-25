@@ -216,11 +216,40 @@ describe('top-bar credit segment — failed vs loading', () => {
     // modal's notice uses, so the set-up state does not read as a failed read.
     expect(pill.textContent).toContain('—')
     expect(within(pill).getByTestId('kiro-usage-sign-in-type-mark')).toBeInTheDocument()
-    // The hover text is the same sentence as the accessible name.
-    expect(pill.getAttribute('title')).toBe(i18nT('app.kiro_credit_usage_sign_in_type'))
+    // The hover hint is the same sentence as the accessible name.
+    expect(pill).toHaveAccessibleDescription(i18nT('app.kiro_credit_usage_sign_in_type'))
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_no_reading'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+  })
+
+  it.each(['kiro', 'kas'])('shows the API-key mark, not a balance, when sessions run on a KIRO_API_KEY on the %s harness', async (backend) => {
+    // kiro-cli keeps reporting its stored login while the chats bill the key's
+    // account, so the gateway sends `api_key` instead of the login's balance. The
+    // dash must say so, with the info mark that marks a configuration and not a
+    // failed read.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: backend } })
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    const label = i18nT('components.kiroAccountModal.credit_usage_api_key')
+    const pill = await screen.findByLabelText(label)
+    expect(pill.textContent).toContain('—')
+    expect(pill).toHaveAccessibleDescription(label)
+    expect(within(pill).getByTestId('kiro-usage-api-key-mark')).toBeInTheDocument()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_no_reading'))).toBeNull()
+  })
+
+  it('renders no API-key mark on a non-kiro harness, which has no Kiro balance to explain', async () => {
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    await waitFor(() => expect(document.querySelector('.tb-capsule')).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.queryByLabelText(i18nT('components.kiroAccountModal.credit_usage_api_key'))).toBeNull(),
+    )
   })
 
   it('keeps the sign-in-type mark for that account when the config read fails', async () => {
@@ -235,6 +264,22 @@ describe('top-bar credit segment — failed vs loading', () => {
 
     const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_sign_in_type'))
     expect(within(pill).getByTestId('kiro-usage-sign-in-type-mark')).toBeInTheDocument()
+  })
+
+  it('shows the no-limit mark, and its notice behind it, for a plan that reports no credit limit', async () => {
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'plan_without_limit' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_no_limit'))
+    expect(pill.textContent).toContain('—')
+    expect(within(pill).getByTestId('kiro-usage-no-limit-mark')).toBeInTheDocument()
+    expect(pill).toHaveAccessibleDescription(i18nT('app.kiro_credit_usage_no_limit'))
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_no_reading'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+
+    fireEvent.click(pill)
+    await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_no_limit'))
+    expect(screen.queryByText(i18nT('components.kiroAccountModal.credit_usage_unavailable'))).toBeNull()
   })
 
   it('keeps the account modal open with Refresh when usage resolves to no reading', async () => {

@@ -170,6 +170,10 @@ FAKE_BROWSER_SOURCE = textwrap.dedent("""\
                 taken = SCENARIO.setdefault("_taken", 0)
                 SCENARIO["_taken"] = taken + 1
                 send({"id": message["id"], "result": {"data": shots[min(taken, len(shots) - 1)]}})
+        elif method == "Runtime.evaluate" and "evaluate" in SCENARIO:
+            # The scenario's whole reply: a "result" the runner reads, or an "error".
+            record("command", method=method, params=message.get("params"))
+            send({"id": message["id"], **SCENARIO["evaluate"]})
         else:
             record("command", method=method, params=message.get("params"))
             send({"id": message["id"], "result": {}})

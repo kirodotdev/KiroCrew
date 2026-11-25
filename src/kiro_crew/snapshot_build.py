@@ -12,6 +12,7 @@ The pinned copy, the consistent SQLite capture and the bundle format live in
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import socket
@@ -28,12 +29,15 @@ from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 from kiro_crew.sandbox_leaves import _CREW_HIDDEN_LEAVES
 from kiro_crew.snapshot_archive import (
     MANIFEST_VERSION,
+    SKIP_LINKED_TREE_ROOT,
     _copy_database_consistently,
     _data_filter,
     _refuse_oversized_tree,
     _staging_ignore,
+    _terminal_safe,
 )
 from kiro_crew.snapshot_components import (
+    _LINKABLE_TREE_ROOTS,
     COMPONENTS,
     Purpose,
     UnsafeComponentRoot,
@@ -41,6 +45,22 @@ from kiro_crew.snapshot_components import (
     safe_tree_root,
 )
 from kiro_crew.staging import staging_dir
+
+
+def _caller_name() -> str:
+    """The account running the command, for the audit row and the manifest.
+
+    ``USER`` first, so a run with a non-empty ``USER`` records that name; then
+    ``USERNAME``, which Windows sets instead; then the login the OS reports; ``unknown``
+    when none of them names one.
+    """
+    name = os.environ.get("USER") or os.environ.get("USERNAME")
+    if name:
+        return name
+    try:
+        return getpass.getuser() or "unknown"
+    except (ImportError, KeyError, OSError):
+        return "unknown"
 
 
 def _fsize(p: Path) -> int:
@@ -126,6 +146,49 @@ def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
             for fn in filenames:
                 _count(Path(dirpath) / fn)
     return total, unreadable
+
+
+def _report_named_workspaces_left_out(mc: Path, selected: list[str]) -> list[tuple[str, str]]:
+    """Name each configured workspace whose folder this bundle's *selected* components do
+    not carry, and return them as ``(name, folder)``.
+
+    shortcut: a named workspace's folder is wherever its ``dir`` points (``workspace-<name>``
+    by default, or any path), so it cannot be a static component tree, and a bundle that
+    took them by default could cross the 4 GiB bound a working backup is under today. Until
+    a component carries them, the snapshot says plainly which ones it left out.
+
+    Advisory only, so nothing here may end the snapshot: it runs after the bundle is written
+    and before ``--keep`` prunes. A config that does not load names nothing, and a ``dir``
+    that does not place (``~olduser/p`` for an account this host lacks raises
+    ``RuntimeError``) is named by its raw value.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.loader_locations import workspace_dir_from_entry
+
+    try:
+        workspaces = KiroCrewConfig.load().workspaces
+    except Exception:
+        return []
+    trees = [PurePosixPath(t) for c in selected for t in COMPONENTS[c].trees]
+    home = mc.resolve()
+    left: list[tuple[str, str]] = []
+    for name, entry in sorted(workspaces.items()):
+        try:
+            folder = workspace_dir_from_entry(entry)
+        except Exception:
+            left.append((name, str(getattr(entry, "dir", ""))))
+            continue
+        try:
+            rel = PurePosixPath(folder.resolve().relative_to(home).as_posix())
+        except (OSError, RuntimeError, ValueError):
+            rel = None
+        if rel is None or not any(rel.is_relative_to(t) for t in trees):
+            left.append((name, str(folder)))
+    if left:
+        print("Note: Named workspaces are not in this snapshot. Copy each folder by hand:")
+        for name, where in left:
+            print(f"   {_terminal_safe(name)}: {_terminal_safe(where)}")
+    return left
 
 
 def _build_snapshot(
@@ -264,6 +327,14 @@ def _build_snapshot(
                 # safe_tree_root returns None only for an unsafe or unresolvable root, not
                 # for an absent one, so a fresh data home passes.
                 if safe_tree_root(mc / tree, what="component root", home=mc) is None:
+                    if tree in _LINKABLE_TREE_ROOTS and platform_compat.is_link_or_junction(
+                        mc / tree
+                    ):
+                        # A supported setup, not an unsafe one: recorded in the manifest
+                        # as a missing component and left out, so the backup is still
+                        # written and retention keeps the last bundle that holds it.
+                        _record_skip(SKIP_LINKED_TREE_ROOT, str(mc / tree))
+                        continue
                     raise UnsafeComponentRoot(
                         f"component {comp!r} names the tree {tree!r}, which does not "
                         f"resolve inside the data home. Refusing to write a bundle that "
@@ -347,7 +418,7 @@ def _build_snapshot(
             "version": MANIFEST_VERSION,
             "created_at": facade.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hostname": socket.gethostname(),
-            "user": os.environ.get("USER", "unknown"),
+            "user": _caller_name(),
             "kirocrew_dir": str(mc),
             "purpose": purpose.value,
             # Which components rode, and what each declared about credential material.

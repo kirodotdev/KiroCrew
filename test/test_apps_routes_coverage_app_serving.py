@@ -751,6 +751,7 @@ async def test_app_ui_stream_client_disconnect_is_quiet(
     ui = home / "apps" / APP / "ui"
     ui.mkdir(parents=True)
     (ui / "app.js").write_bytes(b"console.log('ok')")
+    (ui.parent / "installed.json").write_text('{"name": "demo"}', encoding="utf-8")
 
     calls: list[str] = []
 

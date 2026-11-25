@@ -632,6 +632,15 @@ class LLMProvider(ABC):
         """
         return ""
 
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Why those tools are withheld, as one clause, or ``""`` when they are not.
+
+        A fact any reader may get, a model's prompt included. *with_fix* appends
+        what the person can do, for a surface only a person reads. May read a
+        file: call it off the event loop. Default: ``""``, nothing withheld.
+        """
+        return ""
+
     def touch_activity(self) -> None:
         """Refresh the RUNTIME's activity timestamp without I/O. Default no-op.
 
@@ -860,6 +869,12 @@ class LLMProvider(ABC):
         :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`).
         """
         return ""
+
+    @property
+    def kas_folder_hooks_projected(self) -> bool:
+        """Whether this session's registered agent batch projects a folder agent's
+        own hooks (``kas_project_hooks.kas_hook_checkout``). False with no batch."""
+        return False
 
     @property
     def tool_search_settings(self) -> "ToolSearchSettings | None":

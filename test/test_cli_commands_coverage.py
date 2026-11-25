@@ -147,7 +147,11 @@ class TestSpawnCli:
             ),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
-        assert "No subagents." in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert out == (
+            "No subagents started from the CLI. Runs that a chat or another "
+            "session started are not listed here; see them in the dashboard.\n"
+        )
 
     def test_list_http_error_with_json_body_prints_server_error(
         self, capsys: pytest.CaptureFixture[str]
@@ -544,7 +548,7 @@ class TestAppCli:
             cc._handle_app(_ns(app_action="enable", name="demo"))
 
         assert exc.value.code == 1
-        assert timeouts == [5, 300]
+        assert timeouts == [20, 300]
         err = capsys.readouterr().err
         assert "… applying enable for demo through the running gateway" in err
         assert "⏳ the gateway did not finish enable for demo within 300 s" in err

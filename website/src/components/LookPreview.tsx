@@ -7,8 +7,8 @@ import { lookPreviewSrc } from '../utils/lookPreview'
  * `utils/lookPreview.ts` for how the frame mirrors the parent's picks) renders
  * at a narrow desktop width and is transformed to the box, so the box is a
  * 16:9 picture of the product at whatever width the step gives it. The
- * frame's storage, network and channel writes are fenced by
- * `utils/lookPreviewBoot.ts`.
+ * frame's storage, network and channel writes, and its own `focus()` calls,
+ * are fenced by `utils/lookPreviewBoot.ts`.
  *
  * Illustrative only: `aria-hidden`, `inert`, no pointer events, not in the tab
  * order -- the user picks on the controls under it, never on the picture.

@@ -1,3 +1,5 @@
+import { apiTransport } from '../../api/apiTransport'
+
 /** A failed knowledge request; `code` is the server's machine-readable reason, when it sent one. */
 export class KnowledgeApiError extends Error {
   code?: string
@@ -9,7 +11,7 @@ export class KnowledgeApiError extends Error {
 }
 
 export async function knowledgeApi<T>(path: string, opts?: RequestInit): Promise<T> {
-  const r = await fetch(`/api/knowledge${path}`, opts)
+  const r = await apiTransport.request(`/api/knowledge${path}`, opts)
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     let code: string | undefined

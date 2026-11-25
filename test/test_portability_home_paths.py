@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from kiro_crew import home_path_rewrite, portability
-from kiro_crew.config.loader_locations import workspace_root
+from kiro_crew.config.loader_locations import normalize_workspace_path, workspace_root
 from kiro_crew.home_path_rewrite import PathRewrite, map_home_path
 from kiro_crew.portability import apply_import_zip, create_export_zip
 
@@ -109,7 +109,7 @@ def test_replace_moves_the_workspace_root_and_default_project(homes, tmp_path, m
     old_home, new_home, _ = homes
     target, _summary = _export_then_import(homes, tmp_path, monkeypatch, "replace")
 
-    assert (target / "workspace_dir").read_text().strip() == str(new_home / "work")
+    assert normalize_workspace_path((target / "workspace_dir").read_text()) == (new_home / "work")
     config = json.loads((target / "config.json").read_text())
     assert config["dashboard"]["default_project"] == str(new_home / "app")
     # Opening a session resolves (and creates) the workspace root: it must be under
@@ -141,6 +141,14 @@ def test_legacy_home_inferred_from_only_the_overlay(tmp_path):
     )
 
     assert home_path_rewrite.archive_home(tmp_path) == ("/a/home/x",)
+
+
+def test_a_windows_export_guesses_no_home_from_its_user(tmp_path):
+    manifest = {"home": "C:\\Users\\x", "home_real": "C:\\Users\\x", "user": "x"}
+    (tmp_path / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "workspace_dir").write_text("/a/home/x/app\n", encoding="utf-8")
+
+    assert home_path_rewrite.archive_home(tmp_path) is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Home relocation is POSIX-only")
@@ -326,7 +334,9 @@ def test_export_under_symlinked_home_moves_resolved_paths(homes, tmp_path, monke
     assert _project(target, "dashboard_mapped") == str(new_home / "app")
     assert summary["home_paths_moved"] >= 1
     if mode == "replace":
-        assert (target / "workspace_dir").read_text().strip() == str(new_home / "work")
+        assert normalize_workspace_path((target / "workspace_dir").read_text()) == (
+            new_home / "work"
+        )
         config = json.loads((target / "config.json").read_text())
         assert config["dashboard"]["default_project"] == str(new_home / "app")
     for envelope in (planned_manifest, manifest, written_manifest):

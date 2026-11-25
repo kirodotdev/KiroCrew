@@ -91,8 +91,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import sandbox_launch_mark
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew import pinned_fs, sandbox_launch_mark
+from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.config.paths import config_dir, peek_data_home
 from kiro_crew.user_json import strict_json_equal, strip_utf8_bom
 
@@ -437,6 +437,86 @@ def endorsing(
         raise
 
 
+def _open_dir_at(parent_fd: int, name: str, *, create: bool) -> int:
+    if create:
+        return pinned_fs.create_and_open_dir_at(
+            parent_fd, name, what="endorsed copy directory", refusal=OSError
+        )
+    return os.open(name, pinned_fs.dir_flags(), dir_fd=parent_fd)
+
+
+def _endorsed_dir_at(home_fd: int, *, create: bool) -> int:
+    record_fd = _open_dir_at(home_fd, RECORD_DIR_LEAF, create=create)
+    try:
+        return _open_dir_at(record_fd, ENDORSED_SUBDIR, create=create)
+    finally:
+        os.close(record_fd)
+
+
+def _copy_at(dir_fd: int, leaf: str) -> bytes | None:
+    """The copy *leaf* under *dir_fd*, ``None`` when absent; a non-regular file raises."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(leaf, flags, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", leaf)
+        return handle.read()
+
+
+def endorsed_copy_at(home_fd: int, leaf: str) -> bytes | None:
+    """The endorsed copy of *leaf* in ANOTHER data home held by *home_fd* (POSIX).
+
+    For a writer whose own data home is not the one it writes (a pod's seed and restart
+    step runs in the operator's process). Every level is opened no-follow relative to
+    the held descriptor, so no name under that home can redirect the read. ``None`` when
+    the directory or the copy does not exist.
+    """
+    try:
+        dir_fd = _endorsed_dir_at(home_fd, create=False)
+    except FileNotFoundError:
+        return None
+    try:
+        return _copy_at(dir_fd, leaf)
+    finally:
+        os.close(dir_fd)
+
+
+@contextlib.contextmanager
+def endorsing_at(home_fd: int, leaf: str, content: str) -> Iterator[None]:
+    """:func:`endorsing` for ANOTHER data home held by *home_fd* (POSIX).
+
+    Writes *content* as that home's endorsed copy of *leaf* before the ``with`` body
+    publishes the file, and puts the previous copy back (or removes the new one) when the
+    body raises. It does not refuse a pending leaf: :func:`refuse_save_if_pending` reads
+    this process's own data home, so the caller decides what the copy and the file hold.
+    """
+    dir_fd = _endorsed_dir_at(home_fd, create=True)
+    try:
+        prior = _copy_at(dir_fd, leaf)
+        atomic_write_at(dir_fd, leaf, content, fsync=True, mode=_FILE_MODE)
+        try:
+            yield
+        except BaseException:
+            try:
+                if prior is None:
+                    os.unlink(leaf, dir_fd=dir_fd)
+                else:
+                    atomic_write_at(dir_fd, leaf, prior, fsync=True, mode=_FILE_MODE)
+            except OSError:
+                logger.warning(
+                    "loosening provenance: could not restore the endorsed copy for %s "
+                    "after a failed write",
+                    leaf,
+                    exc_info=True,
+                )
+            raise
+    finally:
+        os.close(dir_fd)
+
+
 def endorsed_bytes(leaf: str) -> bytes | None:
     """The gateway-endorsed copy of *leaf*, or ``None`` when there is none.
 
@@ -525,7 +605,7 @@ def reconcile(leaf: str, disk_bytes: bytes) -> bytes:
         return disk_bytes
     if adopt_known_writer(leaf) == disk_bytes:
         return disk_bytes
-    _report_once(leaf, "is not the gateway's own write")
+    _report_once(leaf, "is not the gateway's own write", held=True)
     return endorsed
 
 
@@ -665,6 +745,65 @@ def _changed_paths(before: Any, after: Any, path: list[str], out: list[str]) -> 
                 _changed_paths(old, new, path + [str(key)], out)
         return
     out.append(".".join(path))
+
+
+def touches_slack(leaf: str, rows: list[dict]) -> bool:
+    """Whether diff *rows* of a config leaf change a ``slack.*`` key."""
+    return leaf in (LEAF_CONFIG, LEAF_CONFIG_LOCAL) and any(
+        (row.get("path") or [None])[0] == "slack" for row in rows
+    )
+
+
+def _held_rows(leaf: str, disk: bytes) -> tuple[list[dict], bool] | None:
+    """``(rows, truncated)``: the redacted diff of a held *leaf* edit, as
+    :func:`pending_changes` lists it. ``None`` when either side is not a JSON object."""
+    try:
+        endorsed = endorsed_bytes(leaf)
+    except OSError:
+        return None
+    before = _parse_object(endorsed) if endorsed is not None else None
+    after = _parse_object(disk)
+    if before is None or after is None:
+        return None
+    changes = _Changes(leaf)
+    _diff_keys(before, after, [], changes)
+    rows = changes.rows()
+    return rows, changes.total > len(rows)
+
+
+#: Most characters of changed-key lines a held-edit notice lists: well under the bell's
+#: body cap (``notifications.bus``), so a large diff still rings a note.
+MAX_LISTED_CHARS = 4000
+
+
+def change_lines(rows: list[dict], truncated: bool) -> list[str]:
+    """The :func:`change_line` of each row that fits in :data:`MAX_LISTED_CHARS` in
+    all, then one line saying more changes are not shown when any was left out."""
+    lines: list[str] = []
+    used = 0
+    for row in rows:
+        line = change_line(row)
+        if used + len(line) > MAX_LISTED_CHARS:
+            # Skipped, not stopped: a short row after one long row still fits.
+            truncated = True
+            continue
+        lines.append(line)
+        used += len(line)
+    if truncated:
+        lines.append("(more changes not shown; `kirocrew config pending` lists them)")
+    return lines
+
+
+def change_line(row: dict) -> str:
+    """One changed key, JSON-quoted so a key or value the edit wrote cannot drive the terminal."""
+    line = f"{row['change']} {json.dumps('.'.join(row['path']))}"
+    if row.get("redacted"):
+        return f"{line} (value withheld)"
+    values = [json.dumps(row[side]) for side in ("before", "after") if side in row]
+    # The diff leaves out a side it cannot show; the other alone would misread the change.
+    if row["change"] == "changed" and len(values) < 2:
+        return line
+    return f"{line}: {' -> '.join(values)}" if values else line
 
 
 def _only_older_writer_keys_changed(leaf: str, disk: bytes) -> bool:
@@ -863,9 +1002,40 @@ def reconciled_bytes(
     return reconcile(leaf, content)
 
 
-def _report_once(leaf: str, what: str) -> None:
-    if leaf not in _reported:
-        _reported.add(leaf)
+def _report_once(leaf: str, what: str, *, held: bool = False) -> None:
+    """Log the substitution once per leaf. A *held* edit says a restart does not apply
+    it; one that changes ``slack.*`` also lists the changed keys, redacted as
+    ``kirocrew config pending`` prints them, since a member id listed by hand looks like
+    it needs a restart. Review and Apply stay in that command: Apply takes the whole file.
+
+    shortcut: once per leaf per process, so a second edit of the same file in one run
+    is not logged; the bell note follows each version. Key on the signature if the log
+    must follow every edit.
+    """
+    if leaf in _reported:
+        return
+    _reported.add(leaf)
+    disk = _disk_bytes(leaf) if held else None
+    diff = _held_rows(leaf, disk) if disk is not None else None
+    if diff is not None and touches_slack(leaf, diff[0]):
+        logger.warning(
+            "%s on disk %s and changes Slack settings (slack.*), so the edit is held for "
+            "review and NOT in effect; a restart does not apply it. Changed: %s. Review "
+            "it and apply or discard it with `kirocrew config pending`, or in Settings > "
+            "Security",
+            leaf,
+            what,
+            "; ".join(change_lines(*diff)),
+        )
+    elif disk is not None:
+        logger.warning(
+            "%s on disk %s, so the edit is held for review and NOT in effect; a restart "
+            "does not apply it. Review it with `kirocrew config pending`, or in "
+            "Settings > Security",
+            leaf,
+            what,
+        )
+    else:
         logger.warning(
             "%s on disk %s; using the gateway-endorsed copy until the change is applied "
             "or discarded in Settings > Security or with `kirocrew config pending`",

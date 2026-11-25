@@ -66,12 +66,15 @@ export type ConnectVia = 'select' | 'auto-connect' | 'auto-warm' | 'retry' | 'li
  * auto-warm racing an explicit disconnect cannot re-open the tunnel the user
  * just closed; a tunnel that is not up comes back as a non-connected status,
  * which this step journals as `warm-declined` and leaves the pane alone.
+ *
+ * `beforeWarm` runs once the connect is admitted, just before the warm entry is
+ * written (a crew link records the crew as opened there, lib/crewWarmSet.ts).
  */
 export async function connectInstanceInto(
   dispatch: AppDispatch,
   id: string,
   via: ConnectVia = 'select',
-  opts: { rebuild?: boolean; onlyIfConnected?: boolean } = {},
+  opts: { rebuild?: boolean; onlyIfConnected?: boolean; beforeWarm?: () => void } = {},
 ) {
   const rebuild = !!opts.rebuild
   const onlyIfConnected = !!opts.onlyIfConnected
@@ -117,6 +120,7 @@ export async function connectInstanceInto(
     // reconnect the same way, and a rebuild answers on a new port. All of those
     // leave the flag off and take the fresh token.
     const keepTokenIfPortUnchanged = onlyIfConnected
+    opts.beforeWarm?.()
     dispatch(setWarm({ id, conn, keepTokenIfPortUnchanged }))
     paneLog('warm', { id, port: conn.port, via, rebuild: rebuild || undefined })
   } else {

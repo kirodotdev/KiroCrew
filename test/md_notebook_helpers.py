@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import json
 import os
-import shutil
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -25,6 +24,7 @@ import pytest
 import yarl
 from aiohttp.test_utils import TestClient, TestServer
 from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
+from git_repo_templates import copy_repo, session_template
 
 from kiro_crew import platform_compat
 from kiro_crew.loop_lock import LoopBoundLock
@@ -87,8 +87,8 @@ def _build_seed_repo(base: Path) -> None:
     _git("push", "-u", "origin", "main", cwd=seed)
 
 
-# Each module that imports this fixture holds its own session-scoped copy, so the
-# template is built once per importing module on each worker.
+# ``session_template`` keeps one template per worker, shared by every module
+# that imports this fixture.
 @pytest.fixture(scope="session")
 def _seed_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the seed repo pair once per session; tests get a copy.
@@ -100,23 +100,19 @@ def _seed_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     Session scope is safe because the template is never yielded to a test, only
     copied from, so no test can reach another's repo.
     """
-    template = tmp_path_factory.mktemp("md-notebook-seed")
-    _build_seed_repo(template)
-    return template
+    return session_template(tmp_path_factory, _build_seed_repo)
 
 
 def _seed_repo(base: Path, template: Path) -> tuple[Path, Path]:
     """Copy the session seed *template* into *base*, returning ``(remote, seed)``.
 
-    ``git`` records the remote as an absolute path, so the copied checkout is
-    re-pointed at the copied bare remote rather than the template's -- otherwise
-    every test would push into one shared remote and see each other's commits.
+    ``git`` records the remote as an absolute path; ``copy_repo`` re-points the
+    copied checkout at the copied bare remote rather than the template's --
+    otherwise every test would push into one shared remote and see each
+    other's commits.
     """
-    remote, seed = base / "remote.git", base / "seed"
-    shutil.copytree(template / "remote.git", remote)
-    shutil.copytree(template / "seed", seed)
-    _git("remote", "set-url", "origin", str(remote), cwd=seed)
-    return remote, seed
+    copy_repo(template, base)
+    return base / "remote.git", base / "seed"
 
 
 class SignedClient:

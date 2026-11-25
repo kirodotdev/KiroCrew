@@ -15,6 +15,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
+        _PERSISTED_TRUNCATION_REPORTED,
         _SPAWN_STATUS_MAX_GREP_LEN,
         _SPAWN_STATUS_MAX_LINES,
         INVALID_WAIT_CODE,
@@ -62,6 +63,16 @@ def _failover_fields(info: object) -> dict[str, object]:
     if not isinstance(moved_from, str) or not isinstance(ran_on, str):
         return {}
     return {"failover_from": moved_from, "backend": backend_to_stored(ran_on)}
+
+
+def _worktree_field(path: object, base: object) -> dict[str, object]:
+    """``{"worktree": {"path", "base"}}`` for an isolated run (``spawn_run`` ``isolate``), else ``{}``.
+
+    Redacted like the task text: with the sandbox off, the run can write the record.
+    """
+    if not isinstance(path, str) or not path or not isinstance(base, str):
+        return {}
+    return {"worktree": {"path": _redact(path[:4096]), "base": _redact(base[:64])}}
 
 
 def _redact(text: str) -> str:
@@ -154,11 +165,15 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         try:
             disk_state = read_state(agent_id)
             if disk_state:
+                from kiro_crew.subagent_persistence import read_run_worktree_record
+
+                record = await asyncio.to_thread(read_run_worktree_record, agent_id)
                 disk_data: dict[str, object] = {
                     "id": agent_id,
                     "task": _redact(disk_state.get("task", "")),
                     "done": True,
                     "started": disk_state.get("started"),
+                    **_worktree_field(*(record or ("", ""))),
                 }
                 tombstone = await asyncio.to_thread(read_tombstone, agent_id) or {}
                 # Legacy persisted records do not carry terminal usage. Keep
@@ -240,6 +255,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     # Present only when ``agent.acp_failover`` moved the run, so the default
     # payload is unchanged: the backend asked for, and the one that ran.
     data.update(_failover_fields(info))
+    worktree = getattr(info, "worktree", None)
+    data.update(_worktree_field(getattr(worktree, "path", None), getattr(worktree, "base", None)))
     if info.done:
         data["outcome"] = info.outcome
         data["stopped"] = info.user_stopped
@@ -260,6 +277,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             unverified = getattr(info, "served_model_unverified", None)
             if isinstance(unverified, bool):
                 data["served_model_unverified"] = unverified
+        # A run whose session had none of Crew's tools, on any outcome: the note the
+        # completion event carries (``SubagentInfo.crew_tools_withheld_note``).
+        withheld = getattr(info, "crew_tools_withheld_note", "")
+        if isinstance(withheld, str) and withheld:
+            data["crew_tools_withheld"] = withheld
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):
@@ -627,16 +649,26 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         # bridge logs the transition once.
         payload["queued_truncated"] = True
     if persisted.overflow or persisted.overflow_is_lower_bound:
-        # Said out loud once per listing, to the operator rather than the client:
+        # Said out loud once per change to the operator rather than the client:
         # a listing of 50 of 51 eligible runs otherwise reads exactly like a
         # listing of all 50 there were. The WARNING carries the count, and it is
         # the whole report: a truncation refuses nobody, so it is not a permission
         # decision and does not belong in the SEL deny stream beside the ownership
         # refusals an operator has to be able to see there. No client reads a
-        # count it cannot act on, so it stays out of the payload too.
+        # count it cannot act on, so it stays out of the payload too. A repeat of
+        # a reported state drops to DEBUG. Only a non-internal listing is
+        # remembered, because an internal caller's listing is scoped to its own
+        # session, so a shared memory would let two sessions end each other's
+        # report; an internal caller warns on every truncated listing.
         # A saturated scan window reports even at a count of zero, because that
         # is the case where the count itself cannot see what was left out.
-        logger.warning(
+        newly = True
+        if not internal:
+            previous = _PERSISTED_TRUNCATION_REPORTED.get(auditee)
+            newly = previous is None or (persisted.overflow_is_lower_bound and not previous)
+            _PERSISTED_TRUNCATION_REPORTED[auditee] = persisted.overflow_is_lower_bound
+        report = logger.warning if newly else logger.debug
+        report(
             "persisted spawn listing truncated: %s%d eligible run(s) past the %d cap%s",
             "at least " if persisted.overflow_is_lower_bound else "",
             persisted.overflow,
@@ -647,4 +679,6 @@ async def api_spawn_list(request: web.Request) -> web.Response:
                 else ""
             ),
         )
+    elif not internal and _PERSISTED_TRUNCATION_REPORTED.pop(auditee, None) is not None:
+        logger.info("persisted spawn listing complete again")
     return web.json_response(payload)

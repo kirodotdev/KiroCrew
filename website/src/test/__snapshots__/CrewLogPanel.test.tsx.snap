@@ -42,6 +42,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         <span
           class="truncate block max-w-[110px]"
           tabindex="0"
+          title=""
         >
           kirocrew-worker
         </span>
@@ -52,6 +53,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         <span
           class="truncate block max-w-[80px]"
           tabindex="0"
+          title=""
         >
           a-model
         </span>
@@ -83,6 +85,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         <span
           class="truncate block max-w-[110px]"
           tabindex="0"
+          title=""
         >
           kirocrew-worker
         </span>
@@ -93,6 +96,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         <span
           class="truncate block max-w-[80px]"
           tabindex="0"
+          title=""
         >
           a-model
         </span>
@@ -164,7 +168,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
             kill failed: pid 8821 still alive
           </span>
           <span
-            class="inline-flex text-danger-ink"
+            class="inline-flex shrink-0 text-danger-ink"
           >
             <button
               class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-inherit bg-transparent border-none p-0 underline decoration-current/30 hover:decoration-current underline-offset-2 "
@@ -212,6 +216,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         <span
           class="truncate block max-w-[110px]"
           tabindex="0"
+          title=""
         >
           kirocrew-knowledge
         </span>
@@ -222,6 +227,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         <span
           class="truncate block max-w-[80px]"
           tabindex="0"
+          title=""
         >
           a-model
         </span>

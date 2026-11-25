@@ -3,8 +3,8 @@ title: Wake judge — a System One model screens auto-nudge ticks
 status: partial
 author: Raymond Chen
 created: 2026-09-22
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 12735
 implementation-prs: [12776, 12787, 13759, 14663, 16192]
 tracking-issues: []

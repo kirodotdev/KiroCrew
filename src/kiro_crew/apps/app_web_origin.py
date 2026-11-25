@@ -1,7 +1,9 @@
 """App web origins: an opted-in app's own origin on the dashboard's port.
 
 An app whose manifest sets ``backend.webOrigin: true`` is served at
-``http://<app>.apps.localhost:<dashboard port>``. The browser resolves every
+``http://<app>.apps.localhost:<dashboard port>``, and on the forward port of a
+Remote Crew pane that a signed pane token recorded (``apps/pane_ports.py``). The
+browser resolves every
 ``*.localhost`` name to loopback on its own machine without DNS, so a request for
 that name reaches whatever listener carries the dashboard there: the gateway
 itself, or the one ``ssh -L`` forward that carries the dashboard from another
@@ -33,7 +35,8 @@ The trust model is the app backend's own loopback port's, unchanged:
   gateway-only API. Every ``X-KiroCrew-*`` header, the dashboard's cookies and
   ``Authorization`` are dropped.
 * The response may set only host-only cookies, cannot clear the dashboard's site
-  data, and may be framed only by the dashboard's own loopback origins.
+  data, and may be framed only by the dashboard's own loopback origins; on a pane
+  port, only by that pane's loopback origins and its recorded parents'.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ import asyncio
 import functools
 import logging
 import string
+import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -360,13 +364,35 @@ async def _refusal(request: web.Request, status: int, reason: str) -> web.Respon
     return web.Response(status=status, text=text)
 
 
-async def _record_grant(request: web.Request, app_host: str) -> None:
+async def _record_grant(request: web.Request, app_host: str, *, pane: bool = False) -> None:
     """The serve decision, recorded as every refusal is, before the relay starts.
 
     Every admission is a permission decision, so every served request leaves a
-    row, reads included.
+    row, reads included. A row for a pane port says so.
     """
-    await _audit(request, outcome="granted", resources=f"{app_host}{request.path}")
+    kind = " (pane port)" if pane else ""
+    await _audit(request, outcome="granted", resources=f"{app_host}{request.path}{kind}")
+
+
+def _pane_ancestors(request: web.Request, port: str) -> list[str]:
+    """The exact origins that may frame an app web origin on pane port *port*.
+
+    Empty when no unexpired pane token recorded *port*. Otherwise the loopback
+    origins on *port* (the pane) and on every recorded parent port (the hub page
+    framing it). Never a wildcard.
+    """
+    from kiro_crew.apps.pane_ports import pane_ports
+    from kiro_crew.dashboard.server import parent_port_frame_ancestors
+
+    if not port.isdigit():
+        return []
+    parents = pane_ports(request.app).parents(int(port), time.time())
+    if not parents:
+        return []
+    found = parent_port_frame_ancestors(int(port))
+    for parent in parents:
+        found.extend(o for o in parent_port_frame_ancestors(parent) if o not in found)
+    return found
 
 
 async def _backend_port(name: str) -> int | None:
@@ -391,11 +417,37 @@ async def _backend_port(name: str) -> int | None:
 _MAX_HTML_EDIT_BYTES = 2 * 1024 * 1024
 
 
+async def _refuse_redirect(
+    _session: aiohttp.ClientSession,
+    _ctx: Any,
+    params: aiohttp.TraceRequestRedirectParams,
+) -> None:
+    """Stop a relayed request at its first redirect instead of following it.
+
+    ``ws_connect`` has no ``allow_redirects`` switch, and on a cross-origin hop
+    aiohttp strips only ``Authorization``/``Cookie``, so a followed redirect
+    would carry ``Kiro-Relay-Authorization`` to wherever it points. Browsers
+    never follow a WebSocket redirect, so nothing that works today relies on it.
+    """
+    params.response.close()
+    raise aiohttp.ClientError(f"upstream redirected the upgrade ({params.response.status})")
+
+
+#: Attached to every session the relay dials through; see :func:`_refuse_redirect`.
+_NO_REDIRECTS = aiohttp.TraceConfig()
+_NO_REDIRECTS.on_request_redirect.append(_refuse_redirect)
+
+
 def _client_session(request: web.Request) -> tuple[aiohttp.ClientSession, bool]:
     session = request.app.get("_proxy_session")
     if session is None or session.closed:
         jar = aiohttp.DummyCookieJar()
-        return aiohttp.ClientSession(auto_decompress=False, cookie_jar=jar), True
+        return (
+            aiohttp.ClientSession(
+                auto_decompress=False, cookie_jar=jar, trace_configs=[_NO_REDIRECTS]
+            ),
+            True,
+        )
     return session, False
 
 
@@ -610,17 +662,32 @@ async def serve_app_web_origin(
     from kiro_crew.dashboard.origin import (
         frame_ancestors_value,
         is_direct_local_request,
+        is_host_forwarded_request,
         is_proxied_request,
     )
 
     gate = ssm_gate.gate if ssm_gate is not None else None
     if gate is not None and gate.owns(request):
         return await _refusal(request, 421, "arrived on the Session Manager listener")
-    if is_proxied_request(request) or not is_direct_local_request(request):
+    if is_proxied_request(request) or not (
+        is_direct_local_request(request) or is_host_forwarded_request(request)
+    ):
         return await _refusal(request, 421, "not a direct local request")
     origins = dashboard_loopback_origins(request.app.get("allowed_origins") or ())
-    if port not in _served_ports(origins):
-        return await _refusal(request, 421, "port is not a dashboard port")
+    pane = port not in _served_ports(origins)
+    # A Remote Crew pane's forward port, served only while a signed pane token
+    # recorded it (apps/pane_ports.py). Its ancestors are the pane's own loopback
+    # origins and each recorded parent's: the directive is matched against every
+    # ancestor, and the pane sits inside its hub's page.
+    ancestors = _pane_ancestors(request, port)
+    if pane:
+        if not ancestors:
+            return await _refusal(request, 421, "port is not a dashboard port")
+        origins = ancestors
+    elif ancestors:
+        # The hub picks its forward port on its own machine, so it can equal one of
+        # this gateway's dashboard ports; the pane's parents frame it there too.
+        origins = [*origins, *(o for o in ancestors if o not in origins)]
     backend_port = await _backend_port(name)
     if backend_port is None:
         return await _refusal(request, 404, "no app web origin for this name")
@@ -634,7 +701,7 @@ async def serve_app_web_origin(
     )
     app_host = f"{name}{APP_WEB_ORIGIN_SUFFIX}:{port}"
     headers = _forwarded_request_headers(request, app_host)
-    await _record_grant(request, app_host)
+    await _record_grant(request, app_host, pane=pane)
     if _is_websocket_upgrade(request):
         return await _relay_websocket(request, target, headers)
     return await _relay_http(request, target, headers, frame_ancestors_value(origins))

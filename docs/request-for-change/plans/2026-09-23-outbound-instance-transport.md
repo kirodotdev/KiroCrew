@@ -1,6 +1,6 @@
 # Outbound Instance Transport Implementation Plan
 
-> **Nothing implemented.** This plan is unstarted at `18f9984b0`: the only
+> **Nothing implemented.** Only the phase 1 design documents are on main: the only
 > `connection_method` values are `("ssh", "ssm", "fargate")`
 > (`src/kiro_crew/instances/registry.py`), and
 > `src/kiro_crew/instances/transports/` does not exist. Its spec is

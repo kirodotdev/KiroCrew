@@ -1628,6 +1628,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "approve_tool: security floor rejected req=%s: %s",
             "auto-approve identity gate rejected req=%s: %s",
             "approve_tool: mimocode mcp control refused req=%s",
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
         ],
         "src/kiro_crew/acp/client_claude.py": [],
         "src/kiro_crew/acp/client_claude_seed.py": [],
@@ -1665,6 +1666,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
         "src/kiro_crew/acp/session_handle_permissions.py": [
             "reject_tool: no deny option advertised for req=%s",
             "approve_tool: security floor rejected req=%s: %s",
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
         ],
         "src/kiro_crew/acp/session_handle_updates.py": [],
         "src/kiro_crew/acp/session_handle_class.py": [],

@@ -186,7 +186,8 @@ def data_home() -> Path:
 #: Attempts at the final rename on Windows, and the pause between them. The
 #: script is stdlib-only, so this is a small inline twin of
 #: ``kiro_crew.atomic_write.replace_with_retry`` rather than an import of it.
-_REPLACE_ATTEMPTS = 5
+#: Must stay equal to ``kiro_crew.atomic_write._REPLACE_MAX_ATTEMPTS``.
+_REPLACE_ATTEMPTS = 10
 _REPLACE_BACKOFF_SECONDS = 0.05
 #: Only Windows refuses to replace a file another handle has open.
 _ON_WINDOWS = os.name == "nt"

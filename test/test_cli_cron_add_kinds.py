@@ -356,6 +356,18 @@ class TestOneShot:
             err = _refused(_ns(at="next blue moon"), capsys)
             svc_cls.return_value.add_job.assert_not_called()
         assert "could not parse time" in err
+        assert "'2026-11-22T05:20:00Z'" in err
+
+    def test_iso_utc_time_is_accepted(self, home):
+        with (
+            patch("kiro_crew.cli_commands.CronService") as svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            svc = svc_cls.return_value
+            svc.add_job.return_value = _mock_job()
+            _cron(_ns(at="2099-11-22T05:20:00Z", timezone="Pacific/Kiritimati"))
+            kwargs = svc.add_job.call_args.kwargs
+        assert kwargs["at_ts"] == datetime(2099, 11, 22, 5, 20, tzinfo=ZoneInfo("UTC")).timestamp()
 
     def test_timezone_with_at_reads_the_time_in_that_zone(self, home, monkeypatch):
         # --timezone is the zone the --at clock time is read in, exactly as
@@ -907,15 +919,22 @@ class TestArgparse:
         assert args.hide_in_chat is False
         assert args.at is None and args.script == "" and args.shell_command == ""
 
+    def test_agent_parses_with_script_so_a_bot_can_be_named(self, monkeypatch):
+        # _cron_add, not argparse, decides: a Bot binds the job, a template is refused.
+        args = self._main_with(
+            ["n", "", "--every", "300", "--agent", "ops", "--script", "a.py:run"], monkeypatch
+        )
+        assert args is not None
+        assert (args.agent, args.script) == ("ops", "a.py:run")
+
     @pytest.mark.parametrize(
         "argv",
         [
             ["n", "m", "--every", "300", "--cron", "0 9 * * *"],
             ["n", "m", "--every", "300", "--at", "5pm"],
             ["n", "", "--every", "300", "--script", "a.py:run", "--command", "ls"],
-            ["n", "m", "--every", "300", "--agent", "ops", "--script", "a.py:run"],
         ],
-        ids=["every+cron", "every+at", "script+command", "agent+script"],
+        ids=["every+cron", "every+at", "script+command"],
     )
     def test_exclusive_groups_are_a_parse_error(self, argv, monkeypatch, capsys):
         with pytest.raises(SystemExit) as exc:

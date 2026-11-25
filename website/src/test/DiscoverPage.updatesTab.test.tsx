@@ -325,15 +325,17 @@ describe('Updates sub-page — list rendering', () => {
     expect(mocks.updateAppNav).toHaveBeenCalledWith('notes')
   })
 
-  it("Update All's consent line opens that app's details without another update", async () => {
+  it("Update All's consent line opens that app's details from its status notice without another update", async () => {
     mocks.apiUpdateApp
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
     renderDiscover('/apps/-/updates')
 
     fireEvent.click(updateAllButton())
-    const notice = await screen.findByRole('alert')
+    const notice = await screen.findByTestId('update-all-notice')
     expect(notice).toHaveTextContent('pages.appsPage.updated_needs_session_approval_consent {"name":"Docs"}')
+    // The update landed, so nothing failed: no red error notice.
+    expect(screen.queryByRole('alert')).toBeNull()
     // The line says to review the permission in the app details; Docs is
     // already updated, so its button opens the page and starts nothing.
     fireEvent.click(within(notice).getByRole('button', { name: 'pages.appsPage.open_app_details {"name":"Docs"}' }))

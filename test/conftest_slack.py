@@ -8,13 +8,14 @@ see the import block there. Plain module, never collected.
 
 from __future__ import annotations
 
-import pytest
+import sys
+
+from conftest_guards import per_test_guard
 
 from kiro_crew.slack.client import SlackClientOps
-from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 
@@ -40,7 +41,97 @@ def _reset_options_control_state():
     outbound._LOCK_USERS.clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _reset_code_channel_audience():
+    """Forget every ``conversations.info`` reading the code-channel audience holds.
+
+    ``kiro_crew.slack.code_channels.audience`` keeps process-global share, archive and
+    privacy readings keyed by channel id. A Conductor thread's dispatch is admitted or
+    refused on the privacy reading, and tests reuse channel ids, so a reading one test
+    left would decide the next one's verdict. Looked up in ``sys.modules`` so a run
+    that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.code_channels.audience")
+        if module is not None:
+            module.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_code_channel_senders():
+    """Forget the dispatch exemption's Slack-author records and Stop marks.
+
+    ``code_channel_exemption`` keeps, per slot key, who drove the conversation from Slack
+    and which slots a Conductor thread's Stop fenced. Tests reuse slot keys, so a mark one
+    test left would refuse the next one's dispatch. Looked up in ``sys.modules`` so a run
+    that never imported it pays nothing.
+    """
+
+    def forget() -> None:
+        module = sys.modules.get("kiro_crew.dashboard.session_control_parts.code_channel_exemption")
+        if module is not None:
+            module.forget_senders()
+
+    forget()
+    try:
+        yield
+    finally:
+        forget()
+
+
+@per_test_guard
+def _reset_thread_board():
+    """Forget the Conductor-thread board's refresh state (its running refreshes, the
+    rooms asked to run again and the newest binding each trigger carried).
+
+    ``kiro_crew.slack.code_channels.board.thread_board`` keeps them process-global,
+    keyed by room, and tests reuse channel and anchor ids, so one left over would
+    coalesce the next test's refresh into a finished one. Looked up in
+    ``sys.modules`` so a run that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.code_channels.board.thread_board")
+        if module is not None:
+            module.reset_for_tests()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_conductor_thread_notices():
+    """Forget which people a Conductor thread already told it is the owner's.
+
+    ``kiro_crew.slack.conductor_thread`` tells each non-owner once per thread and keeps
+    that in a process-global map keyed by ``(channel, thread, user)``; tests reuse those
+    ids, so a notice one test sent would suppress the next test's. Looked up in
+    ``sys.modules`` so a run that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.conductor_thread")
+        if module is not None:
+            module.forget_told()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
@@ -48,9 +139,14 @@ def _enterprise_bypass(_floor_monkeypatch) -> None:
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._allowed_team_ids", {"TTEST"})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _clean_emojis():
     """Reset _PHASE_EMOJIS to defaults before each test (suppresses local config)."""
+    # Imported here, not at module level: ``kiro_crew.slack.handler`` reaches
+    # most of the package, and a module-level import made every collection pay
+    # for it (test/test_conftest_import_budget.py holds that line).
+    from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
+
     original = dict(_PHASE_EMOJIS)
     _PHASE_EMOJIS.clear()
     _PHASE_EMOJIS.update(_build_phase_emojis({})[0])
@@ -59,7 +155,7 @@ def _clean_emojis():
     _PHASE_EMOJIS.update(original)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _clean_slack_thread_state():
     """Reset the ``handler`` module-global thread-state maps between tests.
 
@@ -132,7 +228,7 @@ class MockSlackClient(SlackClientOps):
         )
         return ts
 
-    async def update_message(self, channel, ts, text):
+    async def update_message(self, channel, ts, text="", blocks=None):
         self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
 
     async def delete_message(self, channel, ts):

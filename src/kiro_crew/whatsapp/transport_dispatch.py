@@ -243,7 +243,9 @@ class WhatsAppDispatcher:
         )
         if pending_for(session_key, inbound.conversation_id) is None:
             return ""
-        return deliver_verdict(session_key, verdict, inbound.conversation_id)
+        return deliver_verdict(
+            session_key, verdict, inbound.conversation_id, sessions=self.sessions
+        )
 
     async def _handle_command(self, inbound: InboundMessage, command: str) -> None:
         """Run one command. Reply strings come from the command table's module,

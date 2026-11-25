@@ -818,7 +818,9 @@ def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:
 #: widen — the point of the header is that a NEW internal caller surfaces as
 #: ``unknown-internal`` in the audit until someone decides what to call it,
 #: instead of silently inheriting another component's label.
-KNOWN_INTERNAL_CALLERS = frozenset({"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug"})
+KNOWN_INTERNAL_CALLERS = frozenset(
+    {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug", "kirocrew-cron"}
+)
 
 
 def request_origin(
@@ -831,8 +833,12 @@ def request_origin(
     every MCP-driven event uniformly; the validated component identity rides
     in ``caller``, which SEL already carries for exactly this purpose.
 
-    A request without ``X-Internal-Secret`` is the browser:
-    ``("dashboard", "dashboard")``. An internal request names its component in
+    A request that token auth did not admit as internal (no ``X-Internal-Secret``
+    and no ``request["internal_auth"]``) is the browser:
+    ``("dashboard", "dashboard")``. The agent socket carries no secret -- its
+    capability is verified by token auth, which sets ``internal_auth`` -- so the
+    header alone would read every agent-socket call as the person. An internal
+    request names its component in
     ``X-Internal-Caller`` (attached by the MCP stdio servers' shared loopback
     request helpers — see ``mcp_shared.set_internal_caller``), validated against
     :data:`KNOWN_INTERNAL_CALLERS`. Inferring the identity from the secret alone
@@ -849,7 +855,10 @@ def request_origin(
     logger it is emitted under (the calling route module's, so its tests can
     listen for it).
     """
-    if request.headers.get("X-Internal-Secret") is None:
+    if (
+        request.headers.get("X-Internal-Secret") is None
+        and request.get("internal_auth") is not True
+    ):
         return "dashboard", "dashboard"
     caller = (request.headers.get("X-Internal-Caller") or "").strip()
     if caller in KNOWN_INTERNAL_CALLERS:

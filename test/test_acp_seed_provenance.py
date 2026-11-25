@@ -923,7 +923,7 @@ class TestCrossSessionAdoption:
 
         data = _seed(tmp_path)
         assert data["availableModels"] == _SERVED
-        assert data["model"] == "global.anthropic.claude-opus-5[1m]"
+        assert "model" not in data
         assert second._claude_settings_authored is True
 
     def test_a_user_authored_file_is_still_left_untouched(self, tmp_path, monkeypatch):
@@ -1119,7 +1119,8 @@ class TestPostCaptureModelResolution:
         client = _client(tmp_path, model="claude-opus-5")
         client._model = mr.resolve_wire_model_id(client._model, "claude_code")
         await client._reseed_after_capture()
-        assert _seed(tmp_path)["model"] == "global.anthropic.claude-opus-5[1m]"
+        assert _seed(tmp_path)["availableModels"] == _SERVED
+        assert "model" not in _seed(tmp_path)
 
     def test_the_reseed_rides_an_existing_adapter_only_branch(self):
         """Harness parity (AUTOSDE H13): the KIRO path must not gain the step.
@@ -1196,26 +1197,24 @@ class TestPostCaptureModelResolution:
             assert between.count("await ") == 1
             assert "if self._uses_advertised_model_selection:" in between
 
-    def test_the_written_model_id_is_folded_by_the_writer_itself(self):
-        """No ordering coupling to ``_apply_startup_model``.
+    def test_the_writer_never_writes_the_sessions_pin(self):
+        """A settings ``model`` key makes Claude Code fold that family into one row.
 
-        The re-seed runs before the startup model apply, so it folds the id itself. A
-        bare id missing from ``availableModels`` silently resolves to 200K.
+        The pin is pushed live by ``_apply_startup_model``; the only ``model`` the
+        payload carries is the adopted substitute.
         """
         import inspect
 
-        # The payload is rendered by ``_render_claude_settings_payload`` (split out
-        # so the shared-reader check can compare bytes before deciding to write);
-        # the fold lives there, on the write path itself either way.
         source = inspect.getsource(ClaudeAcpClient._render_claude_settings_payload)
         assert 'data["model"] = self._model' not in source
-        assert "resolve_wire_model_id" in source
+        assert "resolve_wire_model_id" not in source
+        assert 'data["model"] = adopted' in source
 
     def test_the_cold_seed_becomes_coherent_after_the_capture(self, tmp_path, monkeypatch):
         """Cold seed, then ``session/new`` warms the cache, then re-seed.
 
-        The file must name a model that is in the list beside it; otherwise the pick
-        resolves to 200K.
+        The list must name the pin's advertised spelling, or the live push of it is
+        refused; the file itself names no model.
         """
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(
@@ -1235,8 +1234,9 @@ class TestPostCaptureModelResolution:
         client._write_claude_local_settings()  # step 6: after the capture
 
         data = _seed(tmp_path)
-        assert data["model"] == "global.anthropic.claude-opus-5[1m]"
-        assert data["model"] in data["availableModels"]
+        assert "model" not in data
+        assert client._model == "global.anthropic.claude-opus-5[1m]"
+        assert client._model in data["availableModels"]
 
     def test_the_seed_never_ships_a_base_window_sibling(self, tmp_path, monkeypatch):
         # Another settings source defines availableModels, so the warm cache is written.

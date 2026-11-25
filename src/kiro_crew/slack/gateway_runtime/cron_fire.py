@@ -2,15 +2,16 @@
 
 ``_init_cron`` creates the service with ``_cron_callback`` as ``on_job``. That callback
 runs a crewmate's goal reminder, captures what the fire needs, checks the overlap
-guard, and dispatches: the command and script arms, the message job's fire-time gate
-and first-run tab, then the agent sequence or the single-agent turn. This module
-also owns what a fire needs before its turn runs: the capture, resolving a crew alias
-to the agent it dispatches, and acquiring the session that agent runs in; and
-arming the scheduler once memory is ready, and saying when startup moved an
-unreadable cron store aside.
+guard, and dispatches: the command and script arms, the message job's fire-time gate,
+the wait while the host's sign-in has expired, and the first-run tab, then the agent
+sequence or the single-agent turn. This module also owns what a fire needs before
+its turn runs: the capture, resolving a crew alias to the agent it dispatches, and
+acquiring the session that agent runs in; and arming the scheduler once memory is
+ready, and saying when startup moved an unreadable cron store aside.
 
-Orchestrator fields read: ``_cfg``, ``_no_crons``, ``_running_script_ids``,
-``ctx_builder``, ``dashboard_state``, ``sessions``.
+Orchestrator fields read: ``_cfg``, ``_cron_injecting``, ``_no_crons``,
+``_running_script_ids``, ``cron_svc``, ``ctx_builder``, ``dashboard_state``,
+``sessions``, ``subagent_mgr``.
 Orchestrator fields written: ``_cron_armed``, ``_cron_quarantine``,
 ``_cron_reconciled``, ``_cron_runs_holding`` (a message run's task, from before its
 first acquire to its end), ``cron_svc``.
@@ -34,12 +35,16 @@ if TYPE_CHECKING:
         LLMProvider,
         Path,
         _await_cron_fire_time_gate,
+        _defer_cron_before_dispatch,
         _pre_create_cron_slot,
+        _subagent_work_pending,
         agent_sequence_dispatches,
         build_cron_session_context,
+        cron_gate_budget,
         cron_job_env_without_reserved,
         data_home,
         effective_job_approval_mode,
+        effective_wake_budget,
         live,
         logger,
         provider_model_pin_refused,
@@ -147,6 +152,11 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                     )
                 await self._alert_cron_failure(job, gate_reason, denied=True)
                 return None
+            if await _awaits_host_sign_in(job):
+                # A tick that woke no one writes no row, and a waiting tick woke
+                # no one. Its owner hears it from the notice.
+                job.quiet_run = True
+                return None
             if is_stale_wake:
                 outcome = await stale_wake.fire(self.dashboard_state, self.cron_svc)
                 # A tick every ten minutes that woke no one would fill the
@@ -253,6 +263,8 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                 )
             await self._alert_cron_failure(job, gate_reason, denied=True)
             return None
+        if await _awaits_host_sign_in(job):
+            return None
 
         # ── First-run tab pre-create ──
         # The result injection at the end is the only other creator of the
@@ -279,6 +291,42 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         from kiro_crew.shared_crew.admission_entry import admitted_cron_dispatch
 
         return await admitted_cron_dispatch(job, _held(dispatch))
+
+    async def _awaits_host_sign_in(job: CronJob) -> bool:
+        # ── The host's own sign-in ──
+        # An edition whose tools sign in with the host's own credential says when
+        # it has expired (IdentityProvider.credential_freshness). A scheduled
+        # agent turn started then fails at its first such tool and still reads
+        # "ok", so it is not started: retained without counting, as a starved
+        # run is, and its owner is told how to sign in again, once per wait
+        # (_alert_cron_failure). A manual Run starts: its person is there. Command and script jobs do not wait,
+        # since a failed call fails their run where a person sees it.
+        from kiro_crew.preflight import expired_host_credential
+
+        if self.cron_svc is not None and self.cron_svc.run_trigger(job.id) == "manual":
+            return False
+        # Retained for the whole await, as at the fire-time gate: a wake deadline
+        # that cancels it must not consume a one-shot that never dispatched. A
+        # probe that raised (a broken composition) is a failed run instead.
+        # Bounded below the wake deadline as the gate is, so a slow probe on a
+        # job with a short timeout ends in its own bound and the run starts.
+        job.run_never_started = True
+        try:
+            expired = await expired_host_credential(cron_gate_budget(effective_wake_budget(job)))
+        except Exception:
+            job.run_never_started = False
+            raise
+        job.run_never_started = False
+        if expired is None:
+            return False
+        logger.info("Cron '%s': the host sign-in expired; not starting this run", job.name)
+        _defer_cron_before_dispatch(job, expired.remedy)
+        told = await self._alert_cron_failure(job, expired.remedy, awaiting_sign_in=True)
+        # A one-shot is retried on every timer pass while it waits, so only the
+        # pass that told its owner writes a history row. A recurring job writes
+        # one for each slot it was held at, as a run at that slot would.
+        job.quiet_run = job.schedule.kind == "at" and not told
+        return True
 
     async def _held(dispatch: Any) -> Any:
         # ── The run's own holding ──
@@ -737,10 +785,8 @@ def _resolve_cron_agent(
     if template_namespace:
         return None, None, ""
     try:
-        from kiro_crew.config.loader import (
-            resolve_agent_bindings,
-            workspace_dir_from_entry,
-        )
+        from kiro_crew.config.loader import resolve_agent_bindings
+        from kiro_crew.config.loader_locations import usable_workspace_dir_from_entry
 
         cfg = getattr(self, "_cfg", None)
         # Prefer the last applied reload: an agent created at runtime is in
@@ -811,7 +857,9 @@ def _resolve_cron_agent(
         # dir the default declares, so a missing mapping anchors to
         # the data home rather than escaping it (or defaulting to the
         # gateway process cwd via a None).
-        ws_dir = workspace_dir_from_entry(ws_entry)
+        # A sensitive folder falls back to the base workspace, as chat does for its default
+        # project folder. A folder that is not there yet is kept: it is created on use.
+        ws_dir = usable_workspace_dir_from_entry(ws_entry, ws_name or "", must_exist=False)
         cwd = str(ws_dir) if ws_dir else None
         # Carry the identity-resolved alias back as crew_alias:
         # prepare_runtime needs it to resolve the member identity (the
@@ -985,6 +1033,59 @@ def _retained_session_agent_mismatch(
     if isinstance(live_agent, str) and live_agent and live_agent != (agent or ""):
         return live_agent
     return None
+
+
+async def _cron_key_work_pending(self: GatewayOrchestrator, key: str) -> bool:
+    """Whether sub-agent work or an injection still runs on *key*'s session.
+
+    A sub-agent probe that raises counts as pending: a batch is never reset under
+    work nobody could rule out.
+    """
+    if self._cron_injecting.get(key, 0) > 0:
+        return True
+    if not self.subagent_mgr:
+        return False
+    try:
+        return await _subagent_work_pending(self.subagent_mgr, key)
+    except Exception:  # noqa: BLE001 - counted as pending
+        logger.debug(
+            "cron: sub-agent work on %s unreadable; counted as pending", key, exc_info=True
+        )
+        return True
+
+
+async def _cron_batch_kind_defers(
+    self: GatewayOrchestrator,
+    job: CronJob,
+    key: str,
+    provider: Any,
+    *,
+    reprojected: bool,
+) -> bool:
+    """Defer a scheduled fire that cannot run on the batch a person's turn projected.
+
+    That batch recorded withholding what the fire auto-approves
+    (``kas_project_hooks.scheduled_turn_reprojects``), so the fire re-projects it
+    first. Before the re-projection, it waits while work is pending on *key*
+    (``_cron_key_work_pending``: sub-agent work, an injection, or a probe that
+    raised); after it (*reprojected*), it waits when the batch is still
+    person-kind, never running on it or dropping the spec's hooks. A manual Run is
+    never deferred: its person is there to answer the asks, so with work pending it
+    runs as projected, without the kind reset (the caller's ``scheduled=False``).
+    """
+    from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
+
+    if not scheduled_turn_reprojects(provider):
+        return False
+    if self.cron_svc is not None and self.cron_svc.run_trigger(job.id) == "manual":
+        return False
+    if not reprojected and not await self._cron_key_work_pending(key):
+        return False
+    logger.info("Cron '%s': %s runs a person's batch; deferring this fire", job.name, key)
+    _defer_cron_before_dispatch(
+        job, "the session runs a batch a person's turn projected and cannot be re-projected yet"
+    )
+    return True
 
 
 def _announce_cron_quarantine(self: GatewayOrchestrator) -> None:

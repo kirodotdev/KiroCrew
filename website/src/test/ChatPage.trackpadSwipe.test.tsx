@@ -38,7 +38,12 @@ vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
 vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
-vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '800px', input: '816px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
+// `sidePanelSwipe` is the real loader's, so a case can turn the swipe off
+// through `mc-chat-config` the way Settings does.
+vi.mock('../pages/chat/ChatSettings', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../pages/chat/ChatSettings')>()
+  return { loadChatConfig: () => ({ contentWidth: 'compact', sidePanelSwipe: real.loadChatConfig().sidePanelSwipe }), CONTENT_WIDTH: { compact: { messages: '800px', input: '816px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }
+})
 vi.mock('../pages/chat/SidePanel', () => ({
   default: () => <div data-testid="side-panel" />,
   SIDE_PANEL_MIN_W: 320,
@@ -745,6 +750,30 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     expect(swipe(scroller(container, 'rtl', 0), -20, 5)).toBe(0)
     expect(sliding()).toBe(false)
     expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('is not bound while the swipe is turned off in Settings, the toggle still works, and turning it back on binds it live', async () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ sidePanelSwipe: false }))
+    const { store, container } = renderChat()
+    expect(swipe(chat(container), 20, 12)).toBe(0)
+    expect(sliding()).toBe(false)
+    expect(store.getState().chat.activityOpen).toBe(false)
+    // The panel-toggle shortcut still opens and closes it.
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    await screen.findByTestId('side-panel-column')
+    // An open panel is not swiped shut either.
+    expect(swipe(chat(container), -20, 12)).toBe(0)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    // Settings saves and broadcasts; the mounted page binds the swipe again.
+    act(() => {
+      localStorage.setItem('mc-chat-config', JSON.stringify({ sidePanelSwipe: true }))
+      window.dispatchEvent(new Event('mc-config-changed'))
+    })
+    expect(swipe(chat(container), 20, 30)).toBe(30)
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true), { timeout: 3000 })
   })
 
   it('is not bound while the panel docks at the bottom', () => {

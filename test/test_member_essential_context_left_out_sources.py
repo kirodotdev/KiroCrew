@@ -24,7 +24,7 @@ from member_essential_context_helpers import (
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import member_essential_context as _mec
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
-from kiro_crew.member_essential_context import MemberEssentialContextError
+from kiro_crew.member_essential_context import ESSENTIAL_MAX_CHARS, MemberEssentialContextError
 
 # Fixtures shared with the sibling modules, bound by assignment so pytest registers
 # them for the tests in this module.
@@ -236,7 +236,7 @@ def test_over_budget_declared_resources_leave_out_the_tail_and_the_turn_runs(env
         "memory_recall",
     ):
         assert core in message
-    assert len(_envelope(message)) <= 64_000
+    assert len(_envelope(message)) <= ESSENTIAL_MAX_CHARS
     warned = [r for r in caplog.records if r.levelname == "WARNING" and "g2.md" in r.getMessage()]
     assert len(warned) == 1 and "g3.md" in warned[0].getMessage()
 
@@ -250,20 +250,22 @@ def test_an_over_budget_core_still_refuses_with_the_source_named(env, core):
     if core == "prompt":
         spec = env.project / ".kiro" / "agents" / "writer-template.json"
         data = json.loads(spec.read_text(encoding="utf-8"))
-        data["prompt"] = "p" * 64_001
+        data["prompt"] = "p" * (ESSENTIAL_MAX_CHARS + 1)
         spec.write_text(json.dumps(data), encoding="utf-8")
         named = "writer-template.json#prompt"
     else:
-        (env.project / "SOUL.md").write_text("s" * 64_001, encoding="utf-8")
+        (env.project / "SOUL.md").write_text("s" * (ESSENTIAL_MAX_CHARS + 1), encoding="utf-8")
         named = "SOUL.md"
-    with pytest.raises(MemberEssentialContextError, match="exceeds 64000") as raised:
+    with pytest.raises(
+        MemberEssentialContextError, match=f"exceeds {ESSENTIAL_MAX_CHARS}"
+    ) as raised:
         _member_message(env)
     assert named in str(raised.value)
 
 
 def test_a_refused_declared_source_still_refuses_when_the_envelope_is_over_budget(env):
     """Budget fitting never turns a source the reader refuses into an omission."""
-    (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
+    (env.project / "AGENTS.md").write_text("x" * (ESSENTIAL_MAX_CHARS + 1), encoding="utf-8")
     (env.project / "declared-guide.md").unlink()
     (env.project / "declared-guide.md").mkdir()
     with pytest.raises(MemberEssentialContextError, match="declared-guide"):
@@ -275,7 +277,7 @@ def test_guides_whose_names_do_not_fit_are_counted_by_the_short_notice():
     from kiro_crew.context_assembly.member import _fit_member_guides_into_envelope
 
     guides = [(f"/project/context/{'n' * 200}-{i}.md", "g") for i in range(40)]
-    core = ("template#prompt", "c" * 63_200)
+    core = ("template#prompt", "c" * (ESSENTIAL_MAX_CHARS - 800))
     fitted, left_out = _fit_member_guides_into_envelope(
         [core, *guides], frozenset(source for source, _ in guides), identity="I", owner="w"
     )
@@ -284,7 +286,7 @@ def test_guides_whose_names_do_not_fit_are_counted_by_the_short_notice():
     source, notice = fitted[1]
     assert source == "essential-context#omitted"
     assert "40 guide document(s)" in notice and "nnnn" not in notice
-    big_core = ("template#prompt", "c" * 64_000)
+    big_core = ("template#prompt", "c" * ESSENTIAL_MAX_CHARS)
     documents = [big_core, *guides]
     assert _fit_member_guides_into_envelope(
         documents, frozenset(source for source, _ in guides), identity="I", owner="w"
@@ -293,13 +295,13 @@ def test_guides_whose_names_do_not_fit_are_counted_by_the_short_notice():
 
 def test_a_guide_too_large_to_fit_does_not_take_the_smaller_guides_after_it_out(env):
     """Only the guides that cannot fit are left out; later small ones are given back."""
-    (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
+    (env.project / "AGENTS.md").write_text("x" * (ESSENTIAL_MAX_CHARS + 1), encoding="utf-8")
     message = _member_message(env)
-    assert f"{env.project / 'AGENTS.md'} (64,001 characters)" in message
+    assert f"{env.project / 'AGENTS.md'} ({ESSENTIAL_MAX_CHARS + 1:,} characters)" in message
     assert "1 guide document(s)" in message
     assert "Declared guide: examples must be reproducible." in message
     assert "Always guide: explain assumptions." in message
-    assert len(_envelope(message)) <= 64_000
+    assert len(_envelope(message)) <= ESSENTIAL_MAX_CHARS
 
 
 def _declare(env, resources: list[str]) -> None:

@@ -588,9 +588,19 @@ class TestEnqueueOrRunPrompt:
         Mutation guard: drop the ``start_queue_persist`` call and no write starts.
         """
         import asyncio
+        from concurrent.futures import ThreadPoolExecutor
         from unittest.mock import AsyncMock, MagicMock
 
         from kiro_crew.dashboard.state import _ChatSlot
+        from kiro_crew.testing.wait import await_until
+
+        # The write is started, not awaited, and runs on the loop's default
+        # executor. One worker runs jobs in order, so a no-op job submitted after
+        # the enqueue returns only once the write has run.
+        # ``_join_test_loop_executor`` joins the loop's current default executor
+        # at teardown.
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
 
         slot = _ChatSlot(key="chat-1")
         # A turn still in flight, so the prompt queues.
@@ -599,11 +609,10 @@ class TestEnqueueOrRunPrompt:
         state._background_tasks = set()
 
         ran = slot.enqueue_or_run_prompt("hold this durably", AsyncMock(), state)
-        # The write is started, not awaited, and runs in an executor.
-        for _ in range(20):
-            await asyncio.sleep(0)
-            if state.flush_slot_now.call_args_list:
-                break
+        await await_until(
+            loop.run_in_executor(None, lambda: None),
+            what="the executor running the queue's durable write",
+        )
 
         assert ran is False
         assert state.flush_slot_now.call_args_list == [

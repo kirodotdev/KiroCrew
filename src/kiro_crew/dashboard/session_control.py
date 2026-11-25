@@ -172,6 +172,9 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         PUBLISHED_GOAL_MAX,
         PUBLISHED_SUMMARY_MAX,
         SESSION_MAP_BUSY_REFUSAL,
+        THREAD_ENDED_REFUSAL,
+        THREAD_PRIVACY_UNREAD_REFUSAL,
+        THREAD_SWITCH_OFF_REFUSAL,
         TRANSCRIPT_OPERATIONS,
         CodeChannelVerdict,
         _audience_refusal,
@@ -179,6 +182,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _channel_state_refusal,
         _defuse,
         _first_line,
+        _is_owner,
+        _is_stop_fenced,
         _live_config,
         _note_handoff_state,
         _publish_clauses,
@@ -186,13 +191,17 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _sender_refusal,
         _senders,
         _senders_lock,
+        _stop_fenced,
         _switch_refusal,
+        _thread_room_refusal,
         _torn_config_file,
         _turn_carries_channel_text,
         admits,
+        fence_stopped_turn,
         forget_senders,
         judge_code_channel,
         note_channel_sender,
+        note_thread_conductor_start,
         published_goal,
         published_item_fields,
         published_state,
@@ -219,6 +228,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         SEND_DISCARD_HARD_STOP,
         SEND_DISCARD_HARD_STOP_STEER,
         SEND_DISCARD_QUEUE_CANCEL,
+        SEND_DISCARD_REFUSED_STEER,
+        SEND_DISCARD_UNCONFIRMED_STEER,
         SEND_DROP_EXCERPT_CHARS,
         SEND_ORIGIN_META_KEY,
         SESSION_SEND_QUEUED_META,
@@ -297,6 +308,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.dashboard.session_control_parts.session_handoff import (  # noqa: F401
         _HANDOFF_LOCK,
+        _check_bind_move,
         _manages_up_the_line,
         _move_tree_edge,
         hand_back_on_close,
@@ -326,12 +338,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         send_to_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_revive import (  # noqa: F401
+        _ARCHIVED_NOT_CREATOR,
         _PENDING_REBINDS,
         DEFAULT_HISTORY_LIST_ROWS,
         MAX_HISTORY_FOLDER_ID_CHARS,
         MAX_HISTORY_LIST_ROWS,
         MAX_HISTORY_SCAN_ENTRIES,
         UNVERIFIED_CREATOR,
+        _archived_fence_refusal,
         _archived_link_and_mirror,
         _archived_session_is_channel_linked,
         _archived_session_is_mirrored,
@@ -344,6 +358,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _scan_archived_candidates,
         _scan_revivable_history,
         list_archived_sessions,
+        reconfirm_restored_creators,
         revive_own_archived_worker,
         revive_session,
     )
@@ -490,9 +505,11 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.context_assembly.markers import _marker_spans  # noqa: F401
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log.session_tree_projection import projection  # noqa: F401
+    from kiro_crew.dashboard import deferred_steer  # noqa: F401
     from kiro_crew.dashboard import session_managers  # noqa: F401
     from kiro_crew.dashboard.approval_inheritance import inherit_posture  # noqa: F401
     from kiro_crew.dashboard.chat_delivery import sanitize_outbound  # noqa: F401
+    from kiro_crew.dashboard.chat_delivery import start_queue_persist  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _folder_declared_project  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock  # noqa: F401

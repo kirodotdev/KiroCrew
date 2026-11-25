@@ -935,6 +935,14 @@ def harness_environment(
         # from GitHub; absent means empty. Spelled literally
         # (``apps.builtin_adoption_pins.HARNESS_PINS_ENV``).
         "KIROCREW_HARNESS_ADOPTION_PINS": str(home / "harness-adoption-pins.json"),
+        # No KAS engine download (about 55 MB) at each fresh-home boot. Spelled
+        # literally (``acp.kas_engine_startup.SKIP_ENGINE_INSTALL_ENV``).
+        "KIROCREW_SKIP_KAS_ENGINE_INSTALL": "1",
+        # The gateway imports this checkout but is not installed from it: without
+        # the pin every update surface judges the checkout a git install, fetches
+        # its upstream, and opens "Update available" over the dashboard once that
+        # branch moves. Spelled literally (``update_capability.NO_CHECKOUT_ROOT_ENV``).
+        "KIROCREW_UPDATE_NO_CHECKOUT_ROOT": "1",
     }
     if skip_model_download:
         # Embeddings are default-on; never let a harness-spawned gateway

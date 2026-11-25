@@ -10,11 +10,11 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
 ``_awaiting_permission``, ``_between_turn_credits``, ``_cancel_ts``, ``_cancel_unacked``,
 ``_cancelled``, ``_compaction_terminal_seen``, ``_goose_active_run_id``,
-``_goose_steers``, ``_input_wait_emitted``,
+``_goose_steers``, ``_held_steers_unanswered``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
-``_native_child_overflow``, ``_native_child_sids``,
-``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
+``_native_child_finished``, ``_native_child_overflow``, ``_native_child_sids``,
+``_native_child_subjects``, ``_native_child_titles``, ``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
 ``_status_rejected``, ``_steers_accepted``, ``_steers_proven``,
@@ -29,7 +29,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_cloud_replayed_permissions``, ``_drained_child_events``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
+``_mcp_sign_in_needed``, ``_mcp_sign_in_wanted``, ``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
 ``_steering_cancel_tasks``.
 """
 
@@ -42,8 +42,9 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard, kas_profile
+from kiro_crew.acp import batch_guard, kas_approve_for_me, kas_profile, kas_wire
 from kiro_crew.acp._dispatch import (
+    classify_notification,
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
     redact_text,
@@ -54,7 +55,6 @@ from kiro_crew.acp.client import (
     AcpError,
     _effective_prompt_timeout_async,
     _loggable_request_id,
-    _raise_acp_error,
     parse_slash_command,
 )
 from kiro_crew.acp.elicitation import (
@@ -62,6 +62,7 @@ from kiro_crew.acp.elicitation import (
     elicitation_reply,
     is_elicitation_request,
 )
+from kiro_crew.acp.end_token import drop_end_token
 from kiro_crew.acp.prompt_blocks import (
     SentImageLedger,
     StagedImages,
@@ -73,6 +74,7 @@ from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
 from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
     _is_claude_subagent_update,
     _keep_working_claude_redactors,
 )
@@ -82,6 +84,7 @@ from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
@@ -100,9 +103,13 @@ from kiro_crew.acp.types import (
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    UPDATE_AVAILABLE_COMMANDS,
+    UPDATE_CONFIG_OPTION,
+    UPDATE_SESSION_INFO,
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.context_assembly.mcp_servers import sign_in_started_block
 from kiro_crew.metrics.chat_runtime_share import (
     chat_leases_on,
     on_shared_process,
@@ -134,6 +141,49 @@ _DRAIN_CLOSED_STOP_REASONS = frozenset(
         STOP_REASON_TOOL_STALL,
     )
 )
+
+# The frames a backend sends between turns that only report session state,
+# measured on KAS: after the ``session/new`` answer while MCP servers connect, and
+# after each prompt's answer. Allowed by name, or as a notification
+# ``classify_notification`` skips, which no turn reads either; every other frame
+# keeps the WARNING, since a turn's content, bill, steer or notice can ride any
+# carrier.
+_DRAIN_STATE_UPDATES = frozenset((UPDATE_AVAILABLE_COMMANDS, UPDATE_CONFIG_OPTION))
+# KAS ``session_info_update`` kinds (``_meta.kiro.kind``) that only report state.
+# ``display_error`` has no constant: nothing in Crew reads it.
+_DRAIN_STATE_KAS_KINDS = frozenset((kas_wire.KIND_CONTEXT_USAGE, "display_error"))
+
+
+def _is_between_turn_state(msg: JsonRpcMessage | None) -> bool:
+    """Whether a frame the pre-turn drain discards only reports session state.
+
+    True for a notification (``method`` set, no ``id``) that
+    ``classify_notification`` skips, which no turn would read either; for a
+    standard ``session/update`` whose kind is in ``_DRAIN_STATE_UPDATES``; and for
+    a KAS ``session_info_update`` whose ``_meta.kiro.kind`` is in
+    ``_DRAIN_STATE_KAS_KINDS``. False for everything else, so a response, a
+    request and any frame not named here keep the WARNING.
+    """
+    if msg is None or msg.method is None or msg.id is not None:
+        return False
+    action = classify_notification(msg)
+    if action != "update":
+        return action == "skip"
+    params = msg.params if isinstance(msg.params, dict) else {}
+    update = params.get("update")
+    if not isinstance(update, dict):
+        return False
+    kind = update.get("sessionUpdate")
+    # A non-str value would raise on a set lookup, outside the turn guard.
+    if not isinstance(kind, str):
+        return False
+    if kind in _DRAIN_STATE_UPDATES:
+        return True
+    if kind != UPDATE_SESSION_INFO:
+        return False
+    kiro = kas_wire.kiro_meta(update)
+    kas_kind = kiro.get(kas_wire.FIELD_KIND) if kiro is not None else None
+    return isinstance(kas_kind, str) and kas_kind in _DRAIN_STATE_KAS_KINDS
 
 
 # Commands that must stay on the PROMPT transport even where native
@@ -295,6 +345,10 @@ async def prompt(
     # The servers this session's start left to its first turn: a prompt that
     # does not carry them waits briefly here, before any turn state is touched.
     await hold_untold_first_turn(self, message)
+    if getattr(self._runtime, "acp_backend", "") in ACP_BACKENDS_APPROVE_FOR_ME:
+        # A trust or YOLO grant, or a policy deny, made since the last turn takes
+        # approve-for-me off before this prompt runs under it.
+        await kas_approve_for_me.settle(self)
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
@@ -382,6 +436,22 @@ async def stream_command(
         await turn.aclose()
 
 
+def _tell_sign_in_started(method: str, params: dict[str, Any], started: tuple[str, ...]) -> None:
+    """Put the sign-in block first in a prompt whose turn started *started*'s sign-in.
+
+    The turn's ``[MCP SERVERS]`` block was built before the start, so the model
+    would otherwise read the server as waiting and say it cannot sign in, while
+    the sign-in card shows in the same chat. A command or compaction request
+    carries no prompt and is left as it is.
+    """
+    blocks = params.get("prompt")
+    if not started or method != METHOD_PROMPT or not isinstance(blocks, list):
+        return
+    text = sign_in_started_block(started)
+    if text:
+        blocks.insert(0, {"type": "text", "text": text})
+
+
 async def _run_turn(
     self: AcpSessionHandle,
     build_request: Callable[[], Awaitable[tuple[str, dict[str, Any]]]],
@@ -457,7 +527,12 @@ async def _run_turn(
     # the terminal flag records that the engine already reported its outcome.
     self._kas_compact_turn = False
     self._compaction_terminal_seen = False
-    self._stale_eligible = False
+    # The model-wait watchdog judges a prompt from its send: no tool is in
+    # flight yet, so a prompt that never gets a frame is bounded by the
+    # stale window, not the turn ceiling. A turn the agent started arms from
+    # its first activity frame instead (``_dispatch_events``), and a native
+    # command turn not at all (bounded by ``_COMMAND_TURN_TIMEOUT_SECS``).
+    self._stale_eligible = not agent_started and not extract_command_result
     # Set when a genuine stale turn is probed via session/cancel; read by the
     # unresponsive-cancel branch to distinguish a confirmed wedge (signal
     # auto-recovery) from an ordinary unacked cancel (unblock caller).
@@ -490,6 +565,7 @@ async def _run_turn(
     self._turn_steering_denied = False
     self._steers_proven = []
     self._steers_accepted = []
+    self._held_steers_unanswered = set()
     # A goose steer still unechoed was discarded with its run; its caller already
     # queued the text on the turn's teardown (``steer_needs_loss_recovery``).
     self._goose_steers = []
@@ -510,6 +586,9 @@ async def _run_turn(
     self._tool_call_harness_tool_name.clear()
     self._tool_call_identity_unreadable.clear()
     self._native_child_tool_call_ids.clear()
+    self._native_child_finished.clear()
+    self._native_child_titles.clear()
+    self._native_child_subjects.clear()
     self._permission_options.clear()
     self._permission_gate_events.clear()
     # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
@@ -553,7 +632,7 @@ async def _run_turn(
     # response length. The one exception is a discarded terminal's
     # stopReason, logged only as a closed protocol value (see
     # _DRAIN_CLOSED_STOP_REASONS). The count is bounded by the queue, and
-    # the log line is one per turn regardless of how many frames drained.
+    # each log line below is one per turn regardless of how many frames drained.
     #
     # ONE class of leftover frame is NOT the abandoned turn's to destroy.
     # The abandoned turn's own frames are owed to nobody: this method
@@ -572,6 +651,10 @@ async def _run_turn(
     # back into the queue being drained would loop forever (the same reason
     # _wait_for_response re-injects from its finally).
     _stale_dropped = 0
+    # Discarded notifications that only report session state
+    # (``_is_between_turn_state``). Counted apart: a backend sends them after
+    # every ``session/new`` and every answer, so they are expected, not lost.
+    _stale_state = 0
     _stale_owned_dropped = False
     # Whether this drain started the turn's claude roster (a child's update read).
     _claude_roster_reset = False
@@ -799,6 +882,9 @@ async def _run_turn(
             # reader: a truthy non-str here would raise on the set membership
             # below, and this arm runs OUTSIDE the _turn_done restoration
             # guard — an escape would wedge the handle permanently.
+            if _is_between_turn_state(stale):
+                _stale_state += 1
+                continue
             _stale_dropped += 1
             if stale is not None and stale.method is None and stale.id is not None:
                 _stale_result = stale.result or {}
@@ -855,6 +941,14 @@ async def _run_turn(
             _stale_terminals,
             _stale_reason_note,
         )
+    if _stale_state:
+        # Expected on every fresh session and after every answer: DEBUG, the
+        # count only, for the same reason the WARNING above carries no content.
+        logger.debug(
+            "pre-turn drain dropped %d between-turn state notification(s) on "
+            "this session (no turn content, response or request among them)",
+            _stale_state,
+        )
 
     if _stale_owned_dropped:
         self._forget_sent_images()
@@ -899,10 +993,15 @@ async def _run_turn(
         if sign_in_ask:
             self.want_mcp_sign_in_named(sign_in_ask)
         self._match_mcp_sign_in_ask()
+        # An accepted start leaves the wanted set; the prompt built below is
+        # told of it (see ``_tell_sign_in_started``).
+        _wanted_before = self._mcp_sign_in_wanted & self._mcp_sign_in_needed
         self._offer_mcp_sign_in()
-        # A server that failed for want of a credential is connected again
-        # here, after the sign-in offer: the offer takes the runtime's one
-        # consent-URL slot first, and a re-attempt never needs it.
+        _sign_in_started = tuple(sorted(_wanted_before - self._mcp_sign_in_wanted))
+        # A server that failed for want of a credential, or lost its
+        # connection, is connected again here, after the sign-in offer: the
+        # offer takes the runtime's one consent-URL slot first, and a
+        # re-attempt never needs it.
         self._reattempt_failed_mcp_servers()
         # Build the request FIRST (for prompts, the slow, cancellable
         # image-encoding part — see prompt()'s _build), then mark the turn
@@ -923,6 +1022,7 @@ async def _run_turn(
             req_id = AGENT_STARTED_REQUEST_ID
         else:
             _method, _params = await build_request()
+            _tell_sign_in_started(_method, _params, _sign_in_started)
             _mark = getattr(self._runtime, "mark_turn_active", None)
             if _mark is not None:
                 _mark(self._session_id, True)
@@ -977,8 +1077,8 @@ async def _run_turn(
         self._runtime, "acp_backend", ""
     ) in ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR and not prompt_is_adapter_command(_params)
     _held: list[AcpEvent] = []
-    _dispatch = self._dispatch_events(
-        req_id, timeout, extract_command_result=extract_command_result
+    _dispatch = drop_end_token(
+        self._dispatch_events(req_id, timeout, extract_command_result=extract_command_result)
     )
     try:
         # Surface any drain-time rejections (see the pre-turn drain above)
@@ -994,13 +1094,13 @@ async def _run_turn(
         _notices = list(self._pending_reject_notices)
         self._pending_reject_notices.clear()
         for _n_sid, _n_title in _notices:
+            _n_shown = redact_text(str(_n_title)[:4096])[:120]
             yield AcpEvent(
                 kind=EVENT_SUBAGENT_ACTIVITY,
                 sub_session_id=_n_sid,
-                text=(
-                    "Blocked: permission auto-rejected (stranded between turns): "
-                    f"{redact_text(str(_n_title)[:4096])[:120]}"
-                ),
+                text=f"Blocked: permission auto-rejected (stranded between turns): {_n_shown}",
+                title=_n_shown,
+                auto_reject_reason=AUTO_REJECT_STRANDED_BETWEEN_TURNS,
             )
         async for _incoming in _dispatch:
             if (
@@ -1125,7 +1225,11 @@ async def _run_turn(
                 # The same state the backend's own error response leaves:
                 # no stop reason, because the turn did not complete.
                 self._last_stop_reason = ""
-                _raise_acp_error(
+                # Under KAS machine mode a refused credential is the host token's.
+                from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+                raise_turn_error(
+                    self._runtime,
                     _failure,
                     self._advertised_model_ids(),
                     backend=getattr(self._runtime, "acp_backend", ""),

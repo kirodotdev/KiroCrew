@@ -103,9 +103,12 @@ Bot's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped 
 match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
 block both resolve through it, and nothing is written. No shipped page may be named
 `default`.
-A ROOT session running the conductor template of conductor mode (`crew_mode.runs_crew_mode`) gets the same
-`[DASHBOARD]` block on every dashboard turn, keyed by its own store key
-(`session_turn_block`), but only once a page is ADOPTED: the default page it is shown
+A ROOT session running the conductor template of conductor mode (`crew_mode.runs_crew_mode`) gets a
+`[DASHBOARD]` block on every dashboard turn naming its page (and, on a board page, the
+board lines), keyed by its own store key (`session_turn_block`), but no field-write
+line, out-of-date line or upkeep pointer, because a root session has no
+`kirocrew-panel` to call `dashboard_fields` or `dashboard_write` with. It gets the block
+only once a page is ADOPTED: the default page it is shown
 while `empty` asks nothing of it, so it gets no block. A root session on any other agent
 (not in conductor mode) or on a Bot (`agent_kind == "member"`), a dispatched or adopted
 session, and a Bot DM get no session block; the page itself is left as it is.
@@ -116,7 +119,7 @@ It applies to a Persistent chat only (an unset memory mode counts as one): an In
 or Temporary chat may not open sessions, so switching it to the conductor adopts nothing.
 With no page in force, the Bot's Dashboard tab on `/members` shows the suggestions
 page (`CrewDashboardEmpty`), and the turn block says so and lists no fields and no upkeep
-pointer. A shipped page named for the Bot is drawn as before. The decision is made
+pointer. A shipped page named for the Bot is drawn. The decision is made
 ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record `empty`,
 no page named for the slug, no package on screen): the read route sends it as
 `suggestions: true` and the website draws what that says, and `turn_block` asks the same
@@ -237,7 +240,9 @@ Three more rules hold for the operator root only:
 A live dashboard answers "what is true now", which is the wrong tool for "what was true
 when this went wrong". A snapshot is the second question, and it is the field values plus
 everything needed to know what they meant: template id, template version, instance
-version, values, seq.
+version, values, seq. This store is the RFC design and is not in the tree; the agent
+panel's `snapshot` route (`agent_panel_snapshot.py`) is a different thing, a PNG of the
+page in force kept under the data home.
 
 Each is required. A bag of numbers with no template is a page nobody can redraw; a page
 with no seq cannot be placed against the log it came from; values with no instance
@@ -344,11 +349,11 @@ them, and the parity rule is about the pair being committed.
 `MAX_RETAINED_VERSIONS` (20) versions one Bot keeps therefore hold at most 60 MiB
 of pages. A page passes
 two size checks -- this store's before it becomes a version, and the frame's before the
-document that renders it is assembled -- and two independent numbers meant the store
-could refuse a page the frame would happily draw. It did: `project-report` is over
-147,000 bytes and is `DEFAULT_TEMPLATE_ID`, so under a private 64 KiB ceiling no
-Bot could adopt it, and a root session that adopted anything else could never come
-back to the page it starts on. The frame is where the cost is actually paid, which
+document that renders it is assembled -- and two independent numbers would let the
+store refuse a page the frame would happily draw: `project-report` is over 170,000
+bytes and is `DEFAULT_TEMPLATE_ID`, so under a smaller store ceiling no Bot could
+adopt it, and a root session that adopted anything else could never come back to the
+page it starts on. The frame is where the cost is actually paid, which
 makes it the honest place for the number; `test_dashboard_templates_builtin.py` asserts
 the identity and takes every shipped template through preview and apply.
 
@@ -386,18 +391,13 @@ previews only: a session's page has no person route.
 
 A Bot's page changes only through its own `dashboard_apply`, `dashboard_rollback` and
 the person's Keep, and every version stays on disk, so `dashboard_rollback` is how a
-change is undone. The person's structure lock that once froze the page, its
-**Lock dashboard layout** switch, its badge, its `POST /api/members/{slug}/dashboard/lock`
-route and its LOCKED turn-block line are gone.
+change is undone. There is no lock switch, lock route or LOCKED turn-block line.
 
-A `crew-panels/<slug>.dashboard-lock` file written before the removal is neither read
-nor rewritten, and no migration runs: `read` serves `instance.json`, every commit goes
-through, and the page in force is the record. While a lock held, `_commit` refused every
-version, so the record still names the page the lock held unless the Bot's own shell
-rewrote `instance.json`; that version is still in `versions/`, so `dashboard_rollback`
-reaches it. A record written before the `package` key existed now follows the older
-package rule (`keeps_older_package_rule`) whether or not a lock file is beside it, as an
-unlocked record always did. Deleting a Bot leaves such a file where it is.
+A leftover `crew-panels/<slug>.dashboard-lock` file is neither read nor rewritten, and
+no migration runs: `read` serves `instance.json`, every commit goes through, and the
+page in force is the record. A record written before the `package` key existed follows
+the older package rule (`keeps_older_package_rule`) whether or not a lock file is
+beside it. Deleting a Bot leaves such a file where it is.
 
 ## Every commit syncs the upkeep helpers
 
@@ -415,9 +415,10 @@ directory keeps the scripts out of the skills index, and it holds nothing else.
 `_commit` calls `dashboard_upkeep.sync` with the record it just wrote, so adopt, apply,
 rollback and edit each copy the helpers the new page names and drop one it does not.
 `turn_block` calls it too -- a Bot on the page named for it never commits, and a gateway
-upgrade can change a shipped helper -- and, when the page has fields to write, adds the
-one pointer line saying `dashboard_fields` carries the upkeep text, which rides the
-member section through every compaction. `sync` writes only what differs, so it also
+upgrade can change a shipped helper -- and, only when the page has fields to write and
+the session has the page tools (a Bot with `agent.crew_panel` on, or the reply to its
+own `dashboard_apply`), adds the one pointer line saying `dashboard_fields` carries the
+upkeep text, which rides the member section through every compaction. `sync` writes only what differs, so it also
 puts back a hand edit. A root session's own dashboard (`is_session_key`) has no
 Bot shell and gets no scripts and no helper path.
 

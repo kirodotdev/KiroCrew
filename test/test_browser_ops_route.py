@@ -15,9 +15,10 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.browser_harness import live_hub as hub_mod
@@ -277,6 +278,33 @@ async def test_an_op_past_its_budget_is_timeout(monkeypatch: pytest.MonkeyPatch)
     assert body["ok"] is False and body["code"] == "timeout"
 
 
+@pytest.mark.asyncio
+async def test_a_navigate_runs_through_the_sign_in_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route hands a navigate's task to ``browser_harness.sign_in`` with its own
+    supervisor, so an edition's per-origin sign-in is reachable from the agent's op."""
+    from kiro_crew.browser_harness import sign_in
+
+    sup = _Supervisor()
+    _install(monkeypatch, sup)
+    seen: list[tuple[str, Any]] = []
+
+    async def _wrapped(
+        op: str, args: dict[str, Any], ctx: Any, supervisor: Any, caller_key: str = ""
+    ) -> dict[str, Any]:
+        seen.append((op, supervisor))
+        return {"ok": True, "url": "https://example.com/", "title": "", "sign_in": {"outcome": "x"}}
+
+    monkeypatch.setattr(sign_in, "run_op", _wrapped)
+    resp = await mod.api_browser_op(
+        _request({"op": "navigate", "args": {"url": "https://example.com/"}, "session_key": "k"})
+    )
+    body = json.loads(resp.body)
+    assert seen == [("navigate", sup)]
+    assert body["ok"] is True and body["result"]["sign_in"] == {"outcome": "x"}
+
+
 def test_build_context_binds_the_live_hub_and_relay() -> None:
     hub = hub_mod.LiveHub()
     hub.turn_started("held", "t1")
@@ -357,6 +385,58 @@ async def test_follow_current_tab_swallows_a_failing_helper(
     streams = _no_stream(monkeypatch)
     await mod.follow_current_tab(hub, "k", _Boom())
     assert streams == []
+
+
+@pytest.mark.asyncio
+async def test_follow_current_tab_leaves_a_tab_with_no_document_yet_to_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A popup that has not committed its first page reports url "": it is not sent
+    to about:blank, and no frame of it is streamed until a committed URL is judged."""
+    hub = hub_mod.LiveHub()
+    sup = _Supervisor()
+    sup.tab = {"targetId": "P1", "url": "", "title": ""}
+    streams = _no_stream(monkeypatch)
+    opener_stream = MagicMock(target_id="T1", stop=AsyncMock())
+    hub._session("k").stream = opener_stream
+    judged: list[str] = []
+
+    async def _refuse(_ctx: Any, url: str) -> dict[str, Any] | None:
+        assert url, "an empty url must not be judged"
+        judged.append(url)
+        return harness_ops.refusal("redirect_refused", "refused")
+
+    monkeypatch.setattr(mod.harness_ops, "_refuse_committed_url", _refuse)
+    assert await mod.follow_current_tab(hub, "k", sup) is None
+    assert ("goto", {"url": "about:blank"}) not in sup.calls
+    assert streams == [], "no frame of the loading popup is published"
+    opener_stream.stop.assert_awaited_once()
+    # It commits to an address the gate refuses: the next follow refuses it, still unstreamed.
+    sup.tab = {"targetId": "P1", "url": "http://127.0.0.1:9/", "title": ""}
+    refused = await mod.follow_current_tab(hub, "k", sup)
+    assert refused is not None and judged == ["http://127.0.0.1:9/"]
+    assert streams == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tab", [{"targetId": "P1"}, {"targetId": "P1", "url": None}])
+async def test_follow_current_tab_still_judges_a_tab_with_no_url_string(
+    monkeypatch: pytest.MonkeyPatch, tab: dict[str, Any]
+) -> None:
+    hub = hub_mod.LiveHub()
+    sup = _Supervisor()
+    sup.tab = tab
+    _no_stream(monkeypatch)
+    judged: list[str] = []
+
+    async def _refuse(_ctx: Any, url: str) -> dict[str, Any]:
+        judged.append(url)
+        return harness_ops.refusal("redirect_refused", "refused")
+
+    monkeypatch.setattr(mod.harness_ops, "_refuse_committed_url", _refuse)
+    refused = await mod.follow_current_tab(hub, "k", sup)
+    assert refused is not None and refused["code"] == "redirect_refused"
+    assert judged == [""]
 
 
 @pytest.mark.asyncio
@@ -668,7 +748,7 @@ async def test_a_closed_popup_that_sent_its_opener_to_a_refused_url_answers_the_
     await _op("chat-a")
     sup.open_popup("P1", "T1")
     await _op("chat-a")
-    monkeypatch.setattr(mod, "committed_url_allowed", lambda url: url != "https://T1")
+    monkeypatch.setattr(mod, "committed_url_allowed", lambda url, _own=(): url != "https://T1")
     sup.close_on_next_op = True
     audits.clear()
     answer = await _op("chat-a", "click", ref="e1")
@@ -795,6 +875,47 @@ async def test_a_ref_op_after_the_popup_closed_is_refused_and_a_navigate_still_r
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [True, False])
+@pytest.mark.parametrize("during_bind", [False, True])
+async def test_read_after_popup_closed_refuses_only_a_scoped_read(
+    monkeypatch: pytest.MonkeyPatch, scoped: bool, during_bind: bool
+) -> None:
+    """A popup ref must not read the opener's element with the same ref id."""
+    sup = _BindRaceSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a", "snapshot")
+    assert hub.target_of("chat-a") == "P1"
+    if during_bind:
+        sup.close_during_bind = "P1"
+    else:
+        sup.ledger.remove("P1")
+    read_targets: list[tuple[str, dict[str, Any]]] = []
+
+    async def _read(op: str, args: dict[str, Any], ctx: Any) -> dict[str, Any]:
+        assert op == "read"
+        read_targets.append((sup.current, args))
+        return {"ok": True, "content": "opener text"}
+
+    monkeypatch.setattr(harness_ops, "run_op", _read)
+    answer = await _op("chat-a", "read", **({"ref": "e1"} if scoped else {}))
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    if scoped:
+        assert answer["ok"] is False and answer["code"] == "popup_closed"
+        assert read_targets == [], "the opener's same ref must never be read"
+        result = answer
+    else:
+        result = answer["result"]
+        assert result["ok"] is True and result["content"] == "opener text"
+        assert read_targets == [("T1", {})]
+    assert result["popup_closed"]["returned_to"] == "T1"
+    assert hub.pending_tab_move("chat-a") is None
+
+
+@pytest.mark.asyncio
 async def test_a_ref_op_after_a_late_popup_opened_is_refused_until_a_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -842,12 +963,14 @@ def test_a_move_no_answer_reported_stays_pending_and_refuses_page_targeted_ops()
     held = object()
     assert mod._with_tab_move(hub, "k", held) is held
     assert hub.pending_tab_move("k") is not None
-    assert mod._refused_for_tab_move(hub, "k", "snapshot") is None, "reads still run"
-    refused = mod._refused_for_tab_move(hub, "k", "click")
+    assert mod._refused_for_tab_move(hub, "k", "snapshot", {}) is None, "reads still run"
+    pasted = mod._refused_for_tab_move(hub, "k", "paste", {})
+    assert pasted is not None and pasted["code"] == "popup_opened", "paste is refused like type"
+    refused = mod._refused_for_tab_move(hub, "k", "click", {})
     assert refused is not None and refused["code"] == "popup_opened"
     told = mod._with_tab_move(hub, "k", refused)
     assert told["popup"]["target_id"] == "P1" and hub.pending_tab_move("k") is None
-    assert mod._refused_for_tab_move(hub, "k", "click") is None, "told once, then the op runs"
+    assert mod._refused_for_tab_move(hub, "k", "click", {}) is None, "told once, then the op runs"
 
 
 def test_a_governance_deny_leaves_the_tab_move_pending() -> None:
@@ -914,6 +1037,158 @@ async def test_a_popup_that_opened_after_the_answer_is_followed_by_the_next_op(
     answer = (await _op("chat-a"))["result"]
     assert answer["popup"]["target_id"] == "P1"
     assert hub.target_of("chat-a") == "P1" and sup.current == "P1"
+
+
+def _late_popup(
+    monkeypatch: pytest.MonkeyPatch, sup: _PopupSupervisor, on_look: int, after: str
+) -> list[str]:
+    """Open P1 from T1 on the *on_look*-th popup look after the *after* helper ran.
+
+    Returns the key of each look taken after it, so a test counts them. No clock:
+    the look itself is the point the popup lands at.
+    """
+    looks: list[str] = []
+    real = mod.follow_popup
+
+    async def _follow(hub: Any, key: str, *a: Any, **kw: Any) -> Any:
+        if any(h == after for h, _ in sup.calls):
+            looks.append(key)
+            if len(looks) == on_look:
+                sup.open_popup("P1", "T1")
+        return await real(hub, key, *a, **kw)
+
+    monkeypatch.setattr(mod, "follow_popup", _follow)
+    monkeypatch.setattr(mod, "POPUP_LATE_POLL_S", 0)
+    return looks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "args", "helper"),
+    [("click", {"x": 1, "y": 2}, "click"), ("press_key", {"key": "Enter"}, "press_key")],
+)
+async def test_a_popup_that_opens_a_moment_after_a_click_is_followed_by_that_op(
+    monkeypatch: pytest.MonkeyPatch, op: str, args: dict[str, Any], helper: str
+) -> None:
+    """``window.open`` after a fetch: the first look after the click finds nothing."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=2, after=helper)
+    resp = await mod.api_browser_op(_request({"op": op, "args": args, "session_key": "chat-a"}))
+    answer = json.loads(resp.body)
+    assert answer["ok"] is True
+    assert answer["result"]["popup"]["target_id"] == "P1"
+    assert hub.target_of("chat-a") == "P1" and looks == ["chat-a", "chat-a"]
+
+
+@pytest.mark.asyncio
+async def test_an_op_that_cannot_open_a_popup_looks_for_one_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=0, after="js")
+    assert (await _op("chat-a", "snapshot"))["ok"] is True
+    assert looks == ["chat-a"]
+
+
+@pytest.mark.asyncio
+async def test_no_popup_after_a_click_takes_a_bounded_number_of_looks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=0, after="click")
+    assert (await _op("chat-a", "click", x=1, y=2))["ok"] is True
+    assert len(looks) == 1 + mod.POPUP_LATE_READS
+
+
+@pytest.mark.asyncio
+async def test_the_late_looks_stop_once_the_person_holds_the_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=0, after="click")
+    real = mod.follow_popup
+
+    held: list[str] = []
+    monkeypatch.setattr(hub_mod.LiveHub, "in_control", lambda _self, key: key in held)
+
+    async def _claim_then_look(h: Any, key: str, *a: Any, **kw: Any) -> Any:
+        answer = await real(h, key, *a, **kw)
+        if looks:
+            held.append(key)  # the person takes the tab after the first late look
+        return answer
+
+    monkeypatch.setattr(mod, "follow_popup", _claim_then_look)
+    await _op("chat-a", "click", x=1, y=2)
+    assert looks == ["chat-a"], "no look after the person took the tab"
+
+
+@pytest.mark.asyncio
+async def test_a_takeover_during_the_late_wait_keeps_the_persons_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The person takes over while the poll waits and the opener's popup opens then:
+    the session stays on the tab the person took, and its stream is not replaced."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    streams = _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.calls.clear()
+    streams.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=2, after="click")
+    asked: list[bool] = []
+
+    def _in_control(_self: Any, key: str) -> bool:
+        # After the first late look, the first ask is the one before the wait and
+        # says free; every later ask comes after the wait, once the person took over.
+        if not looks:
+            return False
+        asked.append(len(asked) > 0)
+        return asked[-1]
+
+    monkeypatch.setattr(hub_mod.LiveHub, "in_control", _in_control)
+    await _op("chat-a", "click", x=1, y=2)
+    assert looks == ["chat-a"], "no look after the wait the person took over in"
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert ("switch_tab", {"target": "P1", "activate": False}) not in sup.calls
+    assert streams == [], "the stream the person took over is left alone"
+
+
+@pytest.mark.asyncio
+async def test_a_late_popup_from_chat_as_click_is_never_claimed_by_chat_b(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    await _op("chat-b")  # B is on T-new1
+    await _op("chat-a")
+    sup.calls.clear()
+    _late_popup(monkeypatch, sup, on_look=2, after="click")
+    clicked = await _op("chat-a", "click", x=1, y=2)
+    assert clicked["result"]["popup"]["target_id"] == "P1"
+    answer = await _op("chat-b")
+    assert "popup" not in answer["result"]
+    assert hub.owner_of_target("P1") == "chat-a" and "P1" not in hub.targets_of("chat-b")
 
 
 class _LongTitledPopupSupervisor(_PopupSupervisor):
@@ -1102,6 +1377,9 @@ def test_the_shims_budget_outlasts_the_routes_worst_case() -> None:
 
     worst_fast = mod.ENSURE_TIMEOUT_S + mod.LOCK_WAIT_S + mod.OP_TIMEOUT_S + mod.OP_TIMEOUT_S
     worst_slow = mod.ENSURE_TIMEOUT_S + mod.LOCK_WAIT_S + mod.OP_TIMEOUT_S + mod.SLOW_OP_TIMEOUT_S
+    # A navigate may go on to finish an edition sign-in inside its own budget.
+    worst_slow += mod.SIGN_IN_WORST_S
+    assert mod.LOCK_WAIT_S >= mod.SLOW_OP_TIMEOUT_S + mod.SIGN_IN_WORST_S
     # The hold is the shim's, in slices, never in one HTTP call: the gateway's
     # hand-back poll waits far less than the shim's step budget.
     assert mod.HOLD_TIMEOUT_S == 10 * 60
@@ -1199,3 +1477,44 @@ async def test_follow_current_tab_refuses_private_link_before_streaming(monkeypa
     assert sup.calls[-1] == ("goto", {"url": "about:blank"})
     assert hub.get("k").url == "about:blank"
     assert hub.get("k").title == ""
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_under_a_name_the_gateway_trusts_is_never_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tunnel, tailnet or ``dashboard.url`` name serves this dashboard, and the agent's
+    tab may be the person's own signed-in Chrome: the gateway refuses it, however
+    spelled, before the browser sends the request, and a tab that lands there is left.
+    Another public site still opens, a loopback origin the operator listed keeps its
+    own rule, and an unparsable entry in the set breaks nothing."""
+    from kiro_crew.browser_harness import url_gate
+
+    sup = _Supervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    app = web.Application()
+    own = {"https://Dash.Example.com/", "http://8.8.8.8:5476", "http://localhost:3000", "http://[x"}
+    app["allowed_origins"] = own
+
+    async def _op(op: str, args: dict[str, Any]) -> dict[str, Any]:
+        req = make_mocked_request("POST", "/api/browser/op", app=app)
+        req["internal_auth"] = True
+        req._read_bytes = json.dumps({"op": op, "session_key": "k", "args": args}).encode()
+        return json.loads((await mod.api_browser_op(req)).body)
+
+    for op, args in [
+        ("navigate", {"url": "HTTPS://Dash.Example.com.:443/settings"}),
+        ("navigate", {"url": "http://134744072:5476/"}),
+        ("tabs", {"action": "new", "url": "https://dash.example.com/settings"}),
+    ]:
+        body = await _op(op, args)
+        assert body["ok"] is False and body["code"] == "url_blocked", (args, body)
+    assert sup.calls == [], "refused before the browser is touched"
+    sup.tab["url"] = "https://dash.example.com/settings"
+    body = await _op("tabs", {"action": "list"})
+    assert body["code"] == "redirect_refused", body
+    assert sup.calls[-1] == ("goto", {"url": "about:blank"})
+    assert mod.committed_url_allowed("https://dash.example.org/settings", own) is True
+    listed = frozenset({"localhost:3000"})
+    assert url_gate.url_allowed("http://localhost:3000/", listed, 5476, own) is True

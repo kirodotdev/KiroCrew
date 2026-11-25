@@ -1,7 +1,9 @@
 """Dashboard endpoints for session storage: what it costs, and reclaiming it.
 
-Read is open; every mutation is gated on :func:`_is_restricted_session` and
-audited through the SEL, because all three of them move or delete a user's
+Every route asks :func:`require_owner_for_dashboard_caller` first: the history is the
+owner's, so a dashboard session that is neither the owner nor an admitted teammate is
+refused. Every mutation is also gated on :func:`_is_restricted_session` and
+audited through the SEL, because all of them move or delete a user's
 conversation history.
 
 The wire shape deliberately reports a session as ONE size. Sessions occupy two
@@ -23,7 +25,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -34,6 +36,7 @@ from kiro_crew.dashboard.handlers._shared import (
     _is_restricted_session,
     _read_session_key,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import transcript_stems
@@ -345,6 +348,9 @@ async def api_session_storage(request: web.Request) -> web.Response:
     Uncached: it walks both stores, so it is far too expensive to serve on a poll
     and is meant to be fetched when the screen opens or after an action.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.read")
+    if denied is not None:
+        return denied
     data = await asyncio.to_thread(_report_payload)
     return web.json_response(data)
 
@@ -358,6 +364,9 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
     is showing may be minutes old, and acting on them would move sessions the
     user never saw.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.cleanup")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return _deny("session_storage.cleanup", request)
@@ -427,6 +436,11 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
         )
     except SessionStorageError as exc:
         return _refused(exc, "cleanup_refused")
+    await _retire_trashed_subscriptions(
+        {unit.uid: unit.stems for unit in selected},
+        batch.moved,
+        _runtime_owner(state, "POST /api/system/session-storage/cleanup"),
+    )
 
     _sel().log_api_access(
         caller=_read_session_key(request),
@@ -452,6 +466,9 @@ async def api_session_storage_restore(request: web.Request) -> web.Response:
     ("undo what I just did"); naming them restores only those, for the case where
     one conversation turns out to be wanted out of a large sweep.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.restore")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return _deny("session_storage.restore", request)
@@ -637,6 +654,9 @@ async def api_session_storage_empty(request: web.Request) -> web.Response:
     running delete from a stuck one. Progress is read from
     :func:`api_session_storage_empty_status`.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.empty")
+    if denied is not None:
+        return denied
     global _empty_job
 
     state: DashboardState = request.app["state"]
@@ -756,6 +776,9 @@ async def api_session_storage_empty_status(request: web.Request) -> web.Response
     no store, which is what makes it pollable at all — every other endpoint in this
     module walks the sessions on disk.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.empty_status")
+    if denied is not None:
+        return denied
     job = _reportable_job()
     if job is None:
         return web.json_response({"job": None})
@@ -964,6 +987,9 @@ async def api_session_inventory(request: web.Request) -> web.Response:
     Uncached and scan-bound like the report, so it is fetched when the screen
     opens or after an action, never on a poll.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.inventory")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     data = await asyncio.to_thread(_inventory_payload, state)
     return web.json_response(data)
@@ -993,6 +1019,9 @@ async def api_session_inventory_detail(request: web.Request) -> web.Response:
     values rather than failing: the row still has a real size to show, and a
     truncated transcript is not a reason to refuse to talk about the session.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.inventory_detail")
+    if denied is not None:
+        return denied
     uid = request.match_info.get("uid", "")
     if not uid:
         return _bad_request("uid is required.", "invalid_uid")
@@ -1000,6 +1029,54 @@ async def api_session_inventory_detail(request: web.Request) -> web.Response:
     if data is None:
         return web.json_response({"error": "No such session.", "code": "unknown"}, status=404)
     return web.json_response(data)
+
+
+def _stems_by_uid(index: SessionIndex, uids: list[str]) -> dict[str, tuple[str, ...]]:
+    wanted = set(uids)
+    return {u.uid: u.stems for u in list_units(index, cached=True) if u.uid in wanted}
+
+
+def _runtime_owner(state: DashboardState, route: str) -> Callable[[str], bool]:
+    """Whether a live slot or runtime owns a session key, as the delete path asks.
+
+    *route* names the caller in the owner check's log line.
+    """
+    from kiro_crew.dashboard.session_owners import runtime_owns_session
+
+    context = f"the sessions trashed by {route}"
+    return lambda session_key: runtime_owns_session(state, session_key, context)
+
+
+async def _retire_trashed_subscriptions(
+    stems_by_uid: dict[str, tuple[str, ...]],
+    moved: tuple[str, ...],
+    owned: Callable[[str], bool],
+) -> None:
+    """A trashed session keeps no MCP resource subscription (RFC §4.7).
+
+    Done at the move rather than at the empty: the trash is where a session
+    stops being resumable, and a restored one is subscribed again by the session
+    that wants it. Only *moved* sessions are retired: one the move left in place
+    is still live. A session key a live slot or runtime owns when the removal
+    runs keeps its subscriptions, as on the delete path: a slot key is recycled,
+    so a new conversation can take a trashed transcript's key after the move.
+    Fail-soft and bounded: the move already happened and is what the caller
+    asked for.
+    """
+    # Call-time: keeps the gateway out of this import graph.
+    from kiro_crew.mcp_gateway.resource_subscriptions import (
+        retire_sessions_with_stems,
+        retire_within_bound,
+    )
+
+    taken = set(moved)
+    await retire_within_bound(
+        retire_sessions_with_stems(
+            (stem for uid, stems in stems_by_uid.items() if uid in taken for stem in stems),
+            keep=owned,
+        ),
+        "the trashed sessions",
+    )
 
 
 def _classify(uids: list[str], index: SessionIndex, now: float) -> tuple[list[str], list[dict]]:
@@ -1061,6 +1138,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
     Sessions the server would not take are reported per uid rather than silently
     dropped — doing less than the user asked without saying so is a defect.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.trash")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return _deny("session_storage.trash", request)
@@ -1099,6 +1179,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
         )
     if not eligible:
         return web.json_response({"sessions": 0, "bytes": 0, "batch_id": "", "refused": refused})
+    # Read before the move because moved sessions are absent from this listing.
+    # Cached is safe here -- these stems only name what to retire, never what may move.
+    eligible_stems = await asyncio.to_thread(_stems_by_uid, index, eligible)
 
     try:
         batch = await asyncio.to_thread(
@@ -1130,6 +1213,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
         )
         return _refused(exc, "trash_refused")
 
+    await _retire_trashed_subscriptions(
+        eligible_stems, batch.moved, _runtime_owner(state, "POST /api/system/session-storage/trash")
+    )
     # A session resumed while the batch was being staged was left in place, and
     # this endpoint's contract is that anything not taken is named. It joins the
     # same list under the same code the pre-flight uses for a live session: the

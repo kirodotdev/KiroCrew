@@ -1,7 +1,7 @@
 """The one-shot control frames served on the uid-gated socket.
 
 ``ping`` (the pong the manager's adoption gate reads), ``stats``, ``claim``,
-``abort``, ``set-spawn-capacity``, ``owner-port``, ``stand-down``,
+``abort``, ``set-spawn-capacity``, ``owner-port``, ``stand-down``, ``recycle-server``,
 ``session-mounts`` and ``app-call`` each arrive as
 the first frame of their own connection, get one reply, and end it. Trust basis
 for all of them is the owner-only endpoint that authenticates Register;
@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
+from kiro_crew.env import pinned_gateway_spec_path
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
@@ -39,9 +40,11 @@ from kiro_crew.mcp_gateway.daemon.launch import (
     bound_to_owner_port,
     resolvable_target_stems,
 )
+from kiro_crew.mcp_gateway.daemon.session_describe import describe_session_reply
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
-from kiro_crew.mcp_gateway.pool import BackendPool
+from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS, BackendPool
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
+from kiro_crew.mcp_utils import mcp_server_alias
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -60,7 +63,8 @@ def _pong_payload() -> dict[str, Any]:
     owner tell whether its ``owner-port`` announce landed, and
     ``owner_port_unverifiable`` that the daemon binds pooled control-plane backends
     from its environment and refuses the announce; ``start_time`` is the
-    identity a pinned kill must match. Every field is
+    identity a pinned kill must match; ``gateway_path`` is the gateway ``PATH``
+    part this daemon folds launch approvals against. Every field is
     additive: an older manager reads ``type`` and ``targets`` and ignores the
     rest, and an older daemon omits the new ones, which the manager treats as
     unverifiable rather than as a match.
@@ -79,6 +83,9 @@ def _pong_payload() -> dict[str, Any]:
         # signal this pid pins the signal on the process that ANSWERED, not on
         # whatever holds the number by the time the signal is sent.
         "start_time": facade._OWN_START_TIME,
+        # The gateway PATH part this daemon folds launch approvals against, so
+        # a gateway pinned to another part replaces it instead of adopting it.
+        "gateway_path": pinned_gateway_spec_path(),
     }
 
 
@@ -146,6 +153,10 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
     # caller is running this very code, so there is nothing to gain.
     caller_fp = frame.get("caller_fingerprint")
     stale_code = isinstance(caller_fp, str) and bool(caller_fp) and caller_fp != code_fingerprint()
+    # Same code, another gateway PATH part: every launch the caller approves
+    # would fold differently here, so this daemon yields as for other code.
+    caller_part = frame.get("caller_gateway_path")
+    stale_part = isinstance(caller_part, str) and caller_part != pinned_gateway_spec_path()
     # Third ground: this daemon's own gateway has exited. The caller may CLAIM
     # it (``orphaned``), but the daemon decides from its own record -- a live
     # owner means the claim is false and nothing here yields. An orphan is
@@ -156,7 +167,7 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
         and facade._OWNER_PID > 0
         and not facade._pid_exists(facade._OWNER_PID)
     )
-    yield_regardless = stale_code or orphaned
+    yield_regardless = stale_code or stale_part or orphaned
     need = frame.get("need")
     if need is None and yield_regardless:
         need = []
@@ -187,6 +198,8 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
         grounds.append(f"cannot resolve {', '.join(missing)}")
     if stale_code:
         grounds.append(f"runs code {code_fingerprint()} while the caller runs {caller_fp}")
+    if stale_part:
+        grounds.append("folds launch approvals against another gateway PATH part")
     if orphaned:
         grounds.append(f"is owned by gateway pid {facade._OWNER_PID}, which has exited")
     logger.warning(
@@ -600,6 +613,57 @@ async def _apply_owner_port(
     return {"type": "owner-port-set", "port": port}
 
 
+#: Longest server name a ``recycle-server`` frame may carry. Far above any
+#: real ``mcp.json`` key; it bounds what reaches the log line and the SEL row.
+_RECYCLE_SERVER_NAME_MAX = 256
+
+
+async def _apply_recycle_server(frame: dict[str, Any], pool: BackendPool) -> dict[str, Any]:
+    """Recycle one server's pooled backends so its next acquire boots fresh.
+
+    ``kirocrew mcp reload <server>`` sends this when a server's boot-time input
+    changed without its pool key changing (a token it reads from a file, an env
+    key the identity hash leaves out). :meth:`BackendPool.drain_server` shuts
+    the idle backends down and blue-green drains the in-use ones; the daemon
+    and every other server keep running. Replies ``recycled`` with the counts,
+    or ``recycle-server-rejected`` for a frame with no usable name. Both are
+    SEL-audited. Trust basis: the same uid-gated owner-only socket that
+    authenticates Register/Claim/Abort/Stand-down.
+    """
+    server = frame.get("server")
+    if (
+        not isinstance(server, str)
+        or not server
+        or len(server) > _RECYCLE_SERVER_NAME_MAX
+        or not server.isprintable()
+    ):
+        facade._audit_recycle_server("", "denied", "missing or invalid server name")
+        return {"type": "recycle-server-rejected", "reason": "missing or invalid 'server' name"}
+    # Pool keys carry either the mcp.json key or its slash-free alias
+    # (``npm:@playwright/mcp`` -> ``playwright-mcp``), so the operator may
+    # type either spelling and both are drained.
+    evicted = draining = private = 0
+    for name in dict.fromkeys((server, mcp_server_alias(server))):
+        drained = await pool.drain_server(name)
+        evicted += drained.evicted
+        draining += drained.draining
+        private += drained.private
+    detail = (
+        f"evicted={evicted} draining={draining} private={private} "
+        f"deadline={int(DRAIN_DEADLINE_SECS)}s"
+    )
+    logger.info("gatewayd: recycled MCP server %r on request (%s)", server, detail)
+    facade._audit_recycle_server(server, "allowed", detail)
+    return {
+        "type": "recycled",
+        "server": server,
+        "evicted": evicted,
+        "draining": draining,
+        "private": private,
+        "deadline_secs": DRAIN_DEADLINE_SECS,
+    }
+
+
 def _apply_set_spawn_capacity(
     frame: dict[str, Any], admission: Optional[Admission]
 ) -> dict[str, Any]:
@@ -706,6 +770,13 @@ async def _serve_control_frame(
     # Trust basis: same uid-gated 0700 socket as Register/Claim/Abort.
     # Session-open mount check (``acp.mcp_mount_check``): which of one session's
     # broker stubs reached this daemon. Read-only; same uid-gated socket.
+    # Resource-subscription holder lookup (``daemon.session_describe``): the
+    # Register and initialize of one session's live stub for one server.
+    # Read-only; same uid-gated socket.
+    if register.get("type") == "describe-session":
+        await _write_json_line(writer, describe_session_reply(register))
+        return True
+
     if register.get("type") == "session-mounts":
         await _write_json_line(writer, _session_mounts_reply(register))
         return True
@@ -732,6 +803,15 @@ async def _serve_control_frame(
     # ``_apply_stand_down``.
     if register.get("type") == "stand-down":
         await _write_json_line(writer, _apply_stand_down(register, stop_event))
+        return True
+
+    # Recycle-server short-circuit (one-shot control connection from
+    # ``kirocrew mcp reload <server>``): retire one server's pooled backends so
+    # the next acquire boots a fresh process, without cycling the daemon.
+    # Trust basis: same uid-gated owner-only socket as Register/Claim/Abort.
+    # Validation and auditing live in ``_apply_recycle_server``.
+    if register.get("type") == "recycle-server":
+        await _write_json_line(writer, await _apply_recycle_server(register, pool))
         return True
 
     # App-call short-circuit (one-shot control connection from the dashboard):

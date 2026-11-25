@@ -125,6 +125,33 @@ def _publish_slash_commands(client: "DiscordClient") -> None:
 _PENDING_REGISTRATIONS: set[asyncio.Task[None]] = set()
 
 
+def _reopen_owner_dm(client: "DiscordClient", allowed_ids: set[str]) -> None:
+    """Re-open the sole owner's DM in the background, so its pairing is known again.
+
+    The ``DM channel -> user`` pairing lives in this process only, and the owner-DM
+    predicate refuses a session mirrored to a DM it cannot place
+    (``MIRROR_PEER_NOT_ON_RECORD``). Without this, a conductor whose thread was
+    linked to the owner's DM before a restart could not reach any of its workers
+    until the owner wrote into the DM. ``create_dm_channel`` is the call the
+    dashboard's connect row makes to open that DM, and it records the pairing from
+    Discord's own answer. Fired as a task for the reason the slash menu is.
+    """
+    if len(allowed_ids) != 1:
+        return
+    (owner,) = allowed_ids
+
+    async def _reopen() -> None:
+        try:
+            if await client.wait_ready(timeout=_REGISTER_READY_TIMEOUT_SECS):
+                await client.create_dm_channel(owner)
+        except Exception:
+            logger.warning("Discord: re-opening the owner's DM failed", exc_info=True)
+
+    task = asyncio.create_task(_reopen())
+    _PENDING_REGISTRATIONS.add(task)
+    task.add_done_callback(_PENDING_REGISTRATIONS.discard)
+
+
 async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | None":
     """Start the Discord channel if enabled + credentialed; else no-op.
 
@@ -233,6 +260,7 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
                     client.fatal_error or "gateway not READY within 15s (check bot token/network)"
                 )
         _publish_slash_commands(client)
+        _reopen_owner_dm(client, allowed_ids)
         logger.info("Discord channel started (transport path, Gateway WebSocket).")
         return client
     except Exception as exc:

@@ -56,6 +56,10 @@ def cfg(monkeypatch):
     # The machine running the tests is not the host under test: a CI runner or a
     # dev box on an old glibc must not change what status reports.
     monkeypatch.setattr(kas_bundle, "require_loadable_host", lambda: None)
+    # Nor may the runner's own build stamp decide what the build prefers.
+    from kiro_crew.acp import kas_build_default
+
+    monkeypatch.setattr(kas_build_default, "kas_bundle_preferred_by_build", lambda: False)
     return agent
 
 
@@ -82,7 +86,52 @@ async def test_status_reports_the_pin_and_nothing_installed(cfg, monkeypatch):
         "host_unsupported": "",
         "route": None,
         "chat_needs_sign_in": False,
+        "engine_choice": "kiro_cli",
+        "choice_saved": False,
+        "sign_in_moves_to_engine": False,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared", "saved", "routed", "choice"),
+    [
+        (False, False, True, "engine"),
+        (False, False, False, "kiro_cli"),
+        (True, False, True, "kiro_cli"),
+        (True, True, False, "engine"),
+    ],
+    ids=["unset-on-engine", "unset-on-relay", "saved-off-wins", "saved-on-wins"],
+)
+async def test_status_reports_the_engine_choice(cfg, monkeypatch, declared, saved, routed, choice):
+    """A saved value always wins; unset, the choice is the route the next spawn takes,
+    so the card never shows the engine while chats run on kiro-cli."""
+    from kiro_crew.acp import kas_route
+    from kiro_crew.config import loader_document
+
+    cfg.kas_bundle = saved
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(loader_document, "kas_bundle_declared", lambda: declared)
+    monkeypatch.setattr(kas_bundle, "kas_route", lambda *a, **k: kas_route.KasRoute(bundle=routed))
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert (body["engine_choice"], body["choice_saved"]) == (choice, declared)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner", "moves", "lacks", "expected"),
+    [(True, True, False, True), (False, True, False, False), (True, True, True, False)],
+    ids=["owner", "non-owner", "blocking-sign-in-wins"],
+)
+async def test_status_says_when_one_sign_in_moves_chats_to_the_engine(
+    cfg, monkeypatch, owner, moves, lacks, expected
+):
+    cfg.acp_backend = "kas"
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "bundle_route_lacks_sign_in", lambda: lacks)
+    monkeypatch.setattr(kas_bundle, "crew_sign_in_moves_to_bundle", lambda: moves)
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(owner=owner)))
+    assert body["sign_in_moves_to_engine"] is expected
 
 
 def _glibc_too_old():

@@ -105,6 +105,15 @@ describe('main window tab title', () => {
     await waitFor(() => expect(document.title).toBe('Chat — Kiro Crew'))
   })
 
+  it('names Chat alone while the active session still carries the backend placeholder', async () => {
+    const store = renderAt('/chat')
+    act(() => {
+      store.dispatch(addSlotOptimistic(slot('s1', 'New Session…')))
+      store.dispatch(setActiveSlot('s1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Chat — Kiro Crew'))
+  })
+
   it('names the panel on any other page', async () => {
     renderAt('/schedule')
     await waitFor(() => expect(document.title).toBe('Schedule — Kiro Crew'))
@@ -119,6 +128,21 @@ describe('main window tab title', () => {
       store.dispatch(markSlotUnread('s2'))
     })
     await waitFor(() => expect(document.title).toMatch(/^\(\d+\) Fix the login page — Chat — Kiro Crew$/))
+  })
+
+  it("leaves a pop-out window's own title alone when the attention count changes", async () => {
+    const original = window.location.pathname + window.location.search
+    window.history.replaceState(null, '', '/popout/chat/s1?sid=s1')
+    onTestFinished(() => window.history.replaceState(null, '', original))
+    const store = renderAt('/popout/chat/s1?sid=s1')
+    act(() => {
+      store.dispatch(addSlotOptimistic(slot('s1', 'Fix the login page')))
+      store.dispatch(addSlotOptimistic(slot('s2', 'Other work')))
+    })
+    await waitFor(() => expect(document.title).toBe('Fix the login page — Kiro Crew'))
+    act(() => { store.dispatch(markSlotUnread('s2')) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(document.title).toBe('Fix the login page — Kiro Crew')
   })
 
   it('names the remote crew whose pane fills the page, and the local page again on Local', async () => {

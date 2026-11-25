@@ -62,7 +62,7 @@ def viewer(monkeypatch, tmp_path):
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         if ctl.refuse is not None:
             raise ctl.refuse
-        return tuple(ctl.crews)
+        return cps.CrewList(ctl.crews)
 
     async def _owner(request, operation):
         return None
@@ -101,6 +101,7 @@ async def test_a_new_crew_rings_once_and_repeat_reads_do_not(viewer) -> None:
     assert len(state.notes) == 1
     note = state.notes[0]
     assert note["title"] == "You've been added to Build box"
+    assert note["body"] == "Open it from Remote Crews in the Crew switcher."
     assert note["channel"] == crew_notices.CHANNEL
     assert note["actions"] == [{"id": "open", "label": "Open", "url": f"/chat?relay_crew={A}"}]
     assert note["i18n"] == {"id": "relay_crew_added", "params": {"name": "Build box"}}
@@ -115,7 +116,8 @@ async def test_first_read_with_several_crews_rings_one_summary(viewer) -> None:
         _status, body = await _read(client)
         await _read(client)
     assert len(state.notes) == 1
-    assert state.notes[0]["title"] == "You have access to 2 Team Crews"
+    assert state.notes[0]["title"] == "You have access to 2 Shared Crews"
+    assert state.notes[0]["body"] == "Open them from Remote Crews in the Crew switcher."
     assert state.notes[0]["i18n"] == {"id": "relay_crews_available", "params": {"count": 2}}
     assert "actions" not in state.notes[0] or state.notes[0]["actions"] is None
     # A personal Crew is the person's own machine: never announced, never dotted.

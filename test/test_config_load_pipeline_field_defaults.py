@@ -45,6 +45,9 @@ _READ_STAGE_DEPARTURES = {
     # Fail closed: a malformed relay switch reads as off, never as unset, so it cannot
     # let a team key start hosting (``config/section_builders._relay_enabled``).
     ("tunnel", "relay_enabled"): False,
+    # Fail closed: a wrong-typed Region is kept as text so the relay refuses it,
+    # never repaired to "", which would lease from us-east-1.
+    ("tunnel", "relay_lease_region"): "{'not': 'a string'}",
     # Fail closed: a malformed value must not auto-approve conductor sends.
     ("agent", "conductor_own_child_verbs"): False,
     # Fail closed: a malformed value must not move kiro-cli's KAS extract.

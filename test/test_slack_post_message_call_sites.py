@@ -86,7 +86,12 @@ BASELINE: dict[str, tuple[int, str]] = {
         1,
         "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",
     ),
+    "slack/conductor_thread.py": (
+        3,
+        "a Conductor thread's fixed notices: started, ended, a one-way refusal",
+    ),
     "slack/events.py": (5, "!stop and !restart notices and the not-authorized refusal"),
+    "slack/events_slash.py": (1, "the /kirocrew conductor parent message, a defused goal line"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),
     "slack/gateway_runtime/cron_delivery.py": (
         1,
@@ -108,9 +113,12 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        78,
+        89,
         "slash and text command replies: fixed status and help text, the"
-        " channel-agent link refusal, and the !channel config-save refusal",
+        " channel-agent link refusal, the !channel and !voice global"
+        " config-save refusals, the !bot list and its refusals, the !ta"
+        " memory-binding refusals, and the !conductor refusal and the"
+        " Conductor-thread lock on !bot",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
@@ -152,9 +160,10 @@ BASELINE: dict[str, tuple[int, str]] = {
         "stop and reset notices, resume label, new-session greeting",
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
+    "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
-        5,
-        "the channel renderer: placeholders, answer parts, fallback and notices",
+        2,
+        "the channel renderer: options fallback and notices",
     ),
     "slack/renderer_stream_debt.py": (
         1,

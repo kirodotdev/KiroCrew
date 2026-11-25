@@ -601,3 +601,90 @@ def test_o_project_hook_files_notice_shows_once_per_chat(tmp_path, monkeypatch):
     # A different chat has its own mark.
     slot = _NS(_project_hook_files_notice_shown="")
     assert new_session(other) == 1
+
+
+# (o2) The hook-files row carries the tag and the per-folder mark its Dismiss hides by.
+def test_o2_project_hook_files_notice_carries_a_per_folder_mark(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+    from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE
+
+    _point_hooks_dir(monkeypatch, tmp_path / "home")
+    _agents_dir(tmp_path, monkeypatch)
+    project = tmp_path / "proj"
+    hooks_dir = project / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "a.kiro.hook.json").write_text("{}", encoding="utf-8")
+    other = tmp_path / "other"
+    shutil.copytree(project, other)
+    rows: list = []
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda state, slot, role, text, cls, **kw: rows.append((text, kw.get("meta"))),
+    )
+
+    def mark_in_a_new_chat(cwd: Path) -> str:
+        rows.clear()
+        slot = _NS(_project_hook_files_notice_shown="")
+        client = _NS(capabilities=capabilities_for(ACP_BACKEND_KAS), cwd=str(cwd))
+        _asyncio.run(chat_runner._prepare_spec_hooks(_NS(), slot, client, "a1", is_new=True))
+        (meta,) = [m for text, m in rows if "hook files in .kiro/hooks" in text]
+        mark = meta["project_hook_files_mark"]
+        assert meta == {
+            "kind": SPEC_HOOKS_NOTICE_KIND,
+            "spec_hooks_notice": SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+            "project_hook_files_mark": mark,
+        }
+        assert len(mark) == 16 and set(mark) <= set("0123456789abcdef")
+        assert slot._project_hook_files_notice_shown == mark, "the chat's mark is the row's"
+        return mark
+
+    first = mark_in_a_new_chat(project)
+    assert mark_in_a_new_chat(project) == first, "the same folder and names, in a second chat"
+    assert mark_in_a_new_chat(other) != first, "another folder"
+    (hooks_dir / "a.kiro.hook.json").rename(hooks_dir / "b.kiro.hook.json")
+    assert mark_in_a_new_chat(project) != first, "a renamed file"
+
+
+# (p) User hook files saved with a UTF-8 BOM or encoded in UTF-16LE load successfully.
+def test_p_user_hook_file_with_utf8_bom_or_utf16le_loads(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    hooks_dir = home / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True)
+
+    hook_doc = {
+        "version": "v1",
+        "hooks": [
+            {
+                "name": "guard",
+                "trigger": "PreToolUse",
+                "matcher": "execute_bash",
+                "action": {"type": "command", "command": "exit 2"},
+            }
+        ],
+    }
+    raw_json_str = json.dumps(hook_doc)
+
+    # 1. UTF-8 with BOM (PowerShell 5.1 Set-Content -Encoding UTF8 / Notepad default)
+    bom_file = hooks_dir / "01-bom.json"
+    bom_file.write_bytes(b"\xef\xbb\xbf" + raw_json_str.encode("utf-8"))
+
+    # 2. UTF-16LE with BOM (PowerShell 5.1 Out-File / > redirect)
+    utf16le_file = hooks_dir / "02-utf16le.json"
+    utf16le_file.write_bytes(b"\xff\xfe" + raw_json_str.encode("utf-16-le"))
+
+    # 3. Control: plain UTF-8 with CRLF
+    crlf_file = hooks_dir / "03-crlf.json"
+    crlf_file.write_bytes(raw_json_str.replace("\n", "\r\n").encode("utf-8"))
+
+    # 4. Control: genuinely malformed file should still skip cleanly
+    bad_file = hooks_dir / "04-bad.json"
+    bad_file.write_bytes(b"\xef\xbb\xbf{not valid json}")
+
+    _point_hooks_dir(monkeypatch, home)
+    hooks = spec_hooks.user_hook_files()
+
+    # The 3 valid hook files load their PreToolUse hooks; the malformed file is skipped.
+    assert len(hooks) == 3
+    assert all(h.event == HOOK_EVENT_PRE_TOOL_USE for h in hooks)
+    assert all(h.command == "exit 2" for h in hooks)

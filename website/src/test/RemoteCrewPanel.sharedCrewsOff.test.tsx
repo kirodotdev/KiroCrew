@@ -39,7 +39,7 @@ describe('RemoteCrewPanel with remote crew management off', () => {
       }],
     })
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     expect(await screen.findByTestId('shared-crews-card')).toBeInTheDocument()
     expect(screen.getByTestId('shared-crew-row')).toHaveTextContent('Platform team')
   })
@@ -49,7 +49,7 @@ describe('RemoteCrewPanel with remote crew management off', () => {
     ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(async () => ({ ok: true })) }
     const crews = vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(404, 'Not Found'))
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     await waitFor(() => expect(crews).toHaveBeenCalled())
     expect(screen.queryByTestId('shared-crews-card')).not.toBeInTheDocument()
   })

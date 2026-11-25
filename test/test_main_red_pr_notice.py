@@ -90,6 +90,48 @@ def test_any_failed_rule_makes_the_failure_the_authors(pr: dict, kwargs: dict) -
     assert same == {} and own == pr
 
 
+CUT_ON_A_SPACE = "a" * 79 + " tail that the 80 character cut removes"
+OLD_FORM = "a" * 79 + " "
+
+
+def _annotated(message: str) -> dict[str, str]:
+    """What a run's annotations give for one failing test with ``message``."""
+    nodeid = "test/test_a.py::test_x"
+    row = {"annotation_level": "failure", "title": nodeid, "message": f"{nodeid} - {message}"}
+    return watch.parse_annotations([row])
+
+
+def test_a_message_whose_cut_lands_on_a_space_is_still_the_same_as_main() -> None:
+    """Main's record is cleaned again when read; the pull request's message is read fresh."""
+    main = watch.parse_state(_issue_body(failures=_annotated(CUT_ON_A_SPACE)))["failures"]
+    pr = _annotated(CUT_ON_A_SPACE)
+    same, own = mod.classify(pr, main, set(), True)
+    assert same == pr and own == {}
+
+
+@pytest.mark.parametrize("pr_message", [OLD_FORM, OLD_FORM.rstrip()], ids=["old", "new"])
+@pytest.mark.parametrize("main_message", [OLD_FORM, OLD_FORM.rstrip()], ids=["old", "new"])
+def test_a_record_or_a_failure_set_written_with_the_space_still_matches(
+    tmp_path: Path, main_message: str, pr_message: str
+) -> None:
+    """An issue open when the cleaning changed holds the old form; it must keep matching."""
+    nodeid = "test/test_a.py::test_x"
+    state = watch.next_state(None, {nodeid: "x"}, FIRST, 900, RUN_URL)
+    state["failures"] = {nodeid: main_message}
+    (tmp_path / "issue.md").write_text(watch.render_body(state, [], 5), encoding="utf-8")
+    (tmp_path / "pr.json").write_text(json.dumps({nodeid: pr_message}), encoding="utf-8")
+    (tmp_path / "changed.txt").write_text("src/other.py\n", encoding="utf-8")
+    out = tmp_path / "comment.md"
+    argv = ["notice", "--issue-body", str(tmp_path / "issue.md"), "--issue-number", "5"]
+    argv += ["--pr-failures", str(tmp_path / "pr.json"), "--repo", "example/repo"]
+    argv += ["--changed-files", str(tmp_path / "changed.txt"), "--base-ok", "1"]
+    argv += ["--sha", "a" * 40, "--run-url", RUN_URL, "--out", str(out)]
+    assert mod.main(argv) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "Failing here and on main with the same message start:" in text
+    assert "Treat these as yours" not in text
+
+
 def test_a_change_to_another_test_file_does_not_stop_the_match() -> None:
     same, _ = _classify({"test/test_a.py::test_x": "assert 2 == 1"}, changed={"src/x.py"})
     assert same == MAIN
@@ -108,12 +150,15 @@ PR_URL = "https://github.com/example/repo/pull/23933"
 
 def _row(**over: Any) -> dict[str, Any]:
     row = {"url": PR_URL, "state": "open", "author": "buluoray", "created": "2026-10-26T07:00:32Z"}
-    return {**row, **over}
+    return {"body": "Fixes #5", **row, **over}
 
 
 def test_the_fix_line_is_rebuilt_from_the_timeline_without_a_mention() -> None:
     line = mod.fix_line([_row()], "example/repo", 5)
     assert line == "Fix in progress: #23933 (buluoray, opened 2026-10-26 07:00Z)"
+    assert mod.fix_line([_row(body="Red on main, see #5.")], "example/repo", 5).startswith(
+        "Fix in progress: none yet"
+    )
     assert mod.fix_line([_row(state="closed")], "example/repo", 5).startswith(
         "Fix in progress: none yet"
     )
@@ -236,7 +281,10 @@ def test_actions_are_pinned_to_a_commit_and_the_checkout_keeps_no_credentials() 
     for step in uses:
         assert len(step["uses"].split("@")[1]) == 40
         assert step["with"]["persist-credentials"] is False
-        assert step["with"]["sparse-checkout"] == ".github/scripts"
+        assert step["with"]["sparse-checkout"].split() == [
+            ".github/scripts",
+            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts",
+        ]
 
 
 def test_nothing_from_the_event_is_interpolated_into_the_script() -> None:
@@ -585,12 +633,13 @@ def test_shell_text_and_mentions_in_a_failure_message_are_neither_run_nor_posted
     assert "- `test/test_a.py::test_x`: `$(touch" in text
 
 
-def _cross_reference(url: str = PR_URL) -> dict:
+def _cross_reference(url: str = PR_URL, body: str | None = "Fixes #5") -> dict:
     issue = {
         "html_url": url,
         "state": "open",
         "user": {"login": "buluoray"},
         "created_at": "2026-10-26T07:00:32Z",
+        "body": body,
         "pull_request": {"url": url},
     }
     return {"event": "cross-referenced", "source": {"type": "issue", "issue": issue}}
@@ -600,7 +649,8 @@ def _cross_reference(url: str = PR_URL) -> dict:
 def test_the_fix_line_comes_from_the_timeline_and_names_no_one_with_a_mention(
     tmp_path: Path,
 ) -> None:
-    out, stub = _run_step(tmp_path, timeline=[{"event": "labeled"}, _cross_reference()])
+    cited = _cross_reference("https://github.com/example/repo/pull/7", "Red on main, see #5.")
+    out, stub = _run_step(tmp_path, timeline=[{"event": "labeled"}, cited, _cross_reference()])
     assert out.returncode == 0, out.stderr
     text = (stub / "posted.md").read_text(encoding="utf-8")
     assert "Fix in progress: #23933 (buluoray, opened 2026-10-26 07:00Z)" in text

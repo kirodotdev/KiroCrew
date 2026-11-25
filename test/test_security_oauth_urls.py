@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -296,9 +297,9 @@ class TestOAuthAuthorizationUrlRedaction:
         path = "/services/oauth2/authorize"
         mcp_url = "https://mcp.salesforce.example/auth"
         try:
-            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url)
+            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url, server_name="mcp")
             url = f"https://{host}{path}?client_id={consumer_key}&response_type=code"
-            return oauth_url_contains_credential(url)
+            return oauth_url_contains_credential(url, "mcp")
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -966,7 +967,7 @@ class TestOAuthRejectionIsEndpointExemptible:
         endpoint nobody actually approved."""
         looked_up: list[tuple[str, str]] = []
 
-        def spy(host: str, path: str) -> bool:
+        def spy(host: str, path: str, server_name: str | None = None) -> bool:
             looked_up.append((host, path))
             return False
 
@@ -1223,6 +1224,65 @@ class TestOperatorOAuthEndpointExtension:
         self._write_extension(ext_home, content)
         assert _load_operator_oauth_endpoints() == frozenset()
 
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+    def test_utf8_bom_file_lists_its_entry(self, ext_home: Path, newline: str) -> None:
+        """A Windows editor's UTF-8 BOM save is read like a plain UTF-8 file."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+        from kiro_crew.security.exfil import _operator_listed_oauth_endpoint
+
+        doc = json.dumps(
+            {"additional_authorization_endpoints": [{"host": self.HOST, "path": self.PATH}]},
+            indent=2,
+        ).replace("\n", newline)
+        (ext_home / "oauth_endpoints.json").write_bytes(b"\xef\xbb\xbf" + doc.encode("utf-8"))
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+        assert _operator_listed_oauth_endpoint(self.HOST, self.PATH) is True
+
+    def test_utf16_file_is_skipped_with_one_warning(
+        self, ext_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A UTF-16 save lists nothing and says why, once per file version."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        doc = json.dumps(
+            {"additional_authorization_endpoints": [{"host": self.HOST, "path": self.PATH}]}
+        )
+        (ext_home / "oauth_endpoints.json").write_bytes(doc.encode("utf-16"))
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.security"):
+            assert _load_operator_oauth_endpoints() == frozenset()
+            assert _load_operator_oauth_endpoints() == frozenset()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "oauth_endpoints.json" in warnings[0].getMessage()
+        assert "UTF-16" in warnings[0].getMessage()
+
+    def test_a_file_nested_past_the_parser_limit_yields_nothing(
+        self, ext_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``json.loads`` raises RecursionError, not ValueError, for deep nesting."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, "[" * 100_000 + "]" * 100_000)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.security"):
+            assert _load_operator_oauth_endpoints() == frozenset()
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+    def test_corrupt_file_warns_once_and_absent_file_logs_nothing(
+        self, ext_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.security"):
+            assert _load_operator_oauth_endpoints() == frozenset()
+            assert caplog.records == []
+            self._write_extension(ext_home, "{not json")
+            assert _load_operator_oauth_endpoints() == frozenset()
+            assert _load_operator_oauth_endpoints() == frozenset()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "oauth_endpoints.json" in warnings[0].getMessage()
+        assert "{not json" not in warnings[0].getMessage()
+
     def test_valid_entry_accepted_and_host_lowercased(self, ext_home: Path) -> None:
         from kiro_crew.security import _load_operator_oauth_endpoints
 
@@ -1467,9 +1527,12 @@ class TestOperatorOAuthEndpointExtension:
         # A discovered (not operator-listed) endpoint keeps the full scan too.
         try:
             assert record_discovered_oauth_endpoint(
-                self.DCR_HOST, self.DCR_PATH, mcp_url="https://mcp.example.com/mcp"
+                self.DCR_HOST,
+                self.DCR_PATH,
+                mcp_url="https://mcp.example.com/mcp",
+                server_name="mcp",
             )
-            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID), "mcp") is True
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -1557,9 +1620,12 @@ class TestOperatorOAuthEndpointExtension:
     def _at_discovered_sf_endpoint(self, query: str) -> bool:
         try:
             assert record_discovered_oauth_endpoint(
-                self.SF_HOST, self.SF_PATH, mcp_url="https://mcp.salesforce.example/auth"
+                self.SF_HOST,
+                self.SF_PATH,
+                mcp_url="https://mcp.salesforce.example/auth",
+                server_name="mcp",
             )
-            return oauth_url_contains_credential(self._sf_url(query))
+            return oauth_url_contains_credential(self._sf_url(query), "mcp")
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -1779,12 +1845,15 @@ class TestOperatorOAuthEndpointExtension:
         self, monkeypatch: pytest.MonkeyPatch, query: str, rejected: bool
     ) -> None:
         endpoint = (self.HOST, self.PATH)
-        monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {endpoint: float("inf")})
+        monkeypatch.setattr(
+            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(*endpoint, "mcp"): float("inf")}
+        )
         loader = Mock(return_value=frozenset({endpoint}))
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
         # Discovery supplies approval, isolating the client_id lookup.
-        assert security._approved_oauth_authorization_endpoint(*endpoint)
-        assert oauth_url_contains_credential(f"https://{self.HOST}{self.PATH}?{query}") is rejected
+        assert security._approved_oauth_authorization_endpoint(*endpoint, "mcp")
+        url = f"https://{self.HOST}{self.PATH}?{query}"
+        assert oauth_url_contains_credential(url, "mcp") is rejected
         loader.assert_not_called()
 
     def test_discovered_operator_endpoint_audits_salesforce_client_id_once(
@@ -1794,7 +1863,7 @@ class TestOperatorOAuthEndpointExtension:
         url = f"https://{self.HOST}{self.PATH}?client_id={consumer_key}&response_type=code"
         self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
         monkeypatch.setattr(
-            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(self.HOST, self.PATH): float("inf")}
+            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(self.HOST, self.PATH, "mcp"): float("inf")}
         )
         logged: list = []
 
@@ -1804,7 +1873,7 @@ class TestOperatorOAuthEndpointExtension:
 
         monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _RecorderLog())
         assert security._text_contains_bare_secret(consumer_key)
-        assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH)
+        assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH, "mcp")
         assert logged == []
         loader = Mock(wraps=security._load_operator_oauth_endpoints)
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
@@ -1822,9 +1891,9 @@ class TestOperatorOAuthEndpointExtension:
         assert security._OAUTH_EXTENSION_AUDITED == set()
         loader.assert_not_called()
 
-        assert oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url, "mcp") is False
         loader.assert_called_once_with()
-        assert oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url, "mcp") is False
         assert loader.call_count == 2
         assert len(logged) == 1
         event = logged[0]

@@ -3,10 +3,10 @@ title: Share one crewmate — a `.crewmate` bundle with Export and Import in the
 status: partial
 author: gjjnn
 created: 2026-10-17
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
-doc-pr:
-implementation-prs: [21721, 23424, 23223]
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 21508
+implementation-prs: [21721, 23424, 23223, 26601, 29962]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,13 +14,14 @@ superseded-by: []
 
 # RFC: Share one crewmate — a `.crewmate` bundle with Export and Import in the owner's crewmate UI
 
-- Status: partial. Since this line was written, owner Import ([#23424](https://github.com/kirodotdev/KiroCrew/pull/23424)) and Export from the profile card ([#23223](https://github.com/kirodotdev/KiroCrew/pull/23223); `src/kiro_crew/crewmate_bundle_export.py`, `dashboard/handlers/member_export.py`) merged; [#26601](https://github.com/kirodotdev/KiroCrew/pull/26601) later moved export to `.crewjam` (import still takes `.crewmate`). Checked at `1d08e941b3`. Accepted: [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Partly built: [#21721](https://github.com/kirodotdev/KiroCrew/pull/21721) shipped the bundle reader (`crewmate_import_params` in `crewmate_bundle.py`), the `crewmate.import` card kind (`KIND_CREWMATE_IMPORT` in `change_card_catalog_kinds.py`) and an app path (`ctx.crewmate` in `apps/crewmate_sdk.py`) held off by `PREVIEW_ENABLED = False`. No export route and no owner Import entry exist. Every "exists" claim cites a symbol verified against `origin/main` at `b835fe9ca7`.
+- Status: partial. Since this line was written, owner Import ([#23424](https://github.com/kirodotdev/KiroCrew/pull/23424)) and Export from the profile card ([#23223](https://github.com/kirodotdev/KiroCrew/pull/23223); `src/kiro_crew/crewmate_bundle_export.py`, `dashboard/handlers/member_export.py`) merged; [#26601](https://github.com/kirodotdev/KiroCrew/pull/26601) later moved export to `.crewjam`, and [#29962](https://github.com/kirodotdev/KiroCrew/pull/29962) to `.kirobot` (`FILE_SUFFIX` in `crewmate_bundle.py`; import still takes `.crewjam` and `.crewmate`). Phase 3 (round trip) is open: import refuses a bundle with `mcpServers` or `skills` (`needs_mate_config` in `crewmate_bundle.py`). Checked at `fc89562d69`. Accepted: [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Partly built: [#21721](https://github.com/kirodotdev/KiroCrew/pull/21721) shipped the bundle reader (`crewmate_import_params` in `crewmate_bundle.py`), the `crewmate.import` card kind (`KIND_CREWMATE_IMPORT` in `change_card_catalog_kinds.py`) and an app path (`ctx.crewmate` in `apps/crewmate_sdk.py`) held off by `PREVIEW_ENABLED = False`. No export route and no owner Import entry exist. Every "exists" claim cites a symbol verified against `origin/main` at `b835fe9ca7`.
 - Author: gjjnn
 - Amended 2026-10-18 on the product owner's ruling, and accepted with the 2026-10-22 amendment below by the maintainer iamwhatever in [this comment](https://github.com/kirodotdev/KiroCrew/pull/21746#issuecomment-6329962507): there is no Crewmate Share app. Export is a button on the crewmate's profile card and Import is an item in the crewmate dropdown, both core owner UI. The `propose_crewmate` App SDK capability, its two permissions and the `app:` card slot are dropped (§5.5). The bundle format and every security rule are unchanged.
 - Amended 2026-10-22 on review ([#21746](https://github.com/kirodotdev/KiroCrew/pull/21746)): an imported crewmate must not arrive hollow. Crons travel by default, each `script` cron with its script file. Skills the sender wrote travel as files. Lessons may travel only as a skill the owner reads and edits. A `user:` dashboard id stays home. Every added file is shown in full on the `crewmate.import` card, the way rules already are.
 - Amended 2026-10-23 on the owner's ruling (pending the owner's acceptance of this text): a card cannot hold the files a bundle carries, so raising an import card keeps one owner-only staged copy of the checked file on the local backend, and one new owner route writes the carried files on the press (§5.4, "The staged copy"). Bundled skills land in `.kiro/skills/<name>/` of the member's workspace, the tree its sessions read.
 - Amended 2026-10-31 by the maintainer iamwhatever, who decided that the share file follows the Crew Jam rename ([#26601](https://github.com/kirodotdev/KiroCrew/pull/26601)): export writes `<name>.crewjam`, with the manifest entry `crewjam.json` and `"format": "kirocrew.crewjam"`. Import still takes the old `.crewmate` form (`crewmate.json`, `kirocrew.crewmate`) through the same checks, so files already shared keep importing. A file holding both manifest entries is refused (§5.2, "File names").
 - Amended 2026-11-04 by the maintainer CrysisDeu, after the product name became Bot ([2026-11-04 decision](../decisions/2026-11-04-the-share-file-is-a-kirobot-file.md)): export writes `<name>.kirobot`, with the manifest entry `kirobot.json` and `"format": "kirocrew.kirobot"`. Import still takes the `.crewjam` and `.crewmate` forms through the same checks. A file holding more than one manifest entry is refused (§5.2, "File names").
+- Amended 2026-11-23 by the maintainer bolichen97 ([2026-11-23 decision](../decisions/2026-11-23-a-kirobot-import-skips-the-empty-folder-entries-an-archiver-writes.md)): the reader skips the empty `skills/`, `skills/<name>/` and `crons/` folder entries an archiver adds (§5.2).
 - Builds on: [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md) (draft). Its per-mate file `~/.kiro/mates/agents/<id>.json` is the agent part of the bundle below. That RFC lists "a shared/importable crewmate-definition format" as a non-goal (§4); this RFC is that separate effort.
 - Follows: [TENETS.md](../../TENETS.md) tenet 8, "Everything is an app"; §5.6 says why these two entries sit in core.
 
@@ -103,7 +104,7 @@ The file is untrusted. Core re-checks everything in it, exactly as it re-checks 
 
 ### 5.2 The `.crewmate` file
 
-A `.crewmate` file is a zip. Its top-level entries are fixed by name. Two folders are allowed, each exactly one level deep: `skills/<name>/<file>` and `crons/<file>.py`. No other path has a `/`.
+A `.crewmate` file is a zip. Its top-level entries are fixed by name. Two folders are allowed, each exactly one level deep: `skills/<name>/<file>` and `crons/<file>.py`. No other path has a `/`. The empty folder entries an archiver adds for these folders, `skills/`, `skills/<name>/` and `crons/`, are skipped and still count toward the 64 entries; any other folder entry, or one that declares bytes, is refused (amendment of 2026-11-23).
 
 | Entry | Required | Holds |
 |---|---|---|

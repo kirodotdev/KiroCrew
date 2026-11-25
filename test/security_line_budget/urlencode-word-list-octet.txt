@@ -1,0 +1,2 @@
++22
+The exfil blob test's word-list carve-out also tries the run without the two hex digits of a %XX octet it starts on, so a query built by urlencode (ids:(T1 OR T2) becomes %28T1+OR+T2%29) reads as words. One small helper and its call, beside the unchanged whole-run test, and the two new names in the exfil facade's manifest.

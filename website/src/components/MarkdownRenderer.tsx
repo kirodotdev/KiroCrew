@@ -11,7 +11,7 @@
 import React, { createContext, useSyncExternalStore, useContext, memo, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { capWhitespaceRuns, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { REMARK_BASE_PLUGINS } from './markdown/remarkBase'
-import { canonicalChatHref, chatHrefSid, namesASession } from '../utils/sessionKeys'
+import { canonicalChatHref, chatHrefSid, namesASession, rosterKeyFrom } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkAutolinkRules from '../utils/remarkAutolinkRules'
@@ -76,9 +76,11 @@ import {
   MdSourceCtx,
   MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
+  BasePathCtx,
   ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
+  QuotedContentCtx,
   ReadOnlyCodeCtx,
   SessionActionCtx,
   type InsideLink,
@@ -96,7 +98,8 @@ import { linkAddress, useLinkAddressTip } from './markdown/linkAddressTip'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
-import { ImgWithFallback } from './markdown/ImgWithFallback'
+import { ImgWithFallback, parentDirOf } from './markdown/ImgWithFallback'
+import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { DeferredMedia, MdSourceEl } from './markdown/remoteMedia'
 import { MermaidBlock } from './markdown/MermaidBlock'
 import { PlantUmlBlock } from './markdown/PlantUmlBlock'
@@ -157,6 +160,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
   const chatProjectDir = useContext(ChatProjectDirCtx)
+  const basePath = useContext(BasePathCtx)
   // The override is resolved FIRST and wins outright — Issue Radar's in-app
   // issue/PR affordance must keep beating a link preview. Feeding `null` into
   // the unfurl gate for a claimed href also means a claimed link is never
@@ -190,6 +194,12 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const target = useUnfurlHref(claimed || source ? null : href)
   const meta = useLinkMeta(target ?? undefined, target !== null)
   let localHref: string | null = null
+  // Set when `localHref` is a relative link joined to the previewed document.
+  let docRelative = false
+  // The previewed file's folder: '' for a file at the POSIX root, `~` for one
+  // directly in the home folder. null when no rooted document names itself, or
+  // when this host has no open handler and so nothing could follow the link.
+  const docDir = basePath && (actions.onFileOpen || actions.onFolderOpen) && (basePath.startsWith('/') || basePath.startsWith('~/') || WINDOWS_ABS_PATH_RE.test(basePath)) ? parentDirOf(basePath) : null
   if (href?.startsWith('/')) {
     try {
       const decodedHref = decodeURIComponent(href)
@@ -203,16 +213,37 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
     // probe's confirmation changes the click (see `onPathClick`), so a
     // relative link to something that is not a file stays an ordinary link.
     //
-    // A RELATIVE destination is taken only inside a chat transcript, the one
-    // host that says which folder it is relative to (`ChatProjectDirCtx`).
-    // A previewed document's `[x](./CHANGELOG.md)` is relative to that
-    // document, which nothing here joins to, so it keeps its plain link rather
-    // than opening a same-named file from the gateway's directory. `~/` names
-    // the gateway user's home on every host, so it needs no project.
+    // A RELATIVE destination needs a folder it is relative to. A previewed
+    // document (`BasePathCtx`, the file's own absolute path) supplies its
+    // directory, the same base its relative images use, so the link is joined
+    // to it here and probed as an absolute path. `..` is kept for the
+    // backend's realpath, as the image join keeps it. A chat transcript
+    // supplies its project (`ChatProjectDirCtx`), which `usePathResolution`
+    // joins. With neither, a relative link keeps its plain link rather than
+    // opening a same-named file from the gateway's directory. `~/` names the
+    // gateway user's home on every host, so it needs no base.
     try {
       const decodedHref = decodeURIComponent(href)
-      const relativeOk = decodedHref.startsWith('~/') || chatProjectDir != null
-      if (relativeOk && isPathCandidate(splitLineRef(decodedHref).path)) localHref = decodedHref
+      const path = splitLineRef(decodedHref).path
+      if (decodedHref.startsWith('~/')) {
+        if (isPathCandidate(path)) localHref = decodedHref
+      } else if (docDir != null) {
+        // The shape test runs on the JOINED path: an authored link to a bare
+        // `sibling.md` carries no separator of its own, and once joined it is
+        // a rooted path like any other.
+        // A `?query` or `#heading` suffix is for the browser, not part of the
+        // file name, so it is cut from the RAW href before decoding: an
+        // encoded `%23` is a filename character and stays.
+        // shortcut: the heading itself is not revealed, only the file opens.
+        const rel = decodeURIComponent(href.replace(/[?#].*$/, '')).replace(/^\.\//, '')
+        const joined = docDir + (WINDOWS_ABS_PATH_RE.test(docDir) ? '\\' : '/') + rel
+        if (isPathCandidate(splitLineRef(joined).path)) {
+          localHref = joined
+          docRelative = true
+        }
+      } else if (chatProjectDir != null && isPathCandidate(path)) {
+        localHref = decodedHref
+      }
     } catch { /* keep it a normal link */ }
   }
   // Where the link goes, for the code spans in its label (`InsideLinkCtx`): a
@@ -232,15 +263,15 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // helper owns which spellings name a session — so a short `?sid=chat-1380`
   // resolves here exactly as the same short name does in a backtick chip.
   const sessionHrefSid = sessionCandidate ? chatHrefSid(sessionCandidate) : null
-  // Whether this href NAMES a same-origin chat session at all, by SHAPE, and
-  // independent of whether that session is currently reachable (open). A
-  // closed/unknown one is still a chat-session href — it just does not resolve in
-  // the open-tabs roster. Both spellings count, and the union is `namesASession`'s
-  // rather than re-spelled here: declining only the full key left an authored
+  // Whether this href NAMES a same-origin chat session: by SHAPE (closed/unknown
+  // too, `namesASession`), or as an exact open roster key of another shape (a
+  // cron-born title key, `rosterKeyFrom`, #41426), so its active session is inert
+  // like a chat-shaped one. Shared helpers rather than re-spelled here: declining
+  // only the full key left an authored
   // `?sid=chat-9999` to navigate to exactly the dead session view this interception
   // exists to prevent (#9914), and a spelling added to the resolver alone would
   // re-open that hole if this gate kept its own copy of the grammar.
-  const sessionHrefNamesSession = !!sessionHrefSid && namesASession(sessionHrefSid)
+  const sessionHrefNamesSession = !!sessionHrefSid && (namesASession(sessionHrefSid) || (!!sessionActions.sessions && rosterKeyFrom(sessionHrefSid, sessionActions.sessions) !== null))
   // Whether this renderer is wired to route sessions at all — the SAME predicate
   // `resolveSessionChip` guards on (`onSessionOpen` AND `sessions`), so the link
   // affordance and the click handler can never disagree. Both must be present:
@@ -317,7 +348,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // `missing` guards hold a confirmed file/dir and a route to their own paths.
   const missingFileLink = pathResolution.candidate
     && pathResolution.kind === 'missing'
-    && isFileLinkDest(pathResolution.splitPath)
+    && (docRelative || isFileLinkDest(pathResolution.splitPath))
   // askAgent on: a transcript link holds no draft (the host composer's draft is
   // persisted per slot), and a blocked or failed reveal is gateway-side.
   const reveal = useRevealFailure(localHref ?? undefined)
@@ -497,7 +528,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       href={sessionHref ?? href}
       // A `/chat?sid=` href is never a path, so the session branch wins outright.
       // One predicate gates the handler, because a link that RESOLVES necessarily
-      // names a session by shape too — so the two branches inside the handler
+      // names a session too (shape or roster key) — so the two branches inside the handler
       // split the same population rather than needing different gates: resolvable
       // switches in place, and one that names a session but does not resolve (a
       // closed or unknown key, a short name no open session answers to, or the
@@ -1166,6 +1197,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
 
 function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, typing, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
   const readOnlyCodeCtx = useContext(ReadOnlyCodeCtx)
+  const quoted = useContext(QuotedContentCtx)
   // A fence holding lock tags renders them in place whatever its language:
   // the diagram, diff and formatted-markdown renderers would show the
   // placeholder without its tag and card (see RedactedCodeBlock).
@@ -1261,6 +1293,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       return smooth ? <SmoothResize enabled={!block.complete}>{shown}</SmoothResize> : shown
     }
     case 'widget':
+      if (quoted) return null
       if (!block.complete) return <WidgetPlaceholder title={block.language} />
       // A widget whose body holds no HTML element is markdown an agent wrapped in
       // the widget tag (a "Task board" table, say). Drawn in the frame it reads as

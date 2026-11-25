@@ -3,8 +3,8 @@ title: A conductor sends to and closes its own children, and reports on its own 
 status: implemented
 author: kirocrew-worker, directed by iamwhatever
 created: 2026-11-08
-last-audited: 2026-11-08
-audited-at: e48fe0ec03
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 33043
 implementation-prs: [33373]
 tracking-issues: []
@@ -17,7 +17,9 @@ superseded-by: []
 Status: implemented by
 [#33373](https://github.com/kirodotdev/KiroCrew/pull/33373), after acceptance in
 [#33417](https://github.com/kirodotdev/KiroCrew/pull/33417), as proposed:
-default on (Q1) and the four-step fallback's seed unprompted (Q2). It moves a trust
+default on (Q1) and the four-step fallback's seed unprompted (Q2):
+`_conductor_own_child_call` in `src/kiro_crew/dashboard/chat_turn/tool_approval.py`
+behind `agent.conductor_own_child_verbs` (checked at `fc89562d69`). It moves a trust
 boundary, so it is RFC-first under
 [CONTRIBUTING.md](../../CONTRIBUTING.md#pull-request-workflow). **The security
 trade-off in section 6 is the repository owner's (iamwhatever) and the security

@@ -27,6 +27,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _get_mcp_lock,
     _is_valid_mcp_name,
     _mcp_config_corrupt,
+    _mcp_config_unreadable,
     _offload_config_write,
     _set_kirocrew_entry,
 )
@@ -56,15 +57,22 @@ _MIN_QUERY_LEN = 2
 # upstream document fetch, but still bounded).
 _DETAIL_TIMEOUT_SECS = 15.0
 
+# Cap on a provider's reason before it reaches the dashboard: provider-authored
+# text, scrubbed and bounded like the skill discover endpoint's.
+_MAX_REASON_CHARS = 300
+
 
 def _build_registry() -> ProviderRegistry:
-    """Build the provider registry with all available providers.
+    """Build the provider registry: every provider this build can search.
 
     The official registry is registered unless the composed ``discovery`` policy
     refuses it — the seam a managed deployment uses to restrict installable
-    servers to its own registry. The edition capability provider is registered
-    only when the CPP capability manager reports available — external installs
-    never see it.
+    servers to its own registry. The edition capability provider is always
+    registered: whether it is searched is asked on every request
+    (``ProviderRegistry.available_providers``), so an edition whose package
+    manager appears after this first build (its CLI installed later) is searched
+    without a gateway restart, and the public Default, which never reports
+    available, is never searched.
     """
     registry = ProviderRegistry()
 
@@ -74,22 +82,20 @@ def _build_registry() -> ProviderRegistry:
     if admits_registry("mcp", official.name, official.api_base):
         registry.register(official)
 
-    # The edition capability manager (CPP seam) registers as a second
-    # provider only when this edition actually installs one — the public
-    # Default reports unavailable, so external builds only see 'official'.
+    # The edition capability manager (CPP seam) is the second provider.
     # Imported lazily from the shared handler layer (downward import, same
     # pattern as agents.py) and injected as a factory so mcp_providers
     # stays dashboard-free.
     from kiro_crew.dashboard.handlers._shared import _capability_manager
 
-    provider = CapabilityProvider(_capability_manager)
-    if provider.is_available():
-        registry.register(provider)
+    registry.register(CapabilityProvider(_capability_manager))
 
     return registry
 
 
-# Module-level singleton — cheap to build, providers are stateless.
+# Module-level singleton — cheap to build, providers are stateless and each one
+# is asked whether it is available on every request, so nothing here is frozen
+# at the first build.
 _registry: ProviderRegistry | None = None
 
 
@@ -188,7 +194,7 @@ async def _edition_featured(
         return []
     edition = registry.get("capability")
     read = getattr(edition, "featured", None)
-    if edition is None or read is None or not edition.is_available():
+    if edition is None or read is None or not await asyncio.to_thread(edition.is_available):
         return []
     try:
         rows = await asyncio.wait_for(read(limit), timeout=_DETAIL_TIMEOUT_SECS)
@@ -211,7 +217,7 @@ async def edition_package_detail(server_id: str) -> McpServerDetail | None:
     """
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("capability")
-    if provider is None or not provider.is_available():
+    if provider is None or not await asyncio.to_thread(provider.is_available):
         return None
     try:
         return await asyncio.wait_for(
@@ -241,7 +247,7 @@ async def search_registry(
     so the two answer alike.
     """
     registry = await asyncio.to_thread(_get_registry)
-    provider_names = [p.name for p in registry.available_providers]
+    provider_names = [p.name for p in await asyncio.to_thread(lambda: registry.available_providers)]
     if featured and not query:
         rows = _featured_results(provider_names, provider, limit)
         rows += await _edition_featured(registry, provider, limit - len(rows))
@@ -281,10 +287,19 @@ async def search_registry(
             }
         )
 
-    provider_outcomes = [
-        {"name": _redact_external(outcome.name), "status": outcome.status}
-        for outcome in search_response.provider_outcomes
-    ]
+    provider_outcomes = []
+    for outcome in search_response.provider_outcomes:
+        entry = {
+            "name": _redact_external(outcome.name),
+            "display_name": _redact_external(_display_name(registry, outcome.name)),
+            "status": outcome.status,
+        }
+        # Capped AFTER the scrub: cutting first can split a credential into
+        # fragments no redaction pattern matches.
+        reason = _redact_external(outcome.message)[:_MAX_REASON_CHARS] if outcome.message else ""
+        if reason:
+            entry["message"] = reason
+        provider_outcomes.append(entry)
     return {
         "results": items,
         "providers": provider_names,
@@ -298,8 +313,11 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     Multi-provider MCP server search. A query shorter than 2 chars returns
     ``{"results": [], "providers": [...], "provider_outcomes": []}``
     WITHOUT calling any provider — the cheap availability probe the frontend
-    gates its UI on. Completed searches add one ``provider_outcomes`` row per
-    attempted provider while preserving the legacy ``providers`` name list.
+    gates its UI on. Completed searches add one ``provider_outcomes`` row
+    (``name``, ``display_name``, ``status``) per attempted provider while
+    preserving the legacy ``providers`` name list, plus an ``unavailable`` row
+    with a scrubbed ``message`` for a registered provider that was not ready and
+    said why.
     An empty query with ``featured=1`` returns the bundled featured servers
     (``discovery_featured``) without searching, plus the edition package
     registry's own featured rows.
@@ -350,7 +368,7 @@ async def api_mcp_discover_detail(request: web.Request) -> web.Response:
     provider = registry.get(provider_name)
     if provider is None:
         return web.json_response({"error": f"Unknown provider '{provider_name}'"}, status=400)
-    if not provider.is_available():
+    if not await asyncio.to_thread(provider.is_available):
         return web.json_response(
             {"error": f"Provider '{provider_name}' is not available"}, status=503
         )
@@ -462,7 +480,7 @@ async def official_install_plan(server_id: str) -> tuple[str, dict[str, Any], st
             )
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("official")
-    if provider is None or not provider.is_available():
+    if provider is None or not await asyncio.to_thread(provider.is_available):
         raise OfficialPlanError(503, "provider_unavailable", "Provider 'official' is not available")
     try:
         detail = await asyncio.wait_for(
@@ -528,9 +546,9 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             action = await _offload_config_write(
                 _set_kirocrew_entry, name, enabled=enable_now, spec=spec
             )
-            if action == "corrupt":
+            if action in ("corrupt", "unreadable"):
                 # The store exists but is not a readable MCP config, so nothing
-                # was written: report that, not an install.
+                # was written: report that, not an install, and say which.
                 sel().log_api_access(
                     caller="dashboard",
                     operation="mcp_discover_install",
@@ -538,6 +556,8 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
                     source="dashboard",
                     resources=f"official:{name} store unreadable",
                 )
+                if action == "unreadable":
+                    return _mcp_config_unreadable("the Kiro Crew mcp.json")
                 return _mcp_config_corrupt("the Kiro Crew mcp.json")
             if action == "ambiguous":
                 # Two store keys alias to this name and nothing was written:
@@ -612,7 +632,7 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("capability")
-    if provider is None or not provider.is_available():
+    if provider is None or not await asyncio.to_thread(provider.is_available):
         return web.json_response({"error": "Provider 'capability' is not available"}, status=503)
 
     # circular import: agents/mcp import sibling handler modules at call time.

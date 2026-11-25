@@ -91,6 +91,24 @@ describe('tunnelDisplay', () => {
   it('disabled → null (public edition renders nothing)', () => {
     expect(tunnelDisplay(base)).toBeNull()
   })
+
+  it.each(['reconnecting', 'starting', 'stopped'] as const)(
+    'a default-only personal Crew %s → null (quiet until it can host)',
+    (state) => {
+      expect(tunnelDisplay({ ...base, state, error: 'not signed in', reason: 'personal_default' })).toBeNull()
+    },
+  )
+
+  it('a default-only personal Crew in a final error → still shown as Error', () => {
+    const d = tunnelDisplay({ ...base, state: 'error', error: 'upgrade Crew', reason: 'personal_default' })
+    expect(d!.value).toBe('Error')
+    expect(d!.colorClass).toBe('text-danger')
+  })
+
+  it('a default-only personal Crew that connected → shown as Connected', () => {
+    const d = tunnelDisplay({ ...base, state: 'connected', url: 'https://x.example.tunnels.dev', reason: 'personal_default' })
+    expect(d!.value).toBe('Connected')
+  })
 })
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -132,6 +150,33 @@ describe('<TunnelStatus /> tile', () => {
     render(<TunnelStatusTile />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.getByTestId('tunnel-status-error')).toHaveTextContent('net-down')
+  })
+
+  it.each([
+    // Quiet: a personal Crew the relay hosts only by default that cannot host yet.
+    ['reconnecting', 'personal_default', false],
+    ['starting', 'personal_default', false],
+    ['stopped', 'personal_default', false],
+    // Loud: a final failure (a relay that refuses this version) still says to upgrade.
+    ['error', 'personal_default', true],
+    // Loud: someone chose (or a team key or workload): today's red alert.
+    ['reconnecting', '', true],
+  ] as const)('%s with reason %j → error notice shown: %s', async (state, reason, shown) => {
+    const { api } = await import('../api/client')
+    ;(api.tunnelStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state, url: '', error: 'not signed in', uptime: 0, reconnect_attempt: 1, reason,
+    })
+    const { container } = render(<TunnelStatusTile />, { wrapper: Wrapper })
+    await waitFor(() => expect(api.tunnelStatus).toHaveBeenCalled())
+    if (shown) {
+      await waitFor(() => expect(screen.getByTestId('tunnel-status-error')).toHaveAttribute('role', 'alert'))
+    } else {
+      // The status has arrived, not merely the pre-fetch empty render.
+      await waitFor(() => expect(qc.getQueryData(['tunnel-status'])).toBeTruthy())
+      await act(async () => { await Promise.resolve() })
+      expect(screen.queryByTestId('tunnel-status-error')).not.toBeInTheDocument()
+      expect(container).toBeEmptyDOMElement()
+    }
   })
 
   it('shows no error notice for a connected tunnel without an error', async () => {

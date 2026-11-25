@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         _keep_background_open,
         _native_subagent_close_all,
     )
+    from kiro_crew.dashboard.chat_turn.stop_recovery import _stale_replay_vetoed
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -292,6 +293,11 @@ def _attach_turn_stats(
     if row is None:
         return False
     row.setdefault("meta", {})["turn_stats"] = stats
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.dashboard.engine_subagent_record import attach_engine_record
+
+    # The turn's engine sub-agents, recorded on the row its footer went on.
+    attach_engine_record(slot, row)
     return True
 
 
@@ -498,10 +504,13 @@ def _emit_turn_metric(
     provider: str = "",
     harness: str = HARNESS_UNKNOWN,
     trigger: str = TRIGGER_OTHER,
+    owning_app: str = "",
 ) -> None:
     """Emit this turn's OTEL samples (best-effort).
 
     ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
+    ``owning_app`` is the turn's live client's ``owning_app``, for
+    ``kirocrew.app.run_time`` and ``kirocrew.app.credits``.
 
     ``harness`` labels the duration and usage samples (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
@@ -539,6 +548,7 @@ def _emit_turn_metric(
         provider=provider,
         harness=harness,
         trigger=trigger,
+        owning_app=owning_app,
     )
     emit_turn_usage(
         input_tokens=getattr(usage, "input_tokens", 0),
@@ -548,6 +558,7 @@ def _emit_turn_metric(
         model=model,
         provider=provider,
         harness=harness,
+        owning_app=owning_app,
     )
 
 
@@ -859,7 +870,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # turn that is actually re-driven in place, so a stall takes the
     # terminal stall_exhausted label when its 3-attempt budget is
     # already spent ("Session stuck") OR when it is a NESTED turn
-    # (depth > 0), which those branches never re-queue — it dies
+    # (depth > 0) or a stale replay the person's newer intent vetoes,
+    # which those branches never re-queue — it dies
     # with "please retry", a user-visible fault that must reach
     # fault_rate. Only this surface maintains such a budget; every
     # other surface's outcome comes from its stop reason alone.
@@ -869,7 +881,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # zero-billing timeout takes the second path only.
     if event.stop_reason == STOP_REASON_STALE_RECOVER:
         _turn_exhausted = (
-            _prompt_depth > 0 or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+            _prompt_depth > 0
+            or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+            or _stale_replay_vetoed(turn)
         )
     elif event.stop_reason == STOP_REASON_TOOL_STALL:
         _turn_exhausted = _prompt_depth > 0 or slot._tool_stall_retries >= STOP_RECOVERY_MAX_RETRIES
@@ -1044,6 +1058,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         # turn (a per-session acp_backend override included).
         harness=harness_of(client),
         trigger=_dashboard_turn_trigger(turn),
+        # Trusted: Crew sets it from the slot's app at allocation.
+        owning_app=getattr(client, "owning_app", ""),
     )
     if usage_has_billing(_u):
         # Claim the turn's single usage row BEFORE the persist await

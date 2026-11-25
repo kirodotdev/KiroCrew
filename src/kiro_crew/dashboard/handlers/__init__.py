@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers_system import (  # noqa: F401
 from kiro_crew.dashboard.origin import is_loopback  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import (  # noqa: F401
+    is_sensitive_canonical_path,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -130,6 +131,9 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_test,
     api_mcp_oauth_relay,
 )
+from kiro_crew.dashboard.handlers.connections_app_manifest import (  # noqa: E402, F401
+    api_connections_app_manifests,
+)
 
 # ── Session crew log (handlers/crew_log.py) ──
 from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
@@ -152,6 +156,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_folders_create,
     api_cron_folders_delete,
     api_cron_folders_update,
+    api_cron_get,
     api_cron_history,
     api_cron_history_all,
     api_cron_history_detail,
@@ -264,6 +269,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_measure_start,
     api_mcp_probe,
     api_mcp_probe_cached,
+    api_mcp_probe_one,
     api_mcp_quarantine_clear,
     api_mcp_remove,
     api_mcp_resolve_refresh,
@@ -383,6 +389,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_discord_config_save,
     api_feishu_config_get,
     api_feishu_config_save,
+    api_feishu_sdk_install,
     api_imessage_config_get,
     api_imessage_config_save,
     api_notification_ack,
@@ -402,6 +409,10 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_history,
     api_slack_manifest,
     api_slack_manifest_status,
+    api_slack_owner_claim_cancel,
+    api_slack_owner_claim_confirm,
+    api_slack_owner_claim_get,
+    api_slack_owner_claim_start,
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
@@ -505,6 +516,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_sessions_memory,
     api_sessions_restart,
     api_sessions_search,
+    api_sessions_search_messages,
     api_sessions_summarize,
     api_sessions_usage,
     api_sessions_usage_refresh,
@@ -542,6 +554,7 @@ from kiro_crew.dashboard.handlers.tailnet import (  # noqa: E402, F401
     api_tailnet_status,
 )
 from kiro_crew.dashboard.handlers.tailnet_mobile import (  # noqa: E402, F401
+    api_tailnet_mobile_clear_overrides,
     api_tailnet_mobile_configure,
     api_tailnet_mobile_publish,
     api_tailnet_mobile_qr,
@@ -629,12 +642,18 @@ async def api_tasks_summary(request):
     return await handler(request)
 
 
+from kiro_crew.dashboard.handlers.prompt_as_sent import (  # noqa: E402, F401
+    api_prompt_as_sent,
+)
 from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_beacon_status,
     api_collection_status,
     api_context_trace,
     api_telemetry_startup,
     api_usage_turns,
+)
+from kiro_crew.dashboard.handlers.telemetry_app_view import (  # noqa: E402, F401
+    api_app_view,
 )
 from kiro_crew.dashboard.handlers.telemetry_ui_control import (  # noqa: E402, F401
     api_ui_control_clicked,
@@ -846,7 +865,7 @@ def _prompt_dir_entry(path: Path, root_real: Path, src: str) -> dict[str, Any] |
         # for a directory or a device node.
         if not path.is_file() or path.stat().st_nlink > 1:
             return None
-        if is_sensitive_path(str(resolved)):
+        if is_sensitive_canonical_path(str(resolved)):
             return None
     except (OSError, ValueError, RuntimeError):
         return None
@@ -993,7 +1012,7 @@ def _build_prompt_base() -> list[dict[str, Any]]:
                 resolved = str(sop_file.resolve())
             except OSError:
                 continue
-            if is_sensitive_path(resolved):
+            if is_sensitive_canonical_path(resolved):
                 logger.debug("Skipping sensitive path: %s", sop_file)
                 continue
             name = sop_file.stem.removesuffix(".sop")

@@ -3,8 +3,8 @@ title: Issue Radar dispatch — let an agent complete an issue, not just investi
 status: draft
 author: zezhexu
 created: 2026-08-12
-last-audited: 2026-08-12
-audited-at: 9fe52b10a
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 2920
 implementation-prs: []
 tracking-issues: []

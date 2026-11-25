@@ -170,8 +170,10 @@ jobs:
           author=""
           if [ -n "$pr_number" ]; then
             # A read failure here must not stop the issue below: the issue is
-            # the durable record, the PR comment is the courtesy ping.
-            author="$(gh api "repos/$REPO/pulls/$pr_number" --jq '.user.login' 2>/dev/null || true)"
+            # the durable record, the PR comment is the courtesy ping. A failed
+            # read still prints gh's error body on stdout, so the fallback is
+            # its own assignment, not inside $(...).
+            author="$(gh api "repos/$REPO/pulls/$pr_number" --jq '.user.login' 2>/dev/null)" || author=""
           fi
 
           # 3. Is this the FIRST red of a streak? Read the earlier completed

@@ -1,7 +1,7 @@
 """``/api/remote-control``: the personal Remote Control setting, its notice, one-click off.
 
-``GET`` reports what the setting asks for, whether this build locks it, and whether
-the relay is connected now.
+``GET`` reports what the setting asks for, whether this build locks it, whether
+the relay is connected now, and (``problem``) why config keeps it from starting.
 
 ``PUT {"enabled": false}`` is one-click off: it writes an explicit ``false`` (so it
 stays off across a restart), answers, and then stops a running relay once the
@@ -41,20 +41,27 @@ _OPERATION = "remote_control"
 
 async def _view(request: web.Request) -> dict[str, Any]:
     requested = await asyncio.to_thread(setting.requested)
+    locked = setting.locked()
+    # Why a requested relay refuses to start, so the card never asks for a restart.
+    problem = await asyncio.to_thread(setting.start_problem) if requested and not locked else None
     guard = guard_mod.current_guard()
-    connected = False
+    connected = connecting = False
     if guard is not None:
         try:
             connected = await guard.connected()
+            connecting = not connected and await guard.connecting()
         except Exception:  # noqa: BLE001 - a status read must not fail the page
             logger.debug("Remote Control connection probe failed", exc_info=True)
     return {
         "requested": requested,
         # This build ignores the setting, so no restart connects (LTS tunnel lock).
-        "locked": setting.locked(),
+        "locked": locked,
         # Connected to the relay, so other devices can reach this Crew. A client
         # that ended in error is not.
         "running": connected,
+        **({"problem": problem} if problem else {}),
+        # Still starting (waiting for its first host token): it connects on its own.
+        "connecting": connecting,
         # Delivered by the Kiro relay: the card shows the state but no Turn off.
         "relayed": published_relay_caller(request) is not None,
     }

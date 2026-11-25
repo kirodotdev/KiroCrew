@@ -3,8 +3,8 @@ title: Wake on a stop signal -- only a worker's explicit report wakes its conduc
 status: implemented
 author: Raymond Chen, with kirocrew-worker
 created: 2026-10-10
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [18854]
 tracking-issues: [18836]

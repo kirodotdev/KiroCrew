@@ -191,6 +191,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
     # A control click is one short closed name, so 256 bytes is far above any
     # legitimate body.
+    # One app view: a short app name and three closed fields.
+    "handlers/telemetry_app_view.py::api_app_view": ("_MAX_BODY_BYTES", _BOUNDED_BY_DEFAULT),
     "handlers/telemetry_ui_control.py::api_ui_control_clicked": (
         "_MAX_BODY_BYTES",
         _BOUNDED_BY_DEFAULT,
@@ -459,6 +461,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     ),
     # The ultracode and Fast mode routes share one writer, which reads the body.
     "chat_api/slot_effort.py::_write_session_switch": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_effort.py::api_chat_slot_approve_for_me": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/session_relaunch.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/session_relaunch.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_settings.py::api_chat_slot_turn_timeout": ("<default>", _BOUNDED_CONTROL_FIELDS),

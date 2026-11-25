@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,10 +25,12 @@ from kiro_crew.config.memory_sections import lesson_extraction_enabled
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.learn import Lesson
 from kiro_crew.llm_helpers import stream_and_collect_json
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.task_models import Project, Task
 from kiro_crew.task_reporter import notify
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
+from kiro_crew.terminal_safe import safe_terminal_line
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
@@ -35,6 +38,14 @@ if TYPE_CHECKING:
 
 # The facade's logger: records keep the name ``kiro_crew.taskrunner``.
 logger = logging.getLogger("kiro_crew.taskrunner")
+
+#: ``(task_id, run.error, refusal text)`` of the last planning sandbox refusal in the
+#: running task's context. A context value, not a module cache: a task starts from a copy
+#: of its creator's context, so a value set in it never reaches the caller, and it dies
+#: with the task. ``live_error`` (the ``kirocrew run`` stderr line) is its only reader.
+_LIVE_REFUSAL: ContextVar[tuple[str, str, str]] = ContextVar(
+    "taskrunner_live_sandbox_refusal", default=("", "", "")
+)
 
 
 async def _notify(self: TaskRunner, title: str, body: str, run: Project | None = None) -> None:
@@ -44,6 +55,37 @@ async def _notify(self: TaskRunner, title: str, body: str, run: Project | None =
     # back to the sink's own default destination.
     session_key = self._run_session_keys.get(run.task_id, "") if run else ""
     await notify(title, body, run=run, callback=self._on_notify, session_key=session_key)
+
+
+async def decompose_recording_refusal(
+    runner: TaskRunner, run: Project, error_if_refused: str, *args, **kwargs
+) -> list[Task]:
+    """``runner._decompose(*args, **kwargs)``, with a host sandbox refusal read as no plan.
+
+    The run then fails the way it fails on any empty plan, so ``run.error`` and every
+    record built from it read as they always have (*error_if_refused* is that text). The
+    refusal's own text, the machine owner's runbook, is stored nowhere: it goes to the
+    calling task's context for :func:`live_error` (the ``kirocrew run`` stderr line), and
+    its stack trace to DEBUG. A plain function rather than a ``TaskRunner`` member: the
+    runner's member set is frozen.
+    """
+    try:
+        return await runner._decompose(*args, **kwargs)
+    except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
+        logger.debug("Task run %s: the host refused a sandbox", run.task_id, exc_info=True)
+        _LIVE_REFUSAL.set((run.task_id, error_if_refused, safe_terminal_line(str(exc))))
+        return []
+
+
+def live_error(run: Project) -> str:
+    """*run*'s error for the person watching this task: the refusal's own text while
+    ``run.error`` is still the one a sandbox refusal in this task stands behind, else
+    ``run.error``. Read in the task that awaited the run (``kirocrew run``); nothing
+    stored or served reads it."""
+    task_id, error, refusal = _LIVE_REFUSAL.get()
+    if refusal and run.error and (task_id, error) == (run.task_id, run.error):
+        return refusal
+    return run.error
 
 
 def _log_task(self: TaskRunner, history_key: str, run: Project, task: Task) -> None:

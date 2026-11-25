@@ -21,7 +21,7 @@ from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registe
     _stub_remote_probe_ssrf_vet,
 )
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sandbox, sandbox_argv, sandbox_tiers
 from kiro_crew.mcp_discovery import (
     McpServerInfo,
     _cache_probe,
@@ -1142,6 +1142,80 @@ class TestFirstPartyManagedArgv:
             await probe_server(server)
 
         assert seen["flag"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("floor", ["cc", "strict"])
+    async def test_the_policy_markers_survive_a_floor_tier_scrub(
+        self, floor, monkeypatch, tmp_path
+    ) -> None:
+        """A cc/strict floor's launcher scrub must not strip the managed probe's markers."""
+        from kiro_crew.platform import policy_distribution as pd
+        from kiro_crew.platform.enterprise_policy_fetch import PROFILE_PIN_ENV
+
+        self._patch_invocation(monkeypatch)
+        monkeypatch.delenv(PROFILE_PIN_ENV, raising=False)
+        monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+        monkeypatch.setattr(pd, "effective_max_cache_age", lambda: 600)
+        # A trusted ``env`` binary on every host, so the shape under test does not
+        # depend on which absolute ``env`` this machine ships.
+        env_binary = tmp_path / "env"
+        env_binary.write_text("")
+        env_binary.chmod(0o755)
+        monkeypatch.setattr(sandbox, "_ENV_BINARY_CANDIDATES", (str(env_binary),))
+        # The tier the launcher really builds: the probe asks for ``standard`` and the
+        # governance floor clamps it up.
+        tier = sandbox_tiers._clamp_sandbox_mode_to_floor("standard", floor)
+        assert tier == floor
+        denied = tuple(sandbox_tiers._AGENT_DENIED_ENV_KEYS)
+        assert {pd.POLICY_CACHE_ONLY_ENV, pd.POLICY_MAX_AGE_ENV} <= set(denied)
+
+        class _Spawned(Exception):
+            pass
+
+        async def _probe(server: McpServerInfo) -> tuple[list[str], dict[str, str]]:
+            spawned: dict[str, object] = {}
+
+            async def _capture(*argv, **kwargs):
+                spawned["argv"] = list(argv)
+                spawned["env"] = dict(kwargs["env"])
+                raise _Spawned()
+
+            # The argv and env the (passthrough) sandbox wrap hands the launcher.
+            with (
+                patch("kiro_crew.mcp_discovery_probe.create_subprocess_limited", _capture),
+                patch("kiro_crew.mcp_discovery.shutil.which", return_value=server.command),
+            ):
+                await probe_server(server)
+            return spawned["argv"], spawned["env"]  # type: ignore[return-value]
+
+        def _launch(argv: list[str], env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+            # The namespace launcher's scrub of this tier, then the ``env`` exec.
+            final = {k: v for k, v in env.items() if not k.startswith(denied)}
+            if argv[0] == str(env_binary):
+                argv = argv[1:]
+                while argv and "=" in argv[0]:
+                    name, _, value = argv.pop(0).partition("=")
+                    final[name] = value
+            return argv, final
+
+        first_party = McpServerInfo(
+            name="kirocrew-core", command=self._INVOCATION[0], args=list(self._INVOCATION[1])
+        )
+        argv, env = _launch(*await _probe(first_party))
+        assert env.get(pd.POLICY_CACHE_ONLY_ENV) == "1"
+        assert env.get(pd.POLICY_MAX_AGE_ENV) == "600"
+        assert argv == [
+            sandbox_argv._resolve_agent_executable(self._INVOCATION[0]),
+            *self._INVOCATION[1],
+        ]
+
+        third_party_bin = tmp_path / "node"
+        third_party_bin.write_text("")
+        third_party_bin.chmod(0o755)
+        third_party = McpServerInfo(name="playwright-mcp", command=str(third_party_bin))
+        argv, env = await _probe(third_party)
+        assert argv == [str(third_party_bin)]
+        assert pd.POLICY_CACHE_ONLY_ENV not in env and pd.POLICY_MAX_AGE_ENV not in env
 
 
 class TestNoteDeniedEnv:

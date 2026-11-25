@@ -55,25 +55,38 @@ class _GateTally:
     sequence, because status and history are per-run, not per-agent.
 
     Only an unconditional security block counts as a refusal here. A governance
-    denial and an unattended-approval timeout also arrive unapproved, but they
-    describe the policy state or an absent approver rather than a defect in the
-    job — and a job's failure counter drives auto-pause, which is durable.
+    denial, a spec hook's refusal and a rejected or timed-out approval also
+    arrive unapproved, but they describe the policy state or an absent approver
+    rather than a defect in the job — and a job's failure counter drives
+    auto-pause, which is durable. Such calls are counted in ``unresolved`` and
+    the first few kept with their reasons in ``unresolved_calls``, so a run in
+    which none of them ran can name them.
 
     A refusal is reported whether or not other calls got through. The prose
     a run returns is the model's account of what it did, and a model whose
     final write was refused still reports the write as done: the refused
     call's work simply never happened, and the only record of it was the SEL
     audit row. ``all_blocked`` decides the FAILURE budget; ``partially_blocked``
-    decides whether the run's status and its delivery name the refusal.
+    and ``none_approved`` decide whether the run's status and its delivery name
+    the refusal.
     """
 
+    # How many refused and how many unresolved calls are kept by name: the
+    # number ``refusal_summary`` names. The counts stay exact past it.
+    _NAMED_CALLS = 3
+    # How much of a long title ``refusal_summary`` keeps beside a long rule.
+    _TITLE_FLOOR = 40
+
     def __init__(self) -> None:
-        self.refused: list[str] = []
-        # The rule each refusal names, parallel to ``refused`` ("" when the
-        # gate gave no reason), so the summary can say WHY, not only what.
-        self.refused_rules: list[str] = []
+        # How many calls the security gate blocked.
+        self.refused = 0
+        # (title, rule) of the first refused calls ("" when the gate gave no
+        # reason), so the summary can say WHY, not only what.
+        self.refused_calls: list[tuple[str, str]] = []
         self.approved = 0
         self.unresolved = 0
+        # (title, first reason line) of the first unresolved calls.
+        self.unresolved_calls: list[tuple[str, str]] = []
         # An approved call whose bare tool name is ``send_message``. Titles
         # arrive as ``Running: @server/send_message`` (kiro-cli) or
         # ``mcp__server__send_message`` (ACP); ``_bare_tool_name`` strips
@@ -86,12 +99,28 @@ class _GateTally:
             if _bare_tool_name(title) == "send_message":
                 self.delivered = True
         elif security_blocked:
-            self.refused.append(title)
-            # First line only: it is the rule; later lines are operator notes
-            # and diagnostics.
-            self.refused_rules.append((reason or "").strip().split("\n", 1)[0].strip())
+            self.refused += 1
+            self._keep(self.refused_calls, title, reason)
         else:
             self.unresolved += 1
+            self._keep(self.unresolved_calls, title, reason)
+
+    def _keep(self, calls: list[tuple[str, str]], title: str, reason: str) -> None:
+        """Keep one refused call by name, within the bounds the summary reads.
+
+        Titles are LLM-authored and a run can note any number of calls, so
+        only the first ``_NAMED_CALLS`` are kept, each field cut to the one
+        line it can appear in. The cut comes after :func:`display_safe`, so it
+        cannot split a credential the redactor would have matched whole. First
+        reason line only: it is the rule; later lines are operator notes and
+        diagnostics.
+        """
+        from kiro_crew.cron_history import keep_ends
+
+        if len(calls) < self._NAMED_CALLS:
+            rule = (reason or "").strip().split("\n", 1)[0].strip()
+            cap = _CRON_FAILURE_DETAIL_CAP
+            calls.append((keep_ends(display_safe(title), cap), display_safe(rule)[:cap]))
 
     def _empty_reply_text(self, count: str) -> str:
         """The empty-reply shape this tally names, with *count* in the count slot.
@@ -158,41 +187,74 @@ class _GateTally:
         cannot work and spends nothing from the failure budget."""
         return bool(self.refused) and not self.all_blocked
 
+    @property
+    def none_approved(self) -> bool:
+        """No call was approved and none was security-blocked, but at least
+        one was refused another way (a governance denial, a spec hook's
+        refusal, a rejected or timed-out approval). Nothing ran, so the run is
+        reported, but a policy state or an absent approver is not evidence of
+        a job that cannot work, so it spends nothing from the failure budget."""
+        return bool(self.unresolved) and self.approved == 0 and not self.refused
+
     def refusal_summary(self) -> str:
         """One redacted, capped line naming what the gate refused.
 
         Shared by the job's ``last_error`` and the banner on the delivered
         result, so the cron row and the notification cannot disagree about
-        which call was lost. At most three titles are named so a run that
-        tripped the gate many times still reads as one line.
+        which call was lost. Only the calls the tally kept are named, and the
+        list ends with "and N more" when it names fewer than it counts, so a
+        run that tripped the gate many times still reads as one line. That
+        clause is kept clear of the length cap, which would otherwise cut it.
 
         Titles are LLM-authored, and the banner lands in the result BODY,
         which the Slack leg posts as parsed mrkdwn without a mention defang
         (:func:`render_for_slack` redacts; it does not touch ``<!channel>``).
-        So the line goes through :func:`display_safe`, the shared outbound
-        display sink: display-form credential redaction plus the zero-width
-        break in ``<!`` and ``@`` that stops a refused call titled
-        ``<!channel>`` from paging a whole channel the moment the run reports
-        it. The break is invisible on the dashboard cron row, so one spelling
-        serves both surfaces.
+        So every kept title and rule went through :func:`display_safe`, the
+        shared outbound display sink, when ``_keep`` stored it: display-form
+        credential redaction plus the zero-width break in ``<!`` and ``@``
+        that stops a refused call titled ``<!channel>`` from paging a whole
+        channel the moment the run reports it. The break is invisible on the
+        dashboard cron row, so one spelling serves both surfaces.
 
         Each named call carries the rule that refused it, in parentheses, when
         the gate reported one: a bare "blocked" leaves the reader unable to
-        tell which rule fired or whether it was the right one.
+        tell which rule fired or whether it was the right one. A run in which
+        no call was approved (``none_approved``) names its unresolved calls
+        the same way, with "not approved" for a rejected or timed-out approval,
+        which records no reason.
+
+        Each named call gets an equal share of the cap. A title too long for
+        its share keeps its start and its end around a cut, and gives way
+        before its rule does: a long chained command would otherwise push the
+        rule past the cap, and the refused segment of a chain is often its
+        last one.
         """
+        from kiro_crew.cron_history import keep_ends
 
-        def _named(title: str, rule: str) -> str:
+        def _named(title: str, rule: str, width: int) -> str:
             name = title or "<untitled tool>"
-            return f"{name} ({rule})" if rule else name
+            if not rule:
+                return keep_ends(name, width)
+            kept_rule = keep_ends(rule, width - len(" ()") - min(len(name), self._TITLE_FLOOR))
+            return f"{keep_ends(name, width - len(' ()') - len(kept_rule))} ({kept_rule})"
 
-        rules = self.refused_rules + [""] * (len(self.refused) - len(self.refused_rules))
-        named = ", ".join(_named(t, r) for t, r in zip(self.refused[:3], rules[:3], strict=True))
+        def _summary(head: str, calls: list[tuple[str, str]], count: int) -> str:
+            more = f", and {count - len(calls)} more" if count > len(calls) else ""
+            room = _CRON_FAILURE_DETAIL_CAP - len(head) - len(more)
+            share = (room - len(", ") * (len(calls) - 1)) // max(len(calls), 1)
+            named = ", ".join(_named(t, r, share) for t, r in calls)
+            return (head + named)[: _CRON_FAILURE_DETAIL_CAP - len(more)] + more
+
+        if self.none_approved:
+            head = f"none of {self.unresolved} tool call(s) ran, all refused or not approved: "
+            calls = [(t, r or "not approved") for t, r in self.unresolved_calls]
+            return _summary(head, calls, self.unresolved)
         if self.all_blocked:
-            head = f"all {len(self.refused)} tool call(s) blocked by the security gate: "
+            head = f"all {self.refused} tool call(s) blocked by the security gate: "
         else:
-            total = self.approved + self.unresolved + len(self.refused)
-            head = f"{len(self.refused)} of {total} tool call(s) blocked by the security gate: "
-        return display_safe(head + named)[:_CRON_FAILURE_DETAIL_CAP]
+            total = self.approved + self.unresolved + self.refused
+            head = f"{self.refused} of {total} tool call(s) blocked by the security gate: "
+        return _summary(head, self.refused_calls, self.refused)
 
 
 def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
@@ -201,11 +263,13 @@ def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
     The result is what every delivery leg (dashboard bell and slot, channel,
     Slack) shows and what the dedup hash is taken over, so one prefix here is
     what puts the refused call in front of the user beside the prose that may
-    claim the work was done. A fully blocked run is not annotated: its verdict
-    is a failure alert in its own right, and a tool-free or clean run has
-    nothing to name.
+    claim the work was done. A run in which no call was approved and none was
+    security-blocked (``none_approved``) is prefixed the same way, naming its
+    unresolved calls. A fully blocked run is not annotated: its verdict is a
+    failure alert in its own right, and a tool-free or clean run has nothing
+    to name.
     """
-    if not tally.partially_blocked:
+    if not (tally.partially_blocked or tally.none_approved):
         return result_text
     return f"Blocked: {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
 

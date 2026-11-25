@@ -38,6 +38,7 @@ from kiro_crew.subagent_parts.run_limits import (
 
 if TYPE_CHECKING:
     from kiro_crew.subagent import (
+        _MEMORY_PRICE_HOLDERS,
         _STARTUP_COLLECT_GRACE_SECS,
         _STARTUP_HANDSHAKES,
         _STARTUP_LAUNCH_MARGIN_SECS,
@@ -281,6 +282,9 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
+        # Host memory sizing reads what our settled runtimes hold (macOS) from
+        # every live manager (``_host_mem_term``).
+        _MEMORY_PRICE_HOLDERS.add(self)
         # Continuable conversations: session_key ("subagent:<conv-id>") -> last-used
         # ``time.monotonic()`` reading, for the reaper's idle-TTL sweep. The reaper's
         # first pass rebuilds it from state.json (keep=True runs) after a restart; a
@@ -681,8 +685,10 @@ class SubagentManager:
         without this every manager leaks the connection's descriptors and its
         writer executor for the life of the process. Idempotent and safe to call
         from a synchronous teardown: it cancels a still-pending async open, then
-        closes the store if one was attached.
+        closes the store if one was attached. A closed manager also leaves the
+        set host memory sizing reads our settled runtimes from.
         """
+        _MEMORY_PRICE_HOLDERS.discard(self)
         taskq_open_task = self._taskq_init_task
         if taskq_open_task is not None and not taskq_open_task.done():
             taskq_open_task.cancel()
@@ -843,6 +849,7 @@ class SubagentManager:
     _leave_startup = _admission_surface._leave_startup
     running_agents_for = _admission_surface.running_agents_for
     task_memory_rows = _admission_surface.task_memory_rows
+    settled_runtime_hold_gb = _admission_surface.settled_runtime_hold_gb
     spawn = _admission_surface.spawn
     _spawn_after_memory_read = _admission_surface._spawn_after_memory_read
     prepare_spawn = _admission_surface.prepare_spawn
@@ -990,6 +997,7 @@ class SubagentManager:
     _write_state_off_loop = _run_surface._write_state_off_loop
     _write_finished_result_off_loop = _run_surface._write_finished_result_off_loop
     _start_result_file = _run_surface._start_result_file
+    _append_result_chunk = _run_surface._append_result_chunk
     _drain_state_writer = _run_surface._drain_state_writer
     _hold_for_detached_writer = _run_surface._hold_for_detached_writer
     _cap_unclaimed_result = _run_surface._cap_unclaimed_result

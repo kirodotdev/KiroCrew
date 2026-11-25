@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -526,6 +527,122 @@ class TestOptimizerEndpoint:
         mock_sessions.discard_conversation.assert_awaited_once()
         _args, kwargs = mock_sessions.discard_conversation.await_args
         assert kwargs.get("replay") is False
+
+    @pytest.mark.asyncio
+    async def test_the_session_start_runs_outside_the_30s_budget(self, monkeypatch):
+        """Starting the session does not spend the 30s budget.
+
+        Under load a cold start alone can outlast the budget, and a budget that
+        covered it would cancel the start and hand the draft back unchanged. The
+        handler's ``asyncio`` is swapped for one whose ``wait_for`` records while
+        it runs, and the session start and the stream read that record, so the
+        test needs no wall-clock race.
+        """
+        import asyncio
+
+        from kiro_crew.dashboard.handlers import optimizer
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+
+        budget = {"running": False}
+
+        class _BudgetWatchingAsyncio:
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            @staticmethod
+            async def wait_for(awaitable, timeout):
+                budget["running"] = True
+                try:
+                    return await asyncio.wait_for(awaitable, timeout)
+                finally:
+                    budget["running"] = False
+
+        monkeypatch.setattr(optimizer, "asyncio", _BudgetWatchingAsyncio())
+
+        mock_client = AsyncMock()
+        under_budget: dict[str, bool] = {}
+
+        async def fake_stream(prompt):
+            del prompt
+            under_budget["stream"] = budget["running"]
+            yield MagicMock(kind=EVENT_TEXT_CHUNK, text="Refactor the parser module.")
+            yield MagicMock(kind=EVENT_COMPLETE)
+
+        mock_client.stream = fake_stream
+
+        async def start(*args, **kwargs):
+            del args, kwargs
+            under_budget["start"] = budget["running"]
+            return mock_client, True, False
+
+        mock_sessions = MagicMock()
+        mock_sessions.get_or_create = AsyncMock(side_effect=start)
+        mock_sessions.release = MagicMock()
+        mock_sessions.discard_conversation = AsyncMock(return_value=True)
+
+        mock_state = MagicMock()
+        mock_state.sessions = mock_sessions
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"prompt": "refactor the parser", "context": ""})
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+
+        assert under_budget == {"start": False, "stream": True}
+        assert json.loads(resp.body) == {
+            "optimized": "Refactor the parser module.",
+            "changed": True,
+        }
+        mock_sessions.release.assert_called_once_with("_optimizer")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("role_models", "role_efforts", "expected"),
+        [
+            ({"optimizer": "fast-model-1"}, {"optimizer": "low"}, ("fast-model-1", "low")),
+            # Unset: nothing is passed, so the start resolves the background pair.
+            ({"background": "bg-model-1"}, {"background": "high"}, (None, None)),
+        ],
+    )
+    async def test_the_session_starts_on_the_optimizer_role_pins(
+        self, monkeypatch, role_models, role_efforts, expected
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers import optimizer
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+
+        cfg = KiroCrewConfig()
+        cfg.agent.role_models = role_models
+        cfg.agent.role_efforts = role_efforts
+        monkeypatch.setattr(
+            optimizer, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg), raising=False
+        )
+
+        mock_client = AsyncMock()
+
+        async def fake_stream(prompt):
+            del prompt
+            yield MagicMock(kind=EVENT_TEXT_CHUNK, text="Refactor the parser module.")
+            yield MagicMock(kind=EVENT_COMPLETE)
+
+        mock_client.stream = fake_stream
+        mock_sessions = MagicMock()
+        mock_sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
+        mock_sessions.release = MagicMock()
+        mock_sessions.discard_conversation = AsyncMock(return_value=True)
+        mock_state = MagicMock()
+        mock_state.sessions = mock_sessions
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"prompt": "refactor the parser", "context": ""})
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+
+        assert json.loads(resp.body)["changed"] is True
+        kwargs = mock_sessions.get_or_create.call_args.kwargs
+        assert (kwargs.get("model"), kwargs.get("reasoning_effort_override")) == expected
 
 
 def _paste_mock_state(captured_prompt, reply_text):

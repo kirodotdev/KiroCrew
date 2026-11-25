@@ -3,6 +3,7 @@ import { render, screen, act, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Terminal } from '@xterm/xterm'
 import TerminalCompletion from '../components/TerminalCompletion'
+import { setTerminalCtrlCopyPaste, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 
 /* A minimal xterm stand-in: TerminalCompletion only reads the cursor's screen
  * row, subscribes to cursor/linefeed/render events, registers two OSC handlers
@@ -69,6 +70,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     },
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
     hasSelection: () => hasSel,
+    clearSelection: () => { hasSel = false },
   }
   return {
     term: term as unknown as Terminal,
@@ -630,6 +632,67 @@ describe('TerminalCompletion', () => {
       h.setSelection(true)
       expect(h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true, altKey: true }).passedThrough).toBe(true)
       expect(h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true, metaKey: true }).passedThrough).toBe(true)
+      expect(execCommand).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Ctrl+C / Ctrl+V copy and paste setting', () => {
+    let execCommand: ReturnType<typeof vi.fn>
+    beforeEach(() => {
+      execCommand = vi.fn(() => true)
+      document.execCommand = execCommand as unknown as typeof document.execCommand
+    })
+    afterEach(() => {
+      delete (document as { execCommand?: unknown }).execCommand
+      __resetTerminalFontStore()
+    })
+
+    function mount(on: boolean) {
+      setTerminalCtrlCopyPaste(on)
+      const line = `${PROMPT}cd zzz`
+      const h = makeTerm(line, line.length)
+      renderCompletion(h.term)
+      return h
+    }
+
+    it('on, with a selection: Ctrl+C copies, clears the selection and is consumed', () => {
+      const h = mount(true)
+      h.setSelection(true)
+      const r = h.key({ key: 'c', code: 'KeyC', ctrlKey: true })
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy')
+      expect(r).toEqual({ passedThrough: false, prevented: true })
+      // The selection is gone, so the next Ctrl+C is the shell interrupt again.
+      expect(h.key({ key: 'c', code: 'KeyC', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(execCommand).toHaveBeenCalledTimes(1)
+    })
+
+    it('on, with no selection: Ctrl+C passes through as the interrupt', () => {
+      const h = mount(true)
+      expect(h.key({ key: 'c', code: 'KeyC', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(execCommand).not.toHaveBeenCalled()
+    })
+
+    it('on: Ctrl+V is kept from xterm but not cancelled, so the browser pastes', () => {
+      const h = mount(true)
+      expect(h.key({ key: 'v', code: 'KeyV', ctrlKey: true })).toEqual({ passedThrough: false, prevented: false })
+    })
+
+    it('on: matches the letter typed, with the physical key only for a non-Latin layout', () => {
+      const h = mount(true)
+      h.setSelection(true)
+      // Dvorak: the physical C position types `j`, so Ctrl+J stays the shell's.
+      expect(h.key({ key: 'j', code: 'KeyC', ctrlKey: true }).passedThrough).toBe(true)
+      expect(execCommand).not.toHaveBeenCalled()
+      // Cyrillic: `с` is not a Latin letter, so the physical C position copies.
+      expect(h.key({ key: 'с', code: 'KeyC', ctrlKey: true }).passedThrough).toBe(false)
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy')
+    })
+
+    it('off: Ctrl+C with a selection and Ctrl+V both reach xterm unchanged', () => {
+      const h = mount(false)
+      h.setSelection(true)
+      expect(h.key({ key: 'c', code: 'KeyC', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(h.key({ key: 'v', code: 'KeyV', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
       expect(execCommand).not.toHaveBeenCalled()
     })
   })

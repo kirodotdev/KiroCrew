@@ -1,20 +1,24 @@
 ---
 title: Crewmate greeting on open — the warm resume card and the cold welcome
-status: accepted
+status: superseded
 author: iamwhatever
 created: 2026-10-07
-last-audited: 2026-10-07
-audited-at: c65697eaf6
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
 implementation-prs: [17797, 17822]
 tracking-issues: []
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-delayed-task-brief.md]
 ---
 
 # RFC: Crewmate greeting on open — the warm resume card and the cold welcome
 
-- Status: accepted. This is the product owner's decision, given 2026-10-07 in the
+- Status: superseded by [rfc-delayed-task-brief.md](rfc-delayed-task-brief.md). Both
+  branches shipped (#17797, #17822) and neither is on main: the warm branch was
+  replaced by the warm task brief (`WarmBriefCard.tsx`), and #23829 removed the cold
+  Recap on the owner's decision, which that document records (checked at `0c5d8bd5f3`).
+  It was accepted as the product owner's decision, given 2026-10-07 in the
   "Crew page polish" goal ("as a mate, it should send a welcome message when the
   user starts to chat, guiding them on what to do, based on the past tasks the
   user assigned to that mate or that are paused"). It adds to the crewmate DM

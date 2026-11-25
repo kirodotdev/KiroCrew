@@ -29,6 +29,16 @@ on:
         description: "Name of the uploaded artifact containing the wheel"
         required: true
         type: string
+      verify_only:
+        description: >-
+          Run the platform-wheel gate and stop: the publish job is skipped, so
+          nothing reaches the distribution bucket, the feed or the manifest
+          signing key. verify-cli-publish.yml passes true so a fix to this
+          lane can be checked from a branch without publishing. Every other
+          caller leaves it false.
+        required: false
+        type: boolean
+        default: false
       promote:
         description: "Publish verified prerelease bytes to stable without rebuilding"
         required: false
@@ -57,8 +67,71 @@ permissions:
   attestations: write
 
 jobs:
+  # The platform wheels' engine gate, in its own job: it installs the pure wheel
+  # (and so its dependencies from PyPI) to import the checker, so it runs with no
+  # environment, no AWS role and no id-token. publish-cli only compares the bytes
+  # it publishes against the sums this job verified.
+  verify-platform-wheels:
+    name: Verify platform wheels (${{ inputs.channel }})
+    if: ${{ !inputs.promote }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      sums: ${{ steps.gate.outputs.sums }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the pure wheel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: cli-dist
+
+      - name: Download platform wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cli-wheel-*
+          path: cli-platform
+          merge-multiple: true
+
+      # The pure wheel pins pysqlite3-binary, whose only wheels are cp310-cp312,
+      # so the runner image's own python (3.13+) cannot install it. Use the
+      # python build-wheel.yml builds with.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        with:
+          python-version: "3.12"
+          # cache disabled: the gate checks bytes that are about to be published,
+          # and an Actions cache is writable from any branch (zizmor cache-poisoning).
+
+      - name: Gate - every platform wheel carries the pinned engine
+        id: gate
+        env:
+          GATE_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          PURE=(cli-dist/*-py3-none-any.whl)
+          [ "${#PURE[@]}" -eq 1 ] && [ -f "${PURE[0]}" ] || { echo "::error::expected one pure wheel"; exit 1; }
+          "$GATE_PYTHON" -m venv "$RUNNER_TEMP/gate"
+          "$RUNNER_TEMP/gate/bin/pip" install --quiet "${PURE[0]}"
+          WANT="manylinux_2_28_x86_64 manylinux_2_28_aarch64 macosx_11_0_arm64 macosx_11_0_x86_64"
+          for TAG in $WANT; do
+            ls cli-platform/*-py3-none-"$TAG".whl >/dev/null 2>&1 \
+              || { echo "::error::no platform wheel for $TAG; refusing to publish without it"; exit 1; }
+          done
+          "$RUNNER_TEMP/gate/bin/python" scripts/kas_platform_wheel.py verify --pure "${PURE[0]}" cli-platform/*.whl
+          echo "sums=$(cd cli-platform && sha256sum ./*.whl | sed 's#\./##' | tr '\n' ';')" >> "$GITHUB_OUTPUT"
+
   publish-cli:
     name: Publish CLI wheel (${{ inputs.channel }})
+    needs: verify-platform-wheels
+    # A promotion carries no platform wheels, so the gate is skipped there. A
+    # verify_only call never publishes, whatever the gate says.
+    if: ${{ !cancelled() && !inputs.verify_only && (needs.verify-platform-wheels.result == 'success' || (inputs.promote && needs.verify-platform-wheels.result == 'skipped')) }}
     # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
     # than by GROUP. nightly.yml calls this lane with no repository guard, so a
     # fork running its own nightly starts it too; there an organization runner
@@ -371,6 +444,107 @@ jobs:
             echo "- Key: \`${MANIFEST_KEY_ID}\`"
             echo "- Feed: ${FEED_NOTE}"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "$VERDICT" > "$RUNNER_TEMP/feed-verdict"
+
+      # The platform wheels (build-platform-wheels.yml): the
+      # pure wheel plus the pinned KAS engine. Each gets a sha256, provenance, and
+      # its own signed manifest, cli-manifest-<tag>.json beside it and
+      # feed/<channel>/latest-cli-<tag>.json, in the schema latest-cli.json uses;
+      # latest-cli.json itself is untouched, because released clients refuse any
+      # field they do not know. The platform feed moves only when the pure feed
+      # above did. A promotion carries no platform wheels, so a stable promotion
+      # publishes the pure wheel alone and its clients take the engine through
+      # `kirocrew kas install`.
+      - name: Download platform wheels
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cli-wheel-*
+          path: cli-platform
+          merge-multiple: true
+
+      - name: Gate - the platform wheels are the bytes the verify job checked
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}
+        env:
+          VERIFIED: ${{ needs.verify-platform-wheels.outputs.sums }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$VERIFIED" | tr ';' '\n' | sed '/^$/d' | sort > "$RUNNER_TEMP/verified.sums"
+          (cd cli-platform && sha256sum ./*.whl | sed 's#\./##' | sort) > "$RUNNER_TEMP/here.sums"
+          [ -s "$RUNNER_TEMP/verified.sums" ] || { echo "::error::the verify job reported no wheels"; exit 1; }
+          diff "$RUNNER_TEMP/verified.sums" "$RUNNER_TEMP/here.sums" \
+            || { echo "::error::the platform wheels differ from the ones verify-platform-wheels checked"; exit 1; }
+
+      # Same one paused retry as the pure wheel's attestation above.
+      - name: Attest platform wheel provenance
+        id: attest_platform
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: cli-platform/*.whl
+
+      - name: Pause before retrying platform wheel provenance
+        if: ${{ (env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote) && steps.attest_platform.outcome == 'failure' }}
+        run: sleep 45
+
+      - name: Attest platform wheel provenance (retry)
+        if: ${{ (env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote) && steps.attest_platform.outcome == 'failure' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: cli-platform/*.whl
+
+      - name: Publish platform wheels and their signed manifests
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}
+        env:
+          BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          KEY_ARN: ${{ vars.CLI_MANIFEST_SIGNING_KEY_ARN }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          PYREQ: ${{ steps.manifest.outputs.python_requires }}
+        run: |
+          set -euo pipefail
+          CDN_BASE="${CDN_BASE%/}"
+          . "$RUNNER_TEMP/put_immutable.sh"
+          if [ "$CHANNEL" = lts ]; then STEM=kirocrew_lts; else STEM=kirocrew; fi
+          PREFIX="cli/${CHANNEL}/${WHEEL_VERSION}"
+          VERDICT="$(cat "$RUNNER_TEMP/feed-verdict")"
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          PUB_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+          MIN_VERSION=$(grep -v '^[[:space:]]*#' packaging/MIN_VERSION | grep -v '^[[:space:]]*$' || true)
+          MIN_VERSION=$(printf '%s' "$MIN_VERSION" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          PYREQ_ATTR=$(python3 -c 'import html,sys; print(html.escape(sys.argv[1]))' "$PYREQ")
+          : > "$RUNNER_TEMP/platform-links.txt"
+          ( cd cli-platform && sha256sum ./*.whl | sed 's#\./##' > SHA256SUMS )
+          for WHL in cli-platform/*.whl; do
+            NAME=$(basename "$WHL")
+            if [[ ! "$NAME" =~ ^${STEM}-${WHEEL_VERSION//./\\.}-py3-none-([a-z0-9_]+)\.whl$ ]]; then
+              echo "::error::platform wheel $NAME does not match ${STEM}-${WHEEL_VERSION}"; exit 1
+            fi
+            TAG="${BASH_REMATCH[1]}"
+            SHA=$(sha256sum "$WHL" | awk '{print $1}')
+            MANIFEST="cli-platform/cli-manifest-${TAG}.json"
+            python3 packaging/signing/cli-manifest.py payload \
+              --channel "$CHANNEL" --version "$WHEEL_VERSION" \
+              --wheel-url "${CDN_BASE}/${PREFIX}/${NAME}" \
+              --sha256 "$SHA" --python-requires "$PYREQ" \
+              --pub-date "$PUB_DATE" --min-version "$MIN_VERSION" \
+              --public-key packaging/signing/cli-manifest-public.pem \
+              --output "$RUNNER_TEMP/payload-${TAG}.json"
+            python3 packaging/signing/cli-manifest.py kms-sign \
+              --payload "$RUNNER_TEMP/payload-${TAG}.json" --key-arn "$KEY_ARN" \
+              --public-key packaging/signing/cli-manifest-public.pem --output "$MANIFEST"
+            put_immutable "${PREFIX}/${NAME}" "$WHL"
+            put_immutable "${PREFIX}/cli-manifest-${TAG}.json" "$MANIFEST"
+            if [ "$VERDICT" = advance ]; then
+              aws s3 cp "$MANIFEST" "s3://${BUCKET}/feed/${CHANNEL}/latest-cli-${TAG}.json" \
+                --content-type application/json --cache-control no-cache
+            fi
+            echo "<a href=\"${CDN_BASE}/${PREFIX}/${NAME}#sha256=${SHA}\" data-requires-python=\"${PYREQ_ATTR}\">${NAME}</a><br/>" \
+              >> "$RUNNER_TEMP/platform-links.txt"
+            echo "- Platform wheel: \`${NAME}\` (\`latest-cli-${TAG}.json\`: ${VERDICT})" >> "$GITHUB_STEP_SUMMARY"
+          done
+          put_immutable "${PREFIX}/SHA256SUMS-platform" cli-platform/SHA256SUMS
 
       - name: Publish PEP 503 simple index
         if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
@@ -425,6 +599,15 @@ jobs:
               | { grep -v ">${WHEEL_NAME}<" || true; } \
               | sed '/ data-requires-python="/!s/">/" data-requires-python="\&gt;=3.12">/' > links.txt
             echo "$NEW_LINK" >> links.txt
+            # This run's platform wheels, for this channel only: they are signed
+            # for it and live under its cli/ prefix (none on a promotion).
+            if [ "$1" = "$CHANNEL" ] && [ -s "${RUNNER_TEMP:-/nonexistent}/platform-links.txt" ]; then
+              while IFS= read -r LINK; do
+                LNAME=$(printf '%s' "$LINK" | sed -E 's#.*>([^<]+)</a><br/>$#\1#')
+                { grep -v ">${LNAME}<" links.txt || true; } > links.tmp && mv links.tmp links.txt
+                echo "$LINK" >> links.txt
+              done < "${RUNNER_TEMP}/platform-links.txt"
+            fi
 
             {
               echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>'"${PROJECT}"'</title></head><body><h1>'"${PROJECT}"'</h1>'

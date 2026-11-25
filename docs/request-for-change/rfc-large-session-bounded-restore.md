@@ -3,8 +3,8 @@ title: Bounded-time restore for large sessions - tail window for fully read tabs
 status: implemented
 author: kirocrew agent session, directed by chenmingwei23
 created: 2026-11-12
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 35916
 implementation-prs: [35960, 36141, 36259, 36035]
 tracking-issues: [35875]
@@ -59,9 +59,9 @@ Hot path of a cold fold: `ProjectionRegistry.prime` (`src/kiro_crew/projection/r
 
 - [#35206](https://github.com/kirodotdev/KiroCrew/pull/35206) and [#35496](https://github.com/kirodotdev/KiroCrew/pull/35496) (merged): a slot save appends or reuses rows. They make saving cheap, not loading; the restore read above is unchanged by them.
 - [#34882](https://github.com/kirodotdev/KiroCrew/pull/34882) (merged): each unit replays from a watermark on boot. The fresh-savepoint row (0.17 s) is that path. This RFC keeps it as the steady state.
-- [#35840](https://github.com/kirodotdev/KiroCrew/pull/35840) (open, for #35828): a resumed tail folds in place after one apply. Measured here as 11% off the stale-savepoint case for this event mix; its gain grows with fold-state size, which this mix keeps small. Section 1.3 composes with it: one walk feeds every fold's in-place step.
-- [#35869](https://github.com/kirodotdev/KiroCrew/pull/35869) (open, for #35857): the worker list parses only changed item files. Not on the restore path measured here.
-- [#34887](https://github.com/kirodotdev/KiroCrew/pull/34887) (open): refuses a send to a tab the restore has not built. Section 1.2 shortens how long that refusal can last for the focused tab.
+- [#35840](https://github.com/kirodotdev/KiroCrew/pull/35840) (merged, for #35828): a resumed tail folds in place after one apply. Measured here as 11% off the stale-savepoint case for this event mix; its gain grows with fold-state size, which this mix keeps small. Section 1.3 composes with it: one walk feeds every fold's in-place step.
+- [#35869](https://github.com/kirodotdev/KiroCrew/pull/35869) (merged, for #35857): the worker list parses only changed item files. Not on the restore path measured here.
+- [#34887](https://github.com/kirodotdev/KiroCrew/pull/34887) (merged): refuses a send to a tab the restore has not built. Section 1.2 shortens how long that refusal can last for the focused tab.
 
 ## Goals
 

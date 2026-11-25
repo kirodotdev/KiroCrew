@@ -18,6 +18,9 @@ const STREAM_EXCEPTION = 6;
 const MINIDUMP_MODULE_NAME_RVA_OFFSET = 20;
 /** Refuse an absurd stream count rather than allocating from a corrupt header. */
 const MAX_STREAMS = 4096;
+/** Crashpad's `kSimulatedExceptionCode` (client/crashpad_client_win.cc): the
+ *  exception code a Windows `DumpWithoutCrash()` snapshot carries. */
+const CRASHPAD_WIN_SIMULATED_EXCEPTION_CODE = 0x517a7ed;
 
 /**
  * Read a UTF-16LE MINIDUMP_STRING at `rva`.
@@ -166,7 +169,7 @@ function classifyMinidump(parsed, appNames) {
     // pending rather than write our own crash off as a snapshot it never was.
     return { crash: false, readable: false, reason: "exception-unreadable" };
   }
-  if (parsed.exceptionCode === 0) {
+  if (parsed.exceptionCode === 0 || parsed.exceptionCode === CRASHPAD_WIN_SIMULATED_EXCEPTION_CODE) {
     // DumpWithoutCrashing(): a deliberate snapshot. The process kept running.
     return { crash: false, readable: true, reason: "not-a-crash", deletable: true };
   }

@@ -144,6 +144,10 @@ def test_completed_or_background_status_is_not_foreground_progress_claim():
         "I'm continuing the quotation from the previous paragraph.",
         "I'm continuing with the explanation: here is the answer.",
         "Done. I'm continuing with the explanation: here is the answer.",
+        # Where the agent runs, not work in progress (Bug Bash row 48).
+        "Hello!\nI am running on ip-172-31-30-77",
+        "I'm running on macOS 15 on an M3.",
+        "I am running as the kirocrew user",
     ):
         assert _has_progress_claim(text) is False
 

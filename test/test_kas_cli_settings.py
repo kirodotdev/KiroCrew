@@ -103,8 +103,13 @@ def test_the_session_notice_per_process_and_folder(homes):
     assert kcs.session_telemetry_notice(True, work) == kcs.TELEMETRY_NOT_APPLIED_NOTICE
 
 
-def test_an_opt_out_shows_one_session_notice_row(monkeypatch):
-    """The user sees, in the chat, that Crew cannot confirm KAS turned telemetry off."""
+def test_a_first_unconfirmed_notice_is_no_row_and_a_not_applied_one_is(monkeypatch):
+    """The provider carries the session's notice; a chat's first unconfirmed one is no row.
+
+    The bell carries the unconfirmed notice once per install (``kas_telemetry_notice``),
+    so a chat's first session shows no row for it; the not-applied one is about the
+    chat, so it is a row.
+    """
     from types import SimpleNamespace
 
     from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -118,12 +123,19 @@ def test_an_opt_out_shows_one_session_notice_row(monkeypatch):
     assert read(SimpleNamespace(_client=SimpleNamespace())) == ""
     rows = []
     monkeypatch.setattr(chat_runner, "append_and_surface", lambda *a, **k: rows.append(a))
+    chat = SimpleNamespace(_telemetry_notice_shown="")
+    chat_runner._notice_steer_upgrade(
+        object(),
+        chat,
+        SimpleNamespace(telemetry_unconfirmed_notice=read(SimpleNamespace(_client=session))),
+    )
+    assert rows == [] and chat._telemetry_notice_shown, "no row, but the mark is recorded"
     chat_runner._notice_steer_upgrade(
         object(),
         SimpleNamespace(_telemetry_notice_shown=""),
-        SimpleNamespace(telemetry_unconfirmed_notice=read(SimpleNamespace(_client=session))),
+        SimpleNamespace(telemetry_unconfirmed_notice=kcs.TELEMETRY_NOT_APPLIED_NOTICE),
     )
-    assert [r[2] for r in rows] == ["notice"] and "cannot check" in rows[0][3]
+    assert [r[2] for r in rows] == ["notice"] and "was not applied" in rows[0][3]
     rows.clear()
     chat_runner._notice_steer_upgrade(
         object(), object(), SimpleNamespace(telemetry_unconfirmed_notice="")
@@ -140,7 +152,10 @@ def _telemetry_rows(monkeypatch) -> list[str]:
 
 
 def _session_start(slot, notice: str, state: object = None) -> None:
-    """One session start of *slot*'s chat on a KAS session that carries *notice*."""
+    """One session start of *slot*'s chat on a KAS session that carries *notice*.
+
+    The chat-row half of a new session only: the bell note is ``kas_telemetry_notice``'s.
+    """
     from types import SimpleNamespace
 
     from kiro_crew.dashboard import chat_runner
@@ -150,10 +165,13 @@ def _session_start(slot, notice: str, state: object = None) -> None:
     )
 
 
-def test_a_chat_shows_the_telemetry_notice_once(monkeypatch):
-    """Each KAS session a chat creates or reloads carries the notice; the chat shows it once.
+def test_a_chat_shows_a_telemetry_row_only_when_its_answer_changes(monkeypatch):
+    """Each KAS session a chat creates or reloads carries the notice.
 
-    It shows the other notice when the answer changes, and each chat is told on its own.
+    The chat's first one, the unconfirmed notice, is no row (the bell has it). A change
+    of answer is a row each time, so the not-applied row and then the unconfirmed one
+    show, and a stale not-applied row is never the chat's last word. Each chat is told
+    of the not-applied notice on its own.
     """
     from types import SimpleNamespace
 
@@ -161,18 +179,21 @@ def test_a_chat_shows_the_telemetry_notice_once(monkeypatch):
     chat = SimpleNamespace(_telemetry_notice_shown="")
     for _ in range(3):  # the first session, then two sessions that replace it
         _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE)
-    assert rows == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+    assert rows == []
     for _ in range(2):  # the chat moves to an engine that did not take the opt-out
         _session_start(chat, kcs.TELEMETRY_NOT_APPLIED_NOTICE)
-    assert rows == [kcs.TELEMETRY_UNCONFIRMED_NOTICE, kcs.TELEMETRY_NOT_APPLIED_NOTICE]
-    _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE)
-    assert rows[2:] == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+    assert rows == [kcs.TELEMETRY_NOT_APPLIED_NOTICE]
+    for _ in range(2):
+        _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE)
+    assert rows == [kcs.TELEMETRY_NOT_APPLIED_NOTICE, kcs.TELEMETRY_UNCONFIRMED_NOTICE]
     _session_start(SimpleNamespace(_telemetry_notice_shown=""), kcs.TELEMETRY_UNCONFIRMED_NOTICE)
-    assert rows[3:] == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+    assert rows[2:] == []
+    _session_start(SimpleNamespace(_telemetry_notice_shown=""), kcs.TELEMETRY_NOT_APPLIED_NOTICE)
+    assert rows[2:] == [kcs.TELEMETRY_NOT_APPLIED_NOTICE]
 
 
 def test_a_restart_does_not_repeat_the_telemetry_notice(tmp_path, monkeypatch):
-    """A chat saved after the notice and restored from disk stays told."""
+    """A chat saved after a telemetry row and restored from disk stays told."""
     from chat_test_helpers import _make_state
 
     from kiro_crew.dashboard.chat_persistence import (
@@ -187,23 +208,23 @@ def test_a_restart_does_not_repeat_the_telemetry_notice(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     chat = state.get_or_create_slot("s1")
     chat.append("user", "hello")
-    _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE, state)
+    _session_start(chat, kcs.TELEMETRY_NOT_APPLIED_NOTICE, state)
     chat.drain()
     _save_slot_to_history(state, chat, closed=False)
     del state._slots["s1"]
 
     restored = _rehydrate_slot_from_history(state, "s1")
     assert restored is not None and restored is not chat
-    _session_start(restored, kcs.TELEMETRY_UNCONFIRMED_NOTICE, state)
-    assert notices(restored) == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+    _session_start(restored, kcs.TELEMETRY_NOT_APPLIED_NOTICE, state)
+    assert notices(restored) == [kcs.TELEMETRY_NOT_APPLIED_NOTICE]
 
     # A line that carries anything but a mark tells the chat again.
     del state._slots["s1"]
     state.conversation_log.update_metadata("dashboard:s1", {"telemetry_notice_shown": "no mark"})
     forged = _rehydrate_slot_from_history(state, "s1")
     assert forged is not None
-    _session_start(forged, kcs.TELEMETRY_UNCONFIRMED_NOTICE, state)
-    assert notices(forged) == [kcs.TELEMETRY_UNCONFIRMED_NOTICE] * 2
+    _session_start(forged, kcs.TELEMETRY_NOT_APPLIED_NOTICE, state)
+    assert notices(forged) == [kcs.TELEMETRY_NOT_APPLIED_NOTICE] * 2
 
 
 @pytest.mark.asyncio

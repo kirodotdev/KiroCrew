@@ -453,9 +453,17 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
 
 
 async def _deliver_script_result(
-    self: GatewayOrchestrator, job: CronJob, message: str, *, remove: bool = False
+    self: GatewayOrchestrator,
+    job: CronJob,
+    message: str,
+    *,
+    remove: bool = False,
+    pin: tuple[str, str] | None = None,
 ) -> None:
-    """Deliver a script cron result to the originating session. Optionally remove the job."""
+    """Deliver a script cron result to its origin session and its pin. Optionally remove the job.
+
+    *pin* is the ``(channel_type, target_id)`` the run launched with.
+    """
     delivered = False
     # `result_ts` names the stored result the note carries (`message` is it).
     note_meta = {"job_id": job.id, "result_ts": job.last_result_ts}
@@ -515,6 +523,15 @@ async def _deliver_script_result(
         delivered = True
     except Exception as notify_exc:
         logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
+    if message and not job.silent:
+        # The creating app is read off the stored job, so this runs before a removal.
+        # No origin key: a script's result never went to the chat channel that made it.
+        try:
+            await self._deliver_cron_to_channel(
+                "", f"⏰ Cron: {job.name}\n\n{message}", actor_key=f"cron:{job.id}", pin=pin
+            )
+        except Exception as pin_exc:
+            logger.warning("Cron '%s' pinned delivery failed: %s", job.name, pin_exc)
     if remove and delivered and self.cron_svc:
         try:
             await self.cron_svc.remove_job_async(
@@ -555,6 +572,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
     # can always reach it -- including on the fire-time deny paths that
     # return before anything is submitted.
     handoff = _ClaimHandoff()
+    # Set at launch, below; a failure before it has no run output to route.
+    run_dest: tuple[str, str] | None = None
     try:
         try:
             sel().log_tool_invocation(
@@ -623,8 +642,11 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         # The pin is read ONCE: the job object is shared with the store, so an
         # approval landing during the run rewrites job.secret_env_pin in place,
         # and the stale-grant resurfacer must compare against the pin this run
-        # actually verified, not the one that replaced it.
+        # actually verified, not the one that replaced it. The destination pair is
+        # read once for the same reason: this run's output goes where the grant
+        # fingerprint below bound it, not to a pin edited while the script ran.
         run_pin = job.secret_env_pin
+        run_dest = (job.channel_type, job.target_id)
         result = await run_in_cron_pool(
             _vet_at_claim_then,
             handoff,
@@ -641,6 +663,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.silent,
                 job.channel or "",
                 job.thread_ts or "",
+                *run_dest,
             ),
             self._live_internal_secret,
             job.env,
@@ -728,7 +751,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             # streak is a LIFETIME total, so after enough deaths the bound is
             # permanently tripped and the exemption silently stops applying.
             runtime_death.clear_shared_deaths(f"cron:{job.id}")
-            await self._deliver_script_result(job, script_msg, remove=True)
+            await self._deliver_script_result(job, script_msg, remove=True, pin=run_dest)
             try:
                 sel().log_tool_invocation(
                     session_key=f"cron:{job.id}",
@@ -756,7 +779,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             # permanently tripped and the exemption silently stops applying.
             runtime_death.clear_shared_deaths(f"cron:{job.id}")
             # Deliver Report message (keep job running)
-            await self._deliver_script_result(job, script_msg)
+            await self._deliver_script_result(job, script_msg, pin=run_dest)
             try:
                 sel().log_tool_invocation(
                     session_key=f"cron:{job.id}",
@@ -841,7 +864,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             )
         except Exception:
             logger.debug("SEL logging failed in cron script timeout path", exc_info=True)
-        await self._alert_cron_failure(job, f"script {job.last_error}")
+        await self._alert_cron_failure(job, f"script {job.last_error}", pin=run_dest)
         return None
     except CronClaimTimeDenied as exc:
         # Governance refused this run when the worker claimed it --
@@ -932,7 +955,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         # startup RuntimeError, a missing dependency) and identical on
         # every fire, so it read as an idle job rather than a broken
         # one until this alert carried the reason out.
-        await self._alert_cron_failure(job, f"{type(exc).__name__}: {exc}")
+        await self._alert_cron_failure(job, f"{type(exc).__name__}: {exc}", pin=run_dest)
         return None
     finally:
         # Abandon BEFORE releasing the overlap guard, and do it here

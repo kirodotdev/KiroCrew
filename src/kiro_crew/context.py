@@ -66,6 +66,7 @@ from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text  # noqa: F401
 from kiro_crew.board_tag_grammar import is_grantable_tag_id
+from kiro_crew.clear_command import is_clear_command_row
 from kiro_crew.config import live  # noqa: F401
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401
@@ -1153,6 +1154,7 @@ def build_cancelled_turn_preamble(
     user_cap: int = 2000,
     assist_cap: int = 2000,
     newest_request: bool = False,
+    replay: str | None = None,
 ) -> str:
     """Build a preamble describing the most recent cancelled turn, if any.
 
@@ -1162,6 +1164,10 @@ def build_cancelled_turn_preamble(
     backwards for a ``stop_event`` marker, then find the user message
     immediately before it plus any assistant text in between. Return a
     short bracketed preamble. Returns "" if nothing to inject.
+
+    *replay* is the ``build_session_replay`` text the same prompt carries. When
+    it already holds the stopped request, the stopped turn reaches the model
+    through it and the preamble is ``""``.
 
     Called by the dashboard, Slack and the shared channel pipeline after
     ``prev_turn_cancelled`` is observed on the session.
@@ -1174,7 +1180,11 @@ def build_cancelled_turn_preamble(
     except Exception:
         return ""
     return _replay.cancelled_turn_preamble(
-        rows[-20:], user_cap=user_cap, assist_cap=assist_cap, newest_request=newest_request
+        rows[-20:],
+        user_cap=user_cap,
+        assist_cap=assist_cap,
+        newest_request=newest_request,
+        replay=replay or "",
     )
 
 
@@ -1198,6 +1208,10 @@ def _replay_rows(
 
     Conversation rows get the full quota whatever the inject volume, which a
     single bounded query cannot guarantee.
+
+    Only rows after the newest ``/clear`` row are replayed: the clear kept the
+    transcript but not the agent's memory of it, so a later replay must not
+    hand the earlier turns back.
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
@@ -1208,6 +1222,10 @@ def _replay_rows(
         messages = messages[:-exclude_last_n]
     messages = _without_warm_task_brief_messages(messages)
     messages = [row for row in messages if not _replay.is_context_cap_notice(row)]
+    for i in range(len(messages) - 1, -1, -1):
+        if is_clear_command_row(messages[i]):
+            messages = messages[i + 1 :]
+            break
     return _replay._quota_tail(
         messages, conv_max=_REPLAY_CONVERSATION_MAX_ROWS, inject_max=_REPLAY_INJECT_MAX_ROWS
     )
@@ -1558,6 +1576,9 @@ class ContextBuilder:
         # `context_assembly.agent_spec._resolve_agent_prompt`.
         self._browser_gates: dict[str, bool] = {}
         self._browser_gates_lock = threading.Lock()
+        # The same, for how the contract names KAS's own sub-agent tool.
+        self._engine_subagent_gates: dict[str, str] = {}
+        self._engine_subagent_gates_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it

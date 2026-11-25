@@ -164,6 +164,61 @@ async def test_accumulates_text_and_sets_model_and_destroys():
 
 
 @pytest.mark.asyncio
+async def test_confirmation_runs_after_model_selection_and_before_prompt():
+    order = []
+
+    class OrderedSession(_FakeSession):
+        async def set_model(self, model):
+            await super().set_model(model)
+            order.append("model")
+
+        async def prompt(self, prompt, **kwargs):
+            order.append("prompt")
+            async for event in super().prompt(prompt, **kwargs):
+                yield event
+
+    sess = OrderedSession([SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="reply")])
+
+    async def confirm(session):
+        assert session.served_model == "chosen-model"
+        order.append("confirm")
+
+    result = await run_bg_oneliner(
+        _FakeSessions(sess), "p", model="chosen-model", strict_model=True, confirm_session=confirm
+    )
+    assert result == "reply"
+    assert order == ["model", "confirm", "prompt"]
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_session_is_sent_nothing_and_destroyed():
+    sess = _FakeSession([SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="leak")])
+    prompted: list = []
+    real_prompt = sess.prompt
+
+    def _prompt(*args, **kwargs):
+        prompted.append(args)
+        return real_prompt(*args, **kwargs)
+
+    sess.prompt = _prompt
+    seen: list = []
+
+    async def _refuse(session):
+        seen.append(session)
+        raise RuntimeError("mounts a tool")
+
+    with pytest.raises(RuntimeError, match="mounts a tool"):
+        await run_bg_oneliner(
+            _FakeSessions(sess), "secret", model="chosen-model", confirm_session=_refuse
+        )
+    assert seen == [sess]
+    assert prompted == []
+    assert sess.model == "chosen-model"
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
 async def test_image_paths_in_the_prompt_are_not_sent_as_attachments(tmp_path):
     """A one-liner quotes session history; a pasted screenshot's path in it must
     reach the builder as the history marker, never as a readable path it would
@@ -309,15 +364,15 @@ async def test_background_helpers_do_not_start_while_memory_is_critical(monkeypa
     waits on (FOREGROUND) still starts, and so does background work once memory frees.
     """
     import kiro_crew.resource_status as resource_status
-    from kiro_crew.llm_helpers import background_turn
+    from kiro_crew.llm_helpers import BackgroundAdmissionRefused, background_turn
     from kiro_crew.start_priority import StartPriority
 
     sessions = _AcquireRecorder()
     monkeypatch.setattr(resource_status, "_read_available_gb", lambda: 0.5)
     with caplog.at_level("INFO", logger="kiro_crew.llm_helpers"):
-        with pytest.raises(RuntimeError, match="'chat_title' not started"):
+        with pytest.raises(BackgroundAdmissionRefused, match="'chat_title' not started"):
             await run_bg_oneliner(sessions, "p", sel_source="chat_title")
-        with pytest.raises(RuntimeError, match="'consolidation' not started"):
+        with pytest.raises(BackgroundAdmissionRefused, match="'consolidation' not started"):
             async with background_turn(sessions, task="consolidation", session_key="_consolidate"):
                 pass
     assert sessions.acquired == []

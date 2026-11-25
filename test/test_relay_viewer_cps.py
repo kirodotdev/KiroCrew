@@ -20,7 +20,6 @@ from relay_client_helpers import fixture
 
 from kiro_crew.relay_viewer import cps
 from kiro_crew.relay_viewer.cps import (
-    RELAY_ZONE,
     CpsRefused,
     create_crew_access_token,
     list_crew_endpoints,
@@ -471,6 +470,10 @@ async def test_a_crew_exactly_under_the_relay_domain_is_kept(fake: FakeCps, crew
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
 
 
+#: Kiro's relay.kiro.dev zone, the address shape CPS lists outside Frankfurt.
+RELAY_ZONE = "relay.kiro.dev"
+
+
 def _in_zone(body: Dict[str, Any]) -> Dict[str, Any]:
     """*body* with each entry's address moved into Kiro's relay zone."""
     for entry in body["crewEndpoints"]:
@@ -484,9 +487,21 @@ def _in_zone(body: Dict[str, Any]) -> Dict[str, Any]:
         f"https://{TEAM}.us-east-1.{RELAY_ZONE}",
         f"https://{TEAM}.eu-central-1.{RELAY_ZONE}/",
         f"HTTPS://{TEAM.upper()}.US-EAST-1.RELAY.KIRO.DEV",
+        f"https://{TEAM}.kiro-relay.us-east-1.on.aws",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws/",
+        f"HTTPS://{TEAM.upper()}.KIRO-RELAY.EU-CENTRAL-1.ON.AWS",
+        f"https://{TEAM}.us-east-1.kiro-relay.on.aws",
+        # With no domain set the address CPS lists is trusted, so a host outside
+        # relay.kiro.dev is kept on purpose: a new relay Region needs no release.
+        f"https://{TEAM}.evil.example.test",
+        f"https://{TEAM}.{RELAY_ZONE}",
+        f"https://{TEAM}.a.b.{RELAY_ZONE}",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}.evil.example.test",
+        f"https://{TEAM}.us-east-1.evil{RELAY_ZONE}",
+        f"https://{TEAM}.{DOMAIN}",
     ],
 )
-async def test_with_no_relay_domain_a_crew_in_kiros_relay_zone_is_kept(
+async def test_with_no_relay_domain_the_crew_address_cps_lists_is_kept(
     fake: FakeCps, crew_url: str
 ) -> None:
     body = _in_zone(page(1))
@@ -496,27 +511,44 @@ async def test_with_no_relay_domain_a_crew_in_kiros_relay_zone_is_kept(
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
 
 
+@pytest.mark.parametrize("crew_type", ["TEAM", "PERSONAL"])
+def test_the_address_shape_prod_us_east_1_lists_is_kept(crew_type: str) -> None:
+    # The shape the prod us-east-1 control plane lists: a 32-character endpoint ID
+    # under kiro-relay.us-east-1.on.aws (the ID and name here are made up).
+    endpoint = "q7m2kx9w4bz8n5c3v6t1r0yh2pd8ls4a"
+    raw = {
+        "endpointId": endpoint,
+        "crewUrl": f"https://{endpoint}.kiro-relay.us-east-1.on.aws",
+        "name": "build-host",
+        "crewType": crew_type,
+    }
+    crew = cps._crew_endpoint(raw, "")
+    assert crew is not None and crew.crew_url == raw["crewUrl"] and crew.crew_type == crew_type
+
+
 @pytest.mark.parametrize(
     "crew_url",
     [
-        f"https://{TEAM}.evil.example.test",
-        f"https://{TEAM}.{DOMAIN}",
-        f"https://{TEAM}.{RELAY_ZONE}",
-        f"https://{TEAM}.a.b.{RELAY_ZONE}",
-        f"https://{TEAM}.us-east-1.{RELAY_ZONE}.evil.example.test",
-        f"https://{TEAM}.us-east-1.evil{RELAY_ZONE}",
         f"https://{TEAM}.-us.{RELAY_ZONE}",
         f"https://{TEAM}.us_east.{RELAY_ZONE}",
         f"https://{TEAM}.us-east-1.{RELAY_ZONE}:8443/",
         f"https://{TEAM}.us-east-1.{RELAY_ZONE}:443",
         f"https://otherccccccccccccccccccccccccccc.us-east-1.{RELAY_ZONE}",
         f"https://{TEAM}.",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws.",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws:8443/",
+        f"https://{TEAM}kiro-relay.eu-central-1.on.aws",
+        f"https://x.{TEAM}.kiro-relay.eu-central-1.on.aws",
+        f"https://user@{TEAM}.kiro-relay.eu-central-1.on.aws",
+        f"http://{TEAM}.kiro-relay.eu-central-1.on.aws",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws/path",
+        "https://otherccccccccccccccccccccccccccc.kiro-relay.eu-central-1.on.aws",
     ],
 )
-async def test_with_no_relay_domain_a_crew_outside_kiros_relay_zone_is_left_out(
+async def test_with_no_relay_domain_a_crew_address_that_fails_the_structure_is_left_out(
     fake: FakeCps, crew_url: str
 ) -> None:
-    # No token goes to a host outside the zone; the desktop app pins the listed host.
+    # No token goes to a host that is not this Crew's own https:// name on the default port.
     body = _in_zone(page(1))
     body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
     fake.answer(200, body)
@@ -556,3 +588,24 @@ async def test_with_no_domain_the_dropped_row_warning_names_no_setting(
         await list_crew_endpoints(fake.url, BEARER)
     assert "unusable Crew list" in caplog.text
     assert "relay_viewer_relay_domain" not in caplog.text
+
+
+async def test_crews_left_out_only_for_the_relay_domain_are_counted(fake: FakeCps) -> None:
+    """Row 65: a domain one character off drops every Crew; the count says so."""
+    body = page(1)
+    body["crewEndpoints"].insert(0, page(0)["crewEndpoints"][0])
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain="crew.example.invalix")
+    assert crews == ()
+    assert crews.off_domain == 2
+
+
+async def test_crews_left_out_for_another_reason_are_not_counted(fake: FakeCps) -> None:
+    body = page(1)
+    body["crewEndpoints"].insert(
+        0, dict(page(0)["crewEndpoints"][0], crewUrl=f"https://{TEAM}.{DOMAIN}:8443")
+    )
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.endpoint_id for c in crews] == [PERSONAL]
+    assert crews.off_domain == 0

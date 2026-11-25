@@ -1082,6 +1082,38 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
   })
 
+  it("hands the agent the failed config read's report from the read and refresh notices", async () => {
+    // Both notices are worded from the catalog, so the transport's report,
+    // filed under the gateway's own message, must ride along explicitly.
+    __resetErrorJournalForTests()
+    let fail = true
+    const failed = { status: 500, body: { error: 'config store locked', code: 'config_read_failed' } }
+    stubFetch({}, {
+      config: () => Promise.resolve(fail ? failed : { status: 200, body: { auto_update: false } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    const { qc } = mountWeb()
+
+    const read = await screen.findByTestId('auto-update-read-error')
+    fireEvent.click(within(read).getByRole('button', { name: 'Ask the agent' }))
+    let prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('config_read_failed')
+    expect(prompt).toContain('config store locked')
+
+    fail = false
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(screen.queryByTestId('auto-update-read-error')).toBeNull())
+    fail = true
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    const refresh = await screen.findByTestId('auto-update-refresh-error')
+    fireEvent.click(within(refresh).getByRole('button', { name: 'Ask the agent' }))
+    prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('config_read_failed')
+    expect(prompt).toContain('config store locked')
+  })
+
   it('reports a write config.local.json refused, holds the switch, and frees it once a read says the pin is gone', async () => {
     // The pin landed after the page read it: only the refusal can say so.
     let pinned = false

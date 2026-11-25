@@ -150,7 +150,8 @@ def _install_dashboard_middlewares(
     """Install the dashboard's middleware chain on *app*, outermost first.
 
     The order is a security contract: route latency outermost, then the relay-path
-    header rule, the client-sent relay-header strip just inside it, the deny-audit
+    header rule, the client-sent relay-header strip just inside it, the entry gate,
+    the deny-audit
     boundary outer to every barrier that can refuse, the app web origin router, the
     host canonicalization, the ``Host`` barrier, the header policy, CSRF, token
     auth, the redaction audience, the SEL request audit and the per-slot ownership
@@ -187,7 +188,9 @@ def _install_dashboard_middlewares(
         try:
             return await handler(request)  # type: ignore[operator]
         except web.HTTPNotFound:
-            if _is_spa_shell_request(request):
+            from kiro_crew.dashboard.headless import HEADLESS_KEY
+
+            if not request.app.get(HEADLESS_KEY, False) and _is_spa_shell_request(request):
                 return await handlers.index(request)
             raise
         except PendingEditBlocksSave as exc:
@@ -243,6 +246,8 @@ def _install_dashboard_middlewares(
         card_turn_arrival_middleware,
         card_turn_delegation_middleware,
     )
+    from kiro_crew.dashboard.entry_gate import entry_gate_middleware
+    from kiro_crew.dashboard.headless import HEADLESS_KEY, api_only_middleware
     from kiro_crew.dashboard.redaction_audience import redaction_audience_middleware
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
@@ -270,9 +275,17 @@ def _install_dashboard_middlewares(
         # the one prefix in relay_headers, and the rule hands on no relay header,
         # so on a request the rule admitted this layer has nothing to drop.
         relay_header_strip_middleware,
+        # The entry port (dashboard/entry_gate.py): a request that arrived on it is
+        # marked and held to the Crew API. Only the four layers above run first: route
+        # latency, the card turn mark, the relay-path rule (which reads headers and can
+        # refuse) and the relay-header strip. Outer to the deny-audit boundary, the web
+        # origin routers and every barrier inside them, so each sees the request as
+        # forwarded and none serves another origin on this port.
+        entry_gate_middleware,
         # Outer to every barrier that can refuse, so a pre-audit 403 is recorded
         # by POSITION rather than by each deny site remembering to. Inner to the
-        # latency middleware and the two relay-header layers only, which keeps the
+        # latency middleware, the card turn mark, the two relay-header layers and
+        # the entry gate only, which keeps the
         # latency layer's "times the FULL in-gateway handling" contract intact.
         deny_audit_middleware,
         # Inner to the deny-audit boundary and outer to the host canonicalization
@@ -286,6 +299,8 @@ def _install_dashboard_middlewares(
         # The same for a relayed Crew in a browser tab (``kcr-<sid>.localhost``,
         # relay_viewer/browser_origin.py).
         _relay_origin_middleware(ssm_gate),
+        # Other web origins decide their own requests before the dashboard filter.
+        *([api_only_middleware] if app.get(HEADLESS_KEY, False) else []),
         host_canonical_redirect,
         host_validation_middleware,
         # Compressed request bodies are refused outright (415): the hardened
@@ -301,7 +316,7 @@ def _install_dashboard_middlewares(
             internal_secret=internal_secret,
             port=port,
             local_only=local_only,
-            spa_shell_handler=handlers.index,
+            spa_shell_handler=None if app.get(HEADLESS_KEY, False) else handlers.index,
             tailnet_trust=tailnet_trust,
             tailnet_direct=tailnet_direct,
             ssm_gate=ssm_gate,
@@ -321,7 +336,9 @@ def _install_dashboard_middlewares(
         slot_ownership_middleware,
         spa_fallback,
     ]
-    _insert_lts_gate(app, spa_shell_handler=handlers.index)
+    _insert_lts_gate(
+        app, spa_shell_handler=None if app.get(HEADLESS_KEY, False) else handlers.index
+    )
 
     # Verify security invariant: if dashboard_url expands the CSRF origin
     # set for a remote URL, token auth middleware MUST be active.

@@ -489,6 +489,7 @@ async def _api_request(
     build: Callable[[], dict[str, Any]],
     destination: str = "",
     recheck_destination: bool = True,
+    caller_permitted: Callable[[], bool] | None = None,
 ) -> DiscordApiResult:
     """Shared REST ladder. ``build`` supplies the per-ATTEMPT body kwargs.
 
@@ -499,7 +500,8 @@ async def _api_request(
 
     Every one of those waits is also a window in which the destination can be
     withdrawn, so each is paired with a re-read of authorization before the
-    attempt that follows it (:meth:`_destination_still_permitted`). An attempt
+    attempt that follows it (:meth:`_destination_still_permitted`), with
+    ``caller_permitted`` when one person alone sees the reply. An attempt
     that waits nothing is unaffected: the caller's own pre-send check is still
     the most recent reading when no time has passed.
     """
@@ -524,7 +526,11 @@ async def _api_request(
     # timeout or a dropped response can follow a write Discord already made. So
     # it is re-sent only when Discord certainly did not apply it: after a 429, or
     # when the connection failed before the request went out.
-    sent_once = method == "POST" and path.rstrip("/").endswith("/messages")
+    # An interaction follow-up (`POST /webhooks/{app}/{token}`) creates a message too.
+    segments = path.split(_ROUTE_SEP)
+    sent_once = method == "POST" and (
+        path.rstrip("/").endswith("/messages") or (len(segments) == 4 and segments[1] == "webhooks")
+    )
     # The attempt that follows a 429 has already served that back-off, so it
     # sends immediately; re-checking the hold it just waited out would
     # charge it twice.
@@ -534,7 +540,9 @@ async def _api_request(
             return _failed(DISCORD_BLOCKED, detail="invalid-request breaker open")
         if not served_backoff:
             if await self._await_capacity(route, exempt=exempt) > 0:
-                permission = await self._destination_still_permitted(recheck_path, recheck_hint)
+                permission = await self._destination_still_permitted(
+                    recheck_path, recheck_hint, caller_permitted
+                )
                 if not permission.permitted:
                     return _failed(DISCORD_BLOCKED, detail=permission.detail)
         served_backoff = False
@@ -543,7 +551,7 @@ async def _api_request(
                 method,
                 url,
                 headers=auth,
-                proxy=self._proxy,
+                proxy=self._proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=timeout),
                 **build(),
             ) as resp:
@@ -579,7 +587,9 @@ async def _api_request(
                             delay,
                         )
                         return _failed(DISCORD_TRANSIENT, status=429, detail="rate limited")
-                    permission = await self._wait_then_revalidate(recheck_path, delay, recheck_hint)
+                    permission = await self._wait_then_revalidate(
+                        recheck_path, delay, recheck_hint, caller_permitted
+                    )
                     if not permission.permitted:
                         return _failed(DISCORD_BLOCKED, detail=permission.detail)
                     served_backoff = True
@@ -605,7 +615,7 @@ async def _api_request(
                         backoff,
                     )
                     permission = await self._wait_then_revalidate(
-                        recheck_path, backoff, recheck_hint
+                        recheck_path, backoff, recheck_hint, caller_permitted
                     )
                     if not permission.permitted:
                         return _failed(DISCORD_BLOCKED, detail=permission.detail)
@@ -640,7 +650,7 @@ async def _api_request(
             ):
                 return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
             permission = await self._wait_then_revalidate(
-                recheck_path, _TRANSIENT_BACKOFF_SECS * transient, recheck_hint
+                recheck_path, _TRANSIENT_BACKOFF_SECS * transient, recheck_hint, caller_permitted
             )
             if not permission.permitted:
                 return _failed(DISCORD_BLOCKED, detail=permission.detail)

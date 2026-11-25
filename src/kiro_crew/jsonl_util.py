@@ -134,6 +134,12 @@ RECORD_CAP = 128 * 1024 * 1024
 # it takes 18 ms alone. A megabyte per read keeps those hand-backs rare.
 _FRAME_CHUNK = 1 << 20
 
+# Most bytes of whole lines the framer takes from the read-ahead per call. The
+# returned block is a copy held beside the read-ahead, so this bounds what a
+# block adds to a read's peak; 256 KiB still serves hundreds of typical
+# transcript rows per call.
+_FRAME_BLOCK = 1 << 18
+
 # Public so a caller can tell this refusal from an unrelated EINVAL, which shares its errno.
 NOT_REGULAR_FILE = "refusing a non-regular file"
 
@@ -365,6 +371,27 @@ class _ChunkedLines:
                 break
         return parts[0] if len(parts) == 1 else b"".join(parts)
 
+    def read_lines(self, size: int) -> bytes:
+        """Every whole line left in the read-ahead, up to *size* bytes.
+
+        Like :meth:`readline`, but hands the framer all the complete lines one
+        chunk holds in a single call, so a chunk of short records costs one call
+        and one buffer append rather than one per record. Without a ``\\n`` in
+        reach it is exactly :meth:`readline`, which joins a long line from
+        successive chunks in one pass rather than re-copying a growing buffer.
+        """
+        if self._pos >= len(self._buf):
+            self._buf = self._read(_FRAME_CHUNK)
+            self._pos = 0
+            if not self._buf:
+                return b""
+        stop = min(len(self._buf), self._pos + size, self._pos + _FRAME_BLOCK)
+        nl = self._buf.rfind(b"\n", self._pos, stop)
+        if nl == -1:
+            return self.readline(size)
+        start, self._pos = self._pos, nl + 1
+        return self._buf[start : nl + 1]
+
 
 def _frames_with_offsets(
     handle: IO[bytes], cap: int
@@ -391,7 +418,7 @@ def _frames_with_offsets(
     # bytes, so framing and offsets are identical; only the syscalls differ. A
     # chunk read moves the handle past the record a caller stops at, so every
     # caller takes positions from the yielded offsets, never from ``tell``.
-    readline = _ChunkedLines(handle).readline if hasattr(handle, "read") else handle.readline
+    readline = _ChunkedLines(handle).read_lines if hasattr(handle, "read") else handle.readline
     # True while discarding the remainder of an over-cap record, whose own
     # terminator is what ends the discard.
     dropping = False
@@ -619,9 +646,23 @@ def strict_records(handle: IO[bytes], path: Path, *, cap: int = RECORD_CAP) -> I
             raise UndecodableRecord(f"record is not valid UTF-8 in {path!r}") from exc
 
 
-#: Fewest seconds between two WARNINGs for one path whose rename keeps being refused.
+#: Fewest seconds between two WARNINGs for one path whose rotation keeps failing.
 ROTATE_REFUSED_WARN_INTERVAL_SECS = 3600.0
 _rotate_refused_warned_at: dict[Path, float] = {}
+
+
+def _warn_rotation_stuck(path: Path, exc: OSError, max_bytes: int, until: str) -> None:
+    now = time.monotonic()
+    last = _rotate_refused_warned_at.get(path)
+    if last is None or now - last >= ROTATE_REFUSED_WARN_INTERVAL_SECS:
+        _rotate_refused_warned_at[path] = now
+        logger.warning(
+            "could not rotate %s (%s); it grows past its %d-byte cap until %s",
+            path,
+            type(exc).__name__,
+            max_bytes,
+            until,
+        )
 
 
 def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
@@ -650,17 +691,24 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
     the very incidents these logs diagnose, so a rotation failure must
     never cost the record; only a failure of the caller's own append may.
 
-    A refused rename leaves the log growing past its bound with nothing
+    A refused rename, or a lock file that cannot be opened while the log is
+    at or over its cap, leaves the log growing past its bound with nothing
     else to show for it, so it is logged at WARNING with the path and the
     error class, at most once per :data:`ROTATE_REFUSED_WARN_INTERVAL_SECS`
     per path in each process: the caller retries on every append, and a
     holder such as a child that inherited the log's handle keeps refusing
-    until it exits.
+    until it exits. A missing or under-cap log and a lost try-lock stay
+    silent.
     """
     try:
-        lock_fd = platform_compat.open_create_or_existing(
-            path.with_name(path.name + ".lock"), os.O_RDWR, 0o600
-        )
+        try:
+            lock_fd = platform_compat.open_create_or_existing(
+                path.with_name(path.name + ".lock"), os.O_RDWR, 0o600
+            )
+        except OSError as exc:
+            if path.stat().st_size >= max_bytes:
+                _warn_rotation_stuck(path, exc, max_bytes, "its .lock file can be opened")
+            return
         try:
             locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             try:
@@ -668,17 +716,7 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
                     try:
                         os.replace(path, path.with_name(path.name + ".1"))
                     except OSError as exc:
-                        now = time.monotonic()
-                        last = _rotate_refused_warned_at.get(path)
-                        if last is None or now - last >= ROTATE_REFUSED_WARN_INTERVAL_SECS:
-                            _rotate_refused_warned_at[path] = now
-                            logger.warning(
-                                "could not rotate %s (%s); it grows past its %d-byte cap "
-                                "until a rename succeeds",
-                                path,
-                                type(exc).__name__,
-                                max_bytes,
-                            )
+                        _warn_rotation_stuck(path, exc, max_bytes, "a rename succeeds")
             finally:
                 if locked:
                     platform_compat.release_lock(lock_fd)

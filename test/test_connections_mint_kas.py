@@ -18,6 +18,8 @@ import time
 import types
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
+from urllib.parse import urlencode
 
 import pytest
 from aiohttp import web
@@ -364,6 +366,86 @@ async def test_a_consent_url_carrying_a_credential_is_never_published(monkeypatc
     assert [engine.kills for engine in _Engine.instances] == [1, 1]
     assert logged == ["error reason=mint_url_rejected route=kas"]
     assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+
+
+#: The server's own authorization endpoint, on neither endpoint list.
+_OWN_ENDPOINT = "https://auth.docs.example/authorize"
+#: The engine's consent URL there: its S256 challenge and its state are 43
+#: high-entropy characters each, which the gate reads as bare secrets unless
+#: the endpoint is approved.
+_PKCE_AUTHORIZE = (
+    _OWN_ENDPOINT
+    + "?"
+    + urlencode(
+        {
+            "response_type": "code",
+            "client_id": "mcp_7f3a9c2e41b84d0f9e6a5c3b2d1e0f4a",
+            "redirect_uri": "http://127.0.0.1:43123/callback",
+            "state": "Zr8pW2kQ9xL4mN7vB1cT6yH3sD0fG5jK8aE2uRwXq9P",
+            "code_challenge": "Qm9xVf3kLr8sT1uWz0aYcD6eHgJ2nPq5RtXv7BnMk4E",
+            "code_challenge_method": "S256",
+            "resource": _URL,
+        }
+    )
+)
+
+
+def _serve_discovery_naming_the_own_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The configured server's published metadata names :data:`_OWN_ENDPOINT`."""
+    from kiro_crew import link_unfurl
+    from kiro_crew import mcp_oauth_discovery as discovery
+    from kiro_crew.security import exfil, exfil_oauth
+
+    approved: dict[tuple[str, str, str], float] = {}
+    monkeypatch.setattr(exfil_oauth, "_OAUTH_DISCOVERED_ENDPOINTS", approved)
+    monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", approved)
+    monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", lambda: frozenset())
+    monkeypatch.setattr(exfil_oauth, "SecurityEventLog", MagicMock())
+    monkeypatch.setattr(discovery, "_NEGATIVE", {})
+    monkeypatch.setattr(discovery, "_servers_from_agent_spec", lambda: {_SERVER: {"url": _URL}})
+    monkeypatch.setattr(discovery, "_servers_from_settings_registry", lambda: {})
+    docs = {
+        "https://mcp.docs.example/.well-known/oauth-protected-resource/mcp": {
+            "resource": _URL,
+            "authorization_servers": ["https://auth.docs.example"],
+        },
+        "https://auth.docs.example/.well-known/oauth-authorization-server": {
+            "issuer": "https://auth.docs.example",
+            "authorization_endpoint": _OWN_ENDPOINT,
+        },
+    }
+
+    async def _get_json(_session: Any, url: str, _timeout: float) -> dict[str, Any]:
+        if url not in docs:
+            raise ValueError(f"{url} returned HTTP 404, expected 200")
+        return docs[url]
+
+    monkeypatch.setattr(discovery, "_get_json", _get_json)
+    monkeypatch.setattr(
+        discovery,
+        "vet_unfurl_url",
+        lambda url: link_unfurl.vet_unfurl_url(url, resolve=lambda _h, _p: ["93.184.216.34"]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_configured_servers_advertised_endpoint_is_served_on_kas(monkeypatch):
+    # The discovery step the kiro-cli mint and the chat banner run before the
+    # screen: the server's own metadata names this endpoint, so the row shows it.
+    from kiro_crew import security
+
+    _serve_discovery_naming_the_own_endpoint(monkeypatch)
+    monkeypatch.setattr(_Engine, "oauth_url", _PKCE_AUTHORIZE)
+    assert security.oauth_url_contains_credential(_PKCE_AUTHORIZE, _SERVER)  # before discovery
+
+    await _sign_in()
+    row = await _until_state("waiting", "failed")
+
+    assert row.get("oauth_url") == _PKCE_AUTHORIZE, row
+    assert len(_Engine.instances) == 1
+    await _consent()
+    granted = await _until_state("granted", "expired", "failed")
+    assert granted["state"] == "granted"
 
 
 @pytest.mark.asyncio
@@ -862,6 +944,21 @@ async def test_a_refused_purge_keeps_the_kas_sign_in_its_surviving_mirror_reads(
     names = await _vault_names()
     assert set(mcp_grant_kas.kas_saved_sign_in_names(url)) <= names, body
     assert body["entryRemoved"] is False and body["grantSurviving"] == [], body
+
+
+@pytest.mark.asyncio
+async def test_forgetting_a_sign_in_removes_the_path_client_registration_too():
+    from kiro_crew.connections import mint_kas
+
+    url = _notion()["mcp_url"]
+    digest = mcp_grant_kas.kas_connection_hash(url)
+    other = f"kiro.mcp.{'cd' * 32}.kiro-path-client"
+    vault = SecretVault(mcp_grant_kas.grant_store_root(data_home()))
+    for name in (f"kiro.mcp.{digest}.tokens", f"kiro.mcp.{digest}.kiro-path-client", other):
+        vault.set_sync(name, "{}")
+
+    assert await asyncio.to_thread(mint_kas.forget_kas_sign_in, url) is True
+    assert await _vault_names() == {other}
 
 
 @pytest.mark.asyncio

@@ -89,6 +89,8 @@ export interface ClientTransport {
   jRelayViewer: (r: Response) => ReturnType<Response['json']>
   /** `j` that does not journal the config-pending read's 403 `owner_only` (see client.ts). */
   jConfigPending: (r: Response) => ReturnType<Response['json']>
+  /** `j` that does not journal the Kiro sign-in reads' 403 `owner_only` (see client.ts). */
+  jKasLoginRead: (r: Response) => ReturnType<Response['json']>
   /** The shared `X-Session-Key: dashboard:ui` header, for a raw `fetch` that must still carry it. */
   sessionKeyHeader: { 'X-Session-Key': string }
   /** The pre-body 403 `X-Auth-Required` hook, for a method that reads its own response. */

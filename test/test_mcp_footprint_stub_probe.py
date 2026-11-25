@@ -174,6 +174,12 @@ def isolated_stub_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[s
     # child imports this checkout's package, installed or not.
     src = str(Path(kiro_crew.__file__).resolve().parents[1])
     env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": src, "KIROCREW_HOME": str(tmp_path / "home")}
+    # Both stubs read bytecode from the run's cache, so neither compiles the
+    # package. Without it the first stub of a fresh checkout compiles every
+    # module it imports (about 4 MB more PSS) and the second reads the .pyc the
+    # first wrote, so the 15% comparison measured import order, not the probe.
+    if sys.pycache_prefix:
+        env["PYTHONPYCACHEPREFIX"] = sys.pycache_prefix
 
     def unsandboxed(argv: list[str], **_kw: Any) -> tuple[list[str], dict[str, str], None]:
         return list(argv), env, None

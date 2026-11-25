@@ -25,6 +25,7 @@
  */
 import { isEmbeddedPane } from './embedded'
 import { relayTargetOrigin } from './nativeNotify'
+import { safeGetItem } from '../utils/safeStorage'
 
 export type ScrollTouchPhase = 'begin' | 'end'
 /** `at` is when the phase reached this page, on the `performance.now()` clock. */
@@ -57,6 +58,24 @@ export function shellNaturalScrolling(): boolean | null {
   } catch {
     return null
   }
+}
+
+/** The localStorage key of the "Reverse trackpad swipe" switch (Settings >
+ *  Display), written `'1'`/`'0'` by `usePersistedBool`. Off by default. */
+export const REVERSE_TRACKPAD_SWIPE_KEY = 'kc-reverse-trackpad-swipe'
+
+/**
+ * Natural scrolling for a wheel that does not say itself: the desktop shell's
+ * report, else the user's "Reverse trackpad swipe" switch (on means Natural
+ * scrolling is off), else `null`. Chrome and Firefox expose the macOS setting
+ * nowhere, so in those tabs the switch is the only source. The wheel's own
+ * `webkitDirectionInvertedFromDevice` still wins over this (lib/trackpadGesture
+ * `fingerSign`), so the switch changes nothing in Safari or the desktop app.
+ */
+export function naturalScrolling(): boolean | null {
+  const shell = shellNaturalScrolling()
+  if (shell !== null) return shell
+  return safeGetItem(REVERSE_TRACKPAD_SWIPE_KEY) === '1' ? false : null
 }
 
 /**

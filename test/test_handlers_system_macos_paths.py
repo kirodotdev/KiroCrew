@@ -109,31 +109,57 @@ def _collect_as_darwin(
     return handlers_system._collect_system_metrics()
 
 
+def _fake_trusted(monkeypatch: pytest.MonkeyPatch, lookup: Callable[[str], str | None]) -> None:
+    monkeypatch.setattr(
+        handlers_system,
+        "platform_compat",
+        SimpleNamespace(trusted_system_bin_quiet=lookup),
+    )
+
+
+_TOOL_CONSTANTS = ("_SYSCTL", "_VM_STAT", "_NETSTAT", "_PS")
+
+
 class TestMacOsSysctlPaths:
-    """Verify _SYSCTL and _VM_STAT resolve correctly on macOS."""
+    """Verify the system command paths resolve from the system directories only."""
 
-    def test_sysctl_resolves_via_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When shutil.which finds sysctl, use that path."""
-        _fake_which(monkeypatch, lambda cmd: f"/found/{cmd}" if cmd == "sysctl" else None)
-        assert handlers_system._resolve_tool(*_resolver_args("_SYSCTL")) == "/found/sysctl"
-
-    def test_sysctl_falls_back_to_usr_sbin(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When shutil.which returns None, fall back to /usr/sbin/sysctl."""
-        _fake_which(monkeypatch, lambda cmd: None)
+    def test_a_path_hit_does_not_choose_the_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A ``sysctl`` first on PATH (say ``~/.local/bin``) is never the one that runs."""
+        _fake_which(monkeypatch, lambda cmd: f"/home/u/.local/bin/{cmd}")
+        _fake_trusted(monkeypatch, lambda cmd: f"/usr/sbin/{cmd}" if cmd == "sysctl" else None)
         assert handlers_system._resolve_tool(*_resolver_args("_SYSCTL")) == "/usr/sbin/sysctl"
 
-    def test_vm_stat_falls_back_to_usr_bin(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When shutil.which returns None, fall back to /usr/bin/vm_stat."""
-        _fake_which(monkeypatch, lambda cmd: None)
-        assert handlers_system._resolve_tool(*_resolver_args("_VM_STAT")) == "/usr/bin/vm_stat"
+    @pytest.mark.parametrize("constant", _TOOL_CONSTANTS)
+    def test_each_tool_ignores_path(self, monkeypatch: pytest.MonkeyPatch, constant: str) -> None:
+        """With no system copy, every tool takes its fixed fallback, never the PATH hit."""
+        _fake_which(monkeypatch, lambda cmd: f"/home/u/.local/bin/{cmd}")
+        _fake_trusted(monkeypatch, lambda cmd: None)
+        name, fallback = _resolver_args(constant)
+        assert handlers_system._resolve_tool(name, fallback) == fallback
 
     def test_every_tool_path_is_bound_through_the_resolver(self) -> None:
         """Each path constant is ``_resolve_tool(<its command>, <its fallback>)``."""
-        assert {c: _resolver_args(c) for c in ("_SYSCTL", "_VM_STAT", "_NETSTAT")} == {
+        assert {c: _resolver_args(c) for c in _TOOL_CONSTANTS} == {
             "_SYSCTL": ("sysctl", "/usr/sbin/sysctl"),
             "_VM_STAT": ("vm_stat", "/usr/bin/vm_stat"),
             "_NETSTAT": ("netstat", "/usr/sbin/netstat"),
+            "_PS": ("ps", "/bin/ps"),
         }
+
+    def test_without_a_system_pgrep_the_child_count_spawns_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_PGREP`` has no fixed fallback: with none, no pgrep runs and the count is 0."""
+        spawned: list[str] = []
+
+        def fake_check_output(cmd: list[str], **kwargs: Any) -> bytes:
+            spawned.append(cmd[0])
+            return b"%CPU\n0.0\n"
+
+        monkeypatch.setattr(handlers_system, "_PGREP", None)
+        data = _collect_as_darwin(monkeypatch, fake_check_output)
+        assert data["child_processes"] == 0
+        assert None not in spawned
 
     def test_collect_metrics_returns_mem_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """On macOS, _collect_system_metrics returns mem_used_gb when commands succeed.

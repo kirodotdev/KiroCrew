@@ -758,9 +758,9 @@ async def test_the_post_listen_load_publishes_the_ranks(tmp_path, monkeypatch) -
     state.push_slots_update = MagicMock()
     await load_pinned_order_after_listen(state)
     assert list(state._pinned_session_order) == ["c", "a"]
-    state.push_slots_update.assert_called_once()
+    assert state.push_slots_update.call_count == 2, "the order, then the read times"
     await load_pinned_order_after_listen(state)
-    state.push_slots_update.assert_called_once()
+    assert state.push_slots_update.call_count == 2
 
 
 @pytest.mark.asyncio

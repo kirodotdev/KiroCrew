@@ -38,7 +38,7 @@ import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
-import { MAX_TERMINALS_PER_CHAT, offerPanelView, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
+import { offerPanelView, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePinnedViews } from './usePinnedViews'
 import { usePanelTabDescriptors, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
 import { appIcon } from '../../apps/appIcons'
@@ -515,17 +515,13 @@ export default function SidePanel({
   // Files header's per-project quick action (issue #1142) so the two entry
   // points cannot drift on WHERE the shell starts — that cwd is the whole point
   // of the affordance.
-  const [workspaceTerminalCapped, setWorkspaceTerminalCapped] = useState(false)
   const openProjectTerminal = useCallback(() => {
     // A remote session's terminal is a shell in its workspace, opened by the
     // gateway over `coder ssh`; unread placement is never permission to run
     // on the gateway. Read again after a pending leave confirmation.
     const placement = placementRef.current
-    if (placement) {
-      // At the per-chat cap with no workspace terminal to reuse, openTerminal
-      // opens nothing and returns ''; say so instead of doing nothing.
-      setWorkspaceTerminalCapped(!openTerminal({ remoteSlot: slot, title: placement.name }))
-    } else if (placement === null) openTerminal({ cwd: projectDir })
+    if (placement) openTerminal({ remoteSlot: slot, title: placement.name })
+    else if (placement === null) openTerminal({ cwd: projectDir })
   }, [openTerminal, projectDir, slot])
   // A folder a Side Chat reply names opens as a folder tab here, for this chat.
   // Stable, so the side transcript's row renderers are not rebuilt every render.
@@ -989,16 +985,6 @@ export default function SidePanel({
           link straight to it, inside the notice as its footer so the link reads
           as part of it. No hand-off: the adjacent chat composer can hold
           unsent text. */}
-      {workspaceTerminalCapped && (
-        <div className="shrink-0 px-3 pt-3">
-          <ErrorNotice
-            className="w-full"
-            message={i18nT('sessionEnvironments.workspaceTerminalCapped', { max: MAX_TERMINALS_PER_CHAT })}
-            onDismiss={() => setWorkspaceTerminalCapped(false)}
-            testId="side-panel-workspace-terminal-capped"
-          />
-        </div>
-      )}
       {externalTerminalNote && (
         <div className="shrink-0 px-3 pt-3">
           <ErrorNotice

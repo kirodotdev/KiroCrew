@@ -89,6 +89,29 @@ def _live() -> float:
     return time.time() + 3600
 
 
+@pytest.mark.parametrize(
+    ("stored", "requested", "marked"),
+    [
+        (None, "ip:127.0.0.1", False),
+        ("ip:127.0.0.1", "ip:127.0.0.1", True),
+        ("ip:203.0.113.7", "ip:127.0.0.1", False),
+        ("ts:login:alice@example.com", "ts:login:alice@example.com", False),
+    ],
+)
+def test_marking_proxy_use_only_changes_a_matching_address_pins_flag(
+    stored, requested, marked
+) -> None:
+    from kiro_crew.dashboard.token_auth_tokens import TokenStateManager
+
+    state = TokenStateManager()
+    if stored is not None:
+        state.bind_peer("token", stored, 123.0)
+    state.mark_address_pin_proxied("token", requested)
+    assert list(state._peer_bindings.values()) == (
+        [] if stored is None else [(stored, 123.0, marked)]
+    )
+
+
 class TestPostureReportsEffectivePinScope:
     def test_nothing_pinned_is_reported_as_not_known_yet_not_as_effective(self) -> None:
         """A pin nobody is exercising is not evidence the pin works."""

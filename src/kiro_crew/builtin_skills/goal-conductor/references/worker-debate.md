@@ -189,9 +189,11 @@ a participant's file and your relay disagree, the file wins; the recipient
 answers the file and names the mismatch.
 
 Check each delivery result in order: `steered: true` means it entered the
-running turn; otherwise `started: true` means a new turn started. Only
-`steered: false` AND `started: false` means queued. Never resend a successful
-steer merely because `started` is false. For a queued relay, read
+running turn; otherwise `started: true` means a new turn started.
+`pending_steer: true` means it is held for the target's next tool boundary, so
+do not resend it. Only `steered: false` AND `started: false` without
+`pending_steer` means queued. Never resend a successful steer merely because
+`started` is false. For a queued relay, read
 `session_status`; if the target is sleeping in `wait`, resend with
 `session_send` and `steer: true`, which also ends the wait. For a broadcast,
 read every row of the result using the same distinction and resend refused or

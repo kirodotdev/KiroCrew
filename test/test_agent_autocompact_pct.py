@@ -23,6 +23,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.acp_backends import ACP_BACKEND_KAS
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -32,6 +33,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.dashboard.chat import api_chat_slot_autocompact
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session import SessionManager, _Session
 from kiro_crew.testing.synthetic_credentials import github_classic
 
@@ -302,9 +304,24 @@ class _ReplProvider:
         return 50.0
 
 
+def _kas_provider(monkeypatch: pytest.MonkeyPatch, pct: float) -> AcpProvider:
+    """A real ``AcpProvider`` on KAS, so the REPL reads its shipped compaction answers."""
+    with unittest.mock.patch("kiro_crew.providers.acp.AcpClient"):
+        provider = AcpProvider(acp_backend=ACP_BACKEND_KAS)
+    provider._client = MagicMock()
+    provider._client.backend = ACP_BACKEND_KAS
+    monkeypatch.setattr(provider, "context_usage_pct", lambda: pct)
+    for name in ("compact", "shutdown", "start"):
+        monkeypatch.setattr(provider, name, unittest.mock.AsyncMock())
+    return provider
+
+
 async def _repl_once(
-    monkeypatch: pytest.MonkeyPatch, cfg: KiroCrewConfig, agent: str
-) -> _ReplProvider:
+    monkeypatch: pytest.MonkeyPatch,
+    cfg: KiroCrewConfig,
+    agent: str,
+    provider: object | None = None,
+):
     import kiro_crew.cli_chat as cli_chat
 
     lines = iter(["hello"])
@@ -317,7 +334,7 @@ async def _repl_once(
 
     monkeypatch.setattr("builtins.input", fake_input)
     monkeypatch.setattr(cli_chat, "_send_and_print", unittest.mock.AsyncMock())
-    provider = _ReplProvider()
+    provider = _ReplProvider() if provider is None else provider
     await cli_chat._interactive(provider, cfg, agent=agent)
     return provider
 
@@ -341,7 +358,7 @@ class TestCliChat:
         import kiro_crew.cli_chat as cli_chat
 
         cfg = _crew_cfg(builder=0.0)
-        assert cli_chat._repl_compact_at(cfg, "builder") == cfg.session.autocompact_pct
+        assert cli_chat._repl_compact_at(cfg, "builder") == (cfg.session.autocompact_pct, False)
         provider = await _repl_once(monkeypatch, cfg, "builder")
         # The turn ran, and 50% sits below the global, so nothing restarted.
         cli_chat._send_and_print.assert_awaited_once_with(
@@ -350,3 +367,31 @@ class TestCliChat:
         provider.compact.assert_not_awaited()
         provider.shutdown.assert_not_awaited()
         provider.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_repl_leaves_kas_to_itself_at_the_global(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = _crew_cfg(builder=0.0)
+        provider = _kas_provider(monkeypatch, cfg.session.autocompact_pct + 1)
+        assert provider.manual_compact_unsupported_backend is None
+        assert provider.harness_managed_compaction_backend == ACP_BACKEND_KAS
+        await _repl_once(monkeypatch, cfg, "builder", provider)
+        provider.compact.assert_not_awaited()
+        provider.shutdown.assert_not_awaited()
+        provider.start.assert_not_awaited()
+        err = capsys.readouterr().err
+        assert "Compacting" not in err
+        assert f"Context at {cfg.session.autocompact_pct + 1:.0f}%" in err
+
+    @pytest.mark.asyncio
+    async def test_the_repl_compacts_kas_at_its_crews_number(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _crew_cfg(orchestrator=40.0)
+        provider = _kas_provider(monkeypatch, 50.0)
+        assert cfg.session.autocompact_pct > 50.0
+        await _repl_once(monkeypatch, cfg, "orchestrator", provider)
+        provider.compact.assert_awaited_once_with()
+        provider.shutdown.assert_awaited_once_with()
+        provider.start.assert_awaited_once()

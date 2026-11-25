@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow, takePlainPanelShow, notePanelStoppedShowing, notePanelShown, MAX_TERMINALS_PER_CHAT } from '../hooks/usePanelTabs'
+import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow, takePlainPanelShow, notePanelStoppedShowing, notePanelShown } from '../hooks/usePanelTabs'
 import * as panelTabsModule from '../hooks/usePanelTabs'
 import { shouldMountSidePanel, isSidePanelHidden } from '../pages/chat/sidePanelMount'
 
@@ -134,6 +134,17 @@ describe('usePanelTabs', () => {
     rerender({ slot: 'pane-c' })
     act(() => result.current.openView('changes', { automatic: true }))
     expect(result.current.activeId).toBe('changes')
+  })
+
+  it('a file opened held in another slot keeps the focus against that slot\'s discovery open', () => {
+    // The file twin of the held folder: a split pane's file chip or diff Open.
+    const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot, mock.descriptors), {
+      initialProps: { slot: 'pane-a' as string | null },
+    })
+    act(() => result.current.openFile('/x/held.md', 'body', 'pane-b', { hold: true }))
+    rerender({ slot: 'pane-b' })
+    act(() => result.current.openView('changes', { automatic: true }))
+    expect(result.current.activeId).toBe('file:/x/held.md')
   })
 
   it('evictDocumentBodies drops clean file bodies and diff tabs, keeps dirty buffers, in every slot', () => {
@@ -1200,31 +1211,20 @@ describe('openPanelView', () => {
     })
   })
 
-  /* At the terminal cap a request reuses only a terminal on the same machine:
-   * a remote one must never land in a gateway shell, nor a local one in a
-   * workspace. With no match it is refused (empty id), leaving focus alone. */
+  /* No per-chat cap: every request mints its own shell on the machine it
+   * names, past the old cap of four. The gateway's ceiling is the only limit. */
   it.each([
-    ['remote', { remoteSlot: 'chat-r' }, {}],
-    ['local', {}, { remoteSlot: 'chat-r' }],
-  ])('at the cap a %s request never reuses a terminal on the other machine', (_name, ask, held) => {
+    ['remote', { remoteSlot: 'chat-r' }],
+    ['local', {}],
+  ])('opens a fresh %s terminal on every request', (_name, ask) => {
     const { result } = renderHook(() => usePanelTabs('chat-r', mock.descriptors))
-    for (let i = 0; i < MAX_TERMINALS_PER_CHAT; i++) act(() => { result.current.openTerminal(held) })
-    const before = result.current.activeId
-    let sid = 'unset'
-    act(() => { sid = result.current.openTerminal(ask) })
-    expect(sid).toBe('')
-    expect(result.current.activeId).toBe(before)
-    expect(result.current.tabs.filter(t => t.kind === 'terminal')).toHaveLength(MAX_TERMINALS_PER_CHAT)
-  })
-
-  it('at the cap a remote request reuses the newest remote terminal', () => {
-    const { result } = renderHook(() => usePanelTabs('chat-r', mock.descriptors))
-    let remote = ''
-    act(() => { remote = result.current.openTerminal({ remoteSlot: 'chat-r' }) })
-    for (let i = 1; i < MAX_TERMINALS_PER_CHAT; i++) act(() => { result.current.openTerminal() })
-    let sid = ''
-    act(() => { sid = result.current.openTerminal({ remoteSlot: 'chat-r' }) })
-    expect(sid).toBe(remote)
-    expect(result.current.activeId).toBe(`terminal:${remote}`)
+    const ids: string[] = []
+    for (let i = 0; i < 6; i++) act(() => { ids.push(result.current.openTerminal(ask)) })
+    expect(new Set(ids).size).toBe(6)
+    expect(ids.every(Boolean)).toBe(true)
+    const terms = result.current.tabs.filter(t => t.kind === 'terminal')
+    expect(terms).toHaveLength(6)
+    expect(terms.every(t => (t.remoteSlot ?? '') === ((ask as { remoteSlot?: string }).remoteSlot ?? ''))).toBe(true)
+    expect(result.current.activeId).toBe(`terminal:${ids.at(-1)}`)
   })
 })

@@ -3,8 +3,8 @@ title: "Third-party app agent tools: an owner grant on top of the prompted serve
 status: accepted
 author: pearcekieser, with kirocrew-worker
 created: 2026-11-12
-last-audited: 2026-11-12
-audited-at: 029b6db029
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 35966
 implementation-prs: []
 tracking-issues: [32727]

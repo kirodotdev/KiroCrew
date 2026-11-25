@@ -1,16 +1,19 @@
 """Tests for the kirocrew.session.startup.duration histogram contract.
 
 Drives AcpClient.ensure_ready() through each exit path (success / auth_required /
-error / unexpected) and asserts the emitted histogram attributes -- in particular
+error / unexpected / cancelled) and asserts the emitted histogram attributes -- in particular
 that an unexpected (non-Acp) exception is NOT recorded as a healthy "ready"
 outcome (regression guard for the outcome-default fix).
 """
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpAuthRequired, AcpClient, AcpError
+from kiro_crew.acp.client import AcpAuthRequired, AcpClient, AcpError, AcpToolGateUnroutable
+from kiro_crew.testing.wait import await_until
 
 
 class _CapturingRecorder:
@@ -123,6 +126,177 @@ async def test_unexpected_exception_not_ready():
     outcome = _last_outcome(rec)["outcome"]
     assert outcome != "ready"
     assert outcome == "error"
+
+
+async def _cancel_mid_start(start, entered: asyncio.Event) -> None:
+    """Run ``start`` as a task, cancel it once it is inside the start, re-raise.
+
+    The cancel lands on a real suspension point, the way Stop, a closed chat or
+    a reset during start reaches a start in production.
+    """
+    task = asyncio.ensure_future(start())
+    await await_until(entered, what="the start reaching its wait")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await await_until(task, what="the start ending")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_outcome_cancelled():
+    """A start cancelled mid-way is a cancel, not a startup failure."""
+    client = _client()
+    client._spawn = _spawn_ok(client)
+    entered = asyncio.Event()
+
+    async def _init():
+        entered.set()
+        await asyncio.Event().wait()  # unblocked only by the cancel
+
+    client._initialize_session = _init
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _cancel_mid_start(client.ensure_ready, entered)
+    assert _last_outcome(rec)["outcome"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_failed_start_cleanup_keeps_the_failure():
+    """A start that already failed stays a failure when its cleanup is cancelled."""
+    client = _client()
+    client._spawn = _spawn_ok(client)
+
+    async def _init():
+        raise AcpToolGateUnroutable("no route")
+
+    client._initialize_session = _init
+    client._cleanup_failed_live_spawn = AsyncMock(side_effect=asyncio.CancelledError)
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        with pytest.raises(asyncio.CancelledError):
+            await client.ensure_ready()
+    assert _last_outcome(rec)["outcome"] == "tool_gate_unroutable"
+
+
+@pytest.mark.asyncio
+async def test_kiro_cancelled_start_outcome_cancelled():
+    """The kiro path files a cancelled cold start as ``cancelled`` on every point."""
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = SimpleNamespace(_session_key="dashboard:b016", backend="")
+    entered = asyncio.Event()
+
+    async def _impl(phases, meta):
+        phases["spawn_init"] = 12.0
+        entered.set()
+        await asyncio.Event().wait()  # unblocked only by the cancel
+
+    provider._start_kiro_runtime_impl = _impl
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _cancel_mid_start(provider._start_kiro_runtime, entered)
+    assert {a["phase"] for _, a in rec.calls} == {"total", "spawn_init"}
+    assert {a["outcome"] for _, a in rec.calls} == {"cancelled"}
+
+
+async def _start_under_deadline(start, entered: asyncio.Event, *, expire: bool) -> None:
+    """Run ``start`` inside ``startup_deadline``; expire it, or cancel the task, mid-start.
+
+    The deadline is moved to now rather than waited out, so no clock decides the run.
+    """
+    from kiro_crew.startup_deadline import startup_deadline
+
+    deadlines: list[asyncio.Timeout] = []
+
+    async def _bounded():
+        async with startup_deadline(600) as deadline:
+            deadlines.append(deadline)
+            await start()
+
+    task = asyncio.ensure_future(_bounded())
+    await await_until(entered, what="the start reaching its wait")
+    if expire:
+        deadlines[0].reschedule(asyncio.get_running_loop().time())
+    else:
+        task.cancel()
+    with pytest.raises(TimeoutError if expire else asyncio.CancelledError):
+        await await_until(task, what="the start ending")
+
+
+def _waiting_kiro_provider(entered: asyncio.Event):
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = SimpleNamespace(_session_key="dashboard:b016", backend="")
+
+    async def _impl(phases, meta):
+        entered.set()
+        await asyncio.Event().wait()  # unblocked only by the deadline or the cancel
+
+    provider._start_kiro_runtime_impl = _impl
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_expired_startup_deadline_outcome_timeout():
+    """A caller's deadline that cuts the start is a startup timeout, not a cancel."""
+    client = _client()
+    client._spawn = _spawn_ok(client)
+    entered = asyncio.Event()
+
+    async def _init():
+        entered.set()
+        await asyncio.Event().wait()  # unblocked only by the deadline
+
+    client._initialize_session = _init
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _start_under_deadline(client.ensure_ready, entered, expire=True)
+    assert _last_outcome(rec)["outcome"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_kiro_expired_startup_deadline_outcome_timeout():
+    entered = asyncio.Event()
+    provider = _waiting_kiro_provider(entered)
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _start_under_deadline(provider._start_kiro_runtime, entered, expire=True)
+    assert {a["outcome"] for _, a in rec.calls} == {"timeout"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_inside_a_live_startup_deadline_stays_cancelled():
+    """The deadline names only its own expiry: a Stop inside it is still a cancel."""
+    entered = asyncio.Event()
+    provider = _waiting_kiro_provider(entered)
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _start_under_deadline(provider._start_kiro_runtime, entered, expire=False)
+    assert {a["outcome"] for _, a in rec.calls} == {"cancelled"}
+
+
+@pytest.mark.asyncio
+async def test_kiro_cancel_during_failed_start_cleanup_keeps_error():
+    """A kiro start cancelled while it handles its own failure stays ``error``."""
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = SimpleNamespace(_session_key="dashboard:b016", backend="")
+    entered = asyncio.Event()
+
+    async def _impl(phases, meta):
+        try:
+            raise OSError("spawn failed")
+        except OSError:
+            entered.set()
+            await asyncio.Event().wait()  # the failure's cleanup; unblocked by the cancel
+
+    provider._start_kiro_runtime_impl = _impl
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _cancel_mid_start(provider._start_kiro_runtime, entered)
+    assert {a["outcome"] for _, a in rec.calls} == {"error"}
 
 
 class TestKiroStartupAttrs:

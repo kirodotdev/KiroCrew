@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from kiro_crew.agent_sdk.drivers.acp_turn_vocab import LLMProvider, TurnUsage, resolve_billing_stats
+from kiro_crew.agent_sdk.drivers.acp_turn_vocab import TurnUsage, resolve_billing_stats
 
 logger = logging.getLogger("kiro_crew.llm_helpers")
 
@@ -34,8 +34,11 @@ _NO_PRIOR_STATS = object()
 _TURN_BILLED_ATTR = "_kc_turn_billed"
 
 
-def record_interaction_event(client: LLMProvider, session_key: str, surface: str) -> None:
+def record_interaction_event(client: object, session_key: str, surface: str) -> None:
     """Record one per-interaction telemetry event via the PlatformContext seam.
+
+    *client* is read by reflection only, so a channel engine may pass the
+    provider slot it holds (``object | None`` until the session is claimed).
 
     The payload is metadata only (session key, surface, model), never prompt,
     response or file text. Best-effort: a telemetry failure never affects the

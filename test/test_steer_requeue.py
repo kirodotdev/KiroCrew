@@ -535,7 +535,7 @@ class TestProductionWiring:
 
         src = Path(cd.__file__).read_text(encoding="utf-8")
         register_at = src.index("slot._pending_steers.append(message)")
-        await_at = src.index("await client.steer(wire_message)")
+        await_at = src.index("await client.steer(wire_message")
         assert register_at < await_at, (
             "pending registration must precede the steer RPC await so a turn "
             "dying mid-write still requeues the steer"

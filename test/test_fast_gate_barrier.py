@@ -124,6 +124,9 @@ _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
     "metrics-schema-history": "stdlib manifest diff against the base; seconds, no install",
+    # Runs only when `lint-gate` is skipped on purpose: a docs-only pull
+    # request has no code to lint, and this job is its whole test verdict.
+    "docs-contract-tests": "docs-only pull requests skip lint-gate; this is their test lane",
     # These two hold the baselined ratchets. They are OFF the gate path
     # deliberately, and the trade is real: a ratchet failure does not SAVE the
     # matrix, it reds the pull request alongside it. What is bought is the
@@ -844,8 +847,9 @@ class TestTheBarrierFailsClosed:
         # restated here or the API read 404s and the barrier fails closed on every run.
         # Read and nothing more: the barrier runs on pull requests and merge groups, and
         # the one write a superseded push needs lives in the cancel job.
+        # checks:read reads the commit's check-runs when the listing answers none.
         perms = ci["jobs"]["await-fast-gate"]["permissions"]
-        assert perms == {"actions": "read", "contents": "read"}
+        assert perms == {"actions": "read", "checks": "read", "contents": "read"}
 
     def test_the_barrier_script_makes_no_write(self, barrier_script: str) -> None:
         # `gh api` with -f fields defaults to POST, so every call names its method,
@@ -890,8 +894,15 @@ class TestOnlyThePushOnlyCancelJobCanWrite:
         }
         assert writers == {_CANCEL_JOB}, writers
 
-    def test_the_cancel_job_holds_exactly_actions_write_and_contents_read(self, ci: dict) -> None:
-        assert ci["jobs"][_CANCEL_JOB]["permissions"] == {"actions": "write", "contents": "read"}
+    def test_the_cancel_job_holds_exactly_actions_write_checks_and_contents_read(
+        self, ci: dict
+    ) -> None:
+        # checks:read lets the probe make the barrier's own check-runs read.
+        assert ci["jobs"][_CANCEL_JOB]["permissions"] == {
+            "actions": "write",
+            "checks": "read",
+            "contents": "read",
+        }
 
     def test_the_cancel_job_runs_only_on_a_push_to_main(self, ci: dict) -> None:
         guard = ci["jobs"][_CANCEL_JOB]["if"]
@@ -1500,3 +1511,59 @@ class TestLintRunsBeforeTheHeavyJobs:
         assert lint_at < body.index("frontend-test=$FE -- failing closed")
         assert lint_at < body.index("backend-test=$BE -- failing closed")
         assert "Backend Lint & Type Check" in body and "Frontend Lint & Type Check" in body
+
+
+_DOCS_CONTRACT_FIRST_SHARD = "matrix.shard == 1"
+
+
+def test_docs_contract_tests_always_runs_the_whole_electron_suite(ci: dict) -> None:
+    # Electron specs read docs by computed paths the reader selector cannot
+    # see, and `electron-test` skips on a docs-only pull request. The job is a
+    # backend file-shard matrix; the Electron suite runs on exactly one leg,
+    # whatever the selector picked.
+    job = ci["jobs"]["docs-contract-tests"]
+    assert 1 in job["strategy"]["matrix"]["shard"]
+    steps = job["steps"]
+    electron = [
+        step
+        for step in steps
+        if step.get("working-directory") == "website/electron" and "npm test" in step.get("run", "")
+    ]
+    assert electron
+    for step in electron:
+        assert step.get("if") == _DOCS_CONTRACT_FIRST_SHARD
+        assert step["env"]["ELECTRON_SKIP_BINARY_DOWNLOAD"] == "1"
+    node = [step for step in steps if str(step.get("uses", "")).startswith("actions/setup-node@")]
+    assert node
+    for step in node:
+        assert step.get("if") == _DOCS_CONTRACT_FIRST_SHARD
+        assert "website/electron/package-lock.json" in step["with"]["cache-dependency-path"]
+    seed = [step for step in steps if step.get("uses") == "./.github/actions/seed-node-tool-cache"]
+    assert seed
+    for step in seed:
+        assert step.get("if") == _DOCS_CONTRACT_FIRST_SHARD
+    vitest = [step for step in steps if "npx vitest run" in step.get("run", "")]
+    assert vitest
+    for step in vitest:
+        assert step["if"].startswith(_DOCS_CONTRACT_FIRST_SHARD + " && ")
+
+
+def test_docs_contract_tests_shards_the_backend_list_without_argv(ci: dict) -> None:
+    # Positional test files bypass collect_ignore and make pytest walk a
+    # file's directory once per argument (scripts/ci_file_shards.py), so the
+    # selected list reaches pytest only through --file-shard-targets.
+    job = ci["jobs"]["docs-contract-tests"]
+    assert job["strategy"]["fail-fast"] is False
+    shards = job["strategy"]["matrix"]["shard"]
+    assert shards == list(range(1, len(shards) + 1))
+    assert str(job["env"]["SHARD_COUNT"]) == str(len(shards))
+    pytest_steps = [step for step in job["steps"] if "pytest" in step.get("run", "")]
+    assert pytest_steps
+    for step in pytest_steps:
+        body = step["run"]
+        assert "-p scripts.ci_file_shards" in body
+        assert '--file-shard-targets="$BACKEND_FILE"' in body
+        assert '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.shard }}' in body
+        assert "-p scripts.ci_main_red_skip" in body
+        assert step["env"]["CI_MAIN_RED_SKIP"] == "${{ needs.changes.outputs.main_red_skip }}"
+        assert "mapfile" not in body and "targets[@]" not in body

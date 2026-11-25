@@ -658,7 +658,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: layer and the factory that built it. The order is a security contract: latency is
 #: outermost, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
-#: layer reads a client-sent relay header, the
+#: layer reads a client-sent relay header, the entry gate (dashboard only, the one
+#: chain beside which the entry port opens) is next so a request on the
+#: entry port is marked before any layer that refuses or routes, the
 #: deny-audit boundary is outer to every barrier that can refuse, the app web origin
 #: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
 #: audit is inner to them, the redaction audience sits right after token auth, the
@@ -671,6 +673,7 @@ _DASHBOARD_CHAIN = (
     ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
+    ("entry_gate_middleware", "entry_gate_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
     ("relay_origin", "_relay_origin_middleware.<locals>."),
@@ -778,7 +781,7 @@ _DASHBOARD_BOOT = tuple("""
     current_context
     _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred _deferred _deferred _deferred _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -796,7 +799,6 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
-    subprocess_executor
     _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
@@ -818,6 +820,7 @@ _DASHBOARD_BOOT = tuple("""
     _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
     on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
+    register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
     _kick_builtin_adoption_staging _kick_interrupted_update_sweep _kick_app_backend_backstop
@@ -831,17 +834,18 @@ _DASHBOARD_BOOT = tuple("""
     load_loop_stall_exit_after register_pre_exec_stop
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
-    await_crewmate_prune_settled current_context record_boot_to_ready
-    _dispatch_healthy_boot_marker
+    await_crewmate_prune_settled current_context sel setup_tunnel current_context
+    record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
-    current_context unregister_status_delta_sink stop_hook_reconciler
+    unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_retake_hops_then_revive S:_revive_intended_instances
     S:_stt_idle_sweep
-    S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
+    S:_stt_startup_prewarm S:_sweep_remote_closes T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
     T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
@@ -865,7 +869,7 @@ _API_BOOT = tuple("""
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred

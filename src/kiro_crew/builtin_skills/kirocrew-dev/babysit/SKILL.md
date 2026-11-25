@@ -194,7 +194,7 @@ security. Fix, commit and push only within the user's authorization.
    blocker/stall conditions and stop tool. Include worktree/branch and whether
    pushes are authorized. Pass positive cycle and runtime bounds. For Kiro Crew
    preparation use kirocrew-prepare-pr's budget; never raise its cap yourself.
-2. Load the MCP tool by exact `tool_search` ID before calling it. Report only
+2. Load the MCP tool by its exact id, as the `[TOOL NAMES]` block says, before calling it. Report only
    that monitoring was REQUESTED and END YOUR TURN immediately. Application
    happens when the turn's result is processed, not synchronously with the call.
 3. On a later turn, verify the applied transcript notice and session-bound state
@@ -266,7 +266,8 @@ states, hidden allowed-failure jobs and "no single merge verdict" hosts all fail
 closed until you have confirmed the mapping on the actual host.
 
 Conflict, `BEHIND`, or `green_age.py` exit 30 requires an authorized sync, not
-another unchanged poll:
+another unchanged poll (for exit 30, a local rebase and re-check, pushed only when
+it conflicts or goes red):
 GitHub cannot build a conflicted merge ref, so `pull_request` checks may never
 start while old checks look green. `BEHIND` is the weakest of the three and on
 some repositories never appears at all: `mergeStateStatus` reports it only under
@@ -298,7 +299,8 @@ For comment-aware legacy monitoring, declare review-ready only when all hold:
   that did not answer the finding or a lane whose verdict is not reproducible on
   an identical tree, and only the re-run separates those.
 - No conflict, behind-base state, draft or changes-requested hold remains, and
-  where the optional helper is installed, `green_age.py` is not reporting exit 30.
+  where the optional helper is installed, `green_age.py` run in the loop's own
+  checkout is not reporting exit 30.
 - No current-head finding lacks a disposition. For Kiro Crew, use kirocrew-prepare-pr's
   disposition contract rather than inventing a second ledger format.
 

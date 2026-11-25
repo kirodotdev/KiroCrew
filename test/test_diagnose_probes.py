@@ -329,6 +329,37 @@ def test_agent_spec_mcp_command_that_no_longer_exists(world, tmp_path):
     assert "Reinstall" in f["fix"]["steps"][0]
 
 
+def test_a_server_the_default_agent_left_out_for_a_missing_program_is_named(world):
+    from kiro_crew import mcp_dropped_servers
+
+    assert _run(world)["agent_spec_dead_paths"]["status"] == dp.OK
+    mcp_dropped_servers.record_rebuild_drops({"notes": "uvx"})
+    f = _run(world)["agent_spec_dead_paths"]
+    assert f["status"] == dp.PROBLEM
+    assert f["summary"].endswith("program is not on this computer: notes")
+    assert f["evidence"]["dropped"] == [{"server": "notes", "program": "uvx"}]
+    assert "start a new chat with the default agent" in f["fix"]["steps"][0]
+
+
+def test_agent_spec_dead_path_set_in_the_users_mcp_file_names_that_file(world, tmp_path):
+    # A restart rewrites the managed spec from this file, so it writes the dead
+    # path back: the step must send the user to the file, not to a restart.
+    gone = str(tmp_path / "rotated" / "notes_server.py")
+    entry = {"command": "python3", "args": [gone]}
+    store = world["home"] / "mcp.json"
+    store.write_text(json.dumps({"mcpServers": {"notes-tool": entry}}))
+    spec = {"name": "kirocrew", "mcpServers": {"notes-tool": entry}}
+    (world["agents"] / "kirocrew.json").write_text(json.dumps(spec))
+    f = _run(world)["agent_spec_dead_paths"]
+    assert f["status"] == dp.PROBLEM
+    assert [d.get("source") for d in f["evidence"]["dead"]] == [str(store)]
+    assert f["fix"]["steps"] == [
+        f"Correct the path in {store}, then restart the gateway.",
+        "To stop using the server instead, delete it from that file, then run "
+        "`kirocrew setup --agent-only --clean`.",
+    ]
+
+
 def test_signed_out_kiro_cli_explains_failing_turns(world):
     world["app"]["kiro_prerequisite_service"] = _Service(_Status(authenticated=False))
     world["units"].append(

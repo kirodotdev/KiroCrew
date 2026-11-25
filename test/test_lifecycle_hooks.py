@@ -198,7 +198,6 @@ class TestShellBeforePython:
         Mocks both _run_lifecycle_script and on_app_enable in the
         handle_enable_app flow and asserts shell is called first.
         """
-        import sys
         from unittest.mock import MagicMock, patch
 
         from dashboard_owner_helpers import owner_claims
@@ -219,10 +218,6 @@ class TestShellBeforePython:
             "resources": "gateway",
             "enabled": True,
         }
-
-        # Pre-mock dashboard.server to avoid circular import with mimir
-        if "kiro_crew.dashboard.server" not in sys.modules:
-            sys.modules["kiro_crew.dashboard.server"] = MagicMock()
 
         with (
             patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),

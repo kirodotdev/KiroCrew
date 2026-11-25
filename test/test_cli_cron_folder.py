@@ -341,7 +341,13 @@ class TestCliListFolder:
 
     def test_name_and_message_stay_on_the_job_line(self, home, no_create, capsys):
         svc = CronService(base_dir=config_dir())
-        svc.add_job("ok\r\n  ✅ fake  forged", "hi\r\n  ✅ fake2", every_secs=300)
+        job = svc.add_job("ok", "hi\r\n  ✅ fake2", every_secs=300)
+        # Every write door refuses a name carrying a line break, so a store
+        # holds one only when it was written before that rule existed: write
+        # it straight into the store this test already owns. What is pinned
+        # here is what `cron list` does with a name already on disk.
+        job.name = "ok\r\n  ✅ fake  forged"
+        svc._save()
         cli_commands._cron_dispatch(_list())
         out = capsys.readouterr().out
         assert "\r" not in out

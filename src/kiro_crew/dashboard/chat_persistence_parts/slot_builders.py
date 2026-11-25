@@ -65,6 +65,36 @@ if TYPE_CHECKING:
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 
 
+async def _commit_tab_id_backfills(
+    conv_log: ConversationLog, pending_backfills: list[tuple[str, dict]], *, driver: str
+) -> None:
+    """Commit the tab-id backfills a restore driver collected, before it returns.
+
+    Each backfill is an ``os.replace`` of the whole transcript. Left in flight,
+    it overlaps whatever the caller does next with the slot: an on-loop read
+    of a file still mid-replace raises ``PermissionError`` on Windows, and a
+    turn's admission reads the session's execution carrier outside the
+    transcript lock while that replace holds it. So every async driver that
+    can mint one awaits it here, one at a time and off the loop.
+
+    ``update_metadata_if(require_existing=True)``, not ``update_metadata``: a
+    ``DELETE /api/sessions/{key}`` during the restore must not be undone by
+    recreating a metadata-only transcript that reopens as an empty tab.
+    Best-effort: the slot already holds this metadata, so a failure is logged.
+    """
+    for key, fields in pending_backfills:
+        try:
+            await asyncio.to_thread(
+                conv_log.update_metadata_if,
+                key,
+                fields,
+                lambda _meta: True,
+                require_existing=True,
+            )
+        except Exception:  # noqa: BLE001 - best-effort metadata backfill
+            logger.warning("%s: tab-id backfill failed for %s", driver, key, exc_info=True)
+
+
 def _prefetch_rehydrate_inputs(
     conv_log: ConversationLog,
     history_key: str,
@@ -462,13 +492,13 @@ def _rehydrate_slot_from_history(
     per tab; omit it and one is built on demand for single-slot callers.
 
     *pending_backfills* collects the ``(key, fields)`` of any tab-id metadata
-    backfill this slot mints, instead of firing it off the loop here. The async
-    open-slot driver passes a list and DRAINS it (its ``os.replace`` committed)
-    before it returns, so a caller's immediate on-loop transcript read right
-    after restore cannot land inside that replace window and trip a Windows
-    sharing violation. When ``None`` (every synchronous caller) the backfill
-    fires off the loop as before. Mirrors the drain :func:`_apply_recent_session`
-    performs for the recent-session driver.
+    backfill this slot mints, instead of firing it off the loop here. Every async
+    driver (the open-slot and recent-session restores, and
+    :func:`rehydrate_slot_from_history_async`) passes a list and commits it with
+    :func:`_commit_tab_id_backfills` before it returns, so what the caller does
+    next with the slot -- an on-loop transcript read, or a turn whose admission
+    reads the execution carrier -- cannot land inside that replace window. When
+    ``None`` (every synchronous caller) the backfill fires off the loop.
 
     Unlike ``state.get_or_create_slot`` (which creates a fresh, empty slot with
     default ``memory_mode='persistent'``), this helper reads the session's
@@ -655,6 +685,7 @@ async def rehydrate_slot_from_history_async(
 
     published = None
     registered = False
+    pending_backfills: list[tuple[str, dict]] = []
     try:
         published = await _rehydrate_slot_from_history_noted(
             state,
@@ -662,6 +693,7 @@ async def rehydrate_slot_from_history_async(
             kiro_model_map=kiro_model_map,
             adopt_closed=adopt_closed,
             on_noted=_noted,
+            pending_backfills=pending_backfills,
         )
         # Read before the exit work's first await: whether the body's slot
         # holds the key right now is the evidence the recheck below needs.
@@ -688,6 +720,11 @@ async def rehydrate_slot_from_history_async(
         await asyncio.shield(
             asyncio.to_thread(_takeover_ordering.retry_owed_unstamp, state, slot_name)
         )
+    # Exit work too, so a deletion during it is the retired case below.
+    if state.conversation_log is not None:
+        await _commit_tab_id_backfills(
+            state.conversation_log, pending_backfills, driver="rehydrate_slot_from_history_async"
+        )
     # Synchronous, after the last await: a slot that held the key as the body
     # returned and does not hold it now was retired meanwhile.
     if registered and state._slots.get(slot_name) is not published:
@@ -702,6 +739,7 @@ async def _rehydrate_slot_from_history_noted(
     kiro_model_map: dict[str, str] | None = None,
     adopt_closed: bool = False,
     on_noted: Callable[[TakeoverNote], None] | None = None,
+    pending_backfills: list[tuple[str, dict]] | None = None,
 ) -> _ChatSlot | None:
     """:func:`_rehydrate_slot_from_history` with the disk reads off the loop.
 
@@ -870,6 +908,7 @@ async def _rehydrate_slot_from_history_noted(
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
+        pending_backfills=pending_backfills,
     )
     if _restored is not None:
         # Claim recovery belongs HERE, not in each caller: this function is how

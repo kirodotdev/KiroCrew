@@ -6,14 +6,16 @@ import { sendTurn, SEND_ABORT_MS, type SendReceipt } from '../../chat-core/trans
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { sideTurnWire } from './sideTurnWire'
 import { useAppSelector, useAppDispatch, useAppStore } from '../../store'
-import { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
+import { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, resyncWaitingSideConversations, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
+import { renderAssistantBubble, type MessageRenderer } from '../../app-sdk/messageRenderers'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../../guide/trustRoot'
 import StatusNotice from '../../components/StatusNotice'
 import InfoTip from '../../components/InfoTip'
 import { SlotProvider } from '../../providers/SlotContext'
@@ -29,6 +31,8 @@ import type { ChatMessage } from '../../types'
 import { searchableText } from '../../utils/searchableText'
 
 import { i18nT } from '../../i18n/t'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from './shared-crew/MessageByline'
 import { fmtNumber } from '../../i18n/format'
 const MAX_QUESTION_BYTES = 32_768
 // Max auto-grow height (px) for the side-question input before it scrolls.
@@ -210,17 +214,52 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
     () => messages.map((m, i) => {
       const streaming = i === lastIdx && isStreamingLast
       const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
-      // A finished answer's blocked-link records ride in `meta`, where the shared
-      // bubble reads a main chat row's, so a flagged link there draws as its chip.
-      const meta = role === 'assistant' && m.link_blocks !== undefined ? { meta: { link_blocks: m.link_blocks } } : {}
-      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts, ...meta }
+      // A finished answer's records ride in `meta`, where the shared bubble reads
+      // a main chat row's, so a flagged link draws as its chip and a removed
+      // credential as its lock tag.
+      const records = role === 'assistant' && (m.link_blocks !== undefined || m.redactions !== undefined)
+        ? { meta: { link_blocks: m.link_blocks, redactions: m.redactions } }
+        : {}
+      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts, ...records }
     }),
     [messages, lastIdx, isStreamingLast]
   )
 
+  /** The side routes always serve this gateway's own slot, so a reply draws its
+   *  lock tags and its Blocked link card's Allow on the chat page's local-slot
+   *  rule. A streaming row passes no `messageTs`: its `ts` moves with each delta
+   *  and would re-version its local image URLs. */
+  const renderers = useMemo<readonly MessageRenderer[]>(() => [{
+    id: 'assistant',
+    roles: ['assistant', 'streaming'],
+    render: (m, ctx) => {
+      const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: slot, messageTs: m.role === 'streaming' ? undefined : m.ts })
+      return bubble === null ? null : ctx.wrapper(bubble)
+    },
+  }], [slot])
+
+  // A Blocked link card's Allow or Undo on this slot changes how the gateway
+  // serves its answers, so read them again.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if ((e as CustomEvent).detail?.slot === slot) void dispatch(resyncWaitingSideConversations(slot))
+    }
+    window.addEventListener('mc:redaction-hosts-changed', handler)
+    return () => window.removeEventListener('mc:redaction-hosts-changed', handler)
+  }, [dispatch, slot])
+
   // Stage exactly what the transcript renders: hidden widget bodies and protocol
   // markers stay out of the composer, trailing whitespace is removed, and leading
   // indentation remains intact for whitespace-sensitive Markdown.
+  // The transcript's one live region, the same decision the main chat makes:
+  // a side answer is spoken once when it lands, and the side question when it
+  // is sent. The shared scroller is not a live region, so without this a side
+  // answer would arrive in silence.
+  const sideApprovals = useMemo(() => pendingApprovalsOf(transcript), [transcript])
+  const sideUserSpeaker = useUserRowSpeaker(transcript[transcript.length - 1]?.meta ?? undefined, slot, transcript[transcript.length - 1]?.content)
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    announcementTail(transcript), isBusy, undefined, `side:${slot}`, sideApprovals, transcript.length, sideUserSpeaker,
+  )
   const renderedLastAnswer = transcript[lastIdx]?.role === 'assistant'
     ? searchableText(transcript[lastIdx])
     : ''
@@ -933,7 +972,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
     // queued one is a card, so the server frame places both.
     const steer = isBusy && steerRequested
     sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null, ...(blocks.length || files.length ? { display: typed, pastes: blocks, files } : {}) })
-  }, [draft, pasteBlocks, stagedFiles, slot, sendMutation, isBusy, exceedsByteLimit])
+    announceSent(q)
+  }, [draft, pasteBlocks, stagedFiles, slot, sendMutation, isBusy, exceedsByteLimit, announceSent])
 
   const displayError = sendStatus?.error ?? localError
 
@@ -1005,6 +1045,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
       <ChatMessageList
         messages={transcript}
         running={isBusy}
+        renderers={renderers}
         // The host's own openers, so a path or artifact named in a side reply
         // opens where the main transcript opens it: a tab of this panel.
         onFileOpen={onFileOpen}
@@ -1012,6 +1053,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
         onArtifactOpen={onArtifactOpen}
         transcript={{
           sessionId: `side:${slot}`,
+          announcement,
           scrollerStyle: { paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8 },
           aboveRows: messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
@@ -1169,6 +1211,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
             onDragOver={dropTargetProps.onDragOver}
             onDragLeave={dropTargetProps.onDragLeave}
           />
+          {/* The composer's notices are kept clear like the composer itself. */}
+          <div data-testid="side-chat-composer-notices" {...GUIDE_KEEP_CLEAR}>
           <StatusNotice
             className="mx-1 mt-1.5 mb-0"
             testId="side-chat-upload-hint"
@@ -1214,6 +1258,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
                   : i18nT('pages.chat.sideChat.context_only_tools_unavailable_backend')}
             </div>
           ) : null}
+          </div>
         </SlotProvider>
       </div>
     </div>

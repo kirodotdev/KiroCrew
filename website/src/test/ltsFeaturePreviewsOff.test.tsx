@@ -206,6 +206,13 @@ describe('LTS: Feature Previews off', () => {
     for (const entry of entries) expect(settingEntryOffered(entry, GOVERNANCE)).toBe(false)
   })
 
+  it('Settings search offers no Visual refresh card', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'developer.visual-refresh')
+    expect(entry).toBeDefined()
+    lockLts()
+    expect(entry && settingEntryOffered(entry, GOVERNANCE)).toBe(false)
+  })
+
   it('keeps conductor mode off, though it is on with no preview in the oss edition', () => {
     // Maintainer ruling: conductor mode left Feature Previews, and LTS keeps it off.
     const conductorKeys = ['dashboard.new_chat_crew_mode', 'dashboard.auto_open_conductor_board']

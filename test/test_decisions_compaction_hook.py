@@ -121,7 +121,6 @@ def _coordinator() -> tuple[sc.CompactionCoordinator, _Owner]:
     owner = _Owner(holder)
     deps = sc.CompactionDeps(
         logger=logging.getLogger("test.compaction"),
-        is_claude_backend=lambda _p: False,
         is_cc_managed=lambda _p: False,
         get_recorder=lambda: None,
         context_pct_is_unknown=lambda _p: False,

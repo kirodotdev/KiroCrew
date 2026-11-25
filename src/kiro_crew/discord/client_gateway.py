@@ -190,11 +190,11 @@ async def _gateway_loop(self: DiscordClient) -> None:
             # RECONNECT asks for — but only when the connection actually
             # lived a while. A connect->immediate-clean-close (a proxy
             # terminating the upgrade, a server-side condition that
-            # persists) would otherwise spin with ZERO delay: `attempt`
-            # reset on every pass, so the backoff curve was unreachable
-            # from this path and nothing bounded the rate. Discord bans an
-            # identity for 10 minutes after 10,000 invalid requests, so an
-            # unbounded loop costs the channel, not just CPU.
+            # persists) would otherwise spin with ZERO delay: resetting
+            # `attempt` on every pass would leave the backoff curve
+            # unreachable from this path, with nothing bounding the rate.
+            # Discord bans an identity for 10 minutes after 10,000 invalid
+            # requests, so an unbounded loop costs the channel, not just CPU.
             if time.monotonic() - started >= _MIN_HEALTHY_CONN_SECS:
                 attempt = 0
                 continue
@@ -225,33 +225,33 @@ async def _run_connection(self: DiscordClient) -> None:
     ws: Any = None
     try:
         async with session.ws_connect(
-            url, proxy=self._proxy, heartbeat=_WS_HEARTBEAT_SECS, max_msg_size=0
+            url, proxy=self._proxy_for(url), heartbeat=_WS_HEARTBEAT_SECS, max_msg_size=0
         ) as ws:
             self._ws = ws
             try:
                 async for raw in ws:
-                    if raw.type == aiohttp.WSMsgType.TEXT:
-                        # One bad frame costs that frame, not the connection:
-                        # escaping here would land in _gateway_loop's
-                        # catch-all and reconnect. Log metadata only, never
-                        # the body.
-                        try:
-                            frame = json.loads(raw.data)
-                        except json.JSONDecodeError:
-                            frame = None
-                        if not isinstance(frame, dict):
-                            logger.warning(
-                                "Discord gateway: dropping non-object frame (%d bytes)",
-                                len(raw.data),
-                            )
-                            continue
-                        await self._handle_frame(ws, frame)
-                    elif raw.type in (
+                    if raw.type in (
                         aiohttp.WSMsgType.CLOSED,
                         aiohttp.WSMsgType.CLOSE,
                         aiohttp.WSMsgType.ERROR,
                     ):
                         break
+                    if raw.type != aiohttp.WSMsgType.TEXT:
+                        continue
+                    # One bad frame costs that frame, not the connection:
+                    # escaping here would land in _gateway_loop's catch-all
+                    # and reconnect. Log metadata only, never the body.
+                    try:
+                        frame = json.loads(raw.data)
+                    except json.JSONDecodeError:
+                        frame = None
+                    if not isinstance(frame, dict):
+                        logger.warning(
+                            "Discord gateway: dropping non-object frame (%d bytes)",
+                            len(raw.data),
+                        )
+                        continue
+                    await self._handle_frame(ws, frame)
             finally:
                 self._ws = None
         # Clean close only: classify the close code (4004 etc. surfaces

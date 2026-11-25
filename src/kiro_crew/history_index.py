@@ -218,7 +218,11 @@ class IndexRow(NamedTuple):
 #: 4: the raw texts live in ``session_text`` as compressed chunks of whole
 #: messages, so a snippet decompresses only as far as its match; the entry
 #: carries a digest of the folded document that keys the search memos.
-_INDEX_VERSION = 4
+#:
+#: 5: a row's text includes the chat's size-rotated archive head. Rows written
+#: under 4 hold the live file only, and the live file's stat still vouches for
+#: them, so they must be rebuilt.
+_INDEX_VERSION = 5
 
 #: Uncompressed characters a ``session_text`` chunk collects before it is closed.
 #: A message is never split, so one longer message forms its own chunk.

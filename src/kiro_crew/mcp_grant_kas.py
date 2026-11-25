@@ -24,13 +24,19 @@ boolean.
 
 The entry name mirrors an undocumented engine internal,
 ``calculateConnectionHash`` in ``@kiro/agent``'s ``acp-server.js`` (checked
-against KAS 2.36.0 and 2.37.1): sha256 over the trimmed, lower-cased url, ``|``,
-the sorted ``name:value`` headers joined by ``|``, and a ``|cimd:`` suffix when
-the oauth config names a client-metadata url but no client id. Crew never sends
+against KAS 2.36.0, 2.37.1 and 3.5.0 for the browser flow): sha256 over the
+trimmed, lower-cased url, ``|``, the sorted ``name:value`` headers joined by
+``|``, and a ``|cimd:`` suffix when the oauth config names a client-metadata url
+but no client id. Crew never sends
 a url entry's headers to the engine (they are stripped, or the entry becomes a
 local bridge). It does send the ``oauth`` block (``kas_engine_features.carry_oauth``),
 but never its ``clientMetadataUrl``, so no entry gets the ``|cimd:`` suffix and the
-digest input is always ``<url>|``. An engine upgrade that re-keys this makes the
+digest input is always ``<url>|``. A ``clientId`` or ``redirectUri`` does not
+enter it (kiro-agent ``credential-storage-manager.ts`` ``connectionHash``, checked at
+c321b1e), and a ``kiro-path-tokens`` entry shares it. From KAS 0.66.135 a browser
+sign-in made with a stored client secret (``_kiro/mcp/oauth/setClientSecret``)
+appends ``|secret:<sha256 of the secret>``, which this check does not mirror: a
+change that sends a secret must key the lookup on it too. An engine upgrade that re-keys this makes the
 check miss; ``test_mcp_grant_kas.py`` pins a recorded hash so that change has to
 be made on purpose.
 """
@@ -47,6 +53,7 @@ from kiro_crew import hooks as _hooks
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.secrets import SecretVault
+from kiro_crew.secrets.vault import entry_revision
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +62,16 @@ logger = logging.getLogger(__name__)
 GRANT_STORE_PARTS = ("kas", "mcp-grants")
 _KEY_PREFIX = "kiro.mcp"
 _TOKENS_KIND = "tokens"
+#: Where a browser sign-in on the Kiro callback path keeps its tokens, from
+#: KAS 0.66.121 (``credential-storage-manager.ts``: ``kiro-path-client`` goes with
+#: ``kiro-path-tokens``). Same connection hash as ``tokens``.
+_PATH_TOKENS_KIND = "kiro-path-tokens"
 _CLIENT_KIND = "client"
+_PATH_CLIENT_KIND = "kiro-path-client"
+#: The engine entry kinds that hold a sign-in, under either engine version.
+TOKENS_KINDS = (_TOKENS_KIND, _PATH_TOKENS_KIND)
+#: The engine entry kinds that outlive its process: the sign-in and the client registration.
+PERSISTED_KINDS = (*TOKENS_KINDS, _CLIENT_KIND, _PATH_CLIENT_KIND)
 # The ASCII characters JavaScript's ``String.prototype.trim`` removes. Python's
 # ``str.strip()`` with no argument also removes \x1c-\x1f, which the engine keeps.
 _JS_TRIM_ASCII = " \t\n\v\f\r"
@@ -128,30 +144,31 @@ def kas_connection_hash(mcp_url: str) -> str:
 
 
 def kas_tokens_entry_name(mcp_url: str) -> str:
-    """The vault entry name the engine stores this server's tokens under."""
+    """The vault entry name an engine before 0.66.121 stores this server's tokens under."""
     return f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{_TOKENS_KIND}"
 
 
-def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, str]:
-    """The vault entries one saved sign-in is: its ``tokens`` and its ``client``.
+def kas_tokens_entry_names(mcp_url: str) -> tuple[str, ...]:
+    """Every vault entry name an engine may store this server's tokens under."""
+    digest = kas_connection_hash(mcp_url)
+    return tuple(f"{_KEY_PREFIX}.{digest}.{kind}" for kind in TOKENS_KINDS)
 
-    The two kinds the engine's store persists; a Disconnect removes both, as a
-    kiro-cli Disconnect removes its token and registration pair.
+
+def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, ...]:
+    """The vault entries one saved sign-in is: its ``tokens`` and client registration.
+
+    One name per persisted kind. A Disconnect removes them all, as a kiro-cli
+    Disconnect removes its token and registration pair.
     """
     digest = kas_connection_hash(mcp_url)
-    return (f"{_KEY_PREFIX}.{digest}.{_TOKENS_KIND}", f"{_KEY_PREFIX}.{digest}.{_CLIENT_KIND}")
+    return tuple(f"{_KEY_PREFIX}.{digest}.{kind}" for kind in PERSISTED_KINDS)
 
 
-def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool | None:
-    """Whether the KAS grant vault holds a ``tokens`` entry for *mcp_url*.
+def _vault_entries(mcp_url: str, store_root: Path | None) -> dict[str, object] | None:
+    """The grant vault's entry map, ``{}`` with no vault yet, ``None`` when unknowable.
 
-    ``True``/``False`` are observations; ``None`` means the question could not be
-    answered: a non-ASCII url (the engine's normalization is not mirrored for it),
-    a linked ``kas``/``mcp-grants``/``.vault`` directory (refused, as the store
-    refuses it), or an envelope that cannot be read or parsed. No vault yet is a
-    definitive ``False``: nothing was ever stored.
-
-    Blocking (a file read), so async callers use :func:`kas_grant_observed`.
+    The shared read of :func:`kas_grant_presence` and :func:`kas_grant_fingerprint`;
+    see the former for what counts as unknowable. Never opens the key file.
     """
     if not mcp_url.isascii():
         return None
@@ -166,18 +183,53 @@ def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool 
     try:
         (store_root / ".vault" / "secrets.enc").stat()
     except (FileNotFoundError, NotADirectoryError):
-        return False
+        return {}
     except OSError:
         return None
     try:
-        names = SecretVault(store_root).list_names()
+        # Names and ciphertext only: nothing here holds the key.
+        return dict(SecretVault(store_root)._load_entries())  # noqa: SLF001
     except (OSError, ValueError, RecursionError):
         return None
-    return kas_tokens_entry_name(mcp_url) in names
+
+
+def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool | None:
+    """Whether the KAS grant vault holds a ``tokens`` or ``kiro-path-tokens`` entry for *mcp_url*.
+
+    ``True``/``False`` are observations; ``None`` means the question could not be
+    answered: a non-ASCII url (the engine's normalization is not mirrored for it),
+    a linked ``kas``/``mcp-grants``/``.vault`` directory (refused, as the store
+    refuses it), or an envelope that cannot be read or parsed. No vault yet is a
+    definitive ``False``: nothing was ever stored.
+
+    Blocking (a file read), so async callers use :func:`kas_grant_observed`.
+    """
+    entries = _vault_entries(mcp_url, store_root)
+    if entries is None:
+        return None
+    return any(name in entries for name in kas_tokens_entry_names(mcp_url))
+
+
+def kas_grant_fingerprint(mcp_url: str, *, store_root: Path | None = None) -> str | None:
+    """A digest naming the stored sign-in entry for *mcp_url*, or ``None`` with none to name.
+
+    What :func:`kiro_crew.mcp_grant.grant_fingerprint` is for kiro-cli's token file:
+    presence says "a grant", this says "THIS grant". The engine rewrites the entry on
+    every sign-in, and each write is ciphertext under a fresh nonce
+    (:func:`kiro_crew.secrets.vault.entry_revision`), so a new sign-in reads as a new
+    value. Nothing is decrypted and the key file is never opened. ``None`` on absence
+    and on anything :func:`kas_grant_presence` cannot answer. Blocking.
+    """
+    entries = _vault_entries(mcp_url, store_root) or {}
+    for name in kas_tokens_entry_names(mcp_url):
+        entry = entries.get(name)
+        if isinstance(entry, dict):
+            return entry_revision(entry)
+    return None
 
 
 async def forget_kas_grant(mcp_url: str, *, store_root: Path | None = None) -> None:
-    """Delete the engine's ``tokens`` and ``client`` entries for *mcp_url*.
+    """Delete the engine's ``tokens`` and client registration entries for *mcp_url*.
 
     By name only, so no entry is decrypted. Refuses a linked store directory, as
     the store does. For Crew-owned sign-in taking custody of a url (one grant).
@@ -193,8 +245,8 @@ async def forget_kas_grant(mcp_url: str, *, store_root: Path | None = None) -> N
     if linked:
         return
     vault = SecretVault(store_root)
-    for kind in (_TOKENS_KIND, "client"):
-        await vault.delete(f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{kind}")
+    for name in kas_saved_sign_in_names(mcp_url):
+        await vault.delete(name)
 
 
 async def kas_grant_observed(mcp_url: str) -> bool | None:
