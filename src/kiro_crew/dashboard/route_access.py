@@ -119,6 +119,13 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner gate, then the machine owner alone (crew_api_responses).
     # Contract test: test_crew_api_responses.py.
     ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
+    # The same two checks (crew_api_response_reads): a turn is read back by its owner.
+    # Contract test: test_crew_api_response_reads.py.
+    # ``.resolve``: a read removes an expired record and moves a damaged file aside.
+    ("GET", "/v1/responses/{response_id}"): RouteAccess("crew_api.responses.resolve", PREVIEW),
+    ("GET", "/v1/responses/{response_id}/input_items"): RouteAccess(
+        "crew_api.responses.input_items.resolve", PREVIEW
+    ),
     # Connected computers, this computer's own side (feature preview). Owner dashboard
     # only (connected_computers/local_routes.py `_owner`); the action names are the
     # handlers' own audit operation names.

@@ -47,6 +47,14 @@ class Events:
         self._redactor = StreamRedactor(_redact)
         self._sent = ""
         self._open = False
+        #: The text of each delta made so far, in order: what the response's record
+        #: keeps of a stream, and all :func:`rebuilt` needs to make its events again.
+        self.deltas: list[str] = []
+
+    @property
+    def text_sent(self) -> str:
+        """The reply text the deltas have carried so far."""
+        return self._sent
 
     def _event(self, kind: str, **fields: Any) -> dict[str, Any]:
         event = {"type": kind, "sequence_number": self._sequence, **fields}
@@ -84,7 +92,12 @@ class Events:
                 self._event("response.content_part.added", **self._at(), part=self._part("")),
             ]
         self._sent += delta
+        self.deltas.append(delta)
         return [*events, self._event("response.output_text.delta", **self._at(), delta=delta)]
+
+    def delta(self, text: str) -> list[dict[str, Any]]:
+        """The events of one delta whose *text* the redactor has already passed."""
+        return self._delta(text)
 
     def start(self, response: dict[str, Any]) -> list[dict[str, Any]]:
         """The two events that open a stream; *response* is the turn still running."""
@@ -121,3 +134,45 @@ class Events:
     def error(self, message: str) -> list[dict[str, Any]]:
         """The event for a turn that could not be run; the stream closes after it."""
         return [self._event("error", code="internal_error", message=message, param=None)]
+
+
+def opening(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """The two events that open the stream of *response*, a turn still running."""
+    return Events("").start(response)
+
+
+def rebuilt(response: dict[str, Any], stream: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The stream events of a turn that ended, made from its *response*.
+
+    *stream* is what the record keeps of a turn that was answered as a stream: the
+    text of each delta, the message item's id, and whether the stream closed on an
+    ``error`` event. With it the events are the ones that stream sent, number for
+    number. Without it the turn was answered as JSON, or what the record kept of its
+    stream is not used, and the events are the ones a stream would have sent had the
+    engine given the whole reply at once.
+
+    Either way the text is sent as it stands in *response*, which the caller has
+    redacted. It is not passed through the stream's redactor again, so the stream
+    closes on *response* itself, the object a JSON read answers.
+    """
+    output = response["output"]
+    running = {
+        **response,
+        "status": "in_progress",
+        "output": [],
+        "error": None,
+        "incomplete_details": None,
+    }
+    if stream is None:
+        events = Events(output[0]["id"] if output else "")
+        made = events.start(running)
+        if output:
+            made += events.delta(output[0]["content"][0]["text"])
+        return made + events.end(response)
+    events = Events(stream["item_id"])
+    made = events.start(running)
+    for text in stream["deltas"]:
+        made += events.delta(text)
+    if stream["error"]:
+        return made + events.error(response["error"]["message"])
+    return made + events.end(response)

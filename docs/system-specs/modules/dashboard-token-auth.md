@@ -632,10 +632,14 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
+A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/responses/{response_id}`, `/v1/responses/{response_id}/input_items`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each such path to its audit operation; the route passes that
-operation to `owner_route`, and the app-scope refusal reads the same map. `GET /v1/models`
+operation to `owner_route`, and the app-scope refusal reads the same map. The map is keyed
+by route pattern, so the app-scope refusal looks up the pattern the request matched
+(`crew_api_scopes.route_key`) as well as the path: an installed app's token on
+`/v1/responses/resp_<id>` is the same `403 owner_only`, and a path that matched no route is
+judged by the path alone (`test_app_scope_finds_a_templated_public_owner_route_by_its_pattern`). `GET /v1/models`
 also passes `app_route`, so a verified app credential from local authorization is
 judged by the route's row in place of the owner gate. The app is served an empty
 list until a route lets an app run a Bot in its grant or an agent;

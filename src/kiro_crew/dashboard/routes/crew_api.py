@@ -11,12 +11,13 @@ own routes do not have (``crew_api_approvals``).
 here, and ``test_crew_api_owner.py`` fails when a route and its description
 disagree.
 
-Public tier: ``/v1/models``, ``/v1/responses``, ``/v1/crew/capabilities`` and
+Public tier: ``/v1/models``, ``/v1/responses``, ``/v1/responses/{response_id}``,
+``/v1/responses/{response_id}/input_items``, ``/v1/crew/capabilities`` and
 ``/v1/crew/info``, each served by its own handler behind the same ``owner_route``
 gate. ``/v1/models`` also serves a verified app
 credential with an empty list until a grant carries a Bot range or a route lets
-an app run an agent. The owner gets the full catalog; ``/v1/responses`` serves the
-owner alone, and so do the two ``/v1/crew/`` routes.
+an app run an agent. The owner gets the full catalog; the three ``/v1/responses``
+routes serve the owner alone, and so do the two ``/v1/crew/`` routes.
 """
 
 from __future__ import annotations
@@ -27,6 +28,11 @@ from kiro_crew.dashboard import crew_api_approvals, crew_api_grant_requests, han
 from kiro_crew.dashboard.crew_api_instance import api_capabilities, api_info
 from kiro_crew.dashboard.crew_api_models import api_models
 from kiro_crew.dashboard.crew_api_owner import owner_route
+from kiro_crew.dashboard.crew_api_response_reads import (
+    api_response_input_items,
+    api_response_read,
+)
+from kiro_crew.dashboard.crew_api_response_records import STORE_KEY, ResponseStore
 from kiro_crew.dashboard.crew_api_responses import api_responses
 
 
@@ -71,5 +77,9 @@ def register(app: web.Application) -> None:
     )
     app.router.add_get("/v1/models", api_models)
     app.router.add_post("/v1/responses", api_responses)
+    # One store for the three response routes: the records and the running turns.
+    app[STORE_KEY] = ResponseStore()
+    app.router.add_get("/v1/responses/{response_id}", api_response_read)
+    app.router.add_get("/v1/responses/{response_id}/input_items", api_response_input_items)
     app.router.add_get("/v1/crew/capabilities", api_capabilities)
     app.router.add_get("/v1/crew/info", api_info)

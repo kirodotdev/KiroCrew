@@ -17,9 +17,9 @@ Endpoints an app calls with a credential the user granted it.
 | Endpoint | What it does | Status | Stability |
 |---|---|---|---|
 | [`POST /v1/responses`](public-responses.md#post-v1responses) | Run a turn | Available now: owner only | preview |
-| [`GET /v1/responses/{response_id}`](public-responses.md#get-v1responsesresponse_id) | Read a turn; can resume its stream | Planned | stable |
+| [`GET /v1/responses/{response_id}`](public-responses.md#get-v1responsesresponse_id) | Read a turn; can resume its stream | Available now: owner only | preview |
 | [`POST /v1/responses/{response_id}/cancel`](public-responses.md#post-v1responsesresponse_idcancel) | Cancel a running turn | Planned | stable |
-| [`GET /v1/responses/{response_id}/input_items`](public-responses.md#get-v1responsesresponse_idinput_items) | Read this turn's input | Planned | stable |
+| [`GET /v1/responses/{response_id}/input_items`](public-responses.md#get-v1responsesresponse_idinput_items) | Read this turn's input | Available now: owner only | preview |
 | [`POST /v1/files`](public-files.md#post-v1files) | Upload a file for input_image / input_file | Planned | stable |
 | [`GET /v1/conversations`](public-conversations.md#get-v1conversations) | List this grant's conversations | Planned | stable |
 | [`POST /v1/conversations`](public-conversations.md#post-v1conversations) | Create a conversation | Planned | stable |
