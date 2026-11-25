@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +101,12 @@ class TestSuffix:
         started agreeing; asserting the disagreement is what shows the entry is
         still doing work.
         """
-        assert mimetypes.guess_extension("audio/ogg") != ".ogg"
+        if sys.version_info >= (3, 14):
+            # The stdlib answers ``.ogg`` itself from CPython 3.14; the pin is what
+            # keeps the suffix on the interpreters below it.
+            assert mimetypes.guess_extension("audio/ogg") == ".ogg"
+        else:
+            assert mimetypes.guess_extension("audio/ogg") != ".ogg"
         assert wa_attachments._SUFFIX_OVERRIDES["audio/ogg"] == ".ogg"
 
     def test_a_document_declared_generic_keeps_its_own_extension(self) -> None:

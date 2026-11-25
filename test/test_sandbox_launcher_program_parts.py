@@ -206,6 +206,10 @@ def _code_shape(code: types.CodeType) -> tuple:
     """Everything about *code* that decides what it does: its bytecode, names, argument
     layout, flags and constants, nested code compared the same way. Not its file or line
     numbers, which differ between the one program text and the file a part lives in."""
+    consts = code.co_consts
+    if "__firstlineno__" in code.co_names:
+        # A class body records its own first line as a constant from CPython 3.13.
+        consts = tuple(c for c in consts if not (type(c) is int and c == code.co_firstlineno))
     return (
         code.co_name,
         code.co_qualname,
@@ -221,7 +225,7 @@ def _code_shape(code: types.CodeType) -> tuple:
         code.co_flags,
         tuple(
             _code_shape(c) if isinstance(c, types.CodeType) else (type(c).__name__, c)
-            for c in code.co_consts
+            for c in consts
         ),
     )
 
