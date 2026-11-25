@@ -106,8 +106,8 @@ def test_the_verdict_counts_the_added_test_files_and_the_ledger_keeps_the_count(
     assert not set(added) & set(after["would_skip"])
     for tier in cts.TIERS[1:]:
         assert set(after["tiers"][tier]) == set(before["tiers"][tier]) - set(added)
-    # With no row for it, the same file has no signal.
-    assert set(added) <= set(before["would_skip"])
+    # With no row for it, the same file is one the map does not know: held, not skipped.
+    assert set(added) <= set(before["tiers"]["F"]) and not set(added) & set(before["would_skip"])
     parsed = ledger.parse_verdict(json.dumps({"schema": 1, **after}))
     assert parsed is not None and parsed["covered"] == {ctm.ADDED_TEST: count}
     key = {"run": 1, "attempt": 1, "source": "1:b", "fork": False, "pr": 7}

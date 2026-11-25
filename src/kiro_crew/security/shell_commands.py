@@ -481,13 +481,50 @@ def without_substitutions(command: str) -> str:
         pos = _shell._matching_close_paren(command, hit + 2, quote_at[hit + 2])[0]
 
 
-def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
-    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+def _heredocs(text: str) -> "list[HereDoc]":
+    """Each here-document body :func:`read_commands` finds in *text*."""
     if "<<" not in text:
         return []
-    return [
-        (doc.start, doc.end) for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs
-    ]
+    return [doc for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs]
+
+
+def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
+    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+    return [(doc.start, doc.end) for doc in _heredocs(text)]
+
+
+def _close_past_heredocs(rest: str) -> "tuple[int, bool]":
+    """:func:`_matching_close_paren` of *rest* with each heredoc body blanked, read on a
+    prefix that doubles until it is proven to give the same answer as the whole of *rest*.
+
+    :func:`read_commands` reads left to right, and a body starts after the newline that ends
+    its ``<<`` line. So in a prefix, every body that closes before the prefix ends is the
+    body the whole text gives, and a ``<<`` on the prefix's last line has no body in it.
+    A body that runs to the prefix's end may close later, so that prefix is not enough.
+    A body counts as complete only when its tag line's newline is inside the prefix (a tag
+    line cut at the prefix's end can read as the tag when the whole text does not). A close
+    is taken from the prefix only when both walks of :func:`_matching_close_paren_reach`
+    finished inside it, since a ``${...}`` walk that runs on can move the close later.
+    Otherwise the prefix grows; at the whole of *rest* it is the answer.
+    """
+    size = 1024
+    while True:
+        part = rest[:size]
+        whole = len(part) == len(rest)
+        docs = _heredocs(part)
+        if whole or all(d.end < len(part) and d.tail < len(part) for d in docs):
+            for doc in docs:
+                part = (
+                    part[: doc.start]
+                    + re.sub("[^\n]", " ", part[doc.start : doc.end])
+                    + part[doc.end :]
+                )
+            end, proven, reach = _walk._matching_close_paren_reach(part, 0)
+            if whole:
+                return end, proven
+            if reach is not None and reach < len(part):
+                return end, proven
+        size *= 2
 
 
 def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
@@ -500,7 +537,7 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
     the close walk read has no newline after its first ``<<`` (none at all, a ``<<<``
     here-string, a ``$(( 1 << n ))`` shift), no body can change that walk and the
     heredoc re-read is skipped. Each body that does hold a heredoc before its close
-    still re-reads the rest of *text*, so a line of many such bodies stays quadratic.
+    re-reads only a prefix of the rest of *text* (:func:`_close_past_heredocs`).
     """
     spans: "list[tuple[int, int, bool]]" = []
     i, state = 0, 0
@@ -515,9 +552,7 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
                 window = rest if reach is None else rest[:reach]
                 k = window.find("<<")
                 if k >= 0 and "\n" in window[k:]:
-                    for start, stop in heredoc_text_spans(rest):
-                        rest = rest[:start] + re.sub("[^\n]", " ", rest[start:stop]) + rest[stop:]
-                    end, proven = _shell._matching_close_paren(rest, 0)
+                    end, proven = _close_past_heredocs(rest)
                 spans.append((at, at + 2 + end if proven else len(text), proven))
                 i, state = spans[-1][1], 2
                 break

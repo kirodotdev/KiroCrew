@@ -335,7 +335,7 @@ class TestThePullRequestDerivation:
         ]
 
     def test_a_pending_subject_names_no_conditions(self) -> None:
-        """Conditions are carried only where the window reads them.
+        """A pending subject carries none of the blockers the window reads.
 
         The fixture is a DRAFT pull request that also has unresolved review
         threads: the draft makes it PENDING, and the threads are a condition the

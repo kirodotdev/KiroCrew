@@ -5,6 +5,7 @@ import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { SlotProvider } from '../providers/SlotContext'
 import { addStashEntry, makeStashEntry } from '../utils/promptStash'
+import { registerComposerUpload, unregisterComposerUpload } from '../utils/composerSendHolds'
 
 /**
  * `inlineToolbarWhileFits` (#19608): the Crewmates DM composer is ONE row --
@@ -109,6 +110,21 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     renderWithProviders(<ChatInput value="see attached" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits holdSend uploading onUploadFiles={vi.fn()} />)
     expect(screen.getByTestId('composer-send-held')).toBeInTheDocument()
     expect(inline()).toBe(false)
+  })
+
+  // The running uploads' chips draw even with an empty draft (no send-held
+  // line then); on the single row they would squeeze the text to nothing.
+  it('opens to two rows while an upload runs with an empty draft, and returns once it ends', () => {
+    const controller = new AbortController()
+    onTestFinished(() => { unregisterComposerUpload('chat-up', controller) })
+    renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits uploadSlot="chat-up" onUploadFiles={vi.fn()} />)
+    expect(inline()).toBe(true)
+    act(() => registerComposerUpload('chat-up', controller, 'a.png'))
+    expect(screen.getByTestId('composer-upload-chip')).toBeInTheDocument()
+    expect(inline()).toBe(false)
+    act(() => unregisterComposerUpload('chat-up', controller))
+    expect(screen.queryByTestId('composer-upload-chip')).toBeNull()
+    expect(inline()).toBe(true)
   })
 
   // Without the dictation panel (setting off, or reduced motion) a

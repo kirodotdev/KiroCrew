@@ -34,7 +34,7 @@ from kiro_crew.dashboard.listener_guard import (
     listener_guard_exit_code,
     probe_target,
 )
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -476,6 +476,54 @@ async def test_stop_is_idempotent_and_cancels_probe() -> None:
         guard.stop()
         await asyncio.sleep(0)
         assert task.cancelled() or task.done()
+
+
+@pytest.mark.asyncio
+async def test_retire_lets_a_begun_rebind_finish_and_begins_no_other(monkeypatch: Any) -> None:
+    restored: list[str] = []
+    async with _Served(interval=0.05, on_listener_restored=lambda: restored.append("x")) as served:
+        guard = served.guard
+        assert guard is not None
+        guard.arm()
+        probe = guard._probe_task
+        assert probe is not None
+        first = guard.site
+        begun, go_on = asyncio.Event(), asyncio.Event()
+        new_site = guard._new_site
+
+        async def _held() -> Any:
+            begun.set()
+            await go_on.wait()
+            return await new_site()
+
+        monkeypatch.setattr(guard, "_new_site", _held)
+        # Held as the guard's own rebind, so the probe loop begins no second one.
+        guard._recover_task = rebind = asyncio.ensure_future(guard._recover("test"))
+        try:
+            await await_until(begun, what="the rebind to begin")
+            guard.retire()
+            guard.retire()
+            go_on.set()
+            # The rebind that had begun ends as any other: a new site, and the hook.
+            assert await await_until(rebind, what="the rebind") is True
+        finally:
+            go_on.set()
+            if not rebind.done():
+                rebind.cancel()
+                await asyncio.gather(rebind, return_exceptions=True)
+        assert guard.site is not first
+        assert restored == ["x"]
+        assert await _get_live(served.port) == 200
+        # The probe task was not cancelled; it ends by itself.
+        await await_until(probe, what="the probe task to end")
+        assert not probe.cancelled()
+        # No rebind begins afterwards.
+        held = guard.site
+        monkeypatch.setattr(guard, "listener_open", lambda: False)
+        await guard.check_now("test")
+        assert guard.site is held
+        assert guard.recoveries == 1
+        assert guard.exit_code == 0
 
 
 # ---------------------------------------------------------------------------

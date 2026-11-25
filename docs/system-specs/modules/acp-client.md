@@ -173,7 +173,7 @@ inventory, the binding, the reach and the import inventory.
 | `acp/session_handle_kas.py` | what KAS speaks beyond ACP on a session: its hooks requests (list, session start, execute), the checkpoint rewind of an unanswered prompt (`discard_unanswered_prompt`), and its own session-update discriminants (mode, session info) |
 | `acp/session_handle_native_children.py` | harness-native child sessions (H16): the KAS sub-agent roster and child chunks, child-session bookkeeping, the resume refusal and the uncharged report |
 | `acp/session_handle_claude_children.py` | Claude Code's Agent-tool children on a shared-runtime session: the child frames the runtime's reader routes to the announcing session (`runtime_frame_accounting._note_announced_child`), read on the handle |
-| `acp/session_handle_model_selection.py` | the session's model: the advertised list and its parsers (`parse_advertised_models`, `models_from_config_options`, ...), its storage with the session config and read-path revalidation, mode, model and effort selection through the backend's own verbs, and the served-default backfill |
+| `acp/session_handle_model_selection.py` | the session's model: the advertised list and its parsers (`parse_advertised_models`, `models_from_config_options`, ...), its storage with the session config and read-path revalidation, mode, model and effort selection through the backend's own verbs, the served-default backfill, and `apply_configured_model`, the one function that puts a starting session on its configured model (a runtime's own first session and a sub-agent's session on its parent's runtime both call it) |
 | `acp/session_handle_steering.py` | steering a live turn: `steer`, the codex steering-request protocol, settling abandoned answers, and the injected, proven and denied steer bookkeeping the dispatch loop reads |
 | `acp/session_handle_lifecycle.py` | the session outside its turn loop: awaited control requests and slash commands, cancel, death attribution, `destroy` and transcript cleanup |
 | `acp/session_handle_compaction.py` | compaction on every backend (`compact`, the KAS compaction verb, codex and claude inline compaction, `wait_for_compaction`) and the usage and metadata frames it is measured by |
@@ -3316,7 +3316,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   a project checkout is untrusted, and its relative ref must stay inside that
   checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`); a leading
   `$` counts as rooted there. A relative ref expands `$VAR` and `~` first
-  (`acp/kas_prompt.py` `prompt_file_path`), and `systemPrompt` is read when
+  (`acp/kas_prompt.py` `prompt_file_path`; on Windows a missing `HOME` is read
+  as `USERPROFILE`, `expand_ref_vars`), and `systemPrompt` is read when
   `prompt` is absent (`spec_prompt`), as on kiro-cli. A file that is missing,
   unreadable or empty (`KasPromptFileUnreadable`) is sent as `"prompt": ""` by
   `build_kas_custom_agents`, as kiro-cli runs it with no prompt, and the
@@ -5917,8 +5918,11 @@ Node key and why; nothing is published. There are two pins, one engine release:
 `KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2`: the same engine and Node
 release republished with the Amazon Linux 2 builds from `packaging/kas-al2/` on
 linux-x64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
-linux-x64 host whose glibc reads below 2.28; every other host (arm64, macOS,
-Windows, linux-x64 at 2.28+ or with an unreadable glibc) gets `KAS_PIN_VERSION`.
+Linux host whose glibc reads below 2.28 and whose Node key the AL2 pin lists in
+`KAS_PIN_GLIBC_FLOORS` below 2.28 (today linux-x64 only; linux-arm64 joins in the
+commit that pins an AL2 release carrying arm64 builds); every other host (arm64
+until then, macOS, Windows, Linux at 2.28+ or with an unreadable glibc) gets
+`KAS_PIN_VERSION`.
 It is read on every call, so a host that moves to glibc 2.28+ installs the normal
 pin on its next install check, and one that stays at 2.28+ never picks the AL2 pin.
 `pinned_version()` is `KIROCREW_KAS_VERSION` when set, else that host pin, and every
@@ -5979,16 +5983,18 @@ stock macOS and Windows carry no `zstd` executable), official Node builds from
 nodejs.org verified against that release's `SHASUMS256.txt`, manifest out,
 `provenance.json` beside it (each engine tarball's upstream sha256, each Node
 build's source, any overlay; the installer never reads it), optional `aws s3 cp`.
-For an Amazon Linux 2 release two inputs, each pinned by a caller-given sha256,
-replace linux-x64 pieces only: `--node-linux-x64` publishes a local Node tarball
-under nodejs.org's name (refused unless its one top directory is
-`node-v<N>-linux-x64/`, it carries `bin/node`, and that binary prints exactly
-`v<N>`, checked on a linux-x64 publishing host), and `--onnx-overlay-linux-x64`
-re-packs the linux-x64 engine tarball after its upstream sha256 check with the
-overlay's files swapped in under `onnxruntime-node/bin/napi-v3/linux/x64/`
-(names, modes, owners and mtimes kept, a file stays a file and a symlink a
-symlink, every overlay name must replace something). That tarball is then no
-longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
+For an Amazon Linux 2 release, inputs per Linux architecture (`x64`, `arm64`),
+each pinned by a caller-given sha256, replace that architecture's pieces only:
+`--node-linux-<arch>` publishes a local Node tarball under nodejs.org's name
+(refused unless its one top directory is `node-v<N>-linux-<arch>/`, it carries
+`bin/node`, and that binary prints exactly `v<N>`, checked on a publishing host
+of that architecture), and `--onnx-overlay-linux-<arch>` re-packs that engine
+tarball after its upstream sha256 check with the overlay's files swapped in under
+`onnxruntime-node/bin/napi-v3/linux/<arch>/` (names, modes, owners and mtimes
+kept, a file stays a file and a symlink a symlink, every overlay name must
+replace something). The x64 overlay's sha256 flag is `--onnx-overlay-sha256`,
+the arm64 one's `--onnx-overlay-linux-arm64-sha256`. An overlaid tarball is then
+no longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
 (stdlib on 3.14+, the `zstandard` package, or a `zstd` executable) for a
 locally built bundle handed to `--from`. The harness reads the flag off the loop and, when
 on (or when the route below is chosen automatically), resolves

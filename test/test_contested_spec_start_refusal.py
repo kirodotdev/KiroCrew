@@ -18,7 +18,7 @@ import pytest
 from acp_runtime_helpers import _make_runtime
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_spec_pins
+from kiro_crew import agent_discovery, agent_spec_pins, atomic_write, platform_compat
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KAS
 from kiro_crew.agent_discovery import AmbiguousAgentSpecError
@@ -111,6 +111,59 @@ def test_everything_but_a_contest_starts_as_before(agents, pins, case):
     elif case == "no_dir":
         agents.rmdir()
     session_mcp.refuse_contested_agent_spec("helper")
+
+
+def _hold(monkeypatch: pytest.MonkeyPatch, file_name: str, winerror: int | None) -> None:
+    """Every read of *file_name* fails as a Windows hold past the read retry does."""
+    real_open = agent_discovery.open_fenced_for_read
+
+    def held_open(resolved, **kwargs):  # type: ignore[no-untyped-def]
+        if Path(resolved).name == file_name:
+            exc = PermissionError(13, "being used by another process", str(resolved))
+            exc.winerror = winerror  # type: ignore[attr-defined]
+            raise exc
+        return real_open(resolved, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(agent_discovery, "open_fenced_for_read", held_open)
+
+
+@pytest.mark.parametrize(
+    ("winerror", "pin", "refused"),
+    [
+        (32, None, "held"),  # a share-mode hold, which fails the open
+        (33, None, "held"),  # a lock violation at the open
+        (None, None, "held"),  # a byte-range lock, which fails the read
+        (5, None, None),  # an ACL denial refuses every reader alike: not a hold
+        (32, "PkgB-helper.json", "pin"),  # a pin on the held file stays broken
+        (32, "PkgA-helper.json", None),  # a pin on the readable file runs it
+        (32, None, "sole"),  # the only spec held: no claimant, the no-agent-file outcome
+    ],
+)
+def test_a_spec_held_by_another_program_refuses_an_unpinned_start(
+    agents, pins, monkeypatch, winerror, pin, refused
+):
+    if refused == "sole":
+        _write(agents, "PkgB-helper.json", name="helper", prompt="B")
+        refused = None
+    else:
+        _contest(agents)
+    _hold(monkeypatch, "PkgB-helper.json", winerror)
+    if pin is not None:
+        pins["helper"] = pin
+    if refused is None:
+        session_mcp.refuse_contested_agent_spec("helper")
+        return
+    with pytest.raises(AmbiguousAgentSpecError) as caught:
+        session_mcp.refuse_contested_agent_spec("helper")
+    if refused == "pin":
+        assert caught.value.pin == "PkgB-helper.json"
+        return
+    message = str(caught.value)
+    assert "PkgB-helper.json" in message and "kirocrew agent pin" in message
+    # Which agent the held file declares is unknown: no chooser card replaces the text.
+    assert ambiguity_meta(caught.value) is None
 
 
 # -- AcpClient: the per-process adapter hosts ----------------------------------------

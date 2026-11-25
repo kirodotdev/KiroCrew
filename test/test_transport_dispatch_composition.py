@@ -280,10 +280,13 @@ MOVED_MEMBERS = {
         "_handle_status",
         "_handle_unlink",
         "_run_reply_command",
+        "_apply_privacy_mode",
+        "_recorded_mode_refusal",
     ),
     "interactions": (
         "_interaction_actionable",
         "_interaction_reply",
+        "_on_autocomplete_interaction",
         "_on_command_interaction",
         "on_interaction",
     ),
@@ -299,6 +302,7 @@ MOVED_MEMBERS = {
         "_persist_turn",
         "_record_turn",
         "_session_restricted",
+        "_blocks_memory_reads",
         "_uploads_restricted",
     ),
 }
@@ -365,7 +369,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, channel_id: 'str', scope_id: 'str', session_key: 'str', arg: 'str', *, "
-            "reply: 'ReplyFn | None' = None) -> 'None'"
+            "reply: 'ReplyFn | None' = None, user_id: 'str' = '') -> 'None'"
         ),
     ),
     "_handle_resumed_busy": (
@@ -429,6 +433,11 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         False,
         ("(self, session_key: 'str') -> 'tuple[tuple[str, str], ...]'"),
     ),
+    "_on_autocomplete_interaction": (
+        "function",
+        True,
+        ("(self, itx: \"'DiscordInteraction'\") -> 'None'"),
+    ),
     "_on_command_interaction": (
         "function",
         True,
@@ -464,7 +473,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         "(self, record: 'TurnRecord', images: 'Sequence[str]' = ()) -> 'None'",
     ),
-    "_render_config": ("function", False, "(self) -> 'tuple[bool, bool]'"),
+    "_render_config": ("function", False, "(self) -> 'tuple[bool, bool, bool]'"),
     "_resolve_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_routing_turn": (
         "function",
@@ -478,6 +487,21 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
             "(self, cmd: 'str', reply: \"'ReplyFn'\", *, user_id: 'str', thread_id: 'str', "
             "text: 'str') -> 'None'"
         ),
+    ),
+    # Added after the split, by the Discord !temporary / !incognito change.
+    "_apply_privacy_mode": (
+        "function",
+        True,
+        (
+            "(self, mode: 'str', session_key: 'str', user_id: 'str', say: \"'ReplyFn'\") "
+            "-> 'bool | None'"
+        ),
+    ),
+    "_blocks_memory_reads": ("function", True, "(self, session_key: 'str') -> 'bool'"),
+    "_recorded_mode_refusal": (
+        "function",
+        True,
+        "(self, mode: 'str', session_key: 'str') -> 'str | None'",
     ),
     "_scope_id": ("staticmethod", False, "(user_id: 'str', thread_id: 'str' = '') -> 'str'"),
     "_seed_gen": ("function", False, "(self, scope_id: 'str') -> 'int'"),

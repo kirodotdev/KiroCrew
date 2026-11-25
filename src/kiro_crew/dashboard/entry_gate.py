@@ -6,8 +6,10 @@ which is what a program on this machine looks like. So the proxy gets a port of 
 own (``dashboard.entry_port``, off by default), bound on both loopback addresses
 (``127.0.0.1`` and ``::1``) beside the gateway's, and a request came through the
 entry because of the port it arrived on, never because of anything it says. This is
-the SSM listener's rule (:mod:`kiro_crew.dashboard.ssm_gate`). Linux and macOS only
-for now: on Windows a non-zero port stops the start.
+the SSM listener's rule (:mod:`kiro_crew.dashboard.ssm_gate`). On Windows each entry
+listener has a listener guard (``listener_claims._arm_entry_listener_guards``); when
+one cannot rebind, the port is closed and the gateway keeps running
+(:meth:`GateRef.close`).
 
 :func:`entry_gate_middleware` runs in the dashboard chain, the one beside which the
 entry port opens, just inside the relay header strip. Route latency, the Dashboard
@@ -38,12 +40,11 @@ import errno
 import ipaddress
 import logging
 import socket
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 
 from aiohttp import web
 
-from kiro_crew import platform_compat
 from kiro_crew.dashboard.crew_api_auth import bearer_credential
 from kiro_crew.dashboard.crew_api_errors import (
     contract_error,
@@ -68,6 +69,13 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 #: Said where the port is announced: many proxies pass the client's ``Host`` through,
 #: and the entry port answers 400 to a ``Host`` outside :data:`_LOOPBACK_HOSTS`.
 HOST_HINT = "the proxy must send a Host that names 127.0.0.1, [::1] or localhost"
+#: What the owner is told when the entry port is closed while the gateway runs.
+CLOSED_TITLE = "Entry port closed"
+CLOSED_BODY = (
+    "The entry port ({port}) is closed: one of its listeners stopped and could not be "
+    "reopened. Callers on other machines cannot reach this Kiro Crew through it. "
+    "Restart the gateway to open it again."
+)
 #: Errors from binding ``::1`` that mean this machine has no IPv6 loopback: the
 #: address is not configured (EADDRNOTAVAIL) or the kernel has no IPv6
 #: (EAFNOSUPPORT, EPROTONOSUPPORT). EADDRINUSE, another process holding
@@ -129,16 +137,38 @@ class GateRef:
     """The entry gate the middleware reads, filled in once the port is bound.
 
     Put on the app before its runner is set up, since a started app takes no new key.
+
+    ``closed`` is why the port was closed while the gateway kept running (:meth:`close`),
+    empty while it is open or was never on. The gate stays set after a close: a
+    connection the proxy still holds open is known by the port it arrived on, so its
+    requests stay entry requests and are refused, never served as local ones.
     """
 
     gate: EntryGate | None = None
+    closed: str = ""
+
+    def close(
+        self, sites: Iterable[web.TCPSite | web.SockSite], reason: str
+    ) -> tuple[str, str] | None:
+        """Close the entry port for the rest of this run; the gateway keeps serving.
+
+        Stops every entry listener in *sites* and records *reason*. Returns the title
+        and the text the owner is told, ``None`` when the port was closed already.
+        Nothing reopens the port: a restart of the gateway does. Call it on the loop.
+        """
+        if self.closed:
+            return None
+        self.closed = reason or "closed"
+        for site in sites:
+            release_site(site)
+        port = self.gate.port if self.gate is not None else 0
+        return CLOSED_TITLE, CLOSED_BODY.format(port=port)
 
 
 def configured_port(value: object, dashboard_port: int, ssm_port: int | None = None) -> int:
     """The entry port *value* asks for, ``0`` when it is off.
 
-    Raises :class:`EntryPortError` for a non-integer, any non-zero port on Windows,
-    an integer that is neither ``0`` nor a port from :data:`PORT_MIN` to
+    Raises :class:`EntryPortError` for a non-integer, an integer that is neither ``0`` nor a port from :data:`PORT_MIN` to
     :data:`PORT_MAX`, the gateway's own port, or *ssm_port* (the SSM listener's
     port, passed only when that listener is configured to run). Shared config
     validation runs before this check: wrong types become the default ``0`` with a
@@ -148,12 +178,6 @@ def configured_port(value: object, dashboard_port: int, ssm_port: int | None = N
         raise EntryPortError("dashboard.entry_port must be a whole number")
     if value == 0:
         return 0
-    # shortcut: no listener guard for the entry port on Windows, so the setting is
-    # refused there; lift when the entry port has a listener guard.
-    if platform_compat.IS_WINDOWS:
-        raise EntryPortError(
-            "dashboard.entry_port is for Linux and macOS for now; set it to 0 on Windows"
-        )
     if not PORT_MIN <= value <= PORT_MAX:
         raise EntryPortError(f"dashboard.entry_port must be 0 or {PORT_MIN} to {PORT_MAX}")
     if value == dashboard_port:
@@ -260,7 +284,19 @@ def bound_port(app: object) -> int:
     return gate.port if isinstance(gate, EntryGate) else 0
 
 
-async def _refuse(request: web.Request, status: int, code: str, message: str) -> web.Response:
+def closed_reason(app: object) -> str:
+    """Why the entry port of *app* was closed while the gateway runs, ``""`` when it was not."""
+    ref = app.get(ENTRY_GATE_APP_KEY) if isinstance(app, web.Application) else None
+    return ref.closed if isinstance(ref, GateRef) else ""
+
+
+async def _refuse(
+    request: web.Request,
+    status: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+) -> web.Response:
     """One refusal: its audit row, then the Crew API error body."""
 
     def write() -> None:
@@ -280,7 +316,11 @@ async def _refuse(request: web.Request, status: int, code: str, message: str) ->
         await asyncio.to_thread(write)
     except Exception:
         logger.warning("No audit row written for an entry gate refusal (%s)", code)
-    return contract_error(status, code, message, request_id_for(request))
+    response = contract_error(status, code, message, request_id_for(request), headers=headers)
+    if headers and headers.get("Connection") == "close":
+        # The header alone asks the caller to go; this closes the connection here.
+        response.force_close()
+    return response
 
 
 def _names_loopback(request: web.Request) -> bool:
@@ -299,7 +339,8 @@ def _is_owner_route(request: web.Request) -> bool:
 @web.middleware
 async def entry_gate_middleware(request: web.Request, handler: _Handler) -> web.StreamResponse:
     """Mark and narrow a request that arrived on the entry port."""
-    gate = getattr(request.app.get(ENTRY_GATE_APP_KEY), "gate", None)
+    ref = request.app.get(ENTRY_GATE_APP_KEY)
+    gate = getattr(ref, "gate", None)
     if isinstance(gate, EntryGate) and not gate.can_read_socket(request):
         # The connection is gone or its socket address cannot be read, so it cannot
         # show that it is not the entry port: refused rather than served as if it
@@ -313,6 +354,16 @@ async def entry_gate_middleware(request: web.Request, handler: _Handler) -> web.
         request[ENTRY_REQUEST_KEY] = True
     if not on_entry_port:
         return await handler(request)
+    if getattr(ref, "closed", ""):
+        # The port was closed while the gateway runs. This connection was accepted
+        # before that: it is still an entry connection, and it is told to go away.
+        return await _refuse(
+            request,
+            503,
+            "instance_unavailable",
+            "The entry port is closed.",
+            headers={"Connection": "close"},
+        )
     if any(name in request.headers for name in LOCAL_CREDENTIAL_HEADERS):
         # A request through the entry is not from one of this machine's own processes.
         return await _refuse(

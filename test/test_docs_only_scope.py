@@ -260,3 +260,85 @@ def test_unreadable_setup_cfg_falls_back_to_test(module, tmp_path, setup_cfg):
     assert module._backend_roots(str(tmp_path)) == ["test"]
     got = module.readers(["docs/guides/install.md"], root=str(tmp_path))
     assert got == ["test/test_first.py"]
+
+
+def test_the_import_search_and_the_pattern_agree_on_every_shape_of_an_import(module):
+    helpers = ["doc_helpers", "read_docs", "x"]
+    imports = module._helper_imports(helpers)
+    heads = [
+        "import ",
+        "from ",
+        "import\t",
+        "from\n",
+        "importx ",
+        "fromage ",
+        "reimport ",
+        " import  ",
+    ]
+    prefixes = [
+        "",
+        ".",
+        "..",
+        "test.",
+        "tests.",
+        "pkg.tests.",
+        "a.b.test.",
+        "other.",
+        "tests",
+        "1.",
+    ]
+    tails = ["", " import y", "s", "_more", ".sub", "\n", ", z"]
+    yes = no = 0
+    for head in heads:
+        for prefix in prefixes:
+            for name in [*helpers, "doc_helper", "nothing"]:
+                for tail in tails:
+                    for text in (
+                        f"{head}{prefix}{name}{tail}",
+                        f"import os\n{head}{prefix}{name}{tail}\nx = 1\n",
+                        f"# {head}{prefix}{name}{tail}",
+                    ):
+                        want = bool(imports.search(text))
+                        yes, no = yes + want, no + (not want)
+                        assert module._imports_one(imports, text) == want, text
+    # Both answers are exercised.
+    assert yes > 100 and no > 100
+
+
+def test_the_import_search_and_the_pattern_agree_on_every_test_file_of_the_tree(module):
+    root = str(ROOT)
+    tests = [
+        rel
+        for top in module._backend_roots(root)
+        for rel in module._walk(root, top, lambda n: n.startswith("test_") and n.endswith(".py"))
+    ]
+    assert len(tests) > 1000
+    # Helper modules of this tree's own tests, so some files import one and most do not.
+    helpers = ["skill_script_helpers", "ci_test_selection_ledger_fake", "conftest_resets"]
+    imports = module._helper_imports(helpers)
+    hits = 0
+    for rel in tests:
+        text = module._read(root, rel)
+        want = bool(imports.search(text))
+        hits += want
+        assert module._imports_one(imports, text) == want, rel
+    assert 0 < hits < len(tests)
+
+
+def test_readers_lists_what_the_whole_text_search_lists_for_docs_of_the_tree(module, monkeypatch):
+    root = str(ROOT)
+    docs = sorted(
+        rel
+        for top in ("docs", "website/docs")
+        for rel in module._walk(root, top, lambda n: n.endswith(".md"))
+        if module.is_prose_doc(rel)
+    )
+    assert len(docs) > 100
+    # A few docs spread over the tree, one at a time and together, as a pull request names them.
+    picked = docs[:: len(docs) // 3][:3]
+    fast = [module.readers([doc], root) for doc in picked] + [module.readers(picked, root)]
+    # The reference: the same function, with the pattern searched over each whole text.
+    monkeypatch.setattr(module, "_imports_one", lambda imports, text: bool(imports.search(text)))
+    whole = [module.readers([doc], root) for doc in picked] + [module.readers(picked, root)]
+    assert fast == whole
+    assert all(len(listed) > 100 for listed in fast)

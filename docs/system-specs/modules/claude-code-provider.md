@@ -1548,8 +1548,12 @@ read in the gateway because the child inherits its environment. A session id tha
 is not a UUID, an empty cwd, a project name longer than the 200 characters the CLI
 keeps verbatim, or a symlinked `projects`, `file-history`, project directory or
 leaf deletes nothing and answers not done, so the prune keeps its retry record and
-`spawn_release` answers `not_disposed`. A persistent session's store is never
-touched, and nothing is sent over the wire to delete the adapter's session.
+`spawn_release` answers `not_disposed`. A path that does not exist counts as
+gone, so a session that left nothing behind answers done. When none of the three
+existed, the cleanup logs one INFO record naming no session id and no path,
+`claude transcript cleanup: nothing to delete`, which is how a reader tells a
+miss from a delete. A persistent session's store is never touched, and nothing
+is sent over the wire to delete the adapter's session.
 Those checks are one private gate (`_session_targets`), which
 `claude_session_paths` also goes through when the Storage report sizes a mapped
 Claude chat's three paths, read only

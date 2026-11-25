@@ -8,7 +8,8 @@ Three contracts, each with its own failure if broken:
 * **Identification needs two candidates.** Below that the stream request is the
   single-language one, unchanged; from two up it names no ``LanguageCode`` at all,
   because Amazon Transcribe fails a request that carries both.
-* **The picker offers what the backend accepts**: ``vi-VN`` is a common code, and
+* **The picker offers what the backend accepts**: ``vi-VN`` and ``hi-IN`` are
+  common codes, and
   a stored code outside the common list stays selectable.
 
 The live socket's request is covered in ``test_stt_stream.py``'s lifecycle class;
@@ -307,10 +308,11 @@ async def test_saving_another_field_keeps_the_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_vietnamese_is_offered_by_the_picker() -> None:
+@pytest.mark.parametrize("code", ["vi-VN", "hi-IN"])
+async def test_language_is_offered_by_the_picker(code: str) -> None:
     await core.api_stt_config(_req("PUT", {"provider": "transcribe"}))
     body = json.loads((await core.api_stt_config(_req("GET"))).body)
-    assert "vi-VN" in body["language_codes"]
+    assert code in body["language_codes"]
 
 
 @pytest.mark.asyncio

@@ -1427,8 +1427,9 @@ until the user picks the app.
 |-------|------|-------------|
 | `id` | string | Storage-safe slug, unique within the app |
 | `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `page` | object | Instead of `entry`: `{ "param": "<name>" }` opens the link on the app's own page (below). `param` is a slug like `id`. Declare exactly one of `entry` and `page` |
 | `hosts` | string[] | 1-64 hostnames, each checked like a `linkPreviews.hosts` entry. Only `https:` links on the default port and without a user name match |
-| `fullUrl` | boolean | Optional. `open` gets the URL without its query and fragment unless this is `true` and the owner approved it |
+| `fullUrl` | boolean | Optional. `open` (or the page) gets the URL without its query and fragment unless this is `true` and the owner approved it |
 
 At most **one** entry per app; a click goes to the first enabled app whose `hosts`
 claim the link.
@@ -1492,6 +1493,30 @@ Closing the dialog first calls `cancel(id, 'closed')`. `offerCopy` and `offerOpe
 put a **Copy** or **Open &lt;host&gt;** item in that menu: nothing is
 copied or opened until the user picks it. Links inside the frame open through the
 dashboard's link bridge.
+
+**On the app's own page (`page`).** With `"page": { "param": "url" }` instead of
+`entry`, opening the link in the app shows no dialog and loads no frame: the host
+opens the app's page, where the sidebar opens it (`/apps/<name>`), at
+`?url=<the link>`, with the same URL rule (no query or fragment unless `fullUrl` was
+approved). The page reads the parameter when it mounts. The question, **Always** and
+the approvals are the same as for `entry`.
+
+- When the app's page is popped out, that window loads the new address, which
+  replaces what the page held, and is asked to come to the front; the main window
+  stays where it is. A page that keeps unsaved work guards it with `beforeunload`,
+  the one leave check a load runs. A browser can refuse the focus when the window
+  was not opened from this tab (after a reload, or from another tab), as it can for
+  **Pop out** itself.
+- Otherwise the current window navigates to the page, after the page on screen
+  agrees to be left (an unsent draft asks first; cancelling opens nothing). On an
+  app's page, or on Projects or Channels, which cannot be asked, the click is an
+  ordinary link.
+- A `page` entry needs `ui.entry` and a `ui.pages` entry. `token` is not a usable
+  `param`: the dashboard reads it as its own sign-in link. An older Kiro Crew
+  refuses an entry without `entry`, so set `minKiroCrewVersion` when you use `page`.
+- "Always" is remembered per entry, so switching an existing entry from `entry` to
+  `page` changes what a remembered "app" answer does: it opens the page instead of
+  the dialog.
 
 ### `contributes.botChatServers` — Tools in a Bot's Own Chat
 
@@ -1992,8 +2017,8 @@ your preserved data (a root entry named `data` never survives an install
 verbatim in either shape — nor `Data` where the filesystem folds case, as the
 desktop's usually do — and a root `data` that is a link, whatever it points at,
 or a regular file is refused outright before anything is installed: the Gateway
-moves that directory aside and back across updates, and a relocated link would
-lose the directory it named), at `.app_secret`, which the
+keeps that directory as the app's data across updates and moves it aside and back
+around a reinstall, and a link kept or relocated there would lose the directory it named), at `.app_secret`, which the
 Gateway removes — a shipped file or link alike, the link never followed — before
 writing its own credential there, or under a name the copy drops
 at any depth (`node_modules`, `.venv`, `.git`, `__pycache__`), a regular file so
@@ -2247,14 +2272,15 @@ in-gateway code your app runs.
   removed. A listed directory comes back while it is absent or a real directory; the
   files inside it are not checked for a second name, as for Kiro Crew's own masked
   directories.
-- The masks follow your data when Kiro Crew moves it: during an update, and after an
-  uninstall that keeps your data. Kiro Crew keeps a copy of the list beside your app
-  folder for that, `apps/.<name>-credential-masks.json`.
+- The masks stay on your data across an update, which leaves it in place, and follow it
+  after an uninstall that keeps your data. Kiro Crew keeps a copy of the list beside your
+  app folder for that, `apps/.<name>-credential-masks.json`.
 - A sandboxed process cannot rename or remove the folders above a listed file
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
-  On Linux the file stays masked in a session that was running when an update replaced
-  your app folder, but that session can rename the new `apps/<name>` folder until it
-  next starts.
+  On Linux the file stays masked in a session that was running when an uninstall that kept
+  your data, or an install over that data, replaced your app folder, but that session can
+  rename the new `apps/<name>` folder until it next starts. An update leaves the folder in
+  place.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.
 - The agent's own file tools (read, write, edit) refuse every listed file and listed
@@ -2300,16 +2326,16 @@ own backend still writes it, and so does any in-gateway code your app runs.
   refuses every sandboxed spawn until it is replaced with a real directory.
 - On Linux an absent listed directory is created (empty) before a sandboxed process
   starts, once your app's `data/` folder exists, so it can be sealed. While Kiro Crew
-  holds your data aside for an update or uninstall there is no `data/` folder, so a
+  holds your data aside for an uninstall or a reinstall there is no `data/` folder, so a
   process started in that window finds the directory absent and only the file-tool fence
   applies.
 - On macOS and Linux a sandboxed process cannot rename or remove the folders above a
   listed directory; it can still create and edit other files in them.
-- The fence follows your data when Kiro Crew moves it: during an update, and after an
-  uninstall that keeps your data (`apps/.<name>-agent-readonly-dirs.json` keeps the list).
-  A Linux sandboxed process already running when the move happens keeps the seals it
-  started with, so it can write the moved directories until it restarts; every process
-  started after the move sees them read-only.
+- The fence stays on your data across an update, which leaves it in place, and follows it
+  after an uninstall that keeps your data (`apps/.<name>-agent-readonly-dirs.json` keeps
+  the list). A Linux sandboxed process already running when an uninstall or a reinstall
+  moves the data keeps the seals it started with, so it can write the moved directories
+  until it restarts; every process started after the move sees them read-only.
 - The installed app folder is writable from inside the sandbox, so this protects the
   directory from an agent that writes files, not from one that rewrites your `app.json`.
 - Hosts at App Kit seam level 7 or later honour the field; read `ctx.sdk_level` and
@@ -2371,7 +2397,7 @@ the endpoint; it does not import provider code.
 | `setup.onInstall` | string | `""` | Shell command run during a registry install **and again on every registry update** (an update re-enters the install transaction), after clone/build and before the installed copy is created. Not run for a local-path install. Make it idempotent |
 | `setup.onUninstall` | string | `""` | Shell command run before uninstall |
 | `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed**: no code path dispatches it. Put dependency installs into the installed folder in `onEnable`, which an update of an enabled app re-runs, and build steps in an idempotent `onInstall`, which a registry update re-runs |
-| `setup.onEnable` | string | `""` | Shell command run when app is enabled, and again after every update of an enabled app (an update replaces the installed folder, and the fresh copy never carries `node_modules` or `.venv`) |
+| `setup.onEnable` | string | `""` | Shell command run when app is enabled, and again after every update of an enabled app (an update replaces the installed folder's files, and the fresh copy never carries `node_modules` or `.venv`) |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
 | `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
 | `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |

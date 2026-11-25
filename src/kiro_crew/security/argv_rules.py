@@ -40,7 +40,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "sudo": (
         frozenset(
             {
-                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"),
+                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-T", "-D", "-R"),
                 *("--user", "--group", "--close-from", "--host", "--prompt"),
                 *("--other-user", "--role", "--type", "--chdir", "--chroot"),
             }
@@ -50,7 +50,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "doas": (frozenset({"-u", "-C"}), 0),
     "pkexec": (frozenset({"--user"}), 0),
     "runuser": (frozenset({"-u", "-g", "-G", "--user", "--group"}), 0),
-    "env": (frozenset({"-u", "-C", "--unset", "--chdir"}), 0),
+    "env": (frozenset({"-u", "-U", "-C", "--unset", "--chdir"}), 0),
     "command": (frozenset(), 0),
     "builtin": (frozenset(), 0),
     "exec": (frozenset({"-a"}), 0),
@@ -70,7 +70,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "xargs": (
         frozenset(
             {
-                *("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"),
+                *("-I", "-n", "-P", "-L", "-s", "-S", "-d", "-E", "-a"),
                 *("--max-args", "--max-procs", "--max-lines", "--max-chars"),
                 *("--delimiter", "--arg-file", "--process-slot-var"),
             }

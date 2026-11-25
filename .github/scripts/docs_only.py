@@ -160,6 +160,31 @@ def _read(root: str, rel: str) -> str:
         return ""
 
 
+def _helper_imports(helpers: list[str]) -> "re.Pattern[str]":
+    """An import of one of ``helpers``: by bare name, relative name, or a dotted
+    path through a ``test``/``tests`` package."""
+    return re.compile(
+        r"\b(?:import|from)\s+(?:\.+|(?:[\w.]*\.)?tests?\.)?(?:%s)\b"
+        % "|".join(map(re.escape, helpers))
+    )
+
+
+def _imports_one(imports: "re.Pattern[str]", text: str) -> bool:
+    """``bool(imports.search(text))``, tried only where a match can start.
+
+    Every match starts with the word ``import`` or ``from``, so the pattern is
+    tried at each place the text holds one of them instead of at every
+    character, which is what makes it slow on a file that imports no helper.
+    """
+    for word in ("import", "from"):
+        at = text.find(word)
+        while at != -1:
+            if imports.match(text, at):
+                return True
+            at = text.find(word, at + 1)
+    return False
+
+
 def readers(changed: list[str], root: str | None = None) -> list[str]:
     """Test files that could read one of ``changed`` docs (see the module doc)."""
     root = root or _repo_root()
@@ -195,12 +220,9 @@ def readers(changed: list[str], root: str | None = None) -> list[str]:
     # through the tests that import it: by bare name, relative name, or a
     # dotted path through a ``test``/``tests`` package.
     if helpers:
-        imports = re.compile(
-            r"\b(?:import|from)\s+(?:\.+|(?:[\w.]*\.)?tests?\.)?(?:%s)\b"
-            % "|".join(map(re.escape, helpers))
-        )
+        imports = _helper_imports(helpers)
         for rel, text in texts.items():
-            if os.path.basename(rel).startswith("test_") and imports.search(text):
+            if os.path.basename(rel).startswith("test_") and _imports_one(imports, text):
                 picked.add(rel)
 
     frontend = _walk(root, "website/src", lambda n: n.endswith((".test.ts", ".test.tsx")))

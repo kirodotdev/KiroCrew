@@ -118,6 +118,57 @@ def test_only_a_linux_x64_host_below_glibc_2_28_picks_the_al2_pin(
     assert kas_pin.host_pin_version(system, machine) == expected
 
 
+@pytest.mark.parametrize(
+    "machine, glibc, want",
+    [
+        ("aarch64", (2, 26), "al2"),
+        ("arm64", (2, 27), "al2"),
+        ("aarch64", (2, 28), "normal"),
+        ("aarch64", None, "normal"),
+        ("x86_64", (2, 26), "al2"),
+    ],
+)
+def test_an_arm64_host_moves_to_the_al2_pin_once_that_pin_records_an_arm64_floor(
+    monkeypatch: pytest.MonkeyPatch, machine: str, glibc, want: str
+) -> None:
+    # The AL2 pin's floors are the list of architectures it has AL2 builds for:
+    # adding linux-arm64 there is all it takes to route an old-glibc arm64 host.
+    from kiro_crew import constants
+
+    monkeypatch.setitem(
+        kas_pin.KAS_PIN_GLIBC_FLOORS,
+        kas_pin.KAS_PIN_AL2_VERSION,
+        {"linux-x64": (2, 26), "linux-arm64": (2, 26)},
+    )
+    monkeypatch.setattr(constants, "_host_glibc_version", lambda: glibc)
+    expected = kas_pin.KAS_PIN_AL2_VERSION if want == "al2" else kas_pin.KAS_PIN_VERSION
+    assert kas_pin.host_pin_version("Linux", machine) == expected
+
+
+def test_an_al2_floor_at_2_28_does_not_route_a_host_to_the_al2_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A key listed at the nodejs.org floor carries no AL2 build, same as unlisted.
+    from kiro_crew import constants
+
+    monkeypatch.setitem(
+        kas_pin.KAS_PIN_GLIBC_FLOORS,
+        kas_pin.KAS_PIN_AL2_VERSION,
+        {"linux-x64": (2, 26), "linux-arm64": (2, 28)},
+    )
+    monkeypatch.setattr(constants, "_host_glibc_version", lambda: (2, 26))
+    assert kas_pin.host_pin_version("Linux", "aarch64") == kas_pin.KAS_PIN_VERSION
+
+
+def test_an_architecture_with_no_node_key_keeps_the_normal_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import constants
+
+    monkeypatch.setattr(constants, "_host_glibc_version", lambda: (2, 26))
+    assert kas_pin.host_pin_version("Linux", "riscv64") == kas_pin.KAS_PIN_VERSION
+
+
 def test_pinned_version_follows_the_host_unless_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
     from kiro_crew import constants
 

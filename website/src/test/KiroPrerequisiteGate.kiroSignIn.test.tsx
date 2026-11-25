@@ -72,12 +72,13 @@ async function settledStatus() {
   })
 }
 
-// The gateway's answer to read `call` (0 for the first) has come (or failed) and
-// React has rendered from it.
-async function settledBundle(call = 0) {
-  await waitFor(() => expect(vi.mocked(api.kasBundleStatus).mock.calls.length).toBeGreaterThan(call), CHAIN)
+// At least `reads` bundle reads have been made, every one has answered (or
+// failed), and React has rendered from them. A first-run load makes two: the
+// early read that decides whether the app may paint, then the hold's own.
+async function settledBundle(reads: number) {
+  await waitFor(() => expect(vi.mocked(api.kasBundleStatus).mock.calls.length).toBeGreaterThanOrEqual(reads), CHAIN)
   await act(async () => {
-    await vi.mocked(api.kasBundleStatus).mock.results[call].value.catch(() => undefined)
+    await Promise.allSettled(vi.mocked(api.kasBundleStatus).mock.results.map(r => r.value))
   })
 }
 
@@ -147,9 +148,11 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     nextStatus(firstRun)
     let answer!: (value: { chat_needs_sign_in: boolean }) => void
     vi.mocked(api.kasBundleStatus).mockReturnValue(new Promise(resolve => { answer = resolve }) as never)
+    // The early read says the built-in engine is off, so the app paints while the hold's own read is pending.
+    vi.mocked(api.kasBundleStatus).mockResolvedValueOnce({ engine_choice: 'kiro_cli', chat_needs_sign_in: false } as never)
     renderGate(undefined, <RoleField />)
-    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalled(), CHAIN)
-    const role = screen.getByRole('textbox', { name: 'Your role' })
+    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalledTimes(2), CHAIN)
+    const role = await screen.findByRole('textbox', { name: 'Your role' }, CHAIN)
     fireEvent.change(role, { target: { value: 'Data engineer' } })
     await act(async () => {
       answer({ chat_needs_sign_in: true })
@@ -169,7 +172,8 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     await settledStatus()
     expect(screen.getByText('Dashboard loaded')).toBeVisible()
     expect(screen.queryByRole('button', CHOOSER)).not.toBeInTheDocument()
-    expect(api.kasBundleStatus).not.toHaveBeenCalled()
+    // At most the early read that decides the paint while the status was pending; never the hold's own.
+    expect(vi.mocked(api.kasBundleStatus).mock.calls.length).toBeLessThanOrEqual(1)
     expect(api.kasLoginStatus).not.toHaveBeenCalled()
   })
 
@@ -220,7 +224,7 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     vi.mocked(api.kasBundleStatus).mockRejectedValue(new Error('kas_bundle_status_failed'))
     renderGate()
     await settledStatus()
-    await settledBundle()
+    await settledBundle(2)
     expect(screen.getByText('Dashboard loaded')).toBeVisible()
     expect(screen.queryByRole('button', CHOOSER)).not.toBeInTheDocument()
     expect(api.kasLoginStatus).not.toHaveBeenCalled()
@@ -231,7 +235,7 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     signInNeeded(false)
     const { queryClient } = renderGate()
     await settledStatus()
-    await settledBundle()
+    await settledBundle(2)
     const admitted = screen.getByText('Dashboard loaded')
     // Another reader of the field (the chat's sign-in prompt) brings a later
     // answer into the shared cache.
@@ -241,6 +245,89 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     expect(screen.getByText('Dashboard loaded')).toBe(admitted)
     expect(admitted).toBeVisible()
     expect(api.kasLoginStatus).not.toHaveBeenCalled()
+  })
+
+  it('with the built-in engine on, hides the app while the first-run answer is still being read', async () => {
+    nextStatus(firstRun)
+    let answer!: (value: { chat_needs_sign_in: boolean }) => void
+    vi.mocked(api.kasBundleStatus).mockReturnValue(new Promise(resolve => { answer = resolve }) as never)
+    vi.mocked(api.kasBundleStatus).mockResolvedValueOnce({ engine_choice: 'engine', chat_needs_sign_in: false } as never)
+    renderGate()
+    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalledTimes(2), CHAIN)
+    const app = screen.getByText('Dashboard loaded')
+    expect(app).not.toBeVisible()
+    expect(app).toHaveAttribute('data-held', 'true')
+    await act(async () => {
+      answer({ chat_needs_sign_in: false })
+    })
+    await waitFor(() => expect(app).toBeVisible(), CHAIN)
+    expect(app).toHaveAttribute('data-held', 'false')
+  })
+
+  it('with the built-in engine on, shows the harness setup instead, and Set up later admits', async () => {
+    nextStatus(firstRun)
+    vi.mocked(api.kasBundleStatus).mockResolvedValue(
+      { enabled: true, engine_choice: 'engine', chat_needs_sign_in: true } as never,
+    )
+    renderGate()
+    expect(await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Built-in harness/ })).toBeChecked()
+    expect(screen.queryByRole('button', SKIP)).not.toBeInTheDocument()
+    expect(screen.getByText('Dashboard loaded')).not.toBeVisible()
+    fireEvent.click(screen.getByTestId('harness-setup-later'))
+    await waitFor(() => expect(screen.getByText('Dashboard loaded')).toBeVisible(), CHAIN)
+    expect(api.patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('with the built-in engine on, a failed save stays on the choice and says so', async () => {
+    nextStatus(firstRun)
+    vi.mocked(api.kasBundleStatus).mockResolvedValue(
+      { enabled: true, engine_choice: 'engine', chat_needs_sign_in: true } as never,
+    )
+    vi.mocked(api.patchConfig).mockRejectedValue(new Error('failed to write config file'))
+    renderGate()
+    await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)
+    fireEvent.click(screen.getByTestId('harness-setup-continue'))
+    expect(await screen.findByTestId('harness-setup-save-error', {}, CHAIN)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Choose a harness' })).toBeInTheDocument()
+    expect(screen.queryByTestId('harness-setup-ready')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
+  })
+
+  it('with the built-in engine on, a saved pick drops the old harness model list', async () => {
+    nextStatus(firstRun)
+    vi.mocked(api.kasBundleStatus).mockResolvedValue(
+      { enabled: true, engine_choice: 'engine', chat_needs_sign_in: true } as never,
+    )
+    vi.mocked(api.patchConfig).mockResolvedValue({} as never)
+    const { clearCachedModels } = await import('../providers/adapters/acp')
+    renderGate()
+    await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)
+    fireEvent.click(screen.getByTestId('harness-setup-continue'))
+    await waitFor(() => expect(clearCachedModels).toHaveBeenCalled(), CHAIN)
+    expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true)
+  })
+
+  it('with the built-in engine on, someone who may not do setup gets no harness step', async () => {
+    nextStatus({ ...firstRun, setup_allowed: false })
+    vi.mocked(api.kasBundleStatus).mockResolvedValue(
+      { enabled: true, engine_choice: 'engine', chat_needs_sign_in: false } as never,
+    )
+    renderGate()
+    await settledStatus()
+    await settledBundle(2)
+    await waitFor(() => expect(screen.getByText('Dashboard loaded')).toBeVisible(), CHAIN)
+    expect(screen.queryByTestId('harness-setup-later')).not.toBeInTheDocument()
+  })
+
+  it('with the built-in engine off, keeps the plain sign-in hold', async () => {
+    nextStatus(firstRun)
+    vi.mocked(api.kasBundleStatus).mockResolvedValue(
+      { enabled: false, engine_choice: 'kiro_cli', chat_needs_sign_in: true } as never,
+    )
+    renderGate()
+    expect(await screen.findByRole('button', SKIP, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('harness-setup-later')).not.toBeInTheDocument()
   })
 
   it('decides from the answer read when setup admits, not one cached on the setup screen', async () => {
@@ -258,7 +345,7 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     nextStatus(firstRun)
     signInNeeded(false)
     await refetch(queryClient, 'kiro-prerequisite')
-    await settledBundle(1)
+    await settledBundle(3)
     expect(screen.getByText('Dashboard loaded')).toBeVisible()
     expect(screen.queryByRole('button', CHOOSER)).not.toBeInTheDocument()
     expect(api.kasLoginStatus).not.toHaveBeenCalled()

@@ -149,7 +149,11 @@ export const CHUNK_BUDGETS = {
   // `first-load-shared` holds the first-load modules an app window also reaches,
   // the English catalog among them (English is the always-loaded fallback), so no
   // lazy `import()` can move most of it out.
-  'first-load-shared': 3216 * KB, // measured 3,135,505 B
+  //
+  // Re-measured on main @ 2b4661001d, same 5% rule (#42738): 3,298,086 B, 4,902 B
+  // over the 3216 KB ceiling, its headroom spent by English strings added across
+  // many features since c275f70106.
+  'first-load-shared': 3382 * KB, // measured 3,298,086 B
   // The dashboard's own first-load code, cut by import depth into four parts of
   // near-equal size; `main` is the top part, holding the entry. Because the cut
   // is by size, growth anywhere in it raises all four by about a quarter each.

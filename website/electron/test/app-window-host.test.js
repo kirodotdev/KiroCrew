@@ -201,6 +201,36 @@ test("an openOnEnable overlay opens hidden, sandboxed, on the host's own route",
   assert.deepStrictEqual(win.openHandler(), { action: "deny" });
 });
 
+const FULL_SCREEN_APP = {
+  windows: [
+    { id: "pet", entry: "desktop/pet.mjs", kind: "overlay", openOnEnable: true },
+    { id: "card", entry: "desktop/card.mjs", kind: "panel", openOnEnable: true },
+    { id: "poll", entry: "desktop/poll.mjs", kind: "background", openOnEnable: true },
+  ],
+};
+
+test("on macOS an overlay and a panel are non-activating panels, so they show over a full-screen app", async (t) => {
+  const { host, fake } = await started([appRow("pets", FULL_SCREEN_APP)]);
+  t.after(() => host.stop());
+  const [overlay, panel, background] = fake.created;
+  assert.strictEqual(overlay.opts.type, "panel");
+  assert.strictEqual(panel.opts.type, "panel");
+  assert.strictEqual(background.opts.type, undefined, "a background window is never shown");
+  assert.ok(
+    overlay.calls.some((call) => call[0] === "alwaysOnTop" && call[1] === true && call[2] === "screen-saver"),
+    "the overlay sits above a full-screen app",
+  );
+  assert.ok(panel.calls.some((call) => call[0] === "alwaysOnTop" && call[2] === "floating"));
+});
+
+test("off macOS no window gets the macOS-only panel type or level", async (t) => {
+  const { host, fake } = await started([appRow("pets", FULL_SCREEN_APP)], { platform: "linux" });
+  t.after(() => host.stop());
+  for (const win of fake.created) assert.strictEqual(win.opts.type, undefined);
+  const [overlay] = fake.created;
+  assert.ok(!overlay.calls.some((call) => call[0] === "alwaysOnTop" && call[2] === "screen-saver"));
+});
+
 test("ready reveals the window; the declared shortcut is registered", async (t) => {
   const { host, fake } = await started([appRow("pets", OVERLAY_APP)]);
   t.after(() => host.stop());

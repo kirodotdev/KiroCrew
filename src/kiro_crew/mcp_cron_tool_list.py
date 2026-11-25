@@ -296,7 +296,13 @@ def _list_tools() -> list[dict[str, Any]]:
                         "ctx.set_session_mode() to open, seed and set the approval "
                         "mode (trust or trust_reads) of a dashboard session (never "
                         "shell out to 'kirocrew token'; the sandboxed child is "
-                        "refused). "
+                        "refused). ctx.send_to_session() and ctx.set_session_mode() "
+                        "reach only sessions this cron created: a session another "
+                        "creator made, the chat that armed the job included, is "
+                        "refused with not_creator, and ctx.set_session_mode() "
+                        "refuses a closed session as unknown slot. "
+                        "ctx.send_to_session() on a name no session uses yet "
+                        "opens a new session for this cron. "
                         "When set, 'message' is passed to the script as ctx.message "
                         "(used for arguments) rather than being sent to an LLM.",
                     },

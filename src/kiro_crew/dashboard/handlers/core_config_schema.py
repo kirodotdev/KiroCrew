@@ -397,6 +397,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # The per-row unread dot on sidebar session cards (Settings → Display →
     # Sidebar). Default on; only a literal `false` hides it.
     "dashboard.show_unread_dot": {"type": "bool"},
+    # Session cards start with their linked pull requests and issues open
+    # (Settings → Display, Session Cards). Default off; only a literal `true` opens it.
+    "dashboard.expand_linked_items": {"type": "bool"},
     # The quick-search shortcut opens the Command Bar launcher (Settings ->
     # Display -> View). Default on; only a literal `false` opens the search
     # palette instead.

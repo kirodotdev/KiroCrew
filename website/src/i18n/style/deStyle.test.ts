@@ -113,8 +113,8 @@ describe('de register (style/de.md §4)', () => {
 
   /**
    * Blocks already moved to du whole, so they are held to it catalog-wide: the
-   * first screens a new user meets (setup, onboarding, import, AWS consent) and
-   * the top bar. A block joins once its last Sie value is gone.
+   * first screens a new user meets (setup, onboarding, import, AWS consent), the
+   * top bar and Settings. A block joins once its last Sie value is gone.
    */
   const DU_BLOCKS = [
     'app.',
@@ -123,6 +123,7 @@ describe('de register (style/de.md §4)', () => {
     'components.awsConsentGate.',
     'components.kiroPrerequisiteGate.',
     'components.onboardingFlow.',
+    'pages.settings.',
   ]
   // A possessive at a sentence start ("Ihre Rolle") is the formal "your" here.
   // A sentence-start "Sie" is left alone: it is just as often "it" or "they".

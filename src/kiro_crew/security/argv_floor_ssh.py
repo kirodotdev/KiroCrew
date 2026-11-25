@@ -113,16 +113,16 @@ from .shell_normalizer import (
 # same class the verdict cache refuses to latch.  The one definite failure,
 # "no such name", is not an allow on its own either: it counts as not this
 # host only for a HostName rewrite without a proxy, one ProxyJump without a
-# ProxyCommand, or exactly ``ssh [-q] -W %h:%p host`` (either option order).
+# ProxyCommand, ``ssh [-q] -W %h:%p host``, or a plain program dialing %h.
 # The literal hop must pass the live IP-host guard for every DNS address;
 # a matching Host or Match block that sets a destination key (HostName,
 # ProxyJump, ProxyCommand, Canonical*) refuses it. Proxy forms require a
 # literal final HostName and check every locally resolved address, or its IP
 # literal, without checking its Host block. A literal final name with no
-# local DNS answer is left for the proxy to resolve. Other proxy commands,
-# flags, multi-hop routes and unresolved hop destinations stay refused.
+# local DNS answer is left for the proxy to resolve. Shell syntax, ssh-family
+# proxies, multi-hop routes and unresolved hop destinations stay refused.
 # The proof runs inside the agent's sandbox on sandbox-read config bytes;
-# unreadable Includes, Includes inside blocks, unsupported Match criteria,
+# unreadable Includes, a block's Include opening a block, bad Match criteria,
 # tier off and a missing backend keep refusing. A route-cleared name has
 # the same standing as a DNS-cleared name: outer -F/-S/rsync -e routing
 # remains the documented network-fence residual. Failed revalidation drops

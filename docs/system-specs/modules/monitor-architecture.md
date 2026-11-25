@@ -957,7 +957,76 @@ the records and the claim together, and the shared arming path forwards the fiel
 only when set. The dashboard monitor row does not draw extras yet; they are listed
 by `monitor_inspect` and `/api/monitors`.
 
-The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
+### A pull request that waits on people
+
+A pull request whose checks are done and that waits only for a review or for its
+mergeability classifies `PENDING`, and on its own a `PENDING` reading wakes
+nobody. So without more, a watch stays silent through the two moments its
+author must act: the checks finishing, and a person writing.
+`pull_request_waiting_conditions` in `monitoring/pull_request.py` names those two
+moments by comparing the reading with the previous one the record holds, and
+attaches them to a `PENDING` reading only:
+
+| Key | Named on the tick when |
+|---|---|
+| `checks_settled` | every check of a non-draft board finished, with at least one pass and none failed, pending or unknown, read from the facts (so more than 100 passing rows count), and its head has not read settled since its last failure or draft reading |
+| `person_comment` | `person_comment_digest` differs from the previous reading's, on any `PENDING` reading, a draft's included |
+
+`_decide_effect` wakes on a `PENDING` reading that names a condition, at once and
+with no mask: the condition is gone on the next tick, so holding it for the floor
+or behind a retryable supplemental retry would lose it, and the window stays
+closed, so a failure on the next tick still wakes at once. Only the presence of a
+condition is read there, never its fields. A permanent supplemental failure
+(authorization, not found) still stops the watch. Every other `PENDING` tick
+records as before, and the stall count still ignores `PENDING`.
+
+These two are edges, unlike the rest of the engine (below). A reading with nothing
+to compare against is a baseline: a watch's first reading (so arming on a green
+board or under old comments wakes nobody), a previous reading without a board or a
+person digest, and, for the checks edge, a current one without a head. An empty
+board is not settled, so the moment after a push when the host reports no checks
+yet is not taken for a finish. The checks edge fires once per head between drafts:
+when the same head reads incomplete or pending again after a settled board (a
+failed read, green checks re-running after a description edit), the shared builder
+writes `checks_settled_head` into that unsettled reading's canonical and carries
+it while the board stays unsettled, and a failed check or a new head drops it, so
+a re-run that turns a red board green wakes and a repeat of a green one does not.
+A settled board is its own evidence and carries no latch, so its canonical keeps
+the shape every provider shares, unless the projection cut its passed list at the
+per-bucket cap: that canonical reads incomplete, so a settled one carries the
+latch. A draft reading never counts as having read settled: it woke nobody, and
+marking a pull request ready re-runs some checks on the same head, so a draft
+marked ready wakes once when its board next reads settled. The accepted cost: a
+check registered late on the same head, after the board already read settled once,
+finishes without a second wake. They are safe as edges because the reading they
+compare against moves only with a decision: a decided wake persists its reading
+beside the wake claim, and while that wake is in flight `apply_monitor_probe`
+refuses each probe without touching `last_observation`, so a settle or a comment
+that lands while the session is busy is still a difference on the next probe.
+
+`person_comment_digest` comes from the GitHub adapter alone
+(`monitoring/github_pull_request_people.py`). The comment read selects each body's
+author, and its first page also reads the pull request's reviews, unpaged, in the
+same document, so a document the host refuses blanks both comment digests for
+that tick, as a refused comment read always did. The digest covers the non-empty
+bodies a `User` other than the pull request's author wrote, logins compared
+without case; a `Bot` does not count, and a row whose author is null -- a deleted
+account -- is skipped rather than read as malformed. Unlike
+`pr_comment_body_digest` it is non-empty on a complete read that found no such
+body, so "nobody wrote" and "could not read" stay apart. An incomplete read (a
+second page of reviews included, which loses the person wake for that pull
+request's comments too) yields none, and the adapter then carries the previous
+reading's digest forward, so a comment posted while the read failed still differs
+once it recovers. Three costs are accepted rather than paid for with another read:
+a machine account GitHub types as a `User` counts as a person; the watching
+account's own comment, on a pull request it did not author, wakes it once (the
+bounded cost `review_comment_bodies` already carries, and reading `viewer` in this
+document would charge a token that cannot read it to every subject's comment
+read); and a review body a person posts while the reading is `ACTIONABLE` moves the
+digest without a wake of its own. `review_comment_bodies:<digest>` is unchanged: it
+covers every comment body and rides on an `ACTIONABLE` reading only.
+
+The engine is otherwise **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live kernel path: per-key `alerted` timestamps in its loaded
 state, `_dedupe_key` distinguishing `REVISION` from `NEVER` entries, a re-alert
 window defaulting to six hours through `DEFAULT_REALERT_SECS`, a coalescing
@@ -1697,8 +1766,8 @@ operator is actually buying, so the key's help text names them.
 
 **Half of a review-ready objective is invisible to the typed provider.** A
 structured observation carries lifecycle, checks, mergeability, review decision,
-review-thread counts and a digest over the PR-level comment bodies, and nothing
-else; `docs/architecture/mcp.md` states the same boundary from the tool's side
+review-thread counts, a digest over the PR-level comment bodies and, on GitHub,
+one over what a person other than the author wrote, and nothing else; `docs/architecture/mcp.md` states the same boundary from the tool's side
 ("requests that need comments or advisory findings route directly to the finite
 legacy tool whose agent turn can inspect them"). On this repository that is not a
 corner case: a pull request reaches `readiness: passed` only once every non-PASS

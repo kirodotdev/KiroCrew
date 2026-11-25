@@ -632,14 +632,14 @@ def test_the_set_stays_in_the_store_while_the_tree_moves(tmp_path, app_home, mon
     assert _widen(tmp_path).ok
     _edit_record(lambda data: data.pop("approvedGrantsStored", None))
     seen = []
-    real_copy = manager_mod._copy_app_tree
+    real_move_in = manager_mod._move_in_new_entries
 
-    def _probe_then_copy(source, dest):
+    def _probe_then_move_in(new, dest, moved_in):
         assert any("-update-old-" in p.name for p in app_dir(APP).parent.iterdir())
         seen.append(json.loads(_grants_path().read_text(encoding="utf-8"))["api"] == [OLD_API])
-        real_copy(source, dest)
+        real_move_in(new, dest, moved_in)
 
-    monkeypatch.setattr(manager_mod, "_copy_app_tree", _probe_then_copy)
+    monkeypatch.setattr(manager_mod, "_move_in_new_entries", _probe_then_move_in)
     assert _widen(tmp_path, "v3", "3.0.0").ok
     assert seen == [True]
     assert _allowlist() == (OLD_API,)

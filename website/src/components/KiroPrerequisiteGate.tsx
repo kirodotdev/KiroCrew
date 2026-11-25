@@ -25,9 +25,9 @@ import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import KasLoginGate from './KasLoginGate'
+import { KiroInstallCommands, knownPlatform } from './agentHarness/KiroInstallCommands'
 import FirstRunSignInHold, { useFirstRunSignInHold } from './FirstRunSignInHold'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
-import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
 import { AgentSpecsMissing, AgentSpecsRejected } from './KiroPrerequisiteAgentSpecs'
 import { LtsSignInRequired, SessionSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
@@ -49,6 +49,7 @@ import { signInSentence } from '../api/signInCommand'
 // The shared status read: `hooks/useKiroPrerequisite` owns it, the chat's
 // kiro-cli sign-in row reads the same entry.
 const QUERY_KEY = KIRO_PREREQUISITE_KEY
+export { knownPlatform }
 export { kiroPrerequisiteIsBlocking, kiroPrerequisiteRefetchInterval } from '../hooks/useKiroPrerequisite'
 
 
@@ -588,7 +589,7 @@ const BACKENDS_POLL_MS = 30_000
  * sandbox verdict land. Shared by the picker's Check again and the gate's own
  * marker-persisting recheck so both leave the caches in the same state.
  */
-function applyRecheckedBackend(qc: QueryClient, backend: AcpBackendProbe): void {
+export function applyRecheckedBackend(qc: QueryClient, backend: AcpBackendProbe): void {
   qc.setQueryData<{ backends: AcpBackendProbe[] }>(BACKENDS_QUERY_KEY, prev =>
     prev
       ? {
@@ -609,7 +610,7 @@ function applyRecheckedBackend(qc: QueryClient, backend: AcpBackendProbe): void 
  * permits unsandboxed exec — can finish setup. KAS additionally
  * needs kiro-cli ACP support rather than independent setup eligibility.
  */
-function configuredBackendCanStart(
+export function configuredBackendCanStart(
   status: KiroPrerequisiteStatus | undefined,
   probe: AcpBackendProbe | undefined,
 ): boolean {
@@ -648,7 +649,7 @@ function configuredBackendCanStart(
  * sandbox" would be false, and Check again / `kirocrew doctor` re-measure a host
  * that is fine. The remedy is the setting, and only the setting.
  */
-function sandboxOffFor(
+export function sandboxOffFor(
   status: KiroPrerequisiteStatus | undefined,
   probe: AcpBackendProbe | undefined,
 ): boolean {
@@ -677,7 +678,7 @@ export function workloadPodNoSandbox(status: KiroPrerequisiteStatus | undefined,
  * outdated Kiro CLI and a failed probe have no branch because each gets its own
  * screen before this one.
  */
-function notReadyReason(
+export function notReadyReason(
   status: KiroPrerequisiteStatus,
   probe: AcpBackendProbe,
 ): AgentNotReadyReason | null {
@@ -713,77 +714,13 @@ export function acpBackendsRefetchInterval(
 }
 
 /** The backends this screen offers as alternatives to Kiro CLI. */
-function otherCodingAgents(backends: AcpBackendProbe[]): AcpBackendProbe[] {
+export function otherCodingAgents(backends: AcpBackendProbe[]): AcpBackendProbe[] {
   return backends.filter(
     b => b.independent_setup === true && b.selectable !== false,
   )
 }
 
-/**
- * The platform label when the gateway named one this screen can NAME, else ''.
- *
- * The gateway reports one of these three for a host it recognises, and something
- * else when it does not or will not say: `"gateway"` for a non-owner, `"Unknown"`
- * for an OS it has no label for, or the raw `sys.platform` value. Anything
- * outside the set renders as no platform, so the intro never reads "Unknown
- * gateway host" while the Kiro card, one screen region below, admits it does not
- * know the OS. Written as comparisons rather than a lookup table: these are the
- * gateway's wire labels, and the i18n gate reads a string table as copy.
- */
-export function knownPlatform(platform: string | undefined): string {
-  return platform === 'Windows' || platform === 'macOS' || platform === 'Linux' ? platform : ''
-}
 
-/**
- * The install command for Kiro CLI, for the gateway's platform.
- *
- * Kiro Crew still does not RUN it: the command is shown for the user to paste on
- * the gateway host, and Kiro's own setup page stays one click away for every
- * other install route (RPM, AppImage, musl). The commands are `<code>` children,
- * never catalog values — a translated command cannot be typed.
- */
-function KiroInstallCommands({ platform, unzipMissing }: { platform: string; unzipMissing: boolean }) {
-  const windows = platform === 'Windows'
-  const unix = platform === 'macOS' || platform === 'Linux'
-  const known = knownPlatform(platform) !== ''
-  // The prerequisite and the installer read as two ordered steps: "First, install
-  // unzip", then this line.
-  const unzipFirst = platform === 'Linux' && unzipMissing
-  return (
-    <div className="space-y-3">
-      {unzipFirst && <KiroUnzipPrerequisite />}
-      <p className="text-[13px] leading-relaxed text-text">
-        {unzipFirst
-          ? i18nT('components.kiroPrerequisiteGate.install_kiro_cli_then_run_on_host', { platform })
-          : known
-          ? i18nT('components.kiroPrerequisiteGate.install_kiro_cli_run_on_host', { platform })
-          : i18nT('components.kiroPrerequisiteGate.install_kiro_cli_run_for_platform')}
-      </p>
-      {!windows && (
-        <div>
-          {!known && (
-            <p className="text-[12px] font-medium text-muted">
-              {i18nT('components.kiroPrerequisiteGate.install_command_macos_linux')}
-            </p>
-          )}
-          <CopyCommand>
-            <code>curl -fsSL https://cli.kiro.dev/install | bash</code>
-          </CopyCommand>
-        </div>
-      )}
-      {!unix && (
-        <div>
-          <p className="text-[12px] font-medium text-muted">
-            {i18nT('components.kiroPrerequisiteGate.install_command_windows')}
-          </p>
-          <CopyCommand>
-            <code>irm &apos;https://cli.kiro.dev/install.ps1&apos; | iex</code>
-          </CopyCommand>
-        </div>
-      )}
-    </div>
-  )
-}
 
 /**
  * "Use other coding agents": a collapsed alternative to Kiro CLI, modelled on
@@ -1348,7 +1285,12 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   const app = (extra?: ReactNode, unresolved = false) => {
     if (!statusQuery.isPending) appShown.current = true
     return (
-      <FirstRunSignInHold hold={signInHold} resolved={!statusQuery.isPending && !unresolved}>
+      <FirstRunSignInHold
+        hold={signInHold}
+        status={statusQuery.data}
+        resolved={!statusQuery.isPending && !unresolved}
+        undecided={(statusQuery.isPending || unresolved) && !rememberedSetupComplete()}
+      >
         {children}{extra}
       </FirstRunSignInHold>
     )

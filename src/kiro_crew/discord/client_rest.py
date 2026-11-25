@@ -505,11 +505,7 @@ async def _api_request(
     that waits nothing is unaffected: the caller's own pre-send check is still
     the most recent reading when no time has passed.
     """
-    if self._closed and (self._session is None or self._session.closed):
-        return _failed(DISCORD_TRANSIENT, detail="client closed")
-    session = await self._ensure_session()
     url = _API_BASE + path
-    auth = {"Authorization": f"Bot {self._token}"}
     route = _route_key(method, path)
     exempt = _is_global_limit_exempt(path)
     # ``recheck_destination=False`` is for ONE kind of caller: an admission
@@ -546,6 +542,14 @@ async def _api_request(
                 if not permission.permitted:
                     return _failed(DISCORD_BLOCKED, detail=permission.detail)
         served_backoff = False
+        # The session and the token are read per attempt, after every wait
+        # above: an in-place reconnect can swap the bot token, and ``close()``
+        # can end the session, while this request waits out a rate limit or a
+        # backoff.
+        if self._closed and (self._session is None or self._session.closed):
+            return _failed(DISCORD_TRANSIENT, detail="client closed")
+        session = await self._ensure_session()
+        auth = {"Authorization": f"Bot {self._token}"}
         try:
             async with session.request(
                 method,

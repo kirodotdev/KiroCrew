@@ -193,8 +193,8 @@ class PlanHost:
     voice_runtime_parents: tuple[str, ...] = ()
     #: Every rename-sensitive ancestor of those parents.
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
-    #: kiro-cli's own trusted files, sealed read-only: the resolved agents tree and its
-    #: user MCP registry (``settings/mcp.json``, both spellings).
+    #: kiro-cli's own trusted files, sealed read-only: the agents tree, its user MCP
+    #: registry (``settings/mcp.json``) and every installed app's ``app.json``.
     kiro_agents_targets: tuple[str, ...] = ()
     #: The project MCP files of :attr:`SandboxRequest.project_folder`, sealed
     #: read-only. Two FILES in the person's own folder, so unlike the other seals they
@@ -220,7 +220,8 @@ class PlanHost:
     caller_ancestor_guards: tuple[str, ...] = ()
     #: Namespace only: the ``apps/<app>`` folder of each app that declares a credential
     #: mask, taken out of :attr:`readonly_ancestor_guards` and pinned AFTER the masks,
-    #: so the masks and ``data/``'s pin stay on the mount an update's rename keeps.
+    #: so the masks and ``data/``'s pin stay on the mount the rename keeps when a keep-data
+    #: uninstall or an install over kept data replaces that folder.
     mask_parent_pins: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()

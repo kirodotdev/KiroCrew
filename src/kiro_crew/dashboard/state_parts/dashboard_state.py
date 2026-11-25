@@ -510,6 +510,14 @@ class DashboardState:
         # Short reason when the Discord channel failed to start, empty when
         # running or never attempted. Read by the settings badge.
         self.discord_connect_error: str = ""
+        # What the last in-place Discord reconnect could not apply (a rejected
+        # token, refused intents), empty otherwise. Set by
+        # ``discord.gateway.reconnect_discord``; read by the settings save.
+        self.discord_reconnect_error: str = ""
+        # Brings the live Discord client in line with a settings save
+        # (``discord.gateway.reconcile_after_save``). Set by maybe_start_discord;
+        # None until Discord started.
+        self.discord_reconcile: Callable[[], Awaitable[None]] | None = None
         # True once the Telegram channel's long-polling transport started this
         # session (set by maybe_start_telegram). Read by the Telegram settings
         # status badge.
@@ -932,6 +940,9 @@ class DashboardState:
         # must be held, and both must be detached in the reverse of the order
         # they were armed.
         self._secondary_listener_guard: "ListenerGuard | None" = None
+        # One guard per entry-port listener on Windows, in the order they were
+        # armed (server._arm_entry_listener_guards); empty elsewhere.
+        self._entry_listener_guards: "list[ListenerGuard]" = []
         # Which listener sidecar each guarded listener owns, keyed "primary" /
         # "secondary", as (port, address, secret). Written after publication and
         # read by the guards' lifecycle hooks, which withdraw the claim while the

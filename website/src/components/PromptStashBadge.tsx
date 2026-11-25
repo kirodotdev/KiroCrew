@@ -32,7 +32,7 @@ export function PromptStashMenuItems({
 }: {
   stash: Pick<PromptStashState, 'canStash' | 'canRestore' | 'count' | 'stashDisabledReason' | 'stash' | 'restoreLatest' | 'canDiscard' | 'discardLatest'>
   chordLabel: string
-  /** Use descriptions that name this menu rather than a hardware chord. */
+  /** A touch screen: no shortcut tooltips. */
   touch?: boolean
   /** Close the menu after a pick. The dropdown host closes itself on select,
    *  so it may pass a no-op. */
@@ -42,78 +42,67 @@ export function PromptStashMenuItems({
   divider?: boolean
 }) {
   const wrap = `${divider ? 'mt-2 pt-2 border-t border-border ' : ''}flex flex-col gap-0.5`
-  const stashDescription = stash.canStash
-    ? i18nT(touch ? 'components.promptStash.menu_stash_desc_touch' : 'components.promptStash.menu_stash_desc', { chord: chordLabel })
-    : stash.stashDisabledReason === 'full'
-      ? i18nT('components.promptStash.notice_full', { max: PROMPT_STASH_MAX })
-      : stash.stashDisabledReason === 'attachments'
-        ? i18nT('components.promptStash.notice_attachments')
-        : stash.stashDisabledReason === 'empty'
-          ? i18nT('components.promptStash.menu_stash_empty')
-          : i18nT(touch ? 'components.promptStash.menu_stash_desc_touch' : 'components.promptStash.menu_stash_desc', { chord: chordLabel })
-  const stashBody = (
+  // One line per row. A second line appears only for a reason the row cannot
+  // show by itself (the stash is full, attachments, a draft in the way); what
+  // an enabled row does and its shortcut sit in its tooltip on a pointer device.
+  const stashNote = stash.stashDisabledReason === 'full'
+    ? i18nT('components.promptStash.notice_full', { max: PROMPT_STASH_MAX })
+    : stash.stashDisabledReason === 'attachments'
+      ? i18nT('components.promptStash.notice_attachments')
+      : null
+  const restoreNote = stash.canRestore || stash.count === 0
+    ? null
+    : stash.stashDisabledReason === 'attachments'
+      ? i18nT('components.promptStash.notice_attachments')
+      : i18nT('components.promptStash.menu_restore_has_draft')
+  const stashTitle = touch || !stash.canStash ? undefined : i18nT('components.promptStash.menu_stash_desc', { chord: chordLabel })
+  const restoreTitle = touch || !stash.canRestore ? undefined : i18nT('components.promptStash.menu_restore_desc', { count: stash.count, chord: chordLabel })
+  const discardTitle = touch || !stash.canDiscard ? undefined : i18nT('components.promptStash.menu_discard_desc')
+  const rowBody = (Icon: typeof Archive, label: string, note: string | null) => (
     <>
-      <Archive size={14} className="w-4 shrink-0 text-muted lucide-inline group-disabled:opacity-40 group-data-[disabled]:opacity-40" />
+      <Icon size={14} className="w-4 shrink-0 text-muted lucide-inline group-disabled:opacity-40 group-data-[disabled]:opacity-40" />
       <div className="min-w-0">
-        <div className="text-[12px] font-medium text-text group-disabled:opacity-40 group-data-[disabled]:opacity-40">{i18nT('components.promptStash.menu_stash')}</div>
-        <div className="text-[11px] text-muted leading-snug">{stashDescription}</div>
+        <div className="text-[12px] font-medium text-text group-disabled:opacity-40 group-data-[disabled]:opacity-40">{label}</div>
+        {note && <div className="text-[11px] text-muted leading-snug">{note}</div>}
       </div>
     </>
   )
-  const restoreBody = (
-    <>
-      <ArchiveRestore size={14} className="w-4 shrink-0 text-muted lucide-inline group-disabled:opacity-40 group-data-[disabled]:opacity-40" />
-      <div className="min-w-0">
-        <div className="text-[12px] font-medium text-text group-disabled:opacity-40 group-data-[disabled]:opacity-40">{i18nT('components.promptStash.menu_restore')}</div>
-        <div className="text-[11px] text-muted leading-snug">
-          {!stash.canRestore && stash.count > 0 && stash.stashDisabledReason === 'attachments'
-            ? i18nT('components.promptStash.notice_attachments')
-            : !stash.canRestore && stash.count > 0
-              ? i18nT('components.promptStash.menu_restore_has_draft')
-              : stash.count > 0
-                ? i18nT(touch ? 'components.promptStash.menu_restore_desc_touch' : 'components.promptStash.menu_restore_desc', { count: stash.count, chord: chordLabel })
-                : i18nT('components.promptStash.menu_restore_none')}
-        </div>
-      </div>
-    </>
-  )
+  const stashBody = rowBody(Archive, i18nT('components.promptStash.menu_stash'), stashNote)
+  const restoreBody = rowBody(ArchiveRestore, i18nT('components.promptStash.menu_restore'), restoreNote)
   // The way out of a stash the user no longer wants: drops one draft (the
   // restored one while it is unchanged in the input, else the latest), and the
   // status line offers Undo, so a stray pick costs nothing.
-  const discardBody = (
-    <>
-      <Trash2 size={14} className="w-4 shrink-0 text-muted lucide-inline group-disabled:opacity-40 group-data-[disabled]:opacity-40" />
-      <div className="min-w-0">
-        <div className="text-[12px] font-medium text-text group-disabled:opacity-40 group-data-[disabled]:opacity-40">{i18nT('components.promptStash.menu_discard')}</div>
-        <div className="text-[11px] text-muted leading-snug">
-          {stash.canDiscard
-            ? i18nT('components.promptStash.menu_discard_desc')
-            : i18nT('components.promptStash.menu_restore_none')}
-        </div>
-      </div>
-    </>
-  )
+  const discardBody = rowBody(Trash2, i18nT('components.promptStash.menu_discard'), null)
+  // Restore and Discard only once something is stashed: with an empty stash
+  // they can do nothing, and two greyed rows made the menu long for no reason.
+  // Discard also covers a restored draft still unchanged in the input.
+  const showRestore = stash.count > 0
+  const showDiscard = stash.count > 0 || stash.canDiscard
   if (host === 'dropdown') {
     return (
       <div className={wrap} data-testid="prompt-stash-menu">
         <DropdownMenuItem asChild disabled={!stash.canStash} onSelect={() => { onPicked(); stash.stash() }}>
           {/* The row's look sits on the child, not on the primitive. */}
-          <button type="button" data-testid="prompt-stash-menu-stash" className={DROPDOWN_ROW}>
+          <button type="button" data-testid="prompt-stash-menu-stash" title={stashTitle} className={DROPDOWN_ROW}>
             {stashBody}
           </button>
         </DropdownMenuItem>
-        <DropdownMenuItem asChild disabled={!stash.canRestore} onSelect={() => { onPicked(); stash.restoreLatest() }}>
-          {/* The row's look sits on the child, not on the primitive. */}
-          <button type="button" data-testid="prompt-stash-menu-restore" className={DROPDOWN_ROW}>
-            {restoreBody}
-          </button>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild disabled={!stash.canDiscard} onSelect={() => { onPicked(); stash.discardLatest() }}>
-          {/* The row's look sits on the child, not on the primitive. */}
-          <button type="button" data-testid="prompt-stash-menu-discard" className={DROPDOWN_ROW}>
-            {discardBody}
-          </button>
-        </DropdownMenuItem>
+        {showRestore && (
+          <DropdownMenuItem asChild disabled={!stash.canRestore} onSelect={() => { onPicked(); stash.restoreLatest() }}>
+            {/* The row's look sits on the child, not on the primitive. */}
+            <button type="button" data-testid="prompt-stash-menu-restore" title={restoreTitle} className={DROPDOWN_ROW}>
+              {restoreBody}
+            </button>
+          </DropdownMenuItem>
+        )}
+        {showDiscard && (
+          <DropdownMenuItem asChild disabled={!stash.canDiscard} onSelect={() => { onPicked(); stash.discardLatest() }}>
+            {/* The row's look sits on the child, not on the primitive. */}
+            <button type="button" data-testid="prompt-stash-menu-discard" title={discardTitle} className={DROPDOWN_ROW}>
+              {discardBody}
+            </button>
+          </DropdownMenuItem>
+        )}
       </div>
     )
   }
@@ -121,33 +110,35 @@ export function PromptStashMenuItems({
     <div className={wrap} data-testid="prompt-stash-menu">
       <button
         type="button"
-        data-testid="prompt-stash-menu-stash"
+        data-testid="prompt-stash-menu-stash" title={stashTitle}
         disabled={!stash.canStash}
         onClick={() => { onPicked(); stash.stash() }}
-       
         className={MENU_ROW}
       >
         {stashBody}
       </button>
-      <button
-        type="button"
-        data-testid="prompt-stash-menu-restore"
-        disabled={!stash.canRestore}
-        onClick={() => { onPicked(); stash.restoreLatest() }}
-       
-        className={MENU_ROW}
-      >
-        {restoreBody}
-      </button>
-      <button
-        type="button"
-        data-testid="prompt-stash-menu-discard"
-        disabled={!stash.canDiscard}
-        onClick={() => { onPicked(); stash.discardLatest() }}
-        className={MENU_ROW}
-      >
-        {discardBody}
-      </button>
+      {showRestore && (
+        <button
+          type="button"
+          data-testid="prompt-stash-menu-restore" title={restoreTitle}
+          disabled={!stash.canRestore}
+          onClick={() => { onPicked(); stash.restoreLatest() }}
+          className={MENU_ROW}
+        >
+          {restoreBody}
+        </button>
+      )}
+      {showDiscard && (
+        <button
+          type="button"
+          data-testid="prompt-stash-menu-discard" title={discardTitle}
+          disabled={!stash.canDiscard}
+          onClick={() => { onPicked(); stash.discardLatest() }}
+          className={MENU_ROW}
+        >
+          {discardBody}
+        </button>
+      )}
     </div>
   )
 }

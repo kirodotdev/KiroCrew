@@ -213,7 +213,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Per-role models",
-      "help": "Optional per-task-class model overrides. Keys: 'background' (lite / heartbeat background workers), 'subagent' (spawned sub-agents), 'subagent_light' (sub-agents a spawn marks light, while Light Sub-agent Tier is on) and 'optimizer' (Optimize prompt, which runs on the 'background' model while this is unset). An empty value or 'auto' defers to the chat default (agent.model) and then to the provider default, so an unpinned role stays usable on every subscription tier. Pin a cheaper model here to run background / sub-agent work on it without changing the interactive chat default. A 'subagent' pin runs each spawned sub-agent in its own runtime (its own agent process and MCP servers, about 0.55 GB of memory each) where it could otherwise share the parent chat's.",
+      "help": "Optional per-task-class model overrides. Keys: 'background' (lite / heartbeat background workers), 'subagent' (spawned sub-agents), 'subagent_light' (sub-agents a spawn marks light, while Light Sub-agent Tier is on) and 'optimizer' (Optimize prompt, which runs on the 'background' model while this is unset). An empty value or 'auto' defers to the chat default (agent.model) and then to the provider default, so an unpinned role stays usable on every subscription tier. Pin a cheaper model here to run background / sub-agent work on it without changing the interactive chat default. A 'subagent' pin still shares the parent chat's runtime where its backend sets a model per session (kiro-cli and codex) and no reasoning effort applies; elsewhere it runs each spawned sub-agent in its own runtime (its own agent process and MCP servers, about 0.55 GB of memory each).",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -241,7 +241,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Per-role reasoning effort",
-      "help": "Optional per-task-class reasoning effort, paired with role_models (keys: 'background', 'subagent', 'subagent_light', 'optimizer'). Empty for a role inherits the chat default (agent.reasoning_effort) and then the provider/model default; an empty 'optimizer' runs Optimize prompt at the 'background' effort. Only applies on reasoning-capable models. Like a model pin, a 'subagent' effort runs each spawned sub-agent in its own runtime (about 0.55 GB of memory each) where it could otherwise share the parent chat's.",
+      "help": "Optional per-task-class reasoning effort, paired with role_models (keys: 'background', 'subagent', 'subagent_light', 'optimizer'). Empty for a role inherits the chat default (agent.reasoning_effort) and then the provider/model default; an empty 'optimizer' runs Optimize prompt at the 'background' effort. Only applies on reasoning-capable models. A 'subagent' effort runs each spawned sub-agent in its own runtime (about 0.55 GB of memory each) where it could otherwise share the parent chat's.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -2216,7 +2216,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Light Sub-agent Tier",
-      "help": "Let a spawn mark a helper sub-agent (search, lookup, run-and-report, summarize) as light. A light spawn runs on the model in agent.role_models.subagent_light and the effort in agent.role_efforts.subagent_light for whichever of the two its call left unset; a model or effort the call names always wins. A spawn that names an agent, a crew or a backend is not changed. A pinned model or effort starts the sub-agent in its own process, as any per-spawn pin does. Off by default: with it off every spawn picks the model and effort it always has.",
+      "help": "Let a spawn mark a helper sub-agent (search, lookup, run-and-report, summarize) as light. A light spawn runs on the model in agent.role_models.subagent_light and the effort in agent.role_efforts.subagent_light for whichever of the two its call left unset; a model or effort the call names always wins. A spawn that names an agent, a crew or a backend is not changed. A pinned model or effort decides whether the sub-agent shares its parent's process the way any per-spawn pin does. Off by default: with it off every spawn picks the model and effort it always has.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10039,6 +10039,7 @@
         "soft_threshold_pct": 80,
         "reactions_enabled": true,
         "show_thinking": false,
+        "show_timing_footer": true,
         "session_folder": ""
       }
     },
@@ -10227,6 +10228,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "discord.show_timing_footer",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Show Timing Footer",
+      "help": "Post the \"Finished in … · ctx …%\" line under each reply. Turn it off for a cleaner chat; choice buttons still post.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "discord.session_folder",
@@ -10962,6 +10979,7 @@
         "language": "",
         "recent_tint_count": 0,
         "show_unread_dot": true,
+        "expand_linked_items": false,
         "command_bar_enabled": true,
         "channels_enabled": false,
         "folder_sort": "custom",
@@ -11024,7 +11042,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Entry Port",
-      "help": "Off at 0. From 1024 to 65535: also listen at this port on both loopback addresses (127.0.0.1 and ::1; the bind address is not configurable), for a reverse proxy on this computer that forwards callers on other machines. The port serves the Crew API only, reads no cookie, never treats a request as a direct local request (it always counts as forwarded by the proxy) and refuses Owner routes. The proxy must send a Host naming 127.0.0.1, [::1] or localhost; a request to a Crew API route with any other Host is refused with 400. A computer with no IPv6 loopback serves 127.0.0.1 alone. Linux and macOS only for now: on Windows a non-zero value stops the start of the regular or headless kirocrew gateway. An integer that is neither 0 nor 1024 to 65535, or that equals the gateway's own port or dashboard.shared_crew.ssm_port while the SSM listener is on, stops that start too (EntryPortError), as does a port that cannot be bound. The API-only server (--slack-only) does not check the value: it logs a warning and starts. Shared config validation replaces wrong-typed values (8443.5, \"abc\", true, null) with 0, so the entry port stays off, and logs Config: type mismatch at 'dashboard.entry_port': ...; using default. Legacy numeric handling coerces \"8443\" and 8443.0 to integer 8443, so the port opens if it can be bound.",
+      "help": "Off at 0. From 1024 to 65535: also listen at this port on both loopback addresses (127.0.0.1 and ::1; the bind address is not configurable), for a reverse proxy on this computer that forwards callers on other machines. The port serves the Crew API only, reads no cookie, never treats a request as a direct local request (it always counts as forwarded by the proxy) and refuses Owner routes. The proxy must send a Host naming 127.0.0.1, [::1] or localhost; a request to a Crew API route with any other Host is refused with 400. A computer with no IPv6 loopback serves 127.0.0.1 alone. An integer that is neither 0 nor 1024 to 65535, or that equals the gateway's own port or dashboard.shared_crew.ssm_port while the SSM listener is on, stops the start of the regular or headless kirocrew gateway (EntryPortError), as does a port that cannot be bound. The API-only server (--slack-only) does not check the value: it logs a warning and starts. Shared config validation replaces wrong-typed values (8443.5, \"abc\", true, null) with 0, so the entry port stays off, and logs Config: type mismatch at 'dashboard.entry_port': ...; using default. Legacy numeric handling coerces \"8443\" and 8443.0 to integer 8443, so the port opens if it can be bound.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0,
@@ -12698,6 +12716,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.expand_linked_items",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show Linked Items Expanded",
+      "help": "Start each session card with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.command_bar_enabled",

@@ -10,9 +10,15 @@ The stock KAS bundle needs glibc 2.27+ in two places: Node 22 and `libonnxruntim
 | Node patch release (new `-node<N>` in the pin) | rebuild | keep | publish |
 | KAS moves to another `onnxruntime-node` version | keep | rebuild (bump `ORT_VERSION` and its pins) | publish |
 | Node major (22 leaves maintenance 2027-04-30) | rebuild | rebuild (new Node-API headers) | publish |
-| linux-arm64 | separate builds | separate builds | not done yet; arm64 stays at glibc 2.28 |
+| Every row above | once per architecture (`--arch x64`, `--arch arm64`) | once per architecture | publish with every architecture's pieces |
 
-## Node (linux-x64)
+## Architectures
+
+Both scripts take `--arch x64` (the default) or `--arch arm64` on `build` and `verify`. The container runs as that architecture (`docker run --platform`), so run each build on a host of that architecture: an x64 host for x64, an arm64 (Graviton) host for arm64. Elsewhere it runs under emulation, if at all. The pinned `amazonlinux:2` and `amazonlinux:2023` digests are multi-architecture indexes, so the same pins serve both. Every output name carries the architecture (`node-v<N>-linux-<arch>.tar.xz`, `onnxruntime-node-1.21.0-al2-<arch>.tar.xz`). On arm64 the x64-only assembler probes (`vpcompressb`, `vpdpbusds`) are skipped, and CMake is fetched as Kitware's `linux-aarch64` build. The default `--work` and `--out` end in `-<arch>`; give each architecture its own `--work` when you pass one, because the cached toolchain is native binaries.
+
+The stock linux-arm64 engine has the same two blockers as linux-x64: the nodejs.org Node needs glibc 2.28, and `libonnxruntime.so.1` needs 2.27 (for `expf`, `powf` and `logf`). Its `onnxruntime_binding.node` (glibc 2.17, `GLIBCXX_3.4.21`) and the static `rg` already load on AL2.
+
+## Node
 
 `build-node.sh` builds the Node the pin names (the `-node<N>` part of `KAS_PIN_VERSION` in `src/kiro_crew/acp/kas_pin.py`) inside a pinned `amazonlinux:2` container. It uses AL2's `gcc10` package (GCC 10.5 with binutils 2.35, which assembles simdutf's AVX-512 `vpcompressb`; AL2's default binutils 2.29 does not) and `./configure --partly-static`, so `libstdc++` and `libgcc` are linked in statically. No version suffix is added: `node --version` prints exactly `v<N>`, which the installer requires.
 
@@ -25,7 +31,7 @@ The source is trusted through nodejs.org's `SHASUMS256.txt`. Its detached signat
 
 `build` writes `node-v<N>-linux-x64.tar.xz` (laid out like nodejs.org's tarball, ready for `--node-linux-x64`) plus `.sha256`, `glibc-check.txt`, `provenance.txt` and `build.log`. It fails if `bin/node` needs glibc above 2.26, has a `GLIBCXX_`/`CXXABI_` symbol, links `libstdc++`/`libgcc_s`, or prints another version. `verify` runs `env -i node --version` on `amazonlinux:2` and `amazonlinux:2023`. For the onnxruntime checks with this Node, pass its `bin/node` to `build-onnxruntime.sh verify --al2-node`.
 
-## onnxruntime (linux-x64)
+## onnxruntime
 
 `build-onnxruntime.sh` builds onnxruntime 1.21.0 (CPU execution provider only) and its Node-API binding inside a pinned `amazonlinux:2` container. It links the C++ runtime statically (`-static-libstdc++ -static-libgcc`), so neither file needs `libstdc++` or `libgcc_s`, and the highest glibc symbol is at most 2.26.
 
@@ -37,7 +43,7 @@ packaging/kas-al2/build-onnxruntime.sh verify --out /path/to/out --bundle-x64 /p
 
 `build` needs only docker on the host (root is used inside the container only). Most of a first run is building GCC; the toolchain is cached in `--work` for reruns. Files the container creates are handed back to the host user when it exits; if a run is killed hard, remove `--work` with `docker run --rm -v <work>:/w amazonlinux:2 rm -rf /w/*`. It writes `onnxruntime-node-1.21.0-al2-x64.tar.xz` plus `.sha256`, `glibc-check.txt`, `provenance.txt` and `build.log` to `--out`, and fails if a file needs glibc above 2.26, has a `GLIBCXX_`/`CXXABI_` symbol, or links `libstdc++`/`libgcc_s`.
 
-The tarball is a drop-in for `node_modules/onnxruntime-node/bin/napi-v3/linux/x64/`. It holds `libonnxruntime.so.1`, the `libonnxruntime.so.1.21.0` symlink and `onnxruntime_binding.node`, the same names the bundle ships. The binding finds the library through its `$ORIGIN` rpath, so keep them side by side. `libonnxruntime_providers_shared.so` is not rebuilt: the stock one needs only glibc 2.2.5.
+The tarball is a drop-in for `node_modules/onnxruntime-node/bin/napi-v3/linux/<arch>/`. It holds `libonnxruntime.so.1`, the `libonnxruntime.so.1.21.0` symlink and `onnxruntime_binding.node`, the same names the bundle ships. The binding finds the library through its `$ORIGIN` rpath, so keep them side by side. `libonnxruntime_providers_shared.so` is not rebuilt: the stock one needs only glibc 2.2.5.
 
 `verify` overlays the tarball on a copy of the bundle's `onnxruntime-node`, then in `env -i` containers: loads the binding with the AL2 Node (`--al2-node`, the one `build-node.sh` makes) on `amazonlinux:2`, checks the bundle's stock Node still fails there, and runs one inference (`onnxruntime/test/testdata/mul_1.onnx`) with the AL2 Node on `amazonlinux:2` and `amazonlinux:2023`, and with the stock Node on `amazonlinux:2023`.
 
@@ -50,17 +56,19 @@ How inputs are trusted:
 
 ## Publishing an AL2 release
 
-`scripts/kas_bundle_publish.py` takes the two linux-x64 pieces, each with the sha256 you expect:
+`scripts/kas_bundle_publish.py` takes each architecture's two pieces, each with the sha256 you expect:
 
 ```bash
 python3 scripts/kas_bundle_publish.py --kas-dir <KAS build drop> --version 0.66.117-node22.23.4-al2 \
   --node-version 22.23.4 --out ./publish \
   --node-linux-x64 node-v22.23.4-linux-x64.tar.xz --node-linux-x64-sha256 <hex> \
-  --onnx-overlay-linux-x64 onnxruntime-node-1.21.0-al2-x64.tar.xz --onnx-overlay-sha256 <hex>
+  --onnx-overlay-linux-x64 onnxruntime-node-1.21.0-al2-x64.tar.xz --onnx-overlay-sha256 <hex> \
+  --node-linux-arm64 node-v22.23.4-linux-arm64.tar.xz --node-linux-arm64-sha256 <hex> \
+  --onnx-overlay-linux-arm64 onnxruntime-node-1.21.0-al2-arm64.tar.xz --onnx-overlay-linux-arm64-sha256 <hex>
 ```
 
-- `--node-linux-x64` must be laid out like nodejs.org's tarball (`node-v<N>-linux-x64/bin/node`) and print exactly `v<N>`; run the publish on a linux-x64 host so that can be checked. Every other Node key still comes from nodejs.org.
-- `--onnx-overlay-linux-x64` re-packs only the linux-x64 engine tarball. Every other platform's tar bytes stay the KAS build's.
+- `--node-linux-<arch>` must be laid out like nodejs.org's tarball (`node-v<N>-linux-<arch>/bin/node`) and print exactly `v<N>`, which is checked by running it on the publishing host; its ELF header must name that architecture first, since emulation runs either one. That host must run both architectures' binaries when both are given: one architecture natively, the other through binfmt emulation (for example `qemu-user-static`). Every other Node key still comes from nodejs.org.
+- `--onnx-overlay-linux-<arch>` re-packs only that architecture's engine tarball. Every other platform's tar bytes stay the KAS build's.
 - `provenance.json` beside `manifest.json` records where each piece came from.
 - Name it `<KAS_PIN_VERSION>-al2`; a published version is never overwritten.
 
@@ -68,10 +76,11 @@ python3 scripts/kas_bundle_publish.py --kas-dir <KAS build drop> --version 0.66.
 
 | Host | Pin | glibc floor |
 |---|---|---|
-| linux-x64, glibc below 2.28 | `KAS_PIN_AL2_VERSION` (`<KAS_PIN_VERSION>-al2`) | 2.26 |
-| linux-x64, glibc 2.28+ or unreadable | `KAS_PIN_VERSION` | 2.28 |
-| linux-arm64 | `KAS_PIN_VERSION` | 2.28 |
+| Linux, glibc below 2.28, Node key the AL2 pin lists below 2.28 | `KAS_PIN_AL2_VERSION` (`<KAS_PIN_VERSION>-al2`) | 2.26 |
+| Linux, any other key, or glibc 2.28+ or unreadable | `KAS_PIN_VERSION` | 2.28 |
 | macOS, Windows | `KAS_PIN_VERSION` | none |
+
+`KAS_PIN_GLIBC_FLOORS[KAS_PIN_AL2_VERSION]` is the list of architectures the AL2 pin carries AL2 builds for; today that is `linux-x64`. An architecture joins by pinning an AL2 release that carries its builds and adding its key at `(2, 26)` in the same commit.
 
 Both pins are the same engine release, so every engine version check reads one value (`KAS_PIN_ENGINE_RELEASE`). The choice is made again on every install check: a host that moves to glibc 2.28+ installs the normal pin next time. `--unpinned`, `--from` with another version and `KIROCREW_KAS_VERSION` are held to 2.28.
 

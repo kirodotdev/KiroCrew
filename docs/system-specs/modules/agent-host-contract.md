@@ -122,8 +122,13 @@ declared-name resolver (`agent_discovery.declared_spec_claim`, `agent.session_ag
 for a reader that needs a path, `agent_spec_pins.pick_spec_row` for first-match model and
 flag lookups): with no pin, differing claimants are refused with the pin command for each
 file; a pin naming none of them is refused and never falls back; identical claimants
-still pass; a pin on a name with one claimant is ignored. KAS takes the pinned file's
-projection over the wire. kiro-cli resolves a name it is handed itself, so for a contested
+still pass; a pin on a name with one claimant picks no file, but waives the held-file check
+that follows. The start check of a host that does not resolve the spec itself
+(`acp/session_mcp_spec_check.refuse_contested_agent_spec`) also refuses a start when, on
+Windows, a spec file stays held open past the read retry while a readable spec declares the
+name and no pin names it, since the held file may be a second claimant a later read sees:
+the error names each held file and the pin commands, and shows no chooser card. KAS takes
+the pinned file's projection over the wire. kiro-cli resolves a name it is handed itself, so for a contested
 name it is handed only a skill view built from the pinned file (`acp/skill_projection`);
 handing it the authored name of a contested agent is refused
 (`fork_refresh.require_launch_resolves_one_file`, run inside the over-ceiling start
@@ -437,6 +442,19 @@ authentication failure on a Strands session names the Settings → Agent Harness
 Strands → Model provider card, which writes this map, as the remedy
 (`transport_errors._format_acp_error`) instead of the host-credential advice the other
 harnesses get. A Settings form that offers these providers writes exactly this map.
+Bedrock Mantle runs on the same two names. The pinned harness builds a
+`bedrock-mantle/` model whose SDK reads its region from `AWS_DEFAULT_REGION` only and
+always mints a SigV4 token, so under the sandbox it could use neither. The gate module
+replaces the harness's `bedrock-mantle` provider build with one that keeps the
+harness's model (reasoning effort, native web search, the web_fetch summarizer) and
+resolves each request's client arguments itself: the region in plain Bedrock's order
+(an explicit one, then boto3's, then `AWS_REGION`), checked with the SDK's
+`validate_region` before it goes into a URL, the SDK's own per-model base path, and
+`AWS_BEARER_TOKEN_BEDROCK` as the bearer key, with nothing minted. Without the key the
+SDK's own route runs. Nothing resolves at build time, because the read-back boot puts
+a canary under every mapped name. A Mantle request also needs the key's IAM identity
+to allow `bedrock-mantle:CallWithBearerToken`. An operator project that builds its own
+mantle model is not changed.
 The provider and model a session runs on are two plain settings beside it:
 `agent.strands_provider`, one of the prefixes in the table (default `bedrock`, the one
 list is `config/sections_agent_env.STRANDS_PROVIDER_CHOICES`), and

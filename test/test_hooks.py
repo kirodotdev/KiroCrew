@@ -637,6 +637,9 @@ class TestHookGateKwargs:
         "spec_granted_read_paths": "spec_granted_read_paths",
         "spec_parent_limits": "spec_parent_limits",
         "harness_builtin_tool": "harness_builtin_tool",
+        # Derived, not verbatim: ``proven_fetch_url`` reads this id together with
+        # ``raw_params_trusted`` and the ``url`` of ``raw_tool_params``.
+        "fetch_url": "harness_tool_id",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
     }
@@ -704,6 +707,7 @@ class TestHookGateKwargs:
             "spec_granted_read_paths": ("/w/docs/**",),
             "spec_parent_limits": (_parent_limits(),),
             "harness_builtin_tool": "web_fetch",
+            "fetch_url": "",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
         }
@@ -746,6 +750,7 @@ class TestHookGateKwargs:
             "spec_granted_read_paths": (),
             "spec_parent_limits": (),
             "harness_builtin_tool": "",
+            "fetch_url": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
         }
@@ -853,6 +858,10 @@ class TestHookGateKwargs:
         probe.spec_granted_paths = ("<spec_granted_paths>",)
         probe.spec_granted_read_paths = ("<spec_granted_read_paths>",)
         probe.spec_parent_limits = (_parent_limits(),)
+        # A proven fetch, so the one derived field is filled too.
+        probe.harness_tool_id = "claude#WebFetch"
+        probe.raw_params_trusted = True
+        probe.raw_tool_params = {"url": "https://example.com/<raw_tool_params>"}
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -896,6 +905,10 @@ class TestHookGateKwargs:
                 assert got[kwarg] == _denied_grant()
             elif kwarg == "spec_parent_limits":
                 assert got[kwarg] == (_parent_limits(),)
+            elif kwarg == "raw_params":
+                assert got[kwarg] is probe.raw_tool_params
+            elif kwarg == "fetch_url":
+                assert got[kwarg] == probe.raw_tool_params["url"]
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg
 

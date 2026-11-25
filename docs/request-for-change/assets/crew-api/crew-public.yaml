@@ -1074,7 +1074,9 @@ paths:
       x-crew-scope: any
       x-crew-phase: 1a
       x-crew-status: available
-      x-crew-available-to: owner
+      x-crew-available-to:
+      - owner
+      - app
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
@@ -1126,7 +1128,9 @@ paths:
       x-crew-scope: any
       x-crew-phase: 1a
       x-crew-status: available
-      x-crew-available-to: owner
+      x-crew-available-to:
+      - owner
+      - app
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers_system.py:228 (api_status)
       x-crew-coverage: done

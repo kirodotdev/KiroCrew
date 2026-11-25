@@ -1,5 +1,6 @@
 """Every Discord interaction: a button press (a tool approval, a session pick, a model
-pick, an ``[OPTIONS:]`` choice or a reply's Stop) and a registered slash command.
+pick, an ``[OPTIONS:]`` choice or a reply's Stop), a registered slash command, and the
+type-ahead on a slash command's option (``_on_autocomplete_interaction``).
 
 ``on_interaction`` authorizes, acknowledges and routes each press, and re-reads the
 governance ceiling and the rosters before anything but an explicit reject resolves;
@@ -22,10 +23,12 @@ Instance fields assigned, or whose mapping is changed: ``_model_pickers``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING
 
+from kiro_crew.agent_switch_command import pickable_agent_names
 from kiro_crew.discord.commands import build_help_text
 from kiro_crew.discord.renderer import (
     STOP_PREFIX,
@@ -34,8 +37,12 @@ from kiro_crew.discord.renderer import (
     full_choice_text,
     stop_turn_target,
 )
+from kiro_crew.discord.session_resume import SUGGESTION_KEY_PREFIX
 from kiro_crew.discord.transport_dispatch_commands import _REPLY_COMMANDS
-from kiro_crew.discord.transport_dispatch_model_picker import _MODEL_PICKER_TTL_SECS
+from kiro_crew.discord.transport_dispatch_model_picker import (
+    _MODEL_PICKER_TTL_SECS,
+    AUTO_MODEL_ARG,
+)
 from kiro_crew.messaging.dispatch import inbound_permitted
 from kiro_crew.messaging.identity import channel_inbound_permitted, channel_outbound_permitted
 from kiro_crew.messaging.transport import InboundMessage
@@ -69,22 +76,31 @@ _EPHEMERAL_FLAG = 1 << 6
 async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> None:
     """Route an interaction: a slash command, an approval, or a choice."""
     assert self.client is not None
+    authorized = self._authorized(itx.user_id)
+    if authorized and not itx.guild_id:
+        # A DM interaction names its peer, and every callback below answers
+        # that SAME channel without ever opening it, so this is where the
+        # pairing can be learned for the interaction direction. Recorded
+        # before any callback is issued, the type-ahead answer included,
+        # because the mid-send re-check runs inside the first one; and on the
+        # authorized path only, so a denied presser cannot plant a pairing.
+        # Mirrors transport.receive().
+        self.client.remember_dm_recipient(itx.channel_id, itx.user_id)
+    # Type-ahead next, ahead of every gate below: it has one valid answer
+    # (callback 8, within 3s), and the REST lookups, the governance read and the
+    # guild refusal message below could each break that. It runs its own gates,
+    # and answers a denied caller with an empty list rather than silence.
+    if itx.is_autocomplete:
+        await self._on_autocomplete_interaction(itx)
+        return
     # Auth first (deny-by-default short-circuit).
-    if not self._authorized(itx.user_id):
+    if not authorized:
         return
     thread_id = itx.channel_id if itx.guild_id else ""
     # The same actionable-interaction decision is re-used by the spawn
     # approval timeout path. If a condition here can drop every press, an
     # unpressed spawn wait must observe it before reporting a user denial.
     interaction_actionable = await self._interaction_actionable(itx.user_id, thread_id)
-    if not itx.guild_id:
-        # A DM interaction names its peer, and every callback below answers
-        # that SAME channel without ever opening it, so this is where the
-        # pairing can be learned for the interaction direction. Recorded
-        # before any callback is issued, because the mid-send re-check runs
-        # inside the first one; and on the authorized path only, so a denied
-        # presser cannot plant a pairing. Mirrors transport.receive().
-        self.client.remember_dm_recipient(itx.channel_id, itx.user_id)
     # Guild interactions are accepted only in an allow-listed channel that
     # Discord confirms is a thread. This mirrors transport.receive().
     if itx.guild_id and not interaction_actionable:
@@ -618,3 +634,133 @@ async def _on_command_interaction(self: DiscordDispatcher, itx: "DiscordInteract
             await self.handle_message(synthetic, reply=reply)
     finally:
         await finish()
+
+
+#: Discord's callback type for an autocomplete answer: the only response an
+#: autocomplete request accepts (no defer, no message).
+_CALLBACK_AUTOCOMPLETE_RESULT = 8
+#: Most choices one answer may carry, and the longest choice name or value.
+_AUTOCOMPLETE_MAX_CHOICES = 25
+_AUTOCOMPLETE_CHOICE_CHARS = 100
+#: Seconds the gates and the lookup may take before the answer goes out empty.
+#: Discord discards an answer that arrives more than 3s after the request; the
+#: rest of that window is left for the POST itself.
+_AUTOCOMPLETE_BUDGET_SECS = 2.0
+#: Commands whose suggestions are private conversation titles: offered to the
+#: owner, in a DM, and nowhere else (the same rule as their pickers).
+_PRIVATE_SUGGESTIONS = frozenset({"sessions", "bot"})
+
+
+def _autocomplete_choices(rows: "list[tuple[str, str]]", query: str) -> list[dict[str, str]]:
+    """``(name, value)`` *rows* containing *query* (case aside), as Discord choices.
+
+    An empty *query* keeps every row. At most 25 are kept, in the order given. A
+    name is shortened to Discord's 100 characters; a longer VALUE is dropped
+    instead, because a cut value names nothing the handler matches.
+    """
+    wanted = " ".join(query.split()).casefold()
+    choices: list[dict[str, str]] = []
+    for raw_name, value in rows:
+        name = " ".join(raw_name.split())[:_AUTOCOMPLETE_CHOICE_CHARS]
+        if not name or not value or len(value) > _AUTOCOMPLETE_CHOICE_CHARS:
+            continue
+        if wanted and wanted not in name.casefold() and wanted not in value.casefold():
+            continue
+        choices.append({"name": name, "value": value})
+        if len(choices) == _AUTOCOMPLETE_MAX_CHOICES:
+            break
+    return choices
+
+
+async def _on_autocomplete_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> None:
+    """Answer a slash option's type-ahead with matching choices, or with none.
+
+    Every refusal is an EMPTY answer, never a message and never a reason: a denied
+    user, a channel that is not an approved thread, a governance deny, a lookup
+    that fails or outlasts :data:`_AUTOCOMPLETE_BUDGET_SECS`, and ``/sessions`` or
+    ``/bot`` anywhere but the owner's DM. The gates are the slash command's own,
+    read without its REST admission lookup (a thread not yet on the roster gets
+    nothing until the command itself admits it), so the answer can meet Discord's
+    deadline. A suggestion only fills the option in: the command that runs is
+    gated again in full.
+    """
+    assert self.client is not None
+    # Typed, not narrowed: a closure does not keep an `assert`'s narrowing.
+    client: DiscordClient = self.client
+    command = itx.command_name
+    thread_id = itx.channel_id if itx.guild_id else ""
+
+    def admitted() -> bool:
+        # Local reads only, so it can be the last thing read before the answer.
+        if not self._authorized(itx.user_id):
+            return False
+        if command in _PRIVATE_SUGGESTIONS:
+            return not itx.guild_id and self._session_resume.is_owner(itx.user_id)
+        return not thread_id or thread_id in self._allowed_threads
+
+    async def lookup() -> list[dict[str, str]]:
+        if not admitted():
+            return []
+        if thread_id and not await client.is_thread_channel(thread_id):
+            return []
+        if not await channel_inbound_permitted("discord"):
+            logger.info("discord autocomplete emptied: denied by channels governance policy")
+            return []
+        query = itx.options.get(itx.focused_option, "")
+        if command in _PRIVATE_SUGGESTIONS:
+            found = await self._session_resume.suggestions(
+                command,
+                itx.user_id,
+                query,
+                native_key=self._session_key(itx.user_id),
+                limit=_AUTOCOMPLETE_MAX_CHOICES,
+            )
+            # Already matched by the picker's own search, which reads
+            # message content too, so no second filter on the title. The
+            # value is the key: the title shown may be shortened.
+            rows = [(c.title, f"{SUGGESTION_KEY_PREFIX}{c.key}") for c in found]
+            query = ""
+        elif command == "agent":
+            names = await asyncio.to_thread(pickable_agent_names)
+            rows = [("default", "default"), *((name, name) for name in names)]
+        elif command == "model":
+            listed = self._model_choices(
+                self._inbound_session_key(itx.user_id, itx.channel_id, thread_id)
+            )
+            # The Auto row alone means no list was advertised yet.
+            rows = [(label, mid or AUTO_MODEL_ARG) for mid, label in listed]
+            rows = rows if len(rows) > 1 else []
+        else:
+            return []
+        choices = _autocomplete_choices(rows, query)
+        # What follows is a write, so the egress ceiling is read as well, as the
+        # slash reply sink does before every reply.
+        if choices and not await channel_outbound_permitted("discord"):
+            logger.info("discord autocomplete emptied: denied by channels governance policy")
+            return []
+        return choices
+
+    try:
+        choices = await asyncio.wait_for(lookup(), _AUTOCOMPLETE_BUDGET_SECS)
+    except asyncio.TimeoutError:
+        logger.info("discord autocomplete for /%s emptied: lookup outlasted its budget", command)
+        choices = []
+    except Exception:
+        # A failed gate read or lookup is still an answer: empty, never Discord's
+        # own "loading options failed".
+        logger.warning("discord autocomplete for /%s failed", command, exc_info=True)
+        choices = []
+    # The rosters LAST, with no await between them and the write.
+    if choices and not admitted():
+        choices = []
+    # An empty answer names no destination, like the refusal notices above: it
+    # discloses nothing, and a re-check that refused it would turn "no matches"
+    # into Discord's own "loading options failed".
+    await client.api_json(
+        "POST",
+        f"/interactions/{itx.interaction_id}/{itx.interaction_token}/callback",
+        {"type": _CALLBACK_AUTOCOMPLETE_RESULT, "data": {"choices": choices}},
+        destination=itx.channel_id if choices else "",
+        # A REST ladder wait re-reads the caller as well, owner rule included.
+        caller_permitted=admitted if choices else None,
+    )

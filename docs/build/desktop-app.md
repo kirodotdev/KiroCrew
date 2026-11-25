@@ -2170,7 +2170,8 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   `app.exit` is the only exit. The feed lane holds quits for its gateway stop
   the same way. Pinned by `website/electron/test/update-second-quit-keeps-apply.test.js`.
 - **An apply the quit left behind is finished at the next app start.** If the
-  quit-time apply was interrupted or failed, the arm stays. The next start runs
+  quit-time apply was interrupted or failed, or a Windows session end left the
+  update unapplied, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
   the main window opens, clears the arm, and relaunches once into the new bundle.
   While the update command runs, the boot splash shows in its own window
@@ -2235,8 +2236,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   `test/managed-apply-log.test.js`.
 
 Windows shutdown, restart and sign-out end the app without a quit, so on Windows
-the app shows a "Kiro Crew update ready" notice at session end instead, telling
-the user to quit from the tray to install. It never runs `updateCommand` then:
+the app shows a "Kiro Crew update ready" notice at session end instead. For an
+armed update (Install, or an arm adopted from the dashboard), it says Kiro Crew
+tries to install it when it next starts (the start-time apply above), or that a
+tray quit installs it now; for a found update that was not armed, it tells the
+user to quit from the tray to install. It never runs `updateCommand` then:
 Windows gives the app a few seconds, and an apply cut short can leave a
 half-installed app. The notice appears only while a quit would apply an update,
 and not once an install has started.

@@ -436,18 +436,22 @@ async def test_an_unstamp_never_removes_a_newer_close_of_the_created_tab(tmp_pat
     later = ours + 5.0
     record = OwedUnstamp(NAME, key, ours, "our-close")
     # The created tab was legitimately closed AFTER our stamp would have landed.
-    log.update_metadata(key, {"closed": True, "closed_at": later, "closed_id": "their-close"})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": later, "closed_id": "their-close"}
+    )
     assert takeover_ordering.unstamp_superseded_marker(state, record) is True
     meta = log.get_metadata(key)
     assert meta.get("closed") is True and meta.get("closed_at") == later, "a newer close must stay"
     assert state._takeover_watches == {}
     # A stamp carrying no identity was not written by this path: kept, fail closed.
-    log.update_metadata(key, {"closed": True, "closed_at": ours})
+    await asyncio.to_thread(log.update_metadata, key, {"closed": True, "closed_at": ours})
     assert takeover_ordering.unstamp_superseded_marker(state, record) is True
     assert log.get_metadata(key).get("closed") is True, "an unidentified stamp is never ours"
     log.clear_closed(key)
     # Our own stamp, by contrast, comes off -- and a second un-stamp is a no-op.
-    log.update_metadata(key, {"closed": True, "closed_at": ours, "closed_id": "our-close"})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": ours, "closed_id": "our-close"}
+    )
     assert takeover_ordering.unstamp_superseded_marker(state, record) is True
     assert "closed" not in log.get_metadata(key)
     assert "closed_id" not in log.get_metadata(key)

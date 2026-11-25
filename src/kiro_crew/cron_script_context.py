@@ -248,9 +248,11 @@ class ScriptContext:
         turn when its current one ends, so read ``slot`` with ``.get()``. The
         message is redacted the way ``notify()`` redacts its text. When
         ``agent.session_control`` is false the gateway refuses with
-        ``session_control_disabled``, and this method raises RuntimeError
-        carrying that code. Raises RuntimeError if the gateway refuses or
-        cannot be reached.
+        ``session_control_disabled``, and a slot another creator made, the chat
+        that armed the job included, with ``not_creator``; this method raises
+        RuntimeError carrying that code. A *slot* name no session or transcript
+        uses yet opens a new session owned by this cron. Raises RuntimeError if
+        the gateway refuses or cannot be reached.
         """
         result = self._post("/api/chat?ws=1", {"slot": slot, "message": redact(message)})
         if not isinstance(result, dict) or "error" in result:
@@ -264,8 +266,9 @@ class ScriptContext:
         ``"trust_reads"`` (auto-approve read-only tools). Both are scoped to the
         one session named and leave the process-global override alone. The
         gateway refuses any other mode, ``yolo`` and ``normal`` included, with
-        ``mode_not_allowed``, a slot this cron did not open with ``not_creator``,
-        and the call itself with ``session_control_disabled`` while
+        ``mode_not_allowed``, a slot another creator made with ``not_creator``,
+        a name no live session uses with ``unknown slot``, and the call itself
+        with ``session_control_disabled`` while
         ``agent.session_control`` is false; it audits each call and each refusal.
         The mode is sent as given, so the gateway, not this method, is the one
         place that rule lives. Returns the gateway's receipt, ``{"ok": True,

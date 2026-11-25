@@ -556,6 +556,13 @@ class TestSapiEncodedCommand:
         script = self._decode(_sapi_encoded_command("o'ut.wav", "in.txt", "", 0))
         assert "'o''ut.wav'" in script
 
+    @pytest.mark.parametrize("quote", ["\u2018", "\u2019", "\u201a", "\u201b"])
+    def test_a_typographic_quote_in_a_path_is_doubled(self, quote: str) -> None:
+        """PowerShell also ends a single-quoted string on U+2018..U+201B, so a temp
+        folder named O\u2019Brien must not cut the script short."""
+        script = self._decode(_sapi_encoded_command(f"O{quote}Brien.wav", "in.txt", "", 0))
+        assert f"'O{quote * 2}Brien.wav'" in script
+
     def test_the_voice_name_is_read_from_a_file_never_the_script(self) -> None:
         """The configured voice must not reach argv, only its temp path.
 

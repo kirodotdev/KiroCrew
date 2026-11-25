@@ -23,7 +23,7 @@ platform could support it.
 | Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
 | Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-| Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
+| Approval prompt waits | 600s (config) | 600s (config) | 300s | 300s | 300s | — | — | — | 300s | — |
 | Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
@@ -115,9 +115,9 @@ Only six channels ask you at all. Slack, Discord, Telegram, Teams, Webex and
 WhatsApp install an approval decider, so a tool that needs permission produces a
 prompt and waits:
 
-- **Slack: `agent.tool_approval_timeout_secs`** (default 600 seconds), read
-  through the same resolver the dashboard uses.
-- **Discord, Telegram, Teams, Webex, WhatsApp: 300 seconds.**
+- **Slack and Discord: `agent.tool_approval_timeout_secs`** (default 600
+  seconds), read through the same resolver the dashboard uses.
+- **Telegram, Teams, Webex, WhatsApp: 300 seconds.**
 
 An unanswered prompt is **denied**, never approved — the timeout never means yes.
 
@@ -129,7 +129,7 @@ channels, set the approval mode to `auto` or `trust` — see the channel's own
 guide.
 
 `agent.tool_approval_timeout_secs` (default 600) governs the dashboard chat
-path and Slack only. Changing it will not lengthen or shorten the window on any
+path, Slack and Discord only. Changing it will not lengthen or shorten the window on any
 other messaging channel.
 
 ## Owner DM targets
