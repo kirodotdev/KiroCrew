@@ -371,6 +371,24 @@ delete private rules. Distinct rules remain available for explicit owner review;
 same-identity conflict proposals and evidence-backed owner correction/undo are
 unchanged.
 
+**The session that saved a rule is told what its sweep deleted.** The sweep ends after
+the save has answered, so its deletes cannot ride on that response's `superseded` list.
+Each delete is recorded as the removed rule and the rule that caused it, under the
+save's session key in `_CONTRADICTION_NOTICES` (`cron_lesson_supersede.py`: kept on the
+dashboard state, at most `_CONTRADICTION_NOTICE_CAP` across sessions, in memory only, so a
+restart loses a notice and never a lesson). That session's next `POST` or
+`GET /api/lessons` from its own `learn_add` / `learn_list` carries them once as `swept`,
+both rules redacted like `superseded`, and those tools print them as a REMOVED warning.
+A notice the cap evicts is still counted for its session in
+`_CONTRADICTION_NOTICES_DROPPED` (at most the same cap of sessions) and reaches it as
+`swept_dropped`, printed as a count of removals whose details were not kept; a count
+that cap evicts is logged as a warning.
+Only that internal caller takes a notice, since it is the one reader that prints it: an
+app or the Memory tab reading with the same key leaves it pending. A session that makes
+no later lesson call, and a client that stopped waiting before the route answered, never
+see one. A row the compare-and-delete kept records nothing. Pinned by
+`test/test_lesson_sweep_notice.py`.
+
 Stores user corrections (e.g. "use X instead of Y", "remember that X", "never use X"), saved by the agent's `learn_add` tool or extracted by history consolidation, in `~/.kiro/crew/lessons.jsonl`. Categories: `tool`, `preference`, `knowledge`. Injected into LLM context as a `[Learned corrections]` block with complete applicable rules; startup does not trim uncertain rules by recency.
 
 **The JSONL file is per-target, so the three `/api/lessons` routes carry a store dimension.** `~/.kiro/crew/lessons.jsonl` is the DEFAULT store's file; a caller bound to a named memory store reads and writes `memory_stores/<name>/lessons.jsonl` instead, and `_lesson_jsonl_store` picks between them by the caller's BINDING, never by which file holds rows. `LessonStore.path` is the resolver — construct the store and read it, never compose `<dir>/lessons.jsonl`, or the two fall onto different files while both look correct. Full rule, including why keying on population is a data leak: [memory-skills-hooks](memory-skills-hooks.md#which-store-a-dashboard-route-reads-store). Because a silo-bound crew's corrections land in that file exactly when the silo has no `memory.db`, this tier is the one a vector-only injection audit is blind to; `security.scan_memory` scans every store's lessons file for that reason — see [security](security.md).

@@ -4334,7 +4334,7 @@ flag, since a bare `if` on any object is legal. `stored` is the separate propert
 "is my lesson in the store" (true for a no-op re-submit, which is NOT a write). Surfaces
 that report to a human or a model — the `learn add` CLI, the `POST /api/lessons` response
 (`ok` / `outcome` / `reason` / `superseded`, plus `winner` / `winner_repo_scope` on a
-deduped write), the `learn_add` tool result — read `outcome`
+deduped write and `swept` / `swept_dropped` for the internal caller while a contradiction-sweep notice is pending), the `learn_add` tool result — read `outcome`
 and `reason`, and name the `superseded` rules when there are any.
 The dashboard Memory tab clears its draft and refreshes the list only for `inserted`
 or `enriched`; `unchanged` clears the draft but reports that it was already stored,
