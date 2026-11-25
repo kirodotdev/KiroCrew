@@ -217,8 +217,13 @@ from a messaging channel, gets one reply that links the MCP Servers page.
 
 The same holds for a project's own MCP files, `.kiro/settings/mcp.json` and
 `.mcp.json`, in any folder. The agent asks with `request_server` instead, and the
-card adds the server to Kiro Crew's own list. On Linux, the sandbox seals only a
-file that already exists when the chat starts.
+card adds the server to Kiro Crew's own list. To add it only to the chat's own
+folder, the card takes `target: "project"`, names the file and the command, and
+its button reads **Add** and the server's name **to this project**. Only a Kiro chat whose agent sets
+`includeMcpJson` gets that card (the default agent does not), and it writes
+`.kiro/settings/mcp.json`. In any other chat Kiro Crew cannot be sure the file
+loads, so the agent is told to use Kiro Crew's own list instead. On Linux, the sandbox seals only a file that already exists when the chat
+starts.
 
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the

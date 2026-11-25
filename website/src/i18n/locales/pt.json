@@ -11756,6 +11756,7 @@
       "note_crewmate_import": "Nada é executado ao importar: ele busca informações sozinho e pergunta antes de fazer qualquer outra coisa, as tarefas agendadas chegam desligadas e as habilidades esperam você confiar na pasta de trabalho do Bot. Depois, Desfazer neste cartão o remove.",
       "title_crewmate_import": "Importar Bot “{{name}}”",
       "primary_mcp_server": "Aplicar",
+      "primary_mcp_server_project": "Adicionar {{name}} a este projeto",
       "decline_mcp_server": "Cancelar",
       "title_mcp_server_add": "Adicionar servidor: {{name}}",
       "title_mcp_server_change": "Alterar servidor: {{name}}",

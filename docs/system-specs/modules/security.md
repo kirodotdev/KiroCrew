@@ -226,9 +226,24 @@ against rename, so an agent can still create its project's `.kiro` folder. Seatb
 denies each name whether or not it exists. Crew never creates a file in the
 person's folder, so the Linux launcher seals only a file that exists at spawn, and
 a file that does not exist yet is fenced by the file-edit refusal alone (#41996).
-No card writes these files: the refusal's way forward is `request_server` with
-the default target, which adds the server to Kiro Crew's own store, the list every
-governed chat's servers come from, or the person adds it on **MCP Servers**.
+The refusal's way forward is `request_server`. Its default target adds the server
+to Kiro Crew's own store, the list every governed chat's servers come from, or the
+person adds it on **MCP Servers**. With `target` `project` the card adds it to the
+asking chat's own file instead (`request_server_page.project_place`): the folder and
+the file come from the chat's live session, never from the agent, and the card is
+raised only where that chat loads the file. That is a Kiro or KAS chat whose agent
+spec sets `includeMcpJson` (`agent_sdk.mcp_json_reach.agent_includes_mcp_json`, the
+same spec read the session projection uses), and the card writes
+`.kiro/settings/mcp.json`. Any other chat, the default agent included, is refused
+with a 409 that names `target` `crew`. A Claude Code chat is refused too: whether
+it loads `.mcp.json` depends on its setting sources, on `strictMcpConfig` (which a
+Bot's worker sets) and on Claude Code's own approval of project servers, and Crew
+reads none of them back from a live session. The person's Apply writes the file through
+the owner-only `POST /api/mcp/project-file` (`dashboard.handlers.mcp_project_file`),
+which accepts nothing but a confirmed card's step, so no caller chooses the folder;
+it refuses a link anywhere below the folder, and on POSIX it opens each folder on
+the way by descriptor with `O_NOFOLLOW`, so a link planted after the name check is
+refused too.
 
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next
