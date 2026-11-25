@@ -94,6 +94,14 @@ def _scrub_caller_fences(text: str) -> str:
     return text
 
 
+def _text_of_part(part: dict[str, Any]) -> str:
+    """The text of one ``text`` content part, coerced like a scalar ``content``."""
+    text = part.get("text", "")
+    if isinstance(text, str):
+        return text
+    return "" if text is None else str(text)
+
+
 def _flatten_messages(messages: list[dict[str, Any]]) -> str:
     """Flatten OpenAI messages array into a single prompt string.
 
@@ -118,9 +126,7 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> str:
         content = msg.get("content") or ""
         if isinstance(content, list):
             content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
+                _text_of_part(p) for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
         elif not isinstance(content, str):
             # A scalar (or null) content is off-spec but must not 500: coerce
@@ -295,13 +301,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=400,
             )
-        # Reject unsupported roles loudly (tool/function)
+        # Reject unsupported roles loudly (tool/function). A list or object role
+        # is unsupported too; it cannot be looked up in the set below.
         role = msg.get("role", "user")
-        if role in _UNSUPPORTED_ROLES:
+        if isinstance(role, (list, dict)) or role in _UNSUPPORTED_ROLES:
+            shown = role if isinstance(role, str) else f"<{type(role).__name__}>"
             return web.json_response(
                 {
                     "error": {
-                        "message": f"role {role!r} not supported",
+                        "message": f"role {shown!r} not supported",
                         "type": "invalid_request_error",
                     }
                 },
