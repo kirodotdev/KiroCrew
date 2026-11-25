@@ -24,8 +24,12 @@ kirocrew restore --list-components                    # show component names
 
 Stop the gateway before restoring. `kirocrew restore` refuses to run while a
 gateway is listening, because a live gateway holds the memory database open and
-would write over what was just restored. Pass `--force` only if you know the
-gateway on that port is not this instance.
+would write over what was just restored. The port it checks is the one every
+client command talks to: `KIROCREW_PORT` if set, else `KIROCREW_BOUND_PORT`, else
+the port written in `dashboard.url`, else, on Linux and macOS, the running
+gateway's verified run marker, else 5476; so a gateway on the port your config
+names is seen without exporting `KIROCREW_PORT`. Pass `--force` only if you know
+the gateway on that port is not this instance.
 
 Both commands refuse to run on a platform that cannot open a directory relative to a file descriptor, because every component would then be re-opened by name and an ancestor swapped mid-walk could redirect the copy into a credential store. `--allow-unpinned-staging` accepts that by-name traversal instead; a snapshot taken that way records the weaker staging mode in its `MANIFEST.json`.
 
