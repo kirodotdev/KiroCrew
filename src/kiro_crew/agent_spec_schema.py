@@ -62,6 +62,11 @@ FIELDS: tuple[SpecField, ...] = (
         "includeCrewContext", "bool", "Kiro Crew: false keeps Crew context out of the session."
     ),
     SpecField(
+        "includeCrossSessionContext",
+        "bool",
+        "Kiro Crew: false keeps stored memory and lessons out of the session.",
+    ),
+    SpecField(
         "systemPrompt", "string", "Another spelling of prompt; prompt wins when both are set."
     ),
     SpecField("slashCommand", "any", "Slash command settings, read by kiro-cli."),

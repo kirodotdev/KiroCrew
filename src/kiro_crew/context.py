@@ -1143,8 +1143,12 @@ def invalidate_include_crew_context_cache() -> None:
     not-yet-written spec — would otherwise stay wrong until a gateway restart, the
     exact restart-heals failure class this fix exists to remove. Clearing forces
     the next ``build_session_context`` / ``build_message`` to re-read the flag.
+    The ``includeCrossSessionContext`` reads are dropped with it: same spec, same
+    rewrite, and a stale ``True`` there would keep injecting memory the spec now
+    withholds.
     """
     _INCLUDE_CREW_CONTEXT_CACHE.clear()
+    _inclusion.forget_cross_session_context_flags()
 
 
 def build_cancelled_turn_preamble(

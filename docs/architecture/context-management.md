@@ -298,7 +298,8 @@ build's query embed stops it at the model's next step and runs first
 
 No memory cap is a config key — they are module constants. The keys that change
 assembly include `skills.max_triggered`, `skills.lazy_load`, `agent.session_sharing`,
-`agent.member_dispatch`, and each agent's `includeCrewContext`.
+`agent.member_dispatch`, and each agent's `includeCrewContext` and
+`includeCrossSessionContext`.
 
 Memory, lessons, history, folder names, channel text and skill bodies are all
 agent- or third-party-writable, so `_neutralize_structural_markers` rewrites forged
@@ -665,6 +666,17 @@ both `build_message` and the `state.json` record read, so a retried or continued
 run sees the scope its caller asked for. Anything withheld is named to the child
 in `[CONTEXT SCOPE]` — an unexplained gap makes a sub-agent invent user
 preferences, and naming it converts that into an honest "not provided".
+
+The same two groups can be dropped for one agent, on any surface. An agent spec
+that sets `includeCrossSessionContext: false` loses the `memory` and `lessons`
+groups in every build: `context_assembly/inclusion.py` → `_agent_scoped_groups`
+subtracts them from the caller's set in `build_session_context` and in
+`build_message`, ahead of the operator's `memory.inject_memory` /
+`memory.inject_lessons` intersection, so every row above conditioned on one of
+those groups is left out, and so is the re-injection after a compaction. It only
+removes groups, it is silent like the operator's toggles (no `[CONTEXT SCOPE]`,
+which names a parent's choice), and a key that is present but not exactly `true`
+withholds.
 
 **What a sub-agent does not get.** No channel history, Slack thread context, board
 tags, folder breadcrumb, dashboard tool nudges, or the parent's reply-style

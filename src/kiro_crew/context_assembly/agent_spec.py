@@ -7,7 +7,8 @@ and the per-session readings those tokens resolve to -- the delegation cap, the
 Computer Use gate and the browse gate, each read once per session
 (:func:`_session_reading`). Beside it,
 the other reads of an agent's spec: its ``includeCrewContext`` flag
-(:func:`_read_include_crew_context`) and the Claude Code steering load
+(:func:`_read_include_crew_context`), its ``includeCrossSessionContext`` flag
+(:func:`_read_include_cross_session_context`) and the Claude Code steering load
 (:func:`_load_steering_resources`) with its admission gate
 (:func:`steering_target_admissible`).
 
@@ -238,15 +239,13 @@ def steering_resource_documents(
     return documents
 
 
-def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
-    """Read ``includeCrewContext`` from *agent*'s materialized JSON. True on any miss.
+def _read_spec_row(agent: str, pins: Mapping[str, str] | None = None) -> dict[str, Any] | None:
+    """*agent*'s materialized spec as parsed, or ``None`` when no readable spec is its.
 
     Reuses ``_load_agent_prompt``'s sensitive-path-gated scan: skip ``._`` macOS
     sidecars, ``resolve(strict=True)``, refuse a sensitive resolved target, tolerate
     ``ValueError``/``OSError``, and match on the declared ``name`` (or the filename
-    stem). Returns ``True`` unless the matched spec carries an explicit boolean
-    ``false`` — an absent flag, a non-boolean value, a missing/unreadable spec, or a
-    directory error all default to injecting, reproducing the pre-opt-out behavior.
+    stem).
     """
     from kiro_crew import agent_spec_pins
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
@@ -254,7 +253,7 @@ def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None
     try:
         candidates = ctx.iter_agent_spec_files(ctx.kiro_agents_dir(), ordered=False)
     except OSError:
-        return True
+        return None
 
     def rows() -> Iterator[tuple[Any, Path]]:
         for f in candidates:
@@ -277,12 +276,38 @@ def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None
 
     # The first spec declaring or named after *agent*, or the pinned claimant when
     # ``agent.spec_pins`` chooses among several (``pick_spec_row``).
-    data = agent_spec_pins.pick_spec_row(rows(), agent, pins)
+    return agent_spec_pins.pick_spec_row(rows(), agent, pins)
+
+
+def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
+    """Read ``includeCrewContext`` from *agent*'s materialized JSON. True on any miss.
+
+    Returns ``True`` unless the spec :func:`_read_spec_row` matches carries an
+    explicit boolean ``false`` — an absent flag, a non-boolean value, a
+    missing/unreadable spec, or a directory error all default to injecting,
+    reproducing the pre-opt-out behavior.
+    """
+    data = _read_spec_row(agent, pins)
     if data is None:
         return True
     val = data.get("includeCrewContext", True)
     # Honor only an explicit boolean; anything else defaults to inject.
     return val if isinstance(val, bool) else True
+
+
+def _read_include_cross_session_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
+    """Read ``includeCrossSessionContext`` from *agent*'s materialized JSON.
+
+    ``True`` when no readable spec is the agent's or the spec does not carry the
+    key, which is every agent written before the key existed. A spec that carries
+    the key keeps the stored memory and lessons only when the value is exactly
+    ``true``: the key decides what a session may read, so ``false`` and any value
+    that is not a boolean (``"true"``, ``1``, ``null``) both withhold them.
+    """
+    data = _read_spec_row(agent, pins)
+    if data is None or "includeCrossSessionContext" not in data:
+        return True
+    return data["includeCrossSessionContext"] is True
 
 
 def _read_prompt_file(pp: Path) -> str:

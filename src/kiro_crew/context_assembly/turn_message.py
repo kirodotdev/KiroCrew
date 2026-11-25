@@ -196,6 +196,12 @@ def build_message(
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
+    # ``includeCrossSessionContext: false`` on the agent's spec drops the memory and
+    # lessons groups for every store-backed block this turn builds: the essentials,
+    # the post-compaction parts and the per-message lessons. Only the project gates
+    # and ``build_session_context``, which narrows for itself and names a parent's
+    # choice in [CONTEXT SCOPE], still take the caller's ``context_groups``.
+    store_groups = _inclusion._agent_scoped_groups(agent, context_groups)
 
     report_user_span = user_text_range is not None
     if user_text_range is None:
@@ -318,7 +324,7 @@ def build_message(
             template_dir=template_dir,
             workspace=workspace,
             blocks_reads=blocks_reads,
-            context_groups=context_groups,
+            context_groups=store_groups,
             native_documents=native_documents,
             native_envelope_out=_native_envelopes,
             execution_template=agent or "kirocrew",
@@ -541,7 +547,7 @@ def build_message(
                             project=project,
                             private_owner=bool(_private_owner),
                             blocks_reads=blocks_reads,
-                            context_groups=context_groups,
+                            context_groups=store_groups,
                             workspace=workspace,
                             memory_store=memory_store,
                             model_window=model_window,
@@ -573,10 +579,13 @@ def build_message(
                 # An empty group set means the spawning parent withheld memory,
                 # lessons and project, so the block holds only conduct; claiming
                 # "your memory" there makes the child look for content it lacks.
+                # The same holds for an agent whose spec opts out of memory and
+                # lessons (``includeCrossSessionContext: false``).
                 _opener = (
                     "This block holds the rules and runtime facts for this turn. "
                     "Use it to stay consistent but ONLY respond to the "
-                    if context_groups is not None and not context_groups
+                    if (context_groups is not None and not context_groups)
+                    or not _inclusion._agent_includes_cross_session_context(agent)
                     else "This is your memory, lessons, and conversation history from prior "
                     "sessions. Use it to stay consistent but ONLY respond to the "
                 )
@@ -693,7 +702,7 @@ def build_message(
                 private_owner=bool(_private_owner),
                 blocks_reads=blocks_reads,
                 minimal_context=minimal_context,
-                context_groups=context_groups,
+                context_groups=store_groups,
                 workspace=workspace,
                 memory_store=memory_store,
                 model_window=model_window,
@@ -1074,7 +1083,7 @@ def build_message(
             project=project,
             member=member,
             execution_context=execution_context,
-            context_groups=context_groups,
+            context_groups=store_groups,
         )
         if turn_lessons:
             parts.append(turn_lessons)
@@ -1236,7 +1245,7 @@ def build_message(
                 context_provider.served_model,
                 mode,
                 blocks_reads,
-                None if context_groups is None else sorted(context_groups),
+                None if store_groups is None else sorted(store_groups),
                 minimal_context,
                 model_window,
                 ctx._agent_includes_crew_context(agent),

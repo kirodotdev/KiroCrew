@@ -1101,6 +1101,15 @@ One more skill mapping exists and is edition-specific: a `builder-mcp` server
 entry whose `args` carry `--skill-name-filter a,b`. `_extract_skills` unions it
 with the `skill://` set for display. It predates `resources` support.
 
+### Session context
+
+| Field | Type | Effect |
+|---|---|---|
+| `includeCrossSessionContext` | bool | `false` keeps what Kiro Crew stored from the user's other sessions out of this agent's sessions: the stored memory block (preferences, the activity index, the activity block, a memory provider's blocks), the recent-session snippets, the learned corrections and experience, the per-message lessons and the user profile, and for a crew member its own preference and project documents and its briefing. It is `memory.inject_memory` and `memory.inject_lessons` for one agent: the reading drops the `memory` and `lessons` context groups (`context_assembly/inclusion.py` → `_agent_scoped_groups`) before the operator's toggles are applied, at session start, in the re-injection after a compaction and on every follow-up message, on every harness and for a sub-agent run on this agent too. It can only remove: a parent's `include_memory: true` does not add the blocks back. Absent, the agent gets everything it got before the key existed. A spec that carries the key keeps the blocks only when the value is exactly `true`, so `false` and a value that is not a boolean (`"true"`, `1`, `null`) both withhold them. The rest of the session context is unchanged: the rules, the date and runtime, skills, steering and this conversation's own history. The key covers what Kiro Crew injects, not what the agent asks for: `memory_recall` and the chat-history tools still answer an agent whose tools include them. Not read for the built-in `kirocrew` agent, whose spec is generated. Read once per agent and kept until the agents directory is rescanned. |
+
+`includeCrewContext: false` is the sibling key for the dashboard reply rules and
+tool reminders; the two are read apart, so an agent can set either or both.
+
 ## Per-surface summary
 
 Three columns, for the three surfaces a spec is READ by. The
@@ -1129,6 +1138,7 @@ every other mirrored harness.
 | `toolsSettings` | honoured | no wire slot; session-start notice | not read |
 | `toolAliases` | honoured | no wire slot; session-start notice unless Crew's Connections pass wrote every pair | not read |
 | `managedToolPolicy` | Crew-side, per session | Crew-side, per session | Crew-side, per session |
+| `includeCrossSessionContext` | Crew-side, per turn | Crew-side, per turn | Crew-side, per turn |
 | `welcomeMessage` | Crew-only (welcome page, chat transcript) | welcome page and chat transcript, and a wire field from the same capped reading | Crew-only (welcome page, chat transcript) |
 
 ## Ownership and refresh
