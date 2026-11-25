@@ -263,6 +263,72 @@ def test_the_top_up_hands_each_read_to_on_read_once_in_read_order() -> None:
     assert hooked.unread_candidates == {}
 
 
+def _orphan_run(run_id: int, *, age: float, event: str = "push") -> tuple[Any, list[Any]]:
+    """A heal-eligible run whose one CodeBuild job has queued since the run was created."""
+    run = _run(
+        run_id,
+        minutes_ago=age,
+        status="queued",
+        workflow=HEAL_SAFE,
+        event=event,
+        branch=f"{event}-{run_id}",
+    )
+    return run, [_job(run_id * 10 + 1, minutes_ago=age, run_id=run_id)]
+
+
+def _capped_tick(
+    monkeypatch: pytest.MonkeyPatch, inside: list[Any], topped_up: list[Any]
+) -> tuple[dict[int, str], list[int]]:
+    """Drive a dry tick whose bound reads ``inside`` and whose top-up reads ``topped_up``.
+
+    Returns the outcomes and the run ids the tick chose to heal, in the order it chose them.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", len(inside))
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", len(inside))
+    monkeypatch.setattr(wd, "LIVE_EXEMPT_CLASSIFY_READS", 0)
+    runs = [run for run, _ in inside + topped_up]
+    api = FakeApi({"queued": runs}, {int(run["id"]): jobs for run, jobs in inside + topped_up})
+    verdicts, outcomes, _ = _sweep_logged(api, dry_run=True)
+    assert {v.run_id for v in verdicts if v.verdict == wd.ORPHANED} == {int(r["id"]) for r in runs}
+    chosen = [run_id for run_id, outcome in outcomes.items() if outcome == wd.OUTCOME_DRY_RUN]
+    return outcomes, chosen
+
+
+def test_the_heal_cap_goes_to_the_oldest_push_orphans_wherever_they_were_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ten push orphans read inside the bound, six OLDER ones read by the top-up.
+
+    The top-up's verdicts arrive after the bound's, so a cap spent in arrival order would
+    heal the younger runs and leave the older ones for the next tick.
+    """
+    cap = _policy().max_runs
+    younger = [_orphan_run(100 + i, age=ORPHAN_MINUTES + 5 + i) for i in range(10)]
+    older = [_orphan_run(200 + i, age=ORPHAN_MINUTES + 25 + i) for i in range(cap + 1)]
+
+    outcomes, chosen = _capped_tick(monkeypatch, younger, older)
+
+    oldest_first = sorted(older, key=lambda pair: pair[0]["created_at"])
+    assert chosen == [int(run["id"]) for run, _ in oldest_first[:cap]]
+    left = {run_id for run_id, outcome in outcomes.items() if outcome == wd.OUTCOME_NOT_ATTEMPTED}
+    assert left == {int(run["id"]) for run, _ in younger + oldest_first[cap:]}
+
+
+def test_the_slot_kept_for_other_events_goes_to_the_oldest_of_them_wherever_it_was_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Push orphans fill the cap but one slot; that slot is the OLDEST non-push orphan's."""
+    cap = _policy().max_runs
+    pushes = [_orphan_run(100 + i, age=ORPHAN_MINUTES + 5 + i) for i in range(cap + 2)]
+    young_pull = _orphan_run(300, age=ORPHAN_MINUTES + 2, event="pull_request")
+    old_pull = _orphan_run(301, age=ORPHAN_MINUTES + 60, event="pull_request")
+
+    _, chosen = _capped_tick(monkeypatch, pushes + [young_pull], [old_pull])
+
+    oldest_pushes = sorted(pushes, key=lambda pair: pair[0]["created_at"])[: cap - 1]
+    assert chosen == [int(run["id"]) for run, _ in oldest_pushes] + [301]
+
+
 # ── saturation makes an exempt orphan a warning, up to the cap ───────────────
 
 

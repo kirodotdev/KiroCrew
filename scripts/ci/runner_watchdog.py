@@ -1273,9 +1273,11 @@ def run_watchdog(
     # request's next push. Oldest first across both would spend a burst's cap on
     # pull-request runs and leave `main` held. When both kinds wait and at least
     # two slots are free, the last slot goes to the oldest other run, so push
-    # orphans that are left untouched every tick cannot starve the rest.
+    # orphans that are left untouched every tick cannot starve the rest. Age is in
+    # the key, not left to the order the verdicts arrived in: the top-up's verdicts
+    # follow the bound's, and the runs it reads are the older ones.
     orphaned = sorted(
-        (v for v in verdicts if v.verdict == ORPHANED), key=lambda v: v.event != "push"
+        (v for v in verdicts if v.verdict == ORPHANED), key=lambda v: (v.event != "push", -v.age)
     )
     oldest_other = next((v for v in orphaned if v.event != "push"), None)
     if oldest_other is not None and slots_left >= 2 and oldest_other not in orphaned[:slots_left]:
