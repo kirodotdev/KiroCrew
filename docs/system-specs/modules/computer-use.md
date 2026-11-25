@@ -796,6 +796,15 @@ then verifies what came back:
    `C:\Program Files` → "Access is denied"), which is what makes the prefix test
    meaningful in both directions.
 
+   The refusal names the half that failed (`_protection_refusal`). Only a target
+   outside every root, or one whose path cannot be resolved, is told it is outside the
+   protected install directories. One inside a root whose directory this user can
+   write, or whose file this user can replace, or where either could not be verified,
+   names that directory or file instead, as the macOS refusal does. A gateway running
+   with administrator rights can write every root, so every application inside one gets
+   the second text there, where the first would send the user after a reinstall that
+   cannot help.
+
    **The root LIST is read from `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion`, never
    from `os.environ`**, and that is the single most load-bearing line in the module. An
    earlier draft read `%ProgramFiles%`, which is an ordinary environment variable — so
@@ -881,7 +890,7 @@ place. A target has to fail both questions to be trusted:
 immediate parent.** Write access to any single level is enough to substitute the code that
 runs: an agent owning an intermediate `C:\Program Files\Vendor` renames its `App` child aside
 and recreates it with its own binary inside, and a parent-only probe then reports the leaf it
-just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
+just created as unwritable. `_first_writable_directory` walks from the executable's directory
 up to and including the root and stops there — everything above is off the caller's path by
 construction, since the prefix test already placed the target inside it. `launch_macos`'
 `_writable_component` does the same for a bundle's four levels (three under a stock
