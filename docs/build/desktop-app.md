@@ -676,12 +676,13 @@ About (what the app menu's About item opens) shows no prerelease bug-report note
 and its App chip renders the build in the gateway's four-part spelling
 (`v0.13.0.11`, `editionBuildVersion` in `website/src/utils/displayVersion.ts`). A
 shell beside its own gateway therefore shows one version, and a shell beside
-another build's gateway shows both. Ordering is unchanged: semver, and so
-`isNewerVersion` and electron-updater, rank `0.13.0-11` below `0.13.0`, where the
-backend ranks `0.13.0.11` above it. The marker-driven managed lane never compares
-a candidate with `app.getVersion()`, but on the electron-updater feed lane a `-N`
-build would be offered its own base release as an upgrade, so an edition that
-stamps `-N` ships it on a managed lane. electron-builder also names the
+another build's gateway shows both. `isNewerVersion` ranks the stamp as the
+backend does: `0.13.0-11` is the build `0.13.0.11`, above `0.13.0`. That is the
+comparison the marker-driven managed lane makes between a `checkCommand` version
+and `app.getVersion()`, and the one the feed lane's direction gate
+(`shouldAutoOffer`) makes, so a `-N` build is not offered its own base release.
+electron-updater's own semver still ranks `0.13.0-11` below `0.13.0`. An edition
+that stamps `-N` ships it on a managed lane: electron-builder names the
 update-info file after the prerelease (`11-linux.yml` rather than
 `latest-linux.yml`), which only the feed lane reads. Tests:
 `test/test_build_desktop_shell_version.py`,
@@ -2106,8 +2107,16 @@ updater off, no metadata and nothing to run. Packagers that want the managed
 commands honored must install the resources directory root-owned.
 
 On the managed path the app treats a `checkCommand` that exits 0 and prints a
-version as an available update. **`updateCommand` runs only on the user's quit,
-never while the app runs** (the rulings are in
+version newer than the running app as an available update. The command prints
+the bare version alone, and exits non-zero once the install is current. A
+printed version equal to or older than the running one also reads as up to date,
+so the build already installed is not offered, but the re-check after an apply
+(below) reads that output as an install that did not change. A version
+`isNewerVersion` cannot rank, or a line that is more than a bare version
+(`kirocrew 0.13.0.12`), is still offered. That comparison reads an edition
+shell's `0.13.0-11` stamp as the four-part build `0.13.0.11`.
+**`updateCommand` runs only on the user's quit, never while the app runs** (the
+rulings are in
 the 2026-11-10 decision "updates never restart a running gateway"):
 
 - **A click arms.** `install()` (the Install button, the "Restart to update"
