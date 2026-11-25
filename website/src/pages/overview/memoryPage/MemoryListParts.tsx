@@ -97,8 +97,10 @@ function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, onToggle, onRange }: {
+export function FilterPanel({ view, facets, trailing, onToggle, onRange }: {
   view: ListView; facets?: MemoryRecordFacets
+  /** A control at the end of the search row (the wide rail's hide button). */
+  trailing?: ReactNode
   onToggle: (group: MemoryRecordFacetGroup, value: string) => void
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
@@ -118,9 +120,12 @@ export function FilterPanel({ view, facets, onToggle, onRange }: {
     return { group, counts, ticked, values }
   }).filter(item => item.values.length)
   return <div className="space-y-5">
-    <div className="relative">
-      <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
-      <Input type="search" className="min-h-11 w-full pl-9 sm:min-h-9" aria-label={t('memoryPage.search_filters')} placeholder={t('memoryPage.search_filters')} value={find} onChange={event => setFind(event.target.value)} />
+    <div className="flex items-center gap-1">
+      <div className="relative min-w-0 flex-1">
+        <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
+        <Input type="search" className="min-h-11 w-full pl-9 sm:min-h-9" aria-label={t('memoryPage.search_filters')} placeholder={t('memoryPage.search_filters')} value={find} onChange={event => setFind(event.target.value)} />
+      </div>
+      {trailing}
     </div>
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
     {shown.map(({ group, counts, ticked, values }) => {

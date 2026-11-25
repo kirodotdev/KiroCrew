@@ -22,7 +22,7 @@ import MemoryList from './memoryPage/MemoryList'
 import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
 import { MemoryGraphPanel } from './memoryPage/MemoryGraphPanel'
 import { memoryRoute } from '../settings/memoryRoute'
-import { SEED_LIMIT, seedInBatches } from './memorySeedBatches'
+import { seedInBatches, sourceRows, type SeedCounts } from './memorySeedBatches'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
 type Kind = 'fact' | 'directive' | 'episode'
@@ -63,17 +63,17 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
   const [filter, setFilter] = useState('')
   const phone = useIsMobile()
   const data = useMemoryRows(source, true, filter)
-  const [done, setDone] = useState(0)
-  const copy = useMutation({ mutationFn: () => { setDone(0); return seedInBatches(source, store, selection, setDone) }, onSuccess: onCopied })
-  // "Select all matching" reads every remaining page (up to the limit), then picks them all.
-  const [selectingAll, setSelectingAll] = useState(false)
-  useEffect(() => {
-    if (!selectingAll || data.pending || data.loadingMore) return
-    if (data.error) { setSelectingAll(false); return }
-    if (data.more && data.rows.length < SEED_LIMIT) { void data.loadMore(); return }
-    setSelection(data.rows.slice(0, SEED_LIMIT).map(row => ({ kind: kindOf(row), id: keyOf(row) })))
-    setSelectingAll(false)
-  }, [selectingAll, data])
+  const [counts, setCounts] = useState<SeedCounts | null>(null)
+  // "Select all matching" copies every source row the search matches, read page
+  // by page while it copies, so no count is loaded up front and none is capped.
+  const [allMatching, setAllMatching] = useState(false)
+  const copy = useMutation({
+    mutationFn: () => {
+      setCounts({ imported: 0, existing: 0, failed: 0 })
+      return seedInBatches(source, store, allMatching ? sourceRows(source, filter.trim()) : selection, setCounts)
+    },
+    onSettled: onCopied,
+  })
   const failedResults = copy.data?.results.filter(r => ['unconfirmed', 'rejected', 'not_attempted'].includes(r.outcome)) ?? []
   const failureReasons = failedResults.flatMap(result => result.reason?.trim() ? [result.reason.trim()] : [])
   const copyFailure = [
@@ -85,36 +85,36 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
   const choices = (stores.data?.stores || []).filter(s => s.name !== store && s.exists)
   const visible = data.pending || data.error ? [] : data.rows
   const toggle = (row: MemoryRow) => {
+    setAllMatching(false)
     const item = { kind: kindOf(row), id: keyOf(row) }
     setSelection(old => old.some(s => s.id === item.id && s.kind === item.kind) ? old.filter(s => s.id !== item.id || s.kind !== item.kind) : [...old, item])
   }
-  const allPicked = visible.length > 0 && visible.every(row => selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row))) && !data.more
-  return <Modal open title={t('memoryV2.copy_dialog_title', { member })} height={phone ? 'calc(100dvh - 2rem)' : undefined} guardAccidentalDismiss={selection.length > 0} dismissDisabled={copy.isPending} onClose={onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-    <span className="text-[12px] text-muted">{t('memoryV2.copy_up_to', { limit: fmtNumber(SEED_LIMIT) })}</span>
-    <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !selection.length || selection.length > SEED_LIMIT} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{copy.isPending ? t('memoryV2.copy_progress', { done: fmtNumber(done), total: fmtNumber(selection.length) }) : t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
+  const picked = (row: MemoryRow) => allMatching || selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row))
+  const tallies = counts && { imported: fmtNumber(counts.imported), existing: fmtNumber(counts.existing), failed: fmtNumber(counts.failed) }
+  return <Modal open title={t('memoryV2.copy_dialog_title', { member })} height={phone ? 'calc(100dvh - 2rem)' : undefined} guardAccidentalDismiss={allMatching || selection.length > 0} dismissDisabled={copy.isPending} onClose={onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    {tallies ? <span role="status" className="text-[13px] tabular-nums text-text">{t(counts!.failed ? 'memoryV2.copy_tally_failed' : 'memoryV2.copy_tally', tallies)}</span> : <span />}
+    <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !(allMatching ? visible.length : selection.length)} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{allMatching ? t('memoryV2.copy_all_matching') : t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
   </div>}>
     <div className="flex min-w-0 flex-col gap-3">
       <p className="text-[13px] text-muted">{t('memoryV2.copy_explanation')}</p>
-      <SimpleSelect aria-label={t('memoryV2.source')} options={choices.map(s => s.name)} optionLabels={choices.map(s => s.is_default ? t('pages.kiroCrewAgentsPage.global_memory_v1') : s.owner_member || s.name)} optionIcons={choices.map(s => <MemoryStoreAvatar key={s.name} summary={s} />)} value={source} onChange={value => { setSource(value); setSelection([]); copy.reset() }} disabled={copy.isPending} />
-      <label className="space-y-1 text-[13px]"><span className="block">{t('memoryV2.search')}</span><Input className="w-full" placeholder={t('memoryV2.search')} value={filter} onChange={e => setFilter(e.target.value)} /></label>
+      <SimpleSelect aria-label={t('memoryV2.source')} options={choices.map(s => s.name)} optionLabels={choices.map(s => s.is_default ? t('pages.kiroCrewAgentsPage.global_memory_v1') : s.owner_member || s.name)} optionIcons={choices.map(s => <MemoryStoreAvatar key={s.name} summary={s} />)} value={source} onChange={value => { setSource(value); setSelection([]); setAllMatching(false); setCounts(null); copy.reset() }} disabled={copy.isPending} />
+      <label className="space-y-1 text-[13px]"><span className="block">{t('memoryV2.search')}</span><Input className="w-full" placeholder={t('memoryV2.search')} value={filter} disabled={copy.isPending} onChange={e => setFilter(e.target.value)} /></label>
       {/* No hand-off: the selection is an unsaved copy request. */}
       <ErrorNotice message={errorText(data.error || copy.error) || copyFailure} />
       {data.pending && <p role="status" className="py-4 text-center text-[13px] text-muted">{t('pages.overview.memoryTab.loading')}</p>}
       {visible.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-3 text-[13px]">
-        <input type="checkbox" aria-label={t('memoryV2.copy_select_all')} className="h-4 w-4 shrink-0 accent-accent" checked={allPicked} disabled={copy.isPending || selectingAll} onChange={() => { if (allPicked) setSelection([]); else setSelectingAll(true) }} />
+        <input type="checkbox" aria-label={t('memoryV2.copy_select_all')} className="h-4 w-4 shrink-0 accent-accent" checked={allMatching} disabled={copy.isPending} onChange={() => { setAllMatching(on => !on); setSelection([]) }} />
         {t('memoryV2.copy_select_all')}
       </label>}
       <div className={`space-y-2 ${phone ? '' : 'max-h-80 overflow-y-auto'}`}>
         {visible.map(row => <label key={`${kindOf(row)}:${keyOf(row)}`} className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-[13px] transition-colors hover:bg-bg-hover has-[:checked]:border-accent has-[:checked]:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]">
-          <input type="checkbox" aria-label={bodyOf(row)} className="mt-1 h-4 w-4 shrink-0 accent-accent" checked={selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row))} disabled={copy.isPending || (selection.length >= SEED_LIMIT && !selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row)))} onChange={() => toggle(row)} />
+          <input type="checkbox" aria-label={bodyOf(row)} className="mt-1 h-4 w-4 shrink-0 accent-accent" checked={picked(row)} disabled={copy.isPending || allMatching} onChange={() => toggle(row)} />
           <span className="min-w-0 break-words"><span className="block text-muted">{t(MEMORY_RECORD_LABELS[kindOf(row)])}</span>{bodyOf(row)}</span>
         </label>)}
       </div>
       {!data.pending && !data.error && data.more && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={data.loadingMore || undefined} onClick={() => { if (!data.loadingMore) void data.loadMore() }}>{t('memoryV2.show_more')}</Btn>}
       {!data.pending && !data.error && !visible.length && <p className="text-[13px] text-muted">{t('memoryV2.empty')}</p>}
       {copy.data && <div className="text-[13px]">
-        <p>{t('memoryV2.copy_source_unchanged')}</p>
-        {!copy.data.partial && <p role="status">{t('memoryV2.copy_result', { imported: fmtNumber(copy.data.results.filter(r => r.outcome === 'imported').length), skipped: fmtNumber(copy.data.results.filter(r => ['existing', 'rejected', 'not_attempted'].includes(r.outcome)).length) })}</p>}
         {copy.data.results.filter(r => r.reason && !['unconfirmed', 'rejected', 'not_attempted'].includes(r.outcome)).map((r, i) => <p key={`${r.id}:${i}`}>{r.reason}</p>)}
       </div>}
     </div>

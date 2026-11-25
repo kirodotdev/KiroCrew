@@ -597,7 +597,6 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     expect(api.memberMemoryPage.mock.calls.every(([store]) => store === MEMBER_STORE)).toBe(true)
-    expect(screen.queryByText('Adds only selected memories to this member; the source stays unchanged.')).toBeNull()
     expect(api.memorySeed).not.toHaveBeenCalled()
     await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
@@ -608,15 +607,14 @@ describe('private member memory lifecycle', () => {
     expect(within(dialog).getByRole('checkbox', { name: 'Unselected source knowledge' })).not.toBeChecked()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Copy selected (1)' }))
     await waitFor(() => expect(api.memorySeed).toHaveBeenCalledWith('default', MEMBER_STORE, [{ kind: 'fact', id: 'global.selected' }]))
-    expect(await within(dialog).findByText('Copied: 0. Skipped: 1.')).toBeInTheDocument()
-    await waitFor(() => expect(within(dialog).getByText('Adds only selected memories to this member; the source stays unchanged.', { exact: true })).toBeVisible())
+    expect(await within(dialog).findByText('Copied 0. 1 already there.')).toBeInTheDocument()
     expect(within(dialog).getAllByRole('status')).toHaveLength(1)
     expect(within(dialog).getByText('Existing target item preserved')).toBeInTheDocument()
     expect(within(dialog).queryByRole('alert')).toBeNull()
     expect(api.vectorSemanticWrite).not.toHaveBeenCalled()
     expect(api.vectorSemanticDelete).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
-    expect(screen.queryByText('Adds only selected memories to this member; the source stays unchanged.', { exact: true })).toBeNull()
+    expect(screen.queryByText('Copied 0. 1 already there.', { exact: true })).toBeNull()
     fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[0])
     expect(screen.getByText('Copied from Shared · Global Memory V1')).toBeInTheDocument()
     expect(screen.queryByText(FACT.derived_from)).toBeNull()
@@ -780,7 +778,7 @@ describe('private member memory lifecycle', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Copy selected (1)' }))
     const failure = await within(dialog).findByRole('alert')
     expect(failure).toHaveTextContent('Could not confirm the database write')
-    expect(within(dialog).queryByRole('status')).toBeNull()
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Copied 0. 0 already there. 1 failed.')
     expect(within(dialog).getByRole('checkbox', { name: 'Selected source knowledge' })).toBeChecked()
   })
 
@@ -888,28 +886,24 @@ describe('private member memory lifecycle', () => {
     expect(await screen.findByText(FACT.value_json)).toBeInTheDocument()
   })
 
-  it('selects every matching item and copies them in batches of fifty', async () => {
+  it('copies every matching item in one go, past 1,000, and ends on one result line', async () => {
     const original = api.memberMemoryPage.getMockImplementation()!
-    // 120 source facts over two pages of 100.
+    // 1,150 source facts, served 100 a page; 40 are already in the target.
     api.memberMemoryPage.mockImplementation((store: string, table: string, offset: number) => store === 'default' && table === 'semantic'
-      ? Promise.resolve({ entries: Array.from({ length: Math.max(0, Math.min(100, 120 - offset)) }, (_, index) => ({ key: `source.${offset + index}`, value_json: `Source item ${offset + index}` })) })
-      : original(store, table, offset))
-    api.memorySeed.mockImplementation(async (_source: string, _store: string, items: { id: string }[]) => ({ results: items.map(item => ({ id: item.id, outcome: 'imported' })) }))
+      ? Promise.resolve({ entries: Array.from({ length: Math.max(0, Math.min(100, 1150 - offset)) }, (_, index) => ({ key: `source.${offset + index}`, value_json: `Source item ${offset + index}` })) })
+      : store === 'default' ? Promise.resolve({ entries: [] }) : original(store, table, offset))
+    api.memorySeed.mockImplementation(async (_source: string, _store: string, items: { id: string }[]) => ({ results: items.map(item => ({ id: item.id, outcome: Number(item.id.split('.')[1]) < 40 ? 'existing' : 'imported' })) }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     await within(dialog).findByRole('checkbox', { name: 'Source item 99' })
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Select all matching' }))
-    // The second page loads, then all 120 are picked: past the old cap of 50.
-    const copy = await within(dialog).findByRole('button', { name: 'Copy selected (120)' })
-    expect(within(dialog).getByRole('checkbox', { name: 'Source item 119' })).toBeChecked()
-    expect(within(dialog).getByText('Up to 1,000 at a time')).toBeVisible()
-    fireEvent.click(copy)
-    await within(dialog).findByText('Copied: 120. Skipped: 0.')
-    expect(api.memorySeed.mock.calls.map(call => call[2].length)).toEqual([50, 50, 20])
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Source item 0' }))
-    expect(within(dialog).getByRole('button', { name: 'Copy selected (119)' })).toBeEnabled()
+    expect(within(dialog).getByRole('checkbox', { name: 'Source item 0' })).toBeChecked()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy all matching' }))
+    expect(await within(dialog).findByText('Copied 1,110. 40 already there.')).toBeVisible()
+    expect(api.memorySeed.mock.calls.reduce((n, call) => n + call[2].length, 0)).toBe(1150)
+    expect(api.memorySeed.mock.calls.every(call => call[2].length <= 50)).toBe(true)
   })
 
   it('stages a confirmed recovery for this member and explains the restart requirement', async () => {

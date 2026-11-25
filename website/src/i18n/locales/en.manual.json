@@ -12206,9 +12206,10 @@
     "viewPr": "Pull request"
   },
   "memoryV2": {
-    "copy_progress": "Copying {{done}} of {{total}}…",
+    "copy_all_matching": "Copy all matching",
     "copy_select_all": "Select all matching",
-    "copy_up_to": "Up to {{limit}} at a time",
+    "copy_tally": "Copied {{imported}}. {{existing}} already there.",
+    "copy_tally_failed": "Copied {{imported}}. {{existing}} already there. {{failed}} failed.",
     "restore_experience": "Restore experience",
     "member_store_label": "{{member}} · Member memory ({{version}})",
     "recall_model_notice": "Memory matching is not verified for this model. Check the memories selected for this task.",
@@ -12229,8 +12230,6 @@
     "source": "Source memory",
     "search": "Search memory",
     "empty": "No matching memories",
-    "copy_result": "Copied: {{imported}}. Skipped: {{skipped}}.",
-    "copy_source_unchanged": "Adds only selected memories to this member; the source stays unchanged.",
     "copy_selected": "Copy selected ({{count}})",
     "title": "Memory for {{member}}",
     "recall": "Recall for this task",

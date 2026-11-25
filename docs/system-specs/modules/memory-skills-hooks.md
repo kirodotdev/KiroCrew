@@ -2082,16 +2082,20 @@ cards that retain memory type, content, member and channel. Restore keeps its
 original control visible while a separate warning, Confirm and Cancel appear.
 
 Copy from another memory (a bot page's ⋯ menu on every width, and its empty
-list) is an explicit owner operation. The owner picks a source and up to 1,000
-fact, directive or episode identities, one by one or with Select all matching,
-which reads the remaining source pages first. `POST /api/memory/seed` takes at
-most `MAX_SEED_ITEMS` (50) per request, a request-body bound: each copy is one
-row write whose vector the backfill sweep fills later. So the dialog
-(`pages/overview/memorySeedBatches.ts`) sends 50-item batches in order with a
-progress count, and stops at the first batch that is partial or refused, marking
-every later item not attempted. Per batch the server validates the complete
-selection before writing, copies without overwriting target identities, and
-reports imported/skipped outcomes with reasons and provenance. No row is
+list) is an explicit owner operation. The owner picks a source and either
+individual fact, directive or episode identities or Select all matching, which
+copies every source row the search matches with no cap: the dialog reads the
+source page by page while it copies, so nothing is loaded up front.
+`POST /api/memory/seed` takes at most `MAX_SEED_ITEMS` (50) per request, a
+request-body bound: each copy is one row write whose vector the backfill sweep
+fills later. So the dialog (`pages/overview/memorySeedBatches.ts`) sends 50-item
+batches in order, shows running counts (copied, already there, failed) and ends
+on one result line. It stops at the first batch that is partial or refused, or a
+source page that fails to read. Each batch commits before the next is sent, so a
+stopped run keeps what it copied, and running it again skips those rows
+(`seed_item_if_absent` reports them `existing`). Per batch the server validates
+the complete selection before writing, copies without overwriting target
+identities, and reports outcomes with reasons and provenance. No row is
 selected automatically. This is selective copying, not V1 migration.
 
 V1 fresh-session context keeps complete preferences and eligible project-scoped

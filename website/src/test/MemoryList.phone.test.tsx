@@ -120,6 +120,8 @@ describe('the filter sheet', () => {
     const rail = await screen.findByRole('complementary', { name: 'Filters' })
     fireEvent.click(await within(rail).findByRole('checkbox', { name: 'Tool' }))
     expect(screen.queryByRole('button', { name: 'Filters' })).toBeNull()
+    // The hide button shares the search row, not a row of its own.
+    expect(within(rail).getByRole('button', { name: 'Hide filters' }).parentElement).toBe(within(rail).getByRole('searchbox', { name: 'Search filters' }).parentElement!.parentElement)
     fireEvent.click(within(rail).getByRole('button', { name: 'Hide filters' }))
     expect(screen.queryByRole('complementary', { name: 'Filters' })).toBeNull()
     const show = screen.getByRole('button', { name: 'Filters' })

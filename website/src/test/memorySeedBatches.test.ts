@@ -1,40 +1,74 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { api } = vi.hoisted(() => ({ api: { memorySeed: vi.fn() } }))
+const { api } = vi.hoisted(() => ({ api: { memorySeed: vi.fn(), memberMemoryPage: vi.fn() } }))
 vi.mock('../api/client', () => ({ api }))
-const { SEED_BATCH, seedInBatches } = await import('../pages/overview/memorySeedBatches')
+const { SEED_BATCH, seedInBatches, sourceRows } = await import('../pages/overview/memorySeedBatches')
 
 const items = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: 'fact' as const, id: `k${i}` }))
-const imported = (batch: { id: string }[]) => ({ results: batch.map(item => ({ id: item.id, outcome: 'imported' as const })) })
+
+/** A target store that keeps what it was given, the way seed_item_if_absent does. */
+function target() {
+  const kept = new Set<string>()
+  api.memorySeed.mockImplementation(async (_s: string, _t: string, batch: { id: string }[]) => ({
+    results: batch.map(item => {
+      if (kept.has(item.id)) return { id: item.id, outcome: 'existing' as const }
+      kept.add(item.id)
+      return { id: item.id, outcome: 'imported' as const }
+    }),
+  }))
+  return kept
+}
+
+/** A source of `facts` semantic rows and `episodes` experiences, served 100 a page. */
+function source(facts: number, episodes: number) {
+  api.memberMemoryPage.mockImplementation(async (_s: string, kind: string, offset: number) => {
+    const total = kind === 'semantic' ? facts : episodes
+    const n = Math.max(0, Math.min(100, total - offset))
+    return { entries: Array.from({ length: n }, (_, i) => kind === 'semantic' ? { key: `pref.k${offset + i}` } : { id: `ep${offset + i}` }) }
+  })
+}
 
 beforeEach(() => { vi.clearAllMocks() })
 
 describe('seedInBatches', () => {
-  it('sends route-sized batches and reports progress after each', async () => {
-    api.memorySeed.mockImplementation(async (_s: string, _t: string, batch: { id: string }[]) => imported(batch))
+  it('copies every matching source row past 1,000, 50 per request, with running counts', async () => {
+    const kept = target()
+    source(2400, 130)
     const progress = vi.fn()
-    const out = await seedInBatches('default', 'member-a', items(120), progress)
-    expect(api.memorySeed.mock.calls.map(call => call[2].length)).toEqual([SEED_BATCH, SEED_BATCH, 20])
-    expect(progress.mock.calls.map(call => call[0])).toEqual([50, 100, 120])
-    expect(out).toEqual({ results: expect.any(Array), partial: false })
-    expect(out.results).toHaveLength(120)
+    const out = await seedInBatches('default', 'member-a', sourceRows('default', 'pref'), progress)
+    expect(out.partial).toBe(false)
+    expect(out.counts).toEqual({ imported: 2530, existing: 0, failed: 0 })
+    expect(kept.size).toBe(2530)
+    expect(api.memorySeed.mock.calls.every(call => call[2].length <= SEED_BATCH)).toBe(true)
+    expect(api.memberMemoryPage).toHaveBeenCalledWith('default', 'semantic', 2400, 'pref')
+    expect(progress.mock.calls.at(-1)![0]).toEqual({ imported: 2530, existing: 0, failed: 0 })
   })
 
-  it('stops after a partial batch and marks every later item not attempted', async () => {
-    api.memorySeed.mockResolvedValueOnce(imported(items(50))).mockResolvedValueOnce({ partial: true, results: [{ id: 'k50', outcome: 'unconfirmed', reason: 'disk full' }] })
+  it('keeps what a failed run copied, and a second run copies the rest with no duplicates', async () => {
+    const kept = target()
+    const real = api.memorySeed.getMockImplementation()!
+    let calls = 0
+    api.memorySeed.mockImplementation(async (...args: [string, string, { id: string }[]]) => {
+      if (++calls === 7) throw new Error('gateway restarted')
+      return real(...args)
+    })
+    const first = await seedInBatches('default', 'member-a', items(1200))
+    expect(first.partial).toBe(true)
+    expect(first.error).toBeInstanceOf(Error)
+    expect(first.counts.imported).toBe(300)
+    api.memorySeed.mockImplementation(real)
+    const second = await seedInBatches('default', 'member-a', items(1200))
+    expect(second.counts).toEqual({ imported: 900, existing: 300, failed: 0 })
+    expect(kept.size).toBe(1200)
+  })
+
+  it('stops after a partial batch, and rejects a failure before anything was copied', async () => {
+    api.memorySeed.mockResolvedValueOnce({ results: items(50).map(i => ({ id: i.id, outcome: 'imported' })) })
+      .mockResolvedValueOnce({ partial: true, results: [{ id: 'k50', outcome: 'unconfirmed', reason: 'disk full' }] })
     const out = await seedInBatches('default', 'member-a', items(120))
     expect(api.memorySeed).toHaveBeenCalledTimes(2)
-    expect(out.partial).toBe(true)
-    expect(out.results.filter(r => r.outcome === 'not_attempted')).toHaveLength(20)
-  })
-
-  it('keeps what earlier batches copied when a later request fails, and rejects a first failure', async () => {
+    expect(out).toMatchObject({ partial: true, counts: { imported: 50, existing: 0, failed: 1 } })
     const refused = new Error('A selected memory changed')
-    api.memorySeed.mockResolvedValueOnce(imported(items(50))).mockRejectedValueOnce(refused)
-    const out = await seedInBatches('default', 'member-a', items(80))
-    expect(out.error).toBe(refused)
-    expect(out.results.filter(r => r.outcome === 'imported')).toHaveLength(50)
-    expect(out.results.filter(r => r.outcome === 'not_attempted')).toHaveLength(30)
     api.memorySeed.mockRejectedValueOnce(refused)
     await expect(seedInBatches('default', 'member-a', items(10))).rejects.toBe(refused)
   })
