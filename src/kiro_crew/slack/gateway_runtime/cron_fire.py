@@ -263,6 +263,9 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                 )
             await self._alert_cron_failure(job, gate_reason, denied=True)
             return None
+        # ── Reminder: the message reaches the user as written, no agent turn ──
+        if job.notify_only is True:
+            return await self._deliver_cron_reminder(job)
         if await _awaits_host_sign_in(job):
             return None
 
