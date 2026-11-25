@@ -202,7 +202,9 @@ async def _restart_gateway(
         # flight is filed cancelled, its marker cleared and its owner told.
         await stop_cron_before_restart(getattr(state, "crons", None))
         committed = True
-        # A planned restart: the turns close_all() cuts resume on the next boot.
+        # A planned restart: record the chats with a running turn that close_all()
+        # is about to cut, so the next start tries to resume them, and wait for
+        # Owner approval records still being written.
         # Imported at module load, before an apply can remove this tree; that
         # also preloads it for the gateway's update restart.
         step("recording running chats")
