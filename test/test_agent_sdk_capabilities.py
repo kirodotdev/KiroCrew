@@ -95,6 +95,7 @@ CAPABILITY_FIELDS = (
     "loads_steering_natively",
     "keeps_prompt_on_unlanded_turn",
     "ends_turn_on_permission_reject",
+    "names_crew_tools_by_fused_name",
     "keeps_session_across_compaction",
 )
 
