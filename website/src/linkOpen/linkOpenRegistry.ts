@@ -84,7 +84,7 @@ export function resolveLinkOpeners(apps: readonly AppLike[]): ResolvedLinkOpener
     const grant = app.linkOpenGrant
     if (!grant) continue
     const { exact, suffixes } = readHostClaims(p.hosts, MAX_HOSTS, grantedSet(grant.hosts) ?? new Set())
-    if (!exact.size && !suffixes.length) continue
+    if (!exact.size && !suffixes.size) continue
     out.push({
       key: `${app.name}:${id}`,
       appName: app.name,

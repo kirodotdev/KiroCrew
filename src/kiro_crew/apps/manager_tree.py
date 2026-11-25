@@ -89,6 +89,25 @@ def _reserved_name_code(source: Path) -> str:
     return RESERVED_APP_NAME_CODE if is_reserved_app_name(manifest.name) else ""
 
 
+def _min_version_refusal_code(source: Path) -> str:
+    """Return ``MIN_VERSION_REFUSAL_CODE`` if *source* needs a newer Kiro Crew.
+
+    Called on the ``_validate_source_path`` failure path, like
+    ``_reserved_name_code``: the refusal that only an update of Kiro Crew can
+    clear carries its own code, so the dashboard does not send the user to the
+    app's maker for it. Parses defensively for the same reason.
+    """
+    from kiro_crew.apps.version import MIN_VERSION_REFUSAL_CODE
+
+    try:
+        manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
+    except (OSError, ValueError):
+        return ""
+    if manifest.minKiroCrewVersion and _check_min_version(manifest.minKiroCrewVersion):
+        return MIN_VERSION_REFUSAL_CODE
+    return ""
+
+
 def _check_min_version(min_version: str) -> str | None:
     """Return error string if current Kiro Crew version is too old, else None."""
     from kiro_crew.apps.version import check_min_version

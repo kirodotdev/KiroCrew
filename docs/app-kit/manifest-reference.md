@@ -1111,7 +1111,7 @@ No app code runs until a link on one of the provider's `hosts` is hovered.
 |-------|------|-------------|
 | `id` | string | Storage-safe slug, unique within the app |
 | `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
-| `hosts` | string[] | 1-64 hostnames; a leading dot means the domain and every subdomain. Only `https:` links match. Stored lowercased, in IDNA (punycode) form and without a trailing dot. A public suffix (`co.uk`, `.github.io`) or a bare TLD (`com`) is refused |
+| `hosts` | string[] | At least one hostname, with no upper limit; a leading dot means the domain and every subdomain. Only `https:` links match. Stored lowercased, in IDNA (punycode) form and without a trailing dot. A public suffix (`co.uk`, `.github.io`) or a bare TLD (`com`) is refused |
 | `textPatterns` | object[] | Optional. Plain text in chat messages that also opens a card; see below |
 | `fullUrl` | boolean | Optional. `show` gets the URL without its query and fragment unless this is `true` and the owner approved it |
 
@@ -1427,7 +1427,7 @@ until the user picks the app.
 |-------|------|-------------|
 | `id` | string | Storage-safe slug, unique within the app |
 | `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
-| `hosts` | string[] | 1-64 hostnames, with the same rules as `linkPreviews.hosts`. Only `https:` links on the default port and without a user name match |
+| `hosts` | string[] | 1-64 hostnames, each checked like a `linkPreviews.hosts` entry. Only `https:` links on the default port and without a user name match |
 | `fullUrl` | boolean | Optional. `open` gets the URL without its query and fragment unless this is `true` and the owner approved it |
 
 At most **one** entry per app; a click goes to the first enabled app whose `hosts`

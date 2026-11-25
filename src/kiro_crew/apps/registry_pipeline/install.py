@@ -1638,6 +1638,8 @@ async def install_from_registry(
             "message": result.message,
             "error": result.error,
         }
+        if not result.ok and result.error_code:
+            outcome["code"] = result.error_code
         if result.notice:
             # e.g. ``session_approval_reconsent``: the app was left disabled on
             # purpose and the routes must neither start it nor report plain success.

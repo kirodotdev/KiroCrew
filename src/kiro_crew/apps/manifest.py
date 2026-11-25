@@ -83,7 +83,6 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_OPEN_HOSTS,
-    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,

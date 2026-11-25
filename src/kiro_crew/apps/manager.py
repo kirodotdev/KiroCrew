@@ -249,6 +249,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _check_path_safety,
         _copy_app_tree,
         _is_generated_deps_artifact_name,
+        _min_version_refusal_code,
         _owned_data_dir,
         _remove_any_shape,
         _reserved_name_code,
