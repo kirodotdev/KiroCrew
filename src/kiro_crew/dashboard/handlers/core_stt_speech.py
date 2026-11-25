@@ -27,6 +27,7 @@ from kiro_crew.dashboard.handlers.core_stt_access import (
     _deny_app_token,
 )
 from kiro_crew.transcribe import audio_exceeds_secs, availability_detail, batch_duration_cap_secs
+from kiro_crew.transcribe_ffmpeg import _DEMUXER_BY_SUFFIX
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
@@ -57,6 +58,12 @@ _POLISH_MAX_RATIO = 1.8
 #: aiohttp does not cancel a handler when its client leaves, so without this check
 #: an aborted upload kept the recogniser busy until the whole clip was decoded.
 _CLIENT_GONE_POLL_SECS = 0.5
+
+#: Suffixes the upload's temp file may carry: the ones the decoder pins to a
+#: demuxer, plus the containers Apple Speech opens without it. The suffix is
+#: the only part of the client's filename that reaches the temp path, so any
+#: other one (``.webm:x`` names an NTFS stream on Windows) becomes ``.webm``.
+_UPLOAD_SUFFIXES = frozenset(_DEMUXER_BY_SUFFIX) | {".aiff", ".aif", ".aifc", ".caf"}
 
 
 class _ClientGone(Exception):
@@ -464,7 +471,9 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
 
     # Use uploaded filename extension (recording.webm / .mp4 / .ogg)
     fname = getattr(field, "filename", None) or "recording.webm"
-    ext = os.path.splitext(fname)[1] or ".webm"
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in _UPLOAD_SUFFIXES:
+        ext = ".webm"
     # A fresh unpublished path: stream_part_to_file writes to a sibling temp
     # off the event loop and publishes here atomically, so no exit path (413,
     # backend failure, cancellation) can leave a partial file at this name.
