@@ -1391,6 +1391,15 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   mark apps `defaultInstall` for a one-time install and trust grant on first
   boot. Honoured only for a pinned row in force at the `owner` tier; contract in
   [app-kit-platform](app-kit-platform.md) §15.1.
+  A row may also carry `appNamespace: "<namespace>"`. An app installed from that
+  registry then has the public app id `<namespace>.<name>` in `kirocrew.app.*`
+  metrics instead of `private` (`apps/store_origin.py`). Read only from a pinned
+  build row that is still served (a name an operator registry also claims is
+  served by neither, so stays `private`), and only when that registry's cached
+  index lists the app at the clone target its install record names. An id that
+  does not match `^[a-z0-9][a-z0-9._-]{0,63}$` stays
+  `private`. A destination that must not see these names sets
+  `OtlpDestination.private_entity_namespaces`.
 - `TelemetryProvider.otlp_destinations(cfg) -> Sequence[OtlpDestination]` — the
   OTLP collectors this edition sends telemetry to. Read by
   `metrics/provider.py::_otlp_destinations` once per recorder build (through

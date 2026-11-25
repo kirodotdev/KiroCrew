@@ -5,11 +5,14 @@ one per destination an edition declared. The SDK gives every one of them the sam
 collected view, so a destination that may receive only PART of what the core
 collects needs its own exporter-level filter. That is this module.
 
-Three narrowings, all declared on ``OtlpDestination`` and all one-directional:
+Four narrowings, all declared on ``OtlpDestination`` and all one-directional:
 
 * ``allow`` -- a metric whose name is not in the set never reaches the encoder.
 * ``point_attributes`` -- fixed pairs added to every exported data point.
 * ``resource_allow`` -- the exported Resource reduced to the named keys.
+* ``private_entity_namespaces`` -- an ``Entity`` of ``<namespace>.<app>`` is sent as
+  ``private``, with its ``entity_version``; points that then share attributes are
+  merged into one.
 
 Three properties this module exists to guarantee, in the order they matter:
 
@@ -55,6 +58,10 @@ logger = logging.getLogger(__name__)
 #: that wants it.
 ALLOWED_POINT_ATTRIBUTE_KEYS = frozenset({"ClientType", "machineId"})
 
+#: What a hidden ``Entity`` and its ``entity_version`` are sent as:
+#: ``feature_usage.APP_PRIVATE``, spelled here so this module stays import-light.
+PRIVATE = "private"
+
 
 def validate_point_attributes(attributes: Optional[Mapping[str, str]]) -> "dict[str, str]":
     """Return *attributes* as a plain dict, or raise on an unreviewed key.
@@ -84,6 +91,7 @@ def narrows_export(dest: "OtlpDestination") -> bool:
         getattr(dest, "allow", None) is not None
         or bool(getattr(dest, "point_attributes", None))
         or getattr(dest, "resource_allow", None) is not None
+        or bool(getattr(dest, "private_entity_namespaces", None))
     )
 
 
@@ -107,12 +115,15 @@ class FilteredMetricExporter:
         allow: "Optional[frozenset[str]]" = None,
         point_attributes: Optional[Mapping[str, str]] = None,
         resource_allow: "Optional[frozenset[str]]" = None,
+        private_entity_namespaces: "Optional[frozenset[str]]" = None,
     ) -> None:
         self._exporter = exporter
         self._name = name
         self._allow = None if allow is None else frozenset(allow)
         self._point_attributes = validate_point_attributes(point_attributes)
         self._resource_allow = None if resource_allow is None else frozenset(resource_allow)
+        # ``str.startswith`` takes a tuple; the ``.`` keeps namespace ``a`` off ``ab.x``.
+        self._hidden_starts = tuple(sorted(f"{p}." for p in private_entity_namespaces or ()))
         # One warning for the first narrowing failure, then debug. A per-minute
         # reader that kept warning would write one line per interval forever.
         self._warned = False
@@ -214,9 +225,10 @@ class FilteredMetricExporter:
         return Resource(kept, getattr(resource, "schema_url", None))
 
     def _narrow_metric(self, metric: Any) -> Any:
-        """Drop *metric* when the allowlist excludes it, else label its points."""
+        """Drop *metric* when the allowlist excludes it, else hide and label its points."""
         if self._allow is not None and metric.name not in self._allow:
             return None
+        metric = self._hide_entities(metric)
         if not self._point_attributes:
             return metric
         data = getattr(metric, "data", None)
@@ -229,6 +241,43 @@ class FilteredMetricExporter:
         ]
         return dataclasses.replace(metric, data=dataclasses.replace(data, data_points=labelled))
 
+    def _hide_entities(self, metric: Any) -> Any:
+        """*metric* with each hidden ``Entity`` sent as ``private``, or *metric* itself.
+
+        A point whose ``Entity`` starts with a hidden namespace gets ``Entity`` and
+        ``entity_version`` set to ``private``. It can then share its attributes
+        with a point that was ``private`` already; on a counter the two are summed
+        into one, so the destination never sees two points of one series.
+        """
+        if not self._hidden_starts:
+            return metric
+        data = getattr(metric, "data", None)
+        points = getattr(data, "data_points", None)
+        if data is None or not points:
+            return metric
+        out = []
+        hidden = False
+        for point in points:
+            attrs = getattr(point, "attributes", None) or {}
+            entity = attrs.get("Entity")
+            if not (isinstance(entity, str) and entity.startswith(self._hidden_starts)):
+                out.append(point)
+                continue
+            new = dict(attrs)
+            new["Entity"] = PRIVATE
+            if "entity_version" in new:
+                new["entity_version"] = PRIVATE
+            out.append(dataclasses.replace(point, attributes=new))
+            hidden = True
+        if not hidden:
+            return metric
+        # Only a Sum (a counter) adds: every metric that carries Entity is one
+        # (``test_product_metrics``). shortcut: another kind keeps its points
+        # unmerged; merge it too if a gauge ever carries Entity.
+        if hasattr(data, "is_monotonic"):
+            out = _summed_by_attributes(out)
+        return dataclasses.replace(metric, data=dataclasses.replace(data, data_points=out))
+
     def _merged_attributes(self, point: Any) -> "dict[str, str]":
         """Point attributes with this destination's fixed pairs laid over them.
 
@@ -240,6 +289,28 @@ class FilteredMetricExporter:
         existing = dict(getattr(point, "attributes", None) or {})
         existing.update(self._point_attributes)
         return existing
+
+
+def _summed_by_attributes(points: "list[Any]") -> "list[Any]":
+    """*points* with those of equal attributes added into one, in first-seen order.
+
+    The sum spans both points' windows. Exemplars are kept from both.
+    """
+    merged: "dict[frozenset[Any], Any]" = {}
+    for point in points:
+        key = frozenset((point.attributes or {}).items())
+        first = merged.get(key)
+        if first is None:
+            merged[key] = point
+            continue
+        merged[key] = dataclasses.replace(
+            first,
+            value=first.value + point.value,
+            start_time_unix_nano=min(first.start_time_unix_nano, point.start_time_unix_nano),
+            time_unix_nano=max(first.time_unix_nano, point.time_unix_nano),
+            exemplars=[*(first.exemplars or ()), *(point.exemplars or ())],
+        )
+    return list(merged.values())
 
 
 def wrap_if_narrowed(dest: "OtlpDestination", exporter: Any) -> Any:
@@ -261,4 +332,5 @@ def wrap_if_narrowed(dest: "OtlpDestination", exporter: Any) -> Any:
         allow=getattr(dest, "allow", None),
         point_attributes=getattr(dest, "point_attributes", None),
         resource_allow=getattr(dest, "resource_allow", None),
+        private_entity_namespaces=getattr(dest, "private_entity_namespaces", None),
     )

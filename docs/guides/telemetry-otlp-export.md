@@ -457,7 +457,7 @@ is what this guide is about.
 A destination is also allowed to receive only PART of that. `OtlpDestination`
 carries three optional fields. An `otlp_endpoints` entry sets them with the keys
 of the same names, and a build that assembles its own destination can set them
-too:
+too (a build can also set a fourth, `private_entity_namespaces`, below):
 
 - `allow` -- only metrics whose name is in this set are sent. Unset means
   everything, which is what your endpoint gets.
@@ -466,6 +466,11 @@ too:
 - `resource_allow` -- that destination's batches carry a resource reduced to these
   keys, so a destination that may see only `service.name` and `service.version`
   does not receive `service.instance.id`.
+
+A build can name the apps of a registry it ships, as `<namespace>.<name>` in `Entity`.
+A destination the build assembles can set `private_entity_namespaces` to receive
+those values as `private` instead. An `otlp_endpoints` entry has no such key, and
+nothing is named unless the build declares the registry.
 
 Three things to take from this if you operate a collector:
 
@@ -517,7 +522,7 @@ These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
 group, `kirocrew.app.installed`, `kirocrew.app.updated`,
 `kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time`,
 `kirocrew.app.credits`, `kirocrew.app.present`, `kirocrew.app.opened` and `kirocrew.app.foreground_time`: `Feature` = `app`, `Activity` = the last name segment,
-`Entity` (a shipped built-in's or a store app's name, else `private`),
+`Entity` (a shipped built-in's or a store app's name, `<namespace>.<name>` for an app from a registry the build names, else `private`),
 `entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
 or build suffix, `private` for a private app), and `via` (`store` / `default` /
 `other`) on `installed` and `updated`, `keep_data` (`true` / `false`) on

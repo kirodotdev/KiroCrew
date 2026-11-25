@@ -284,6 +284,7 @@ class TestTheObservableOutcome:
             _product(point_attributes={}, resource_allow=None),
             _product(allow=None, resource_allow=None),
             _product(allow=None, point_attributes={}),
+            _hiding(),
         ):
             assert df.narrows_export(dest) is True
 
@@ -528,3 +529,85 @@ class TestTheWrapperKeepsTheCoresDecisions:
         assert wrapper.force_flush(1234) is True
         wrapper.shutdown(5678)
         assert calls == [("force_flush", 1234), ("shutdown", 5678)]
+
+
+# -- private_entity_namespaces ------------------------------------------------------
+
+APP_PRESENT = "kirocrew.app.present"
+
+
+def _hiding(namespaces: "frozenset[str]" = frozenset({"acme"})) -> OtlpDestination:
+    """A destination that narrows only by hiding ``<namespace>.<app>`` entities."""
+    return OtlpDestination(
+        "hiding",
+        "https://hiding.example/v1/metrics",
+        frozenset({"metrics"}),
+        private_entity_namespaces=namespaces,
+    )
+
+
+def _entity_points(exporter, name: str = APP_PRESENT) -> "dict[tuple, float]":
+    """``(Entity, entity_version, status)`` -> value, for every point of *name*."""
+    out: "dict[tuple, float]" = {}
+    for point in exporter.points(name):
+        a = dict(point.attributes or {})
+        key = (a.get("Entity"), a.get("entity_version"), a.get("status"))
+        assert key not in out, f"two points of one series reached the destination: {key}"
+        out[key] = point.value
+    return out
+
+
+def _record_entities(h) -> None:
+    counter = h.meter.create_counter(APP_PRESENT)
+    for entity, version in (
+        ("acme.tool-a", "1.0.0"),
+        ("acme.tool-b", "2.0.0"),
+        ("private", "private"),
+        ("weather-app", "1.2.3"),
+        ("acmex.tool", "1.0.0"),
+    ):
+        counter.add(1, attributes={"Entity": entity, "entity_version": version, "status": "on"})
+    # A point with no Entity is left as it is.
+    h.meter.create_counter(ALLOWED).add(1, attributes={"status": "on"})
+
+
+class TestPrivateEntityNamespaces:
+    def test_a_hidden_entity_is_private_and_merged_into_the_private_series(self, harness):
+        h = harness([_operator(), _hiding()])
+        _record_entities(h)
+        h.flush()
+
+        assert _entity_points(h.exporters["hiding"]) == {
+            ("private", "private", "on"): 3,
+            ("weather-app", "1.2.3", "on"): 1,
+            ("acmex.tool", "1.0.0", "on"): 1,
+        }
+        assert h.exporters["hiding"].attrs(ALLOWED) == [{"status": "on"}]
+
+    def test_the_operator_destination_and_the_local_sink_keep_the_names(self, harness):
+        h = harness([_operator(), _hiding()])
+        _record_entities(h)
+        h.flush()
+
+        assert _entity_points(h.exporters["operator"]) == {
+            ("acme.tool-a", "1.0.0", "on"): 1,
+            ("acme.tool-b", "2.0.0", "on"): 1,
+            ("private", "private", "on"): 1,
+            ("weather-app", "1.2.3", "on"): 1,
+            ("acmex.tool", "1.0.0", "on"): 1,
+        }
+        _, points, _ = h.local_records()
+        local = {(p.get("attributes") or {}).get("Entity") for p in points}
+        assert {"acme.tool-a", "acme.tool-b", "private"} <= local, local
+
+    def test_the_merged_point_spans_both_windows(self):
+        from opentelemetry.sdk.metrics.export import NumberDataPoint
+
+        a = NumberDataPoint({"Entity": "private"}, 10, 20, 1, [])
+        b = NumberDataPoint({"Entity": "private"}, 5, 30, 2, [])
+        (merged,) = df._summed_by_attributes([a, b])
+        assert (merged.start_time_unix_nano, merged.time_unix_nano, merged.value) == (5, 30, 3)
+
+    def test_no_namespaces_is_not_wrapped(self):
+        inner = _RecordingExporter()
+        assert df.wrap_if_narrowed(_hiding(frozenset()), inner) is inner
