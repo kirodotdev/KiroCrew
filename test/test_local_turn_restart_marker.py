@@ -469,6 +469,67 @@ async def test_a_failed_marker_save_never_refuses_the_turn(tmp_path, monkeypatch
     assert slot._dirty is True
 
 
+@pytest.mark.asyncio
+async def test_a_reader_holding_past_the_budget_defers_the_marker_to_the_next_save(
+    tmp_path, monkeypatch, caplog
+):
+    """A Windows reader that outlasts the rename budget defers the marker, sized and said.
+
+    The admission merge gives up after the transcript budget and the turn goes
+    ahead. The give-up warning names the transcript's size, the marker warning
+    names what waits for the next save, and once the reader has closed that save
+    writes the generation and the prompt copy.
+    """
+    import logging
+
+    from windows_sim import replace_sharing_violation
+
+    from kiro_crew import atomic_write, platform_compat
+    from kiro_crew.testing.clock import ManualClock
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    slot.append("assistant", "earlier answer", "msg msg-a")
+    assert await _save_off_loop(state, slot)
+    slot.append("user", "the prompt that opens this turn", "msg msg-u")
+    slot._turn_generation = 6
+    slot._dirty = False
+    log = state.conversation_log
+    assert log is not None
+    transcript = log._path("dashboard:chat-1")
+
+    class _AsOnWindows:
+        IS_WINDOWS = True
+
+        def __getattr__(self, name):
+            return getattr(platform_compat, name)
+
+    monkeypatch.setattr(atomic_write, "platform_compat", _AsOnWindows())
+    # The budget's sleeps advance a virtual clock, so the 3 s hold costs no wall time.
+    ManualClock(monotonic_start=0.0).install(monkeypatch, atomic_write)
+
+    generation = _local_turn_generation_for(slot)
+    with caplog.at_level(logging.WARNING):
+        with replace_sharing_violation(match=transcript.name, times=10_000):
+            await _begin_local_turn_marker(state, slot, generation)
+
+    assert slot._turn_in_flight_generation == 6
+    assert slot._dirty is True
+    assert "turn_in_flight_generation" not in log.get_metadata("dashboard:chat-1")
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "giving up" in m and f"({transcript.stat().st_size} bytes)" in m for m in messages
+    ), messages
+    assert any("wait for the next save" in m for m in messages), messages
+
+    # The reader has closed: the next periodic save lands what admission could not.
+    await asyncio.to_thread(state.flush_slot_now, slot)
+
+    meta = log.get_metadata("dashboard:chat-1")
+    assert meta["turn_in_flight_generation"] == 6
+    assert meta["turn_in_flight_prompt"]["content"] == "the prompt that opens this turn"
+
+
 def test_generation_is_bound_before_the_marker_save_is_awaited():
     from kiro_crew.dashboard.state import _ChatSlot
 
