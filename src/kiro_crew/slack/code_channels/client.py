@@ -29,6 +29,7 @@ from typing import Any
 
 from kiro_crew.security import redact_credentials
 from kiro_crew.slack.code_channels.models import (
+    MAX_TITLE_CHARS,
     ChannelInfo,
     CodeChannelApiError,
     CodeChannelRequestError,
@@ -335,6 +336,12 @@ def parse_channel_info(channel_id: str, raw: Any) -> ChannelInfo:
             channel.get("is_archived") if isinstance(channel.get("is_archived"), bool) else None
         ),
         mpim=channel.get("is_mpim") if isinstance(channel.get("is_mpim"), bool) else None,
+        session_status=(
+            str(session.get("status"))
+            if session.get("status") in ("active", "processing", "suspended", "closed")
+            else ""
+        ),
+        session_title=str(session.get("title") or "")[:MAX_TITLE_CHARS],
     )
 
 

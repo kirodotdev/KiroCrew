@@ -410,6 +410,14 @@ class SlackClientOps(ABC):
         """The newest *limit* messages no bot posted, newest first; errors raise."""
         raise NotImplementedError
 
+    async def fetch_channel_messages(self, channel: str, *, latest: str, limit: int) -> list[dict]:
+        """The channel timeline's newest *limit* messages before *latest* (exclusive),
+        bots' included, newest first. A failed read returns ``[]``.
+
+        Default returns empty list -- subclasses override to hit Slack.
+        """
+        return []
+
     async def conversations_list(self) -> list[dict]:
         """List channels the bot can see. Each dict has at least ``id`` and ``name``.
 
@@ -1299,6 +1307,18 @@ class RealSlackClient(SlackClientOps):
         except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):
             logger.debug("fetch_thread_replies failed for %s/%s", channel, thread_ts, exc_info=True)
         return []
+
+    async def fetch_channel_messages(self, channel: str, *, latest: str, limit: int) -> list[dict]:
+        """One ``conversations.history`` page before *latest* (exclusive), newest first."""
+        kwargs: dict[str, Any] = {"channel": channel, "latest": latest, "limit": limit}
+        self._inject_team(channel, kwargs)
+        try:
+            resp = await self._web.conversations_history(**kwargs)
+        except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):
+            logger.debug("fetch_channel_messages failed for %s", channel, exc_info=True)
+            return []
+        messages: list[dict] = resp.get("messages", [])
+        return messages
 
     async def fetch_history(
         self, channel: str, limit: int, *, thread_ts: str | None = None, oldest: str | None = None

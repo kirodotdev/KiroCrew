@@ -67,6 +67,7 @@ from kiro_crew.slack import thread_trust
 from kiro_crew.slack.agent_sessions.fence import fenced_turn
 from kiro_crew.slack.channel_crew import context_template, resolve_channel_crew
 from kiro_crew.slack.channel_policy import channel_refusal
+from kiro_crew.slack.code_channels import joined as joined_code_channel
 from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
     _get_default_agent,
@@ -327,6 +328,11 @@ async def handle_message_transport(
     ``start_priority``: as for ``handler.handle_message`` (rule:
     ``kiro_crew.start_priority``).
 
+    In a code channel another agent runs (the code-channel gate's verdict for
+    this message, ``code_channels.joined.verdict_record``) a top-level message
+    is answered top-level, and a fresh session first reads the channel's record
+    and earlier messages, as untrusted data.
+
     ``spool_text`` / ``spool_attachments`` / ``spool_attachment_names``: as for
     ``handler.handle_message`` -- the pre-ingestion message the shutdown spool
     records instead of *text*, and the names of its files.
@@ -366,6 +372,14 @@ async def handle_message_transport(
         # and answering at root would strand the reply away from the question.
         if thread_ts is None:
             post_thread_ts = None
+    # A code channel reads as one flowing session: a top-level message is answered
+    # top-level, a threaded one in its thread (Slack's lifecycle guide, #working).
+    # Only the posting moves; the session stays keyed by the message, as before.
+    # Read from the gate's verdict, so a message held or queued before its turn keeps it.
+    code_channel_info = joined_code_channel.verdict_record(channel, msg_ts)
+    _joined = code_channel_info is not None
+    if _joined and thread_ts is None:
+        post_thread_ts = None
 
     # ── Resolve the thread to its OWNING session (mirrors native handle_message) ──
     # canonical_key above is purely syntactic: it namespaces the bare thread ts
@@ -950,6 +964,19 @@ async def handle_message_transport(
                 first_turn=_first_turn,
             )
 
+        # ── A code channel another agent runs: its record and earlier messages ──
+        # Read once, by a fresh session, BEFORE the receipt row below (which would
+        # count as a prior turn). Context only: who gets answered was decided above.
+        _code_channel_text: str | None = None
+        if _joined and context_builder and is_new and not resumed:
+            if _prior is None:
+                _prior = await has_prior_turns(conversation_log, session_key)
+            if not _prior:
+                # Up to this message, not its thread's root: later top-level posts count.
+                _code_channel_text = await joined_code_channel.channel_context(
+                    slack, code_channel_info, channel, msg_ts, session_key=session_key
+                )
+
         # ── Conversation log: the user's turn, at RECEIPT ──
         # Recorded BEFORE the turn runs rather than alongside the reply
         # afterwards. Writing both rows at the end meant the message did not
@@ -1050,6 +1077,7 @@ async def handle_message_transport(
                     parent_prompt_text(_thread_parent) if _thread_parent is not None else None
                 ),
                 thread_replies_text=_thread_replies.text if _thread_replies else None,
+                code_channel_text=_code_channel_text,
                 # The user's row already landed at receipt above. Without this the
                 # history fallback replays it as the thread's history, ahead of
                 # the same text as the current request.

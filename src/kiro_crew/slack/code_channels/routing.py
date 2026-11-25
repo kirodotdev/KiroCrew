@@ -36,7 +36,7 @@ from typing import Any
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal, new_channel_refusal
-from kiro_crew.slack.code_channels import hooks, recognition, thread_stop_gate
+from kiro_crew.slack.code_channels import hooks, joined, recognition, thread_stop_gate
 from kiro_crew.slack.code_channels.binding import (
     BindingUnavailable,
     bound_slot,
@@ -434,7 +434,9 @@ async def _inbound_gate(
         # UNKNOWN (a failed lookup) and UNAVAILABLE are never read as ours: the
         # message takes the normal path, exactly as without code channels. A
         # bound channel's origin was checked above, so that path cannot skip it.
-        return PASS
+        # Another agent's code channel carries its record on: the normal path
+        # answers it top-level and reads it first (:mod:`.joined`).
+        return InboundResult(Gate.PASS, info=info) if kind is ChannelKind.OTHER_AGENT else PASS
     # Slack's copy of the origin message is matched against the recorded origin,
     # or, before a binding exists (still being created, or opened from Slack's
     # UI), against the origin Slack reports for the channel.
@@ -549,8 +551,8 @@ async def _dispatch(
 ) -> bool:
     if result is not None and result.gate is Gate.DIRECTED:
         return await _dispatch_directed(orch, result, event, clean_text, sender_id)
-    if result is None or result.gate is not Gate.PASS:
-        return False
+    if result is None or result.gate is not Gate.PASS or joined.is_code_channel(result.info):
+        return False  # a mention inside a code channel never opens another one
     self_user = _self_user_id()
     mentioned = bool(self_user) and self_user in _MENTION.findall(str(event.get("text") or ""))
     if was_mention or mentioned:
@@ -1181,6 +1183,10 @@ async def deliver_directed(
                     actor=sender_id,
                 )
                 _audit(sender_id, "slack.code_channel.adopt", "allowed", f"channel={channel}")
+                if opened is None:  # Slack's record, not one of our routes. Under the lock,
+                    # so a later message waits until this first turn has its context.
+                    ts = str(event.get("ts") or "")
+                    await joined.seed_adopted(_slack(orch), binding, result.info, ts)
             elif bound_slot(_dashboard_state(), binding) is None:
                 # The session was closed in the dashboard: open a fresh one.
                 binding = await _bind_channel(
