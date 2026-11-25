@@ -35,7 +35,11 @@ def _span(name, span_id, parent, start, end, *, trace=TRACE_A, attrs=None, error
     status = {"status_code": "ERROR" if error else "UNSET"}
     return {
         "name": name,
-        "context": {"trace_id": f"0x{trace}", "span_id": f"0x{span_id:016x}", "trace_state": "[]"},
+        "context": {
+            "trace_id": f"0x{trace}",
+            "span_id": f"0x{span_id:016x}",
+            "trace_state": "[]",
+        },
         "parent_id": None if parent is None else f"0x{parent:016x}",
         "start_time": stamp(start),
         "end_time": stamp(end),
@@ -50,7 +54,11 @@ def _write(directory: Path, rows, name="spans-2026-11-14-100.jsonl", extra_lines
 
 
 def _turn(trace=TRACE_A, base=1, attrs=None):
-    ids = {"kirocrew.turn_id": TURN_A, "kirocrew.local.session_key": SESSION, **(attrs or {})}
+    ids = {
+        "kirocrew.turn_id": TURN_A,
+        "kirocrew.local.session_key": SESSION,
+        **(attrs or {}),
+    }
     return [
         _span("invoke_agent kirocrew", base, None, 0, 10, trace=trace, attrs=ids),
         _span("kirocrew.step", base + 1, base, 0.5, 2.5, trace=trace),
@@ -136,14 +144,16 @@ def test_a_malformed_line_is_skipped_with_one_warning_per_shard(_traces_dir, cap
     assert err.count("Warning:") == 1 and "skipped 4 line(s) in spans-2026-11-14-100.jsonl" in err
 
 
-def test_a_shard_over_the_size_cap_is_skipped_with_a_warning(
+def test_a_shard_over_the_size_cap_stops_the_run_instead_of_reporting_no_match(
     _traces_dir, _floor_monkeypatch, capsys
 ):
     _write(_traces_dir, _turn())
     _floor_monkeypatch.setattr(render, "MAX_SHARD_BYTES", 10)
-    rows, err = _show(capsys, TURN_A)
-    assert rows[0].startswith("No trace matches")
-    assert "skipped spans-2026-11-14-100.jsonl: larger than" in err
+    with pytest.raises(SystemExit) as exited:
+        render.trace_show(argparse.Namespace(key=TURN_A))
+    captured = capsys.readouterr()
+    assert exited.value.code == 1 and captured.out == ""
+    assert "Error: cannot read spans-2026-11-14-100.jsonl: larger than" in captured.err
 
 
 def test_the_span_count_is_bounded_and_the_newest_shards_are_read_first(
@@ -212,7 +222,11 @@ def test_the_rows_are_bounded(_traces_dir, _floor_monkeypatch, capsys):
 def test_the_cut_line_counts_every_span_never_shown_not_just_the_queued_ones(_traces_dir, capsys):
     """Two subtrees of 600 spans under one root: the cut falls inside the first one."""
     ids = iter(range(10, 10_000))
-    spans = [_span("root", 1, None, 0, 1300), _span("a", 2, 1, 0, 650), _span("b", 3, 1, 650, 1300)]
+    spans = [
+        _span("root", 1, None, 0, 1300),
+        _span("a", 2, 1, 0, 650),
+        _span("b", 3, 1, 650, 1300),
+    ]
     for parent, base in ((2, 0), (3, 650)):
         spans += [_span("s", next(ids), parent, base + i, base + i + 1) for i in range(600)]
     _write(_traces_dir, spans)

@@ -2053,8 +2053,13 @@ costs one call returning `None`, pinned by
 plus `kirocrew.trace_ns`; metrics keep `kirocrew`) with a `BatchSpanProcessor` into
 `tracing/exporter.py::JsonlSpanExporter`:
 `<data home>/traces/spans-YYYY-MM-DD-<pid>.jsonl`, one `ReadableSpan.to_json` line
-per span, pruned by `retention_days` / `max_total_mb` as a budget of its own. It is not
-the process's global tracer provider. Both span processors run on
+per span, pruned by `retention_days` / `max_total_mb` as a budget of its own. A span
+shard also rotates before it passes `tracing/shard_cap.py::MAX_SPAN_SHARD_BYTES`
+(50 MB), the same cap `kirocrew trace show` reads at, so the sink never writes a
+shard the reader must skip; `max_total_mb` still bounds the folder. A shard found
+over that cap (an older shard, or one written by another build) is a hard error in
+`trace show`, never a "No trace matches" answer. It is not the process's global
+tracer provider. Both span processors run on
 `tracing/provider.py::BATCH_LIMITS` (queue 2,048, batch 512, 5 s delay, 10 s export timeout), so no `OTEL_BSP_*`
 variable changes them.
 
