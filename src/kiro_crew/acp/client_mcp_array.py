@@ -610,7 +610,8 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     A mirror-less backend translates no spec, so the array Crew composes for it
     carries only what Crew adds on its own: the member session-control and panel
     entries. Empty for every backend outside both member sets, and for every
-    non-member session, so an ordinary session's array is unchanged.
+    non-member session but an ordinary pi one, which carries the spec's
+    control plane (see the end of this function).
 
     The two switch-offs still bind, read from one parse of the spec and the
     global settings file. ``disabled`` reaches the appends as it does on a
@@ -774,15 +775,24 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     # clash, as they do over a pooled stub. Scoped to the crewmate DM session the
     # gap is about -- the same ``is_member_session_key`` gate the member mounts
     # above ride -- and to a crewmate's worker, whose projection above is its own
-    # per-session spec (``session_mcp._crewmate_worker_spec``), so an ordinary pi
-    # session is unchanged, as it is on every other mirror-less path (the member
-    # mounts are already empty for it).
+    # per-session spec (``session_mcp._crewmate_worker_spec``). An ordinary pi
+    # session gets only Crew's own control plane (``kirocrew-core`` /
+    # ``kirocrew-cron``) from that translation, with its identity, as a mirrored
+    # harness does; which of the spec's other servers it receives is not decided.
     # circular import: members' module graph is heavy; resolved at call time.
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
     from kiro_crew.members import is_member_session_key
 
     out = members
     if records_zero_tools and (worker or is_member_session_key(self._session_key)):
         out = self._broker_only_spec_mounts(projection) + members
+    elif records_zero_tools:
+        control_plane = [
+            e
+            for e in self._broker_only_spec_mounts(projection)
+            if e.get("name") in CONTROL_PLANE_SERVERS
+        ]
+        out = control_plane + members
     if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         out = _with_crew_connections(self, projection, out)
     return out
@@ -1385,8 +1395,8 @@ def _antigravity_session_mcp_servers(self: AcpClient) -> list:
 def _pi_session_mcp_servers(self: AcpClient) -> list:
     """MCP server array passed to a pi ``session/new`` / ``session/load``.
 
-    Only the member mounts: pi has no mirror, so its spec is not
-    translated and Crew's pooled tools arrive through the shared broker append.
+    The composition of :meth:`_mirrorless_member_mounts`: pi has no mirror, so
+    Crew's pooled tools arrive through the shared broker append.
     pi-acp stores the wire array and never forwards it, so what MOUNTS these
     servers is the handoff file the spawn wrote from the same composition
     (:func:`kiro_crew.acp.harness.pi.pi_mcp_handoff_payload`). The wire copy is
