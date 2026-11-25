@@ -279,8 +279,8 @@ def await_codex_mcp_startup(harness) -> None:
 
     ``wait_for_mounts`` can only see the probe servers, which write a start line;
     Crew's own servers do not, so codex's own startup signal is the one that covers
-    them. Product code does not send this meta, so it is added here, on this
-    driver's *harness* object, through ``session_request``: the seam every
+    them. Product code sends this meta with a shorter cap, so it is raised here, on
+    this driver's *harness* object, through ``session_request``: the seam every
     ``session/new`` passes through just before it goes out."""
     from kiro_crew.acp.types import METHOD_SESSION_NEW
 

@@ -35,7 +35,7 @@ const ROWS = [
   },
 ] as const
 
-/** Signed out: the short list that sits beside the sign-in choices. */
+/** Signed out: the short list that sits under the sign-in choices. */
 export function KiroAccountUnlocksList() {
   return (
     <aside

@@ -6497,7 +6497,8 @@
       "sign_out_link_config_unreadable": "Impossibile caricare le impostazioni, quindi il link per uscire non può essere mostrato.",
       "switch_in_settings": "Cambia account nelle Impostazioni",
       "bots_sign_in_in_settings": "Accesso a Kiro per i Bot nelle Impostazioni",
-      "kiro_account_in_settings": "Account Kiro nelle Impostazioni"
+      "kiro_account_in_settings": "Account Kiro nelle Impostazioni",
+      "credit_usage_not_ready": "Il tuo saldo non è ancora pronto."
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
@@ -8397,7 +8398,8 @@
       "pending_cancel_unsettled": "Accesso effettuato, ma non è stato possibile annullare l’accesso avviato qui. Resta aperto fino alla scadenza.",
       "card_intro": "Kiro Agent e le altre funzioni di Kiro funzionano con questo account Kiro, qualunque harness dell’agente tu usi. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo cambia.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
-      "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
+      "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui.",
+      "use_another_way": "Usa un altro metodo"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Copia il comando di accesso",
@@ -17133,19 +17135,15 @@
         "engine_sign_in_reason": "Accedi a {{productName}} per passare al motore integrato."
       },
       "kiroSignInCard": {
-        "title": "Accesso a Kiro",
         "checking": "Verifica dell’accesso…",
         "signed_in_with": "Accesso effettuato con {{provider}}",
-        "signed_in_body": "Gli agenti vengono eseguiti con questo account Kiro. Il token di accesso viene rinnovato automaticamente.",
         "access_token_expires": "Il token di accesso scade {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "Il token di accesso è scaduto e verrà rinnovato la prossima volta che un agente ne avrà bisogno.",
         "sign_in_expired": "Accesso scaduto.",
         "sign_in_expired_body": "Accedi di nuovo per riprendere le sessioni e il lavoro degli agenti.",
         "sign_in_expired_body_account": "Accedi di nuovo per usare le funzioni che richiedono il tuo account Kiro.",
         "sign_in_again": "Accedi di nuovo",
         "switch_account": "Cambia account",
         "sign_out": "Esci",
-        "takes_effect_next_process": "Si applica ai processi agente avviati da ora in avanti; le sessioni in corso lo adottano al turno successivo.",
         "could_not_sign_out": "Impossibile uscire",
         "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada.",
         "search_label": "Esci o cambia account Kiro",
@@ -17169,7 +17167,10 @@
         "use_kiro_cli_account": "Usa l’account Kiro CLI",
         "use_kiro_cli_explain": "Questo rimuove l’accesso salvato qui. Kiro Agent verrà quindi eseguito con l’account Kiro CLI. Per annullare, accedi di nuovo qui.",
         "remove_this_sign_in": "Rimuovi questo accesso",
-        "keep_it": "Mantienilo"
+        "keep_it": "Mantienilo",
+        "signed_out_hint": "I tuoi agenti girano sul tuo account Kiro.",
+        "code_step_hint": "Apri la pagina e controlla che mostri questo codice.",
+        "loading_account": "Caricamento dell’account"
       },
       "kiroAccountUnlocks": {
         "list_heading": "Con un account Kiro",

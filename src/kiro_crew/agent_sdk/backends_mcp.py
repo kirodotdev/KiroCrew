@@ -465,13 +465,17 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = (
 # client id, redirect URI and scopes a Connections provider writes). Only kiro-cli
 # reads it: it loads the entry from the agent file it was launched with. KAS takes
 # its agents over ``_meta.kiro.customAgents``; from engine 0.66.104 that schema keeps
-# a public client's ``clientId`` and ``redirectUri`` (``kas_engine_features.carry_oauth``),
-# but a confidential client's block, one naming ``clientSecret``, is withheld on
-# every engine. Every pre-registered Connections provider is confidential, so KAS
-# is not a member until Crew sends the secret through
-# ``_kiro/mcp/oauth/setClientSecret``. A backend joins only once its own path carries
-# the block to the engine; until then the Connections page marks those providers
-# kiro-cli only.
+# a public client's ``clientId`` and ``redirectUri`` (``kas_engine_features.carry_oauth``).
+# A confidential client's block, one naming ``clientSecret``, reaches only an engine
+# that announced ``mcpOAuthClientSecret`` (0.66.135, and only when Crew declared
+# ``secretStorage``, i.e. ``agent.kas_persist_mcp_sign_in``): Crew sends the block
+# without the secret and the secret through ``_kiro/mcp/oauth/setClientSecret``
+# (``kas_client_secret``). Every pre-registered Connections provider is
+# confidential, and this set is read where no engine is running yet (the
+# Connections page): which engine a KAS chat gets, and whether it announces the
+# flag, is known only once it starts. So KAS stays out, and the page keeps marking
+# those providers kiro-cli only rather than offer a sign-in an older engine cannot
+# finish. A backend joins only once every engine its path runs carries the block.
 ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose sessions reach a Crew-owned Connection (``crew_oauth`` preview)

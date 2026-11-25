@@ -301,6 +301,16 @@ class SessionCapabilities:
     #: the default agent's block comes from its spec as before.
     crew_sends_persona_prompt: bool
 
+    #: Whether the harness itself picks which conditional steering files
+    #: (``manual`` and ``fileMatch`` inclusion) a turn gets, so Crew's context
+    #: assembly leaves that choice to it. Read both by a live provider's
+    #: ``native_steering`` and, for a chat with no live provider yet, by the
+    #: dashboard's steering list, so the two answer alike.
+    #:
+    #: True for KAS. False everywhere else, an unknown backend included: there
+    #: Crew keeps those files reachable itself.
+    loads_steering_natively: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -336,6 +346,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         writes_crew_readable_transcript=backend in _CREW_READABLE_TRANSCRIPT_BACKENDS,
         honors_chat_steering_off=is_claude_backend_name(backend),
         crew_sends_persona_prompt=is_claude_backend_name(backend),
+        loads_steering_natively=backend == ACP_BACKEND_KAS,
     )
 
 
@@ -374,6 +385,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     writes_crew_readable_transcript=False,
     honors_chat_steering_off=False,
     crew_sends_persona_prompt=False,
+    loads_steering_natively=False,
 )
 
 

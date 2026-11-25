@@ -6605,7 +6605,8 @@
       "sign_out_link_config_unreadable": "設定を読み込めなかったため、サインアウトのリンクを表示できません。",
       "switch_in_settings": "設定でアカウント切り替え",
       "bots_sign_in_in_settings": "設定で Bot の Kiro サインイン",
-      "kiro_account_in_settings": "設定の Kiro アカウント"
+      "kiro_account_in_settings": "設定の Kiro アカウント",
+      "credit_usage_not_ready": "残高はまだ準備できていません。"
     },
     "artifactChatPanel": {
       "agent_chat": "エージェントチャット",
@@ -7973,7 +7974,8 @@
       "pending_cancel_unsettled": "サインインしましたが、ここで開始したサインインをキャンセルできませんでした。タイムアウトするまで開いたままになります。",
       "card_intro": "Kiro Agent やその他の Kiro の機能は、どのエージェントハーネスを使っていてもこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
-      "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
+      "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。",
+      "use_another_way": "別の方法を使う"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "サインインのコマンドをコピー",
@@ -16259,19 +16261,15 @@
         "engine_sign_in_reason": "内蔵エンジンに切り替えるには {{productName}} にサインインしてください。"
       },
       "kiroSignInCard": {
-        "title": "Kiro サインイン",
         "checking": "サインイン状態を確認しています…",
         "signed_in_with": "{{provider}} でサインイン済み",
-        "signed_in_body": "エージェントはこの Kiro アカウントとして動作します。アクセストークンは自動的に更新されます。",
         "access_token_expires": "アクセストークンは {{when}} に期限切れになります（{{at}}）。",
-        "expired_renews_on_next_use": "アクセストークンは期限切れです。次にエージェントが必要としたときに更新されます。",
         "sign_in_expired": "サインインが失効しました。",
         "sign_in_expired_body": "セッションとエージェントの作業を再開するには、再度サインインしてください。",
         "sign_in_expired_body_account": "Kiro アカウントが必要な機能を使うには、再度サインインしてください。",
         "sign_in_again": "再度サインイン",
         "switch_account": "アカウントを切り替え",
         "sign_out": "サインアウト",
-        "takes_effect_next_process": "今後起動するエージェントプロセスに適用されます。実行中のセッションは次のターンで切り替わります。",
         "could_not_sign_out": "サインアウトできませんでした",
         "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。",
         "search_label": "サインアウト・Kiro アカウント切り替え",
@@ -16295,7 +16293,10 @@
         "use_kiro_cli_account": "Kiro CLI のアカウントを使う",
         "use_kiro_cli_explain": "ここに保存されているサインインを削除します。その後、Kiro Agent は Kiro CLI のアカウントとして動作します。元に戻すには、ここでもう一度サインインしてください。",
         "remove_this_sign_in": "このサインインを削除",
-        "keep_it": "そのままにする"
+        "keep_it": "そのままにする",
+        "signed_out_hint": "エージェントはあなたの Kiro アカウントで動作します。",
+        "code_step_hint": "ページを開き、このコードが表示されていることを確認してください。",
+        "loading_account": "アカウントを読み込み中"
       },
       "kiroAccountUnlocks": {
         "list_heading": "Kiro アカウントでできること",
