@@ -122,7 +122,7 @@ from .shell_normalizer import (
 # local DNS answer is left for the proxy to resolve. Shell syntax, ssh-family
 # proxies, multi-hop routes and unresolved hop destinations stay refused.
 # The proof runs inside the agent's sandbox on sandbox-read config bytes;
-# unreadable Includes, Includes inside blocks, unsupported Match criteria,
+# unreadable Includes, a block's Include opening a block, bad Match criteria,
 # tier off and a missing backend keep refusing. A route-cleared name has
 # the same standing as a DNS-cleared name: outer -F/-S/rsync -e routing
 # remains the documented network-fence residual. Failed revalidation drops

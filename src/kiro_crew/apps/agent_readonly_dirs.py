@@ -32,8 +32,8 @@ grammar, sources, name-from-location rule and retained record of
 leave its app's data directory or reach another app's. The backend's lift drops every
 core leaf of any disposition and anything beneath another mask, so a declaration cannot
 lift a core fence. The retained record, ``apps/.<name>-agent-readonly-dirs.json``, keeps
-the fence on data a default uninstall leaves behind and on the data an update holds
-aside in ``apps/.<name>-data-tmp/``.
+the fence on data a default uninstall leaves behind, on the data while an update has
+the old manifest out, and on data held aside in ``apps/.<name>-data-tmp/``.
 
 The agent cannot rewrite the declaration away: every installed app's ``app.json`` is
 refused to its file tools and sealed read-only in its sandbox

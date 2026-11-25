@@ -59,9 +59,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.diag import memory_snapshot
+
 logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────────
+
+#: ``resource_status.POSTURE_CRITICAL``, spelled here because this module keeps
+#: ``resource_status`` off its import path (it starts on the boot path).
+POSTURE_CRITICAL = "critical"
 
 ENV_ENABLED = "KIROCREW_DIAG_RECORDER"
 ENV_SAMPLE_SECS = "KIROCREW_DIAG_SAMPLE_SECS"
@@ -106,7 +112,7 @@ DEFAULT_QUERY_RADIUS_SECS = 300.0
 
 FILE_PREFIX = "snapshots-"
 FILE_SUFFIX = ".jsonl"
-DIR_NAME = "diag"
+DIR_NAME = memory_snapshot.DIAG_DIR_NAME
 
 #: Filesystems whose fullness has broken this host before. ``/tmp`` is tmpfs
 #: here (RAM-backed), so filling it is a memory event, not a disk event.
@@ -500,6 +506,7 @@ class Recorder:
 
         # Previous-sample state, for the change-detecting events.
         self._prev_posture: str | None = None
+        self._last_memory_snapshot_ts: float | None = None
         self._prev_config_stat: dict[str, tuple[float, int, int] | None] = {}
         self._prev_adaptive_cap: int | None = None
         self._prev_day: str | None = None
@@ -862,6 +869,8 @@ class Recorder:
                     "available_gb": row["posture"].get("available_gb"),
                 },
             )
+        if posture == POSTURE_CRITICAL and self._prev_posture != POSTURE_CRITICAL:
+            self._write_memory_snapshot(row)
         if posture is not None:
             self._prev_posture = posture
 
@@ -916,6 +925,39 @@ class Recorder:
         if self._prev_day is not None and day != self._prev_day:
             self._prune()
         self._prev_day = day
+
+    def _write_memory_snapshot(self, row: dict[str, Any]) -> None:
+        """Write who holds the memory, once per entry into the critical posture.
+
+        Runs on the sampler thread, never the loop. The moment memory turns
+        critical is the one a later report asks about, and a host that then
+        freezes and reboots leaves nothing else that names the processes.
+        """
+        ts = row["ts"]
+        last = self._last_memory_snapshot_ts
+        if last is None:
+            last = memory_snapshot.newest_critical_ts(self._dir())
+        # A clock that stepped back past the last snapshot does not hold the next one.
+        if last is not None and 0 <= ts - last < memory_snapshot.CRITICAL_MIN_GAP_SECS:
+            return
+        self._last_memory_snapshot_ts = ts
+        try:
+            text = memory_snapshot.render(
+                self._procfs,
+                reason="memory posture turned critical",
+                now=ts,
+                posture_fn=lambda: row.get("posture") or {},
+            )
+            path = memory_snapshot.write_critical(self._dir(), text, ts)
+        except Exception:  # noqa: BLE001 - a snapshot must never break the sample
+            logger.debug("diag recorder: memory snapshot failed", exc_info=True)
+            return
+        if path is not None:
+            logger.warning(
+                "host memory is critical: wrote the biggest processes to diag/%s/%s",
+                memory_snapshot.CRITICAL_DIR_NAME,
+                path.name,
+            )
 
     def _threshold_entered(self, name: str, active: bool) -> bool:
         """Return true once when a measured threshold enters its active state."""

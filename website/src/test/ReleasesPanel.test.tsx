@@ -232,6 +232,22 @@ describe('ReleasesPanel', () => {
     expect(screen.getByText('1 release')).toBeInTheDocument()
   })
 
+  it('names the LTS line instead of notes, and links the LTS tag, in an LTS build', async () => {
+    // What an LTS 0.2.0 gateway sends: its own row, no open-source sections.
+    mount({
+      current_version: '0.2.0',
+      stale: false,
+      edition: 'lts',
+      releases: [{ version: '0.2.0', date: '', body: '', is_current: true, in_progress: false }],
+    })
+    await waitFor(() => expect(within(current()).getByRole('heading')).toHaveTextContent('What\'s new in 0.2.0'))
+    expect(within(current()).getByTestId('releases-lts-note')).toHaveTextContent(/on the LTS line.*updates only from the LTS channel/)
+    expect(within(current()).queryByText(/shipped without release notes/)).toBeNull()
+    expect(within(current()).getByRole('link', { name: /View commits/ }))
+      .toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/commits/lts-v0.2.0')
+    expect(screen.queryByTestId('releases-newer')).toBeNull()
+  })
+
   it('shows the running release\u2019s summary and folds the rest into Read all notes', async () => {
     mount({
       ...STABLE_NO_NOTES,

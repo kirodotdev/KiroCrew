@@ -682,7 +682,7 @@ async def _run_uninstall(
 
         # Step 5: Remove files. Off-loop: rmtree of a large installed tree is
         # blocking filesystem I/O. (uninstall_app shares the
-        # ``.{name}-data-tmp`` move-aside path with install/update — covered
+        # ``.{name}-data-tmp`` move-aside path with install — covered
         # by the lifecycle lock held above.)
         #
         # Held under the SHARED config lock because `uninstall_app` also runs

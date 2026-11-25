@@ -226,11 +226,11 @@ describe('ChatInput', () => {
       expect(optimizeRow()).toBeDisabled()
     })
 
-    it('has no row when idle (the cluster button is back) or when the host opted out', () => {
+    it('keeps the same row when idle (#41795), and has none when the host opted out', () => {
       const { unmount } = renderWithProviders(<ChatInput {...busy} isRunning={false} />)
-      expect(screen.getByRole('button', { name: 'Optimize prompt' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Optimize prompt' })).not.toBeInTheDocument()
       openPlusMenu()
-      expect(optimizeRow()).not.toBeInTheDocument()
+      expect(optimizeRow()).toHaveTextContent('Optimize prompt')
       unmount()
       renderWithProviders(<ChatInput {...busy} promptOptimizer={false} />)
       openPlusMenu()
@@ -242,6 +242,16 @@ describe('ChatInput', () => {
       renderWithProviders(<ChatInput {...busy} collapsible />)
       fireEvent.keyDown(screen.getByTestId('composer-more-trigger'), { key: 'Enter' })
       expect(screen.getByTestId('composer-more-optimize')).toHaveTextContent('Optimize prompt')
+    })
+
+    it('keeps it in the touch overflow when idle too, with no shortcut tooltip', () => {
+      touchEnv.touch = true
+      renderWithProviders(<ChatInput {...busy} isRunning={false} collapsible />)
+      expect(screen.queryByRole('button', { name: 'Optimize prompt' })).not.toBeInTheDocument()
+      fireEvent.keyDown(screen.getByTestId('composer-more-trigger'), { key: 'Enter' })
+      const row = screen.getByTestId('composer-more-optimize')
+      expect(row).toHaveTextContent('Optimize prompt')
+      expect(row).not.toHaveAttribute('title')
     })
 
     it('starts the optimize from the row, and holds the queue button while it rewrites the draft', async () => {

@@ -655,7 +655,7 @@ export function AboutPanel() {
           </span>
         </span>
       )}
-      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} />
+      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} desktopLts={info?.channel === 'lts'} />
     </div>
   ) : null
 

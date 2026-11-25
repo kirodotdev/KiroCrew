@@ -560,6 +560,93 @@ def test_an_unreadable_record_grants_nothing(store, clock, tmp_path):
         store.authorize(ASK)
 
 
+def _reclaimed(store: la.LocalAuthorization, token: str, **claims: Any) -> str:
+    """*token* with *claims* changed, signed with *store*'s own key."""
+    head, body, _ = token.split(".")
+    merged = {**json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))), **claims}
+    body = base64.urlsafe_b64encode(json.dumps(merged).encode()).rstrip(b"=").decode()
+    return f"{head}.{body}.{store._sign(f'{head}.{body}')}"
+
+
+def test_refused_as_names_a_reason_only_for_a_token_this_gateway_signed(store, clock, tmp_path):
+    tokens = _tokens(store, clock)
+    token, grant_id = tokens["access_token"], tokens["grant_id"]
+    assert store.refused_as(token) == ("", "")  # it verifies: there is nothing to explain
+    assert store.revoke_grant(grant_id, caller=SUBJECT) is True
+    assert store.verify(token) is None
+    assert store.refused_as(token) == (la.REVOKED, grant_id)
+
+    other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"z" * 32, clock)
+    head, body, signature = token.split(".")
+    not_ours = [
+        "",
+        "a.b.c",
+        "é.é.é",
+        f"{head}.{body}",
+        f"{head}.{body}.",
+        f"{head}.{body}.{signature[:-2]}{'AA' if signature[-2:] != 'AA' else 'BB'}",
+        _reclaimed(other, token),
+        _reclaimed(other, token, exp=int(clock.now) - 10),
+    ]
+    for candidate in not_ours:
+        assert store.verify(candidate) is None, candidate
+        assert store.refused_as(candidate) == ("", ""), candidate
+
+
+def test_refused_as_reads_the_record_only_after_the_signature_and_the_expiry(
+    store, clock, tmp_path, monkeypatch
+):
+    tokens = _tokens(store, clock)
+    token = tokens["access_token"]
+    assert store.revoke_grant(tokens["grant_id"], caller=SUBJECT) is True
+    reads: list[int] = []
+    real_load = store._load
+    monkeypatch.setattr(store, "_load", lambda: reads.append(1) or real_load())
+    other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"z" * 32, clock)
+    assert store.refused_as(_reclaimed(other, token)) == ("", "")
+    assert store.refused_as(token[:-2] + ("AA" if token[-2:] != "AA" else "BB")) == ("", "")
+    assert store.refused_as(_reclaimed(store, token, exp="soon")) == ("", "")
+    assert reads == []
+    assert store.refused_as(token) == (la.REVOKED, tokens["grant_id"])
+    assert reads == [1]
+    clock.now += la.ACCESS_TTL_SECS
+    assert store.refused_as(token) == (la.EXPIRED, tokens["grant_id"])
+    assert reads == [1]  # past its expiry: the grant is not looked at
+
+
+def test_refused_as_says_expired_before_revoked_and_nothing_once_the_record_is_gone(
+    store, clock, tmp_path
+):
+    tokens = _tokens(store, clock)
+    token, grant_id = tokens["access_token"], tokens["grant_id"]
+    # In date, and its grant has no record: no reason.
+    assert store.refused_as(_reclaimed(store, token, grant_id="grt_0000000000000000")) == ("", "")
+    clock.now += la.ACCESS_TTL_SECS - 1
+    assert store.refused_as(token) == ("", "")
+    clock.now += 1
+    assert store.refused_as(token) == (la.EXPIRED, grant_id)
+    assert store.revoke_grant(grant_id, caller=SUBJECT) is True
+    assert store.refused_as(token) == (la.EXPIRED, grant_id)
+
+    # In date, and its grant's record is revoked: revoked until the record's own end.
+    record = json.loads((tmp_path / "local-grants" / "state.json").read_text(encoding="utf-8"))
+    late = _reclaimed(
+        store, token, exp=int(record["grants"][grant_id]["expires_at"]) + la.ACCESS_TTL_SECS
+    )
+    assert store.refused_as(late) == (la.REVOKED, grant_id)
+    clock.now = record["grants"][grant_id]["expires_at"]
+    assert store.refused_as(late) == ("", "")
+    assert store.verify(late) is None
+
+
+def test_refused_as_gives_no_reason_when_the_record_cannot_be_read(store, clock, tmp_path):
+    tokens = _tokens(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller=SUBJECT) is True
+    (tmp_path / "local-grants" / "state.json").write_text("{not json", encoding="utf-8")
+    assert store.refused_as(tokens["access_token"]) == ("", "")
+    assert store.verify(tokens["access_token"]) is None
+
+
 @pytest.mark.parametrize(
     "changes",
     [

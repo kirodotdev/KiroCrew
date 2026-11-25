@@ -7,7 +7,7 @@ import { useAppSelector, store, type AppDispatch } from '../store'
 import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectPageLoaded,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
@@ -477,8 +477,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleSnipComplete,
     handleSnipCancel,
     composerUploadFiles,
-    cancelUpload,
-    uploadCount,
     handleOptimizeResult,
     dragOver,
     dropTargetProps,
@@ -654,7 +652,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     lastMsg?.content,
     connected ? sessionTitles : undefined,
   )
-  const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker)
+  const pageLoaded = useAppSelector(s => selectPageLoaded(s, activeSlot ?? ''))
+  const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker, pageLoaded)
   // Follow-up option chips and the ownership of the text they append.
   const {
     followUpOptions, followUpSourceKey, followUpMulti,
@@ -1324,9 +1323,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               automationSnapshotFailed={automationSnapshotFailed} setAutomationOpen={setAutomationOpen} prefillHint={prefillHint} setPrefillHint={setPrefillHint} pasteSlice={pasteSlice}
               pendingFiles={pendingFiles} pendingSessions={pendingSessions} resizedInfo={resizedInfo} unstageSessionRef={unstageSessionRef} uploading={uploading} agentBtnRect={agentBtnRect}
               anchorAgentBtn={anchorAgentBtn} projectPickerOpen={projectPickerOpen} setProjectPickerOpen={setProjectPickerOpen} anchorProjectBtn={anchorProjectBtn} projectBtnRect={projectBtnRect}
-              pendingDirs={pendingDirs} composerRef={composerRef} composerVoiceOptions={composerVoiceOptions} isMac={isMac} cancelUpload={cancelUpload} composerUploadFiles={composerUploadFiles}
+              pendingDirs={pendingDirs} composerRef={composerRef} composerVoiceOptions={composerVoiceOptions} isMac={isMac} composerUploadFiles={composerUploadFiles}
               dropTargetProps={dropTargetProps} handleCapture={handleCapture} handleFileOpen={handleFileOpen} handleOptimizeResult={handleOptimizeResult} tabsCtl={tabsCtl}
-              uploadCount={uploadCount} sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
+              sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
               composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
               followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
               refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} composerSend={composerSend} pickModel={pickModel} setProject={setProject} projectSwitching={projectSwitching} switchAgent={pickAgent} currentSlot={currentSlot}

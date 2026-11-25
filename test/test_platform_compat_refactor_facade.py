@@ -247,6 +247,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_liveness": tuple("""
         PID_DEAD PID_ALIVE PID_UNSIGNALABLE live_thread_group_leaders is_thread_group_leader
         pid_liveness pgroup_of pgroup_of_leader pid_exists pid_is_zombie process_thread_count
+        SUPERVISION_TERMINAL SUPERVISION_OWN_GROUP SUPERVISION_NOT_POSIX supervision_shape_failure
         """.split()),
     "kiro_crew.platform_compat_identity": tuple("""
         process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME

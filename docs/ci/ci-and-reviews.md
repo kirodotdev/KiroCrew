@@ -701,7 +701,7 @@ limits to it:
 
 | Limit | Rule | On 10,000 points | What it bounds |
 |---|---|---|---|
-| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | The census stops, and says Partial, before a call that would start with less: other workflows keep half of every hour's bucket |
+| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | Before a call that would start with less, the census waits for the bucket's reset if it comes within the 30 minutes a run may wait in all (`--wait-for-reset-seconds 1800`), and otherwise stops and says Partial: other workflows keep half of every hour's bucket |
 | most (`--max-points`) | two fifths of the bucket, less 120 | 3,880 | The most one run spends. A weekday is about 3,000 |
 
 The 120 points are one call for each of the 4 workers at about 30 points, the
@@ -718,8 +718,13 @@ wrapper may sleep inside it on a spent limit and 300 for the call itself: the
 wrapper charges a sleep before it starts, so a call ended mid-sleep would have
 spent the wait budget and read nothing.
 
-The census never waits for a bucket: a job that sleeps holds a
-runner. A `schedule` event carries no inputs and no `repository` object, so
+The census waits for a bucket only at the reserve, and only for a reset that
+is near: it starts late in the bucket's hour while the rest of CI draws on the
+same bucket, and both weekday reads before the wait (2026-11-23 and
+2026-11-24) stopped Partial minutes before the reset (#39700). A reset further
+away than the time left of the 30 minutes still ends the census Partial, and
+the day job's 90-minute limit holds the wait. A `schedule` event carries no
+inputs and no `repository` object, so
 an empty `day` means yesterday and the default branch falls back to
 `github.ref_name`; a test evaluates every step's `env:` under both events.
 
@@ -2808,7 +2813,20 @@ Details worth knowing:
     FAILED outcome: most of the watched set is exempt, so reporting a stuck run
     there as a warning inside a passing scheduled run would leave the shape of the
     incident this watchdog exists for — a stuck run nobody is told about — intact
-    for the majority of the repository. The
+    for the majority of the repository. One case is a warning instead: while
+    CodeBuild is dispatching slowly (a start served after the orphaned job queued
+    waited the saturation line or more, judged on the orphan's own queue first), the
+    queued job may only be slow, so the run is reported with
+    `human-held-heal-exempt-fleet-saturated`, which does not fail the tick, and the
+    tick prints how many runs it held that way. That ends once a job of the run has
+    queued 60 minutes: from then on it is `human-required-heal-exempt-workflow`
+    whatever the fleet does, so saturation cannot hide a run that has waited for
+    hours. So that such a run is judged at all, 5 of the per-tick classify reads are
+    held for runs of a workflow that is not heal-safe for their event and whose
+    attempt started past the orphan threshold (`queued` runs first, then the oldest
+    attempt); the rest of the bound goes to heal-eligible runs first, and on a
+    saturated fleet those alone fill it. The held reads displace reads of the same
+    bound and add none. The
     watchdog never cancels or fully re-runs them. Immediately before a live
     orphan is cancelled, the watchdog reads the workflow file from that run's
     `head_sha` through the repository contents API and re-derives heal-safety.
@@ -2861,7 +2879,14 @@ Details worth knowing:
     unread run that could hold such a start, up to 200 more reads (all or nothing:
     a partial read cannot lift the hold, so a larger set is not read at all), so the
     hold is reached only past that top-up bound; a tick with no orphan spends none
-    of those reads, which is why they are not folded into the per-tick bound.
+    of those reads, which is why they are not folded into the per-tick bound. A run
+    read by the top-up is classified from that same read, so it gets a verdict like
+    a run inside the bound. Every tick also prints one line counting, and naming up
+    to 20 of, the listed runs in status `queued` whose attempt started past the
+    orphan threshold and that got no verdict. It is read from the listing rows, costs
+    no call, and carries no outcome: the row cannot say whether the waiting job is
+    CodeBuild-routed or lost rather than slow, so the line means "not judged", and it
+    is there to be read across ticks before any rule is hung on it.
     The unread runs are retained
     with their creation times and re-judged on age at each cancel, not counted once:
     the cancel phase re-reads the listing once and then judges several cancels

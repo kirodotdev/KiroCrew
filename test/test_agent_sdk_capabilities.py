@@ -75,6 +75,7 @@ CAPABILITY_FIELDS = (
     "provider_seam",
     "model_id_namespace",
     "resolves_model_from_advertised_list",
+    "takes_model_per_session",
     "effort_via_config_option",
     "effort_via_slash_command",
     "compacts_inline",
@@ -98,6 +99,7 @@ CAPABILITY_FIELDS = (
     "names_crew_tools_by_fused_name",
     "model_auto_switches_in_place",
     "harness_loads_agent_context",
+    "reports_mcp_sign_in_suspects",
     "keeps_session_across_compaction",
 )
 

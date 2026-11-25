@@ -1130,7 +1130,7 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     assert out == _BUNDLE
     assert code is None
     assert host.calls == []
-    assert collected == [{"version_alignment": "aligned (1.2.3)"}]
+    assert collected == [{"version_alignment": "aligned (1.2.3)", "outside_gateway": True}]
 
 
 def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(

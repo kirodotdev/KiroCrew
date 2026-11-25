@@ -1739,6 +1739,28 @@ def test_status_prints_the_session_map_remedy_only_while_writes_are_refused(
     assert "Session map:" not in capsys.readouterr().out
 
 
+def test_status_says_the_entry_port_is_closed_only_while_it_is(monkeypatch, capsys) -> None:
+    import io
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    payloads = [{"entry_port_closed": "rebinding failed"}, {"entry_port_closed": ""}, {}]
+
+    @contextmanager
+    def _urlopen(url, timeout):
+        yield io.BytesIO(json.dumps(payloads.pop(0)).encode())
+
+    monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+    monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+    cli_server._status(SimpleNamespace(port=None))
+    out = capsys.readouterr().out
+    assert "  Entry port:  closed; restart the gateway to open it again\n" in out
+    for _ in range(2):
+        cli_server._status(SimpleNamespace(port=None))
+        assert "Entry port:" not in capsys.readouterr().out
+
+
 class TestApproveBusyVsDown:
     """The update-approve CLI path reports a slow gateway as busy, and a
     refused connection as not running. It carries a single-use nonce, so the

@@ -33,7 +33,7 @@ from typing import Final
 from aiohttp import web
 
 from kiro_crew.dashboard import crew_api_scopes, local_authorization
-from kiro_crew.dashboard.crew_api_errors import is_crew_api_path
+from kiro_crew.dashboard.crew_api_errors import contract_error, is_crew_api_path, request_id_for
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
 from kiro_crew.dashboard.token_auth_tokens import validate_token_with_app_off_loop
@@ -52,6 +52,16 @@ APP_CREDENTIAL_OPERATION = "crew_api.app_credential"
 APP_CREDENTIAL_REFUSED = crew_api_scopes.APP_REFUSED
 #: The audit word for a route whose row admits the credential and which serves no app.
 NO_APP_ROUTE = "no-app-route"
+#: The 401 for each reason ``LocalAuthorization.refused_as`` gives: the error code, the
+#: message and the audit row's error.
+_APP_CREDENTIAL_REFUSALS: Final = {
+    local_authorization.EXPIRED: (
+        "invalid_token",
+        "The access token has expired.",
+        "token-expired",
+    ),
+    local_authorization.REVOKED: ("token_revoked", "The grant was revoked.", "token-revoked"),
+}
 _AUDIT_TEXT_MAX = 64
 
 #: The refusal a ``?token=`` gets on a Crew API path.
@@ -174,6 +184,38 @@ async def _audit_app_credential(
         )
 
 
+async def _refused_app_credential(request: web.Request, credential: str) -> web.Response | None:
+    """The 401 for an app credential that failed for a reason the app may be told.
+
+    Only a token this gateway signed gets one: ``invalid_token`` with a message that
+    names the expiry, or ``token_revoked`` when the token is still in date and its
+    grant's record says revoked. A token with any other signature, a grant with no
+    record and a record that cannot be read get ``None``, so the caller's own 401
+    answers them exactly as it answers a credential that is no app credential.
+
+    Through any forwarder this returns ``None`` as well, as it does for a credential
+    that verifies: the forwarded answer never shows which of these the token was.
+    That is decided first, so such a request does not have the token looked at here.
+    """
+    if not is_direct_local_request(request) or published_relay_caller(request) is not None:
+        return None
+    try:
+        reason, grant_id = await asyncio.to_thread(
+            lambda: local_authorization.gateway_local_authorization().refused_as(credential)
+        )
+    except Exception:
+        logger.warning("Crew API app credential check failed")
+        return None
+    refusal = _APP_CREDENTIAL_REFUSALS.get(reason)
+    if refusal is None:
+        return None
+    code, message, audit = refusal
+    await _audit_app_credential(
+        request, f"{APP_CREDENTIAL_USER_PREFIX}{_audit_text(grant_id)}", audit, request.path
+    )
+    return contract_error(401, code, message, request_id_for(request), {"X-Auth-Required": "true"})
+
+
 async def judge_app_credential(
     request: web.Request, credential: str
 ) -> web.Response | AppAdmitted | None:
@@ -182,7 +224,9 @@ async def judge_app_credential(
     An app credential is the access token local authorization issued for a grant the
     owner approved (:mod:`kiro_crew.dashboard.local_authorization`). It is verified
     there: signature, expiry, and that its grant is still active. A credential that
-    fails is not an app credential, so the caller's own 401 answers it.
+    fails is not an app credential, so the caller's own 401 answers it. The two
+    exceptions are in :func:`_refused_app_credential`: a token this gateway signed
+    that is past its expiry, or whose grant is revoked, gets a 401 that says so.
 
     A verified one is a known caller, and :func:`crew_api_scopes.refusal_for` says why it may
     not call the route it matched: the tier, the entitlement or the scope. A route whose
@@ -208,7 +252,7 @@ async def judge_app_credential(
         logger.warning("Crew API app credential check failed")
         return None
     if found is None:
-        return None
+        return await _refused_app_credential(request, credential)
     caller = f"{APP_CREDENTIAL_USER_PREFIX}{found.grant_id}"
     resources = f"{request.path} client_id={_audit_text(found.client_id)}"
     if not is_direct_local_request(request) or published_relay_caller(request) is not None:

@@ -377,6 +377,23 @@ class ListenerGuard:
             self._probe_task = None
         self._detach_handler()
 
+    def retire(self) -> None:
+        """Stop guarding while the loop keeps running; safe to call twice.
+
+        Unlike :meth:`stop`, the probe task is not cancelled. A rebind that has
+        already begun, in the probe task or in the task the exception handler
+        started, runs to its end: its listener becomes :attr:`site` and
+        ``on_listener_restored`` fires, so the caller can close that listener.
+        Cancelling it instead could cut it off after the listener opened, with
+        nothing holding that listener. No rebind begins afterwards, and the probe
+        task ends by itself at its next check.
+
+        For a caller that closes the listener for good and goes on serving.
+        :meth:`stop` stays the call at shutdown.
+        """
+        self._stopped = True
+        self._detach_handler()
+
     def _detach_handler(self) -> None:
         """Restore the handler this guard displaced, if it is still the installed one.
 

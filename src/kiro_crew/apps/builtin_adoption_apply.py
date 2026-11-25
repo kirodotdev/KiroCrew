@@ -344,7 +344,7 @@ async def staging_loop(
 
 
 def _record_eligible(name: str) -> bool:
-    """E2: a safe builtin-owned record whose directory the swap may move."""
+    """E2: a safe builtin-owned record whose files the update may replace in place."""
     from kiro_crew.apps.manager import (
         _builtin_owns_install,
         _check_path_safety,
@@ -369,7 +369,7 @@ def _record_eligible(name: str) -> bool:
     tmp_data = path.parent / f".{name}-data-tmp"
     if _owned_data_dir(tmp_data) and _owned_data_dir(path / "data"):
         # Data in two places: ``update_app`` refuses it, since the moved-aside
-        # copy may be the only one a killed swap preserved.
+        # copy may be the only one a killed install or uninstall preserved.
         logger.warning("Adoption of %s skipped: its data is in two places", name)
         return False
     return not _temp_data_name_obstruction(tmp_data)

@@ -24,6 +24,10 @@ vi.mock('../../components/crew/CrewMonitoredAvatar', () => ({
   ),
 }))
 
+vi.mock('./CrewHeldLimits', () => ({
+  default: ({ member }: { member: { name: string } }) => <section data-testid="held-limits-stub">{member.name}</section>,
+}))
+
 vi.mock('./CrewExportView', () => ({
   default: ({ slug, member, name, mode, onDirtyChange }: { slug: string; member: string; name?: string; mode?: string; onDirtyChange?: (d: boolean) => void }) => (
     <div data-testid="export-view-stub" data-mode={mode ?? 'export'} data-name={name ?? ''}>
@@ -225,6 +229,12 @@ describe('CrewProfilePanel Profile tab', () => {
     ])
     for (const el of marked) expect(el).toHaveAttribute('role', 'tab')
     expect(marked[3]).toBe(screen.getByRole('tab', { name: 'Profile' }))
+  })
+
+  it('puts the bot\'s held limits directly under About', () => {
+    setup()
+    const held = screen.getByTestId('held-limits-stub')
+    expect(screen.getByTestId('crew-profile-about').nextElementSibling).toBe(held)
   })
 
   it('says there is no description instead of rendering an empty card', () => {

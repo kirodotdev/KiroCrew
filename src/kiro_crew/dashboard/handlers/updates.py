@@ -43,8 +43,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import _quiescence_of  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _read_force_flag  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _read_update_request  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _release_admission  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _resolve_restart_target  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _restart_running  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _start_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _update_record_busy  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_apply  # noqa: F401
@@ -240,6 +243,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform_compat import reexec_launcher  # noqa: F401
     from kiro_crew.platform_compat import reexec_python_module  # noqa: F401
     from kiro_crew.pre_exec_stops import run_pre_exec_stops  # noqa: F401
+    from kiro_crew.restart_admission import REASON_PAUSE_HELD  # noqa: F401
     from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
     from kiro_crew.safety_override import flush_breadcrumb_writes  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401

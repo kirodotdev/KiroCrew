@@ -130,6 +130,16 @@ line in its Memory Pressure section. Read from inside a Job object with a lower 
 limit, such as an agent's shell, they are that job's. Rows on other platforms carry
 neither field.
 
+When the memory posture turns `critical`, the recorder also writes a plain-text
+memory snapshot to `diag/memory-critical/memory-critical-<UTC stamp>.txt`
+(`kiro_crew.diag.memory_snapshot`): host total and available memory, the 15
+biggest processes on the host by RSS, and Kiro Crew's own processes grouped by
+kind (gateway, chat, mcp-server, ...). It writes at most one per 10 minutes and
+keeps the newest 5. A process is recorded by pid, its short kernel name
+(`/proc/<pid>/comm`) and RSS only, never its arguments or environment. The host
+list is Linux only. The diagnostics bundle carries a fresh snapshot as
+`memory.txt` and the newest 3 critical ones under `memory-critical/`.
+
 The `diag/` directory is masked inside the agent sandbox in every mode. Read it
 through the debug tools, which redact on the way out.
 

@@ -252,7 +252,13 @@ gateway's automatic update) build each new version as its own tree beside it,
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
 rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
-own venv). A re-run and an update both install the new version with every
+own venv). A systemd service installed from the fixed `crew-venv` names that
+tree's launcher in `ExecStart`, so after an update it keeps starting the version
+the installer put there. `kirocrew service status` and `kirocrew doctor` then
+print one line that names the loaded program and the fix: for the system unit,
+run the `crew-venv-current/bin/kirocrew service install` it names (without
+`sudo`; it asks for sudo itself); for the per-user unit, point `ExecStart=` in
+the unit file at that path and run `systemctl --user daemon-reload`. A re-run and an update both install the new version with every
 optional extra the install being replaced has, and a re-run whose carried extra
 cannot be installed fails and keeps the previous install. Neither carries a
 package that is not a declared extra (such as `faiss-cpu`): each names, once,
@@ -927,7 +933,11 @@ On a Linux host that systemd did not boot (no `/run/systemd/system`, as in a
 container whose PID 1 is something else, or WSL without systemd),
 `service install` refuses before anything is written, because no system unit
 could start there. Run `kirocrew gateway` under that host's own supervisor or
-boot script instead.
+boot script instead. On Linux and macOS, `kirocrew restart` keeps that gateway
+under its supervisor when the supervisor runs it inside its own process group
+with no terminal on stdin, as a supervisor script or loop does: the gateway
+restarts itself in place, with the same pid. Any other gateway is stopped and
+started again detached, as before.
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else

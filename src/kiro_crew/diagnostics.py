@@ -67,6 +67,8 @@ _ISSUE_NEW_URL = f"https://github.com/{_ISSUE_REPO}/issues/new"
 # Cap how many rolling files we pull so a huge crash-dump backlog can't bloat
 # the bundle (or, worse, the redaction pass).
 _MAX_CRASH_DUMPS = 5
+# Critical-memory snapshots kept in the bundle, newest first.
+_MAX_MEMORY_SNAPSHOTS = 3
 _MAX_IPS_REPORTS = 5
 # Same bound for the per-process kiro-cli chat logs read from agent scratch:
 # one per spawned process, so a host running many agents has many.
@@ -1427,6 +1429,7 @@ def collect_bundle(
     include_logs: bool = True,
     output_dir: Path | None = None,
     version_alignment: str | None = None,
+    outside_gateway: bool = False,
 ) -> BundleResult:
     """Collect, redact, and zip a diagnostics bundle.
 
@@ -1439,6 +1442,9 @@ def collect_bundle(
         version_alignment: the running gateway's version against the selected
             package's, as ``kirocrew doctor --bundle`` (or the dashboard, for an
             update the gateway staged) reads it. None records it as not checked.
+        outside_gateway: True when the caller is not the gateway (``kirocrew
+            doctor --bundle``), so ``memory.txt`` finds the running gateway from
+            its lock instead of treating this process as the gateway.
 
     Returns:
         :class:`BundleResult` with the zip path and a pre-filled issue URL.
@@ -1529,6 +1535,15 @@ def collect_bundle(
             text_sources.append((f"crash-dumps/{d.name}", d, False))
     for ips in _macos_crash_reports():
         text_sources.append((f"crash-reports/{ips.name}", ips, False))
+    # What the host's memory looked like when it last turned critical. Imported
+    # here: this module is on the dashboard's boot path, and ``kiro_crew.diag``
+    # stays off it (test_mcp_debug pins that).
+    from kiro_crew.diag import memory_snapshot
+
+    for snap in memory_snapshot.latest_critical(
+        home / memory_snapshot.DIAG_DIR_NAME, _MAX_MEMORY_SNAPSHOTS
+    ):
+        text_sources.append((f"memory-critical/{snap.name}", snap, False))
 
     # Create the archive 0o600 from the start (not chmod-after, which leaves a
     # world-readable window) — the bundle holds local diagnostic logs.
@@ -1556,6 +1571,18 @@ def collect_bundle(
         result.included.append("versions.txt")
         result.redaction_summary["versions.txt"] = versions_secrets
         result.path_collapses += versions_collapses
+
+        # Who holds the memory right now: host total and the biggest processes,
+        # names and RSS only (memory_snapshot never writes a command line).
+        memory, memory_secrets, memory_collapses = _scrub_bundle(
+            memory_snapshot.render(
+                find_gateway=memory_snapshot.running_gateway_pid if outside_gateway else None
+            )
+        )
+        zf.writestr("memory.txt", memory)
+        result.included.append("memory.txt")
+        result.redaction_summary["memory.txt"] = memory_secrets
+        result.path_collapses += memory_collapses
 
         for member, src, _gated in text_sources:
             try:

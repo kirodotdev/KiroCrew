@@ -445,8 +445,11 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "name": "monitor_watch",
             "description": (
                 "Watch a supported pull request with cheap provider probes. The owning session "
-                "is woken only when a new revision needs action; unchanged, pending, retry, "
-                "and terminal probes use no agent turn. Available from dashboard, Slack, and "
+                "is woken when a new revision needs action and, while the pull request is "
+                "pending (not ready and not blocked on its author), once when its checks finish "
+                "green outside draft and, on GitHub, once each time a person other than its "
+                "author comments or leaves a review with text; unchanged, retry, terminal and "
+                "other pending probes use no agent turn. Available from dashboard, Slack, and "
                 "Discord sessions. One structured monitor per session."
                 + (_WATCH_STEER_STRUCTURED_DEFAULT if prefer_structured else "")
             ),

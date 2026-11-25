@@ -5,11 +5,14 @@ from __future__ import annotations
 import ast
 import base64
 import inspect
+import itertools
 import re
 import shlex
+import sys
 import threading
 
 import pytest
+from denied_commands_security_helpers import _interpreter_work, _linear_work
 from named_cases_helpers import named_cases
 
 from kiro_crew import security
@@ -587,3 +590,129 @@ def ast_parse_fails(source: str) -> bool:
     except SyntaxError:
         return True
     return False
+
+
+#: The search :func:`inline_payload._name_bound_before` replaced, kept here as the
+#: reference its answers are held to.
+_OLD_ALIAS_BINDING_RE = re.compile(r"([A-Za-z_]\w*)\s*=\s*\Z")
+
+
+def _old_name_bound_before(view: str, head: int) -> str | None:
+    binding = _OLD_ALIAS_BINDING_RE.search(view[:head])
+    return None if binding is None else binding.group(1)
+
+
+class TestTheAliasBindingReadsBackFromTheHead:
+    """Each head's binding is read back from the head, never by searching the prefix.
+
+    The gate's decisions must not move, so the backward read is held to the
+    answer of the end-anchored search it replaced, on every prefix below.
+    """
+
+    _NAMED = [
+        "",
+        "=",
+        "= ",
+        " =",
+        "a",
+        "a=",
+        "a =",
+        "a = ",
+        "a\t=\n",
+        "a\n\n=\n\n",
+        "a==",
+        "a = =",
+        "a!=",
+        "a<=",
+        "a.b =",
+        "x: int =",
+        "a b =",
+        "9 =",
+        "9abc =",
+        "99_9 =",
+        "é =",
+        "éabc =",
+        "abcé =",
+        "λ=",
+        "aλ =",
+        "ǅa =",
+        "a٣ =",
+        "_ =",
+        "__ = ",
+        "ab12_ =  ",
+        "\u2028a\u2028=\u2028",
+        "a = \xa0",
+        "a\x1c=\x1f",
+        "f = getattr",
+        "r = runpy.run_module; s=",
+        "x = 1; f = ",
+    ]
+    #: Every string of up to four characters over word starts, non-start word
+    #: characters (digits, Unicode letters and digits), ASCII and Unicode blanks,
+    #: ``=`` and characters the search rejects.
+    _ALPHABET = "aZ_9éǅ٣ \t\n\xa0\x1c=(!"
+
+    def _generated(self):
+        for length in range(5):
+            for chars in itertools.product(self._ALPHABET, repeat=length):
+                yield "".join(chars)
+
+    def test_the_named_prefixes_bind_what_the_search_bound_at_every_head(self):
+        for text in self._NAMED:
+            for head in range(-3, len(text) + 4):
+                assert inline_payload._name_bound_before(text, head) == _old_name_bound_before(
+                    text, head
+                ), (text, head)
+
+    def test_every_generated_prefix_binds_what_the_search_bound(self):
+        checked = 0
+        for prefix in self._generated():
+            # Text after the head never takes part in the binding.
+            view = prefix + "getattr(m, 'exec')"
+            assert inline_payload._name_bound_before(view, len(prefix)) == _old_name_bound_before(
+                view, len(prefix)
+            ), prefix
+            checked += 1
+        assert checked == sum(len(self._ALPHABET) ** n for n in range(5))
+
+    def test_blank_and_word_classes_are_the_patterns_own(self):
+        every = "".join(chr(point) for point in range(sys.maxunicode + 1))
+        assert set(re.findall(r"\s", every)) == {c for c in every if c.isspace()}
+        assert set(re.findall(r"\w", every)) == {c for c in every if c.isalnum() or c == "_"}
+
+    def test_binding_cost_is_linear_in_the_number_of_heads(self):
+        def script(heads: int) -> str:
+            return "; ".join(['f = getattr(builtins, "exec")'] * heads)
+
+        class CountedView(str):
+            """A view that bills every character an index or a slice hands back.
+
+            A prefix search runs in C, so the instruction count sees one step per
+            head however long the copied prefix is; the slice length shows it.
+            """
+
+            read = 0
+
+            def __getitem__(self, key):  # type: ignore[override]
+                item = str.__getitem__(self, key)
+                CountedView.read += len(item)
+                return item
+
+        def work(heads: int) -> int:
+            view = CountedView(script(heads))
+            spans = inline_payload._call_spans(view)
+            brackets = inline_payload._argument_spans(view)
+            tables: list[dict[str, str]] = []
+            CountedView.read = 0
+            steps = _interpreter_work(
+                lambda: tables.append(inline_payload._callable_aliases(view, spans, brackets))
+            )
+            assert tables == [{"f": "exec"}]
+            return steps + CountedView.read
+
+        sizes = (200, 400, 600)
+        counts = [work(heads) for heads in sizes]
+        assert _linear_work(counts), (
+            f"{counts} steps and characters read at {sizes} heads -- the binding "
+            "read grows faster than the script"
+        )

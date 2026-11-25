@@ -388,6 +388,8 @@ TREE = {
     "test/test_a.py": "",
     "test/test_gate.py": "",
     "test/test_idle.py": "",
+    # In the tree and not in the bundle below: a test file newer than the map.
+    "test/test_newer_than_map.py": "",
     "test/test_reads_docs.py": 'GUIDE = "docs/guide.md"\n',
     "test/test_reads_ui.py": 'PAGE = "website/src/a.ts"\n',
 }
@@ -431,7 +433,12 @@ def _verdict(repo: Path, tmp_path: Path, edits: dict[str, str]) -> dict[str, Any
         "schema": 1,
         "commit": "c0ffee",
         "built_at": (NOW - timedelta(days=1)).isoformat(),
-        "tests": {"test/test_a.py": 1, "test/test_idle.py": 8},
+        "tests": {
+            "test/test_a.py": 1,
+            "test/test_idle.py": 8,
+            "test/test_reads_docs.py": 1,
+            "test/test_reads_ui.py": 1,
+        },
         "files": {"src/kiro_crew/a.py": [0]},
         "cochange": {"src/kiro_crew/a.py": ["test/test_a.py"]},
         "guard": ["test/test_gate.py"],
@@ -456,7 +463,11 @@ def test_a_doc_edit_beside_a_code_edit_runs_the_docs_readers_on_both_systems(
     assert verdict["tiers"]["A"] == ["test/test_gate.py", "test/test_reads_docs.py"]
     assert verdict["would_skip"] == ["test/test_idle.py", "test/test_reads_ui.py"]
     assert verdict["windows"]["verdict"] == "select"
-    assert verdict["windows"]["run"] == ["test/test_gate.py", "test/test_reads_docs.py"]
+    # The file the map has no entry for is held on Linux and runs on Windows.
+    newer = "test/test_newer_than_map.py"
+    assert newer in verdict["tiers"]["F"]
+    assert verdict["unknown"] == {"new": 2, "never_runs": 0, "held": 1}
+    assert verdict["windows"]["run"] == ["test/test_gate.py", newer, "test/test_reads_docs.py"]
 
 
 def test_a_frontend_edit_runs_the_cross_surface_list_of_its_own_tree_only(
@@ -481,7 +492,11 @@ def test_a_frontend_edit_runs_the_cross_surface_list_of_its_own_tree_only(
     assert verdict["verdict"] == "select" and verdict["covered"] == {"M": 1}
     assert verdict["tiers"]["A"] == ["test/test_gate.py", "test/test_reads_ui.py"]
     assert verdict["would_skip"] == ["test/test_idle.py", "test/test_reads_docs.py"]
-    assert verdict["windows"]["run"] == ["test/test_gate.py", "test/test_reads_ui.py"]
+    assert verdict["windows"]["run"] == [
+        "test/test_gate.py",
+        "test/test_newer_than_map.py",
+        "test/test_reads_ui.py",
+    ]
 
 
 def test_the_select_command_prints_the_readers_of_a_changed_doc(

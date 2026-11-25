@@ -226,10 +226,8 @@ class TestSpawnPrep:
         assert sandbox._materialize_declared_mask_dirs(established) == [str(data / "state")]
         assert established == [str(data / "state")]
 
-    def test_a_spawn_mid_update_masks_the_directory_that_comes_back(
-        self, home, tmp_path, monkeypatch
-    ):
-        """The update moves ``data/`` aside, copies the new tree, then moves it back."""
+    def test_a_spawn_mid_update_masks_the_directory_in_place(self, home, tmp_path, monkeypatch):
+        """The update leaves ``data/`` in place, so a spawn mid-copy masks it there."""
         from kiro_crew.apps import manager
         from kiro_crew.apps.manager import install_app, update_app
 
@@ -251,8 +249,8 @@ class TestSpawnPrep:
         )
         result = update_app(newer)
         assert result.ok, result.error
-        staged_state = str(home / "apps" / ".demo-data-tmp" / "state")
-        assert created_mid_copy == [[staged_state]]
+        assert created_mid_copy == [[str(home / "apps" / "demo" / "data" / "state")]]
+        assert not (home / "apps" / ".demo-data-tmp").exists()
         assert (home / "apps" / "demo" / "data" / "state").is_dir()
 
     def test_a_spawn_inside_a_keep_data_uninstall_leaves_the_kept_data_whole(

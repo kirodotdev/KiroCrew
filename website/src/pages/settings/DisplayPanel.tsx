@@ -344,7 +344,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onSupersede: () => setUnreadDotError(null),
   }))
 
-  // Sidebar cards start with their linked-items strip open (dashboard.expand_linked_items).
+  // Session cards start with their linked-items strip open (dashboard.expand_linked_items).
   // Off by default; only a literal `true` is on, the same rule ChatSidebar reads.
   const shownExpandLinks = overlay.shown('dashboard.expand_linked_items', mcQ.data?.dashboard?.expand_linked_items === true)
   const [expandLinksError, setExpandLinksError] = useState<string | null>(null)
@@ -1539,6 +1539,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'sidebar':
           return (
+      <>
       <SettingsSection title={i18nT('pages.settings.displayPanel.sidebar_colors')}>
         <SettingsCard>
           <SettingsButtonGroup
@@ -1585,15 +1586,6 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
               on this panel that navigation would discard. */}
           <ErrorNotice message={unreadDotError} variant="inline" />
-          <SettingsToggle
-            label={i18nT('pages.settings.displayPanel.expand_linked_items')}
-            checked={shownExpandLinks}
-            onChange={v => expandLinksMut.mutate(v)}
-            disabled={expandLinksMut.isPending || !mcQ.isSuccess}
-            configKey="dashboard.expand_linked_items"
-          />
-          {/* No hand-off, for the same reason as the unread dot's notice above. */}
-          <ErrorNotice message={expandLinksError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
             <span className="text-[13px] font-semibold text-text" id="display-default-session-color-label">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
@@ -1607,6 +1599,24 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           </div>
         </SettingsCard>
       </SettingsSection>
+      {/* Not a color setting, so it has its own section, named with the
+          "session cards" term the other card settings use. */}
+      <SettingsSection title={i18nT('pages.settings.displayPanel.session_cards')}>
+        <SettingsCard>
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.expand_linked_items')}
+            hint={i18nT('pages.settings.displayPanel.expand_linked_items_desc')}
+            checked={shownExpandLinks}
+            onChange={v => expandLinksMut.mutate(v)}
+            disabled={expandLinksMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.expand_linked_items"
+          />
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={expandLinksError} variant="inline" />
+        </SettingsCard>
+      </SettingsSection>
+      </>
           )
 
         default:
