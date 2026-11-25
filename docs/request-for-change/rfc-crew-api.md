@@ -691,11 +691,11 @@ What it is. A headless gateway listens on loopback only, so a caller on another 
 reaches it through a reverse proxy that the deployer runs on the gateway's machine.
 `dashboard.entry_port` names a second port for that proxy. It is `0`, off, by default. When set, the regular or
 headless gateway binds it on `127.0.0.1`, and on `[::1]` when the machine has an IPv6
-loopback; no setting changes the address. The API-only server does not open it. It is for
-Linux and macOS for now. On Windows the gateway's main port and its second loopback address
-have a listener guard (`dashboard/listener_guard.py`), and the entry port has none yet, so a
-non-zero value stops the start there;
-[#41874](https://github.com/kirodotdev/KiroCrew/issues/41874) tracks it.
+loopback; no setting changes the address. The API-only server does not open it. On
+Windows each entry listener has a listener guard (`dashboard/listener_guard.py`). When a
+guard cannot rebind its listener, the gateway closes the entry port, keeps serving on
+loopback, and reports a warning (**proposed amendment, 2026-11-25, waiting for a
+maintainer's sign-off**).
 The gateway does not start, configure or ship the proxy.
 
 Who can reach what through it:

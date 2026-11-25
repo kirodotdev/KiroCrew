@@ -5299,12 +5299,11 @@ Returns the effective config for a channel:
 
 `dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
 proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
-bind address is not configurable. It is for Linux and macOS only for now: on
-Windows a non-zero value stops the start of the regular or the headless
-`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+bind address is not configurable. On Windows each entry listener has a listener
+guard. An integer that is neither `0` nor 1024 to 65535, or that
 equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
-while the SSM listener is configured to run, stops that start too
-(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+while the SSM listener is configured to run, stops the start of the regular or
+the headless `kirocrew gateway` (`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
 nor opens the port: it logs a warning and starts.
 The shared config validation replaces a wrong-typed value (for example `8443.5`,
 `"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It

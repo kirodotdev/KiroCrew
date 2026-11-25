@@ -932,6 +932,9 @@ class DashboardState:
         # must be held, and both must be detached in the reverse of the order
         # they were armed.
         self._secondary_listener_guard: "ListenerGuard | None" = None
+        # One guard per entry-port listener on Windows, in the order they were
+        # armed (server._arm_entry_listener_guards); empty elsewhere.
+        self._entry_listener_guards: "list[ListenerGuard]" = []
         # Which listener sidecar each guarded listener owns, keyed "primary" /
         # "secondary", as (port, address, secret). Written after publication and
         # read by the guards' lifecycle hooks, which withdraw the claim while the

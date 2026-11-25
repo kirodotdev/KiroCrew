@@ -798,6 +798,21 @@ class TestDashboardPortSelection:
         assert ds.no_crons is True
 
     @pytest.mark.asyncio
+    async def test_ephemeral_port_is_the_reserved_one_whatever_the_runner_lists_first(self):
+        """Other listeners first on the runner: the port is still the gateway's own."""
+        orch = _prepared_orchestrator()
+        orch._port_override = "auto"
+        runner = SimpleNamespace(
+            app={"served_port": 54321},
+            addresses=[("127.0.0.1", 8443), ("::1", 8443, 0, 0), ("127.0.0.1", 54321)],
+        )
+        ds = _mock_dashboard_state()
+        with patch.object(gw, "LessonStore", MagicMock()):
+            with patch.object(gw, "start_dashboard", AsyncMock(return_value=(runner, ds))):
+                await orch._init_dashboard()
+        assert orch._dashboard_port == 54321
+
+    @pytest.mark.asyncio
     async def test_literal_port_override_is_used_verbatim(self):
         orch = _prepared_orchestrator()
         orch._port_override = "8123"
