@@ -120,7 +120,7 @@ class _GatedIngress:
         """Return once the server is waiting to be allowed its next piece."""
         await until_parked(self._gate)
 
-    def bind_host(self, *, crew_kind: str, owner_user_id: str) -> None:
+    def bind_host(self, *, crew_kind: str, owner_user_id: str, access_scope: Any = None) -> None:
         return None
 
     def unbind_host(self) -> None:
