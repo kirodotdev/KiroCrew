@@ -348,6 +348,7 @@ from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
     _bang_stop,
     _bang_thread_agent,
     _bang_title,
+    _bang_trust,
     _bang_voice,
     _bang_yolo,
     _handle_compact_command,
@@ -525,8 +526,9 @@ def _display_redactor(text: str) -> str:
 
 # Bang commands with no slash equivalent that the native router still answers in a thread
 # linked to a dashboard chat, so they are never delivered to it as a chat message: the
-# words that change what a thread is (``!bot``, ``!conductor``), one set for both.
-_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS
+# words that change what a thread is (``!bot``, ``!conductor``) and ``!trust``, which
+# changes its session's approval mode.
+_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS | {"!trust"}
 
 # Mapping of bang commands to their /kirocrew slash equivalents. None: not
 # deprecated, so no notice: the bang acts on the thread it is typed in (`!voice on`),

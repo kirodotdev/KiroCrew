@@ -111,6 +111,19 @@ def add_trusted_session(
         )
 
 
+def remove_trusted_session(session_key: str) -> None:
+    """Drop ONE session's grant, both halves: the inverse of :func:`add_trusted_session`.
+
+    The policy is reset through the manager the grant was made with. A failing
+    policy write raises after the in-memory half is gone: the grant is off for
+    the session's own turns either way, and the caller says the sub-agent half
+    failed.
+    """
+    manager = _trusted_sessions.pop(session_key, None)
+    if manager is not None:
+        manager.set_approval_policy(session_key, "")
+
+
 def clear_trusted_sessions(keep_policy: "set[str] | None" = None) -> None:
     """Drop every grant, INCLUDING the approval policy each one wrote.
 

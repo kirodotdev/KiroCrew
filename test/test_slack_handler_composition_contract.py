@@ -216,6 +216,7 @@ _SPLIT_HELPERS: dict[str, str] = {
     "_bang_stop": "commands",
     "_bang_thread_agent": "commands",
     "_bang_title": "commands",
+    "_bang_trust": "commands",
     "_bang_voice": "commands",
     "_bang_yolo": "commands",
     "_deliver_answer": "delivery",

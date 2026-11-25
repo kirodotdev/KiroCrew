@@ -368,9 +368,11 @@ async def _answer_permission_request(
         )
         return False
 
-    # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve
+    # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve.
+    # Session Trust is the owner's grant: a shared user's turn still asks.
     _yolo_now = is_yolo_mode()
-    if not _held and (_yolo_now or is_session_trusted(session_key)):
+    _session_trusted = not is_shared_listed(turn.user_id) and is_session_trusted(session_key)
+    if not _held and (_yolo_now or _session_trusted):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
