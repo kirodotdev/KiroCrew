@@ -1,8 +1,9 @@
 """Builtin-skill sync: a failed copy costs only that skill.
 
 The copy is staged in a private sibling and published with one rename, so a
-failure leaves nothing at the skill's name, never touches a concurrent save
-there, and never removes another sync's stage.
+failure leaves no half tree at the skill's name, keeps an installed copy it was
+updating, never touches a concurrent save there, and never removes another
+sync's stage.
 """
 
 from __future__ import annotations
@@ -19,6 +20,9 @@ from kiro_crew.skills import _ensure_builtin_skills
 builtin_root = _sync_safety.builtin_root
 base = _sync_safety.base
 _make_skill = _sync_safety._make_skill
+_switch_off = _sync_safety._switch_off
+_inject_on_trigger_off = _sync_safety._inject_on_trigger_off
+_ship_version = _sync_safety._ship_version
 
 
 class TestFailedCopy:
@@ -45,6 +49,68 @@ class TestFailedCopy:
         assert (base / "alpha" / "SKILL.md").is_file()
         assert (base / "omega" / "SKILL.md").is_file()
         assert not (base / "broken").exists()
+
+    def test_failed_update_keeps_the_installed_copy_and_its_opt_out(
+        self, builtin_root: Path, base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An update whose copy fails must leave the installed copy at its
+        # name: an empty name would make the next sync install the packaged
+        # SKILL.md with no opt-out left to read, reverting the switch.
+        import errno
+
+        src = _make_skill(builtin_root, "helper", "v1", {"scripts/run.py": "x"})
+        _ensure_builtin_skills(base)
+        _switch_off(base / "helper")
+        _ship_version(src, "v2")
+        real_copytree = skills_mod.shutil.copytree
+
+        def _full_disk(src_arg: object, dst_arg: object, **kw: object) -> object:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(skills_mod.shutil, "copytree", _full_disk)
+        assert _ensure_builtin_skills(base) == []
+
+        assert (base / "helper" / "SKILL.md").is_file()
+        installed = (base / "helper" / "SKILL.md").read_text(encoding="utf-8")
+        assert "v1" in installed and "v2 body" not in installed
+        assert _inject_on_trigger_off(base / "helper")
+        assert (base / "helper" / "scripts" / "run.py").is_file()
+        for leftover in ("user-backup", "sync-claim", "superseded", "sync-stage"):
+            assert not list(base.glob(f".helper.{leftover}*")), leftover
+
+        monkeypatch.setattr(skills_mod.shutil, "copytree", real_copytree)
+        assert _ensure_builtin_skills(base) == []
+
+        installed = (base / "helper" / "SKILL.md").read_text(encoding="utf-8")
+        assert "v2 body" in installed
+        assert _inject_on_trigger_off(base / "helper")
+
+    def test_failed_update_sets_an_edited_copy_aside_only_once_replaced(
+        self, builtin_root: Path, base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A failed copy puts a locally edited copy back at its name instead
+        # of reporting it set aside; the sync that installs the packaged copy
+        # sets it aside and reports it.
+        import errno
+
+        src = _make_skill(builtin_root, "helper", "v1", {"scripts/run.py": "x"})
+        _ensure_builtin_skills(base)
+        (base / "helper" / "scripts" / "run.py").write_text("edited", encoding="utf-8")
+        _ship_version(src, "v2")
+        real_copytree = skills_mod.shutil.copytree
+
+        def _full_disk(src_arg: object, dst_arg: object, **kw: object) -> object:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(skills_mod.shutil, "copytree", _full_disk)
+        assert _ensure_builtin_skills(base) == []
+        assert (base / "helper" / "scripts" / "run.py").read_text(encoding="utf-8") == "edited"
+
+        monkeypatch.setattr(skills_mod.shutil, "copytree", real_copytree)
+        assert _ensure_builtin_skills(base) == [("helper", base / ".helper.user-backup")]
+        assert "v2 body" in (base / "helper" / "SKILL.md").read_text(encoding="utf-8")
+        backup_run = base / ".helper.user-backup" / "scripts" / "run.py"
+        assert backup_run.read_text(encoding="utf-8") == "edited"
 
     def test_partial_copy_does_not_retire_relocated_flat_skill(
         self, builtin_root: Path, base: Path, monkeypatch: pytest.MonkeyPatch
