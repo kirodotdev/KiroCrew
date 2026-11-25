@@ -1627,7 +1627,7 @@ def test_author_bug_fix_treats_a_clean_tree_as_no_defect_found(tmp_path, fake_gi
 
 @pytest.mark.parametrize("author", ["author_bug_fix", "author_perf_fix"])
 def test_a_failed_git_status_raises_instead_of_reading_as_no_change(tmp_path, fake_git, author):
-    """A failed status prints nothing on stdout; it must not pass for a clean tree (#42343)."""
+    """A failed status prints nothing on stdout; it must not pass for a clean tree."""
     fake_git["returncode"] = 128
     fake_git["stderr"] = "error: bad signature 0x41544f4e\nfatal: index file corrupt\n"
     runner = _FakeAgentRunner(R.AgentResult(ok=True, text="fixed it"))
