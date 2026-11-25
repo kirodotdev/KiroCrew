@@ -56,10 +56,11 @@ export function useOpenInAppPath(): (path: string) => void {
         void dispatch(switchSlot({ key, announceOnMissing: true, quietOnMissing: closedKey !== null })).then(action => {
           if (!closedKey || !switchSlot.rejected.match(action) || !action.payload || !isMissingSlotError(action.payload)) return
           // A later switch owns the pane now; do not pull it back.
-          if (appStore.getState().chat.slotSwitchLatestRequestId !== action.meta.requestId) return
+          const stillCurrent = () => appStore.getState().chat.slotSwitchLatestRequestId === action.meta.requestId
+          if (!stillCurrent()) return
           const showActionError = (message: string) => { dispatch(setAgentSwitchNotice({ message, error: true })) }
-          void openClosedSession({ key: closedKey, title: closedKey }, dispatch, showActionError).then(outcome => {
-            if (outcome === 'failed') {
+          void openClosedSession({ key: closedKey, title: closedKey }, dispatch, showActionError, stillCurrent).then(outcome => {
+            if (outcome === 'failed' && stillCurrent()) {
               showActionError(i18nT('components.markdownRenderer.closed_session_open_failed', { name: closedKey }))
             }
           })

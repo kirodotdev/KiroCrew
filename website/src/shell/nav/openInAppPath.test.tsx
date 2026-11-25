@@ -8,6 +8,7 @@ import { createTestStore } from '../../test/helpers'
 import { relayPaneOpened, setActiveId } from '../../store/instancesSlice'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
 import { api, ApiError } from '../../api/client'
+import * as chatActions from '../../store/chatSlice'
 import { useOpenInAppPath } from './openInAppPath'
 
 // The crew-link hook is a unit of its own (`lib/crewDeepLink.test.tsx`); here
@@ -174,6 +175,39 @@ describe('useOpenInAppPath', () => {
     expect(here).toBe('/chat')
     meta.mockRestore()
     resume.mockRestore()
+  })
+
+  it('keeps a newer session selection when a closed-session lookup settles late', async () => {
+    const closedKey = 'chat-9-1785000000'
+    const openKey = 'chat-2-1785000000'
+    let resolveMeta!: (row: Awaited<ReturnType<typeof api.sessionMeta>>) => void
+    const pendingMeta = new Promise<Awaited<ReturnType<typeof api.sessionMeta>>>(resolve => { resolveMeta = resolve })
+    const meta = vi.spyOn(api, 'sessionMeta').mockReturnValue(pendingMeta)
+    const detail = vi.spyOn(api, 'chatSlotDetail')
+      .mockRejectedValueOnce(new ApiError(404, 'not found'))
+      .mockResolvedValue({ messages: [], running: false } as never)
+    const resume = vi.spyOn(api, 'resumeChatSlot').mockResolvedValue({ ok: true, key: closedKey } as never)
+    const resumeFromHistory = vi.spyOn(chatActions, 'resumeFromHistory')
+    const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000', openKey])
+
+    await act(async () => { open(`/chat?sid=${closedKey}`) })
+    expect(detail).toHaveBeenCalledWith(closedKey, expect.anything())
+    expect(meta).toHaveBeenCalledWith(closedKey)
+    const originalRequestId = store.getState().chat.slotSwitchLatestRequestId
+    await act(async () => {
+      const selected = await store.dispatch(chatActions.switchSlot({ key: openKey, gesture: true, announceOnMissing: true }))
+      expect(chatActions.switchSlot.fulfilled.match(selected)).toBe(true)
+    })
+    expect(store.getState().chat.slotSwitchLatestRequestId).not.toBe(originalRequestId)
+    expect(store.getState().chat.activeSlot).toBe(openKey)
+
+    await act(async () => { resolveMeta({ key: closedKey, title: 'Old run' }) })
+    expect(resumeFromHistory).not.toHaveBeenCalled()
+    expect(resume).not.toHaveBeenCalled()
+    expect(store.getState().chat.activeSlot).toBe(openKey)
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
+    expect(store.getState().chat.switchSlotGone).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('shows the chip failure message when a closed-session lookup rejects, without reporting deletion', async () => {

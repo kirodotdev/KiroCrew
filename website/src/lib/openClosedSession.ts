@@ -8,13 +8,15 @@ export async function openClosedSession(
   { key, title }: { key: string; title: string },
   dispatch: AppDispatch,
   showActionError: (message: string) => void,
+  stillCurrent?: () => boolean,
 ): Promise<'opened' | 'gone' | 'failed'> {
-  let row: Awaited<ReturnType<typeof api.sessionMeta>>
+  let row: Awaited<ReturnType<typeof api.sessionMeta>> | undefined
   try {
     row = await api.sessionMeta(key)
   } catch {
-    return 'failed'
+    row = undefined
   }
+  if (stillCurrent?.() === false || row === undefined) return 'failed'
   if (!row) {
     showActionError(i18nT('store.chatSlice.session_gone_open_failed_named', { name: title }))
     return 'gone'
