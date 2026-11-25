@@ -97,6 +97,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         api_artifact_set_pinned,
     )
     from kiro_crew.dashboard.handlers.artifacts_parts.create_update import (  # noqa: F401
+        _keep_masked_canvas_values,
         _validate_inbound_webapp_metadata,
         api_artifact_update,
         api_artifacts_create,
@@ -274,6 +275,11 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.artifacts import slug_is_well_formed  # noqa: F401
     from kiro_crew.artifacts import webapp_metadata_from_dict  # noqa: F401
     from kiro_crew.constants import md_link_destination  # noqa: F401
+    from kiro_crew.dashboard.artifact_masked_merge import MaskedMergeError  # noqa: F401
+    from kiro_crew.dashboard.artifact_masked_merge import carries_placeholder  # noqa: F401
+    from kiro_crew.dashboard.artifact_masked_merge import (  # noqa: F401
+        restore_masked_values,
+    )
     from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.chat_folders import archived_session_names_in_folders  # noqa: F401
     from kiro_crew.dashboard.chat_folders import chat_folder_subtree_ids  # noqa: F401

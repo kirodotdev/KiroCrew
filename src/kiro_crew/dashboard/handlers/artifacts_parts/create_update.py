@@ -23,6 +23,11 @@ from kiro_crew.artifacts import (
     has_unthemed_hardcoded_colors,
     webapp_metadata_from_dict,
 )
+from kiro_crew.dashboard.artifact_masked_merge import (
+    MaskedMergeError,
+    carries_placeholder,
+    restore_masked_values,
+)
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.artifacts_parts.dashboard_package_gate import (
     _SNAPSHOT_ABSENT,
@@ -36,7 +41,10 @@ from kiro_crew.dashboard.handlers.artifacts_parts.dashboard_package_gate import 
     _promote_verdict,
     _stored_snapshot_for,
 )
-from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _serialize
+from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
+    _redact_text,
+    _serialize,
+)
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _artifact_source_for_request,
     _audit,
@@ -54,6 +62,16 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     logger,
 )
 from kiro_crew.dashboard.handlers.artifacts_parts.session_documents import _collision_report
+
+
+def _keep_masked_canvas_values(slug: str, stored_content: str, content: str) -> str:
+    """*content* with the values a masked canvas read hid put back; other kinds as sent.
+
+    Blocking file IO, so callers run it off the event loop.
+    """
+    if get_default_store().get(slug).kind != "canvas":
+        return content
+    return restore_masked_values(stored_content, content, _redact_text)
 
 
 def _validate_inbound_webapp_metadata(body: dict[str, Any]) -> str | None:
@@ -724,6 +742,55 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         # compare-and-set for every other kind, untouched, because the editor's
         # autosave depends on a prose write not being fenced it never asked for.
         expected_token = body.get("expected_token")
+        content = body.get("content")
+        # The canvas editor builds its autosave from a masked read, so the save
+        # carries placeholders where the stored document holds credential values.
+        # It says so by naming that read in ``placeholders_token``, which no other
+        # writer sends and which main's editor cannot build; only such a save is
+        # merged, against the version it names (any other answers 409 below), for
+        # the owner's dashboard. Every other save, literal placeholder text
+        # included, is written as sent.
+        placeholders_token = body.get("placeholders_token")
+        if (
+            not is_mcp
+            and isinstance(content, str)
+            and raw_kind is None
+            and isinstance(stored_content, str)
+            and expected_token
+            and expected_token == stored_token
+            and isinstance(placeholders_token, str)
+            and placeholders_token
+            and carries_placeholder(content)
+            # A canvas hiding nothing has no value to put back: placeholder text
+            # in it is plain text, whichever page sent it.
+            and await _run_off_loop(lambda: _redact_text(stored_content) != stored_content)
+        ):
+            # The placeholders line up only with the masked read they came from. A
+            # save built from another read (a "Keep mine" over a newer version)
+            # could pair a placeholder with another writer's value, so it is refused.
+            # The code tells the page which way out to offer: a stale save can
+            # only reload, a refused edit can also be undone.
+            code = "masked_merge_refused"
+            try:
+                if placeholders_token != expected_token:
+                    code = "masked_merge_stale"
+                    raise MaskedMergeError(
+                        "this save's hidden-text placeholders come from an older version"
+                    )
+                content = await _run_off_loop(
+                    lambda: _keep_masked_canvas_values(slug, stored_content, content)
+                )
+            except MaskedMergeError as exc:
+                _audit(
+                    tool="artifact_update",
+                    request=request,
+                    outcome="denied",
+                    error=str(exc),
+                    extra={"slug": slug},
+                )
+                return web.json_response(
+                    {"error": f"{exc}; nothing was written", "code": code}, status=400
+                )
         # OFF the event loop: update() writes current.html, a version snapshot
         # and -- for a linked artifact -- the source file itself, so running it
         # inline stalls the gateway for every other session on a large file or a
@@ -734,7 +801,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             lambda: get_default_store().update(
                 slug,
                 kind=raw_kind,
-                content=body.get("content"),
+                content=content,
                 description=body.get("description"),
                 tags=body.get("tags"),
                 name=body.get("name"),
