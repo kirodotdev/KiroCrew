@@ -70,16 +70,17 @@ before them: a part of the window would read as the whole of it.
 What the selector falls back on (prints nothing, exit 3)
 --------------------------------------------------------
 * a file added, deleted, renamed or copied: the set of files changes, which a
-  map of the old set cannot describe;
+  map of the old set cannot describe (but see the exception below);
 * any `conftest.py`: it reaches every test below it;
 * a non-`.py` file anywhere, or a `.py` file outside `src/` and `test/`
   (workflows, scripts, config, data): tests read those as data, and the plugin
-  records only code that ran. The exception is a modified path whose readers
-  CI can already name, a prose doc outside `src/` or a frontend path
-  (`scripts/ci_test_data_readers.py`): it adds those test files to the
-  selection and no fall-back. Added, deleted or renamed, such a path falls
-  back like any other, and so does one whose reader scan finds nothing (a
-  dead scan and a working one look the same);
+  records only code that ran. The exception is a path whose readers CI can
+  already name, a prose doc outside `src/` or a frontend path
+  (`scripts/ci_test_data_readers.py`): added, deleted, modified or renamed
+  (both names covered), it adds those test files to the selection and no
+  fall-back, as CI's own docs-only and frontend-only scopes treat it. A path
+  whose reader scan finds nothing falls back (a dead scan and a working one
+  look the same);
 * a `.py` file the map never saw executed in a test, unless it is itself a
   test file;
 * an empty always-run guard tier (`leaf_test_scope.corpus_gates`): a dead scan
@@ -154,6 +155,8 @@ IMPORT_TIME = "<import time>"
 CORE_REACH = 0.5
 # A def with one of these decorators runs once; later callers read the kept result.
 CACHES = frozenset({"cache", "lru_cache", "cached_property"})
+# The statuses a path with known readers may have: added, deleted, modified, renamed.
+COVERED_STATUSES = frozenset("ADMR")
 
 
 Changes = list[tuple[str, list[str]]]
@@ -377,21 +380,28 @@ def is_test_file(path: str) -> bool:
     return path.startswith(TESTPATHS) and name.startswith("test_") and name.endswith(".py")
 
 
-def data_rows(changes: Changes, rule: DataRule | None) -> tuple[Changes, list[str]]:
-    """Split a diff into the rows the fall-back rules judge and the paths with known readers.
+def data_rows(changes: Changes, rule: DataRule | None) -> tuple[Changes, Changes]:
+    """Split a diff into the rows the fall-back rules judge and the rows with known readers.
 
-    A modified path `rule` covers leaves the diff; with no rule every row stays.
+    A row leaves the diff when its status is one of `COVERED_STATUSES` and `rule`
+    covers every path of it, both names of a rename; with no rule every row stays.
     """
     if rule is None:
         return changes, []
     rest: Changes = []
-    data: list[str] = []
+    covered: Changes = []
     for status, paths in changes:
-        if status == "M" and paths and rule.covers(paths[-1]):
-            data.append(paths[-1])
-        else:
-            rest.append((status, paths))
-    return rest, data
+        known = status in COVERED_STATUSES and paths and all(rule.covers(p) for p in paths)
+        (covered if known else rest).append((status, paths))
+    return rest, covered
+
+
+def covered_statuses(covered: Changes) -> dict[str, int]:
+    """How many covered rows a diff has of each status letter, for the verdict."""
+    counts: dict[str, int] = {}
+    for status, _paths in sorted(covered):
+        counts[status] = counts.get(status, 0) + 1
+    return counts
 
 
 def select(
@@ -405,7 +415,8 @@ def select(
     is `changed_functions` of it, when the diff has a base and a head, and `rule`
     names the readers of its docs and frontend paths."""
     reasons: list[str] = []
-    changes, data = data_rows(changes, rule)
+    changes, covered = data_rows(changes, rule)
+    data = [path for _status, paths in covered for path in paths]
     tests = sorted(test_map["tests"])
     files: Mapping[str, list[int]] = test_map["files"]
     chosen: set[str] = set()

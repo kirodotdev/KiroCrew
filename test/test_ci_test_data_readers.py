@@ -3,9 +3,10 @@
 `scripts/ci_test_data_readers.py` names the test files that read a changed prose
 doc or frontend file; `ci_test_map.select`, the scorer and its Windows block add
 them to the selection. Pinned: the rule is `docs_only`'s and ci.yml's, held by
-reference; a covered path changes nothing but the readers it adds; every other
-tracked path keeps the verdict it has with no rule; and the readers are never
-skipped, on Linux or on Windows.
+reference; a covered path, added, deleted, modified or renamed, changes nothing
+but the readers it adds; every other tracked path keeps the verdict it has with
+no rule; the readers are never skipped, on Linux or on Windows; and the verdict
+says which statuses it covered, which the miss ledger keeps.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from macos_lane_helpers import load_workflow
 
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from scripts import ci_test_selection as cts
+from scripts import ci_test_selection_ledger as ledger
 
 ctm = cts.ctm
 win = cts.windows
@@ -52,7 +54,16 @@ FULL = [
     "M\tsrc/kiro_crew/never_ran.py\n",
     "M\tsrc/kiro_crew/a.py\nD\tsrc/kiro_crew/b.py\n",
 ]
-DATA = ["M\tdata/guide.md\n", "M\tdata/guide.md\nM\tdata/deep/mod.py\n"]
+# Covered rows of each status that leaves the fall-back rules, and what the verdict says of them.
+DATA = {
+    "M\tdata/guide.md\n": {"M": 1},
+    "A\tdata/new.md\nD\tdata/old.md\nM\tdata/deep/mod.py\nA\tdata/newer.md\n": {
+        "A": 2,
+        "D": 1,
+        "M": 1,
+    },
+    "R100\tdata/guide.md\tdata/moved.md\nA\tdata/other.md\n": {"A": 1, "R": 1},
+}
 
 
 class _Rule:
@@ -90,7 +101,7 @@ def test_a_covered_path_adds_its_readers_and_changes_nothing_else(rest: str, dat
         assert result.tests == sorted(set(without.tests) | FOUND)
         assert result.readers == tuple(sorted(FOUND))
         assert rule.asked == [_paths(data)]
-    # With no rule the same path is one the map does not record.
+    # With no rule the same rows send the diff to the full suite.
     assert _select(rest + data).full
 
 
@@ -106,19 +117,22 @@ def test_a_covered_path_never_narrows_a_diff_that_falls_back(rest: str, data: st
     assert empty_guard.full and rule.asked == []
 
 
+def test_the_covered_statuses_are_the_four_the_verdict_names() -> None:
+    assert ctm.COVERED_STATUSES == {status for counts in DATA.values() for status in counts}
+
+
 @pytest.mark.parametrize(
     "row",
     [
-        "A\tdata/guide.md\n",
-        "D\tdata/guide.md\n",
+        # A status outside the four.
         "T\tdata/guide.md\n",
-        "R100\tdata/guide.md\tdata/moved.md\n",
         "C90\tdata/guide.md\tdata/copy.md\n",
+        # A rename with one name outside the covered set, either side.
         "R100\tdata/guide.md\tsrc/kiro_crew/guide.md\n",
         "R90\tsetup.cfg\tdata/setup.md\n",
     ],
 )
-def test_only_a_modified_covered_path_leaves_the_fall_back_rules(row: str) -> None:
+def test_a_row_the_rule_does_not_cover_whole_keeps_the_fall_back_rules(row: str) -> None:
     rule = _Rule()
     for rest in NARROWED:
         result = _select(rest + row, rule)
@@ -135,7 +149,7 @@ def test_a_scan_that_names_no_reader_forfeits_the_reduction() -> None:
 
 
 def test_a_diff_of_covered_paths_alone_selects_the_guard_tier_and_the_readers() -> None:
-    result = _select(DATA[1], _Rule())
+    result = _select(next(iter(DATA)), _Rule())
     assert result == ctm.Selection(False, sorted(set(GUARD) | FOUND), [], tuple(sorted(FOUND)))
     total = sum(TESTS.values())
     assert ctm.share(result, MAP) == pytest.approx((TESTS["test/test_gate.py"] + 4) / total)
@@ -196,13 +210,24 @@ def test_the_scorer_runs_every_reader_and_reads_no_other_signal_from_a_covered_p
         assert set(after["tiers"][tier]) == set(before["tiers"][tier]) - FOUND
     assert set(after["would_skip"]) == set(before["would_skip"]) - FOUND
     assert after["would_run_share"] > before["would_run_share"]
+    # The statuses that let the diff be narrowed, as the miss ledger reads them.
+    assert before["covered"] == {} and after["covered"] == DATA[data]
+    parsed = ledger.parse_verdict(json.dumps({"schema": 1, **after}))
+    assert parsed is not None and parsed["covered"] == DATA[data]
+    key = {"run": 1, "attempt": 1, "source": "1:b", "fork": False, "pr": 7}
+    key.update(head="a" * 40, date="2026-11-20T12:00:00Z")
+    held = ledger.run_rows(key, parsed, {}, set())
+    assert held[0]["covered"] == DATA[data] and ledger.valid_row(held[0])
 
 
 def test_the_scorer_falls_back_as_select_does_and_runs_no_scan_then() -> None:
     rule = _Rule()
+    data = next(iter(DATA))
     for rest in FULL:
-        assert _score(rest + DATA[0], rule) == _score(rest)
-    assert _score(DATA[0], _Rule(found=()))["verdict"] == "full"
+        fallen = _score(rest + data, rule)
+        assert fallen == _score(rest) and fallen["covered"] == {}
+    unread = _score(data, _Rule(found=()))
+    assert unread["verdict"] == "full" and unread["covered"] == {}
     assert rule.asked == []
 
 
@@ -210,7 +235,7 @@ def _block(diff: str, rule: _Rule | None, **over: Any) -> dict[str, Any]:
     changes = ctm.parse_name_status(diff)
     args: dict[str, Any] = {"added": {}, "bucket": ["**/*windows*"], "ignored": set(), "at": NOW}
     args.update(over)
-    _rest, data = ctm.data_rows(changes, rule)
+    data = [path for _status, paths in ctm.data_rows(changes, rule)[1] for path in paths]
     return win.block(
         changes,
         _score(diff, rule),
@@ -226,13 +251,12 @@ def _block(diff: str, rule: _Rule | None, **over: Any) -> dict[str, Any]:
 def test_the_windows_block_runs_the_readers_less_what_windows_never_collects() -> None:
     rest = "M\tsrc/kiro_crew/a.py\n"
     before = _block(rest, None)
-    after = _block(rest + DATA[0], _Rule())
+    data = next(iter(DATA))
+    after = _block(rest + data, _Rule())
     assert before["verdict"] == after["verdict"] == "select"
     assert set(after["run"]) == set(before["run"]) | FOUND
     ignored = {"test/test_reads.py"}
-    assert (
-        set(_block(rest + DATA[0], _Rule(), ignored=ignored)["run"]) == set(after["run"]) - ignored
-    )
+    assert set(_block(rest + data, _Rule(), ignored=ignored)["run"]) == set(after["run"]) - ignored
     # A covered path is still a path: one in the Windows bucket runs everything there.
     named = _block(rest + "M\tdata/windows_notes.md\n", _Rule())
     assert named["verdict"] == "full" and named["reason"].startswith("windows_path: ")
@@ -299,12 +323,14 @@ def test_every_uncovered_path_keeps_the_verdict_it_has_with_no_rule(
     packaged = [p for p in uncovered if rule.docs.is_prose_doc(p)]
     trees = tuple(tree for tree in rule.docs._DOC_TREES if not tree.startswith("website/"))
     not_prose = [p for p in uncovered if p.startswith(trees) and not rule.docs.is_prose_doc(p)]
-    assert packaged and not_prose and len(kinds) > len(trees)
-    for path in sorted({*kinds.values(), *packaged, *not_prose}):
-        changes = [("M", ["src/kiro_crew/a.py"]), ("M", [path])]
-        result = ctm.select(changes, MAP, GUARD, rule=rule)
-        assert result.full and result == ctm.select(changes, MAP, GUARD), path
-        assert any(reason.startswith(f"{path}: ") for reason in result.reasons), path
+    skills = [p for p in uncovered if p.startswith("src/") and p.endswith("/SKILL.md")]
+    assert packaged and not_prose and skills and len(kinds) > len(trees)
+    for path in sorted({*kinds.values(), *packaged, *not_prose, *skills}):
+        for status in sorted(ctm.COVERED_STATUSES - {"R"}):
+            changes = [("M", ["src/kiro_crew/a.py"]), (status, [path])]
+            result = ctm.select(changes, MAP, GUARD, rule=rule)
+            assert result.full and result == ctm.select(changes, MAP, GUARD), path
+            assert any(path in reason for reason in result.reasons), path
 
 
 def test_the_rule_is_docs_onlys_and_ci_ymls_not_a_copy(
@@ -402,7 +428,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _verdict(repo: Path, tmp_path: Path, edits: dict[str, str]) -> dict[str, Any]:
     for rel, text in edits.items():
         (repo / rel).write_text(text, encoding="utf-8")
-    _git(repo, "commit", "-qam", "head")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "head")
     bundle = {
         "schema": 1,
         "commit": "c0ffee",
@@ -424,8 +451,10 @@ def _verdict(repo: Path, tmp_path: Path, edits: dict[str, str]) -> dict[str, Any
 def test_a_doc_edit_beside_a_code_edit_runs_the_docs_readers_on_both_systems(
     repo: Path, tmp_path: Path
 ) -> None:
-    verdict = _verdict(repo, tmp_path, {"src/kiro_crew/a.py": "x = 1\n", "docs/guide.md": "two\n"})
+    edits = {"src/kiro_crew/a.py": "x = 1\n", "docs/guide.md": "two\n", "docs/new.md": "one\n"}
+    verdict = _verdict(repo, tmp_path, edits)
     assert verdict["verdict"] == "select" and verdict["reason"] is None
+    assert verdict["covered"] == {"A": 1, "M": 1}
     # The reader the real scan finds in this tree; with no reader rule it has no signal.
     assert verdict["tiers"]["A"] == ["test/test_gate.py", "test/test_reads_docs.py"]
     assert verdict["would_skip"] == ["test/test_idle.py", "test/test_reads_ui.py"]
@@ -452,7 +481,7 @@ def test_a_frontend_edit_runs_the_cross_surface_list_of_its_own_tree_only(
     argv = ["--root", str(repo), "--bundle", str(tmp_path / "bundle.json")]
     assert cts.main([*argv, "--base", "HEAD~1", "--head", "HEAD", "--out", str(out)]) == 0
     verdict = json.loads(out.read_text(encoding="utf-8"))
-    assert verdict["verdict"] == "select"
+    assert verdict["verdict"] == "select" and verdict["covered"] == {"M": 1}
     assert verdict["tiers"]["A"] == ["test/test_gate.py", "test/test_reads_ui.py"]
     assert verdict["would_skip"] == ["test/test_idle.py", "test/test_reads_docs.py"]
     assert verdict["windows"]["run"] == ["test/test_gate.py", "test/test_reads_ui.py"]
@@ -476,7 +505,10 @@ def test_the_select_command_prints_the_readers_of_a_changed_doc(
         "test/test_gate.py",
         "test/test_reads_docs.py",
     ]
-    # A doc the diff adds is a change to the set of files, as it is for any path.
+    # A doc the diff adds has the same readers; one added to the package falls back.
     diff.write_text("A\tdocs/new.md\n", encoding="utf-8")
+    assert ctm.main([*argv, "--name-status", str(diff)]) == 0
+    assert capsys.readouterr().out.split() == ["test/test_gate.py", "test/test_reads_docs.py"]
+    diff.write_text("A\tsrc/kiro_crew/docs/new.md\n", encoding="utf-8")
     assert ctm.main([*argv, "--name-status", str(diff)]) == ctm.FULL
-    assert "full suite: A docs/new.md: file set changed" in capsys.readouterr().err
+    assert "full suite: A src/kiro_crew/docs/new.md: file set changed" in capsys.readouterr().err
