@@ -9,6 +9,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
+        DEFAULT_APPROVAL_MODES,
         LINK_PATTERN_PATTERN_MAX_LEN,
         LINK_PATTERN_URL_MAX_LEN,
         LINK_PATTERNS_MAX,
@@ -84,6 +85,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "restore_window_minutes",
             "merge_queued_messages",
             "default_memory_mode",
+            "default_approval_mode",
             "new_chat_crew_mode",
             "widget_density",
             "verbosity",
@@ -254,6 +256,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["default_memory_mode"] = val
+        if "default_approval_mode" in body:
+            val = body["default_approval_mode"]
+            if not isinstance(val, str) or val not in DEFAULT_APPROVAL_MODES:
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "default_approval_mode must be 'normal' or 'trust_reads'",
+                        "code": "invalid_default_approval_mode",
+                    },
+                    status=400,
+                )
+            updates["default_approval_mode"] = val
         if "new_chat_crew_mode" in body:
             val = body["new_chat_crew_mode"]
             if not isinstance(val, bool):
@@ -823,6 +839,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "restore_window_minutes": cfg.dashboard.restore_window_minutes,
             "merge_queued_messages": cfg.dashboard.merge_queued_messages,
             "default_memory_mode": cfg.dashboard.default_memory_mode,
+            "default_approval_mode": cfg.dashboard.default_approval_mode,
             "new_chat_crew_mode": cfg.dashboard.new_chat_crew_mode,
             "widget_density": cfg.dashboard.widget_density,
             "verbosity": cfg.dashboard.verbosity,

@@ -533,7 +533,7 @@ loop-stall watchdog exits the gateway.
 `platform_compat_offloop_spawn` splits the transport build in two:
 
 1. A worker on `spawn_executor()` (a bounded `mc-spawn` pool whose `submit` only
-   enqueues, see [below](#the-default-executor-and-the-spawn-pool-never-wait-on-a-worker-start)) builds the `Popen`:
+   enqueues, see [below](#the-loops-thread-pools-never-wait-on-a-worker-start)) builds the `Popen`:
    `CreateProcess` plus the overlapped pipe handles. No loop state is touched.
 2. On the calling loop, a subclass of the stock transport whose `_start` is the
    interpreter's own `_start` with its `windows_utils.Popen` lookup answered by
@@ -598,52 +598,81 @@ loop turning; cancellation reaps; the fallback logs once) and
 inherited-descriptor closing match `Popen`'s; the scope is per task; the manifest
 fan-out opens it).
 
-## The default executor and the spawn pool never wait on a worker start
+## The loop's thread pools never wait on a worker start
 
 CPython's `ThreadPoolExecutor.submit` holds `concurrent.futures.thread._global_shutdown_lock`,
 one lock for every pool in the process, while it starts a worker, and `Thread.start()`
 waits for the new thread to run. On a Windows host near its commit limit a start takes
 seconds, so every other thread's `submit` waits on that lock, an idle worker
-notwithstanding. Two of the pools the loop thread submits to carry its own I/O and
-every child it starts: the default executor (`asyncio.to_thread`,
-`run_in_executor(None, ...)`, the loop's `getaddrinfo`) and `spawn_executor()` for
-every child built off the loop as above.
+notwithstanding, and a pool with no idle worker starts the new one on the caller's
+thread. The loop thread submits to the default executor (`asyncio.to_thread`,
+`run_in_executor(None, ...)`, the loop's `getaddrinfo`), to `spawn_executor()` for
+every child built off the loop as above, and to the thread pools `kiro_crew.executors`
+builds (`subprocess_executor()`, `discovery_executor()`, `maintenance_executor()`,
+`crew_log_executor()` and the rest).
 
-Both pools are `enqueue_only_pool.EnqueueOnlyThreadPoolExecutor`
-(`configure_default_executor` installs it as the default executor). Its `submit`
-takes only the pool's own lock, never one held across a `Thread.start()`, and puts
-the call on `_work_queue`; one grower thread per pool, started when the pool is
-built, starts the workers up to the cap. A slow start therefore delays only work
-waiting for a new worker, and idle workers keep taking work. A worker that cannot
-start (thread exhaustion) leaves the grower running: the next `submit` asks again,
-and a pool with no worker fails its queued calls with a `RuntimeError` whose cause
-is the start error, as the stdlib's `submit` raised it. It subclasses
-`ThreadPoolExecutor` because `loop.set_default_executor` accepts nothing else, and
-keeps `_work_queue` because `turn_timing` reads its depth. Its threads are daemons:
+All of them are `enqueue_only_pool.EnqueueOnlyThreadPoolExecutor`
+(`configure_default_executor` installs it as the default executor). Its `submit` takes
+only the pool's own lock, never one held across a `Thread.start()`, and puts the call
+on `_work_queue`. Building a pool starts its first worker and then one grower thread,
+both on the building thread (a shared pool's getter in `kiro_crew.executors` holds
+`executors._lock` across them, once per pool; `memory_preparation_executor()` builds a
+fresh pool per call), so a pool always has a worker and only growth waits on the
+grower, which starts the rest up to the cap. A slow start therefore delays only work
+waiting for a new worker, and the running workers keep taking work. A first worker the
+host refuses to start (thread or commit exhaustion) raises its error to the builder,
+so from the getter where the caller submits, as the stdlib's first `submit` raised it
+to the same caller, and nothing of the pool is kept; the next getter call builds it
+again. A refused growth start leaves the queue to the running workers, and the next
+`submit` asks again. It subclasses `ThreadPoolExecutor` because
+`loop.set_default_executor` accepts nothing else, and keeps `_work_queue` because
+`turn_timing` and `cron_queue_depth()` read its depth. Its threads are daemons:
 `shutdown()` stops them with one sentinel (and `cancel_futures` cancels queued work),
-a pool dropped without a shutdown stops them through a weak reference, and work still
-running at interpreter exit is not joined, where the stdlib's exit hook joined it.
-Neither pool has such work on the `asyncio.run` path: `asyncio.run` joins the
-default pool through `shutdown_default_executor`, and before that it cancels and
-awaits every task, and a cancelled spawn waits out its in-flight build (above).
-A call queued before `shutdown()` still runs: a pool with no worker yet starts one
-for it, unless the pool is also dropped before its grower wakes. Neither pool loses a
-call that way: `asyncio.run` joins the default pool before `loop.close()` drops it,
-and the spawn pool's exit hook cancels its queue (`cancel_futures=True`) before it
-drops the pool. `shutdown(wait=True)` joins the grower before the workers, so it
-returns only once every worker it started has finished.
-Every other pool keeps the stdlib executor, so a loop-thread `run_in_executor` on
-one of them (`subprocess_executor()` among them) still takes the process-wide
-lock, and on a pool with no idle worker starts that worker on the loop thread.
+and a pool dropped without a shutdown stops them through a weak reference. A call
+queued before `shutdown()` still runs. `shutdown(wait=True)` joins the grower before
+the workers, so it returns only once every worker it started has finished.
+
+At interpreter exit every such pool's work is joined as the stdlib joins its own
+pools', so queued and running work (an update apply, a crew-log or memory store write)
+still finishes. One hook does it, registered at import through
+`threading._register_atexit`, the private function the stdlib registers its own exit
+hook (`_python_exit`) with. It makes every pool refuse new work from then on, as the
+stdlib's pools refuse it after interpreter shutdown, shuts every pool registered by
+then down behind its queued work, joins each grower, then puts a stop behind each
+recorded worker's queue and joins every worker recorded by then: workers are recorded
+with their queue, apart from their pool, as the stdlib records its own, so a pool
+already shut down without `wait` and dropped (the default executor after
+`loop.close()`, the per-pass memory-preparation pool) still has its running work
+joined. A pool first built while the hook runs takes no work, so its idle daemon
+threads end with the interpreter. Those hooks run in reverse order of registration and
+this module registers after `concurrent.futures.thread`, so this hook runs just before
+the stdlib's, while stdlib pools still accept work, and both run before the non-daemon
+threads are joined and before `atexit`. `shutdown_maintenance_executor()`, the
+`atexit` handler of the `kiro_crew.executors` pools, therefore still finds nothing
+queued to cancel, as it did after the stdlib's hook. The gateway itself leaves through
+`os._exit` (`slack/gateway_runtime/exit_path.py`; `platform_compat.hard_exit` on a
+forced exit), which runs neither hook, so this governs the processes that exit
+normally: CLI commands, child processes and tests.
+
+Every other pool keeps the stdlib executor: those built outside `kiro_crew.executors`
+(the spawn pool aside) and the two inside `subprocess_pool.SubprocessPoolExecutor`. A
+loop-thread `run_in_executor` on one of them still takes the process-wide lock.
 
 The guards are `test/test_loop_thread_pool_lock.py` (with that lock held by another
-thread, `asyncio.to_thread` and a gateway-loop `create_subprocess_exec` complete and
-the child's exit status arrives, on the Windows CI shards through a real Proactor
-loop) and `test/test_enqueue_only_pool.py` (`submit` returns while the worker start
-is held; a failed worker start; cap, results and errors; cancel and shutdown; a call
-queued before any worker started runs before a waited shutdown returns; a worker
-counts as idle once; a dropped pool's threads stop; an interpreter with a live pool
-exits).
+thread, `asyncio.to_thread`, a gateway-loop `create_subprocess_exec` (the child's exit
+status arrives, on the Windows CI shards through a real Proactor loop) and a
+loop-thread `run_in_executor` on every `kiro_crew.executors` pool complete; a built
+pool's getter returns while another thread holds `executors._lock`, as a first build
+does across its starts), `test/test_executors.py` (a getter whose first worker cannot
+start raises, and the next call builds the pool), `test/test_push_branch_gate.py`
+(the push-allow audit is written inline when the maintenance pool cannot start a
+worker) and `test/test_enqueue_only_pool.py` (`submit` returns while a growth start is
+held; a refused first start raises where the pool is built; a refused growth start
+leaves the call to the running worker; a spawn whose pool cannot be built raises the
+start error; cap, results and errors; cancel and shutdown; a worker counts as idle
+once; a dropped pool's threads stop; at a normal interpreter exit a running call and a
+queued call on a live pool, and a running call on a pool shut down without `wait` and
+dropped, all finish, and a pool built while the hook runs refuses its submit).
 
 ## Windows session-tree teardown
 

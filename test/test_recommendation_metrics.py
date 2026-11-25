@@ -93,7 +93,7 @@ def test_value_lists_are_pinned():
         "optin",
         "other",
     )
-    assert fu.TIP_SOURCE_VALUES == ("curated", "catalog", "generated", "other")
+    assert fu.TIP_SOURCE_VALUES == ("curated", "catalog", "generated", "exploratory", "other")
     assert fu.VIDEO_STATUS_VALUES == ("seen", "dismissed", "other")
     assert m.RECOMMENDATION_CHANNELS == ("tip", "explore", "video")
     assert m.RECOMMENDED_BY_VALUES == ("tip", "explore", "video", "several", "none")

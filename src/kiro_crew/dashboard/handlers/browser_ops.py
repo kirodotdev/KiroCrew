@@ -1281,10 +1281,12 @@ async def run_browser_op(
         return _held(request, hub, key, op, interrupted=False)
     from kiro_crew.dashboard.handlers import browser_card_ask
 
-    # An upload a person's act grant on this host covers runs with no card; its host
-    # goes down to the op, which re-reads the bound tab before the files go.
-    granted_host = "" if approval else browser_card_ask.upload_grant_host(state, session_key, op)
-    ctx.upload_grant_host = granted_host
+    # An upload or js a person's act grant on this host covers runs with no card; the
+    # host goes down to the op, which re-reads the bound tab before the op runs.
+    granted_host = (
+        "" if approval else browser_card_ask.site_grant_host(state, session_key, op, args, request)
+    )
+    ctx.upload_grant_host = granted_host if op == "upload" else ""
     # The caller as the tool gate names it: an agent- or app-bound profile narrows too.
     slot = (getattr(state, "_slots", None) or {}).get(key)
     ctx.read_allowed = functools.partial(
@@ -1298,7 +1300,9 @@ async def run_browser_op(
     carded = (
         None
         if granted_host
-        else await browser_card_ask.gate(state, session_key, op, args, approval, ctx.read_allowed)
+        else await browser_card_ask.gate(
+            state, session_key, op, args, approval, ctx.read_allowed, request
+        )
     )
     if carded is None and op == "upload" and approval:
         if listed is None:

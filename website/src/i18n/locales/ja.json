@@ -9141,27 +9141,6 @@
       "title": "スケジュールテンプレート",
       "use_template": "「{{title}}」テンプレートを使用"
     },
-    "searchBar": {
-      "case_sensitive": "大文字と小文字を区別",
-      "close_esc": "閉じる (Esc)",
-      "find_in_chat": "チャットで検索",
-      "find_in_chat_2": "チャットで検索…",
-      "next": "次へ（{{mod}}）",
-      "next_match": "次の一致",
-      "no_results": "結果がありません",
-      "previous": "前へ（{{mod}}）",
-      "previous_match": "前の一致",
-      "no_results_loaded_only": "読み込み済みの履歴に結果がありません",
-      "results_loaded_only": "読み込み済みの履歴で {{current}}/{{total}} 件",
-      "result_position_other": "{{count}} 件中 {{current}} 件目"
-    },
-    "searchResultsList": {
-      "assistant": "アシスタント",
-      "search_results": "検索結果",
-      "selected": "選択済み",
-      "showing_matches_other": "現在の結果周辺の {{n}} 件の一致のうち {{shown}} 件を表示中 — すべて表示するには検索を絞り込んでください。",
-      "you": "あなた"
-    },
     "multiSelect": {
       "deselect_all": "すべてを選択解除",
       "select_all": "すべてを選択"
@@ -11209,6 +11188,7 @@
       "undo_delete_secret": "シークレットを削除",
       "undo_unavailable": "この変更は元に戻せません。",
       "undo_unavailable_overwrites": "元に戻せません：既存のシークレットを上書きしました。",
+      "gateway_restart_required": "この Bot のワーカーがゲートウェイ経由でこの MCP サーバーを使えるのは、ゲートウェイを再起動した後です (設定 → バージョン情報 → ゲートウェイを再起動)。",
       "cron_every_day": "毎日",
       "cron_every_minute": "毎分",
       "cron_every_hour": "毎時",
@@ -11252,6 +11232,7 @@
       "note_crewmate_import": "インポートしても何も実行されません。調べものは自分で行い、それ以外は何をする前にも確認し、予定されたジョブはオフのまま届き、スキルはこの Bot のワークスペースフォルダーを信頼するまで待機します。押した後は、このカードの「元に戻す」で削除できます。",
       "title_crewmate_import": "Bot「{{name}}」をインポート",
       "primary_mcp_server": "適用",
+      "primary_mcp_server_project": "{{name}} をこのプロジェクトに追加",
       "decline_mcp_server": "キャンセル",
       "title_mcp_server_add": "サーバーを追加：{{name}}",
       "title_mcp_server_change": "サーバーを変更：{{name}}",
@@ -11648,6 +11629,47 @@
       "keyboard_hint": "↑ ↓ で移動 · Enter で開く · Esc で閉じる",
       "scan_note": "{{total}} 件中、最新の {{searched}} 件のチャットを検索しました",
       "more_matches_other": "このチャットに一致がさらに {{count}} 件"
+    },
+    "chatHistorySearch": {
+      "title": "このチャットを検索",
+      "open": "検索",
+      "open_hint": "検索 ({{shortcut}})",
+      "placeholder": "検索",
+      "cancel": "キャンセル",
+      "clear": "検索をクリア",
+      "entry_date": "日付",
+      "every_day": "すべての日を表示",
+      "previous_month": "前の月",
+      "next_month": "次の月",
+      "tabs_label": "メッセージの種類",
+      "tab_all": "すべて",
+      "tab_images": "画像",
+      "tab_files": "ファイル",
+      "tab_links": "リンク",
+      "tab_videos": "動画",
+      "tab_pdfs": "PDF",
+      "tab_html": "HTML",
+      "tab_widgets": "ウィジェット",
+      "tab_pinned": "ピン留め済み",
+      "searching": "検索中…",
+      "no_results": "一致するメッセージはありません",
+      "no_pinned": "ピン留めしたメッセージはありません。メッセージの「その他の操作」メニューからピン留めできます。",
+      "no_recent_results": "最近のメッセージに一致するものはありません",
+      "error": "検索に失敗しました。もう一度お試しください。",
+      "results_label": "検索結果",
+      "role_you": "あなた",
+      "role_bot": "Bot",
+      "search_older": "さらに古いメッセージを検索",
+      "preview_label": "メッセージのプレビュー",
+      "back": "結果に戻る",
+      "preview_day": "{{date}} 前後",
+      "show_earlier": "前のメッセージを表示",
+      "show_later": "後のメッセージを表示",
+      "loading": "読み込み中…",
+      "preview_error": "これらのメッセージを読み込めませんでした",
+      "load_failed": "検索を読み込めませんでした",
+      "image_count_other": "画像 {{count}} 枚",
+      "file_count_other": "ファイル {{count}} 件"
     },
     "canvas": {
       "add_text": "テキストを追加",
@@ -13142,6 +13164,7 @@
         "fork_as_temporary": "一時的なチャットとしてフォーク",
         "copy_failed": "コピーに失敗しました",
         "quote_message": "メッセージを引用",
+        "quoted": "引用しました",
         "turn_credits": "{{credits}} クレジット",
         "turn_cache_likely": "キャッシュを再構築した可能性が高い",
         "turn_cache_likely_hint": "この返信は、モデルが会話をキャッシュに保持する時間より長い間隔の後に届いたため、会話全体がもう一度保存され、いつもより費用がかかった可能性が高いです。これは推定です。",
@@ -13990,6 +14013,7 @@
         "copied": "コピーしました",
         "copy_link": "メッセージへのリンクをコピー",
         "put_in_composer": "入力欄に入れる",
+        "put_in_composer_done": "入れました",
         "unpin": "ピン留めを解除",
         "copy_text_failed": "テキストをコピーできませんでした。メッセージに移動して、テキストを選択してコピーしてください。",
         "copy_link_failed": "リンクをコピーできませんでした。このページがクリップボードを使えるか確認して、もう一度お試しください。",
@@ -14636,6 +14660,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}：{{text}}",
         "approval": "{{speaker}}が承認を待っています：{{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "ヒントを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。"
       }
     },
     "chatPage": {
@@ -14718,7 +14745,6 @@
       "knowledge_context_not_kept": "添付したナレッジコンテキストは保持されませんでした。再送信する前にもう一度選択してください。",
       "more_actions": "その他の操作",
       "update_entry_load_failed": "アップデート項目を読み込めませんでした。設定でアップデートを確認してください。",
-      "no_results": "結果なし",
       "no_tools": "ツールなし",
       "open_activity_panel": "アクティビティパネルを開く",
       "open_file": "ファイル {{path}} を開く",
@@ -14772,7 +14798,6 @@
       "tool_status_disabled": "無効",
       "tool_status_loaded": "このセッションで読み込み済み",
       "type_to_filter": "入力して絞り込む…",
-      "type_to_search_this_conversation": "入力してこの会話を検索します。",
       "unknown_error": "不明なエラー",
       "upload_failed_check_file_type_and_size_max_50_mb": "アップロードに失敗しました — ファイル形式とサイズを確認してください (最大 50 MB)",
       "upload_failed_error": "アップロードに失敗しました: {{error}}",
@@ -20248,7 +20273,8 @@
         "task_runner_save_failed": "Task Runner の設定を保存できませんでした。もう一度お試しください。",
         "channels": "チャネルを表示",
         "channels_hint": "オフにすると、チャネルは左のレールと「すべてを検索」から消えます。何も削除も停止もされません。チャネルとそこで作業しているエージェントはそのまま残ります。",
-        "channels_save_failed": "チャネルの設定を保存できませんでした。もう一度お試しください。"
+        "channels_save_failed": "チャネルの設定を保存できませんでした。もう一度お試しください。",
+        "content_text_size_tip": "View メニューの Content Text Size は、ページ、パネル、設定のテキストを拡大縮小します。メニューとツールバーは影響を受けません。メッセージのテキストはチャット設定の「メッセージのフォントサイズ」に従い、ターミナルは独自の設定に従います。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",
@@ -22726,6 +22752,12 @@
       "all_hidden_hint": "まだ使っていない Bot は非表示です。検索すると見つかります。",
       "hidden_named_hint_other": "{{names}} はまだ使っていないため非表示で、上の数には含まれていません。検索すると見つかります。",
       "hidden_more_count_other": "ほか {{count}} 個の Bot",
+      "other_crews_heading": "ほかのクルーの Bot",
+      "other_crews_open": "{{crew}} を開く",
+      "other_crews_unreachable": "このクルーに接続できませんでした",
+      "other_crews_no_bots": "Bot はありません",
+      "other_crews_loading": "Bot を読み込んでいます…",
+      "other_crews_load_failed": "ほかのクルーの Bot を読み込めませんでした。",
       "hidden_more_hint": "{{names}} はまだ使っていないため非表示で、上の数には含まれていません。",
       "star_failed_title": "スターを保存できませんでした",
       "star_failed": "この Bot のスターを更新できませんでした。",

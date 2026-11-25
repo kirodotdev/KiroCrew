@@ -117,6 +117,11 @@ const CardResultLine = forwardRef<HTMLDivElement, CardResultLineProps>(function 
             : i18nT('components.changeCards.undo_unavailable')}
         </p>
       )}
+      {(card.status === 'applied' || card.status === 'partial') && card.gateway_restart_required === true && (
+        <p className="m-0 mb-1 text-[12px] text-text" data-testid="change-card-restart-required">
+          {i18nT('components.changeCards.gateway_restart_required')}
+        </p>
+      )}
       {/* No hand-off: nothing unsaved here, but the line sits beside a chat draft. */}
       <ErrorNotice variant="inline" className="mb-1" testId="change-card-undo-error" message={problem ? problemText(problem) : ''} onDismiss={onClearError} />
       {problem && wantsRefresh(problem.code) && (

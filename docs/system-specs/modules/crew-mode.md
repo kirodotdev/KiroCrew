@@ -3154,7 +3154,10 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`ACP_BACKENDS_MEMBER_PANEL`) the session array gains a
   `members.member_mate_session_server` element (`acp/member_goal_mount.py`),
   withheld like the panel when the server or one of its tools is switched
-  off. Kiro Crew's own default agent, the conductor and a Bot's own file are
+  off, and when the spec excludes the server whole
+  (`default_crew_servers.withheld_whole`: `excludedTools` naming
+  `@kirocrew-mate`, `managedToolPolicy.excludeServers`, a whole-server deny),
+  where the Bot's wording names no goal tool either. Kiro Crew's own default agent, the conductor and a Bot's own file are
   left alone, as is a spec that already mounts the server. So a chat that cannot write the goal down is a defect
   in that chat, never a state this tab routes around; the no-tools prompts
   (another harness, or a switched-off server) say the chat cannot save a goal
@@ -4872,19 +4875,16 @@ parts:
   (`mate_spec_policy._carry_builtin_allow`, `kas_tool_view.builtin_allow_tool`);
   a name-scoped one is never widened to it. Only when those entries cannot
   grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
-  (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
-  `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
-  the read and write tools, `web_fetch.blocked`, and `availableAgents` under the
-  `subagent` key (not `use_subagent`), each only when KAS's
+  (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`, listed below with the keys an
+  ordinary KAS session of the agent applies), each only when KAS's
   translation keeps every entry (`kas_tool_view.tools_settings_unenforced`).
   A carried `availableAgents` binds both spawn paths: KAS's own sub-agent tool
   through its `subagent` deny, and `spawn_run` / `spawn_sub_agents` because the
   spawn gate reads a worker parent's merged session spec
   (`agent_policy._bot_worker_allowlist`) and refuses when that spec cannot be read.
-  Every other key or tool, in any form (`allowedPaths`, `fallbackAction`,
-  `denyByDefault`, `trusted`, `subagent.trustedAgents`), is
-  refused by name. One that cannot land as written (anything outside the
-  allowlist, an entry for a tool the base sets differently or under another
+  Every other key or tool, in any form (`web_fetch.trusted`, a
+  `use_subagent` key), is refused by name. One that cannot land as written
+  (anything outside the allowlist, an entry for a tool the base sets differently or under another
   spelling of it, a `permissions` block KAS would refuse whole, a built-in
   `allow` rule KAS's projection drops beside the worker's `allowedTools` list
   (`kas_tool_view.permission_allow_derivable`) that no `allowedTools` entry can
@@ -5409,12 +5409,17 @@ The worker carries the `toolsSettings` keys of
 `mate_spec_policy.CARRIED_TOOLS_SETTINGS`, the same ones an ordinary KAS session
 of that agent applies: shell `deniedCommands`, `allowedCommands`,
 `denyByDefault` and `autoAllowReadonly`, read and write `deniedPaths` and
-`allowedPaths`, `web_fetch.blocked`, and `subagent.availableAgents` and
-`trustedAgents` under the `subagent` spelling only. Crew's gate answers the
-shell keys and the `allowedPaths`; KAS turns `trustedAgents` into a `subagent`
-allow. Every other key (`fallbackAction`, `web_fetch.trusted` in a file, a key
-Crew does not know) is refused by name. A shell `allowedCommands` or a read or
-write `allowedPaths` is carried whole even when an entry of it is one Crew
+`allowedPaths`, the write tool's `fallbackAction`, `web_fetch.blocked`, and
+`subagent.availableAgents` and `trustedAgents` under the `subagent` spelling
+only. Crew's gate answers the shell keys, the `allowedPaths` and a write
+`fallbackAction` of `"deny"`, whose `spec-write-allowlist` row refuses every
+write-tool call of the worker's own agent that no usable `allowedPaths` entry
+covers, unasked; KAS turns `trustedAgents` into a `subagent` allow. A write
+`fallbackAction` value KAS's translation does not apply (anything but a deny and
+the default `"interactive"`, such as `"allow"`) is refused by name, and so is
+every other key (`fallbackAction` on another tool, `web_fetch.trusted` in a
+file, a key Crew does not know). A shell
+`allowedCommands` or a read or write `allowedPaths` is carried whole even when an entry of it is one Crew
 cannot read, since that entry grants nothing and the call asks. A
 `deniedCommands` list is carried whole too. When an entry of it is one neither
 KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
@@ -5464,8 +5469,11 @@ notice (`spec_keys_notice`) says the worker refuses those commands unless they
 are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
 session keeps the old wording.
 A named bundle (`policies`) beside the agent's `rules` is left behind and the
-rules are carried, as the upgrade path reads it: KAS refuses a block that names
-a bundle, and a bundle only expands into allow rules, so leaving it narrows.
+rules are carried, as the upgrade path reads it: KAS's projection leaves a
+bundle out, and a bundle only expands into allow rules, so leaving it narrows.
+When a Bot's own template policy names one (`mate_spec_policy.layer_policy`),
+the bundle is left out and its `deny` and `ask` rules land; an `allow` beside it,
+or a new `allow` layered onto a file whose own block names a bundle, refuses the add as `permissions (allow rules beside a policies bundle; write them out without the bundle, or use allowedTools)`.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for

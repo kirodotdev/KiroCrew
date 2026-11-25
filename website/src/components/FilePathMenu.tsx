@@ -49,6 +49,7 @@ import {
   ContextMenuTrigger,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuLabel,
   ContextMenuSeparator,
 } from './ui/context-menu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -327,17 +328,22 @@ export function useCopyAck(filePath: string, copy: () => Promise<boolean> = () =
 function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePathMenuItemsProps) {
   const revealErrorId = useId()
   const editorErrorId = useId()
+  // `/api/reveal` refuses a path with a `..` segment and cannot expand `~`, and
+  // the shell's open-file handler cannot expand `~` either (editorAcceptsPath),
+  // so a path spelled that way (a home or document-relative link) gets no
+  // native row that is sure to fail.
+  const revealable = !filePath.startsWith('~') && !filePath.split('/').flatMap(part => part.split('\\')).includes('..')
   // The one shared Reveal gate (see useCanReveal): the browser on the gateway
   // host AND a host that can open a file manager, so no row offers one that is
   // not there.
-  const canReveal = useCanReveal()
+  const canReveal = useCanReveal() && revealable
   // Shared owner of the platform-aware reveal label (see useRevealLabel) — the
   // same wording MarkdownPanel's overflow and FileViewer's overflow use.
   const revealLabel = useRevealLabel()
   const openLabel = i18nT('components.markdownPanel.open_with_default_app')
   // The one shared Open gate (see useCanOpenFile) — the same predicate the two
   // overflow menus consume, so a Windows/dir target hides Open identically.
-  const canOpen = useCanOpenFile(kind)
+  const canOpen = useCanOpenFile(kind) && revealable
 
   // In-app rows: gated on the host's handler alone, never on locality, so a
   // viewer on another machine always has an entry that acts on its own screen.
@@ -421,7 +427,7 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
       {/* The in-app rows are their own group, so they do not read as variants of
           the native rows below that act on the gateway host. */}
       {(openInPanel || containingFolder) && <ContextMenuSeparator />}
-      {canOpenInEditor && (
+      {canOpenInEditor && !filePath.startsWith('~') && (
         <ContextMenuItem
           // preventDefault keeps the menu open so a launch failure can render
           // in place through editorError rather than vanishing with the menu.
@@ -492,6 +498,12 @@ export interface FilePathMenuProps extends InAppPathHandlers {
   children: ReactNode
   /** File or directory — directories hide the Open item (see FilePathMenuItems). */
   kind?: FilePathKind
+  /** Head the menu with the path, which also names it: for a trigger whose
+   *  text is not the path (a Markdown link), so the reader knows the target. */
+  showPath?: boolean
+  /** No menu for now (the trigger's own `disabled`): for a trigger that may
+   *  become a path later, so it keeps one element when it does. */
+  disabled?: boolean
 }
 
 /**
@@ -503,13 +515,26 @@ export interface FilePathMenuProps extends InAppPathHandlers {
  * </FilePathMenu>
  * ```
  */
-export default function FilePathMenu({ filePath, children, kind, onFileOpen, onFolderOpen }: FilePathMenuProps) {
+export default function FilePathMenu({ filePath, children, kind, onFileOpen, onFolderOpen, showPath, disabled }: FilePathMenuProps) {
+  const pathLabelId = useId()
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
+      {/* Radix turns the iOS long-press callout off on every trigger; one
+          with no menu keeps the element's own (see MessageContextMenu). */}
+      <ContextMenuTrigger asChild disabled={disabled} style={disabled ? { WebkitTouchCallout: 'inherit' } : undefined}>
         {children}
       </ContextMenuTrigger>
-      <ContextMenuContent className="min-w-[180px]" onClick={e => e.stopPropagation()}>
+      <ContextMenuContent className="min-w-[180px]" onClick={e => e.stopPropagation()} aria-labelledby={showPath ? pathLabelId : undefined}>
+        {showPath && (
+          <>
+            {/* Only a width on the primitive (shadcn/no-restyle): the path wraps
+                in full on its own span, so its end is never cut off. */}
+            <ContextMenuLabel id={pathLabelId} className="max-w-[260px]">
+              <span className="break-all font-mono font-normal">{filePath}</span>
+            </ContextMenuLabel>
+            <ContextMenuSeparator />
+          </>
+        )}
         <FilePathMenuItems
           filePath={filePath}
           kind={kind}

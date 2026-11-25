@@ -864,6 +864,33 @@ async def request_browser_close(upstream_ws_url: str) -> None:
         await upstream.close()
 
 
+async def request_chromium_close(upstream_ws_url: str, sent: asyncio.Event | None = None) -> bool:
+    """:func:`request_browser_close`, sent only to an endpoint that answers as Chromium.
+
+    ``Browser.getVersion`` goes first, and ``Browser.close`` follows only when its
+    reply carries the request's id and a ``Chrome/`` product. ``False`` means nothing
+    was asked to close. A reply that is not JSON raises, as a refused handshake does.
+    *sent* is set once ``Browser.close`` went out, before the close handshake.
+    """
+    upstream = await _connect_ws(upstream_ws_url)
+    try:
+        await upstream.send(json.dumps({"id": 1, "method": "Browser.getVersion"}))
+        async for raw in upstream.messages():
+            reply = json.loads(raw)
+            if isinstance(reply, dict) and reply.get("id") == 1:
+                result = reply.get("result")
+                product = result.get("product") if isinstance(result, dict) else None
+                if not (isinstance(product, str) and "Chrome/" in product):
+                    return False
+                await upstream.send(json.dumps({"id": 2, "method": "Browser.close"}))
+                if sent is not None:
+                    sent.set()
+                return True
+        return False
+    finally:
+        await upstream.close()
+
+
 async def _close_quietly(ws: web.WebSocketResponse | aiohttp.ClientWebSocketResponse) -> None:
     try:
         await asyncio.wait_for(ws.close(), _CLOSE_TIMEOUT_SECS)

@@ -515,7 +515,9 @@ def test_a_moved_class_annotations_still_resolve(name: str) -> None:
     namespace, which is the facade's: every name they spell is bound there."""
     cls = getattr(stm, name)
     hints = typing.get_type_hints(cls)
-    assert set(hints) == set(vars(cls).get("__annotations__", {}))
+    # The class's own annotations: ``inspect.get_annotations`` reads the namespace
+    # entry where there is one and evaluates CPython 3.14's deferred ones.
+    assert set(hints) == set(inspect.get_annotations(cls))
 
 
 def test_the_status_annotations_name_the_state_class() -> None:

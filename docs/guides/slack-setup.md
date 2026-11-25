@@ -765,7 +765,7 @@ match falls through to it.
 ### Owner-Only Bang Commands
 
 These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`. Most of them
-are deprecated in favour of `/kirocrew` sub-commands: `!yolo`, `!stop`, `!voice`,
+are deprecated in favour of `/kirocrew` sub-commands: `!yolo`, `!stop`,
 `!agent`, `!ta`, `!dashboard`, `!channel`, `!link-to-dashboard` and `!restart`
 still run, and the reply carries a deprecation notice naming the slash command
 to use instead.
@@ -780,7 +780,7 @@ to use instead.
 | `!link-to-dashboard` | Import the current Slack thread into a dashboard session |
 | `!project <path>` / `!project off` | Scope which project-local `.kiro` agents `!ta` can find (does not change the working directory) |
 | `!title <text>` | Set the thread title |
-| `!voice` | Configure TTS voice settings |
+| `!voice …` | TTS voice settings; `!voice global on` / `!voice global off` voice replies in every thread (saved), bare `!voice global` toggles; while it is off, `!voice on` / `!voice off` this thread |
 | `!channel` | Configure the current channel |
 | `!stop` | Interrupt the running turn |
 | `!compact` | Compact the current thread's session context in place |

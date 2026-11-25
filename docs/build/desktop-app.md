@@ -1419,6 +1419,14 @@ rail control is to leave focus mode first, with the toggle chord (Alt+Shift+M
 by default, rebindable on the shortcuts page) or this View menu item. While
 keyboard shortcuts are switched off the chord is dead, so the hidden chrome
 is not made inert and Tab still reveals it.
+The View submenu also holds a **Content Text Size** ladder of three radio items,
+Small, Medium and Large (12, 16 and 20 px; `text-size.js:TEXT_SIZE_TIERS`). A pick
+sets Chromium's default font size in every open dashboard window at once
+(`runtime/window/chrome.js:setFontSize`) and is saved as
+`displayPreferences.fontSize`, which seeds each new window's `defaultFontSize`.
+Only text whose CSS gives it no size, or a size in rem, moves; text pinned in px,
+spacing, the built-in terminal and the embedded browser panel stay as they are.
+A stored value that is not on the ladder is left in place and read as 16 px.
 When a remote crew is connected, the instance switcher shares the same bounded
 left region as the menu: it is a single trigger naming the crew on screen (see
 InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant

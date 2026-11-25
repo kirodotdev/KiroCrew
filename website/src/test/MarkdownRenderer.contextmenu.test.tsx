@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, fireEvent, waitFor } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import MessageContextMenu from '../pages/chat/MessageContextMenu'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { stubPathKinds } from './pathKindStub'
 
@@ -348,6 +349,178 @@ describe('MarkdownRenderer path chips — context menu (FilePathMenu)', () => {
       expect(menu!.textContent).toContain('Copy path')
       expect(menu!.textContent).not.toContain('Open with default app')
     })
+  })
+})
+
+// ── Right-click context menu on file links ───────────────────────────────────
+
+describe('MarkdownRenderer file links — context menu (FilePathMenu)', () => {
+  const FILE = '/home/user/project/report.md'
+
+  afterEach(() => {
+    delete (window as { fileOpenAPI?: unknown }).fileOpenAPI
+  })
+
+  it('right-click on a confirmed file link opens the path menu, headed by the path the link points at', async () => {
+    stubKind('file')
+    ;(window as { fileOpenAPI?: unknown }).fileOpenAPI = { open: vi.fn() }
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <MarkdownRenderer content={`See [the report](${FILE}).`} onFileOpen={onFileOpen} />,
+    )
+
+    // The link's menu turns on once its probe confirms the file, so the
+    // right-click is tried again until it opens.
+    const menu = await waitFor(() => {
+      rightClick(getByRole('link', { name: 'the report' }))
+      const m = document.querySelector('[role="menu"]')
+      expect(m).not.toBeNull()
+      return m!
+    })
+    // The link's text is not the path, so the menu shows the file its rows act
+    // on first, and is named by it for a screen reader.
+    expect(menu.textContent?.startsWith(FILE)).toBe(true)
+    expect(document.getElementById(menu.getAttribute('aria-labelledby') ?? '')?.textContent).toBe(FILE)
+    expect(menu.textContent).not.toContain('the report')
+    expect(menu.textContent).toContain('Open in side panel')
+    expect(menu.textContent).toContain('Open with default app')
+    expect(menu.textContent).toContain('Show in file manager')
+    expect(menu.textContent).toContain('Open in editor')
+    expect(menu.textContent).toContain('Copy path')
+    // The menu takes the long press on touch, so the platform's callout is off
+    // (the open menu hides the page from the accessibility tree).
+    expect((getByRole('link', { name: 'the report', hidden: true }).style as unknown as Record<string, string>).WebkitTouchCallout).toBe('none')
+
+    const openInPanel = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find(el => el.textContent?.includes('Open in side panel'))
+    fireEvent.click(openInPanel!)
+    expect(onFileOpen).toHaveBeenCalledWith(FILE)
+  })
+
+  it('a confirmed path chip used as the link label opens its own menu on right-click', async () => {
+    stubKind('file')
+    const { container } = render(
+      <MarkdownRenderer content={`See [\`${FILE}\`](${FILE}).`} onFileOpen={vi.fn()} />,
+    )
+
+    // Both triggers are live: the link's wrapper and the chip inside its label.
+    const chip = await waitFor(() => {
+      expect(container.querySelector('a[data-state]:not([data-disabled])')).not.toBeNull()
+      const c = container.querySelector('code[data-path-kind="file"]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+
+    rightClick(chip)
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+    })
+    // The chip's menu, not the link's: no path heading, since the chip's own
+    // text is the path.
+    const menu = document.querySelector('[role="menu"]')!
+    expect(menu.textContent).not.toContain(FILE)
+    expect(menu.textContent).toContain('Open with default app')
+  })
+
+  it('a touch hold on a path chip used as the link label opens only the chip menu', async () => {
+    stubKind('file')
+    const { container } = render(
+      <MarkdownRenderer content={`See [\`${FILE}\`](${FILE}).`} onFileOpen={vi.fn()} />,
+    )
+    const chip = await waitFor(() => {
+      expect(container.querySelector('a[data-state]:not([data-disabled])')).not.toBeNull()
+      const c = container.querySelector('code[data-path-kind="file"]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+
+    vi.useFakeTimers()
+    try {
+      // Radix opens a menu 700 ms into a touch hold on its trigger; the link's
+      // trigger must leave a hold on the chip to the chip.
+      fireEvent.pointerDown(chip, { pointerType: 'touch', button: 0, clientX: 10, clientY: 10 })
+      act(() => { vi.advanceTimersByTime(700) })
+      expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+      expect(document.querySelector('[role="menu"]')!.textContent).not.toContain(FILE)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a home-relative link gets no native row that is sure to fail', async () => {
+    stubKind('file')
+    ;(window as { fileOpenAPI?: unknown }).fileOpenAPI = { open: vi.fn() }
+    const { getByRole } = render(
+      <MarkdownRenderer content={'See [notes](~/notes.md).'} onFileOpen={vi.fn()} />,
+    )
+    const menu = await waitFor(() => {
+      rightClick(getByRole('link', { name: 'notes' }))
+      const m = document.querySelector('[role="menu"]')
+      expect(m).not.toBeNull()
+      return m!
+    })
+    // Neither `/api/reveal` nor the shell's open-file handler expands `~`, so
+    // no launch row is offered; the in-app rows and Copy path are.
+    expect(menu.textContent?.startsWith('~/notes.md')).toBe(true)
+    expect(menu.textContent).toContain('Open in side panel')
+    expect(menu.textContent).toContain('Copy path')
+    expect(menu.textContent).not.toContain('Open with default app')
+    expect(menu.textContent).not.toContain('Show in file manager')
+    expect(menu.textContent).not.toContain('Open in editor')
+  })
+
+  it('a link the probe reads as missing opens no path menu and keeps the long-press callout', async () => {
+    stubPathKinds(() => null)
+    const { getByRole } = render(
+      <MarkdownRenderer content={'See [gone](/home/user/project/gone.md).'} onFileOpen={vi.fn()} />,
+    )
+    const link = getByRole('link', { name: 'gone' })
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-muted'))
+
+    rightClick(link)
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+    // On touch the platform's own long-press stays, as on any other link
+    // (happy-dom keeps this vendor style as a property only, not in the
+    // style attribute).
+    expect((link.style as unknown as Record<string, string>).WebkitTouchCallout).not.toBe('none')
+  })
+
+  it('a link in the text still streaming keeps its element when its menu turns on', async () => {
+    stubKind('file')
+    const onFileOpen = vi.fn()
+    const content = `Still typing [the report](${FILE})`
+    const { getByRole, rerender } = render(<MarkdownRenderer content={content} streaming glow onFileOpen={onFileOpen} />)
+    const link = getByRole('link', { name: 'the report' })
+    // The reply ends, so the link is probed and its menu turns on.
+    rerender(<MarkdownRenderer content={content} onFileOpen={onFileOpen} />)
+    await waitFor(() => expect(link.matches('a[data-state]:not([data-disabled])')).toBe(true))
+    expect(link.isConnected).toBe(true)
+  })
+
+  it('inside a chat bubble, a right-click on a confirmed file link opens only the path menu', async () => {
+    stubKind('file')
+    const { container, getByRole } = render(
+      <MessageContextMenu items={[{ id: 'quote', label: 'Quote message', icon: null, onSelect: vi.fn() }]}>
+        <div>
+          <MarkdownRenderer content={`See [the report](${FILE}).`} onFileOpen={vi.fn()} />
+        </div>
+      </MessageContextMenu>,
+    )
+    // The bubble itself is a trigger too, so the link is right-clicked only
+    // once its own menu is wired.
+    await waitFor(() => {
+      expect(container.querySelector('a[data-state]:not([data-disabled])')).not.toBeNull()
+    })
+
+    rightClick(getByRole('link', { name: 'the report' }))
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+    })
+    const menu = document.querySelector('[role="menu"]')!
+    expect(menu.textContent?.startsWith(FILE)).toBe(true)
+    expect(menu.textContent).not.toContain('Quote message')
   })
 })
 

@@ -671,11 +671,14 @@ async def _run_inner_impl(
     _person_rejected = [False]
     _refusal_resumes = [0]
     # Whether the model wrote or called anything after the latest refusal.
-    # opencode answers ``reject_once`` by ending a clean turn ``end_turn`` on
-    # the refusal itself, which leaves it unanswered; other harnesses go on
-    # after a reject, so only opencode's clean ending is read as one.
+    # A harness with ``ends_turn_on_permission_reject`` (opencode, on
+    # ``reject_once``) ends a clean turn ``end_turn`` on the refusal itself,
+    # which leaves it unanswered; other harnesses go on after a reject, so only
+    # that clean ending is read as one.
     _refusal_answered = [False]
-    _reject_ends_turn = getattr(client, "is_opencode_backend", False) is True
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    _reject_ends_turn = capabilities_of(client).ends_turn_on_permission_reject
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -1165,14 +1168,19 @@ async def _run_inner_impl(
     # The harness the run is on: opencode names a Crew tool only in its title.
     _harness = getattr(getattr(client, "client", None), "backend", None)
     _harness = _harness if isinstance(_harness, str) else None
-    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_PI
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    _fused_names = _harness is not None and (
+        capabilities_for(_harness).names_crew_tools_by_fused_name
+    )
 
     def _harness_servers() -> tuple[str, ...]:
-        # pi and claude name a Crew tool only by a fused name, read as Crew's only
-        # for a server the session handed the harness; read at each dispatch, since
-        # a respawn hands the servers again.
+        # A harness with ``names_crew_tools_by_fused_name`` (pi, claude) names a
+        # Crew tool only by a fused name, read as Crew's only for a server the
+        # session handed the harness; read at each dispatch, since a respawn hands
+        # the servers again.
         names = getattr(getattr(client, "client", None), "_harness_mcp_server_names", None)
-        if _harness not in (ACP_BACKEND_PI, ACP_BACKEND_CLAUDE) or not callable(names):
+        if not _fused_names or not callable(names):
             return ()
         found = names()
         return tuple(found) if isinstance(found, (tuple, list)) else ()

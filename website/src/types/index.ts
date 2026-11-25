@@ -23,6 +23,8 @@ export type {
   RemoteCrewCapabilities,
   InstanceVersionRow,
   InstanceVersions,
+  InstanceBotsRow,
+  InstanceBots,
   RemoteUpdateJob,
 } from './index.gateway'
 export type {

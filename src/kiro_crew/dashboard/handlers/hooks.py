@@ -960,6 +960,9 @@ async def _run_hook_inner(
             memory_store=memory_store,
             execution_context=execution,
             context_provider=client,
+            # One-shot: a new hook session reads none of the key's logged history.
+            compressed_history="",
+            conversation_reset=True,
         )
         trusted_prompt = full_message
     if full_message is not trusted_prompt:
@@ -979,7 +982,7 @@ async def _run_hook_inner(
     # at 0, so without this the row records a literal 0. Started after the
     # context build so prompt assembly is not charged to the turn.
     _turn_t0 = time.monotonic()
-    # A caller that reuses a ``sessionKey`` resumes its conversation, so a turn
+    # A turn on a live session it adopted, which already holds an earlier turn,
     # can open with the alternation placeholder (``drop_echo``).
     async for event in drop_echo(client.stream(full_message)):
         if event.kind == EVENT_TEXT_CHUNK:
@@ -1215,8 +1218,9 @@ async def _run_hook_agent(
     Returns ``(outcome, result text)``, the text redacted as delivery sends it,
     for a caller that waits for the answer.
 
-    The session is reset after the turn: its process stops and its resume sid
-    stays, so a caller that reuses a ``sessionKey`` resumes the conversation.
+    The session is reset after the turn and its resume sid is forgotten, so a
+    caller that reuses a ``sessionKey`` starts a fresh conversation; the sid is
+    kept while a sub-agent of the turn still owes it a report.
     Context continuity across webhook calls is provided by hooks.json —
     the agent calls ``register_hook`` to persist context_summary, and this
     handler injects it into each turn's message.
@@ -1353,8 +1357,30 @@ async def _run_hook_agent(
         except Exception:
             logger.exception("Hook session reset failed: %s", session_key)
         finally:
-            _hook_inflight_sessions.discard(session_key)
-            _hook_semaphore.release()
+            try:
+                # A hook session is one-shot: the reset keeps the resume sid, which
+                # would let the next call on this `sessionKey` load this conversation.
+                # Kept while a sub-agent of the turn still owes it a report (the
+                # probes of `_parent_owes_child_work` and its `_now` half, less the
+                # teardown fence this path never opens): the report is injected
+                # into this conversation.
+                subs = state.subagents
+                if subs is None or not (
+                    subs.has_unfinished_report_for(session_key)
+                    or subs.has_in_memory_pending_work_for(session_key)
+                    or subs.has_live_or_queued_children(session_key)
+                    or await subs.has_pending_work_for_async(session_key)
+                    or await subs.has_pending_store_children(session_key)
+                ):
+                    state.sessions.forget_conversation(session_key)
+            except Exception:
+                logger.exception(
+                    "Hook session %s: owed-work read or forget failed; resume sid kept",
+                    session_key,
+                )
+            finally:
+                _hook_inflight_sessions.discard(session_key)
+                _hook_semaphore.release()
 
     # Deliver BEFORE recording, and record only the destinations that actually
     # accepted the result. Deriving `delivered` from intent instead of outcome

@@ -15,7 +15,7 @@ List grants (with usage).
 | Stability | stable |
 | Callers the API defines | The owner, with the owner's own sign-in. |
 
-revoked grants are not listed by default. Served for grants made through local authorization (amendment, 2026-11-24), oldest first. Such a grant is active or gone, so any other `status` lists nothing; each row carries `kind`, `namespace`, `client_id`, `app`, `scopes`, `status`, `created_at` and `expires_at`.
+revoked grants are not listed by default. Served for grants made through local authorization (amendment, 2026-11-24), oldest first. Such a grant is active or gone, so any other `status` lists nothing. A grant that has expired, or whose refresh token has run out unused and so can mint no token again, is gone too. Last use and usage are not kept for such a grant, so despite this operation's summary a row carries neither. `created_at` is when the app redeemed its code and the grant began. Each row carries `kind`, `namespace`, `client_id`, `app`, `scopes`, `bots`, `status`, `created_at` and `expires_at`.
 
 Query parameters:
 
@@ -134,7 +134,7 @@ Response body fields (`application/json`), [Grant](schemas.md#grant):
 | `monitor` | object | no |  |
 | `kind` | `remote`, `local` | no | remote: issued by the Kiro authorization service; local: local authorization, issued by this gateway. |
 | `namespace` | string | no | Stored on every record of local authorization; one fixed value, `default`, today. |
-| `expires_at` | integer | no | A local grant only: when the grant ends by itself, in Unix seconds. |
+| `expires_at` | integer | no | A local grant only: the latest the grant can last, in Unix seconds. It ends, and leaves the list, earlier when its refresh token runs out unused. |
 
 Errors. The response body is [Error](schemas.md#error); its `error.code` field holds the code.
 
@@ -263,7 +263,7 @@ Response body fields (`application/json`), [Grant](schemas.md#grant):
 | `monitor` | object | no |  |
 | `kind` | `remote`, `local` | no | remote: issued by the Kiro authorization service; local: local authorization, issued by this gateway. |
 | `namespace` | string | no | Stored on every record of local authorization; one fixed value, `default`, today. |
-| `expires_at` | integer | no | A local grant only: when the grant ends by itself, in Unix seconds. |
+| `expires_at` | integer | no | A local grant only: the latest the grant can last, in Unix seconds. It ends, and leaves the list, earlier when its refresh token runs out unused. |
 
 Errors. The response body is [Error](schemas.md#error); its `error.code` field holds the code.
 

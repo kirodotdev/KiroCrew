@@ -271,3 +271,34 @@ async def test_the_dashboard_lists_the_global_servers_an_agent_opts_in_to(
 
     assert resp.status == 200
     assert _payload(resp) == [{"name": n, "enabled": True} for n in expected]
+
+
+@pytest.mark.parametrize("user_level,expected", [(False, False), (True, True)])
+def test_a_kas_agent_is_judged_by_the_spec_kas_runs_not_the_checkouts(
+    tmp_path, monkeypatch, user_level, expected
+):
+    # KAS runs the user-level spec over a same-named checkout spec, so the checkout's
+    # opt-in decides nothing there; kiro-cli runs the checkout's.
+    from kiro_crew.agent_sdk import mcp_json_reach
+
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    (agents_dir / "crew.json").write_text(
+        json.dumps({"name": "crew", "prompt": "mine", "includeMcpJson": user_level})
+    )
+    project = tmp_path / "checkout"
+    (project / ".kiro" / "agents").mkdir(parents=True)
+    (project / ".kiro" / "agents" / "crew.json").write_text(
+        json.dumps({"name": "crew", "prompt": "theirs", "includeMcpJson": not user_level})
+    )
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
+    assert mcp_json_reach.agent_includes_mcp_json("crew", ACP_BACKEND_KAS, str(project)) is expected
+
+
+def test_an_unknown_kas_agent_includes_nothing(tmp_path, monkeypatch):
+    from kiro_crew.agent_sdk import mcp_json_reach
+
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
+    assert mcp_json_reach.agent_includes_mcp_json("nobody", ACP_BACKEND_KAS, str(tmp_path)) is False

@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2, Save } from 
 
 import { api } from '../../api/client'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
+import SearchMenuRow from '../../components/chatHistorySearch/SearchMenuRow'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,7 +26,7 @@ import McpToolsPanel from './McpToolsPanel'
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
  *  servers and initial-prompt submenus and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown, memoryMode, onPromote, promoting }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown, memoryMode, onPromote, promoting, onOpenSearch }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
@@ -54,6 +55,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   onPromote?: () => void
   /** A keep is in flight; the item is disabled so a double click makes one copy. */
   promoting?: boolean
+  /** Desktop only: opens this chat's history search. A first row here, not a
+   *  button in the title row, whose trailing group already holds its peers
+   *  (`max-two-buttons-per-row`); the row names the find shortcut. */
+  onOpenSearch?: () => void
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -125,6 +130,12 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
             <DropdownMenuItem data-testid="mobile-new-session-here" disabled={newSessionHere.disabled} onSelect={newSessionHere.onSelect}>
               <MessageSquarePlus size={13} className="shrink-0 text-muted" /> {newSessionHere.label}
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        {activeSlot && onOpenSearch && (
+          <>
+            <SearchMenuRow onSelect={onOpenSearch} testId="chat-header-search" />
             <DropdownMenuSeparator />
           </>
         )}

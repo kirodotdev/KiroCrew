@@ -26,7 +26,6 @@ const mount = (panelVisible: boolean, extra: { hasLiveAppTab?: boolean; hasBrows
   activityOpen: panelVisible,
   hasLiveAppTab: false,
   hasBrowserTab: false,
-  searchOpen: false,
   ...extra,
 })
 

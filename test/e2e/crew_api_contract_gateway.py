@@ -204,6 +204,15 @@ class Gateway:
         assert len(ids) == 1, f"the new grant is not listed once\n{self.diagnostics()}"
         return str(ids[0])
 
+    def kept_response(self) -> str:
+        """The id of a turn the owner ran, which the gateway keeps to be read back."""
+        ran = self._must(
+            self._owner_call("POST", "/v1/responses", {"model": self.model, "input": "hello"}),
+            200,
+            "POST /v1/responses",
+        )
+        return str(json.loads(ran.body)["id"])
+
     def _credential(self, caller: str) -> str | None:
         if caller == ANONYMOUS:
             return None

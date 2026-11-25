@@ -70,7 +70,12 @@ before them: a part of the window would read as the whole of it.
 What the selector falls back on (prints nothing, exit 3)
 --------------------------------------------------------
 * a file added, deleted, renamed or copied: the set of files changes, which a
-  map of the old set cannot describe (but see the exception below);
+  map of the old set cannot describe. Two exceptions: the docs and frontend
+  paths below, and an added test file, which is selected as an edited one is:
+  no unchanged file can import a file that did not exist, and the tests that
+  read the set of test files are the guard tier. An added source file or test
+  helper still falls back: tests reach a new module through import-time
+  wiring (a route table, a registry) that neither the map nor its name shows;
 * any `conftest.py`: it reaches every test below it;
 * a non-`.py` file anywhere, or a `.py` file outside `src/` and `test/`
   (workflows, scripts, config, data): tests read those as data, and the plugin
@@ -157,6 +162,8 @@ CORE_REACH = 0.5
 CACHES = frozenset({"cache", "lru_cache", "cached_property"})
 # The statuses a path with known readers may have: added, deleted, modified, renamed.
 COVERED_STATUSES = frozenset("ADMR")
+# The verdict's `covered` key for the test files a diff adds.
+ADDED_TEST = "added_test"
 
 
 Changes = list[tuple[str, list[str]]]
@@ -404,6 +411,17 @@ def covered_statuses(covered: Changes) -> dict[str, int]:
     return counts
 
 
+def is_added_test(status: str, paths: list[str]) -> bool:
+    """Whether a row adds a test file, which `select` takes as it takes an edited one."""
+    return status == "A" and bool(paths) and is_test_file(paths[-1])
+
+
+def added_tests(changes: Changes) -> dict[str, int]:
+    """The verdict's `covered` entry for the test files a diff adds; empty when it adds none."""
+    count = sum(1 for status, paths in changes if is_added_test(status, paths))
+    return {ADDED_TEST: count} if count else {}
+
+
 def select(
     changes: Changes,
     test_map: Mapping[str, Any],
@@ -422,7 +440,9 @@ def select(
     chosen: set[str] = set()
     for status, paths in changes:
         path = paths[-1] if paths else ""
-        if status != "M":
+        if is_added_test(status, paths):
+            chosen.add(path)
+        elif status != "M":
             reasons.append(f"{status} {' -> '.join(paths)}: file set changed")
         elif path.rsplit("/", 1)[-1] == "conftest.py":
             reasons.append(f"{path}: conftest reaches every test below it")

@@ -196,6 +196,10 @@ STRANDS_VERIFIED_VERSION = "0.2.4"
 #: The Python packages the Strands CLI's project worker imports, at the versions the
 #: gate was measured on. Installed into the project environment Crew runs Strands in.
 STRANDS_PYTHON_REQUIREMENT = "strands-harness==0.3.3"
+#: botocore's CRT extra, installed beside it: boto3's credential chain refuses an AWS
+#: profile using the ``login`` provider without it, and the worker dies before it
+#: loads the gate.
+STRANDS_PYTHON_CRT_REQUIREMENT = "botocore[crt]"
 #: The CLI's own ``engines.node`` floor.
 STRANDS_NODE_FLOOR = (22, 0, 0)
 

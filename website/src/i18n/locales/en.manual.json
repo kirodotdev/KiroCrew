@@ -3633,18 +3633,6 @@
       "beside_hint": "Relaunches the agent behind every open chat so saved changes apply. Chats and their history stay; a reply in progress stops.",
       "restart_failed_because": "Could not restart — {{reason}}. Wait a moment, then press Apply & Restart again."
     },
-    "searchBar": {
-      "next": "Next ({{mod}})",
-      "no_results": "No results",
-      "previous": "Previous ({{mod}})",
-      "no_results_loaded_only": "No results in loaded history",
-      "results_loaded_only": "{{current}}/{{total}} results in loaded history"
-    },
-    "searchResultsList": {
-      "assistant": "Assistant",
-      "selected": "selected",
-      "you": "You"
-    },
     "secretField": {
       "hide": "Hide",
       "show": "Show"
@@ -4947,6 +4935,7 @@
       "undo_delete_secret": "Delete secret",
       "undo_unavailable": "Undo isn't available for this change.",
       "undo_unavailable_overwrites": "Undo isn't available: this replaced a secret that already existed.",
+      "gateway_restart_required": "This Bot's worker gets this MCP server through the gateway only after you restart the gateway (Settings → About → Restart gateway).",
       "cron_every_day": "Every day",
       "cron_every_minute": "Every minute",
       "cron_every_hour": "Every hour",
@@ -4990,6 +4979,7 @@
       "note_crewmate_import": "Nothing runs when you import: it looks things up on its own and asks before anything else, schedules arrive switched off, and skills wait until you trust the bot's workspace folder. After the press, Undo on this card removes it.",
       "title_crewmate_import": "Import bot “{{name}}”",
       "primary_mcp_server": "Apply",
+      "primary_mcp_server_project": "Add {{name}} to this project",
       "decline_mcp_server": "Cancel",
       "title_mcp_server_add": "Add server: {{name}}",
       "title_mcp_server_change": "Change server: {{name}}",
@@ -6175,7 +6165,8 @@
         "fork_as_temporary": "Fork as temporary",
         "copy_failed": "Copy failed",
         "quote_message": "Quote message",
-        "speaker_heading": "{{productName}}"
+        "speaker_heading": "{{productName}}",
+        "quoted": "Quoted"
       },
       "messageContextMenu": {
         "copy_link_text": "Copy link text",
@@ -7101,6 +7092,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} is waiting for your approval: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "The tip couldn't load. Check the connection to the gateway, then try again."
       }
     },
     "chatPage": {
@@ -7149,7 +7143,6 @@
       "knowledge_context_not_kept": "Its knowledge context was not kept — re-pick it before you resend.",
       "more_actions": "More actions",
       "update_entry_load_failed": "Couldn't load the update entry. Check for updates in Settings.",
-      "no_results": "No results",
       "no_tools": "No tools",
       "open_activity_panel": "Open activity panel",
       "open_file": "Open file {{path}}",
@@ -7172,7 +7165,6 @@
       "tool_status_deferred": "Deferred",
       "tool_status_disabled": "Disabled",
       "tool_status_loaded": "Loaded this session",
-      "type_to_search_this_conversation": "Type to search this conversation.",
       "unknown_error": "unknown error",
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
@@ -10110,6 +10102,7 @@
         "install": "Install",
         "install_failed": "Install failed",
         "native_window_zoom_tip": "Native window zoom, the same setting as {{mod}}+ / {{mod}}− (50%–300%). Remembered across launches.",
+        "content_text_size_tip": "Content Text Size, in the View menu, scales text in pages, panels and Settings. Menus and toolbars are unaffected. Message text follows Message Font Size in Chat settings, and the terminal follows its own setting.",
         "custom_font_family": "Custom font",
         "custom_font_family_desc": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures.",
         "custom_font_choose": "Choose a font…",

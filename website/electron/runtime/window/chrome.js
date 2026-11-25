@@ -2,6 +2,7 @@
 
 const { resolveThemeSource } = require("../../native-theme");
 const { clampZoomFactor, stepZoomFactor } = require("../../zoom");
+const { DEFAULT_TEXT_SIZE_PX, isSupportedTextSize } = require("../../text-size");
 const { applyFocusModeChrome } = require("../../focus-chrome");
 const { createFocusCursorWatch } = require("../../focus-cursor");
 const {
@@ -10,6 +11,8 @@ const {
 } = require("../../windows-titlebar");
 
 const HEADER_CSS_PX = 42;
+// The one home for the content text size preference. Nothing else writes it.
+const FONT_SIZE_STORE_KEY = "displayPreferences.fontSize";
 const TRAFFIC_LIGHT_NATIVE_H = 12;
 const TRAFFIC_LIGHT_Y_NUDGE = -4;
 
@@ -288,6 +291,175 @@ function createWindowChrome({
     );
   }
 
+  // Content text size — Chromium's default font size for the dashboard.
+  //
+  // Font SIZE is the shell's; font FAMILY stays the dashboard's. The dashboard
+  // must never write `html.style.fontSize`: two writers compound into scaling
+  // nobody can predict, which is why the old `mc-font-scale` key was removed by
+  // a migration rather than kept alongside this. The principle is the
+  // one-home-per-setting rule in docs/system-specs/modules/config.md.
+  //
+  // Electron exposes no `webContents.setDefaultFontSize`, and
+  // `webPreferences.defaultFontSize` applies at construction only, so the
+  // protocol command is the only way to move a window that is already open. If
+  // Chromium ever retires it the feature degrades to needing a restart, because
+  // the construction seed in window-lifecycle.js is a separate durable path.
+  //
+  // Every dashboard window, not one. `setupWindowContents` runs for the main
+  // window and for each connection window, so a single held target would be
+  // whichever was built last rather than the one in front of the user. It also
+  // has to be all of them to agree with the construction seed, which writes the
+  // stored size into every dashboard view's webPreferences: with one target, a
+  // relaunch would move windows a live pick had not.
+  //
+  // This state sits in the factory, not at module scope, so a test gets a clean
+  // cache from a fresh createWindowChrome() rather than deleting this module
+  // out of require.cache between cases.
+  let fontSizeCache = null;
+  // Keyed per webContents, so one blocked window defers only itself and a retry
+  // can never fire against a window it was not meant for. Weak, so a closed
+  // window's entry goes with it.
+  const pendingFontSizes = new WeakMap();
+  const fontSizeListenerBound = new WeakSet();
+
+  function readStoredFontSize() {
+    const stored = store.get(FONT_SIZE_STORE_KEY);
+    // Both spellings of absent: electron-store answers undefined for a missing
+    // key, and several stores in this tree answer null. Neither is a corrupt
+    // value, so neither warns.
+    if (stored === undefined || stored === null) return DEFAULT_TEXT_SIZE_PX;
+    if (isSupportedTextSize(stored)) return stored;
+    // Declined, never corrected. The operator's config is their document, and
+    // silently rewriting it erases the very value somebody may be debugging.
+    glog(
+      `displayPreferences.fontSize is ${JSON.stringify(stored)}, which is not a`
+        + ` supported size; using ${DEFAULT_TEXT_SIZE_PX}px. The stored value is left as it is.`,
+    );
+    return DEFAULT_TEXT_SIZE_PX;
+  }
+
+  function getFontSize() {
+    if (fontSizeCache === null) fontSizeCache = readStoredFontSize();
+    return fontSizeCache;
+  }
+
+  /** Every live dashboard webContents. `_mcView` is set on a dashboard window
+   *  and on nothing else, which is how the rest of this facade enumerates them,
+   *  so an embedded browser panel is excluded by never qualifying rather than by
+   *  being skipped. */
+  function dashboardWebContentsList() {
+    return BaseWindow.getAllWindows()
+      .filter((win) => win && !win.isDestroyed() && win._mcView)
+      .map((win) => win._mcView.webContents)
+      .filter((contents) => contents && !contents.isDestroyed());
+  }
+
+  /** Remember the size whose apply this window blocked, and arrange one retry
+   *  for it. Exactly ONE focus listener per webContents however many applies
+   *  fail there: a listener per failure would fire the apply once per failure on
+   *  a single later focus. */
+  function deferFontSize(contents, px) {
+    // A newer pick has already landed, so this one is stale: an apply that
+    // fails slowly must not queue its own size back over a pick that succeeded
+    // while it was still in flight. Without this, the next focus would re-apply
+    // the older size and the window would disagree with the menu and the store.
+    if (px !== fontSizeCache) return;
+    pendingFontSizes.set(contents, px);
+    if (fontSizeListenerBound.has(contents)) return;
+    // Bind first, record second. The other order leaves the set claiming a
+    // listener that does not exist if the bind throws.
+    contents.on("focus", () => {
+      const pending = pendingFontSizes.get(contents);
+      if (pending === undefined) return;
+      void applyFontSizeTo(contents, pending);
+    });
+    fontSizeListenerBound.add(contents);
+  }
+
+  /** Push `px` to one dashboard webContents. Always resolves: the boolean says
+   *  the work finished, not that Chromium accepted it, so no caller has to
+   *  catch. A blocked apply leaves a pending size on that window instead. */
+  async function applyFontSizeTo(contents, px) {
+    // Chromium has one debugger slot per webContents and developer tools can
+    // hold it. Attach only into an empty slot, and detach only the session we
+    // opened: attaching over developer tools breaks Toggle Developer Tools, and
+    // detaching a session we did not open closes somebody else's.
+    let weAttached = false;
+    try {
+      // Inside the try on purpose. Outside it, a throw from isDestroyed left a
+      // rejected promise that both `void` callers ignored.
+      if (!contents || contents.isDestroyed()) return false;
+      if (!contents.debugger.isAttached()) {
+        contents.debugger.attach("1.3");
+        weAttached = true;
+      }
+      await contents.debugger.sendCommand("Page.setFontSizes", {
+        fontSizes: { standard: px, fixed: px },
+      });
+      pendingFontSizes.delete(contents);
+      return true;
+    } catch (err) {
+      // The recovery is itself wrapped: a throw from the log or from binding the
+      // listener would otherwise escape this catch and reject after all.
+      try {
+        glog(`content text size apply deferred to the next focus: ${(err && err.message) || err}`);
+        deferFontSize(contents, px);
+      } catch {
+        // Nothing left to try; the construction seed still carries the choice.
+      }
+      return false;
+    } finally {
+      if (weAttached) {
+        try {
+          contents.debugger.detach();
+        } catch {
+          // The session went with the view; nothing left to close.
+        }
+      }
+    }
+  }
+
+  /** Apply to every dashboard window. Each is independent, so one window that
+   *  is dead or holding its debugger slot cannot stop the others. */
+  async function applyFontSizeEverywhere(px) {
+    // The await sits inside the try so the fan-out is safe on its own terms
+    // rather than resting on applyFontSizeTo never rejecting. Both callers
+    // reach this through `void`, and an unhandled rejection in the main
+    // process takes every window with it.
+    try {
+      const targets = dashboardWebContentsList();
+      await Promise.all(targets.map((contents) => applyFontSizeTo(contents, px)));
+    } catch (err) {
+      glog(`content text size: apply could not run: ${(err && err.message) || err}`);
+    }
+  }
+
+  /** Re-push the stored size after every load on one view.
+   *
+   *  A renderer that is replaced — a crash recovery, a cross-site navigation —
+   *  takes its default font size from the `webPreferences` captured when the
+   *  window was built, which is the size at build time rather than the size the
+   *  user has picked since. Without this, such a view drops to the older size
+   *  while the menu and the store both still read the newer one.
+   *
+   *  `did-finish-load` fires on every load and reload, which is why the Windows
+   *  caption reserve is re-pushed from the same event for the same reason. The
+   *  re-apply costs one protocol command per load and is a no-op in effect when
+   *  the size already matches. */
+  function trackFontSizeChrome(view) {
+    view.webContents.on("did-finish-load", () => {
+      void applyFontSizeTo(view.webContents, getFontSize());
+    });
+  }
+
+  function setFontSize(px) {
+    if (!isSupportedTextSize(px)) return getFontSize();
+    fontSizeCache = px;
+    store.set(FONT_SIZE_STORE_KEY, px);
+    void applyFontSizeEverywhere(px);
+    return px;
+  }
+
   return {
     syncNativeTheme,
     positionTrafficLights,
@@ -301,6 +473,9 @@ function createWindowChrome({
     getZoom,
     setZoom,
     stepZoom,
+    getFontSize,
+    setFontSize,
+    trackFontSizeChrome,
   };
 }
 

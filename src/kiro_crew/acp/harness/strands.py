@@ -70,6 +70,7 @@ from kiro_crew.acp.transport_framing import write_frames_blocking
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_STRANDS,
     STRANDS_NODE_FLOOR,
+    STRANDS_PYTHON_CRT_REQUIREMENT,
     STRANDS_PYTHON_REQUIREMENT,
     STRANDS_VERIFIED_VERSION,
     launch_effort_supported,
@@ -236,7 +237,16 @@ def strands_python_setup_command(project_dir: str) -> str:
     python = strands_python(project_dir)
     create = "py -3 -m venv" if platform_compat.IS_WINDOWS else "python3 -m venv"
     joiner = "; " if platform_compat.IS_WINDOWS else " && "
-    return f'{create} "{venv}"{joiner}{_run_quoted(python)} -m pip install "{STRANDS_PYTHON_REQUIREMENT}"'
+    return f'{create} "{venv}"{joiner}{_pip_install_command(python)}'
+
+
+#: Every package Crew installs into the project environment.
+_STRANDS_PYTHON_REQUIREMENTS = (STRANDS_PYTHON_REQUIREMENT, STRANDS_PYTHON_CRT_REQUIREMENT)
+
+
+def _pip_install_command(python: str) -> str:
+    requirements = " ".join(f'"{requirement}"' for requirement in _STRANDS_PYTHON_REQUIREMENTS)
+    return f"{_run_quoted(python)} -m pip install {requirements}"
 
 
 def _run_quoted(program: str) -> str:
@@ -264,7 +274,7 @@ def strands_python_env_issue(project_dir: str) -> str:
             f"the Python environment at {os.path.join(project_dir, '.venv')} does not "
             f"have {STRANDS_PYTHON_REQUIREMENT} installed. Install it in a terminal on "
             f"the gateway host. {HOST_TERMINAL_NOTE} Run: "
-            f'{_run_quoted(python)} -m pip install "{STRANDS_PYTHON_REQUIREMENT}"'
+            f"{_pip_install_command(python)}"
         )
     return ""
 

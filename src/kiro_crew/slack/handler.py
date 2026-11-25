@@ -522,11 +522,13 @@ def _display_redactor(text: str) -> str:
 # words that change what a thread is (``!bot``, ``!conductor``), one set for both.
 _NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
-_BANG_TO_SLASH: dict[str, str] = {
+# Mapping of bang commands to their /kirocrew slash equivalents. None: not
+# deprecated, so no notice: the bang acts on the thread it is typed in (`!voice on`),
+# which a slash command cannot name.
+_BANG_TO_SLASH: dict[str, str | None] = {
     "!yolo": "/kirocrew yolo",
     "!stop": "/kirocrew stop",
-    "!voice": "/kirocrew voice",
+    "!voice": None,
     "!agent": "/kirocrew agent",
     "!dashboard": "/kirocrew dashboard",
     "!ta": "/kirocrew agent",

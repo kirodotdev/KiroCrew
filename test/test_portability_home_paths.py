@@ -7,6 +7,7 @@ import os
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -492,6 +493,26 @@ def test_staged_read_rejects_nonregular_files(tmp_path, kind):
     assert home_path_rewrite._read_header(path) is None
     home_path_rewrite._replace_header(path, {"_type": "metadata"}, 0)
     assert path.exists()
+
+
+def test_an_unknown_home_here_looks_at_no_path_the_archive_names(tmp_path, monkeypatch):
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "MANIFEST.json").write_text(json.dumps({"user": "x"}), encoding="utf-8")
+    (staged / "workspace_dir").write_text("//share-host/share/x/pkg\n", encoding="utf-8")
+    monkeypatch.setattr(portability, "this_home", lambda: None)
+    looked_up = []
+
+    def exists(path):
+        looked_up.append(os.fspath(path))
+        return False
+
+    fake_path = SimpleNamespace(**{**vars(os.path), "exists": exists})
+    fake_os = SimpleNamespace(**{**vars(os), "path": fake_path})
+    monkeypatch.setattr(home_path_rewrite, "os", fake_os)
+
+    assert portability._move_home_paths(staged, {}) == frozenset()
+    assert looked_up == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Home relocation is POSIX-only")

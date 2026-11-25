@@ -49,10 +49,11 @@ choice wins: saving the Bot's model clears the model that chat picked for
 itself (with `/model`, for example), and saving its reasoning effort clears
 the chat's own effort, so the chat's next reply uses the Bot's values. This
 happens on every save from the Bot's editor, which always sends both fields,
-so renaming the Bot or saving it unchanged resets them too. A change made
-outside the dashboard, with `kirocrew agent update --model` or by editing
-`config.json`, does not reset the chat's own model or effort; save the Bot
-in its editor to bring the chat back onto it. A `/model` typed in the chat
+so renaming the Bot or saving it unchanged resets them too. A change of the
+Bot's model or effort made outside the dashboard, with
+`kirocrew agent update --model` or by editing `config.json`, resets them the
+same way once the running Kiro Crew picks up the file; a change made while Kiro
+Crew is stopped does not, so save the Bot in its editor. A `/model` typed in the chat
 after the save wins again until the next save.
 Other chats and the sessions the Bot starts keep their own picks.
 
@@ -418,7 +419,9 @@ somewhere it does not belong.
 Triggers are comma-separated phrases. A phrase scores as the fraction of its own
 words present in the task text, and a Bot scores as its best phrase, so a
 specific multi-word phrase has to match more completely than a generic one-word
-phrase to reach the same score. A phrase prefixed with `!` is a negative: if all
+phrase to reach the same score. Chinese, Japanese and Thai are written without
+spaces, so a trigger word in one of them matches anywhere inside the task text:
+`周报` matches "帮我总结一下这周的周报". A phrase prefixed with `!` is a negative: if all
 of its words appear, that Bot is excluded whatever else it scored.
 Negatives are applied after every positive, so the order you write them in
 cannot change the outcome. Anything below a 0.7 overlap is not a match at all,

@@ -155,11 +155,10 @@ Four cases, and the difference between them is the whole answer:
   agent is, grants included). The chat's own agent's `postToolUse` hooks run on a sub-agent's
   finished calls too. With the "KAS sub-agents" feature preview on (Settings >
   Developer > Feature previews, off by default) a KAS chat on any agent Kiro Crew
-  ships or builds (not a conductor's) also reaches Kiro Crew's built-in
-  `kirocrew-helper` (the chat agent's built-in tools and MCP servers under its
-  rules, none of Kiro Crew's own servers). Your own dashboard chat on the default
-  agent, and the crew member named `default`'s chat on it, also reach your own
-  agents, up to 8 in name order, under the
+  ships or builds (not a conductor's own chat or a Bot's own thread) reaches Kiro
+  Crew's built-in `kirocrew-helper` in place of `spawn_run` (a copy of the chat's
+  own agent under its rules, with none of Kiro Crew's own servers and no
+  sub-agent tool), and your own agents, up to 8 in name order, under the
   same rules as a listed agent above: one with a `denyByDefault` or
   `fallbackAction: "deny"` allowlist, a granted tool beside write `deniedPaths` or
   beside a `deniedCommands` entry the engine cannot hold as a rule, a
@@ -417,7 +416,7 @@ disk, so there the injection is refused as before.
    the write allowlist, `deniedPaths`, `web_fetch.blocked`) have no field on any
    mirrored harness, and Crew's gate tiers that apply them on KAS
    (`spec-shell-allowlist`, `spec-write-allowlist`) are fed the shell and write
-   allowlists on `claude` and `opencode` alone (`ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS`),
+   allowlists on `claude`, `opencode` and `goose` alone (`ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS`),
    so elsewhere the field is applied nowhere. The other exception is
    `subagent.availableAgents`, which Crew's spawn gate reads from the parent's
    spec on every backend (the `toolsSettings` row). Every mirror says so:
@@ -426,7 +425,7 @@ disk, so there the injection is refused as before.
    `deepseek` and `mimocode`. A new
    chat session whose spec sets it gets one notice naming what goes unapplied:
    `toolsSettings` whole, or each entry other than a declared
-   `subagent.availableAgents` and, on `claude`, the allowlist keys its gate applies
+   `subagent.availableAgents` and, on `claude`, `opencode` and `goose`, the allowlist keys the gate applies
    (`denyByDefault` with `allowedCommands`, `fallbackAction: "deny"` with
    `allowedPaths`), which no notice names
    (`src/kiro_crew/agent_sdk/tools_settings_reach.py`;
@@ -1101,6 +1100,15 @@ One more skill mapping exists and is edition-specific: a `builder-mcp` server
 entry whose `args` carry `--skill-name-filter a,b`. `_extract_skills` unions it
 with the `skill://` set for display. It predates `resources` support.
 
+### Session context
+
+| Field | Type | Effect |
+|---|---|---|
+| `includeCrossSessionContext` | bool | `false` keeps what Kiro Crew stored from the user's other sessions out of this agent's sessions: the stored memory block (preferences, the activity index, the activity block, a memory provider's blocks), the recent-session snippets, the learned corrections and experience, the per-message lessons and the user profile, and for a crew member its own preference and project documents and its briefing. It is `memory.inject_memory` and `memory.inject_lessons` for one agent: the reading drops the `memory` and `lessons` context groups (`context_assembly/inclusion.py` → `_spec_scoped_groups`) before the operator's toggles are applied, at session start, in the re-injection after a compaction and on every follow-up message, on every harness and for a sub-agent run on this agent too. It can only remove: a parent's `include_memory: true` does not add the blocks back. Absent, the agent gets everything it got before the key existed. A spec that carries the key keeps the blocks only when the value is exactly `true`, so `false` and a value that is not a boolean (`"true"`, `1`, `null`) both withhold them. The key is read from the spec the session runs, found the way the agent's prompt is found: the project's `.kiro/agents/` ahead of the global directory with `agent.spec_pins` applied, or the file a session is pinned to. A lookup that is refused (two differing specs for the name, a project spec of that name that cannot be parsed) withholds too, with a WARNING naming the agent. It is read on every build and never cached, so an edit holds from the next message. The rest of the session context is unchanged: the rules, the date and runtime, skills, steering and this conversation's own history. The key covers what Kiro Crew injects, not what the agent asks for: `memory_recall` and the chat-history tools still answer an agent whose tools include them. Not read for the built-in `kirocrew` agent, whose spec is generated. |
+
+`includeCrewContext: false` is the sibling key for the dashboard reply rules and
+tool nudges; the two are read apart, so an agent can set either or both.
+
 ## Per-surface summary
 
 Three columns, for the three surfaces a spec is READ by. The
@@ -1118,7 +1126,7 @@ every other mirrored harness.
 | `tools` | honoured | wire field; absent means NO tools | roster only |
 | `allowedTools` | honoured | translated to `permissions` | not read |
 | `excludedTools` | honoured | wire field | read by Tool Search only |
-| `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling; a block refused whole (a `policies` bundle, a malformed or oversized block) is named in the session-start notice, and so is an `allow` left out for an `exclude` too long to send | not read |
+| `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling; a block refused whole (a malformed or oversized block) is named in the session-start notice; a `policies` bundle is left out with the `allow` rules beside it while its `deny` and `ask` rules travel, and the notice names it as `permissions.policies` with: "Allow rules beside a policies bundle aren't used, so those tools ask first. To skip the ask, write the rules out without the bundle, or list the tools in allowedTools."; and so is an `allow` left out for an `exclude` too long to send | not read |
 | `mcpServers` | honoured | projected, minus `env` / `headers` | session array instead |
 | `includeMcpJson` | honoured; absent: kiro-cli reads `false`, but Crew's rewriter still pools the global `mcp.json` servers the agent's `tools` names, and refuses with a stub each other one holding a `secret://` reference, unless the spec states `false` under either spelling (`useLegacyMcpJson` included) | wire field only when the spec states `false`; undeclared mcp.json servers excluded unless the spec states `true`, or the file predates the rule and states no key | not read |
 | `includePowers` | not read | wire field when the spec states a bool | not read |
@@ -1129,6 +1137,7 @@ every other mirrored harness.
 | `toolsSettings` | honoured | no wire slot; session-start notice | not read |
 | `toolAliases` | honoured | no wire slot; session-start notice unless Crew's Connections pass wrote every pair | not read |
 | `managedToolPolicy` | Crew-side, per session | Crew-side, per session | Crew-side, per session |
+| `includeCrossSessionContext` | Crew-side, per turn | Crew-side, per turn | Crew-side, per turn |
 | `welcomeMessage` | Crew-only (welcome page, chat transcript) | welcome page and chat transcript, and a wire field from the same capped reading | Crew-only (welcome page, chat transcript) |
 
 ## Ownership and refresh

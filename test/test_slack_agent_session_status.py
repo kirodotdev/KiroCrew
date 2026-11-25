@@ -1173,6 +1173,39 @@ class TestRendererApprovalPause:
         assert [p["status"] for _, p in web.calls] == ["suspended", "processing"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("title", "outcome"),
+        [("Running: Read", "\nrejected"), ("", "rejected")],
+        ids=["opened-with-the-tool-name", "opened-without-details"],
+    )
+    async def test_a_rejected_tool_card_never_closes_as_error(self, title, outcome) -> None:
+        # One ``error`` task makes Slack title the whole plan "Something went
+        # wrong" on a turn that is still running. Slack adds details to what the
+        # card shows, so after the tool name the outcome starts its own line.
+        from conftest import MockSlackClient
+        from kiro_crew.providers.base import LLMEvent
+        from kiro_crew.slack.handler_runtime.stream import _AnswerStream
+
+        slack = MockSlackClient()
+        answer = _AnswerStream(
+            slack,
+            "C1",
+            "1700.1",
+            team_id="T1",
+            user_id="U1",
+            channel_activation=None,
+            show_thinking=False,
+        )
+        answer.use_slack_stream, answer.stream_ts = True, "1700.2"
+        await answer.on_tool_call(
+            LLMEvent(kind="tool_call", title=title, tool_kind="read", tool_purpose="peek")
+        )
+        await answer.on_tool_rejected()
+        cards = [a for kind, a in slack.actions if kind == "append_task"]
+        assert [(c["status"], c["details"]) for c in cards[-1:]] == [("complete", outcome)]
+        assert [c["status"] for c in cards].count("error") == 0
+
+    @pytest.mark.asyncio
     async def test_no_resume_without_an_approval_status(self) -> None:
         from kiro_crew.slack.handler_runtime.stream import _AnswerStream
 

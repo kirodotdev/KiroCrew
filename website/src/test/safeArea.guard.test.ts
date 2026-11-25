@@ -295,7 +295,7 @@ describe('four-edge safe-area utilities compile to every edge', () => {
   })
 
   it.each([
-    ['.p-safe-or-4', 'calc(var(--spacing) * 4)'],
+    ['.p-safe-or-4', 'calc(4px * 4)'],
     ['.p-safe-or-\\[10px\\]', '10px'],
   ])('%s keeps the gutter and widens it past each inset', (selector, gutter) => {
     const body = rule(selector)

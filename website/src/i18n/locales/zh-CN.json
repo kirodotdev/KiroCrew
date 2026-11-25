@@ -9141,27 +9141,6 @@
       "title": "定时任务模板",
       "use_template": "使用“{{title}}”模板"
     },
-    "searchBar": {
-      "case_sensitive": "区分大小写",
-      "close_esc": "关闭（Esc）",
-      "find_in_chat": "在聊天中查找",
-      "find_in_chat_2": "在聊天中查找…",
-      "next": "下一个（{{mod}}）",
-      "next_match": "下一个匹配",
-      "no_results": "无结果",
-      "previous": "上一个（{{mod}}）",
-      "previous_match": "上一个匹配",
-      "no_results_loaded_only": "已加载的历史记录中无结果",
-      "results_loaded_only": "已加载的历史记录中第 {{current}}/{{total}} 条结果",
-      "result_position_other": "第 {{current}}/{{count}} 条结果"
-    },
-    "searchResultsList": {
-      "assistant": "助手",
-      "search_results": "搜索结果",
-      "selected": "已选中",
-      "showing_matches_other": "正在显示当前结果附近 {{n}} 个匹配中的 {{shown}} 个 — 请缩小搜索范围以查看全部。",
-      "you": "你"
-    },
     "multiSelect": {
       "deselect_all": "取消全选",
       "select_all": "全选"
@@ -11209,6 +11188,7 @@
       "undo_delete_secret": "删除凭据",
       "undo_unavailable": "这个更改无法撤销。",
       "undo_unavailable_overwrites": "无法撤销：这次覆盖了一个已经存在的凭据。",
+      "gateway_restart_required": "这个 Bot 的工作者要等你重启网关（设置 → 关于 → 重启网关）后，才能通过网关获得这个 MCP 服务器。",
       "cron_every_day": "每天",
       "cron_every_minute": "每分钟",
       "cron_every_hour": "每小时",
@@ -11252,6 +11232,7 @@
       "note_crewmate_import": "导入时不会运行任何东西：查找信息会自己来，其他任何事之前都会先问你，定时任务以关闭状态到达，技能要等你信任这个 Bot 的工作区文件夹后才会加载。确认后，可用这张卡片上的撤销删除它。",
       "title_crewmate_import": "导入 Bot“{{name}}”",
       "primary_mcp_server": "应用",
+      "primary_mcp_server_project": "将 {{name}} 添加到此项目",
       "decline_mcp_server": "取消",
       "title_mcp_server_add": "添加服务器：{{name}}",
       "title_mcp_server_change": "更改服务器：{{name}}",
@@ -11648,6 +11629,47 @@
       "keyboard_hint": "↑ ↓ 移动 · Enter 打开 · Esc 关闭",
       "scan_note": "已搜索最近的 {{searched}} 个聊天（共 {{total}} 个）",
       "more_matches_other": "此聊天中还有 {{count}} 条匹配"
+    },
+    "chatHistorySearch": {
+      "title": "搜索此聊天",
+      "open": "搜索",
+      "open_hint": "搜索 ({{shortcut}})",
+      "placeholder": "搜索",
+      "cancel": "取消",
+      "clear": "清除搜索",
+      "entry_date": "日期",
+      "every_day": "显示所有日期",
+      "previous_month": "上个月",
+      "next_month": "下个月",
+      "tabs_label": "消息类型",
+      "tab_all": "全部",
+      "tab_images": "图片",
+      "tab_files": "文件",
+      "tab_links": "链接",
+      "tab_videos": "视频",
+      "tab_pdfs": "PDF",
+      "tab_html": "HTML",
+      "tab_widgets": "小组件",
+      "tab_pinned": "已置顶",
+      "searching": "正在搜索…",
+      "no_results": "没有匹配的消息",
+      "no_pinned": "没有置顶消息。在消息的“更多操作”菜单中可以置顶。",
+      "no_recent_results": "最近的消息中没有匹配项",
+      "error": "搜索失败，请重试。",
+      "results_label": "搜索结果",
+      "role_you": "你",
+      "role_bot": "Bot",
+      "search_older": "搜索更早的消息",
+      "preview_label": "消息预览",
+      "back": "返回结果",
+      "preview_day": "{{date}} 前后",
+      "show_earlier": "显示更早的消息",
+      "show_later": "显示更晚的消息",
+      "loading": "正在加载…",
+      "preview_error": "无法加载这些消息",
+      "load_failed": "无法加载搜索",
+      "image_count_other": "{{count}} 张图片",
+      "file_count_other": "{{count}} 个文件"
     },
     "canvas": {
       "add_text": "添加文本",
@@ -13142,6 +13164,7 @@
         "fork_as_temporary": "以临时模式分叉",
         "copy_failed": "复制失败",
         "quote_message": "引用消息",
+        "quoted": "已引用",
         "turn_credits": "{{credits}} 额度",
         "turn_cache_likely": "缓存可能已重建",
         "turn_cache_likely_hint": "这条回复是在超过模型缓存该对话的时长之后发出的，因此很可能重新保存了整段对话，花费比平时更多。这只是估计。",
@@ -13990,6 +14013,7 @@
         "copied": "已复制",
         "copy_link": "复制消息链接",
         "put_in_composer": "放入输入框",
+        "put_in_composer_done": "已放入",
         "unpin": "取消置顶",
         "copy_text_failed": "无法复制文本。跳转到消息，选中文本后复制。",
         "copy_link_failed": "无法复制链接。请检查此页面是否可以使用剪贴板，然后重试。",
@@ -14636,6 +14660,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}：{{text}}",
         "approval": "{{speaker}} 正在等待你的批准：{{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "提示加载失败。请检查与网关的连接，然后重试。"
       }
     },
     "chatPage": {
@@ -14718,7 +14745,6 @@
       "knowledge_context_not_kept": "它附带的知识上下文没有保留——重新发送前请重新选择。",
       "more_actions": "更多操作",
       "update_entry_load_failed": "无法加载更新入口。请在设置中检查更新。",
-      "no_results": "无结果",
       "no_tools": "无工具",
       "open_activity_panel": "打开活动面板",
       "open_file": "打开文件 {{path}}",
@@ -14772,7 +14798,6 @@
       "tool_status_disabled": "已禁用",
       "tool_status_loaded": "本会话已加载",
       "type_to_filter": "输入以筛选…",
-      "type_to_search_this_conversation": "输入内容以搜索此对话。",
       "unknown_error": "未知错误",
       "upload_failed_check_file_type_and_size_max_50_mb": "上传失败 — 检查文件类型和大小（最大 50 MB）",
       "upload_failed_error": "上传失败：{{error}}",
@@ -20248,7 +20273,8 @@
         "task_runner_save_failed": "无法保存 Task Runner 设置。请重试。",
         "channels": "显示频道",
         "channels_hint": "关闭后，频道会从左侧导航栏和“全局搜索”中移除。不会删除或停止任何内容：你的频道以及其中正在工作的智能体都会保留。",
-        "channels_save_failed": "无法保存频道设置。请重试。"
+        "channels_save_failed": "无法保存频道设置。请重试。",
+        "content_text_size_tip": "View 菜单中的 Content Text Size 会缩放页面、面板和设置中的文字。菜单和工具栏不受影响。消息文字遵循聊天设置中的“消息字号”，终端遵循其自身设置。"
       },
       "importPanel": {
         "agent_data": "代理数据",
@@ -22726,6 +22752,12 @@
       "all_hidden_hint": "尚未使用的 Bot 已隐藏，搜索即可找到。",
       "hidden_named_hint_other": "{{names}} 尚未使用，已隐藏，未计入上方的数量，搜索即可找到。",
       "hidden_more_count_other": "另外 {{count}} 个 Bot",
+      "other_crews_heading": "你其他 Crew 上的 Bot",
+      "other_crews_open": "打开 {{crew}}",
+      "other_crews_unreachable": "无法连接到此 Crew",
+      "other_crews_no_bots": "没有 Bot",
+      "other_crews_loading": "正在加载 Bot…",
+      "other_crews_load_failed": "无法加载你其他 Crew 上的 Bot。",
       "hidden_more_hint": "{{names}} 尚未使用，已隐藏，未计入上方的数量。",
       "star_failed_title": "收藏未保存",
       "star_failed": "无法更新此 Bot 的收藏状态。",

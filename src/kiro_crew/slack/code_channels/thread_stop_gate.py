@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.slack.code_channels import stop_helpers, thread_runtime
+from kiro_crew.slack.code_channels import stop_helpers, surface, thread_runtime
 from kiro_crew.slack.code_channels.store import Binding, store
+from kiro_crew.slack.code_channels.surface_store import room_key
 
 OPERATION = "slack.conductor_thread.stop"
 
@@ -115,11 +116,11 @@ async def decide(
     # No channel-activation check (review or off): Stop only removes work, so the owner's
     # Stop is admitted whatever the channel's activation, even where a thread started.
     routing._audit(sender_id, OPERATION, "allowed", resources)
-    # A thread has no channel-wide stop fence or status hold (the channel holds other
-    # threads), so it skips ``routing._stop_bound``'s: its Stop fences the stopped
-    # turn's dispatch itself (stop_helpers.stop_channel).
-    # shortcut: Slack writes a thread admitted before the Stop are not fenced; key the
-    # fence by thread when part C's board writes need it.
+    # First, before any await: a board write the thread admitted before this press
+    # writes nothing more. Under the thread's own key, not the channel's (it holds
+    # other threads), so it skips ``routing._stop_bound``'s channel fence and status
+    # hold; the stopped turn's dispatch is fenced in stop_helpers.stop_channel.
+    surface.mark_stopped(room_key(binding))
     await stop_helpers.stop_channel(
         orch, binding, sender_id, channel, source=OPERATION, say_idle=True
     )

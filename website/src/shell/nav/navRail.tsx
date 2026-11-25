@@ -245,7 +245,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
 
         {/* Apps list: the last part of the rail's scroll region. */}
         <div className="shrink-0 px-2">
-          <div className="grid gap-0.5">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-0.5">
             {(() => {
               const fullList = sortedAppGroup
               // Collapse a long Apps list behind a "N more" toggle (both expanded
@@ -323,7 +323,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
           return (
-            <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
+            <div className="shrink-0 grid grid-cols-[minmax(0,1fr)] gap-0.5 px-2 pt-1 pb-2">
               {terminalEnabled && (
                 <NavItem
                   path="#"

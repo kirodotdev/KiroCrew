@@ -168,6 +168,7 @@ from kiro_crew.acp.kas_permissions import (
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
 )
+from kiro_crew.acp.kas_policy_bundle import bundle_ids
 from kiro_crew.acp.kas_projection_reads import (  # noqa: F401
     _gated_off_managed_servers,
     _registry_governed,
@@ -363,6 +364,8 @@ def spec_keys_without_carrier(
     )
     if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
+    elif bundle_ids(authored):
+        lost.append("permissions.policies")
     lost.extend(f"permissions.rules[{i}]" for i in projection_dropped_rules(authored))
     gate = may_skip_gate_for_session(session_key, governance_app)
     lost.extend(

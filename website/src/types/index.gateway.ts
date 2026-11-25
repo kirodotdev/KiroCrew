@@ -561,6 +561,21 @@ export interface InstanceVersions {
   instances: InstanceVersionRow[]
 }
 
+/** One connected crew's bots, as `GET /api/instances/bots` lists them for the
+ *  Bots page. The crew's roster up to the row cap, each string redacted and clamped. */
+export interface InstanceBotsRow {
+  id: string
+  bots: { name: string; display_name: string }[]
+  /** Why the roster could not be read (the carrier's code), or "" when it was. */
+  error: string
+  /** How many of the crew's bots lie past the row cap and are not in `bots`. */
+  omitted: number
+}
+
+export interface InstanceBots {
+  crews: InstanceBotsRow[]
+}
+
 /** The latest "Update remote" job for one crew (`GET /api/instances/{id}/update`). */
 export interface RemoteUpdateJob {
   /** `succeeded`: the crew came back on a different version. `unchanged`: both

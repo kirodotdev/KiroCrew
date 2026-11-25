@@ -64,6 +64,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE
     ),
+    # Owner gate (handlers_instances_gate._guard); writes nothing.
+    ("GET", "/api/instances/bots"): RouteAccess("instances.bots.read", UNSTABLE),
+    # Owner dashboard only (handlers/mcp_project_file.py); adds one server to a chat
+    # folder's project MCP file, the Apply of an mcp.server card with target project.
+    ("POST", "/api/mcp/project-file"): RouteAccess("mcp.project_file.change", UNSTABLE),
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
@@ -72,6 +77,14 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # and an internal caller.
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
         "chat.source_links_off.change", UNSTABLE
+    ),
+    # Dashboard user, or the slot's owner app through the slot-ownership checkpoint
+    # (chat_history_search.py); bounded transcript reads, writes nothing.
+    ("GET", "/api/chat/slots/{slot}/history/search"): RouteAccess(
+        "chat.history_search.read", UNSTABLE
+    ),
+    ("GET", "/api/chat/slots/{slot}/history/around"): RouteAccess(
+        "chat.history_around.read", UNSTABLE
     ),
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
@@ -98,12 +111,21 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(
         "tailnet.mobile.clear_overrides", UNSTABLE
     ),
+    # Gateway auth middleware: 403 without a token (tips.api_tips_exploratory); reads only.
+    ("GET", "/api/tips/exploratory"): RouteAccess("tips.exploratory.read", UNSTABLE),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
     # Owner gate, then the machine owner alone (crew_api_responses).
     # Contract test: test_crew_api_responses.py.
     ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
+    # The same two checks (crew_api_response_reads): a turn is read back by its owner.
+    # Contract test: test_crew_api_response_reads.py.
+    # ``.resolve``: a read removes an expired record and moves a damaged file aside.
+    ("GET", "/v1/responses/{response_id}"): RouteAccess("crew_api.responses.resolve", PREVIEW),
+    ("GET", "/v1/responses/{response_id}/input_items"): RouteAccess(
+        "crew_api.responses.input_items.resolve", PREVIEW
+    ),
     # Connected computers, this computer's own side (feature preview). Owner dashboard
     # only (connected_computers/local_routes.py `_owner`); the action names are the
     # handlers' own audit operation names.

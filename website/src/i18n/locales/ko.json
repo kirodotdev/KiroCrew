@@ -9141,27 +9141,6 @@
       "title": "스케줄 템플릿",
       "use_template": "‘{{title}}’ 템플릿 사용"
     },
-    "searchBar": {
-      "case_sensitive": "대소문자 구분",
-      "close_esc": "닫기 (Esc)",
-      "find_in_chat": "채팅에서 찾기",
-      "find_in_chat_2": "채팅에서 찾기…",
-      "next": "다음 ({{mod}})",
-      "next_match": "다음 일치",
-      "no_results": "결과 없음",
-      "previous": "이전 ({{mod}})",
-      "previous_match": "이전 일치",
-      "no_results_loaded_only": "불러온 기록에 결과 없음",
-      "results_loaded_only": "불러온 기록에서 결과 {{current}}/{{total}}",
-      "result_position_other": "결과 {{count}}개 중 {{current}}번째"
-    },
-    "searchResultsList": {
-      "assistant": "어시스턴트",
-      "search_results": "검색 결과",
-      "selected": "선택됨",
-      "showing_matches_other": "현재 결과 주변의 일치 항목 {{n}}개 중 {{shown}}개 표시 중 — 모두 보려면 검색 범위를 좁히세요.",
-      "you": "나"
-    },
     "multiSelect": {
       "deselect_all": "전체 선택 해제",
       "select_all": "전체 선택"
@@ -11209,6 +11188,7 @@
       "undo_delete_secret": "시크릿 삭제",
       "undo_unavailable": "이 변경은 되돌릴 수 없습니다.",
       "undo_unavailable_overwrites": "되돌릴 수 없습니다: 이미 있던 시크릿을 덮어썼습니다.",
+      "gateway_restart_required": "이 Bot의 워커는 게이트웨이를 다시 시작한 후에만 게이트웨이를 통해 이 MCP 서버를 받습니다(설정 → 정보 → 게이트웨이 다시 시작).",
       "cron_every_day": "매일",
       "cron_every_minute": "매분",
       "cron_every_hour": "매시간",
@@ -11252,6 +11232,7 @@
       "note_crewmate_import": "가져와도 아무것도 실행되지 않습니다. 찾아보는 일은 스스로 하고 그 외에는 하기 전에 묻고, 예약된 작업은 꺼진 상태로 오며, 스킬은 Bot 작업 공간 폴더를 신뢰할 때까지 기다립니다. 누른 뒤에는 이 카드의 실행 취소로 삭제할 수 있습니다.",
       "title_crewmate_import": "Bot ‘{{name}}’ 가져오기",
       "primary_mcp_server": "적용",
+      "primary_mcp_server_project": "이 프로젝트에 {{name}} 추가",
       "decline_mcp_server": "취소",
       "title_mcp_server_add": "서버 추가: {{name}}",
       "title_mcp_server_change": "서버 변경: {{name}}",
@@ -11648,6 +11629,47 @@
       "keyboard_hint": "↑ ↓ 이동 · Enter 열기 · Esc 닫기",
       "scan_note": "채팅 {{total}}개 중 최근 {{searched}}개를 검색했습니다",
       "more_matches_other": "이 채팅에 일치 항목 {{count}}개 더"
+    },
+    "chatHistorySearch": {
+      "title": "이 채팅 검색",
+      "open": "검색",
+      "open_hint": "검색 ({{shortcut}})",
+      "placeholder": "검색",
+      "cancel": "취소",
+      "clear": "검색 지우기",
+      "entry_date": "날짜",
+      "every_day": "모든 날짜 보기",
+      "previous_month": "이전 달",
+      "next_month": "다음 달",
+      "tabs_label": "메시지 유형",
+      "tab_all": "전체",
+      "tab_images": "이미지",
+      "tab_files": "파일",
+      "tab_links": "링크",
+      "tab_videos": "동영상",
+      "tab_pdfs": "PDF",
+      "tab_html": "HTML",
+      "tab_widgets": "위젯",
+      "tab_pinned": "고정됨",
+      "searching": "검색 중…",
+      "no_results": "일치하는 메시지가 없습니다",
+      "no_pinned": "고정된 메시지가 없습니다. 메시지의 추가 작업 메뉴에서 고정할 수 있습니다.",
+      "no_recent_results": "최근 메시지 중 일치하는 항목이 없습니다",
+      "error": "검색하지 못했습니다. 다시 시도하세요.",
+      "results_label": "검색 결과",
+      "role_you": "나",
+      "role_bot": "Bot",
+      "search_older": "이전 메시지 더 검색",
+      "preview_label": "메시지 미리 보기",
+      "back": "결과로 돌아가기",
+      "preview_day": "{{date}} 전후",
+      "show_earlier": "이전 메시지 보기",
+      "show_later": "이후 메시지 보기",
+      "loading": "불러오는 중…",
+      "preview_error": "이 메시지를 불러오지 못했습니다",
+      "load_failed": "검색을 불러오지 못했습니다",
+      "image_count_other": "이미지 {{count}}개",
+      "file_count_other": "파일 {{count}}개"
     },
     "canvas": {
       "add_text": "텍스트 추가",
@@ -13142,6 +13164,7 @@
         "fork_as_temporary": "임시 채팅으로 분기",
         "copy_failed": "복사 실패",
         "quote_message": "메시지 인용",
+        "quoted": "인용했습니다",
         "turn_credits": "크레딧 {{credits}}",
         "turn_cache_likely": "캐시를 다시 만들었을 가능성이 높음",
         "turn_cache_likely_hint": "이 답변은 모델이 대화를 캐시에 유지하는 시간보다 오래 쉰 뒤에 도착했으므로, 대화 전체를 다시 저장해 평소보다 비용이 더 들었을 가능성이 높습니다. 추정치입니다.",
@@ -13990,6 +14013,7 @@
         "copied": "복사됨",
         "copy_link": "Copy link to message",
         "put_in_composer": "작성창에 넣기",
+        "put_in_composer_done": "넣었습니다",
         "unpin": "Unpin",
         "copy_text_failed": "텍스트를 복사하지 못했습니다. 메시지로 이동해 텍스트를 선택해서 복사하세요.",
         "copy_link_failed": "링크를 복사하지 못했습니다. 이 페이지가 클립보드를 사용할 수 있는지 확인한 뒤 다시 시도하세요.",
@@ -14636,6 +14660,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}}이(가) 승인을 기다리고 있습니다: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "팁을 불러오지 못했습니다. 게이트웨이 연결을 확인한 뒤 다시 시도하세요."
       }
     },
     "chatPage": {
@@ -14718,7 +14745,6 @@
       "knowledge_context_not_kept": "첨부한 지식 컨텍스트는 유지되지 않았습니다. 다시 보내기 전에 다시 선택하세요.",
       "more_actions": "추가 작업",
       "update_entry_load_failed": "업데이트 항목을 불러올 수 없습니다. 설정에서 업데이트를 확인하세요.",
-      "no_results": "결과 없음",
       "no_tools": "도구 없음",
       "open_activity_panel": "활동 패널 열기",
       "open_file": "파일 {{path}} 열기",
@@ -14772,7 +14798,6 @@
       "tool_status_disabled": "비활성",
       "tool_status_loaded": "이 세션에서 로드됨",
       "type_to_filter": "입력해서 필터…",
-      "type_to_search_this_conversation": "입력해서 이 대화를 검색합니다.",
       "unknown_error": "알 수 없는 오류",
       "upload_failed_check_file_type_and_size_max_50_mb": "업로드에 실패했습니다 — 파일 형식과 크기를 확인하세요 (최대 50 MB)",
       "upload_failed_error": "업로드에 실패했습니다: {{error}}",
@@ -20248,7 +20273,8 @@
         "task_runner_save_failed": "Task Runner 설정을 저장하지 못했습니다. 다시 시도하세요.",
         "channels": "채널 표시",
         "channels_hint": "끄면 채널이 왼쪽 레일과 전체 검색에서 사라집니다. 삭제되거나 중지되는 것은 없습니다. 채널과 그 안에서 일하는 에이전트는 그대로 유지됩니다.",
-        "channels_save_failed": "채널 설정을 저장하지 못했습니다. 다시 시도하세요."
+        "channels_save_failed": "채널 설정을 저장하지 못했습니다. 다시 시도하세요.",
+        "content_text_size_tip": "View 메뉴의 Content Text Size는 페이지, 패널, 설정의 텍스트 크기를 조정합니다. 메뉴와 툴바는 영향을 받지 않습니다. 메시지 텍스트는 채팅 설정의 메시지 글꼴 크기를 따르며, 터미널은 자체 설정을 따릅니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
@@ -22726,6 +22752,12 @@
       "all_hidden_hint": "아직 사용하지 않은 Bot은 숨겨져 있습니다. 검색하여 찾으세요.",
       "hidden_named_hint_other": "{{names}}은(는) 아직 사용하지 않아 숨겨져 있으며 위의 수에 포함되지 않습니다. 검색하여 찾으세요.",
       "hidden_more_count_other": "그 외 Bot {{count}}개",
+      "other_crews_heading": "다른 크루의 Bot",
+      "other_crews_open": "{{crew}} 열기",
+      "other_crews_unreachable": "이 크루에 연결할 수 없습니다",
+      "other_crews_no_bots": "Bot 없음",
+      "other_crews_loading": "Bot 불러오는 중…",
+      "other_crews_load_failed": "다른 크루의 Bot을 불러올 수 없습니다.",
       "hidden_more_hint": "{{names}}은(는) 아직 사용하지 않아 숨겨져 있으며 위의 수에 포함되지 않습니다.",
       "star_failed_title": "즐겨찾기가 저장되지 않음",
       "star_failed": "이 Bot의 즐겨찾기를 업데이트할 수 없습니다.",

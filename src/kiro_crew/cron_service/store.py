@@ -349,6 +349,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_run_ts=_guard_num("last_run_ts", None),
         last_status=_guard_opt_str("last_status"),
         last_error=_guard_opt_str("last_error"),
+        last_error_kind=_guard_str("last_error_kind"),
         created_ts=_guard_num("created_ts", 0.0),
         delete_after_run=j.get("delete_after_run", False),
         last_result=_guard_opt_str("last_result"),
@@ -639,6 +640,10 @@ def job_record(j: CronJob) -> dict[str, Any]:
     if j.channel_type or j.target_id:
         record["channel_type"] = j.channel_type
         record["target_id"] = j.target_id
+    # The last run's error kind, by the same rule: a job that never failed on a
+    # model throttle or capacity rejection saves to the bytes an older build wrote.
+    if j.last_error_kind:
+        record["last_error_kind"] = j.last_error_kind
     return record
 
 
@@ -648,7 +653,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: ``person_owner_key``, ``owner_member_id`` with ``owner_approval_mode``,
 #: ``acked_item_ids`` with ``acked_item_ids_digest``,
 #: ``project_path``, ``new_chat_per_run``, ``notify_only``, ``secret_env_resurfaced_pin``,
-#: ``on_tab_close``, ``channel_type`` with ``target_id``, and a non-default
+#: ``on_tab_close``, ``channel_type`` with ``target_id``, ``last_error_kind``, and a non-default
 #: ``auto_pause_after_failures`` and ``alert_after_failures``, which are omitted
 #: at the default). A record key outside this set came from a newer build. A key
 #: inside it is this build's to write or to omit, so a value this build cleared
@@ -673,6 +678,7 @@ _KNOWN_JOB_KEYS = frozenset(
             on_tab_close="fresh",
             channel_type="-",
             target_id="-",
+            last_error_kind="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,
             acked_item_ids=["-"],

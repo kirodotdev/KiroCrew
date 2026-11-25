@@ -1028,9 +1028,14 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
     # record itself: the store re-validates ``budgets.max_runtime_secs`` on
     # add, so a monitor forwarded with its stored budget would still be refused.
     restart_runtime_secs = min(monitor.budgets.max_runtime_secs, runtime_ceiling_secs())
+    # A restart re-arms the watch alone: its extras, their records and any extra
+    # claim go together, as the session that named them is not the one asking.
     restart_monitor = dataclasses.replace(
         monitor,
         budgets=dataclasses.replace(monitor.budgets, max_runtime_secs=restart_runtime_secs),
+        also_wake_on=[],
+        also_wake_state={},
+        also_wake_claim={},
     )
     try:
         restarted, error, status = await authorize_and_add_nudge(

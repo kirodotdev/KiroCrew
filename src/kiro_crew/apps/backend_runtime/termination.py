@@ -357,19 +357,109 @@ def stop_app_backend(
         try:
             ap.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            # The audit row records what the kill call did, and is written as soon as
+            # it returns or raises, so no later wait can delay or lose it.
+            outcome = "sigkill_escalation"
+            refusal: OSError | None = None
             try:
                 platform_compat.kill_process_tree(ap.proc.pid, platform_compat.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
+            except ProcessLookupError:
+                # The root exited between the wait and the kill.
+                outcome = "sigkill_root_gone"
+            except OSError as exc:
+                refusal = exc
+                outcome = "sigkill_failed"
             try:
                 sel().log_api_access(
                     caller="gateway",
                     operation="app_backend_stop",
-                    outcome="sigkill_escalation",
+                    outcome=outcome,
                     resources=f"{app_name} pid={ap.proc.pid}",
+                    error=str(refusal) if refusal is not None else "",
                 )
             except Exception as exc:
-                logger.debug("SEL audit failed for sigkill_escalation %s: %s", app_name, exc)
+                logger.debug("SEL audit failed for %s %s: %s", outcome, app_name, exc)
+            # ``taskkill /T`` can end the root and still fail on one descendant, and a
+            # timed-out invocation may already have landed, so a raised kill is judged
+            # by whether the ROOT then exits. That verdict goes to the return value and
+            # the log; the row above stays true either way.
+            root_exited = False
+            if refusal is not None:
+                try:
+                    ap.proc.wait(timeout=1)
+                    root_exited = True
+                except subprocess.TimeoutExpired:
+                    pass
+            if refusal is not None and root_exited:
+                # The root is gone but the kill reported an error, so descendants may
+                # survive it: the same drain, and the same reading of its verdict, as
+                # the exited-root branch below. A positive survivor refuses a withdrawn
+                # ceiling; an inconclusive drain is settled by the port probe below.
+                logger.warning(
+                    "App %s: backend pid %d exited after a SIGKILL that reported an "
+                    "error (%s); attempting to drain what it left behind",
+                    app_name,
+                    ap.proc.pid,
+                    refusal,
+                )
+                gone = _drain_exited_root_tree(
+                    app_name, ap.proc, ap.pid_start_time, ap.spawn_instance
+                )
+                if gone is False and _retry_if_serving is not None:
+                    logger.warning(
+                        "App %s: descendants of its backend root (pid %d) survived the "
+                        "drain, so the stop is reported as refused rather than successful",
+                        app_name,
+                        ap.proc.pid,
+                    )
+                    try:
+                        sel().log_api_access(
+                            caller="gateway",
+                            operation="app_backend_stop",
+                            outcome="rejected_descendant_serving",
+                            resources=f"{app_name} port={ap.port}",
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "SEL audit failed for rejected_descendant_serving %s: %s",
+                            app_name,
+                            exc,
+                        )
+                    with _lock:
+                        _processes.setdefault(app_name, ap)
+                        if ap.port:
+                            _allocated_ports.setdefault(app_name, ap.port)
+                    return False
+                if gone is False:
+                    logger.warning(
+                        "App %s: a descendant outlived its backend root (pid %d) and "
+                        "survived the drain; the stop is reported as successful, as an "
+                        "ordinary stop tolerates",
+                        app_name,
+                        ap.proc.pid,
+                    )
+            elif refusal is not None:
+                logger.warning(
+                    "App %s: SIGKILL of backend pid %d was refused (%s); the backend may "
+                    "still be running, so the stop is reported as failed",
+                    app_name,
+                    ap.proc.pid,
+                    refusal,
+                )
+                if _retry_if_serving is not None:
+                    # A live root is a positive survivor, which a withdrawn ceiling
+                    # refuses on, as the exited-root branch below does. Only that caller
+                    # gets its record back: an ordinary stop's pop ends the health watch.
+                    with _lock:
+                        _processes.setdefault(app_name, ap)
+                        if ap.port:
+                            _allocated_ports.setdefault(app_name, ap.port)
+                elif ap.log_fh:
+                    try:
+                        ap.log_fh.close()
+                    except OSError:
+                        pass
+                return False
         if (
             _retry_if_serving is not None
             and ap.port

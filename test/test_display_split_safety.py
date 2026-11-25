@@ -654,9 +654,10 @@ class TestInteriorRunBoundMutation:
         A 5000-backtick run at budget 100 produces about 2451 pieces.  At cap=43
         each start yields up to 42 interior windows, a fixed number per piece, so
         the readings graded grow linearly with the pieces; without the cap they grow
-        with its square.  Every reading is one call to the redactor, so the calls are
-        counted at three equally spaced piece counts and must grow linearly, which
-        reads the code and not the host.
+        with its square.  Every distinct reading is one call to the redactor, so the
+        calls are counted at three equally spaced piece counts and must grow
+        linearly, which reads the code and not the host.  Every piece differs, so
+        no two windows are one text and each window costs its own scan.
         """
         from denied_commands_security_helpers import _linear_work
 
@@ -668,10 +669,9 @@ class TestInteriorRunBoundMutation:
                 calls += 1
                 return _default_redactor(text)
 
-            # two backticks per piece approximates the actual chunks
             assert not severs_a_credential(
-                ["``"] * count, counting
-            ), "bare backtick pieces must not look like a credential"
+                [f"w{index} " for index in range(count)], counting
+            ), "numbered words must not look like a credential"
             return calls
 
         work = [readings(count) for count in (100, 200, 300)]
@@ -679,3 +679,20 @@ class TestInteriorRunBoundMutation:
             f"redactor calls {work} grow faster than the piece count -- "
             f"the {_INTERIOR_RUN_PIECES}-piece interior-run cap is gone"
         )
+
+    def test_a_grade_scans_each_distinct_text_once(self) -> None:
+        """Equal pieces make equal windows; the grade scans each text one time.
+
+        A rotation of a bare backtick run is hundreds of equal pieces, and every
+        interior window of the same width is one string. Scanning it per window
+        is the cost a rotation of such a run pays, so the count is read per text.
+        """
+        scans: dict[str, int] = {}
+
+        def counting(text: str) -> str:
+            scans[text] = scans.get(text, 0) + 1
+            return _default_redactor(text)
+
+        assert not severs_a_credential(["``"] * 200, counting, str.strip)
+        assert scans, "the grade never reached the redactor"
+        assert max(scans.values()) == 1, max(scans.items(), key=lambda item: item[1])

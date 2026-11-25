@@ -4,9 +4,10 @@ CPython's ``ThreadPoolExecutor.submit`` holds ``concurrent.futures.thread.
 _global_shutdown_lock`` (one lock for the whole process) while it starts a worker,
 and a slow ``Thread.start()`` -- seconds on a Windows host near its commit limit --
 held the gateway loop inside ``submit`` for 20 s until its watchdog exited it.
-Two of the pools the loop submits to are covered here: the default executor that
-``configure_default_executor`` installs (``asyncio.to_thread``) and
-``spawn_executor()``, which builds every child the gateway loop starts.
+The pools the loop submits to are covered here: the default executor that
+``configure_default_executor`` installs (``asyncio.to_thread``), ``spawn_executor()``,
+which builds every child the gateway loop starts, and every pool
+``kiro_crew.executors`` builds (``run_in_executor``).
 
 These tests hold that lock on a helper thread until the test releases it, so a
 start of any length is simulated without a sleep. A loop whose pool takes the lock
@@ -19,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures.thread as stdlib_thread
 import contextlib
+import inspect
 import sys
 import threading
 from collections.abc import Iterator
@@ -32,6 +34,17 @@ from kiro_crew.testing.wait import finished
 #: A lost-run bound only: the tests release what they hold themselves, and a hold
 #: still in place at this bound means the code under test waited for it.
 _HOLD_BOUND_SECS = 10.0
+
+#: Every thread-pool getter in ``kiro_crew.executors`` but the default executor's; the
+#: path resolver's pool is a ``SubprocessPoolExecutor``, not a thread pool.
+_POOL_GETTERS = sorted(
+    name
+    for name, value in vars(executors).items()
+    if name.endswith("_executor")
+    and inspect.isfunction(value)
+    and name
+    not in {"configure_default_executor", "path_resolve_executor", "shutdown_maintenance_executor"}
+)
 
 
 class _Held:
@@ -67,6 +80,44 @@ async def test_to_thread_runs_while_another_thread_holds_the_pool_lock() -> None
     with _held_pool_lock() as held:
         assert await finished(asyncio.to_thread(lambda: "ran"), "the to_thread call") == "ran"
     assert not held.timed_out, "the loop waited for another thread's worker start"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("getter", _POOL_GETTERS)
+async def test_run_in_executor_on_each_pool_runs_while_another_thread_holds_the_pool_lock(
+    getter: str,
+) -> None:
+    pool = getattr(executors, getter)()
+    loop = asyncio.get_running_loop()
+    try:
+        with _held_pool_lock() as held:
+            worker = await finished(
+                loop.run_in_executor(pool, threading.current_thread), f"the {getter} call"
+            )
+        assert not held.timed_out, "the loop waited for another thread's worker start"
+        assert worker.name.startswith(pool._thread_name_prefix)
+    finally:
+        if getter == "memory_preparation_executor":  # a new pool per call, owned here
+            pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize(
+    "getter", [name for name in _POOL_GETTERS if name != "memory_preparation_executor"]
+)
+def test_a_built_pools_getter_returns_while_another_thread_holds_the_getters_lock(
+    getter: str,
+) -> None:
+    """A first pool build holds ``executors._lock`` across its worker's and grower's starts."""
+    pool = getattr(executors, getter)()
+    got: list[object] = []
+    caller = threading.Thread(target=lambda: got.append(getattr(executors, getter)()), daemon=True)
+    with executors._lock:
+        caller.start()
+        caller.join(_HOLD_BOUND_SECS)
+        waited = caller.is_alive()
+    caller.join(_HOLD_BOUND_SECS)
+    assert not waited, f"{getter}() waited on the lock another pool's build holds"
+    assert got == [pool]
 
 
 # Each run starts its own interpreter child; the spawn tests keep them serial.

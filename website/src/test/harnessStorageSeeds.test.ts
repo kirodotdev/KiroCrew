@@ -89,31 +89,13 @@ function racingSeeds(files: string[], shape: (fn: ts.Node | undefined) => boolea
   return found
 }
 
-/**
- * These re-seed ONE stubbed page per scenario from a new init script that clears
- * what the previous one wrote, so a stub registered once cannot carry the seed.
- * They move to a fresh page per scenario under #31778.
- */
-const RESEEDED_PAGES = [
-  'capture-continue-turn.mjs',
-  'capture-diff-split-preference.mjs',
-  'capture-file-changes-older-turn.mjs',
-  'capture-files-tree-empty-folder.mjs',
-  'capture-pierre-chat-diffs.mjs',
-  'capture-pierre-files-tab.mjs',
-  'capture-pierre-misc-surfaces.mjs',
-  'capture-pulls-first-paint.mjs',
-  'capture-stale-collapse.mjs',
-  'capture-turn-snapshot-budget.mjs',
-]
-
 describe('harness localStorage seeds', () => {
   it('seeds a stubbed page through localStorageEntries, not its own init script', () => {
     expect(racingSeeds(harnessFiles(SCRIPTS), onlySetsItems)).toEqual([])
   })
 
-  it('leaves removing keys to the stub\'s clear on a page seeded once', () => {
-    const files = new Set(racingSeeds(harnessFiles(SCRIPTS), removesItems).map(site => site.split(':')[0]))
-    expect([...files].sort()).toEqual(RESEEDED_PAGES)
+  // A scenario that needs another seed opens a fresh page and stubs it once.
+  it('leaves removing keys to the stub\'s clear', () => {
+    expect(racingSeeds(harnessFiles(SCRIPTS), removesItems)).toEqual([])
   })
 })

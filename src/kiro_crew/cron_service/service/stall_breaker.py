@@ -163,6 +163,7 @@ def _pause_for_loop_stall(
             job.last_status,
             job.last_run_ts,
             job.last_error,
+            job.last_error_kind,
         )
         job.enabled = False
         job.auto_paused = True
@@ -174,6 +175,7 @@ def _pause_for_loop_stall(
             "the run was about to execute, then resume with "
             f"`kirocrew cron resume {job.id}`."
         )
+        job.last_error_kind = ""
         try:
             self._save()
         except (OSError, CronStoreUnreadable) as exc:
@@ -200,6 +202,7 @@ def _pause_for_loop_stall(
                 job.last_status,
                 job.last_run_ts,
                 job.last_error,
+                job.last_error_kind,
             ) = before
             logger.warning("loop-stall auto-pause not persisted: %s", exc)
             return (False, None)

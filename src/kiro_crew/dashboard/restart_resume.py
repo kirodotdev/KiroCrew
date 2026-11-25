@@ -1,13 +1,14 @@
 """Resume the chats a planned in-app restart cut off.
 
-Every planned restart (the dashboard's ``_restart_gateway`` for Restart and
-update apply, the gateway's update restart, the Slack ``/kirocrew restart``)
-records the chats with a running turn (:func:`record_running_slots`) just
-before its ``close_all()`` cuts them. The next dashboard boot takes that record once, deleting it before
-it acts (:func:`take_intent`), and resumes those chats through the Resume-all
-run (``chat_resume_all.start_resume_all``), so its bound on concurrent turns
-and every refusal it makes still apply. A crash writes no record: its chats
-keep the Resume button and wait for the owner.
+The dashboard's ``_restart_gateway`` behind ``POST /api/restart`` and Slack's
+``/kirocrew restart`` call :func:`record_running_slots` to record chats with a
+running turn just before ``close_all()`` cuts them. The next gateway start,
+with or without a dashboard, takes that record once, deleting it before it
+acts (:func:`take_intent`), and attempts to resume those chats through the
+Resume-all run (``chat_resume_all.start_resume_all``), so its bound on
+concurrent turns and every refusal it makes still apply. A crash writes no
+record: with a dashboard its chats keep the Resume button and wait for the
+owner. Without a valid record, this startup recovery path resumes no chats.
 """
 
 from __future__ import annotations
@@ -36,6 +37,23 @@ _INTENT_MAX_BYTES = 256 * 1024
 _INTENT_MAX_AGE_SECS = 30 * 60
 
 
+#: The name ``POST /v1/responses`` gives the session of one request
+#: (``crew_api_responses``); a test holds the two spellings together.
+ONE_REQUEST_API_PREFIX = "resp-"
+
+
+def _one_request_api_turn(name: str, slot: object) -> bool:
+    """Whether *slot* is the Crew API's session for one ``/v1/responses`` request.
+
+    Its caller is gone once the gateway restarts, so resuming the turn would run
+    tools nobody waits for. Both marks are needed: a person's own chat can carry
+    the prefix, and other one-request sessions carry only the card mark.
+    """
+    return name.startswith(ONE_REQUEST_API_PREFIX) and (
+        getattr(slot, "_dashboard_card_exempt", False) is True
+    )
+
+
 def intent_path() -> Path:
     return config_dir() / INTENT_NAME
 
@@ -58,10 +76,19 @@ async def record_running_slots(state: DashboardState | None) -> None:
     """
     try:
         slots = list(getattr(state, "_slots", {}).items())
-        names = sorted(n for n, s in slots if getattr(s, "_turn_in_flight_generation", 0) > 0)
+        names = sorted(
+            n
+            for n, s in slots
+            if getattr(s, "_turn_in_flight_generation", 0) > 0 and not _one_request_api_turn(n, s)
+        )
         await asyncio.wait_for(asyncio.to_thread(write_intent, names), 5.0)
     except Exception:
         logger.warning("Resume-after-restart record failed", exc_info=True)
+    # The other record a planned restart must not cut short: an approval answered
+    # just now is still being written. Imported here: that module imports handlers.
+    from kiro_crew.dashboard.crew_api_approvals import finish_writes_before_restart
+
+    await finish_writes_before_restart(state)
 
 
 def take_intent() -> frozenset[str]:

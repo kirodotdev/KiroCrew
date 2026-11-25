@@ -1709,10 +1709,13 @@ jobs:
     # to 'kirocrew-linux-4-core' and runs four shards in parallel instead of
     # eight; a single shard there takes about three times as long and needs 70
     # to clear its pytest run plus setup while still bounding a hung job. The
+    # fleet arm carries 5 more for shard 1's measure step (its own cap), which
+    # runs on the fleet only; an expression has no arithmetic, so every fleet
+    # shard gets them. The
     # predicate mirrors max-parallel below: startsWith(..., 'codebuild-') is
     # true only on CodeBuild-routed runs, so every non-fleet value keeps the
     # longer budget.
-    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 60 || 70 }}
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 65 || 70 }}
     strategy:
       # 4 protects the shared hosted pool and the larger-runner group's own
       # `maximum_runners` cap; the CodeBuild label has its own account quota.
@@ -2018,6 +2021,27 @@ jobs:
         # sandbox, so on this runner (`unshare(CLONE_NEWNS)` -> EPERM) those skip with a
         # named reason and the other ~523 run. See the note above the `jobs:` key.
 
+      # The step above deselects the tests red on main, so a file only they
+      # reach would read low in the coverage Coverage Gate judges. Shard 1 runs
+      # them once more here, serially, with the same coverage targets; what they
+      # cover counts only when that run exits 0 (scripts/ci_main_red_skip.py
+      # `measure`). Same shell as the tests. Fleet runs only: their job budget
+      # carries the step's 5 minutes, the hosted one has none to spare.
+      - name: Measure the tests skipped as red on main (coverage only)
+        if: matrix.group == 1 && steps.scope.outputs.reduced == 'false' && needs.changes.outputs.main_red_skip != '' && startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-')
+        shell: /usr/local/bin/ci-shell {0}
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: |
+          python3 scripts/ci_main_red_skip.py measure -q -n0 --dist no --timeout=120 -m "not ipv6_required and not real_venv" \
+            --cov=kiro_crew --cov=sage_lib \
+            --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
+            --cov-report=
+
       - name: Report peak memory
         if: ${{ always() }}
         run: |
@@ -2038,9 +2062,11 @@ jobs:
         if: steps.scope.outputs.reduced != 'true'
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
-        # combine job can merge all shards with `coverage combine`.
+        # combine job can merge all shards with `coverage combine`. `--append`
+        # adds the measure step's file to the .coverage the tests' run left,
+        # instead of replacing it.
         run: |
-          coverage combine 2>/dev/null || true
+          coverage combine --append 2>/dev/null || true
           test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
           mv .coverage ".coverage.${{ matrix.group }}"
 

@@ -3518,7 +3518,10 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, that must rebuild agent artifacts, or that set
 process-wide registry state
-live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` —
+`agents` (→ `dashboard/bot_chat_follow.py::follow_config_change`: a Bot's changed `model` or
+`reasoning_effort` clears its own chat's pick, after the session manager's applier),
+`agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
@@ -3569,6 +3572,14 @@ dashboard notification (`_apply_background_model`).
 A failed heartbeat spec install is held like a conductor spec, so the hourly maintenance
 wake (`retry_held_conductor_specs`) re-runs the rebuild until the heartbeat spec carries
 the new model.
+The guard writes an `agent_home_write` denied row on every rebuild it refuses, and a
+refusal can last the whole process (a linked worktree, a data home beside another
+install's specs). So both appliers rebuild through `_rebuild_specs`: a retry of a value
+whose rebuild was refused first asks `_decline_shared_agent_home(audit=False)` and skips
+the rebuild while the guard still declines, which is one denied row per saved value
+rather than one per watcher tick. The retry itself still runs every tick, so a refusal
+that clears (an unreadable spec that reads again, foreign specs removed) is applied on
+the next one, and a newly saved value is rebuilt and audited at once.
 The `wrote=False` refusal is one case of a general ownership guard: every write through
 the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
@@ -3980,6 +3991,7 @@ class DashboardConfig:
     url: str = ""                  # public URL for the dashboard (used in Slack links); restart=True
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
+    default_approval_mode: str = "normal"  # normal | trust_reads (DEFAULT_APPROVAL_MODES); the approval mode the machine owner's plain New chat opens on. Any other value, a wrong type or an absent key builds "normal". Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum, `invalid_default_approval_mode`). `POST /api/chat/slots` seeds it once, before the new slot's first frame, through `slot_approval_seed.seed_slot_approval` under the SEL caller `chat_default_mode` (`dashboard/chat_default_mode.py`): clamped to the `approval_modes` policy (a refused Reads answers `default_mode_refused: "policy"` and the chat stays on Normal), never ending a YOLO grant. Only a create that asks for it (`start_mode_default: true`, which the browser sends from the person's own New chat entry points: those that pass `crewModeDefault`, plus New Incognito / Temporary, the first message on an empty chat page, a template's Chat button, a milestone's chat, and split view's and a scene's New session, through `createSlot`'s `startModeDefault` or `api.createChatSlot`'s last argument; `website/src/store/chat/newChatStartModeCallsites.test.ts` pins every create site to one kind or the other), unnamed, by the machine owner's own browser session and not a crewmate's chat (`crewmate_approval.crewmate_name_for`), an app's, a cron's, an ephemeral helper's, a work item's or an app page's gets it; a Shared Crew teammate, session_create / session_fork, channels and subagents keep how they start (rfc-default-approval-mode section 3.2). `trust` is not a value: rfc section 6
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system" | "schedule"; empty = unset (frontend falls back to localStorage or "system")

@@ -140,7 +140,9 @@ class TestLtsReleaseLegs:
         for name in built:
             assert calls[name]["with"]["edition"] == "lts", name
         published = {name for name, job in calls.items() if "channel" in (job.get("with") or {})}
-        assert len(published) == 11  # cli, six linux, windows, three mac legs
+        # cli, six linux, windows, and each of the three mac legs twice
+        # (a `prepare` and a `publish` call of sign-and-notarize.yml)
+        assert len(published) == 14
         for name in published:
             assert calls[name]["with"]["channel"] == "lts", name
             assert not (calls[name]["with"] or {}).get("promote"), name
@@ -196,18 +198,39 @@ class TestLtsReleaseLegs:
         assert "github-release" not in _workflow("release-lts.yml")["jobs"]
 
     def test_nothing_publishes_before_the_tagged_commit_passes_the_tests(self) -> None:
-        """Every publisher and every signer waits for the suite, and no job
-        may relax that with an ``if:`` (``always()`` would run it after a red
-        suite). The builds do NOT wait: they only make this run's artifacts,
+        """Every publisher waits for the suite and may not relax that with an
+        ``if:`` (``always()`` would run it after a red suite). Only a macOS
+        publish half may skip, and only on its own prepare call's
+        ``notarized`` output, with no status function. The signers and the
+        builds do NOT wait for the suite: they only make this run's artifacts,
         and holding them put the whole suite in front of the macOS chain."""
         jobs = _workflow("release-lts.yml")["jobs"]
-        shippers = [n for n in jobs if n.startswith(("publish-", "sign-and-notarize"))]
+        shippers = [n for n in jobs if n.startswith("publish-")]
         assert shippers
         for name in shippers:
             needs = jobs[name]["needs"]
             needs = [needs] if isinstance(needs, str) else needs
             assert "release-candidate-tests" in needs, name
-            assert "if" not in jobs[name], f"{name}: an `if:` could run it past a red suite"
+            if not jobs[name].get("uses", "").endswith("/sign-and-notarize.yml"):
+                assert "if" not in jobs[name], f"{name}: an `if:` could run it past a red suite"
+        # Signing and notarization publish nothing, so they run beside the
+        # suite; their publish-macos* halves carry it.
+        signers = [n for n in jobs if n.startswith("sign-and-notarize")]
+        assert signers
+        for name in signers:
+            assert jobs[name]["with"]["stage"] == "prepare", name
+            assert "release-candidate-tests" not in jobs[name]["needs"], name
+            assert "if" not in jobs[name], f"{name}: an `if:` could skip its publish half"
+        by_variant = {jobs[n]["with"].get("mac_variant", ""): n for n in signers}
+        for name in shippers:
+            if jobs[name].get("uses", "").endswith("/sign-and-notarize.yml"):
+                assert jobs[name]["with"]["stage"] == "publish", name
+                assert set(jobs[name]["secrets"]) == {"AWS_SIGNING_ROLE_ARN"}, name
+                # It may skip only when its own prepare call notarized nothing.
+                signer = by_variant[jobs[name]["with"].get("mac_variant", "")]
+                assert signer in jobs[name]["needs"], f"{name}: must wait on {signer}"
+                assert jobs[name]["if"] == f"needs.{signer}.outputs.notarized == 'true'", name
+        assert len([n for n in shippers if n.startswith("publish-macos")]) == len(signers)
         for name in ("build-wheel", "build-desktop", "build-windows"):
             assert "release-candidate-tests" not in jobs[name]["needs"], name
             assert "dependency-vulnerability-gate" in jobs[name]["needs"], name

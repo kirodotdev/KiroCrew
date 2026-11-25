@@ -498,7 +498,7 @@ export function useMembersPageThreadView({
   const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
   const threadShown = pageVisible && !createOpen && !relayCovered
   // What the PANE may count as seen: the thread is shown AND nothing floats
-  // over the chat. An overlay side panel (a phone sheet, a desktop overlay
+  // over the chat. An overlay side panel (full width on a phone, a desktop overlay
   // under its scrim), a floating Profile card and the phone roster drawer all
   // cover the transcript, while the docked placements sit beside it, so a reply
   // landing behind any of them stays unseen. Narrower than `threadShown` on
@@ -839,6 +839,7 @@ export function MembersPageThreadColumn({
                   profileFlight={profileFlight} navigation={navigation} navigate={navigate} location={location}
                   setSearchParams={setSearchParams} profile={profile} openQuick={openQuick}
                   createHeld={createHeld} importHeld={importHeld} active={active}
+                  onOpenSearch={sidePanel.openHistorySearch}
                 />
                 {/* Everything that can sit between the header and the pane —
                     notices, the greeting cards — stays in flow and is padded
@@ -1139,7 +1140,13 @@ export function MembersPageThreadColumn({
                         pushToTalk={threadView.chatUncovered && !sidePanel.panelSessionFocused}
                         // ⌘F / Ctrl+F: Find in chat, on the same terms as the
                         // dictation key above (#39585).
-                        findInChat={threadView.chatUncovered && !sidePanel.panelSessionFocused}
+                        // An open search lives in the side panel, so the panel's
+                        // overlay covering the chat keeps it open.
+                        findInChat={(threadView.chatUncovered || sidePanel.historySearchOpen) && !sidePanel.panelSessionFocused}
+                        // The search opens as the side panel's Search tab.
+                        historySearchHost={sidePanel.historySearchHost}
+                        onHistorySearchOpenChange={sidePanel.onHistorySearchOpenChange}
+                        onHistorySearchOpener={sidePanel.setHistorySearchOpener}
                         // The failure notice above owns the verdict on this thread
                         // while a repair has failed; the pane's own "Session
                         // ready" would contradict it one line down.

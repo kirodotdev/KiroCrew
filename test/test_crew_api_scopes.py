@@ -207,6 +207,8 @@ def test_the_routes_that_serve_an_app_credential() -> None:
         assert ROUTES[key].api_tier == PUBLIC and not ROUTES[key].entitlements
     assert crew_api_auth.app_owner_only_routes() == {
         "/v1/responses",
+        "/v1/responses/{response_id}",
+        "/v1/responses/{response_id}/input_items",
         "/v1/crew/capabilities",
         "/v1/crew/info",
     }

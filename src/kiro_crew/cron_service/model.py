@@ -168,6 +168,10 @@ class CronJob:
     last_run_ts: float | None = None
     last_status: str | None = None  # "ok" | "error"
     last_error: str | None = None
+    # Which model failure ``last_error`` is, read from the error's own transport
+    # tags, never from its text: "throttle", "capacity" (the model was unavailable
+    # on the backend), or "" for any other failure and for a run that succeeded.
+    last_error_kind: str = ""
     created_ts: float = 0.0
     delete_after_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was

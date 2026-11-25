@@ -1140,6 +1140,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("connections_warm_mint", "dashboard"),
     ],
     "kiro_crew/context_assembly/agent_spec.py": [
+        # A pinned session's file, read for its ``includeCrossSessionContext`` key.
+        ("agent_context_scope", "context"),
         ("agent_prompt", "context"),
         ("steering_resources", "unknown"),
     ],
@@ -1495,7 +1497,11 @@ _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_TEMPLATE_SPEC_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/context_assembly/agent_spec.py": [("agent_prompt", "context")],
+    # The agent prompt, and the ``includeCrossSessionContext`` key of the same spec.
+    "kiro_crew/context_assembly/agent_spec.py": [
+        ("agent_context_scope", "context"),
+        ("agent_prompt", "context"),
+    ],
     "kiro_crew/member_essential_context.py": [("member_essentials", "context")],
 }
 _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {

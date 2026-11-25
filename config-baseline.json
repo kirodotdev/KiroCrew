@@ -10920,6 +10920,7 @@
         "chat_entry_cache_max_bytes": 33554432,
         "cautious_boot": true,
         "default_memory_mode": "persistent",
+        "default_approval_mode": "normal",
         "new_chat_crew_mode": false,
         "widget_density": "more",
         "browser_local_origins": [],
@@ -11948,6 +11949,23 @@
         "temporary"
       ],
       "defaultValue": "persistent"
+    },
+    {
+      "path": "dashboard.default_approval_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "New chats start on",
+      "help": "Approval mode a plain chat you start from the dashboard opens on: 'normal' asks before each tool; 'trust_reads' runs read-only tools and read-only shell commands without asking. Crewmates, channels, schedules and agents keep their own settings, and the approval-modes policy can hold a chat on 'normal'.",
+      "hasChildren": false,
+      "enumValues": [
+        "normal",
+        "trust_reads"
+      ],
+      "defaultValue": "normal"
     },
     {
       "path": "dashboard.new_chat_crew_mode",

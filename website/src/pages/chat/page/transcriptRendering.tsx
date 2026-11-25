@@ -44,6 +44,7 @@ import type { PrivateForkMemoryMode } from '../../../utils/forkMemoryModes'
 import TurnBlock from '../TurnBlock'
 import { i18nT } from '../../../i18n/t'
 import { fmtMessageTime, fmtMessageTimeFull } from '../messageTime'
+import { quoteMarkRef } from '../quotedReply'
 import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
@@ -165,6 +166,9 @@ interface TranscriptRenderingOptions {
   handleLoadEarlier: () => void
   isPinned: (mid: string) => boolean
   handleJumpToQuote: (q: MessageQuote) => void
+  /** The jump from a sent `>` quote back to its reply, and the words it marks there. */
+  quoteJumpFor: (quoted: string, fromTs: string) => (() => void) | null
+  quoteMark: { ts: string; mid: string | null; quoted: string } | null
   handleTogglePinForMessage: (mid: string, messageTs: string, role: 'user' | 'assistant', content: string) => void
   /** Unsend, Edit and Queue instead on a steer the running turn has not read yet. */
   handleSteerAction: (mid: string, action: SteerRetractAction) => void
@@ -196,7 +200,7 @@ export function useTranscriptRendering({
   handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
   decideRow, revealAppInPanel, lastTextIdx, regenerateIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
-  handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
+  handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote, quoteJumpFor, quoteMark,
   handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   editSkillAgent, editSkillProject,
 }: TranscriptRenderingOptions) {
@@ -330,8 +334,8 @@ export function useTranscriptRendering({
   // The returned object is new each render; the functions in it are not.
   const {
     handleEditResend: stableEditResend, handleJumpToQuote: stableJumpToQuote, handleRegenerate: stableRegenerate,
-    handleTogglePinForMessage: stableTogglePin, quoteWholeMessage: stableQuoteMessage,
-  } = useStableCallbackProps({ handleEditResend, handleJumpToQuote, handleRegenerate, handleTogglePinForMessage, quoteWholeMessage })
+    handleTogglePinForMessage: stableTogglePin, quoteWholeMessage: stableQuoteMessage, quoteJumpFor: stableQuoteJumpFor,
+  } = useStableCallbackProps({ handleEditResend, handleJumpToQuote, handleRegenerate, handleTogglePinForMessage, quoteWholeMessage, quoteJumpFor })
   // One pin and one quote handler per message row. Keyed by the row object,
   // which the store keeps by reference while it is unchanged, so a settled row
   // gets the same pair on every render and a replaced row gets a fresh pair
@@ -406,7 +410,7 @@ export function useTranscriptRendering({
     const msgTimeFull = fmtMessageTimeFull(m.ts)
     return (
       <MessageSearchScope key={key} messageIdx={i}>
-      <div data-jump-target={isJumpTarget(m, landedTs, jumpMid) || isJumpTarget(m, highlightTs, jumpMid) ? m.ts : undefined} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${isJumpTarget(m, landedTs, jumpMid) ? 'animate-msg-landed rounded-lg' : isJumpTarget(m, highlightTs, jumpMid) ? 'animate-msg-highlight rounded-lg' : ''}`}>
+      <div ref={quoteMark && isJumpTarget(m, highlightTs, jumpMid) && isJumpTarget(m, quoteMark.ts, quoteMark.mid) ? quoteMarkRef(quoteMark.quoted) : undefined} data-jump-target={isJumpTarget(m, landedTs, jumpMid) || isJumpTarget(m, highlightTs, jumpMid) ? m.ts : undefined} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${isJumpTarget(m, landedTs, jumpMid) ? 'animate-msg-landed rounded-lg' : isJumpTarget(m, highlightTs, jumpMid) ? 'animate-msg-highlight rounded-lg' : ''}`}>
         <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
           {isUser ? (
             <UserMessage
@@ -435,6 +439,7 @@ export function useTranscriptRendering({
               onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'user').togglePin : undefined}
               onQuoteMessage={activeSlot && !activeSlotRemoteBound ? rowHandlersFor(m, 'user').quote : undefined}
               onJumpToQuote={stableJumpToQuote}
+              onJumpToQuotedText={stableQuoteJumpFor}
               onSteerAction={activeSlotRemoteBound ? undefined : handleSteerAction}
               steerActionPending={messageId ? steerActionPending[messageId] : undefined}
               steerActionRefusal={messageId ? steerActionRefusals[messageId] : undefined}
@@ -570,7 +575,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, handleForkWithMemoryMode, activeSlotMemoryMode, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, handleForkWithMemoryMode, activeSlotMemoryMode, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, stableQuoteJumpFor, quoteMark, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

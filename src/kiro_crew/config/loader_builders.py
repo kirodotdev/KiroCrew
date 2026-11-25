@@ -222,6 +222,11 @@ def _default_memory_mode_from(raw: object) -> str:
     return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
 
 
+def _default_approval_mode_from(raw: object) -> str:
+    """The stored start mode for the owner's new chats; anything else reads as ``normal``."""
+    return raw if isinstance(raw, str) and raw in _sections.DEFAULT_APPROVAL_MODES else "normal"
+
+
 def _folder_sort_from(raw: object, default: str) -> str:
     """Normalize the sidebar folder sort mode; anything unknown is *default*, ``custom``.
 
@@ -1506,6 +1511,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         auto_open_conductor_board=section.read("auto_open_conductor_board", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
+        default_approval_mode=_default_approval_mode_from(section.get("default_approval_mode")),
         new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
         widget_density=section.get("widget_density"),
         browser_local_origins=_sections.coerce_browser_local_origins(

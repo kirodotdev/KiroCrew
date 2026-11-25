@@ -82,6 +82,12 @@ Head: <revision>. Changed: <allowlisted canonical facts>.
 Next action: <bounded instructions>.
 ```
 
+A wake for one of the other pull requests a watch lists in `also_wake_on` has
+one more line right after `[Monitor wake]`: `Also waiting on pull request
+<other>: it merged. The lines below describe the watched one.` (or `it was closed
+without merging`, `it could not be read and is no longer checked`). Every other
+line still describes the watched pull request.
+
 `MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state_parts/injected_turns.py`.
 The complete envelope is redacted before its 4,096-character cap and contains
 only canonical provider facts, never raw responses, logs, comments, diffs,

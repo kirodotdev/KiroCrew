@@ -51,6 +51,7 @@ from kiro_crew.slack.code_channels.workspace.diff import (
     MASK_LINES,
     MAX_VIEW_BYTES,
     OMITTED,
+    UNREAD,
     WITHHOLD,
     DiffGroup,
     assemble,
@@ -1890,6 +1891,7 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
             listing = git_ops.untracked_files(cwd, cap=_UNTRACKED_LIST_CAP)
             names, names_cut = listing if listing is not None else ([], False)
             chunks: list[bytes] = []
+            unread = False  # a new file this platform cannot read safely (Windows)
             remaining = MAX_VIEW_BYTES - len(body)
             for rel in names[:_MAX_UNTRACKED]:
                 if remaining <= 0:
@@ -1899,10 +1901,8 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                     names_cut = True  # never read a credential-shaped path
                     continue
                 section = render_untracked(cwd, rel, budget=remaining)
-                if section is None:
-                    continue
-                if section == OMITTED:
-                    names_cut = True  # a new file the tab cannot show: say so
+                if section is None or section in (OMITTED, UNREAD):  # not shown: say why
+                    unread, names_cut = unread or section == UNREAD, names_cut or section == OMITTED
                     continue
                 # The same whole-file screen as tracked files: a rendered new
                 # file is one hunk holding the whole file, and line-level
@@ -1921,8 +1921,9 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                 remaining -= len(section)
             names_cut = names_cut or len(names) > _MAX_UNTRACKED
             branch = git_ops.current_branch(cwd) or record.branch
-            workers = (
-                worker_groups(
+            workers: list[DiffGroup] = []
+            if board is not None:
+                workers = worker_groups(
                     cwd,
                     board,
                     branch,
@@ -1931,9 +1932,6 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                     screen=lambda raw, cut: _screen_worker(cwd, raw, cut),
                     header=_worker_header,
                 )
-                if board is not None
-                else []
-            )
         except git_ops.SandboxUnavailable:
             return None
         # Every byte bound for Slack goes through the gateway's outbound
@@ -1947,6 +1945,7 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                 tracked_truncated=body_cut,
                 untracked=tuple(_redact_bytes(chunk) for chunk in chunks),
                 untracked_truncated=names_cut,
+                untracked_unread=unread,
             )
             built = assemble_groups([channel_group, *workers])
         else:
@@ -1955,6 +1954,7 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                 tracked_truncated=body_cut,
                 untracked=[_redact_bytes(chunk) for chunk in chunks],
                 untracked_truncated=names_cut,
+                untracked_unread=unread,
             )
         base_label = (git_ops.default_branch_name(cwd) if record.base_ref else "") or base[:12]
         return built.content, redact_via_context(base_label), redact_via_context(branch)

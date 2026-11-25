@@ -23,6 +23,7 @@ Instance fields assigned, or whose mapping is changed: none.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
@@ -31,10 +32,16 @@ from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restr
 from kiro_crew.security import redact, redact_local_paths
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 
+logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 
-async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
+
+async def _record_turn(
+    self: DiscordDispatcher, record: TurnRecord, images: Sequence[str] = ()
+) -> None:
     """Write one exchange to the live dashboard window and the transcript.
 
     The pipeline's ``record`` adapter: it decides WHEN this runs, and this
@@ -58,6 +65,12 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     that raised, the error it died with, after the partial reply the user
     already saw. That error takes the same redaction and cap as the member-memory
     refusal and the dashboard runner's own terminal-error row's role and class.
+
+    *images* are the pictures the turn downloaded for the message. Each is copied
+    into the session's attachments store before either writer, so the row names
+    the copy instead of the temp file the turn deletes; the live window needs the
+    same text, because it rewrites its rows on disk on every save. A store that
+    fails leaves the row as it came in.
     """
     if await self._session_restricted(record.session_key):
         return
@@ -71,8 +84,16 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     key = record.session_key
     reply = record.reply_text if record.reply_text.strip() else ""
     dashboard_state = getattr(self._session_resume, "dashboard_state", None)
+    user_text = record.user_text
+    if images and self.conv_log is not None:
+        try:
+            user_text = await asyncio.to_thread(
+                self.conv_log.store_ingested_images, key, user_text, images
+            )
+        except Exception:
+            logger.warning("discord: keeping pictures failed session=%s", key, exc_info=True)
     # Both copies need the SAME body, both halves; own hop.
-    safe_text = await asyncio.to_thread(_redact_at_write_boundary, "user", record.user_text)
+    safe_text = await asyncio.to_thread(_redact_at_write_boundary, "user", user_text)
     safe_reply = await asyncio.to_thread(_redact_at_write_boundary, "assistant", reply)
     mirror_mids = project_channel_turn_live(dashboard_state, key, safe_text, safe_reply)
     extra_row: tuple[str, str, str, str | None] | None = None

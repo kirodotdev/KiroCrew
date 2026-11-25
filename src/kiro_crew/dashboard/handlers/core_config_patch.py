@@ -444,7 +444,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             )
         try:
             value = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # a 400-digit integer is valid JSON
             return _deny("must be a number", f"{path_key}={value}")
         if not math.isfinite(value):
             return _deny("must be a finite number", f"{path_key}={value}")
@@ -554,7 +554,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
                 try:
                     sub_val = float(sub_val)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
                 if not math.isfinite(sub_val):
                     return _deny(f"{sub_key} must be a finite number", f"{path_key}={value}")

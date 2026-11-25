@@ -53,6 +53,7 @@ from kiro_crew import platform_compat
 from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover
 from kiro_crew.browser_harness import governance as browse_governance
 from kiro_crew.browser_harness import install, sign_in_guard
+from kiro_crew.browser_harness.earlier_chromium import held_profile_detail, prepare_profile
 from kiro_crew.browser_harness.env import daemon_env
 from kiro_crew.browser_harness.helper_table import HELPERS
 from kiro_crew.browser_harness.relay import (
@@ -979,8 +980,7 @@ class HarnessSupervisor:
                 )
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
-        await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
-        await asyncio.to_thread(_clear_restored_session, profile)
+        await prepare_profile(profile)
         argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
         if choice.headless:
             argv.append(_HEADLESS_ARG)
@@ -1046,8 +1046,7 @@ class HarnessSupervisor:
         self, argv: list[str], profile: Path
     ) -> tuple[asyncio.subprocess.Process, str]:
         """Windows: a free debugging port, read back from ``DevToolsActivePort``."""
-        port_file = profile / DEVTOOLS_PORT_FILE
-        await asyncio.to_thread(port_file.unlink, missing_ok=True)
+        await asyncio.to_thread((profile / DEVTOOLS_PORT_FILE).unlink, missing_ok=True)
         proc = await self._spawn([*argv, _CHROMIUM_PORT_ARG], env=dict(self._env()), pipes=False)
         try:
             deadline = time.monotonic() + CHROMIUM_START_TIMEOUT_SECS
@@ -1056,7 +1055,8 @@ class HarnessSupervisor:
                 if url is not None:
                     return proc, url
                 if proc.returncode is not None:
-                    raise BrowserUnavailable(self._chromium_exit_detail(proc.returncode))
+                    detail = self._chromium_exit_detail(proc.returncode)
+                    raise BrowserUnavailable(await held_profile_detail(profile, detail))
                 await asyncio.sleep(_POLL_SECS)
             raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
         except BaseException:

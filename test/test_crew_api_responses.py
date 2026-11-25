@@ -1045,6 +1045,94 @@ async def test_the_live_session_ceiling_is_a_concurrency_limit(client, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_input_preparation_cannot_overbook_the_last_live_slot(
+    client, monkeypatch, stream
+) -> None:
+    count = client.state.live_slot_count
+    assert count() == 0
+    # Existing sessions occupy every slot but one; count new allocations for real.
+    monkeypatch.setattr(client.state, "live_slot_count", lambda: MAX_LIVE_SLOTS - 1 + count())
+    preparing = asyncio.Event()
+    release_input = threading.Event()
+    held_admitted = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    input_items = responses._input_items
+    turn = client.turn
+    turn.release = asyncio.Event()
+
+    def _prepare(parsed):
+        if parsed.prompt == "held":
+            loop.call_soon_threadsafe(preparing.set)
+            assert release_input.wait(30), "the held input preparation was not released"
+        return input_items(parsed)
+
+    async def _turn(state, slot, message, **kwargs):
+        if message == "held":
+            held_admitted.set()
+        await await_until(
+            asyncio.ensure_future(turn(state, slot, message, **kwargs)),
+            what="the admitted turn to finish",
+        )
+
+    monkeypatch.setattr(responses, "_input_items", _prepare)
+    monkeypatch.setattr(responses, "_run_chat", _turn)
+    held = asyncio.ensure_future(_ask(client, {**ASK, "input": "held", "stream": stream}))
+    asking = [held]
+    admitted_wait = asyncio.ensure_future(held_admitted.wait())
+    try:
+        await await_until(preparing, what="the first request to prepare its input off-loop")
+        other = asyncio.ensure_future(_ask(client))
+        asking.append(other)
+        await await_until(turn.started, what="the second request to occupy the last slot")
+        release_input.set()
+        await await_until(
+            asyncio.ensure_future(
+                asyncio.wait({held, admitted_wait}, return_when=asyncio.FIRST_COMPLETED)
+            ),
+            what="the held request to be refused or admitted",
+        )
+        occupied = client.state.live_slot_count()
+        turn.release.set()
+        results = await await_until(asyncio.gather(*asking), what="both POSTs to finish")
+        response, body = results[0]
+        error = _contract_error(response, body, 429, "concurrency_limit")
+        assert error["limit"] == "turns"
+        assert results[1][0].status == 200
+        assert occupied == MAX_LIVE_SLOTS
+        assert len(turn.entered) == 1
+        _no_slot_left(client)
+    finally:
+        release_input.set()
+        turn.release.set()
+        admitted_wait.cancel()
+        await await_until(
+            asyncio.gather(*asking, admitted_wait, return_exceptions=True),
+            what="the requests and admission waiter to settle",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "status", "code"),
+    [
+        ({"model": "nobody"}, 404, "model_not_found"),
+        ({"model": "nobody", "input": ""}, 400, "invalid_request"),
+    ],
+)
+async def test_body_and_model_refusals_precede_the_live_session_ceiling(
+    client, monkeypatch, change, status, code
+) -> None:
+    monkeypatch.setattr(client.state, "live_slot_count", lambda: MAX_LIVE_SLOTS)
+    response, body = await await_until(
+        asyncio.ensure_future(_ask(client, {**ASK, **change})), what="the refused POST"
+    )
+    _contract_error(response, body, status, code)
+    assert client.turn.entered == []
+    _no_slot_left(client)
+
+
+@pytest.mark.asyncio
 async def test_an_engine_that_is_not_signed_in_is_unavailable(client, monkeypatch) -> None:
     async def _signs_in(*_args: Any, **_kwargs: Any) -> bool:
         return True

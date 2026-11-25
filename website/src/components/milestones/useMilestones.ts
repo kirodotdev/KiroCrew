@@ -442,7 +442,7 @@ export function useRunStarter() {
     // the user opened meanwhile wins (`shown` is false). A fill-in prompt is
     // staged as the keyed prefill before the chat opens, so it lands once, on
     // the commit that opens it, and never over text typed while it loads.
-    const view = await createChatForView(dispatch, store.getState, { defaultFolder: true, ...agent, ...(send ? {} : { prefill: prompt }) })
+    const view = await createChatForView(dispatch, store.getState, { defaultFolder: true, startModeDefault: true, ...agent, ...(send ? {} : { prefill: prompt }) })
     if (!view.shown) return
     // A yes to the first ask covers this navigate; with nothing at stake then,
     // the live guard is asked now (a draft can start during the create).

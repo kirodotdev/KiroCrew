@@ -175,6 +175,33 @@ two entries match apart from `disabledTools`
 collision handling. The merged entry is the one read, so a Kiro global guard on the
 raw key survives a store entry that omits the field.
 
+**A raw store key adopts its own rendering.** Switching such a row off writes
+`disabled: true` onto the raw store entry, which then differs from the previous
+rendering under the alias. Before the store merge, `_adopt_stale_alias_rendering`
+moves that rendering back under the raw key, so the server mounts once, switched
+off, rather than running beside a muted `playwright-mcp-2`. It adopts only when the
+store holds one raw key for the alias, the rendering launches the store entry's own
+program, and no app and no scope global declares a server (a `command` or `url`)
+under the alias. The stub a tool toggle leaves there (`{"disabledTools": [...]}`,
+or `{}` once the tool is back on) declares nothing, so it does not block adoption.
+The `timeout` and `disabled` it reconciled onto the rendering stay, and a switch
+written onto the stub mutes that one mount. The adopted entry is then reconciled as
+a slash-free store key's previous rendering is: when no source claimed the alias in
+the pass, `timeout` and `disabled` follow the store entry, and one it leaves out is
+removed. That includes a `timeout` the agent spec wrote on the alias, since nothing
+records which side wrote it. `disabledTools` is decided after that, and dropped only
+when `mcp_aliases.raw_tools_project_onto_alias()`, the call the raw-key list
+projection above makes, says the entry is the raw key's: no scope holds the alias,
+and apart from the launch (already compared) and `disabled` (the shared-server
+sync's) the two entries match except for that list. Then a store entry with no list
+clears it, and an entry with its own `autoApprove` keeps its list. An app server whose raw key
+renders as the same alias claims it, so the store never adopts an app's rendering. A `playwright-mcp-2` that is only a muted copy of the
+same rendering, left by an older build, is folded into the one mount, and its
+`tools` and `allowedTools` refs (bare and per-tool) move to `playwright-mcp` through
+the helpers key normalization uses for a duplicate's refs
+(`mcp_aliases.mcp_ref_owner()`, `mcp_aliases.rewrite_mcp_ref()`); the
+disabled-server sync then revokes the grants a muted server may not keep.
+
 **Resolution-aware fallback.** The same server can be defined in several sources
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
@@ -2508,9 +2535,11 @@ What the pass does with a Bot file is what it does with an agent spec: the
 same hardened reader, the same `_rewrite_single_spec`, the same launch approvals
 (an unapproved launch stays unwrapped), the same env-sidecar ledger and prune,
 and the same fingerprint and cache (the files sign as the `mate_sources` input,
-which an app overlay refresh may see change; a new target still makes the refresh
-wait for a restart). It differs in four places. The stub's `--agent` identity is
-`crewmate:<id>`, never the file's own `name`, so the sidecar
+which an app overlay refresh, or the refresh a change card runs when it adds or
+changes a gateway-routed server on a Bot, may see change; a new target still
+makes the refresh wait for a restart, and the card then says so). It differs
+in four places. The stub's `--agent` identity is `crewmate:<id>`, never the
+file's own `name`, so the sidecar
 (`env_sidecar_name(agent, server)`) and caller identity are the Bot's own. A
 file gets no settings injection: the worker's servers are its Bot file's. A
 file is taken only when it is a plain file (no symlink) in a plain folder, is not
@@ -2628,7 +2657,20 @@ before; the stub identity itself, and so the pool and sidecar names, stay the
 Bot's own.
 
 An edited Bot file can run on its older stub until the next pass. Overlays
-are written at gateway start and on an app overlay refresh, while the worker's
+are written at gateway start, on an app overlay refresh, and on the refresh a
+`crewmate.capabilities` change card runs when its save adds or changes a
+gateway-routed server on a Bot that owns its file. Routed is the rewriter's own
+rule: the name is in `mcp_gateway.stub_servers`, or, for a server whose env holds
+a `secret://` reference, its slash-free alias matches one there
+(`secret_uri.routed_for_secret_reference`). The save writes the file inside that
+refresh, and the Bot's idle workers
+are reloaded after it. When the refresh refuses (for example, the server's
+launch is a target the running daemon does not hold), or the running gateway
+does not route that server yet (a `mcp_gateway.stub_servers` change written
+outside the per-server share, `POST /api/mcp-gateway/servers/stub`, waits for
+the next gateway start), the overlay does not carry its stub and the
+applied card shows a line saying the Bot's worker gets the server through the
+gateway only after a gateway restart, and where to restart it. The worker's
 governed spec is read at session start, and the lookup matches by server name.
 So after an edit (a changed command, args or env, a rotated token) the session
 subtracts the current entry and gets the stub, and the sidecar, of the launch
@@ -6831,6 +6873,15 @@ and the legacy loop is the exception. Neither position refuses either tool.
 Objectives that require interpreting comments or advisory review evidence keep a
 finite legacy loop in both positions instead of claiming the structured probe
 observes those facts.
+
+`monitor_watch` and `monitor_update` also take `also_wake_on`, at most three other
+pull requests a `github_pull_request` watch waits on (each wakes the session once
+when it merges, is closed or is retired as unreadable, and never ends the watch;
+[monitor-architecture](../system-specs/modules/monitor-architecture.md#extra-wake-subjects)).
+Each entry is parsed by the GitHub target rules before a directive is emitted; on
+`monitor_update` the list REPLACES the stored one (`[]` clears it). Another kind,
+or a plain `monitor_start` loop, is refused in band from the session-monitor read
+the arming preflight already makes, and again by the applier.
 
 `monitor_watch.kind` is the closed set `github_pull_request`,
 `gitlab_merge_request`, `azure_devops_pull_request`, and
