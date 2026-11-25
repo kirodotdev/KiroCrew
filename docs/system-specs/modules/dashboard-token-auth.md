@@ -520,7 +520,18 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
    signature, expiry, and a grant that is still active and names the same
    `client_id`). The order of the checks is the credential's kind, its validity, where
    the request came from, then the tier:
-   - One that does not verify is not an app credential and gets the 401 of step 2.
+   - One that does not verify is not an app credential and gets the 401 of step 2,
+     with two exceptions, both only for a token this gateway signed and only on a
+     request that came straight from this machine
+     (`LocalAuthorization.refused_as`). One past its expiry is `401 invalid_token`
+     with the message "The access token has expired.". One still in date whose
+     grant's record says revoked is `401 token_revoked`. The signature is checked
+     first and the expiry second, and the grant record is read only after both, so
+     a token with any other signature gets the 401 of step 2, byte for byte. So
+     does a token in date whose grant has no record, or whose record cannot be
+     read. Each of the two
+     writes one `crew_api.app_credential` row (`denied`, `token-expired` or
+     `token-revoked`). The `WWW-Authenticate` challenge is the same on every 401.
    - A verified one that did not come straight from this machine (a forwarding header,
      a peer that is not loopback, or a request the relay delivered) gets that same
      401, byte for byte: only the audit row says why. Local authorization issues the

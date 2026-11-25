@@ -174,6 +174,22 @@ def _assert_401(resp, ran: bool) -> None:
     assert error["message"].endswith(CREDENTIAL_HINT)
 
 
+def _assert_refused(resp, ran: bool, code: str, message: str) -> None:
+    """A 401 that names *code* and opens with *message*. The challenge never changes."""
+    assert ran is False
+    assert resp.status == 401
+    assert resp.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+    assert resp.headers["X-Auth-Required"] == "true"
+    error = _error(resp)
+    assert (error["type"], error["code"]) == ("authentication_error", code)
+    assert error["message"] == f"{message} {CREDENTIAL_HINT}"
+
+
+def _answer(resp) -> tuple:
+    """Everything a caller can read from *resp*."""
+    return resp.status, resp.body, tuple(sorted(resp.headers.items()))
+
+
 def _b64(data: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
 
@@ -272,7 +288,7 @@ async def test_a_revoked_grant_is_401_on_the_next_call(store, clock) -> None:
     assert (resp.status, ran) == (200, True)
     assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
     resp, _, ran = await _send(path="/v1/models", headers=headers)
-    _assert_401(resp, ran)
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
 
 
 @pytest.mark.asyncio
@@ -330,16 +346,14 @@ async def test_an_owner_cookie_beside_an_app_credential_changes_nothing(store, c
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
-    ["expired", "other-key", "typ", "alg-none", "revoked", "client-id", "tampered", "no-grant"],
+    ["other-key", "typ", "alg-none", "client-id", "tampered", "no-grant"],
 )
 async def test_an_app_token_that_does_not_verify_is_401(
     store, clock, audit, tmp_path, case
 ) -> None:
     tokens = _grant(store, clock)
     token = tokens["access_token"]
-    if case == "expired":
-        clock.now += la.ACCESS_TTL_SECS + 1
-    elif case == "other-key":
+    if case == "other-key":
         other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"x" * 32, clock)
         token = _grant(other, clock)["access_token"]
     elif case == "typ":
@@ -347,8 +361,6 @@ async def test_an_app_token_that_does_not_verify_is_401(
     elif case == "alg-none":
         head = _b64({"alg": "none", "typ": la.TOKEN_TYP})
         token = f"{head}.{token.split('.')[1]}."
-    elif case == "revoked":
-        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
     elif case == "client-id":
         token = _resigned(store, token, client_id="another-app")
     elif case == "tampered":
@@ -368,6 +380,252 @@ async def test_an_app_token_in_the_query_is_401_like_any_query_credential(store,
     resp, request, ran = await _send(path="/v1/models", query={"token": token})
     _assert_401(resp, ran)
     assert "app" not in _published(request)
+
+
+# ── a token this gateway signed is told why it was refused ───────────────────
+
+
+def _forged(token: str) -> str:
+    """*token* with a signature this gateway did not make."""
+    return token[:-2] + ("AA" if token[-2:] != "AA" else "BB")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/crew/owner/bots", "/v1/models"])
+async def test_a_signed_token_in_date_whose_grant_is_revoked_is_401_token_revoked(
+    store, clock, audit, path
+) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    resp, request, ran = await _send(path=path, headers=_bearer(tokens["access_token"]))
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+    assert "app" not in _published(request) and "user" not in _published(request)
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"], row["resources"]) == (
+        f"app:{tokens['grant_id']}",
+        "denied",
+        "token-revoked",
+        path,
+    )
+    assert audit.log_api_access.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_refresh_token_revokes_and_the_access_token_is_token_revoked(
+    store, clock
+) -> None:
+    tokens = _grant(store, clock)
+    renewed = store.refresh(CLIENT, tokens["refresh_token"], "", ISSUER)
+    with pytest.raises(la.AuthError):
+        store.refresh(CLIENT, tokens["refresh_token"], "", ISSUER)
+    resp, _, ran = await _send(path="/v1/models", headers=_bearer(renewed["access_token"]))
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True], ids=["grant-active", "grant-revoked"])
+async def test_a_signed_token_past_its_expiry_is_401_invalid_token_that_says_expired(
+    store, clock, audit, revoked
+) -> None:
+    """The expiry is judged before the grant, so a revocation does not change the answer."""
+    tokens = _grant(store, clock)
+    if revoked:
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    clock.now += la.ACCESS_TTL_SECS + 1
+    resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    _assert_refused(resp, ran, "invalid_token", "The access token has expired.")
+    assert "app" not in _published(request)
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"]) == (
+        f"app:{tokens['grant_id']}",
+        "denied",
+        "token-expired",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_token_reads_expired_once_its_own_lifetime_is_over(store, clock) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    headers = _bearer(tokens["access_token"])
+    clock.now += la.ACCESS_TTL_SECS - 1
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+    clock.now += 1
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    _assert_refused(resp, ran, "invalid_token", "The access token has expired.")
+
+
+@pytest.mark.asyncio
+async def test_no_token_without_this_gateways_signature_learns_anything_about_a_grant(
+    store, clock, audit, tmp_path, monkeypatch
+) -> None:
+    """Every token below gets one answer, byte for byte: the one a random string gets.
+
+    Each names a grant that is revoked, or is past its expiry, or both. None carries a
+    signature this gateway made over those claims, so none is told so.
+    """
+    tokens = _grant(store, clock)
+    token = tokens["access_token"]
+    grant_id = tokens["grant_id"]
+    assert store.revoke_grant(grant_id, caller="U_HOST_OWNER") is True
+    other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"x" * 32, clock)
+    foreign = _grant(other, clock)["access_token"]
+    candidates = {
+        "random": "not.a.token",
+        "tampered signature": _forged(token),
+        "another gateway's token": foreign,
+        "another gateway's, naming the revoked grant": _resigned(other, foreign, grant_id=grant_id),
+        "another gateway's, past its expiry": _resigned(other, foreign, exp=int(clock.now) - 10),
+        "tampered signature, past its expiry": _forged(
+            _resigned(store, token, exp=int(clock.now) - 10)
+        ),
+        "unsigned": f"{_b64({'alg': 'none', 'typ': la.TOKEN_TYP})}.{token.split('.')[1]}.",
+        "signed, grant has no record": _resigned(store, token, grant_id="grt_0000000000000000"),
+    }
+    reads: list[int] = []
+    real_load = store._load
+    monkeypatch.setattr(store, "_load", lambda: reads.append(1) or real_load())
+    sent = {"X-Request-Id": "req_same0001"}
+    answers = {}
+    for name, candidate in candidates.items():
+        before = len(reads)
+        resp, request, ran = await _send(path="/v1/models", headers={**_bearer(candidate), **sent})
+        _assert_401(resp, ran)
+        assert "app" not in _published(request), name
+        answers[name] = _answer(resp)
+        if name != "signed, grant has no record":
+            # The record is not opened for a token this gateway did not sign.
+            assert len(reads) == before, name
+    assert len(set(answers.values())) == 1, answers
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_cannot_be_read_answers_a_revoked_token_as_a_random_one(
+    store, clock, audit, monkeypatch
+) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+
+    def _unreadable():
+        raise OSError("record unreadable")
+
+    monkeypatch.setattr(store, "_load", _unreadable)
+    sent = {"X-Request-Id": "req_same0001"}
+    answers = []
+    for token in (tokens["access_token"], "not.a.token"):
+        resp, request, ran = await _send(path="/v1/models", headers={**_bearer(token), **sent})
+        _assert_401(resp, ran)
+        assert "app" not in _published(request)
+        answers.append(_answer(resp))
+    assert answers[0] == answers[1]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({"X-Forwarded-For": "203.0.113.7"}, id="x-forwarded-for"),
+        pytest.param({"Forwarded": "for=203.0.113.7"}, id="forwarded"),
+        pytest.param({"X-Real-IP": "203.0.113.7"}, id="x-real-ip"),
+    ],
+)
+async def test_a_forwarded_revoked_or_expired_token_is_answered_exactly_as_a_forged_one(
+    store, clock, audit, state, extra
+) -> None:
+    tokens = _grant(store, clock)
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    sent = {**extra, "X-Request-Id": "req_same0001"}
+    answers = []
+    for token in (tokens["access_token"], _forged(tokens["access_token"])):
+        resp, request, ran = await _send(path="/v1/models", headers={**_bearer(token), **sent})
+        _assert_401(resp, ran)
+        assert "app" not in _published(request)
+        answers.append(_answer(resp))
+    assert answers[0] == answers[1]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+async def test_a_revoked_or_expired_token_the_relay_delivered_gets_no_reason(
+    store, clock, audit, state
+) -> None:
+    tokens = _grant(store, clock)
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    request = _make_request(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    relayed = RelayCaller(kiro_user_id="kiro-user.owner-0001", kind=RelayCallerKind.OWNER)
+    request.get = lambda key, default=None: relayed if key == RELAY_CALLER_KEY else default
+    assert await crew_api_auth.judge_app_credential(request, tokens["access_token"]) is None
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+async def test_a_revoked_or_expired_token_from_another_address_gets_no_reason(
+    store, clock, audit, state
+) -> None:
+    tokens = _grant(store, clock)
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    resp, request, ran = await _send(
+        path="/v1/models", headers=_bearer(tokens["access_token"]), remote="203.0.113.7"
+    )
+    assert (resp.status, ran) == (401, False)
+    assert _error(resp)["code"] == "invalid_token"
+    assert "expired" not in _error(resp)["message"] and "revoked" not in _error(resp)["message"]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+async def test_a_refused_signed_token_is_in_no_audit_row_no_log_line_and_no_answer(
+    store, clock, audit, caplog, state
+) -> None:
+    tokens = _grant(store, clock)
+    token = tokens["access_token"]
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    caplog.set_level(logging.DEBUG)
+    resp, _, _ = await _send(path="/v1/models", headers=_bearer(token))
+    assert resp.status == 401
+    written = (
+        repr(audit.log_api_access.call_args_list)
+        + caplog.text
+        + resp.body.decode()
+        + repr(dict(resp.headers))
+    )
+    for piece in (token, token[:12], token[-12:], *token.split("."), tokens["refresh_token"]):
+        assert piece not in written
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_check_that_raises_is_401_like_a_random_token(
+    store, clock, audit, monkeypatch
+) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+
+    def _raises(token):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(store, "refused_as", _raises)
+    resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    _assert_401(resp, ran)
+    audit.log_api_access.assert_not_called()
 
 
 # ── only from this machine ───────────────────────────────────────────────────
