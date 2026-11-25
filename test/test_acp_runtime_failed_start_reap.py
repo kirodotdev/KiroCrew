@@ -105,8 +105,13 @@ async def test_a_failed_init_leaves_no_child_processes(tmp_path, monkeypatch, ca
 
     async def _failing_handshake(_caps, *_budget):
         # Wait for the tree to exist, then fail the way a stalled kiro-cli does.
-        await async_wait_until(pid_file.exists, describe=lambda: f"{pid_file} was never written")
-        pid = int(pid_file.read_text())
+        text = await async_wait_until(
+            pid_file.read_text,
+            off_loop=True,
+            ignoring=(FileNotFoundError, PermissionError),
+            describe=lambda: f"{pid_file} was never written",
+        )
+        pid = int(text)
         child_pid.append(pid)
         start_ids[pid] = platform_compat.get_process_start_id(pid)
         # The shape under test: the child leads its own group, outside the root's.
@@ -166,8 +171,13 @@ async def test_a_cancel_during_the_failed_start_scan_still_reaps_the_tree(tmp_pa
     start_ids: dict[int, str | None] = {}
 
     async def _failing_handshake(_caps, *_budget):
-        await async_wait_until(pid_file.exists, describe=lambda: f"{pid_file} was never written")
-        pid = int(pid_file.read_text())
+        text = await async_wait_until(
+            pid_file.read_text,
+            off_loop=True,
+            ignoring=(FileNotFoundError, PermissionError),
+            describe=lambda: f"{pid_file} was never written",
+        )
+        pid = int(text)
         child_pid.append(pid)
         start_ids[pid] = platform_compat.get_process_start_id(pid)
         raise AcpRuntimeError("initialize timed out")
