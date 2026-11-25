@@ -174,6 +174,20 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     expect(probe.hasAttribute('data-composer-typo')).toBe(true)
   })
 
+  // The probe holds the whole draft. A long one (Quote on a long reply)
+  // wrapped it a thousand pixels tall inside the box, so revealing the caret
+  // scrolled the box itself and left it blank. Zero height keeps it out of
+  // the box's scrollable area; the fit is read from `scrollHeight`, which
+  // still reports the wrapped height. The real-layout half is the
+  // `capture-bot-chat-long-quote.mjs` harness.
+  it('gives the fit probe no height of its own, so a long draft cannot scroll the box', () => {
+    renderWithProviders(<ChatInput value={'word '.repeat(400)} onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    const probe = screen.getByTestId('composer-one-row-probe')
+    expect(probe.className.split(/\s+/)).toContain('h-0')
+    expect(probe.className).toContain('overflow-y-auto')
+    expect(probe.className).toContain('absolute')
+  })
+
   // One row centres the text line on the buttons: equal padding above and
   // below, set on the text column so the textarea, its paste mirror and the
   // Lexical editor all read it. Two rows keep INPUT_TYPO's 12px over 4px.
