@@ -14,15 +14,18 @@
  *
  * A row that arrives already finished has no transition: a Telegram or Discord
  * turn is appended whole, and a turn can fail before it streams. Such a row is
- * spoken when it is a new tail row by identity. The first transcript a session
- * shows is its baseline and is never spoken, so first load and a session switch
- * stay silent with no clock involved: the gateway's timestamps and the
- * browser's clock are never compared.
+ * spoken when it is a new tail row by identity. The transcript a session shows
+ * when its host says it has loaded, or when the reader sends before that, is
+ * its baseline and is never spoken, so first load and a session switch stay
+ * silent with no clock involved: the gateway's timestamps and the browser's
+ * clock are never compared. An empty loaded transcript is a baseline too, so
+ * the first message into it is new.
  *
  * The user's own message is spoken too, at the moment it is sent, so a reader
  * hears what went out before the reply comes back. That one is driven by the
- * send itself (`announceSent`) rather than by watching the transcript, because
- * a user row at the tail is also what a session that is still running looks
+ * send itself (`announceSent`, or `announceSentIn` for a send made outside the
+ * transcript's composer) rather than by watching the transcript, because a
+ * user row at the tail is also what a session that is still running looks
  * like on first load, and only the send knows the row is new.
  *
  * Both are prefixed with the same speaker label the transcript's offscreen
@@ -41,6 +44,9 @@ import { messageAnnouncementText } from '../utils/messageAnnouncement'
 import { extractInlineThinking } from '../app-sdk/protocol/inlineThinking'
 import { extractSteeringAcks, parseOptions } from '../app-sdk/protocol'
 import { parseGrill } from '../app-sdk/protocol/grillMarker'
+import { isNoteRow } from '../lib/noteContract'
+import { resolveInjectCard } from '../pages/chat/RecoveryCard'
+import { stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 
 /**
  * How long the region keeps a settled reply before releasing it, in ms.
@@ -171,6 +177,34 @@ export function sentSpokenSource(markdown: string): string {
   })
 }
 
+/** An `inject` row the transcript draws as a message under its source label
+ *  (the `inject` renderer): a scheduled task's name or the sending app's, with
+ *  the envelope its bubble strips removed. Any other `inject` row draws as a
+ *  card or not at all, and has nothing to speak. */
+function injectSpoken(row: AnnouncementTail | undefined): { speaker: string; source: string } | null {
+  if (row?.role !== 'inject') return null
+  const cronLabel = typeof row.meta?.cronLabel === 'string' ? row.meta.cronLabel : ''
+  const appLabel = typeof row.meta?.appLabel === 'string' ? row.meta.appLabel.split('/')[0] : ''
+  const content = row.content ?? ''
+  if ((!cronLabel && !appLabel) || resolveInjectCard({ content, meta: row.meta })) return null
+  const text = cronLabel
+    ? content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
+    : stripAppEnvelope(content)
+  return { speaker: cronLabel || appLabel, source: isNoteRow(row) ? parseOptions(text).text : text }
+}
+
+/** Every mounted hook's way to speak a send into the session it shows. */
+const sentListeners = new Set<(slot: string, markdown: string) => void>()
+
+/** Speak a message the reader sent from outside a transcript's composer (a
+ *  Dashboard card's one-click reply, the sidebar's quick reply, the top bar's
+ *  feature request) in each transcript showing `slot`, as `announceSent` does
+ *  for the composer. Its echo is the reader's own row, which is never spoken
+ *  from the transcript. */
+export function announceSentIn(slot: string, markdown: string): void {
+  for (const listener of sentListeners) listener(slot, markdown)
+}
+
 /** "<speaker>: <text>", with the speaker label the offscreen headings use. */
 function spoken(speaker: string, markdown: string): string {
   return i18nT('pages.chat.transcriptAnnouncement.spoken', {
@@ -206,6 +240,10 @@ export function useTranscriptAnnouncement(
    *  Every host passes the result of `useUserRowSpeaker`, so the fallback text
    *  and own-send decision use exactly the heading's attribution. */
   tailUserSpeaker: { speaker: string; own: boolean },
+  /** Whether the transcript shown is this session's loaded page, not one
+   *  still being fetched. The first render it is true takes the baseline,
+   *  unless a send already has. */
+  loaded: boolean,
 ): TranscriptAnnouncement {
   const [announcement, setAnnouncement] = useState('')
   const releaseRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -238,29 +276,45 @@ export function useTranscriptAnnouncement(
     }, ANNOUNCEMENT_HOLD_MS)
   }, [])
   useEffect(() => () => clearTimeout(releaseRef.current), [])
-  const announceSent = useCallback((markdown: string) => {
-    if (isInvisibleOnly(messageAnnouncementText(sentSpokenSource(markdown)))) return
-    sentSessionRef.current = renderedKeyRef.current
-    hold(spoken(i18nT('pages.chat.userMessage.speaker_heading'), sentSpokenSource(markdown)), true)
-  }, [hold])
-  const role = lastMsg?.role
-  // A system notice (compaction, a session reload) is an assistant row the
-  // transcript draws as a status card, not a reply, so it is never spoken as one.
-  const systemNotice = isSystemNoticeKind(lastMsg?.kind ?? (lastMsg?.meta?.kind as string | undefined))
-  const content = lastMsg?.content
-  const tailId = rowIdentity(lastMsg)
-  const tailMid = typeof lastMsg?.meta?.mid === 'string' ? lastMsg.meta.mid : ''
-  const tailGatewayNotice = !!lastMsg?.meta?.notice
-  const userSpeaker = tailUserSpeaker.speaker
-  const tailOwn = tailUserSpeaker.own
   // The tail identities this session has shown, whether this session's baseline
-  // (its first non-empty transcript) has been taken, and what was last spoken
+  // (its loaded transcript) has been taken, and what was last spoken
   // from the tail. Together they let a row that arrives already finished be
   // spoken once without reading history back, and keep a row that becomes the
   // tail again from being spoken twice.
   const seenTailsRef = useRef<Set<string>>(new Set())
   const tailBaselineRef = useRef(false)
   const lastSpokenTailRef = useRef({ said: '', mid: '', count: -1 })
+  // The settled tail this render shows, for a send that starts the baseline.
+  const settledTailRef = useRef('')
+  const announceSent = useCallback((markdown: string) => {
+    if (isInvisibleOnly(messageAnnouncementText(sentSpokenSource(markdown)))) return
+    sentSessionRef.current = renderedKeyRef.current
+    // A send before the host reads loaded (a failed open) starts the baseline.
+    if (!tailBaselineRef.current) {
+      tailBaselineRef.current = true
+      if (settledTailRef.current) seenTailsRef.current.add(settledTailRef.current)
+    }
+    hold(spoken(i18nT('pages.chat.userMessage.speaker_heading'), sentSpokenSource(markdown)), true)
+  }, [hold])
+  useEffect(() => {
+    const listener = (slot: string, markdown: string) => { if (slot === renderedKeyRef.current) announceSent(markdown) }
+    sentListeners.add(listener)
+    return () => { sentListeners.delete(listener) }
+  }, [announceSent])
+  const role = lastMsg?.role
+  // A system notice (compaction, a session reload) is an assistant row the
+  // transcript draws as a status card, not a reply, so it is never spoken as one.
+  const systemNotice = isSystemNoticeKind(lastMsg?.kind ?? (lastMsg?.meta?.kind as string | undefined))
+  const content = lastMsg?.content
+  const tailId = rowIdentity(lastMsg)
+  settledTailRef.current = isStreaming ? '' : tailId
+  const tailMid = typeof lastMsg?.meta?.mid === 'string' ? lastMsg.meta.mid : ''
+  const tailGatewayNotice = !!lastMsg?.meta?.notice
+  const userSpeaker = tailUserSpeaker.speaker
+  const tailOwn = tailUserSpeaker.own
+  const inject = injectSpoken(lastMsg)
+  const injectSpeaker = inject?.speaker ?? ''
+  const injectSource = inject?.source ?? ''
   useEffect(() => {
     // A session switch starts a new baseline. A held sent message is kept only
     // when it was sent from a chat with no session yet, which gets its key on
@@ -278,22 +332,26 @@ export function useTranscriptAnnouncement(
         setAnnouncement('')
       }
     }
-    // The first non-empty transcript is the baseline: recorded, never spoken.
-    const baseline = tailId !== '' && !tailBaselineRef.current
+    // The loaded transcript is the baseline, an empty one included: recorded,
+    // never spoken. No row is new before it.
+    const baseline = loaded && !tailBaselineRef.current
     if (baseline) tailBaselineRef.current = true
     const seenTails = seenTailsRef.current
-    const newTail = !baseline && tailId !== '' && !seenTails.has(tailId)
-    // A streaming tail is not seen yet. Its settled form therefore remains new
-    // even when both forms carry the same identity.
-    if (!isStreaming && tailId !== '') seenTails.add(tailId)
+    const newTail = tailBaselineRef.current && !baseline && tailId !== '' && !seenTails.has(tailId)
+    // A streaming tail is not seen yet, so its settled form remains new even when
+    // both forms carry the same identity; an inbound row is seen once judged,
+    // except a new user row still read as the reader's own, whose heading may
+    // yet name a teammate.
+    if ((!isStreaming || role === 'user' || injectSpeaker) && !(newTail && role === 'user' && tailOwn) && tailId !== '') seenTails.add(tailId)
 
-    // A new teammate, app, or relayed row can arrive while an assistant turn
-    // is still running. Speak it before the streaming return and hold it
-    // through the clear. The reader's own send was already spoken by
-    // `announceSent` and is identified by the same heading attribution.
-    if (role === 'user') {
-      if (newTail && !tailOwn) {
-        const source = sentSpokenSource(content ?? '')
+    // A new teammate, app, or relayed row, or an app's or scheduled task's
+    // labelled `inject` row, can arrive while an assistant turn is still
+    // running. Speak it before the streaming return and hold it through the
+    // clear. The reader's own send was already spoken by `announceSent` and is
+    // identified by the same heading attribution.
+    if (role === 'user' || injectSpeaker) {
+      if (newTail && !(role === 'user' && tailOwn)) {
+        const source = role === 'user' ? sentSpokenSource(content ?? '') : injectSource
         if (!isInvisibleOnly(messageAnnouncementText(source))) {
           const said = `${role}\n${source}`
           const last = lastSpokenTailRef.current
@@ -301,7 +359,7 @@ export function useTranscriptAnnouncement(
             && (tailMid === last.mid || (!last.mid && tailMid !== ''))
           if (!sameCopy) {
             lastSpokenTailRef.current = { said, mid: tailMid, count: rowCount }
-            hold(spoken(userSpeaker, source), false, true)
+            hold(spoken(role === 'user' ? userSpeaker : injectSpeaker, source), false, true)
           }
         }
       }
@@ -354,7 +412,7 @@ export function useTranscriptAnnouncement(
     lastSpokenTailRef.current = { said, mid: tailMid, count: rowCount }
     const speaker = assistantName || i18nT('pages.chat.assistantMessage.speaker_heading')
     hold(spoken(speaker, source), false)
-  }, [isStreaming, role, systemNotice, content, tailId, tailMid, tailGatewayNotice, userSpeaker, tailOwn, rowCount, hold, assistantName, sessionKey])
+  }, [isStreaming, role, systemNotice, content, tailId, tailMid, tailGatewayNotice, userSpeaker, tailOwn, injectSpeaker, injectSource, rowCount, hold, assistantName, sessionKey, loaded])
   // Approvals. The scroller's old live region read a permission row as it
   // appeared; without it, and with the banner suppressed for the chat on
   // screen, the agent would sit blocked with nothing said. Each request is

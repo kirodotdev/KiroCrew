@@ -842,7 +842,9 @@ describe('ChatPage renderMessage — role dispatch', () => {
       'Result: 4 issues triaged.',
       'Use workflow_result(wf_abc123) for the full stream.',
     ].join('\n')
-    renderChatPage([msg('assistant', content, { ts: 'w1' })])
+    // In the page the chat opens with, so the live region takes it as history.
+    const page = [msg('assistant', content, { ts: 'w1' })]
+    renderChatPage(page, { chat: { messages: page } })
     await waitFor(() => expect(shown()).toContain('issue triage'))
     expect(shown()).not.toContain('Use workflow_result(')
     expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()

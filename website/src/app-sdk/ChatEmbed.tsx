@@ -824,7 +824,7 @@ function ChatEmbed({
   const embedStreaming = serverMessages[serverMessages.length - 1]?.role === 'streaming' || (shown?.running ?? false)
   const embedApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
   const embedUserSpeaker = useUserRowSpeaker(embedTail?.meta ?? undefined, slotKey, embedTail?.content)
-  const { announcement, announceSent } = useTranscriptAnnouncement(embedTail, embedStreaming, undefined, slotKey, embedApprovals, messages.length, embedUserSpeaker)
+  const { announcement, announceSent } = useTranscriptAnnouncement(embedTail, embedStreaming, undefined, slotKey, embedApprovals, messages.length, embedUserSpeaker, shown != null)
   /** Latest rendered draft, for the async send path to read at settle time
    *  instead of a value closed over at render. */
   const draftRef = useRef(draft)
