@@ -709,7 +709,15 @@ Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
 float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
 The startup output of `kirocrew gateway --headless` shows whether the entry port is
 off or gives its `127.0.0.1:<port>` address, the one a proxy on this machine dials;
-the output of `kirocrew restart` has no entry-port line.
+the output of `kirocrew restart` has no entry-port line. The port it prints is the
+one the gateway bound (`entry_gate.bound_port`, read from the gate `entry_gate.start`
+set), not the configured value. When the port is on, the next line says that the
+proxy must send a `Host` that names `127.0.0.1`, `[::1]` or `localhost`
+(`entry_gate.HOST_HINT`), and the log line `entry_gate.start` writes when the port
+opens says the same. Pinned by
+`test_the_printed_credential_command_names_the_bound_port`,
+`test_bound_port_reads_the_gate_the_start_set` and
+`test_a_headless_start_prints_the_bound_entry_port`.
 
 A request arrived on the entry port when its LOCAL socket is that port
 (`entry_gate.EntryGate.owns`), never because of a header. `entry_gate_middleware`
