@@ -1920,12 +1920,15 @@ def test_collect_handler_returns_download_url(tmp_path, monkeypatch):
         redaction_summary={"versions.txt": 0},
         github_issue_url="https://github.com/kirodotdev/KiroCrew/issues/new?title=x",
     )
-    monkeypatch.setattr(dh.diagnostics, "collect_bundle", lambda **kw: fake)
+    seen: dict = {}
+    monkeypatch.setattr(dh, "_staged_update_alignment", lambda: "aligned (9.9.9)")
+    monkeypatch.setattr(dh.diagnostics, "collect_bundle", lambda **kw: seen.update(kw) or fake)
 
     resp = asyncio.run(
         dh.api_diagnostics_collect(_CollectReq({"note": "hi", "include_logs": True}))
     )
     assert resp.status == 200
+    assert seen["version_alignment"] == "aligned (9.9.9)"
     body = json.loads(resp.text)
     assert body["download_url"] == "/api/diagnostics/download/b.zip"
     assert body["github_issue_url"].startswith("https://github.com/")

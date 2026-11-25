@@ -750,8 +750,11 @@ take the hold in `cli.main` after argument parsing.
   `update_restart_ready_version` and `update_restart_ready_reason`
   (`status_update_fields`, `status_snapshot`); the update pill reads "Update
   ready", and the update dialog's primary action becomes "Restart to update".
-  A cycle that finds the same version already staged builds nothing. No restart is
-  scheduled, queued or retried; the new version starts at the next restart or
+  A diagnostics bundle the dashboard collects compares the running version with
+  the staged one while no live-target pointer is set and
+  `wheel_apply.restart_reaches` still holds for it ([cli](cli.md),
+  `kirocrew doctor --bundle`). A cycle that finds the same version already
+  staged builds nothing. No restart is scheduled, queued or retried; the new version starts at the next restart or
   stop a person chooses, or at a fresh start. The same note carries two other
   causes: the approved in-app wheel (`updates_step_up`
   stages it and marks `REASON_STAGED`; it never restarts), and the stale-asset
