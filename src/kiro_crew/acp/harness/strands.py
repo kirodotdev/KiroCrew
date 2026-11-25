@@ -328,7 +328,9 @@ def strands_installed_version(strands_bin: str) -> str:
     Read from ``@strands-agents/cli``'s own ``package.json``, never by running it. On
     POSIX the bin link resolves into the package; on Windows the bin is a
     ``strands.cmd`` shim in the npm prefix, with the package under that directory's
-    ``node_modules``. Blocking (reads files).
+    ``node_modules``. A Volta shim sits in Volta's ``bin`` folder, and the install is
+    the npm prefix Volta keeps beside it under ``tools/image/packages``. Blocking
+    (reads files).
     """
     try:
         here = Path(os.path.realpath(strands_bin)).parent
@@ -337,6 +339,13 @@ def strands_installed_version(strands_bin: str) -> str:
     roots = [here / "node_modules"]
     if here.name == ".bin":
         roots.append(here.parent)
+    # The shim's own folder, unresolved: a POSIX Volta shim links to Volta's
+    # ``volta-shim``, which need not live in the Volta home.
+    shims = Path(strands_bin).parent
+    if shims.name == "bin":
+        image = shims.parent / "tools" / "image" / "packages" / _STRANDS_NPM_PACKAGE
+        # npm's global layout in that prefix: node_modules on Windows, lib/ on POSIX.
+        roots += [image / "node_modules", image / "lib" / "node_modules"]
     candidates = [root / _STRANDS_NPM_PACKAGE / "package.json" for root in roots]
     candidates += [
         directory / "package.json"
