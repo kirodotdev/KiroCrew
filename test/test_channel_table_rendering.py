@@ -182,6 +182,8 @@ class FakeDiscordClient:
             btn.get("label", "")
             for row in (rows[-1] if rows else [])
             for btn in row.get("components", [])
+            # Buttons only: two or more choices also get a select menu row.
+            if btn.get("type") == 2
         ]
 
 

@@ -348,7 +348,8 @@ class TestDiscordRenderer:
         assert all("option-action" not in t for t in _discord_texts(cli))
         comps = cli.final_components()
         assert comps is not None
-        assert [b["label"] for row in comps for b in row["components"]] == ["Yes", "No"]
+        buttons = [b for row in comps for b in row["components"] if b["type"] == 2]
+        assert [b["label"] for b in buttons] == ["Yes", "No"]
 
     @pytest.mark.asyncio
     async def test_quoted_tag_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:

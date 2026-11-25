@@ -1,5 +1,6 @@
 """Every Discord interaction: a button press (a tool approval, a session pick, a model
-pick, an ``[OPTIONS:]`` choice or a reply's Stop), a registered slash command, and the
+pick, an ``[OPTIONS:]`` choice or a reply's Stop), an ``[OPTIONS:]`` select, a
+registered slash command, and the
 type-ahead on a slash command's option (``_on_autocomplete_interaction``).
 
 ``on_interaction`` authorizes, acknowledges and routes each press, and re-reads the
@@ -31,11 +32,15 @@ from typing import TYPE_CHECKING
 from kiro_crew.agent_switch_command import pickable_agent_names
 from kiro_crew.discord.commands import build_help_text
 from kiro_crew.discord.renderer import (
+    SELECT_ANSWERED,
+    SELECT_INVALID,
+    SELECT_PREFIX,
     STOP_PREFIX,
     DiscordApprovalDecider,
     _redact_transformed,
     full_choice_text,
     stop_turn_target,
+    take_option_select,
 )
 from kiro_crew.discord.session_resume import SUGGESTION_KEY_PREFIX
 from kiro_crew.discord.transport_dispatch_commands import _REPLY_COMMANDS
@@ -71,6 +76,15 @@ _UNTAGGED_OPTIONS_REFUSAL = (
 _STOP_FINISHED_NOTICE = "⏹ This reply already finished, so nothing was stopped."
 #: Discord's EPHEMERAL message flag: only the presser sees the follow-up.
 _EPHEMERAL_FLAG = 1 << 6
+
+#: Answer to a select press whose prompt is not live: nothing was sent.
+_SELECT_STALE_NOTICE = (
+    "⌛ These choices are no longer active (already answered, or the conversation "
+    "moved on), so nothing was sent. Type your answer instead."
+)
+#: Longest select-answer echo, inside one 2000-character Discord message. Only
+#: the echo is cut; the turn gets every pick in full.
+_ECHO_MAX_CHARS = 1900
 
 
 async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> None:
@@ -399,6 +413,51 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             components=[],
             destination=itx.channel_id,
             caller_permitted=lambda: self._authorized(itx.user_id),
+        )
+        return
+
+    # [OPTIONS:] select: "sel:<nonce>:<menu>", carrying the picked indices in
+    # `values`. It reached here through every gate an `opt:` button press passes,
+    # and the turn it starts goes through the same `origin_tag` routing check.
+    # The nonce names the exact list the answer offered: the picks are checked
+    # against that menu's slice of it (offered indices, no repeats, one up to the
+    # menu's size) and answer with its full text, never with anything the client
+    # sent. A prompt answers once, and a newer prompt or turn on the session
+    # retires it, so an older or replayed menu sends nothing.
+    if data.startswith(SELECT_PREFIX):
+        outcome, origin_tag, picks = take_option_select(data, itx.values)
+        if outcome == SELECT_INVALID:
+            await self.client.send_message(
+                itx.channel_id, "⚠️ Couldn't read that choice — please type it instead."
+            )
+            return
+        # Retire the menus but KEEP the answer text, as a button press does.
+        await self.client.edit_message_components(itx.channel_id, itx.message_id, [])
+        if outcome != SELECT_ANSWERED:
+            await self.client.send_message(itx.channel_id, _SELECT_STALE_NOTICE)
+            return
+        if not origin_tag:
+            await self.client.send_message(itx.channel_id, _UNTAGGED_OPTIONS_REFUSAL)
+            return
+        # Several picks answer as one message, joined the way Slack joins them.
+        answer = ", ".join(picks)
+        echo = _redact_transformed(f"> {answer}")
+        if len(echo) > _ECHO_MAX_CHARS:
+            echo = echo[: _ECHO_MAX_CHARS - 1] + "…"
+        await self.client.send_message(itx.channel_id, echo)
+        await self.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id=itx.user_id,
+                conversation_id=itx.channel_id,
+                text=answer,
+                thread_id=thread_id or None,
+                person_origin=True,
+            ),
+            # Model-authored text, so turn content and never a command: the
+            # same rule and reason as the `opt:` press below.
+            interpret_commands=False,
+            origin_tag=origin_tag,
         )
         return
 

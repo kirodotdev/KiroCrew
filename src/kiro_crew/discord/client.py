@@ -1366,6 +1366,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _INTERACTION_AUTOCOMPLETE,
         _INTERACTION_MESSAGE_COMPONENT,
         _MAX_HEARTBEAT_SECS,
+        _MAX_SELECT_VALUES,
         _MIN_HEALTHY_CONN_SECS,
         _MIN_HEARTBEAT_SECS,
         _OP_DISPATCH,
@@ -1384,6 +1385,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _focused_option,
         _heartbeat_interval_secs,
         _reply_message_id,
+        _select_values,
     )
     from kiro_crew.discord.client_recheck import (  # noqa: F401
         _REVOKED_DETAIL,

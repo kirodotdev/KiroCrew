@@ -156,6 +156,10 @@ class DiscordInteraction:
     #: The option the user is typing into (``kind == 4`` only), or "". Its
     #: partial text is that option's entry in ``options``.
     focused_option: str = ""
+    #: The values a string-select press picked (``kind == 3`` only), in Discord's
+    #: order, or empty for a button. Data the dispatcher checks against what the
+    #: menu offered (``renderer_components.take_option_select``), never text.
+    values: list[str] = field(default_factory=list)
 
     @property
     def is_command(self) -> bool:
@@ -483,6 +487,7 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
             command_name=str(data.get("name", "") or "").lower(),
             options=_command_options(data.get("options")),
             focused_option=_focused_option(data.get("options")),
+            values=_select_values(data.get("values")),
         )
         task = asyncio.create_task(self._invoke_interaction(interaction))
         self._handler_tasks.add(task)
@@ -536,6 +541,23 @@ def _focused_option(raw: Any) -> str:
         if isinstance(opt, dict) and opt.get("focused") is True:
             return str(opt.get("name", "") or "")
     return ""
+
+
+#: Discord's ceiling on the values one string select can return.
+_MAX_SELECT_VALUES = 25
+
+
+def _select_values(raw: Any) -> list[str]:
+    """A string-select press's ``data.values``, or ``[]`` when malformed.
+
+    All or nothing: a list that is too long or holds a non-string is dropped
+    whole rather than trimmed, so the picks are never a subset nobody chose.
+    """
+    if not isinstance(raw, list) or len(raw) > _MAX_SELECT_VALUES:
+        return []
+    if not all(isinstance(value, str) for value in raw):
+        return []
+    return list(raw)
 
 
 def _find_button_label(components: list[dict], custom_id: str) -> str:

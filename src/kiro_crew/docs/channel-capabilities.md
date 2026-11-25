@@ -22,7 +22,7 @@ platform could support it.
 | Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
-| Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
+| Tappable choices per prompt | 10 | 125 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
 | Approval prompt waits | 600s (config) | 600s (config) | 300s | 300s | 300s | — | — | — | 300s | — |
 | Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -60,7 +60,7 @@ see [Choices on a channel with no buttons](#choices-on-a-channel-with-no-buttons
 tool approval or a choice list — a Block Kit block on Slack, an Adaptive Card on
 Teams and Webex, an inline keyboard on Telegram. It is not the same question
 as buttons: Discord shows ❌ here and still renders Approve/Deny buttons and
-tappable `[OPTIONS:]` rows, which is what its `25` in the row below means.
+tappable `[OPTIONS:]` buttons and menus, which is what its `125` in the row below means.
 
 **Dashboard link is two-way** means connecting the channel from the dashboard
 marks the binding as an inbound target, so your reply in the channel continues

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -275,7 +276,14 @@ class TestTimingFooterSwitch:
         off = await _run_turn(["the answer [OPTIONS: Yes | No]"], footer=False)
         assert not any("Finished in" in text for _, text, _ in off)
         assert off[-1][2], "the choice buttons still ride the reply"
-        assert off == [(kind, _strip_footer(text), comps) for kind, text, comps in on]
+
+        def _same_menu(comps: Any) -> Any:
+            # A select's custom_id carries a random per-prompt nonce.
+            return re.sub(r"sel:[0-9a-f]+:", "sel:<nonce>:", repr(comps))
+
+        assert [(kind, text, _same_menu(comps)) for kind, text, comps in off] == [
+            (kind, _strip_footer(text), _same_menu(comps)) for kind, text, comps in on
+        ]
 
     @pytest.mark.asyncio
     async def test_off_a_split_reply_splits_at_the_same_places(self) -> None:

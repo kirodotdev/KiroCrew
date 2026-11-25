@@ -377,7 +377,11 @@ running turn or `!queue` to answer it afterward. The reply being written carries
 goes away when the reply finishes, and a press on an old one stops nothing. The button
 arrives with the reply's first text or tool line, so while the agent is still thinking
 before either, send `!stop`. `[OPTIONS:]` choices render as
-buttons, and interactive tool approvals render as Approve/Deny buttons under
+buttons, with a "Choose several…" menu under them that sends every choice you
+tick as one answer. A list of more than 20 choices shows as menus of 25 instead
+(up to 125), and you can tick one or several in a menu. A menu answers once and
+only for the latest question, so an older one, or one from before a restart,
+sends nothing. Interactive tool approvals render as Approve/Deny buttons under
 the tool's name, its MCP server when it has one, its stated purpose, and its
 input, each shown as code so Discord formatting in them never renders.
 Credentials are redacted from what the prompt shows. A field is shown only if
