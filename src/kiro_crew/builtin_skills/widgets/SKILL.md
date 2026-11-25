@@ -133,10 +133,28 @@ renders in the same themed iframe:
 </mcwidget>
 ```
 
-The opening tag takes two attributes: `title=` and `slug=`. A `slug=` binds the
+The opening tag takes three attributes: `title=`, `slug=` and `use=`. A `slug=` binds the
 impression to an artifact that already exists and suppresses registration; omit
-it for new content.
+it for new content. `use=` draws an app widget, below.
 Put `<mcwidget>` on its own line after a blank line, never glued to a closing ``` fence.
+
+## App widgets (`use=`)
+
+An installed app can ship a widget that any chat draws from data alone. Name it
+with `use="<app>:<widget id>"` and write ONE JSON object as the body, no HTML:
+
+```html
+<mcwidget use="issue-cards:issue-card" title="Issue #7">
+{"number": 7, "title": "Example", "state": "open"}
+</mcwidget>
+```
+
+- Read the app's own skill first: it names each widget's `use` value and the
+  payload fields. Never guess a `use` value or a field.
+- The app draws the view, so the theme and layout rules below do not apply to it.
+- The body is at most 16 KB. An app widget is not saved as an artifact.
+- A reader without the app, or with a payload that is not one JSON object, sees
+  a card that says why and shows the data.
 
 ## Every widget is already an artifact
 

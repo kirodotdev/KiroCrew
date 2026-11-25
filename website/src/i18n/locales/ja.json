@@ -11348,6 +11348,16 @@
       "run_unanswered": "ターミナルが応答しなかったため、お使いのコンピューターのターミナルアプリにコピーしてください。",
       "title": "ご自身で実行してください"
     },
+    "appWidget": {
+      "frame_label": "{{title}}（{{app}} より）",
+      "reason_bad_use": "このウィジェットは「{{use}}」を指定していますが、これはアプリのウィジェット名ではありません。",
+      "reason_no_app": "このウィジェットには {{app}} アプリが必要ですが、インストールされていないかオンになっていません。",
+      "reason_no_widget": "{{app}} アプリには「{{use}}」という名前のウィジェットがありません。",
+      "reason_too_large": "このウィジェットのデータは大きすぎて表示できません。",
+      "reason_not_object": "このウィジェットのデータが無効なため、表示できません。",
+      "reason_failed": "{{app}} アプリはこのウィジェットを表示できませんでした。",
+      "show_data": "ウィジェットのデータを表示"
+    },
     "messageActions": {
       "popover_label": "{{app}}：{{title}}",
       "item_label": "{{title}}（{{app}}）",

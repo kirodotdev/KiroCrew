@@ -119,6 +119,10 @@ class FramePoint:
     #: JavaScript that defines ``const POINT = { ctx, accepts, missing, message }``.
     script: str
     admit: Admit | None = None
+    #: The frame gets no capability (so no ``ctx.fetch``) and loads no network image.
+    #: For a point whose frame is handed text the agent wrote: an image URL built
+    #: from that text would carry it to any host.
+    offline: bool = False
 
 
 _POINTS: dict[str, FramePoint] = {}
@@ -126,7 +130,12 @@ _signers: dict[str, PathTokenSigner] = {}
 
 
 def register_frame_point(
-    name: str, resolve: Resolver, script: str, admit: Admit | None = None
+    name: str,
+    resolve: Resolver,
+    script: str,
+    admit: Admit | None = None,
+    *,
+    offline: bool = False,
 ) -> None:
     """Register a point's resolver, frame script and optional per-mint admission.
 
@@ -134,7 +143,9 @@ def register_frame_point(
     """
     if not POINT_RE.fullmatch(name):
         raise ValueError(f"not a point name: {name!r}")
-    _POINTS[name] = FramePoint(name=name, resolve=resolve, script=script, admit=admit)
+    _POINTS[name] = FramePoint(
+        name=name, resolve=resolve, script=script, admit=admit, offline=offline
+    )
 
 
 def _point_admits(name: str, point: str, point_id: str, query: Mapping[str, str]) -> bool:
@@ -290,12 +301,16 @@ async def handle_app_frame_mint(request: web.Request) -> web.Response:
         frame_id = _secrets.token_urlsafe(12)
         renewal = False
     _audit("app_frame_mint", "granted", name, point=key)
+    registered = _POINTS[point]
     token = _mint_frame_token(request, name, client, frame_id, point, point_id)
-    capability = _signer("fetch").mint(name, client, frame_id, point, point_id)
+    capability: str | None = None
+    if not registered.offline:
+        signed = _signer("fetch").mint(name, client, frame_id, point, point_id)
+        capability = f"{frame_id}~{point}~{point_id}~{signed}"
     body: dict[str, object] = {
         "frame": f"{FRAME_PREFIX}{name}/{point}/{point_id}/{frame_id}/{token}",
         "frameId": frame_id,
-        "capability": f"{frame_id}~{point}~{point_id}~{capability}",
+        "capability": capability,
         "ttl": _CAPABILITY_TTL_SECS,
     }
     if not renewal:
@@ -305,9 +320,13 @@ async def handle_app_frame_mint(request: web.Request) -> web.Response:
         # `/app-frame/...` by URL gets the proxy's login answer instead. This
         # response is the dashboard's own request, made on the person's session
         # after the same checks the frame route makes (resolved, granted, admitted).
-        registered = _POINTS[point]
         body["document"] = _frame_html(
-            found[2], found[0], _secrets.token_urlsafe(18), registered.script, srcdoc=True
+            found[2],
+            found[0],
+            _secrets.token_urlsafe(18),
+            registered.script,
+            srcdoc=True,
+            offline=registered.offline,
         )
     return web.json_response(body, headers={"Cache-Control": "no-store"})
 
@@ -645,7 +664,9 @@ function invocationControls(invocationId) {
 SRCDOC_SELF = "__kirocrew_frame_self__"
 
 
-def _frame_html(name: str, entry: str, nonce: str, script: str, *, srcdoc: bool = False) -> str:
+def _frame_html(
+    name: str, entry: str, nonce: str, script: str, *, srcdoc: bool = False, offline: bool = False
+) -> str:
     config: dict[str, object] = {
         "app": name,
         "entry": f"/apps/{name}/ui/{entry}",
@@ -659,7 +680,8 @@ def _frame_html(name: str, entry: str, nonce: str, script: str, *, srcdoc: bool 
         # as `frame_csp` (sandboxing comes from the iframe's own attribute).
         config["srcdoc"] = True
         head_policy = (
-            f'<meta http-equiv="Content-Security-Policy" content="{frame_meta_csp(nonce)}">'
+            '<meta http-equiv="Content-Security-Policy" '
+            f'content="{frame_meta_csp(nonce, offline=offline)}">'
         )
     # Any document may run its module inline (the relay fallback), with this nonce.
     config["nonce"] = nonce
@@ -676,7 +698,7 @@ def _frame_html(name: str, entry: str, nonce: str, script: str, *, srcdoc: bool 
     )
 
 
-def frame_meta_csp(nonce: str) -> str:
+def frame_meta_csp(nonce: str, *, offline: bool = False) -> str:
     """`frame_csp` as a srcdoc document's ``<meta>`` policy.
 
     The same fetch directives, with ``'self'`` as :data:`SRCDOC_SELF` (the
@@ -687,13 +709,13 @@ def frame_meta_csp(nonce: str) -> str:
     """
     kept = [
         d.strip()
-        for d in frame_csp(nonce, "'none'").split(";")
+        for d in frame_csp(nonce, "'none'", offline=offline).split(";")
         if d.strip() and d.split()[0] not in ("sandbox", "frame-ancestors")
     ]
     return "; ".join(kept).replace("'self'", SRCDOC_SELF)
 
 
-def frame_csp(nonce: str, frame_ancestors: str) -> str:
+def frame_csp(nonce: str, frame_ancestors: str, *, offline: bool = False) -> str:
     """The frame document's policy. ``sandbox allow-scripts`` is the boundary.
 
     ``sandbox`` with ``allow-scripts`` and nothing else gives the document an opaque
@@ -702,14 +724,17 @@ def frame_csp(nonce: str, frame_ancestors: str) -> str:
     module (``script-src 'self'`` plus the bootstrap's nonce) and its network on the
     gateway (``connect-src 'self'``); ``'self'`` is resolved by the browser against
     the frame's real URL, so it stays right behind a tunnel that rewrites Host.
-    Images may come from any https host, as a card shows avatars and icons.
+    Images may come from any https host, as a card shows avatars and icons, except
+    in an ``offline`` point's frame (``FramePoint.offline``), which loads images only
+    from the gateway and from ``data:`` and ``blob:`` URLs.
     """
+    images = "'self' data: blob:" if offline else "'self' https: data: blob:"
     return (
         "sandbox allow-scripts; "
         "default-src 'none'; "
         f"script-src 'self' 'nonce-{nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' https: data: blob:; "
+        f"img-src {images}; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
         "media-src 'none'; worker-src 'none'; frame-src 'none'; child-src 'none'; "
@@ -754,7 +779,9 @@ async def handle_app_frame(request: web.Request) -> web.Response:
     # The embedding parent (an Instances embed) comes from the signed token, not
     # from a cookie this credentialless request never carries.
     resp.headers["Content-Security-Policy"] = frame_csp(
-        nonce, frame_ancestors_value(parent_port_frame_ancestors(parent) if parent else [])
+        nonce,
+        frame_ancestors_value(parent_port_frame_ancestors(parent) if parent else []),
+        offline=registered.offline,
     )
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Cache-Control"] = "no-store"
@@ -1108,6 +1135,18 @@ register_frame_point(
     resolve_selection_action,
     SELECTION_ACTION_SCRIPT,
     admit_selection_action,
+)
+
+from kiro_crew.apps import widget_frame as _widget_frame  # noqa: E402
+
+
+def _resolve_widget(name: str, widget_id: str) -> FrameEntry | None:
+    # Through the module, so a test that stands in for the resolver is what every route reads.
+    return _widget_frame.resolve_widget(name, widget_id)
+
+
+register_frame_point(
+    _widget_frame.WIDGETS_POINT, _resolve_widget, _widget_frame.WIDGET_SCRIPT, offline=True
 )
 
 

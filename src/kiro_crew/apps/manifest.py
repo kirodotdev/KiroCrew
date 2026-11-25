@@ -214,6 +214,17 @@ from kiro_crew.apps.manifest_session_create import (  # noqa: F401
     SessionCreateItemsConfig,
     _session_create_len,
 )
+from kiro_crew.apps.manifest_widgets import (  # noqa: F401
+    _WIDGET_KEYS,
+    MAX_WIDGET_DESCRIPTION,
+    MAX_WIDGET_ENTRY,
+    MAX_WIDGET_TITLE,
+    MAX_WIDGETS_PER_APP,
+    WIDGET_ID_RE,
+    WidgetConfig,
+    WidgetsConfig,
+    _utf16_len,
+)
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
@@ -231,6 +242,7 @@ from kiro_crew.user_json import loads_user_json
 #   ``manifest_sections`` -- the typed ``app.json`` blocks other than ``contributes``
 #   ``manifest_contributes`` -- the ``contributes`` block and its caps
 #   ``manifest_session_create`` -- the ``contributes.sessionCreateItems`` rows
+#   ``manifest_widgets`` -- the ``contributes.widgets`` views an agent draws in a chat
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -714,6 +726,11 @@ class AppManifest:
                 report_path(
                     refusal, f"contributes.selectionActions entry {refusal}: {selection.entry!r}"
                 )
+        # A widget entry is imported by the same frame bootstrap.
+        for widget in self.contributes.widgets.widgets:
+            refusal = path_refusal(widget.entry)
+            if refusal:
+                report_path(refusal, f"contributes.widgets entry {refusal}: {widget.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -988,6 +1005,8 @@ class AppManifest:
             or self.contributes.selectionActions
             # A Sessions New row's `endpoint` decides which project a new session opens on.
             or self.contributes.sessionCreateItems.items
+            # A widget `entry` is an ESM module the frame imports, like a composer action's.
+            or self.contributes.widgets.widgets
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further

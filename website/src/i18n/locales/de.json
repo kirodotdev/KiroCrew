@@ -11608,6 +11608,16 @@
       "run_unanswered": "Das Terminal hat nicht geantwortet, also kopiere ihn in die Terminal-App auf deinem Computer.",
       "title": "Selbst ausführen"
     },
+    "appWidget": {
+      "frame_label": "{{title}}, von {{app}}",
+      "reason_bad_use": "Dieses Widget nennt „{{use}}“, das ist kein App-Widget-Name.",
+      "reason_no_app": "Dieses Widget braucht die App {{app}}, die nicht installiert oder nicht aktiviert ist.",
+      "reason_no_widget": "Die App {{app}} hat kein Widget namens „{{use}}“.",
+      "reason_too_large": "Die Daten dieses Widgets sind zu groß zum Anzeigen.",
+      "reason_not_object": "Die Daten dieses Widgets sind ungültig, daher kann es nicht angezeigt werden.",
+      "reason_failed": "Die App {{app}} konnte dieses Widget nicht anzeigen.",
+      "show_data": "Daten des Widgets anzeigen"
+    },
     "messageActions": {
       "popover_label": "{{app}}: {{title}}",
       "item_label": "{{title}}, von {{app}}",

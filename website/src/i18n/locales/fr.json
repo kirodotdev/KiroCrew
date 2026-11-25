@@ -11868,6 +11868,16 @@
       "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
       "title": "À lancer toi-même"
     },
+    "appWidget": {
+      "frame_label": "{{title}}, de {{app}}",
+      "reason_bad_use": "Ce widget indique « {{use}} », qui n’est pas un nom de widget d’app.",
+      "reason_no_app": "Ce widget a besoin de l’app {{app}}, qui n’est pas installée ou pas activée.",
+      "reason_no_widget": "L’app {{app}} n’a aucun widget nommé « {{use}} ».",
+      "reason_too_large": "Les données de ce widget sont trop volumineuses pour être affichées.",
+      "reason_not_object": "Les données de ce widget ne sont pas valides, il ne peut donc pas être affiché.",
+      "reason_failed": "L’app {{app}} n’a pas pu afficher ce widget.",
+      "show_data": "Afficher les données du widget"
+    },
     "messageActions": {
       "popover_label": "{{app}} : {{title}}",
       "item_label": "{{title}}, de {{app}}",

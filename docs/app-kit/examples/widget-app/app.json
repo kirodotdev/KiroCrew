@@ -1,0 +1,19 @@
+{
+  "name": "issue-cards",
+  "version": "0.1.0",
+  "displayName": "Issue Cards",
+  "description": "Example app: a widget any chat can draw for one GitHub issue",
+  "author": "kirocrew",
+  "skills": ["skills/issue-card"],
+  "tags": ["example"],
+  "contributes": {
+    "widgets": [
+      {
+        "id": "issue-card",
+        "title": "Issue card",
+        "description": "One GitHub issue: number, title, state, labels and url.",
+        "entry": "widgets/issue-card.mjs"
+      }
+    ]
+  }
+}

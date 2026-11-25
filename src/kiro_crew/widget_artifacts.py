@@ -83,6 +83,10 @@ def register_widgets(text: str, message_ts: str, session_key: str) -> list[str]:
         if w.slug:
             # Re-emission of an existing artifact — not a new one.
             continue
+        if w.use:
+            # An app widget's body is the JSON payload its app draws, not a page:
+            # stored alone, the artifact would show raw JSON.
+            continue
         if not w.content.strip():
             # An empty widget body has nothing to persist and would fail
             # content validation; skip rather than log a failure per turn.

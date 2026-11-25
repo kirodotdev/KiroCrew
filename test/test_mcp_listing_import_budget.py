@@ -140,11 +140,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: config validation checks the schema with the in-house
 #: ``kiro_crew.config.schema_check`` instead of importing ``jsonschema`` (66 modules,
 #: none of them ``kiro_crew``); that one file is the whole rise.
+#: Raised by 1 for each server: the ``contributes.widgets`` block lives in its own
+#: stdlib-only ``kiro_crew.apps.manifest_widgets``, which ``manifest_contributes`` imports
+#: because the ``Contributes`` dataclass needs ``WidgetsConfig`` at import, as with
+#: ``manifest_memory_providers`` above; that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 507,
-    "mcp-cron": 373,
-    "mcp-guide": 367,
-    "mcp-mate": 370,
+    "mcp-core": 508,
+    "mcp-cron": 374,
+    "mcp-guide": 368,
+    "mcp-mate": 371,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

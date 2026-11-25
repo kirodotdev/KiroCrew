@@ -120,6 +120,7 @@ BROWSER_ONLY_CONTRIBUTIONS = frozenset(
         "linkOpen",
         "composerActions",
         "selectionActions",
+        "widgets",
     }
 )
 

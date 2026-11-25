@@ -131,6 +131,9 @@ class ParsedWidget:
     ``truncated`` marks a widget whose ``</mcwidget>`` never arrived. The
     frontend still renders it on final text, so it is registered like any other,
     but the flag lets callers treat a half-written body differently if needed.
+
+    ``use`` is the ``use=`` attribute of an app widget (``<app>:<id>``), else
+    ``""``. Its body is a JSON payload the app's frame draws, not a page.
     """
 
     index: int
@@ -138,6 +141,7 @@ class ParsedWidget:
     title: str
     slug: str
     truncated: bool = False
+    use: str = ""
     #: ``(start, end)`` character offsets of the whole span in ``raw``, from
     #: ``<mcwidget`` to just past ``</mcwidget>`` (or the end of input when
     #: ``truncated``), so a reader can drop the span and keep the prose around
@@ -186,16 +190,19 @@ def mask_inline_code(line: str) -> str:
     return "".join(out)
 
 
-def _parse_attrs(attr_str: str) -> tuple[str, str]:
-    """Return ``(title, slug)`` from a captured attribute run."""
+def _parse_attrs(attr_str: str) -> tuple[str, str, str]:
+    """Return ``(title, slug, use)`` from a captured attribute run."""
     title = ""
     slug = ""
+    use = ""
     for m in _WIDGET_ATTR_RE.finditer(attr_str or ""):
         if m.group(1) == "title":
             title = m.group(2)
         elif m.group(1) == "slug":
             slug = m.group(2)
-    return title, slug
+        elif m.group(1) == "use":
+            use = m.group(2)
+    return title, slug, use
 
 
 def parse_widgets(raw: str) -> List[ParsedWidget]:
@@ -214,6 +221,7 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
     widget_buf: List[str] = []
     widget_title = ""
     widget_slug = ""
+    widget_use = ""
     widget_fence_tick = ""
     fence_tick = ""
     fence_len = 0
@@ -224,7 +232,7 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
     widget_at = 0
 
     def flush_widget(end: int, truncated: bool = False) -> None:
-        nonlocal widget_buf, widget_title, widget_slug, widget_fence_tick
+        nonlocal widget_buf, widget_title, widget_slug, widget_use, widget_fence_tick
         widgets.append(
             ParsedWidget(
                 index=len(widgets),
@@ -235,12 +243,14 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
                 title=widget_title or "Widget",
                 slug=widget_slug,
                 truncated=truncated,
+                use=widget_use,
                 span=(widget_at, end),
             )
         )
         widget_buf = []
         widget_title = ""
         widget_slug = ""
+        widget_use = ""
         widget_fence_tick = ""
 
     for line in lines:
@@ -250,7 +260,7 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
             masked = mask_inline_code(line)
             w_open = _WIDGET_OPEN_RE.search(masked)
             if w_open:
-                widget_title, widget_slug = _parse_attrs(w_open.group(1) or "")
+                widget_title, widget_slug, widget_use = _parse_attrs(w_open.group(1) or "")
                 widget_at = here + w_open.start()
                 after_tag = line[w_open.end() :]
                 # Close tag on the same line -> single-line widget.
