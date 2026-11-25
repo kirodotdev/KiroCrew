@@ -4,13 +4,13 @@
  */
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Search, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
 import { Btn, IconButton, Input, PanelSectionHeader, Slider } from '../../../components/ui'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { compareText, fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRecordFilters, MemoryRecordSort } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
-import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView } from './memoryListView'
+import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
 
 const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
 const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
@@ -218,7 +218,7 @@ export function FilterChip({ group, value, tone, chip, title, children }: { grou
 }
 
 /** The chips under a row's text: what it is, how sure, where from, when. */
-export function RecordMeta({ row, sort, chip }: { row: MemoryRecord; sort: MemoryRecordSort; chip?: ChipFilter }) {
+export function RecordMeta({ row, sort, chip, meaning = false }: { row: MemoryRecord; sort: MemoryRecordSort; chip?: ChipFilter; meaning?: boolean }) {
   const { t } = useTranslation()
   const lesson = row.kind === 'directive' ? lessonFacts(row) : null
   const score = typeof row.importance === 'number' ? row.importance : null
@@ -229,7 +229,7 @@ export function RecordMeta({ row, sort, chip }: { row: MemoryRecord; sort: Memor
     {lesson && lesson.applies !== 'unstated' && <FilterChip group="applies" value={lesson.applies} tone={`px-2 ${lesson.applies === 'always' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`} chip={chip}>{facetLabel('applies', lesson.applies)}</FilterChip>}
     {lesson?.scope === SCOPE_UNUSABLE && <FilterChip group="scope" value={SCOPE_UNUSABLE} tone="bg-warn-subtle px-2 text-warn-text" chip={chip} title={t('pages.overview.memoryTab.scope_unusable_hint')}><AlertTriangle className="lucide-inline" aria-hidden="true" />{facetLabel('scope', SCOPE_UNUSABLE)}</FilterChip>}
     {lesson && lesson.scope && lesson.scope !== SCOPE_UNUSABLE && <FilterChip group="scope" value={lesson.scope} tone="bg-bg-hover px-2 text-muted" chip={chip}><Folder className="lucide-inline" aria-hidden="true" /><span className="truncate font-mono">{lesson.scope}</span></FilterChip>}
-    {typeof row.match === 'number' && <span className={`${CHIP} bg-bg-hover px-2 text-muted`} title={t('memoryPage.match_hint')}><span className="tabular-nums">{t('memoryPage.match_value', { value: fmtScore(row.match) })}</span></span>}
+    {typeof row.match === 'number' && <span className={`${CHIP} px-2 ${meaning ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`} title={t(meaning ? 'memoryPage.meaning_match_hint' : 'memoryPage.match_hint')}><span className="tabular-nums">{t('memoryPage.match_value', { value: fmtScore(row.match) })}</span></span>}
     {row.kind === 'episode' && recordTags(row).map(tag => <FilterChip key={tag} group="tag" value={tag} tone="bg-bg-hover px-2 text-muted" chip={chip}>#{tag}</FilterChip>)}
     {score !== null && <ScoreChip value={score} label={row.kind === 'episode' ? 'importance' : 'confidence'} />}
     {/* The facet counts spell a blank source as `unknown` (memory_record_facets.SOURCE_UNKNOWN). */}
@@ -239,8 +239,8 @@ export function RecordMeta({ row, sort, chip }: { row: MemoryRecord; sort: Memor
 }
 
 /** One record in the list: text, chips, key, and its actions menu. */
-export function RecordRow({ row, sort, selecting, selected, selectDisabled, open, focus, chip, onSelect, onOpen, onEdit, onForget, focusRef }: {
-  row: MemoryRecord; sort: MemoryRecordSort; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean; chip?: ChipFilter
+export function RecordRow({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, chip, onSelect, onOpen, onEdit, onForget, focusRef }: {
+  row: MemoryRecord; sort: MemoryRecordSort; meaning?: boolean; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean; chip?: ChipFilter
   onSelect: () => void; onOpen: () => void; onEdit: () => void; onForget: () => void
   focusRef?: React.Ref<HTMLLIElement>
 }) {
@@ -262,7 +262,7 @@ export function RecordRow({ row, sort, selecting, selected, selectDisabled, open
       </button>
       {negative && <p className="line-clamp-2 text-[13px] leading-5 text-muted">{t('memoryPage.lesson_dont', { text: negative })}</p>}
       {!!row.metadata?.email_addresses?.length && <p className="flex flex-wrap gap-x-3 text-[13px] leading-5 text-muted">{row.metadata.email_addresses.slice(0, 3).map(email => <span key={email} className="inline-flex min-w-0 items-start gap-1 break-all"><Mail className="lucide-inline shrink-0" aria-hidden="true" />{email}</span>)}</p>}
-      <RecordMeta row={row} sort={sort} chip={chip} />
+      <RecordMeta row={row} sort={sort} chip={chip} meaning={meaning} />
       {row.key && <p className="truncate font-mono text-[11px] text-muted" title={row.key}>{row.key}</p>}
       {pending > 0 && <Btn className="mt-1 min-h-11" onClick={onOpen}><History className="lucide-inline" />{t('memoryEditing.review_proposals', { count: fmtNumber(pending) })}</Btn>}
     </div>
@@ -277,3 +277,31 @@ export function RecordRow({ row, sort, selecting, selected, selectDisabled, open
   </li>
 }
 
+
+/** Words or Meaning: how the one search box reads what is typed in it. */
+export function SearchModeSwitch({ mode, onChange, wide = false }: { mode: SearchMode; onChange: (mode: SearchMode) => void; wide?: boolean }) {
+  const { t } = useTranslation()
+  return <div role="radiogroup" aria-label={t('memoryPage.search_by')} className={`flex rounded-lg bg-bg-hover p-0.5 ${wide ? 'h-11 w-full' : 'h-8'}`}>
+    {(['words', 'meaning'] as const).map(key => {
+      const on = key === mode
+      return <button key={key} type="button" role="radio" aria-checked={on} onClick={() => onChange(key)} className={`flex flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-md px-2.5 text-[12px] focus-ring ${on ? 'bg-card text-text shadow-sm' : 'text-muted'}`}>
+        {key === 'meaning' && <Sparkles className="lucide-inline" aria-hidden="true" />}{t(key === 'words' ? 'memoryPage.mode_words' : 'memoryPage.mode_meaning')}
+      </button>
+    })}
+  </div>
+}
+
+/** Saved topics: one click runs that search by meaning; × removes it. Save shows in Meaning mode. */
+export function SavedTopics({ topics, query, canSave, onRun, onRemove, onSave }: { topics: string[]; query: string; canSave: boolean; onRun: (topic: string) => void; onRemove: (topic: string) => void; onSave: () => void }) {
+  const { t } = useTranslation()
+  const showSave = canSave && !!query && !topics.includes(query)
+  if (!topics.length && !showSave) return null
+  return <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0" aria-label={t('memoryPage.topics')} role="group">
+    {topics.length > 0 && <span className="mr-1 text-[12px] text-muted">{t('memoryPage.topics')}</span>}
+    {topics.map(topic => <span key={topic} className="flex min-h-11 items-center sm:min-h-8"><span className="inline-flex h-8 max-w-[240px] items-center rounded-full border border-border bg-card text-[13px] text-text">
+      <button type="button" className="truncate pl-3 pr-1.5 focus-ring" title={topic} onClick={() => onRun(topic)}>{topic}</button>
+      <button type="button" aria-label={t('memoryPage.remove_topic', { topic })} className="flex h-full w-9 shrink-0 items-center justify-center text-muted focus-ring sm:w-7" onClick={() => onRemove(topic)}><X className="lucide-inline" aria-hidden="true" /></button>
+    </span></span>)}
+    {showSave && <Btn className="min-h-11 border-transparent text-accent sm:min-h-8" onClick={onSave}><Plus className="lucide-inline" aria-hidden="true" />{t('memoryPage.save_topic', { topic: query })}</Btn>}
+  </div>
+}

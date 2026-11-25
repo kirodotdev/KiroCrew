@@ -24016,7 +24016,19 @@
     "embedded_count": "已嵌入 {{embedded}} / {{total}}",
     "failures_in_global": "重复失败会在所有聊天中统计，从中起草的经验保存在全局记忆里。",
     "open_global_failures": "在全局记忆中查看失败",
-    "embedded_read_failed": "无法读取已嵌入的记忆数量"
+    "embedded_read_failed": "无法读取已嵌入的记忆数量",
+    "mode_words": "字词",
+    "mode_meaning": "含义",
+    "search_by": "搜索方式",
+    "topics": "话题",
+    "save_topic": "保存“{{topic}}”",
+    "remove_topic": "移除话题：{{topic}}",
+    "weaker_hidden": "已隐藏较弱的匹配：{{count}}",
+    "show_weaker": "显示它们",
+    "meaning_placeholder": "描述一个话题",
+    "meaning_match_hint": "按含义与话题的接近程度",
+    "meaning_unavailable": "暂时无法按含义搜索",
+    "search_words_instead": "按字词搜索"
   },
   "uiLocations": {
     "description": {

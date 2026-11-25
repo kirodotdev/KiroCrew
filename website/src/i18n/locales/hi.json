@@ -24618,7 +24618,19 @@
     "embedded_count": "{{total}} में से {{embedded}} एम्बेड हुईं",
     "failures_in_global": "बार-बार की विफलताएँ हर चैट में गिनी जाती हैं, और उनसे बनी सीख वैश्विक मेमोरी में सहेजी जाती है।",
     "open_global_failures": "वैश्विक मेमोरी में विफलताएँ खोलो",
-    "embedded_read_failed": "कितनी स्मृतियाँ एम्बेड हुईं, यह पढ़ा नहीं जा सका"
+    "embedded_read_failed": "कितनी स्मृतियाँ एम्बेड हुईं, यह पढ़ा नहीं जा सका",
+    "mode_words": "शब्द",
+    "mode_meaning": "अर्थ",
+    "search_by": "खोज का तरीका",
+    "topics": "विषय",
+    "save_topic": "“{{topic}}” सहेजो",
+    "remove_topic": "विषय हटाओ: {{topic}}",
+    "weaker_hidden": "छिपे कमज़ोर मेल: {{count}}",
+    "show_weaker": "उन्हें दिखाओ",
+    "meaning_placeholder": "कोई विषय बताओ",
+    "meaning_match_hint": "अर्थ के हिसाब से यह विषय के कितना पास है",
+    "meaning_unavailable": "अर्थ से खोज उपलब्ध नहीं है",
+    "search_words_instead": "शब्दों से खोजो"
   },
   "uiLocations": {
     "description": {

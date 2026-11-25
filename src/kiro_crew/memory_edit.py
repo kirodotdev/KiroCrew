@@ -19,7 +19,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
-from kiro_crew import memory_record_facets, memory_schema
+from kiro_crew import memory_record_facets, memory_record_meaning, memory_schema
 
 MAX_BATCH_ROWS = 10000
 MAX_BATCH_BYTES = 32 * 1024 * 1024
@@ -448,6 +448,8 @@ def list_records(
     sort: str | None = None,
     descending: bool = True,
     facets: bool = False,
+    meaning: bool = False,
+    weak: bool = False,
 ) -> dict:
     """One page of records, in ``kind, id`` order unless *sort* names another.
 
@@ -455,14 +457,31 @@ def list_records(
     With *facets*, the body also carries ``facets``: per group, how many rows each
     value would list (see ``memory_record_facets.count_facets``), cached until the
     store next changes.
+
+    With *meaning*, the search words are not matched as words: every record is
+    ranked by how close its stored vector is to theirs (``memory_record_meaning``),
+    each entry carries that score as ``match``, and rows under
+    ``MEANING_CUTOFF`` are left out and counted in ``hidden`` unless *weak*.
     """
     query = _query(query)
     if isinstance(limit, bool) or isinstance(offset, bool) or not 1 <= limit <= 100 or offset < 0:
         raise MemoryEditError("Use a page size of 1–100 and a non-negative offset.")
     if sort is not None and sort not in memory_record_facets.SORTS:
         raise MemoryEditError("Sort by updated, created, confidence, importance, key or match.")
-    if sort == "match" and not query["q"]:
+    if (sort == "match" or meaning) and not query["q"]:
         raise MemoryEditError("Best match needs search words.")
+    vector = None
+    if meaning:
+        sort, descending = "match", True
+        try:
+            # Model inference, outside the store lock.
+            vector = memory_record_meaning.embed_query(store, query["q"])
+        except memory_record_meaning.MeaningUnavailable:
+            raise MemoryEditError(
+                "Search by meaning needs the embedding model, which is not ready. Search by words instead.",
+                code="meaning_unavailable",
+                status=409,
+            ) from None
     if sort is None and not facets:
         entries, total = [], 0
         with store._db_lock:
@@ -476,8 +495,28 @@ def list_records(
     with store._db_lock, _read_snapshot(store):
         # One light pass over every search match, then only the page is assembled.
         # Both passes read one snapshot, so a position names the same row in each.
-        base = {"q": query["q"], "kind": "all"}
+        base = {"q": "" if meaning else query["q"], "kind": "all"}
+        # Numbered before the meaning cut-off drops rows, so a position still names the row.
         everything = _cached_summaries(store, base)
+        hidden = 0
+        if vector is not None:
+            # Copies: these match scores answer this question, not the cached pass.
+            everything = [dict(summary) for summary in everything]
+            scores = memory_record_meaning.score_rows(store, vector)
+            for summary in everything:
+                summary["match"] = memory_record_meaning.summary_score(scores, summary)
+            if not weak:
+                strong = [
+                    s for s in everything if s["match"] >= memory_record_meaning.MEANING_CUTOFF
+                ]
+                hidden = sum(
+                    1
+                    for s in everything
+                    if s["match"] < memory_record_meaning.MEANING_CUTOFF
+                    and (query["kind"] == "all" or s["kind"] == query["kind"])
+                    and memory_record_facets.matches(s, filters)
+                )
+                everything = strong
         listed = [
             summary
             for summary in everything
@@ -513,8 +552,15 @@ def list_records(
         "total": len(listed),
         "has_more": len(listed) > offset + limit,
     }
+    if meaning:
+        body["hidden"] = hidden
     if facets:
-        body["facets"] = _cached_facets(everything, filters, query["kind"])
+        # A meaning search ranks a fresh copy each time: nothing to reuse.
+        body["facets"] = (
+            _cached_facets(everything, filters, query["kind"])
+            if vector is None
+            else memory_record_facets.count_facets(everything, filters, query["kind"])
+        )
     return body
 
 

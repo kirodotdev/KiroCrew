@@ -17,13 +17,18 @@ export type ListView = {
   sort: MemoryRecordSort
   order: 'asc' | 'desc'
   filters: MemoryRecordFilters
+  /** How the search words are read: as words, or as a topic ranked by meaning. */
+  mode: SearchMode
 }
-export const DEFAULT_VIEW: ListView = { q: '', kind: 'all', sort: 'updated', order: 'desc', filters: {} }
+export type SearchMode = 'words' | 'meaning'
+export const DEFAULT_VIEW: ListView = { q: '', kind: 'all', sort: 'updated', order: 'desc', filters: {}, mode: 'words' }
 export const FACET_GROUPS: MemoryRecordFacetGroup[] = ['category', 'applies', 'scope', 'tag', 'source', 'surface', 'crew']
 const SORTS: MemoryRecordSort[] = ['updated', 'created', 'confidence', 'importance', 'key', 'match']
 
 /** The sort a request sends: Best match needs search words, so it falls back to Updated without them. */
-export const effectiveSort = (view: ListView): MemoryRecordSort => view.sort === 'match' && !view.q ? 'updated' : view.sort
+export const effectiveSort = (view: ListView): MemoryRecordSort => byMeaning(view) ? 'match' : view.sort === 'match' && !view.q ? 'updated' : view.sort
+/** A search by meaning needs words to embed; with none the list is the plain one. */
+export const byMeaning = (view: ListView) => view.mode === 'meaning' && !!view.q
 
 /** Which kinds a facet group or a score belongs to. */
 export const GROUP_KINDS: Record<MemoryRecordFacetGroup, MemoryRecordKind[]> = {
@@ -54,6 +59,7 @@ export function loadView(store: string): ListView {
       sort: SORTS.includes(saved.sort) ? saved.sort : DEFAULT_VIEW.sort,
       order: saved.order === 'asc' ? 'asc' : 'desc',
       filters,
+      mode: saved.mode === 'meaning' ? 'meaning' : 'words',
     }
   } catch { return DEFAULT_VIEW }
 }

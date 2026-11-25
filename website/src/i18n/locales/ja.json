@@ -24016,7 +24016,19 @@
     "embedded_count": "{{total}} 件中 {{embedded}} 件を埋め込み済み",
     "failures_in_global": "繰り返しの失敗はすべてのチャットで集計され、そこから作成したレッスンはグローバル記憶に保存されます。",
     "open_global_failures": "グローバル記憶で失敗を開く",
-    "embedded_read_failed": "埋め込み済みの記憶の数を読み込めませんでした"
+    "embedded_read_failed": "埋め込み済みの記憶の数を読み込めませんでした",
+    "mode_words": "単語",
+    "mode_meaning": "意味",
+    "search_by": "検索方法",
+    "topics": "トピック",
+    "save_topic": "「{{topic}}」を保存",
+    "remove_topic": "トピックを削除: {{topic}}",
+    "weaker_hidden": "非表示の弱い一致: {{count}}",
+    "show_weaker": "表示する",
+    "meaning_placeholder": "トピックを入力",
+    "meaning_match_hint": "意味の上でトピックにどれだけ近いか",
+    "meaning_unavailable": "意味による検索は利用できません",
+    "search_words_instead": "単語で検索"
   },
   "uiLocations": {
     "description": {

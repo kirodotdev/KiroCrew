@@ -25220,7 +25220,19 @@
     "embedded_count": "{{embedded}} sur {{total}} vectorisés",
     "failures_in_global": "Les échecs répétés sont comptés dans toutes les discussions, et les leçons rédigées à partir d’eux sont enregistrées dans la mémoire globale.",
     "open_global_failures": "Ouvrir les échecs dans la mémoire globale",
-    "embedded_read_failed": "Impossible de lire combien de souvenirs sont vectorisés"
+    "embedded_read_failed": "Impossible de lire combien de souvenirs sont vectorisés",
+    "mode_words": "Mots",
+    "mode_meaning": "Sens",
+    "search_by": "Rechercher par",
+    "topics": "Sujets",
+    "save_topic": "Enregistrer « {{topic}} »",
+    "remove_topic": "Retirer le sujet : {{topic}}",
+    "weaker_hidden": "Correspondances faibles masquées : {{count}}",
+    "show_weaker": "Les afficher",
+    "meaning_placeholder": "Décris un sujet",
+    "meaning_match_hint": "Proximité avec le sujet, par le sens",
+    "meaning_unavailable": "La recherche par le sens n’est pas disponible",
+    "search_words_instead": "Rechercher par mots"
   },
   "uiLocations": {
     "description": {

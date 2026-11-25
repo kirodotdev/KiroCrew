@@ -50,17 +50,18 @@ describe('the memory toolbar', () => {
     expect(toolbar).toHaveClass('flex-wrap')
     // A width class would stop wrapping from 640 px, inside the phone layout.
     expect(toolbar.className).not.toMatch(/sm:flex-nowrap/)
-    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('basis-full')
+    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).parentElement).toHaveClass('basis-full')
   })
 
-  it('keeps the search box at least 20rem wide, and on its own row when the content area is narrow', async () => {
+  it('keeps the search box at least 22rem wide, and on its own row when the content area is narrow', async () => {
     renderWithProviders(<List />)
     const toolbar = await screen.findByTestId('memory-toolbar')
     // Keyed on the toolbar's own width (a container query), not the window's.
     expect(toolbar.parentElement).toHaveClass('@container')
-    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('basis-full', '@[40rem]:min-w-[20rem]', '@[40rem]:basis-0')
-    // Button text never wraps onto a second line.
+    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).parentElement).toHaveClass('basis-full', '@[40rem]:min-w-[22rem]', '@[40rem]:basis-0')
+    // Button text never wraps onto a second line, the mode switch's included.
     for (const button of within(toolbar).getAllByRole('button')) if (button.textContent?.trim()) expect(button.className).toMatch(/whitespace-nowrap/)
+    for (const radio of within(toolbar).getAllByRole('radio')) expect(radio.className).toMatch(/whitespace-nowrap/)
     // A short placeholder, so it fits beside the mode switch, Select and Test recall.
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' })).toHaveAttribute('placeholder', 'Search memories…')
   })
@@ -402,5 +403,34 @@ describe('tags as filters', () => {
     expect(within(detail).getByText('Learned from chat')).toHaveAttribute('title', 'consolidation:dashboard:chat-1-1')
     fireEvent.click(within(detail).getByRole('button', { name: '#release' }))
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { tag: ['release'] } }))
+  })
+})
+
+describe('the search mode switch', () => {
+  it('leaves the search box for a row of its own when the toolbar is too narrow for it', async () => {
+    const original = globalThis.ResizeObserver
+    globalThis.ResizeObserver = class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 420 } } as ResizeObserverEntry], this as unknown as ResizeObserver) }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    try {
+      renderWithProviders(<List />)
+      const toolbar = await screen.findByTestId('memory-toolbar')
+      const box = within(toolbar).getByRole('textbox', { name: 'Search memory' })
+      const modes = within(toolbar).getByRole('radiogroup', { name: 'Search by' })
+      expect(box.parentElement!.contains(modes)).toBe(false)
+      expect(box).toHaveClass('pr-10')
+    } finally {
+      globalThis.ResizeObserver = original
+    }
+  })
+
+  it('sits inside the search box on a wide toolbar', async () => {
+    renderWithProviders(<List />)
+    const toolbar = await screen.findByTestId('memory-toolbar')
+    const box = within(toolbar).getByRole('textbox', { name: 'Search memory' })
+    expect(box.parentElement!.contains(within(toolbar).getByRole('radiogroup', { name: 'Search by' }))).toBe(true)
   })
 })

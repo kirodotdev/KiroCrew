@@ -25220,7 +25220,19 @@
     "embedded_count": "{{embedded}} su {{total}} con embedding",
     "failures_in_global": "Gli errori ripetuti vengono contati in tutte le chat e le lezioni redatte a partire da essi vengono salvate nella memoria globale.",
     "open_global_failures": "Apri gli errori nella memoria globale",
-    "embedded_read_failed": "Impossibile leggere quanti ricordi hanno l’embedding"
+    "embedded_read_failed": "Impossibile leggere quanti ricordi hanno l’embedding",
+    "mode_words": "Parole",
+    "mode_meaning": "Significato",
+    "search_by": "Cerca per",
+    "topics": "Argomenti",
+    "save_topic": "Salva “{{topic}}”",
+    "remove_topic": "Rimuovi argomento: {{topic}}",
+    "weaker_hidden": "Corrispondenze deboli nascoste: {{count}}",
+    "show_weaker": "Mostrale",
+    "meaning_placeholder": "Descrivi un argomento",
+    "meaning_match_hint": "Quanto è vicino all’argomento per significato",
+    "meaning_unavailable": "La ricerca per significato non è disponibile",
+    "search_words_instead": "Cerca per parole"
   },
   "uiLocations": {
     "description": {

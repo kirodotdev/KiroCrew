@@ -25220,7 +25220,19 @@
     "embedded_count": "{{embedded}} de {{total}} com embedding",
     "failures_in_global": "Falhas repetidas são contadas em todas as conversas, e as lições redigidas a partir delas são salvas na memória global.",
     "open_global_failures": "Abrir falhas na memória global",
-    "embedded_read_failed": "Não foi possível ler quantas memórias têm embedding"
+    "embedded_read_failed": "Não foi possível ler quantas memórias têm embedding",
+    "mode_words": "Palavras",
+    "mode_meaning": "Significado",
+    "search_by": "Pesquisar por",
+    "topics": "Tópicos",
+    "save_topic": "Salvar “{{topic}}”",
+    "remove_topic": "Remover tópico: {{topic}}",
+    "weaker_hidden": "Correspondências fracas ocultas: {{count}}",
+    "show_weaker": "Mostrá-las",
+    "meaning_placeholder": "Descreva um tópico",
+    "meaning_match_hint": "Quanto isto se aproxima do tópico pelo significado",
+    "meaning_unavailable": "A pesquisa por significado não está disponível",
+    "search_words_instead": "Pesquisar por palavras"
   },
   "uiLocations": {
     "description": {

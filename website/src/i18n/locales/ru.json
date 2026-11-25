@@ -25822,7 +25822,19 @@
     "embedded_count": "Векторизовано {{embedded}} из {{total}}",
     "failures_in_global": "Повторяющиеся сбои считаются по всем чатам, а уроки по ним сохраняются в общей памяти.",
     "open_global_failures": "Открыть сбои в общей памяти",
-    "embedded_read_failed": "Не удалось узнать, сколько воспоминаний векторизовано"
+    "embedded_read_failed": "Не удалось узнать, сколько воспоминаний векторизовано",
+    "mode_words": "Слова",
+    "mode_meaning": "Смысл",
+    "search_by": "Искать по",
+    "topics": "Темы",
+    "save_topic": "Сохранить «{{topic}}»",
+    "remove_topic": "Убрать тему: {{topic}}",
+    "weaker_hidden": "Скрыто слабых совпадений: {{count}}",
+    "show_weaker": "Показать их",
+    "meaning_placeholder": "Опиши тему",
+    "meaning_match_hint": "Насколько это близко к теме по смыслу",
+    "meaning_unavailable": "Поиск по смыслу недоступен",
+    "search_words_instead": "Искать по словам"
   },
   "uiLocations": {
     "description": {

@@ -47,6 +47,8 @@ _RECORD_PARAMS = {
     "ref",
     "conf_min",
     "conf_max",
+    "mode",
+    "weak",
     *memory_record_facets.FACET_GROUPS,
 }
 
@@ -73,6 +75,12 @@ async def api_memory_records(request: web.Request) -> web.Response:
         want_facets = request.query.get("facets", "0")
         if want_facets not in ("0", "1"):
             raise memory_edit.MemoryEditError("Facets must be 0 or 1.")
+        mode = request.query.get("mode", "words")
+        if mode not in ("words", "meaning"):
+            raise memory_edit.MemoryEditError("Mode must be words or meaning.")
+        want_weak = request.query.get("weak", "0")
+        if want_weak not in ("0", "1"):
+            raise memory_edit.MemoryEditError("Weak must be 0 or 1.")
         filters: dict = {
             group: request.query.getall(group)
             for group in memory_record_facets.FACET_GROUPS
@@ -104,6 +112,8 @@ async def api_memory_records(request: web.Request) -> web.Response:
             sort=sort,
             descending=direction == "desc",
             facets=want_facets == "1",
+            meaning=mode == "meaning",
+            weak=want_weak == "1",
         )
     except memory_edit.MemoryEditError as exc:
         return _error(exc)

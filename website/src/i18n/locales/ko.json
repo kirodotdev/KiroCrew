@@ -24016,7 +24016,19 @@
     "embedded_count": "{{total}}개 중 {{embedded}}개 임베딩됨",
     "failures_in_global": "반복 실패는 모든 채팅에서 집계되며, 이를 바탕으로 작성한 학습 내용은 전역 메모리에 저장됩니다.",
     "open_global_failures": "전역 메모리에서 실패 열기",
-    "embedded_read_failed": "임베딩된 기억 수를 읽지 못했습니다"
+    "embedded_read_failed": "임베딩된 기억 수를 읽지 못했습니다",
+    "mode_words": "단어",
+    "mode_meaning": "의미",
+    "search_by": "검색 기준",
+    "topics": "주제",
+    "save_topic": "‘{{topic}}’ 저장",
+    "remove_topic": "주제 제거: {{topic}}",
+    "weaker_hidden": "숨겨진 약한 일치: {{count}}",
+    "show_weaker": "표시",
+    "meaning_placeholder": "주제를 설명하세요",
+    "meaning_match_hint": "의미로 볼 때 주제와 얼마나 가까운지",
+    "meaning_unavailable": "의미로 검색할 수 없습니다",
+    "search_words_instead": "단어로 검색"
   },
   "uiLocations": {
     "description": {

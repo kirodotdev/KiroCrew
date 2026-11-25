@@ -12446,7 +12446,19 @@
     "embedded_count": "{{embedded}} of {{total}} embedded",
     "failures_in_global": "Repeated failures are counted across every chat, and the lessons drafted from them are saved to Global memory.",
     "open_global_failures": "Open failures in Global memory",
-    "embedded_read_failed": "Could not read how many memories are embedded"
+    "embedded_read_failed": "Could not read how many memories are embedded",
+    "mode_words": "Words",
+    "mode_meaning": "Meaning",
+    "search_by": "Search by",
+    "topics": "Topics",
+    "save_topic": "Save “{{topic}}”",
+    "remove_topic": "Remove topic: {{topic}}",
+    "weaker_hidden": "Weaker matches hidden: {{count}}",
+    "show_weaker": "Show them",
+    "meaning_placeholder": "Describe a topic",
+    "meaning_match_hint": "How close this is to the topic, by meaning",
+    "meaning_unavailable": "Search by meaning is not available",
+    "search_words_instead": "Search by words"
   },
   "sessionEnvironments": {
     "title": "Session Environments",

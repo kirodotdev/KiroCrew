@@ -24618,7 +24618,19 @@
     "embedded_count": "{{total}}টির মধ্যে {{embedded}}টি এমবেড করা",
     "failures_in_global": "বারবার ব্যর্থতা প্রতিটি চ্যাট জুড়ে গোনা হয়, আর সেগুলো থেকে লেখা শিক্ষা গ্লোবাল মেমোরিতে সংরক্ষিত হয়।",
     "open_global_failures": "গ্লোবাল মেমোরিতে ব্যর্থতা খুলুন",
-    "embedded_read_failed": "কতগুলো স্মৃতি এমবেড করা হয়েছে তা পড়া যায়নি"
+    "embedded_read_failed": "কতগুলো স্মৃতি এমবেড করা হয়েছে তা পড়া যায়নি",
+    "mode_words": "শব্দ",
+    "mode_meaning": "অর্থ",
+    "search_by": "খোঁজার ধরন",
+    "topics": "বিষয়",
+    "save_topic": "“{{topic}}” সংরক্ষণ করো",
+    "remove_topic": "বিষয় সরান: {{topic}}",
+    "weaker_hidden": "লুকানো দুর্বল মিল: {{count}}",
+    "show_weaker": "সেগুলো দেখাও",
+    "meaning_placeholder": "একটি বিষয় লিখুন",
+    "meaning_match_hint": "অর্থের দিক থেকে এটি বিষয়ের কতটা কাছে",
+    "meaning_unavailable": "অর্থ দিয়ে খোঁজা এখন পাওয়া যাচ্ছে না",
+    "search_words_instead": "শব্দ দিয়ে খুঁজুন"
   },
   "uiLocations": {
     "description": {

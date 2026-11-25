@@ -24618,7 +24618,19 @@
     "embedded_count": "{{embedded}} von {{total}} eingebettet",
     "failures_in_global": "Wiederholte Fehler werden über alle Chats gezählt, und die daraus entworfenen Lektionen werden im globalen Speicher gespeichert.",
     "open_global_failures": "Fehler im globalen Speicher öffnen",
-    "embedded_read_failed": "Die Zahl der eingebetteten Erinnerungen konnte nicht gelesen werden"
+    "embedded_read_failed": "Die Zahl der eingebetteten Erinnerungen konnte nicht gelesen werden",
+    "mode_words": "Wörter",
+    "mode_meaning": "Bedeutung",
+    "search_by": "Suchen nach",
+    "topics": "Themen",
+    "save_topic": "„{{topic}}“ speichern",
+    "remove_topic": "Thema entfernen: {{topic}}",
+    "weaker_hidden": "Ausgeblendete schwächere Treffer: {{count}}",
+    "show_weaker": "Anzeigen",
+    "meaning_placeholder": "Beschreibe ein Thema",
+    "meaning_match_hint": "Wie nah das dem Thema nach der Bedeutung ist",
+    "meaning_unavailable": "Die Suche nach Bedeutung ist nicht verfügbar",
+    "search_words_instead": "Nach Wörtern suchen"
   },
   "uiLocations": {
     "description": {

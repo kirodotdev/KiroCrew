@@ -8174,6 +8174,22 @@ come last under that sort, newest first, whichever way it runs. `match` is a
 word score from 0 to 1, with a key hit weighted above a text hit, and each
 entry of a `match` page carries it.
 
+`mode=meaning` (with search words) ranks by meaning instead: the words are
+embedded once with the store's own embedding function, outside the store lock,
+and every live fact, lesson and experience is scored by the cosine between that
+vector and its stored one, with the store's own `_stored_similarity_scorer`
+(`memory_record_meaning`). The words are not matched as words then, and the sort
+is that score, highest first, carried as each entry's `match`. A row with no
+vector or one of another width scores 0. Rows under `MEANING_CUTOFF` (0.45) are
+left out of the list and the facet counts, and the body's `hidden` counts the
+ones the kind and filters would have listed; `weak=1` lists them too. With no
+embedding model the route answers 409 `meaning_unavailable`. The scores go on
+copies of the cached row summaries, never on the cached pass itself. On the page
+the Words / Meaning switch sits inside the search box while the toolbar is at
+least 32rem wide (`SWITCH_INLINE_MIN`, measured on the toolbar) and takes its own
+row below the box otherwise, so it never covers the typed text; its labels never
+wrap.
+
 `POST /api/memory/records/refresh` resolves up to 500 exact
 identities after a concurrent change without discarding the user's draft. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
