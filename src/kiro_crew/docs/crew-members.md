@@ -418,7 +418,9 @@ somewhere it does not belong.
 Triggers are comma-separated phrases. A phrase scores as the fraction of its own
 words present in the task text, and a Bot scores as its best phrase, so a
 specific multi-word phrase has to match more completely than a generic one-word
-phrase to reach the same score. A phrase prefixed with `!` is a negative: if all
+phrase to reach the same score. Chinese, Japanese and Thai are written without
+spaces, so a trigger word in one of them matches anywhere inside the task text:
+`周报` matches "帮我总结一下这周的周报". A phrase prefixed with `!` is a negative: if all
 of its words appear, that Bot is excluded whatever else it scored.
 Negatives are applied after every positive, so the order you write them in
 cannot change the outcome. Anything below a 0.7 overlap is not a match at all,
