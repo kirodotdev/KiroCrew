@@ -657,20 +657,14 @@ class TestOwnerVerifiedSecretTransport:
         assert callable(holder["verify_peer"]), "the unix send must carry a peer verifier"
         assert tcp_calls == [], "TCP must stay untouched when the owner-only socket exists"
 
-    @pytest.mark.skipif(
-        not hasattr(__import__("socket"), "AF_UNIX"),
-        reason="needs a real AF_UNIX socket file; AF_UNIX-only",
-    )
-    def test_a_stale_socket_file_falls_through_to_the_peer_verified_tcp_arm(
-        self, monkeypatch, short_sock_dir
-    ):
+    @staticmethod
+    def _plant_stale_socket_file(monkeypatch, short_sock_dir):
+        """A socket file with no listener, as a crashed gateway leaves it.
+
+        Bound then closed without unlinking, so connect() on it is refused.
+        """
         import socket as _socket
-        import urllib.request
 
-        from kiro_crew import cli_restart_idle, cli_server
-
-        # A socket file with no listener: bind then close without unlinking, as a
-        # crashed gateway leaves it. connect() on it is refused.
         sock_file = short_sock_dir / "gw.sock"
         s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         s.bind(str(sock_file))
@@ -678,6 +672,18 @@ class TestOwnerVerifiedSecretTransport:
         assert sock_file.exists()
         monkeypatch.setattr("kiro_crew.cli_server.dashboard_socket_path", lambda _p: sock_file)
 
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"),
+        reason="needs a real AF_UNIX socket file; AF_UNIX-only",
+    )
+    def test_a_stale_socket_file_falls_through_to_the_peer_verified_tcp_arm(
+        self, monkeypatch, short_sock_dir
+    ):
+        import urllib.request
+
+        from kiro_crew import cli_server
+
+        self._plant_stale_socket_file(monkeypatch, short_sock_dir)
         holder: dict = {}
 
         def fake_tcp(req, timeout, *, verify_peer):
@@ -686,7 +692,11 @@ class TestOwnerVerifiedSecretTransport:
 
         monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
         cli_server._owner_verified_secret_urlopen(
-            urllib.request.Request("http://127.0.0.1:7777/x"), 7777, 5, operation="gateway_token"
+            urllib.request.Request("http://127.0.0.1:7777/x"),
+            7777,
+            5,
+            operation="gateway_token",
+            tcp_after_stale_socket=True,
         )
         assert callable(holder["verify_peer"]), "TCP must carry its own peer verifier"
 
@@ -701,12 +711,59 @@ class TestOwnerVerifiedSecretTransport:
                 7777,
                 5,
                 operation="gateway_token",
+                tcp_after_stale_socket=True,
             )
-        # The reason stays a refusal, so the idle-gated restart still reads a
-        # crashed gateway as down rather than as a failed check.
+        # The reason stays a refusal, so a caller still reads it as "nothing is
+        # running" rather than as a failed check.
         assert isinstance(caught.value.reason, ConnectionRefusedError)
-        monkeypatch.setattr(cli_restart_idle, "read_local_secret", lambda *a, **k: "")
-        assert cli_restart_idle._ask_gate(7777).state == "down"
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"),
+        reason="needs a real AF_UNIX socket file; AF_UNIX-only",
+    )
+    def test_update_approval_never_falls_back_to_tcp_after_a_stale_socket(
+        self, monkeypatch, short_sock_dir
+    ):
+        """Only an opted-in caller retries over TCP; the approval nonce stays on the socket."""
+        import urllib.request
+
+        from kiro_crew import cli_server
+
+        self._plant_stale_socket_file(monkeypatch, short_sock_dir)
+        tcp_calls: list[object] = []
+        monkeypatch.setattr(
+            cli_server, "tcp_verified_urlopen", lambda *a, **k: tcp_calls.append((a, k))
+        )
+        with pytest.raises(urllib.error.URLError) as caught:
+            cli_server._owner_verified_secret_urlopen(
+                urllib.request.Request("http://127.0.0.1:7777/x"),
+                7777,
+                5,
+                operation="gateway_update_approve",
+            )
+        assert isinstance(caught.value.reason, ConnectionRefusedError)
+        assert "stale gateway socket" not in str(caught.value)
+        assert tcp_calls == [], "the approval must never be retried over TCP"
+
+    def test_the_token_command_alone_opts_in_to_the_stale_socket_fallback(
+        self, monkeypatch, capsys
+    ):
+        import argparse
+
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "test-secret")
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        seen: list[dict] = []
+
+        def fake_send(req, port, timeout, **kwargs):
+            seen.append(kwargs)
+            return self._resp(b'{"token": "abc"}')
+
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", fake_send)
+        args = argparse.Namespace(ttl="1h", port=7777)  # flake-ok: token TTL, not a wait
+        cli_server._token(args)
+        assert seen == [{"operation": "gateway_token", "tcp_after_stale_socket": True}]
 
     @pytest.mark.skipif(
         not hasattr(__import__("socket"), "AF_UNIX"),

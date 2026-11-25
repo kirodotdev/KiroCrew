@@ -101,7 +101,7 @@ class TestTokenRefusal:
         _floor_monkeypatch.setattr(
             cli_server,
             "_owner_verified_secret_urlopen",
-            lambda req, port, timeout, *, operation="": cli_server.loopback_urlopen(
+            lambda req, port, timeout, *, operation="", tcp_after_stale_socket=False: cli_server.loopback_urlopen(
                 req, timeout=timeout
             ),
         )
@@ -117,7 +117,7 @@ class TestTokenRefusal:
         )
         body = json.dumps({"error": reason, "code": "member_owner_token_refused"}).encode()
 
-        def refused(req, port, timeout, *, operation=""):
+        def refused(req, port, timeout, *, operation="", tcp_after_stale_socket=False):
             raise urllib.error.HTTPError(
                 "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
             )
@@ -154,7 +154,7 @@ class TestTokenRefusal:
 
         body = json.dumps({"error": "refused", "code": code}).encode()
 
-        def refused(req, port, timeout, *, operation=""):
+        def refused(req, port, timeout, *, operation="", tcp_after_stale_socket=False):
             raise urllib.error.HTTPError(
                 "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
             )
@@ -199,7 +199,7 @@ class TestTokenRefusal:
         CLI does not guess which gate refused."""
         import io
 
-        def refused(req, port, timeout, *, operation=""):
+        def refused(req, port, timeout, *, operation="", tcp_after_stale_socket=False):
             raise urllib.error.HTTPError(
                 "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
             )
@@ -216,7 +216,7 @@ class TestTokenRefusal:
         assert "code " not in err
 
     def test_connection_refused_still_reports_unreachable(self, monkeypatch, capsys) -> None:
-        def boom(req, port, timeout, *, operation=""):
+        def boom(req, port, timeout, *, operation="", tcp_after_stale_socket=False):
             raise urllib.error.URLError("refused")
 
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
@@ -289,7 +289,7 @@ class TestPortOwnershipGuard:
         _floor_monkeypatch.setattr(
             cli_server,
             "_owner_verified_secret_urlopen",
-            lambda req, port, timeout, *, operation="": cli_server.loopback_urlopen(
+            lambda req, port, timeout, *, operation="", tcp_after_stale_socket=False: cli_server.loopback_urlopen(
                 req, timeout=timeout
             ),
         )

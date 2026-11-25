@@ -204,8 +204,15 @@ def _token(args: argparse.Namespace) -> None:
         url += "&kind=session"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
+        # A socket file a crashed gateway left behind must not cost the sign-in
+        # when the gateway serves TCP, so this one send opts in to the
+        # peer-verified TCP arm after a stale socket.
         with _owner_verified_secret_urlopen(
-            req, port, timeout=_TOKEN_REQUEST_TIMEOUT, operation="gateway_token"
+            req,
+            port,
+            timeout=_TOKEN_REQUEST_TIMEOUT,
+            operation="gateway_token",
+            tcp_after_stale_socket=True,
         ) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")

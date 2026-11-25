@@ -46,6 +46,7 @@ __all__ = [
     "deadline_expired",
     "http_error_reason",
     "loopback_urlopen",
+    "stale_socket_refused",
     "unix_socket_urlopen",
 ]
 # tcp_verified_urlopen is intentionally NOT exported: it has one in-tree caller
@@ -347,11 +348,24 @@ def loopback_urlopen(
                 # re-raise must precede the URLError arm below.
                 raise
             except urllib.error.URLError as exc:
-                if not isinstance(exc.reason, (FileNotFoundError, ConnectionRefusedError)):
+                if not stale_socket_refused(exc):
                     raise
                 # Stale socket file (gateway died / restarted TCP-only):
                 # connect never delivered anything, so TCP retry is safe.
     return build_loopback_opener().open(req, timeout=timeout)
+
+
+def stale_socket_refused(exc: BaseException) -> bool:
+    """Whether a unix-socket send failed at ``connect()``, so nothing was sent.
+
+    A socket file a dead gateway left behind refuses (``ConnectionRefusedError``)
+    or has vanished (``FileNotFoundError``) at connect time, before any byte of
+    the request is written. urllib wraps either in ``URLError.reason``; a bare
+    ``OSError`` of either type counts too. Any later failure -- an HTTP status,
+    a timeout, a reset mid-response -- is not this case.
+    """
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, (FileNotFoundError, ConnectionRefusedError))
 
 
 def deadline_expired(exc: BaseException) -> bool:

@@ -30,7 +30,7 @@ from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.urls import dashboard_socket_path
 from kiro_crew.instances import run_marker
-from kiro_crew.loopback_http import tcp_verified_urlopen, unix_socket_urlopen
+from kiro_crew.loopback_http import stale_socket_refused, tcp_verified_urlopen, unix_socket_urlopen
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
 from kiro_crew.sel import sel
 
@@ -193,7 +193,12 @@ def _existing_dashboard_socket(port: int) -> str:
 
 
 def _owner_verified_secret_urlopen(
-    req: "urllib.request.Request", port: int, timeout: float, *, operation: str
+    req: "urllib.request.Request",
+    port: int,
+    timeout: float,
+    *,
+    operation: str,
+    tcp_after_stale_socket: bool = False,
 ):
     """Open *req* against the local gateway with ownership PROVEN ON THE TRANSPORT.
 
@@ -218,16 +223,19 @@ def _owner_verified_secret_urlopen(
        before any byte is written and raises unless the kernel confirms the peer
        is this principal (``SO_PEERCRED``/``LOCAL_PEERCRED`` via
        :func:`check_peer_is_self`) AND the gateway recorded for this port.
-       A socket file that refuses or has vanished at connect()
-       (``ConnectionRefusedError`` or ``FileNotFoundError``, as a crashed
-       gateway leaves it) fails before the hook runs and before any byte is
-       written, so it falls through to item 2. A socket that connects but
-       fails the peer check refuses and is never retried over TCP; any other
-       connect error is raised as-is.
+       By default every failure on this arm is raised and never retried over
+       TCP. A caller that passes ``tcp_after_stale_socket=True`` (only the
+       ``kirocrew token`` mint) opts in to one exception: a socket file that
+       refuses or has vanished at connect() (:func:`stale_socket_refused`, as a
+       crashed gateway leaves it) fails before the hook runs and before any
+       byte is written, so it falls through to item 2. A socket that connects
+       but fails the peer check refuses and is never retried over TCP; any
+       other connect error is raised as-is. The update approval send keeps the
+       default: its nonce never leaves the owner-only socket.
 
     2. No usable ``AF_UNIX`` socket -- a TCP-only gateway (the server
-       documents these), native Windows (no ``AF_UNIX`` at all), or the stale
-       socket file of item 1: send over
+       documents these), native Windows (no ``AF_UNIX`` at all), or, for an
+       opted-in caller, the stale socket file of item 1: send over
        loopback TCP via :func:`tcp_verified_urlopen` with the SAME security
        guarantee bound to the connection -- :func:`_connected_peer_verdict` on
        the CONNECTED socket, right before the first byte, reads the kernel's
@@ -294,9 +302,10 @@ def _owner_verified_secret_urlopen(
         except urllib.error.URLError as exc:
             # A socket file a crashed gateway left behind refuses (or has vanished)
             # at connect(), before verify_peer runs and before any byte, so the
-            # credential was never written. Only that case falls through to the TCP
-            # proof, which writes the credential solely after a positive peer MATCH.
-            if not isinstance(exc.reason, (FileNotFoundError, ConnectionRefusedError)):
+            # credential was never written. Only that case, and only for a caller
+            # that opted in, falls through to the TCP proof, which writes the
+            # credential solely after a positive peer MATCH.
+            if not (tcp_after_stale_socket and stale_socket_refused(exc)):
                 raise
             stale_socket = socket_path
     else:
@@ -329,8 +338,8 @@ def _owner_verified_secret_urlopen(
         return tcp_verified_urlopen(req, timeout, verify_peer=_verify_tcp_peer)
     except urllib.error.URLError as exc:
         if stale_socket and isinstance(exc.reason, ConnectionRefusedError):
-            # The reason stays a ConnectionRefusedError: callers such as the
-            # idle-gated restart read that type as "nothing is running".
+            # The reason stays a ConnectionRefusedError: the token command's
+            # deadline_expired check reads that type as "nothing is running".
             raise urllib.error.URLError(
                 ConnectionRefusedError(
                     exc.reason.errno,

@@ -2396,14 +2396,19 @@ refused.
   `check_peer_is_self` to return `MATCH` (`SO_PEERCRED` on Linux,
   `LOCAL_PEERCRED` on macOS; `UNVERIFIABLE` refuses) AND the socket's peer pid
   (`get_peer_pid`) to equal the recorded pid
-  (`_connected_unix_peer_is_recorded_gateway`). A stale socket file (one that
-  refuses or has vanished at `connect()`, a `URLError` whose reason is
-  `ConnectionRefusedError` or `FileNotFoundError`) fails before the hook runs
-  and before any byte is written, so the send falls through to the TCP arm. A
-  socket that connects but fails the hook raises `_GatewayPeerRefused` and is
-  never retried over TCP. Any other `URLError` is raised as-is.
+  (`_connected_unix_peer_is_recorded_gateway`). By default any failure on
+  this arm raises and is never retried over TCP; `kirocrew update approve`,
+  `logout`, `stop` and the other sends keep that default, so the approval
+  nonce never leaves the owner-only socket. Only `kirocrew token` (`_token`)
+  passes `tcp_after_stale_socket=True`, which opts in to one exception: a
+  stale socket file (one that refuses or has vanished at `connect()`, which
+  `loopback_http.stale_socket_refused` recognises) fails before the hook runs
+  and before any byte is written, so that send falls through to the TCP arm.
+  A socket that connects but fails the hook raises `_GatewayPeerRefused` and
+  is never retried over TCP. Any other `URLError` is raised as-is.
 - **TCP arm** — taken when there is no socket (a TCP-only gateway, native
-  Windows, which has no `AF_UNIX`) or after a stale socket file in the Unix
+  Windows, which has no `AF_UNIX`) or, for `kirocrew token` only, after a
+  stale socket file in the Unix
   arm. The secret is still written only on a `MATCH`. If the arm was reached
   from a stale socket and TCP refuses too, the `URLError` keeps a
   `ConnectionRefusedError` reason (callers read that type as "nothing is
@@ -2588,8 +2593,7 @@ Without `--expect-pid` the command is unchanged:
    through `_owner_verified_secret_urlopen`
    ([Owner-verified secret sends](#owner-verified-secret-sends)). It prefers the
    gateway's owner-only unix socket with the connected-peer proof, which needs
-   no port tool; with no socket, or a stale one that refuses at connect, it
-   falls back to loopback TCP with the
+   no port tool; with no socket it falls back to loopback TCP with the
    connected-peer proof. A peer that cannot be proven gets nothing and the
    request returns `False`. The handler independently requires a same-machine
    peer (a loopback address, or a kernel-attested same-user unix peer via

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.urls import dashboard_socket_path
-from kiro_crew.loopback_http import deadline_expired, unix_socket_urlopen
+from kiro_crew.loopback_http import deadline_expired, stale_socket_refused, unix_socket_urlopen
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.terminal_safe import safe_terminal_line
 
@@ -92,9 +92,9 @@ def _gateway_error(exc: urllib.error.HTTPError) -> AppGatewayError:
 
 def _socket_unavailable(exc: OSError) -> bool:
     """Whether strict Unix transport proved that no gateway received the request."""
-    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-    if isinstance(reason, (FileNotFoundError, ConnectionRefusedError)):
+    if stale_socket_refused(exc):
         return True
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
     return (
         isinstance(reason, OSError) and "AF_UNIX" in str(reason) and "not available" in str(reason)
     )
