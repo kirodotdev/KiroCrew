@@ -165,6 +165,15 @@ def shell_command_from_tool_params(params: dict) -> str | None:
     return _command(params)
 
 
+def is_harness_web_fetch(tool_id: str) -> bool:
+    """Whether *tool_id* (``<backend>#<tool>``) names its harness's own web-fetch built-in."""
+    # Imported lazily for the same reason as fits_tool_result.
+    from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES, split_harness_tool_id
+
+    tool = split_harness_tool_id(tool_id)
+    return tool is not None and tool[1] in HARNESS_TOOL_TABLES[tool[0]].get("web_fetch", ())
+
+
 def published_stderr_tail(
     lines: list[str], sep: str, last: int, redact: Callable[[str], str] | None = None
 ) -> str:
