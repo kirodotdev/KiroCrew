@@ -737,7 +737,9 @@ async def _handle_restart(
     from kiro_crew.cron import stop_cron_before_restart
 
     await stop_cron_before_restart(getattr(orch, "cron_svc", None))
-    # A planned restart: the turns close_all() cuts resume on the next boot.
+    # A planned restart: record the chats with a running turn that close_all() is
+    # about to cut, so the next start tries to resume them, and wait for Owner
+    # approval records still being written.
     from kiro_crew.dashboard import restart_resume
 
     await restart_resume.record_running_slots(orch.dashboard_state)

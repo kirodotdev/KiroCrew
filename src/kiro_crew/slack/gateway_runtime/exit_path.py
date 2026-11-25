@@ -302,7 +302,8 @@ async def _stop_services_and_sessions(
     """The teardown ``_shutdown`` runs once AutoNudge has drained.
 
     Cancelled handlers first, then cron and heartbeat, the MCP broker, the
-    session, channel and dashboard closes, then the subagent store and memory
+    session, channel and dashboard closes, one bounded wait for Owner approval
+    records still being written, then the subagent store and memory
     startup those closes release and the unwinding dashboard turns. Only then is
     the closed AutoNudge service withdrawn from its process-wide singleton, and
     last comes one prune of this home's unused skill views. ``eager_spawns`` are the
@@ -399,6 +400,16 @@ async def _stop_services_and_sessions(
 
     if cleanup_tasks:
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+    # An approval answered just before this stop may still be on its way to the
+    # Owner approval record, written by a task nothing else awaits; the hard exit
+    # after this method would cut it and the next start would read the row as
+    # expired. After the closes above, so no later answer can arrive. Bounded, and
+    # it never raises; it returns at once when there is nothing to write.
+    if self.dashboard_state:
+        from kiro_crew.dashboard.crew_api_approvals import finish_writes_before_exit
+
+        await finish_writes_before_exit(self.dashboard_state, PERSISTENCE_DRAIN_GRACE_SECS, "stop")
 
     # AFTER the gather, not beside cancel_all() above: cancel_all() is what stops
     # the runs that still write to the durable task queue, so closing the store

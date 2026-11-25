@@ -209,8 +209,8 @@ class ApprovalIndex:
         self._closing = closing
         #: The writes started when a request ended, held until they finish.
         self._writes: set[asyncio.Task[None]] = set()
-        #: A bounded restart wait must not cancel the drain it leaves running.
-        self._restart_write: asyncio.Task[None] | None = None
+        #: A bounded wait before an exit must not cancel the drain it leaves running.
+        self._exit_write: asyncio.Task[None] | None = None
         self._records: dict[str, dict[str, Any]] = {}
         #: The futures of the requests waiting in this process, read when one ends.
         self._watched: dict[Target, Any] = {}
@@ -320,6 +320,14 @@ class ApprovalIndex:
         if self._loaded:
             await self.store()
 
+    def unwritten(self) -> int:
+        """How many rows the file does not have as they are now."""
+        saved = {row["id"]: row for row in self._saved or []}
+        return sum(
+            {k: r[k] for k in record_file.FIELDS} != saved.get(r["id"])
+            for r in self._records.values()
+        )
+
     async def _store_ending(self, approval_id: str) -> None:
         try:
             await self.store()
@@ -411,28 +419,47 @@ RESTART_WRITE_WAIT_SECS = 5.0
 
 
 async def finish_writes_before_restart(state: Any) -> None:
+    """The wait a planned restart makes before it cuts the turns."""
+    await finish_writes_before_exit(state, RESTART_WRITE_WAIT_SECS, "restart")
+
+
+async def finish_writes_before_exit(state: Any, wait_secs: float | None, occasion: str) -> None:
     """Let the records of endings and answers already made reach the file before the
     process ends.
 
-    Called by a planned restart before it cuts the turns. Bounded, and it never
-    raises: a restart goes on without the write, and says so.
+    Called by a planned restart (*occasion* ``restart``), and by the gateway's
+    graceful stop once its sessions and its web server are closed (``stop``, with
+    the bound that stop gives a durable write,
+    ``gateway_shutdown_budget.PERSISTENCE_DRAIN_GRACE_SECS``; not measured for this
+    file). A process that is killed runs neither, and its unwritten rows
+    read ``expired`` with reason ``gateway_restart`` on the next start. Waits at
+    most *wait_secs* and never raises: the exit goes on without the write, and the
+    warning says how many rows the file does not have. With nothing to write it
+    returns without touching the file.
     """
     index = getattr(state, "__dict__", {}).get("_crew_api_approval_index")
     if index is None:
         return
 
+    def missed() -> None:
+        logger.warning(
+            "Owner approval records were not all written before the %s: %d not written",
+            occasion,
+            index.unwritten(),
+        )
+
     async def drain() -> None:
         try:
             await index.finish_writes()
         except Exception:
-            logger.warning("Owner approval records were not all written before the restart")
+            missed()
 
-    if index._restart_write is None or index._restart_write.done():
-        index._restart_write = asyncio.create_task(drain())
+    if index._exit_write is None or index._exit_write.done():
+        index._exit_write = asyncio.create_task(drain())
     try:
-        await asyncio.wait_for(asyncio.shield(index._restart_write), RESTART_WRITE_WAIT_SECS)
+        await asyncio.wait_for(asyncio.shield(index._exit_write), wait_secs)
     except Exception:
-        logger.warning("Owner approval records were not all written before the restart")
+        missed()
 
 
 def _approval(record: dict[str, Any]) -> dict[str, Any]:

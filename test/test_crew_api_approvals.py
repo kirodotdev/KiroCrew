@@ -458,7 +458,7 @@ async def test_a_record_file_that_cannot_be_believed_is_set_aside_and_live_appro
 
 
 @pytest.mark.asyncio
-async def test_a_record_file_that_can_be_neither_read_nor_moved_is_503_and_gives_no_id(
+async def test_a_record_file_that_is_not_valid_and_cannot_be_moved_is_503_and_gives_no_id(
     client, tmp_path, monkeypatch
 ):
     content = "not json"
@@ -540,6 +540,29 @@ async def test_an_id_that_cannot_be_written_is_not_announced_and_an_answer_still
 
 def _stored_states(home: Path) -> list[str]:
     return [row["state"] for row in json.loads(_record_file(home).read_text())["approvals"]]
+
+
+def _stopping(state: Any, monkeypatch) -> Any:
+    """A gateway about to run its graceful stop's teardown over *state*."""
+    from slack_gateway_helpers import _make_orchestrator, _mock_sessions
+
+    from kiro_crew.slack import gateway
+
+    async def unwound(_state: Any) -> None:
+        return None
+
+    monkeypatch.setattr(gateway, "wait_for_unwinding_turns", unwound)
+    orch = _make_orchestrator(test_mode=True)
+    orch.sessions = _mock_sessions()
+    orch.dashboard_state = state
+    return orch
+
+
+async def _states_after_restart(home: Path, monkeypatch, ids: list[str]) -> list[tuple[str, Any]]:
+    """What the next gateway process over *home*'s record reads for *ids*."""
+    async with _serve(_state(home / "restarted", monkeypatch)) as second:
+        read = [await (await second.get(f"{LIST}/{i}", headers=AS_OWNER)).json() for i in ids]
+    return [(row["state"], row["expired_reason"]) for row in read]
 
 
 @pytest.mark.asyncio
@@ -856,7 +879,110 @@ async def test_a_write_that_never_ends_does_not_hold_the_restart(client, monkeyp
     with caplog.at_level("WARNING", logger=approvals.logger.name):
         await approvals.finish_writes_before_restart(client.state)
     release.set()
-    assert "were not all written before the restart" in caplog.text
+    # The warning counts the rows the file lacks, and names nothing else.
+    assert "were not all written before the restart: 1 not written" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_graceful_stop_waits_for_answers_made_just_before_it(client, tmp_path, monkeypatch):
+    from kiro_crew.slack import gateway
+
+    allowed = _native(client.state, "yes")
+    denied = _native(client.state, "no", slot_key="other")
+    ids = [row["id"] for row in await _listed(client)]
+    save, release = records.save, threading.Event()
+
+    def slow_save(path, rows):
+        if not release.wait(60):
+            raise TimeoutError("the test never released the write")
+        save(path, rows)
+
+    monkeypatch.setattr(records, "save", slow_save)
+    # No bound here: this test is about the wait, and the bound has its own test below.
+    monkeypatch.setattr(gateway, "PERSISTENCE_DRAIN_GRACE_SECS", None)
+    # Answered on another surface: the write is a task nothing but the stop waits for.
+    allowed.set_result("approved")
+    denied.set_result("rejected_once")
+    index = approvals.gateway_approval_index(client.state)
+    await async_wait_until(lambda: bool(index._writes), describe=lambda: "no write started")
+    finish_writes, waiting = index.finish_writes, asyncio.Event()
+
+    async def finish_writes_seen():
+        waiting.set()
+        await finish_writes()
+
+    monkeypatch.setattr(index, "finish_writes", finish_writes_seen)
+    orch = _stopping(client.state, monkeypatch)
+    stopping = asyncio.get_running_loop().create_task(orch._stop_services_and_sessions())
+    try:
+        await await_until(waiting, what="the stop to reach the wait")
+        # The sessions are closed by now, so no later answer can arrive.
+        orch.sessions.close_all.assert_awaited_once()
+        assert _stored_states(tmp_path) == ["pending", "pending"] and not stopping.done()
+    finally:
+        release.set()
+    await await_until(stopping, what="the stop's teardown")
+    assert await _states_after_restart(tmp_path, monkeypatch, ids) == [
+        ("allowed", None),
+        ("denied", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_never_ends_does_not_hold_the_stop_and_its_row_reads_expired(
+    client, tmp_path, monkeypatch, caplog
+):
+    from kiro_crew.slack import gateway
+
+    native = _native(client.state, "rid")
+    (row,) = await _listed(client)
+    save, release, stuck = records.save, threading.Event(), iter([True])
+
+    def save_stuck_once(path, rows):
+        # Only this process's write never ends; the next process writes as usual.
+        if next(stuck, False):
+            release.wait(10)
+        else:
+            save(path, rows)
+
+    monkeypatch.setattr(records, "save", save_stuck_once)
+    # flake-ok: a zero bound runs out at once whatever the host's speed; no race is timed.
+    monkeypatch.setattr(gateway, "PERSISTENCE_DRAIN_GRACE_SECS", 0)  # flake-ok: see above
+    native.set_result("approved")
+    index = approvals.gateway_approval_index(client.state)
+    await async_wait_until(lambda: bool(index._writes), describe=lambda: "no write started")
+    orch = _stopping(client.state, monkeypatch)
+    try:
+        with caplog.at_level("WARNING", logger=approvals.logger.name):
+            await await_until(
+                asyncio.create_task(orch._stop_services_and_sessions()),
+                what="the stop's teardown",
+            )
+        assert "were not all written before the stop: 1 not written" in caplog.text
+        # The answer never reached the file, so the next process reads the row as cut.
+        assert await _states_after_restart(tmp_path, monkeypatch, [row["id"]]) == [
+            ("expired", "gateway_restart")
+        ]
+    finally:
+        release.set()
+        await await_until(index._exit_write, what="the drain the stop left running")
+
+
+@pytest.mark.asyncio
+async def test_a_graceful_stop_with_nothing_to_write_leaves_the_record_alone(
+    client, tmp_path, monkeypatch
+):
+    _native(client.state, "rid")
+    await _listed(client)
+    save = Mock()
+    monkeypatch.setattr(records, "save", save)
+    # A gateway whose record is written, and one whose Owner routes were never called.
+    for state in (client.state, _state(tmp_path / "unused", monkeypatch)):
+        orch = _stopping(state, monkeypatch)
+        await await_until(
+            asyncio.create_task(orch._stop_services_and_sessions()), what="the stop's teardown"
+        )
+    save.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -947,7 +1073,7 @@ async def test_a_cancelled_wait_never_lets_an_older_write_replace_a_later_answer
         await async_wait_until(finished.is_set, describe=lambda: "the older worker did not finish")
         if answering is not None:
             assert (await await_until(answering, what="the later owner's response")).status == 200
-        if draining := getattr(index, "_restart_write", None):
+        if draining := getattr(index, "_exit_write", None):
             await await_until(draining, what="the retained restart drain")
     assert _stored_states(tmp_path) == ["allowed", "allowed"]
     assert [record["state"] for record in index._saved] == ["allowed", "allowed"]
@@ -1015,6 +1141,20 @@ def test_the_record_file_round_trips_and_refuses_a_repeated_id(tmp_path):
         "state.json.damaged-19700101T000000Z",
         "second",
     )
+
+
+def test_a_record_too_large_to_be_read_back_is_not_written(tmp_path, monkeypatch):
+    path = tmp_path / "kind" / "state.json"
+    row = dict.fromkeys(records.FIELDS)
+    row.update(id="apr_" + "a" * 32, state="pending", created_at=7, slot="s")
+    records.save(path, [row])
+    kept = path.read_bytes()
+    # The reader's ceiling: a file of exactly that size is still written and read.
+    monkeypatch.setattr(records, "_MAX_BYTES", len(kept))
+    records.save(path, [row])
+    with pytest.raises(ValueError):
+        records.save(path, [row, {**row, "id": "apr_" + "b" * 32}])
+    assert path.read_bytes() == kept and records.load(path) == [row]
 
 
 @requires_symlinks
