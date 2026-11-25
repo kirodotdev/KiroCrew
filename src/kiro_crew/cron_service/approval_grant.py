@@ -168,14 +168,29 @@ def sign_existing_grants(store_dir: Path) -> list[str]:
     marker under :data:`MIGRATION_DIR_LEAF` exists. With no persisted key it logs
     and returns without the marker, so the next start tries again. Returns the
     signed ids.
+
+    Under the store lock the marker is written and synced BEFORE any signature
+    reaches the store, so a pass can only publish signatures once: a marker write
+    that fails leaves the store untouched for the next start to retry. A store
+    write that fails after the marker landed is not retried, and those grants stay
+    unsigned and fire interactive (the load warning names them). A store that does
+    not parse, or holds no ``jobs`` list, also writes the marker and signs nothing.
     """
-    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.atomic_write import atomic_write, fsync_dir
     from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
     from kiro_crew.owner_only_files import mkdirs_owner_only
 
     marker_dir = store_dir / MIGRATION_DIR_LEAF
     marker = marker_dir / MIGRATION_MARKER
     path = store_dir / _CRONS_FILE
+
+    def _consume_marker() -> None:
+        # Every directory this creates is 0700; atomic_write gives a data-home
+        # file 0600 by default (owner_only_files).
+        mkdirs_owner_only(marker_dir)
+        atomic_write(marker, "1\n", fsync=True)
+        fsync_dir(marker_dir)
+
     try:
         if marker.exists():
             return []
@@ -185,26 +200,35 @@ def sign_existing_grants(store_dir: Path) -> list[str]:
                 "the next start tries again"
             )
             return []
-        signed: list[str] = []
-        if path.is_file():
-            with cron_store_lock(store_dir):
-                data = json.loads(path.read_bytes())
-                records = data.get("jobs") if isinstance(data, dict) else None
-                if not isinstance(records, list):
-                    return []
-                for record in records:
-                    if not isinstance(record, dict) or not carries_grant(record):
-                        continue
-                    if holds(record):
-                        continue
-                    if sign_record(record):
-                        signed.append(str(record.get("id") or ""))
-                if signed:
-                    atomic_write(path, json.dumps(data, indent=2))
-        # Every directory this creates is 0700; atomic_write gives a data-home
-        # file 0600 by default (owner_only_files).
-        mkdirs_owner_only(marker_dir)
-        atomic_write(marker, "1\n")
+        if not path.is_file():
+            _consume_marker()
+            return []
+        with cron_store_lock(store_dir):
+            # Another process may have run the pass while this one waited.
+            if marker.exists():
+                return []
+            raw = path.read_bytes()
+            try:
+                data = json.loads(raw)
+            except (ValueError, RecursionError):
+                data = None
+            records = data.get("jobs") if isinstance(data, dict) else None
+            if not isinstance(records, list):
+                # Unreadable: the pass is still spent, so a store that parses
+                # later is not signed wholesale.
+                _consume_marker()
+                return []
+            signed: list[str] = []
+            for record in records:
+                if not isinstance(record, dict) or not carries_grant(record):
+                    continue
+                if holds(record):
+                    continue
+                if sign_record(record):
+                    signed.append(str(record.get("id") or ""))
+            _consume_marker()
+            if signed:
+                atomic_write(path, json.dumps(data, indent=2))
         return signed
     except Exception:
         logger.warning("Stored cron approval grants were not signed", exc_info=True)

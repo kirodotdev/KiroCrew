@@ -11,6 +11,7 @@ start pass signs older jobs once and its marker sits in a sandbox-hidden leaf.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -414,3 +415,75 @@ def test_a_load_without_the_key_says_nothing(tmp_path, caplog, monkeypatch) -> N
         CronService(base_dir=tmp_path)
 
     assert not [r for r in caplog.records if "did not sign" in r.getMessage()]
+
+
+def _failing_for(target_name: str):
+    """``atomic_write`` that raises OSError for a path named *target_name* only."""
+    from kiro_crew import atomic_write as aw
+
+    real = aw.atomic_write
+
+    def _write(path, *args, **kwargs):
+        if Path(path).name == target_name:
+            raise OSError("no space left on device")
+        return real(path, *args, **kwargs)
+
+    return _write
+
+
+def test_a_failed_marker_write_publishes_no_signature(tmp_path, monkeypatch) -> None:
+    auto_id, _ = _older_store(tmp_path)
+    before = (tmp_path / "crons.json").read_bytes()
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            "kiro_crew.atomic_write.atomic_write",
+            _failing_for(approval_grant.MIGRATION_MARKER),
+        )
+        assert approval_grant.sign_existing_grants(tmp_path) == []
+
+    assert (tmp_path / "crons.json").read_bytes() == before
+    assert "approval_grant" not in _row(tmp_path, auto_id)
+    assert job_fire_approval_mode(_reload(tmp_path, auto_id)) == ""
+    # Nothing was published, so the next start runs the pass and signs it.
+    assert auto_id in approval_grant.sign_existing_grants(tmp_path)
+    assert job_fire_approval_mode(_reload(tmp_path, auto_id)) == "auto"
+
+
+def test_a_failed_store_write_after_the_marker_does_not_run_the_pass_again(
+    tmp_path, monkeypatch
+) -> None:
+    auto_id, _ = _older_store(tmp_path)
+
+    with monkeypatch.context() as mp:
+        mp.setattr("kiro_crew.atomic_write.atomic_write", _failing_for("crons.json"))
+        assert approval_grant.sign_existing_grants(tmp_path) == []
+
+    marker = tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.MIGRATION_MARKER
+    assert marker.is_file()
+    later = CronService(base_dir=tmp_path).add_job(name="c", message="go", every_secs=3600)
+    _rewrite(tmp_path, later.id, approval_mode="auto")
+
+    assert approval_grant.sign_existing_grants(tmp_path) == []
+
+    assert "approval_grant" not in _row(tmp_path, later.id)
+    assert job_fire_approval_mode(_reload(tmp_path, later.id)) == ""
+    assert job_fire_approval_mode(_reload(tmp_path, auto_id)) == ""
+
+
+def test_an_unreadable_store_spends_the_pass(tmp_path) -> None:
+    store_path = tmp_path / "crons.json"
+    store_path.write_bytes(b"{not json")
+
+    assert approval_grant.sign_existing_grants(tmp_path) == []
+
+    marker = tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.MIGRATION_MARKER
+    assert marker.is_file()
+    assert store_path.read_bytes() == b"{not json"
+
+    store_path.unlink()
+    job_id = _hand_written_auto(tmp_path)
+    assert approval_grant.sign_existing_grants(tmp_path) == []
+
+    assert "approval_grant" not in _row(tmp_path, job_id)
+    assert job_fire_approval_mode(_reload(tmp_path, job_id)) == ""
