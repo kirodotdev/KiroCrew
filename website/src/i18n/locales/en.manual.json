@@ -3874,7 +3874,27 @@
     },
     "updateFoundModal": {
       "this_version_is_below_minimum": "This update is required — versions below {{version}} are no longer supported.",
-      "update_required": "Update required"
+      "update_required": "Update required",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_one": "{{n}} more",
+      "work_holders_more_other": "{{n}} more",
+      "work_kind_approval": "waiting for approval",
+      "work_kind_callback": "incoming message",
+      "work_kind_channel_handler": "channel message",
+      "work_kind_other": "other work",
+      "work_kind_queued": "queued messages",
+      "work_kind_refusal_write": "reply being sent",
+      "work_kind_script": "scheduled job",
+      "work_kind_subagent": "sub-agent",
+      "work_kind_task_runner": "task runner",
+      "work_kind_turn": "chat turn",
+      "work_kind_unreadable": "work that could not be checked",
+      "work_kind_update_build": "update build",
+      "work_kind_workflow": "workflow",
+      "work_running_now": "Running now: {{holders}}."
     },
     "updateModal": {
       "windows_installer_handoff": "A Windows installation window will show progress.",

@@ -799,7 +799,7 @@ take the hold in `cli.main` after argument parsing.
   user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
-- **The census names what it counts, for the host only.** `_in_flight_work_census`
+- **The census names what it counts, only to callers that already list that work.** `_in_flight_work_census`
   is the one definition of what is counted: it returns a `work_holders.Holder`
   (`kind`, `name`, `since_secs`, `count`) for every item, and
   `_in_flight_work_counts` is the sum over the holders of one walk.
@@ -817,7 +817,7 @@ take the hold in `cli.main` after argument parsing.
   `channel_handler`, `queued`, `approval`, `callback`, `refusal_write`,
   `update_build`, `task_runner`, or `unreadable` for a source that raised (its
   `name` says which source and nothing else). Only two kinds of work are
-  named, each by an identifier a list route already shows the one reader of
+  named, each by an identifier a list route already shows both readers of
   names: a dashboard slot's turn, queue or approval by its slot key (`key`,
   `running`, `queue_depth` and `pending_approval` in `GET /api/chat/slots`),
   and a script or command cron by its job name and age (`name`, `is_running`
@@ -826,11 +826,11 @@ take the hold in `cli.main` after argument parsing.
   schedule list leaves out (a goal check-in, the stale-wake job). A name is
   never message text, a session title or a path.
   - **Who may read a name.** A name identifies another session's or job's work,
-    which the slot-visibility filter withholds from an app token, so names have
-    ONE reader: `Quiescence.named_holders()`, called only by the host-only
-    `POST /api/restart/when-idle` (the local secret's `internal_auth` mark and a
-    loopback peer), whose busy answer carries the first five as `holders` and
-    the rest as the number `holders_more`. The secret proves the call came from
+    which the slot-visibility filter withholds from an app token, so names are
+    read only through `Quiescence.named_holders()`, by two callers, each of whose
+    answers carries the first five as `holders` and the rest as the number
+    `holders_more`. One is the host-only `POST /api/restart/when-idle` (the local
+    secret's `internal_auth` mark and a loopback peer), on its busy answer. The secret proves the call came from
     inside, not who made it, so the handler adds them only for a caller that
     declares no session and carries no app claim
     (`restart_gate._may_read_names`): the CLI on the host. A caller acting for a
@@ -838,11 +838,16 @@ take the hold in `cli.main` after argument parsing.
     tool call, with `X-Session-Key`) gets the counts alone. This is the caller
     `GET /api/crons` and `GET /api/chat/slots` already answer in full; a
     process that holds the raw secret and omits its session key is that caller
-    on every internal route, and this one tells it nothing those two do not. Everything a dashboard client or an
-    app can receive carries the counts alone: `Quiescence.payload()`,
-    `RestartAdmission.detail()` (the `update_progress` error step, a tier-0
-    event delivered to every app token, and the "Restart refused" log line) and
-    `POST /api/restart`'s `409 work_in_flight`.
+    on every internal route, and this one tells it nothing those two do not. The
+    other is `POST /api/restart`'s `409 work_in_flight`, which the owner gate
+    (`require_owner_dashboard_request`) answers only for the machine owner or a
+    Shared Crew teammate, both of whom `GET /api/chat/slots?crew=all` and
+    `GET /api/crons` already answer in full; an app token, an internal-secret
+    caller and a non-owner dashboard session are refused before the census is
+    read. Everything else a dashboard client or an app can receive carries the
+    counts alone: `Quiescence.payload()` and `RestartAdmission.detail()` (the
+    `update_progress` error step, a tier-0 event delivered to every app token,
+    and the "Restart refused" log line).
     `kirocrew restart --when-idle` prints the names after the counts only when
     its stdout is a terminal; a captured run (Remote Crew over SSH or SSM, whose
     output tail the calling dashboard relays) prints the counts alone.
@@ -933,9 +938,9 @@ take the hold in `cli.main` after argument parsing.
   (`KIROCREW_DESKTOP_GATEWAY`) skips the boot apply, because the desktop owns it.
   `POST /api/restart` is the user restart that brings an armed update in: the
   boot after its re-exec applies it. It answers `409 work_in_flight` with the counts
-  for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
+  and the named holders for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
   `website/src/api/client/updates.ts`: `restartGateway` posts `force: false`, shows
-  the counts (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
+  the counts and the named holders (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
   work_in_flight`, and sends `force: true` only after "Restart anyway"; a "no"
   rejects with a `WorkConfirmDeclined`, which every caller treats as a quiet
   cancel (no error shown). `applyUpdate` posts `{when: "next-start"}` and never
