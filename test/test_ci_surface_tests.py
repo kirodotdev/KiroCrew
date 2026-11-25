@@ -1156,3 +1156,139 @@ def test_the_suite_has_a_module_that_declares_no_test() -> None:
         "yield an item; a tree where every matching file declares a test leaves this "
         "exemption unexercised and the pin stops measuring it"
     )
+
+
+# -- the fast path answers as the pattern does -------------------------------
+
+
+def _reference(selector, text: str) -> bool:
+    """What the rule means: the pattern, searched over the whole text."""
+    return bool(selector._BACKEND_FOREIGN.search(text))
+
+
+def test_every_alternative_starts_with_its_literal_and_the_pattern_is_built_from_them(
+    selector,
+) -> None:
+    parts = selector._BACKEND_FOREIGN_PARTS
+    joined = "|".join(f"(?:{pattern})" for _literal, pattern in parts)
+    assert selector._BACKEND_FOREIGN.pattern == joined
+    assert selector._BACKEND_FOREIGN.flags & re.IGNORECASE
+    for literal, pattern in parts:
+        # Lower-case ASCII, and a match of the alternative on its own.
+        assert literal == literal.lower() and literal.isascii(), literal
+        whole = re.compile(pattern, re.IGNORECASE).fullmatch(literal)
+        assert whole, f"{pattern!r} does not match its own literal {literal!r}"
+        # No way to match without it: optional or alternative leading text would break the
+        # search for places a match can start.
+        stripped = pattern.replace(r"\b", "")
+        assert stripped.startswith(re.escape(literal)), (literal, pattern)
+        assert not re.search(r"[|()\[\]*+{]", stripped[: len(re.escape(literal))]), pattern
+
+
+def test_the_characters_searched_whole_are_all_that_ignorecase_folds_to_ascii(selector) -> None:
+    letters = re.compile("[a-z]", re.IGNORECASE)
+    folds = {
+        chr(point) for point in range(128, sys.maxunicode + 1) if letters.fullmatch(chr(point))
+    }
+    assert folds == set(selector._FOLDS_TO_ASCII)
+    # Lower-casing keeps every other character in its place.
+    grows = {chr(p) for p in range(sys.maxunicode + 1) if len(chr(p).lower()) != 1}
+    assert grows <= set(selector._FOLDS_TO_ASCII)
+
+
+def _texts_around(literal: str) -> list[str]:
+    """`literal` in each case, at each edge, beside word and non-word characters, cut short,
+    doubled, and with each character IGNORECASE folds to an ASCII letter put in."""
+    cases = {literal, literal.upper(), literal.title(), literal.swapcase()}
+    for fold, plain in (("ſ", "s"), ("K", "k"), ("ı", "i"), ("İ", "i")):
+        cases.update(c.replace(plain, fold) for c in list(cases))
+        cases.update(c.replace(plain.upper(), fold) for c in list(cases))
+    edges = ["", " ", "x", "_", "9", ".", "/", "'", "\n", "é", "İ", "s", "x."]
+    texts = []
+    for case in cases:
+        for before in edges:
+            for after in edges:
+                texts.append(f"{before}{case}{after}")
+                texts.append(f"import os\n{before}{case}{after}\nassert 1\n")
+        texts.append(case[:-1])
+        texts.append(case[1:])
+        texts.append(case + case)
+        texts.append(case[:-1] + " " + case)
+        # A place a match cannot start, then one where it can.
+        texts.append(f"x{case}x {case}")
+    return texts
+
+
+def test_the_fast_path_and_the_pattern_agree_on_every_shape_of_a_mention(selector) -> None:
+    disagree = []
+    yes = no = 0
+    for literal, _pattern in selector._BACKEND_FOREIGN_PARTS:
+        for text in _texts_around(literal):
+            want = _reference(selector, text)
+            yes, no = yes + want, no + (not want)
+            if selector._mentions_backend_foreign(text) != want:
+                disagree.append((literal, text))
+    assert not disagree, disagree[:5]
+    # Both answers are exercised: a test of matches alone would pass a path that says yes.
+    assert yes > 1000 and no > 1000
+    for text in ("", "plain python\n", "x" * 5000, "İ" * 3, "WEBſITE", "Kubernetes"):
+        assert selector._mentions_backend_foreign(text) == _reference(selector, text), text
+
+
+def test_the_fast_path_and_the_pattern_agree_on_every_test_file_of_the_tree(selector) -> None:
+    root = selector._repo_root()
+    seen, disagree, must = 0, [], set()
+    for rel_dir in selector._BACKEND_ROOTS:
+        for path in selector._iter_files(root, rel_dir, selector._BACKEND_GLOBS):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            want = _reference(selector, text)
+            seen += 1
+            if want:
+                must.add(path.relative_to(root).as_posix())
+            if selector._mentions_backend_foreign(text) != want:
+                disagree.append(path.name)
+    assert seen > 1000 and 0 < len(must) < seen
+    assert not disagree, disagree[:5]
+    # And so the list every caller gets is the pattern's, file for file.
+    if not selector._is_windows():
+        assert selector.collect("backend") == sorted(must)
+
+
+# One mention of each kind the backend rule keeps running, and near misses it does not.
+_BACKEND_MENTIONS = (
+    "open('website/src/utils/sanitize')",
+    "ELECTRON_RUN_AS_NODE",
+    "Path('packaging') / 'build-desktop.sh'",
+    "node_modules",
+    "the repo-root skills tree",
+    "['docker', 'run']",
+    "sanitize.ts",
+    "App.tsx",
+    "bench-render.mjs",
+    "Info.plist",
+    "tsconfig.json",
+    "entitlements.mac",
+    "['npm', 'ci']",
+    "vitest.config",
+    "Playwright",
+)
+_BACKEND_NEAR_MISSES = (
+    "import os\n",
+    "skillset",
+    "upskills",
+    "dockerfile",
+    "npmrc",
+    "rows.tsv",
+    "a.mjsx",
+    "a.plists",
+)
+
+
+def test_each_kind_of_mention_keeps_a_backend_file_running(selector) -> None:
+    # As many kinds as the rule has alternatives: one that is dropped leaves a mention unmatched.
+    assert len(_BACKEND_MENTIONS) >= len(selector._BACKEND_FOREIGN_PARTS)
+    for text in _BACKEND_MENTIONS:
+        assert _reference(selector, text) and selector._mentions_backend_foreign(text), text
+    for text in _BACKEND_NEAR_MISSES:
+        assert not _reference(selector, text), text
+        assert not selector._mentions_backend_foreign(text), text

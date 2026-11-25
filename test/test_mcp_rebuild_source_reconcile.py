@@ -45,6 +45,17 @@ def _scope(tmp_path: Path, cfg_dir: Path, spec: dict) -> dict:
     ]
 
 
+def _store(tmp_path: Path, cfg_dir: Path, spec: dict, *, kiro_servers: dict | None = None) -> dict:
+    """One rebuild with *spec* as the ``~/.kiro/crew/mcp.json`` store entry for :data:`SERVER`."""
+    return _run_install_mcp_merge(
+        tmp_path,
+        cfg_dir,
+        cc_servers={},
+        kiro_servers=kiro_servers or {},
+        kirocrew_servers={SERVER: spec},
+    )["mcpServers"]
+
+
 def _grant(tmp_path: Path, tools: list[str]) -> None:
     """Add an ``autoApprove`` to the GENERATED spec, as a user hand-edit would."""
     spec_path = tmp_path / "kiro_agents" / "kirocrew.json"
@@ -200,6 +211,63 @@ class TestADeclaringSourceOwnsDisabledTools:
 
         _emit(["a", "b"])
         assert _emit(["a"])["disabledTools"] == ["store"]
+
+
+class TestTheStoreOwnsTheModifierKeysOfAServerOnlyItDeclares:
+    """A server only ``~/.kiro/crew/mcp.json`` declares follows the store's edits.
+
+    The symptom guarded: a tool switched off and then back on in the MCP tab stays
+    off for the agent when the rebuild keeps the previous spec's ``disabledTools``
+    after the store entry has dropped it.
+    """
+
+    def test_a_tool_switched_back_on_is_on_again(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        off = _store(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["x"]})[SERVER]
+        assert off["disabledTools"] == ["x"]
+        on = _store(tmp_path, cfg_dir, {"command": cmd})[SERVER]
+        assert "disabledTools" not in on, (
+            "the store switched the tool back on, but the previous rebuild's "
+            "disabledTools stayed in the spec, so the agent still cannot call it"
+        )
+
+    def test_a_dropped_timeout_is_removed(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _store(tmp_path, cfg_dir, {"command": cmd, "timeout": 5000})
+        assert "timeout" not in _store(tmp_path, cfg_dir, {"command": cmd})[SERVER]
+
+    def test_a_kiro_global_list_still_survives_a_store_entry_without_one(
+        self, tmp_path: Path
+    ) -> None:
+        """A name a scope global claimed is that global's to reconcile, not the store's."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+        kiro = {SERVER: {"command": cmd, "disabledTools": ["a"]}}
+
+        _store(tmp_path, cfg_dir, {"command": cmd}, kiro_servers=kiro)
+        merged = _store(tmp_path, cfg_dir, {"command": cmd}, kiro_servers=kiro)[SERVER]
+        assert merged["disabledTools"] == ["a"]
+
+    def test_a_user_grant_survives(self, tmp_path: Path, monkeypatch) -> None:
+        """Only the modelled keys are projected; ``autoApprove`` stays the user's."""
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _store(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["x"]})
+        _grant(tmp_path, ["safe_tool"])
+
+        merged = _store(tmp_path, cfg_dir, {"command": cmd})[SERVER]
+        assert merged["autoApprove"] == ["safe_tool"]
 
 
 class TestTheCommandsUnitFollowsAnUnchangedCommand:

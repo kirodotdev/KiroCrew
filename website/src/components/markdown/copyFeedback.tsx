@@ -1,7 +1,9 @@
 import type React from 'react'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { copyToClipboard } from '../../utils/clipboard'
 import { InstantTip, useInstantTip } from '../InstantTip'
+import { useOverlayRoot } from '../overlayRoot'
 import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 
@@ -228,7 +230,7 @@ export function useTitleCuedCopy(text: string, failureMessage: string): {
  * words that lead up to the chip (`placement: 'flow'`). Spread `tipHandlers`
  * on the chip; `press(el)` names the anchor (`arm`) and writes. `bubble` is
  * the portal plus the always-mounted `sr-only` status that announces
- * "Copied!": render it BESIDE the chip, since a `role="button"` element's
+ * "Copied!": it is portaled out of the chip, since a `role="button"` element's
  * children are presentational and a live region inside one is never read. The
  * refusal is announced by the notice's own `role="alert"` alone.
  */
@@ -238,8 +240,26 @@ export function useBubbleCuedCopy(text: string, hint: React.ReactNode, failureMe
   bubble: React.ReactNode
 } {
   const { copied, failed, flashSeq, copy } = useCopiedFlash(text)
-  const { tip, tipHandlers, tipId, arm } = useInstantTip({ hold: flashSeq, placement: 'flow' })
+  const { tip, tipHandlers: baseTipHandlers, tipId, arm } = useInstantTip({ hold: flashSeq, placement: 'flow' })
+  const overlayRoot = useOverlayRoot()
+  // The dialog the chip sits in, if any. A screen reader confined to a modal
+  // dialog does not read a live region outside it, so the status region lives
+  // inside the chip's dialog and in the pane's overlay root otherwise. It is
+  // resolved from the chip when the pointer or keyboard focus first reaches it,
+  // which happens before its click or Enter, so the region is already mounted,
+  // empty, where the copy will fill it.
+  const [dialogHost, setDialogHost] = useState<HTMLElement | null>(null)
+  const noteHost = (el: Element) => {
+    const dialog = el.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]')
+    setDialogHost(prev => (prev === dialog ? prev : dialog))
+  }
+  const tipHandlers: typeof baseTipHandlers = {
+    ...baseTipHandlers,
+    onPointerEnter: (e: React.PointerEvent) => { noteHost(e.currentTarget); baseTipHandlers.onPointerEnter(e) },
+    onFocus: (e: React.FocusEvent) => { noteHost(e.currentTarget); baseTipHandlers.onFocus(e) },
+  }
   const press = (el: HTMLElement) => {
+    noteHost(el)
     arm(el)
     copy(text)
   }
@@ -250,14 +270,18 @@ export function useBubbleCuedCopy(text: string, hint: React.ReactNode, failureMe
     <>
       <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] break-words">{cue}</InstantTip>
       {/* Always mounted: a live region that appears already filled is not
-          reliably read. `select-none`: the span sits in the sentence right
-          after the chip, and `sr-only` hides it from sight but not from a
-          native selection, so a copy across the chip during the flash would
-          paste "Copied!" glued to the value. Same treatment as the path
-          chips' hidden full path. */}
-      <span role="status" aria-live="polite" className="sr-only select-none">
-        {copied ? i18nT('components.markdownRenderer.copied') : ''}
-      </span>
+          reliably read. Portaled OUT of the sentence: any hidden sibling of
+          the chip (`sr-only`'s `position: absolute`, or `user-select: none`)
+          makes Chromium split the paragraph there, so a triple-click selected
+          only the text on one side of the chip; and a selectable one pastes
+          "Copied!" into a copy across the chip during the flash. Outside the
+          text it is in no selection of the message at all. */}
+      {createPortal(
+        <span role="status" aria-live="polite" className="sr-only select-none">
+          {copied ? i18nT('components.markdownRenderer.copied') : ''}
+        </span>,
+        dialogHost ?? overlayRoot,
+      )}
     </>
   )
   return { press, tipHandlers, bubble }

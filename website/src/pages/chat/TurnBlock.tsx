@@ -88,8 +88,13 @@ const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
 // ever hid. Density relief is per-card (ToolCallLine's fold chip) plus the
 // size caps in presentToolDiff, so an edit-heavy turn is N foldable cards,
 // not an immovable wall (see rfc-tool-derived-diff-cards.md).
+// The exception is a row the gateway stamped `file_change_recorded`: the
+// turn's changed-files card lists that change, so the row is a working step
+// and folds with the others (rfc-fold-recorded-edit-cards.md). A row without
+// the stamp (another harness's write shape, a refused path, an older turn)
+// keeps the rule above, since its card may be the only record of the edit.
 const isDiffCardItem = (it: TurnItem) =>
-  it.kind === 'single' && isDiffToolMessage(it.msg)
+  it.kind === 'single' && isDiffToolMessage(it.msg) && it.msg.meta?.file_change_recorded !== true
 // An answered ask_question row carries the only record of the user's answers (its chip), so like a diff card it stays out of both folds.
 const isAskAnsweredItem = (it: TurnItem) =>
   it.kind === 'single' && isAskAnsweredToolMessage(it.msg)
@@ -303,7 +308,10 @@ function substantiveLength(text: string): number {
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
  * any length, else -1. System notice rows (a watchdog recycle, a compaction)
- * never qualify: they trail the answer and must not displace it. Shared by the
+ * never qualify: they trail the answer and must not displace it. Nor does any
+ * row after the turn's last stamped reply (`isTurnEnd`, the reply the runner
+ * recorded): a workflow result or another writer's row landing after it would
+ * otherwise fold the turn's final answer. Shared by the
  * auto-expand decision and the render split so the "what's the always-visible
  * conclusion vs collapsed reasoning" answer can't drift between them (a
  * mismatch wrongly expands reasoning above a visible match and pushes it down).
@@ -311,7 +319,8 @@ function substantiveLength(text: string): number {
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
+  const lastReply = items.findLastIndex(it => it.kind === 'single' && isTurnEnd(it.msg))
+  for (let i = lastReply >= 0 ? lastReply : items.length - 1; i >= 0; i--) {
     const it = items[i]
     if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i

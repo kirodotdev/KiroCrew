@@ -857,8 +857,14 @@ def test_a_long_backslash_run_is_measured_in_bounded_memory(tmp_path, monkeypatc
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    # A few chunk-sized buffers, far below the 1 MiB run.
-    assert peak < chunk * 32, peak
+    # A few chunk-sized buffers, far below the 1 MiB run. The file object's own read
+    # buffer is traced with them, and it is ``io.DEFAULT_BUFFER_SIZE``: 8 KiB up to
+    # CPython 3.13, inside the allowance, and 128 KiB from 3.14, allowed for on top.
+    allowance = chunk * 32
+    if io.DEFAULT_BUFFER_SIZE >= allowance:
+        allowance += io.DEFAULT_BUFFER_SIZE
+    assert allowance < chunk * 256 // 2
+    assert peak < allowance, peak
 
 
 @pytest.mark.parametrize(

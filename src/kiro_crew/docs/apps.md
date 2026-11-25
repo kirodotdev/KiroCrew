@@ -31,6 +31,12 @@ unaffected: it reads your own machine, so everything installed is still listed.
 **Sources** (the gear in the Discover header) is where you add an organization's own
 registry, or install a local directory from a path.
 
+Library's header has a **Discover apps** button that opens Discover. To take the
+Discover row off the left rail, turn off **Show Discover in the sidebar** in
+**Settings → Display → View**. The switch is kept per browser, like a sidebar pin.
+While it is off, the app updates count shows on the Library row, and Discover still
+opens from Search Everywhere and at `/apps`.
+
 ### Enable, disable, update, uninstall
 
 - **Enable** is the activation gate. A disabled app contributes no pages, no agents,

@@ -262,9 +262,11 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.reasoning_effort",
         "agent.refusal_fallback_model",
         "agent.role_efforts.background",
+        "agent.role_efforts.optimizer",
         "agent.role_efforts.subagent",
         "agent.role_efforts.subagent_light",
         "agent.role_models.background",
+        "agent.role_models.optimizer",
         "agent.role_models.subagent",
         "agent.role_models.subagent_light",
         "agent.soft_stop_budget_secs",
@@ -294,6 +296,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.channels_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        "dashboard.expand_linked_items",
         # A feature preview only decides whether the dashboard OFFERS an
         # unreleased page or menu entry; the feature's own routes and checks
         # are the same either way.

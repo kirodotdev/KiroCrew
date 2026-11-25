@@ -374,6 +374,11 @@ the same and the difference is the whole security story:
   Tailscale daemon as that allowed identity; persistence does not turn the QR
   into a tailnet-wide bearer session.
 
+  If `config.local.json` overrides one of those settings, setup stops and names
+  the key. **Fix this** shows each override next to the value that would apply;
+  confirm it and only those keys are removed from `config.local.json`, then
+  setup runs again.
+
   The basic CLI equivalent is:
   ```bash
   kirocrew config set dashboard.tailscale.enabled true   # once per machine
@@ -635,6 +640,16 @@ The public-internet notes above apply here too: put an auth layer in front of
 the proxy, and change settings over SSH, since proxied requests stay
 read-only.
 
+To expose only the Crew API (no dashboard page, no cookie), point the proxy at
+the entry port instead: set `dashboard.entry_port` to a port from 1024 to 65535
+with `kirocrew config set` and restart. The gateway then also listens on that
+port on `127.0.0.1` and `::1`. It serves Crew API routes only, refuses Owner
+routes, and treats every request as forwarded. The proxy must send a `Host` of
+`127.0.0.1`, `[::1]` or `localhost`; any other `Host` gets `400`. Linux and
+macOS only for now. See
+[dashboard-token-auth.md](../system-specs/modules/dashboard-token-auth.md)
+(*Entry port*).
+
 ### Getting a link on your phone
 
 1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
@@ -654,7 +669,10 @@ desktop-style command menu first.
 On a phone, Return starts a new line in the chat composers (the Chat page, a
 mate's chat, the side panel), in a mate thread reply and in Edit & Resend.
 Tap Send to send. A phone's on-screen keyboard has no Shift+Return, so a
-Return that sent would leave no way to write a second line. On a tablet or a
+Return that sent would leave no way to write a second line. This holds in a
+phone browser that draws the page at desktop width or names no phone in its
+user agent, such as an enterprise in-app browser: the phone's own screen size
+decides, not the page width or the user agent. On a tablet or a
 desktop, **Settings → Chat → Composer → Send shortcut** decides what Return
 does.
 

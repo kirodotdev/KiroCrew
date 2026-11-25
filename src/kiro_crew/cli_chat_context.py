@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from kiro_crew.agent_discovery import served_provider_label
+from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_assembly.budget import window_for_provider_client
 from kiro_crew.context_assembly.inclusion import CONTEXT_GROUP_PROJECT
@@ -48,7 +49,8 @@ class _LiveSession(Protocol):
     def context_incarnation(self) -> object: ...
 
 
-#: The provider capabilities that name a Kiro harness, which loads the agent itself.
+#: The provider flags naming the harnesses whose saved session ``kirocrew chat
+#: --continue`` restores (``cli_chat_runs.start_run``).
 _KIRO_HARNESS_FLAGS = ("is_kiro_backend", "is_kas_backend")
 
 
@@ -114,13 +116,14 @@ class CliSessionContext:
     async def first_message(self, provider: object, text: str) -> str | None:
         """*text* as the first message of the session *provider* serves.
 
-        ``None`` means *text* goes as typed: the provider runs kiro-cli or KAS,
-        which load the agent themselves, or, with the context still owed, *text* is
-        a harness command or the build failed, which a one-line notice reports.
+        ``None`` means *text* goes as typed: the provider's harness loads the agent
+        itself (``SessionCapabilities.harness_loads_agent_context``, kiro-cli and
+        KAS), or, with the context still owed, *text* is a harness command or the
+        build failed, which a one-line notice reports.
         *provider* is the live provider; ``build_message`` admits it as the
         session's context provider through ``context_provider_of``.
         """
-        if _on_kiro_harness(provider) or await _is_harness_command(text):
+        if capabilities_of(provider).harness_loads_agent_context or await _is_harness_command(text):
             return None
         try:
             # Off-loop: the build reads memory and may embed the recall query.

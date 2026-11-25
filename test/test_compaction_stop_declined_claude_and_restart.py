@@ -17,6 +17,8 @@ from compaction_stop_declined_helpers import _clear_channel_decline_markers  # n
 from compaction_stop_declined_helpers import KEY, _setup
 
 from kiro_crew.acp_backends import ACP_BACKEND_DEEPSEEK
+from kiro_crew.agent_sdk.backend_identity import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_CANCELLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
@@ -47,9 +49,7 @@ async def test_the_claude_arm_ignores_a_stop_that_ended_the_previous_turn():
     mgr, key, compact, order, notices = await _setup()
     session = mgr._sessions[key]
     session.provider.compact = AsyncMock(side_effect=RuntimeError("provider failed"))
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps, is_claude_backend=lambda _p: True
-    )
+    session.provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
     # A turn holds the session; the compaction queues behind it. The Stop lands
     # on THAT turn, after the compaction task started but before it holds the
     # permit -- the window a counter read before the wait mistakes for its own.
@@ -73,9 +73,9 @@ async def test_the_claude_arm_times_out_behind_a_live_turn_as_a_failure_not_a_ca
     session = mgr._sessions[key]
     live_turn = _ArrivalSemaphore()
     monkeypatch.setattr(session, "semaphore", live_turn)
+    session.provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
     mgr._compaction._deps = dataclasses.replace(
         mgr._compaction._deps,
-        is_claude_backend=lambda _p: True,
         # The budget is the input this test drives to expiry, so it stays tight. Nothing
         # races it: the permit stays held until the verdict is in, and the verdict is
         # awaited under the lost-run bound instead of for a duration.
@@ -110,9 +110,7 @@ async def test_the_claude_arm_hands_the_permit_to_the_waiter_on_a_force_stop():
         raise RuntimeError("cancelled by the harness")
 
     session.provider.compact = AsyncMock(side_effect=_compact)
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps, is_claude_backend=lambda _p: True
-    )
+    session.provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
     task = asyncio.ensure_future(mgr._compaction._compact_session(key, 90.0))
     await await_until(started, what="the compaction starting")
 
@@ -150,9 +148,7 @@ async def test_the_claude_arm_settles_cancelled_when_the_stop_lands_on_its_turn(
         raise RuntimeError("cancelled by the harness")
 
     session.provider.compact = AsyncMock(side_effect=_compact_then_stopped)
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps, is_claude_backend=lambda _p: True
-    )
+    session.provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
     result = await mgr._compaction._compact_session(key, 90.0)
     assert result == "cancelled"
     assert notices == [(False, COMPACT_OUTCOME_CANCELLED)]

@@ -1,8 +1,9 @@
 """What a session's context includes: context-group scope, skills and steering.
 
-A spawning parent narrows the switchable context groups for its sub-agent and the
-operator's toggles narrow them further; :func:`_build_context_scope_section` names
-what a parent withheld. :func:`_render_folder_steering_section` is the one folder
+A spawning parent narrows the switchable context groups for its sub-agent, the
+agent's own spec can drop the memory and lessons groups (:func:`_spec_scoped_groups`)
+and the operator's toggles narrow them further; :func:`_build_context_scope_section`
+names what a parent withheld. :func:`_render_folder_steering_section` is the one folder
 steering renderer, :func:`skill_parts` the one loader call, and
 :func:`steering_resources_part` the one steering-resources gate for a harness that
 reads no agent ``resources`` (Claude Code, Codex, OpenCode and Pi), that session start and
@@ -25,6 +26,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.context_assembly import agent_spec as _agent_spec
 from kiro_crew.context_assembly import budget as _budgets
 
 if TYPE_CHECKING:
@@ -81,6 +83,55 @@ def _build_context_scope_section(groups: frozenset[str] | None) -> str:
         + ".\nIf the task needs any of it, say it was not provided and ask the "
         "parent — do not guess.\n[End of context scope]\n\n"
     )
+
+
+def _agent_includes_cross_session_context(
+    agent: str | None, project: str | None = None, session_key: str | None = None
+) -> bool:
+    """Whether this session of *agent* gets the memory and lessons kept from other sessions.
+
+    ``False`` only for a custom agent whose effective spec sets
+    ``includeCrossSessionContext`` to anything but ``true``, or cannot be read
+    (:func:`_agent_spec._read_include_cross_session_context`). *project* is where
+    the session's agent template is looked up ahead of the global directories, and
+    *session_key* finds the file a pinned session runs from. No agent and a
+    built-in agent always answer ``True``: its spec is generated, so it has no
+    author to opt out.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
+    if not agent or is_kirocrew_default_agent(agent):
+        return True
+    return _agent_spec._read_include_cross_session_context(
+        agent, project, spec_path=ctx.pinned_session_skill_spec(session_key)
+    )
+
+
+def _spec_scoped_groups(
+    keeps_stored: bool, context_groups: frozenset[str] | None
+) -> frozenset[str] | None:
+    """The caller-passed scope, minus the memory and lessons groups unless *keeps_stored*.
+
+    *keeps_stored* is :func:`_agent_includes_cross_session_context`'s answer for
+    the session. An agent that sets ``includeCrossSessionContext: false`` loses
+    the two groups that carry content from the user's other sessions: stored
+    memory, the activity index, recent-session snippets, a memory provider's
+    blocks, learned corrections and experience, per-message lessons and the user
+    profile. The result feeds the same group gates the operator's
+    ``memory.inject_memory`` / ``memory.inject_lessons`` toggles feed
+    (``_config_scoped_groups``), so the spec key is those two toggles for one agent.
+    It can only remove groups, never add one back, and it leaves the project group
+    and this conversation's own history alone. On-demand recall tools are not
+    context injection and are not touched.
+
+    Callers keep the caller-passed value for the ``[CONTEXT SCOPE]`` block, whose
+    "your parent withheld" text is about a spawn's choice, not the agent's own.
+    """
+    if keeps_stored:
+        return context_groups
+    base = SWITCHABLE_CONTEXT_GROUPS if context_groups is None else context_groups
+    return frozenset(base) - {CONTEXT_GROUP_MEMORY, CONTEXT_GROUP_LESSONS}
 
 
 def _render_folder_steering_section(
@@ -223,11 +274,13 @@ def steering_resources_part(
     steering and ``AGENTS.md`` that kiro-cli inherits. A harness that reads that
     ``AGENTS.md`` itself from its working directory (Codex, OpenCode, Pi) does not get it from
     this load. *steering_off* holds the resolved paths this chat switched off;
-    only a Claude Code chat honours it, the one harness whose list offers the
-    switch, and a chat with none takes exactly the old call.
+    only a harness whose capability record says it honours the switch
+    (``SessionCapabilities.honors_chat_steering_off``, Claude Code today) leaves
+    them out, and a chat with none takes exactly the old call.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.steering_off import honoured_for as steering_off_honoured
 
     if essentials or not ctx.acp_driver.crew_loads_spec_steering(provider_type):
         return ""
@@ -236,7 +289,7 @@ def steering_resources_part(
     if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):
         return ""
     reads_agents_md = ctx.acp_driver.reads_project_agents_md(provider_type)
-    if steering_off and ctx.is_claude_code(provider_type):
+    if steering_off and steering_off_honoured(provider_type):
         return ctx._load_steering_resources(
             project, steering_off, harness_reads_agents_md=reads_agents_md
         )

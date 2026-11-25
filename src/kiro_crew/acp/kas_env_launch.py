@@ -126,9 +126,11 @@ def inherited_auth_env(forward_ssh_auth_sock: bool) -> dict[str, str]:
     """The gateway's own ``KRB5CCNAME`` and ``SSH_AUTH_SOCK``, for a server KAS starts.
 
     kiro-cli's MCP children inherit its environment, so they see the two pointers
-    the gateway armed for it. KAS starts a stdio server with a fixed minimal
-    environment instead, so the launcher hands the server the same two, read from
-    the gateway's live environment under the rules the KAS spawn applies:
+    the gateway armed for it. KAS hands a stdio server its own environment too
+    (``kas_env_withhold._ENV_REFERENCE``), whatever that holds; the launcher also
+    writes the same two into the snapshot, read from the gateway's live
+    environment under the rules the KAS spawn applies, so a server it starts gets
+    them as kiro-cli's would:
 
     * ``KRB5CCNAME`` as :func:`kiro_crew.env.resolve_krb5_ccname` settles it. On
       Linux an unset or keyring value becomes the user's own ``FILE:`` cache when
@@ -170,24 +172,81 @@ def launch_through_shim(
     """*projected* rewritten to start through the launcher, its snapshot written.
 
     *env* is what the wire withheld (:func:`withheld_env`); placeholders in it are
-    expanded here, against the same filtered view the gateway's own sidecar uses,
-    because the launcher runs with the engine's reduced environment. *inherited*
-    (:func:`inherited_auth_env`) is written under it as given: those are the
-    gateway's own values, not text to expand, and a key *env* names wins. Raises
-    ``OSError`` when the snapshot cannot be written.
+    expanded here (:func:`_resolved_env`). *inherited* (:func:`inherited_auth_env`)
+    is written under it as given: those are the gateway's own values, not text to
+    expand, and a key *env* names wins. Raises ``OSError`` when the snapshot cannot
+    be written.
     """
-    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
-
     args = projected.get("args")
     launch: dict[str, Any] = {
         "command": projected["command"],
         "args": [a for a in args if isinstance(a, str)] if isinstance(args, list) else [],
-        "env": {**(inherited or {}), **_expand_env_map(dict(env), server=server)},
+        "env": {**(inherited or {}), **_resolved_env(env, agent_id=agent_id, server=server)},
     }
     version = _write_snapshot(
         launch, session_key=SHARED_SESSION, agent_id=agent_id, server=server, shared=True
     )
     return _shim_entry(projected, SHARED_SESSION, agent_id, server, version)
+
+
+#: ``(agent, server, keys)`` :func:`_resolved_env` already logged, so a server every
+#: session of a shared runtime projects is named once per gateway process.
+_LEFT_OUT_LOGGED: set[tuple[str, str, tuple[str, ...]]] = set()
+_LEFT_OUT_LOGGED_LOCK = threading.Lock()
+
+
+def _resolved_env(env: Mapping[str, str], *, agent_id: str, server: str) -> dict[str, str]:
+    """*env* with its ``${NAME}`` and ``${env:NAME}`` references expanded, for the snapshot.
+
+    A reference resolves against the filtered view the gateway's own sidecar uses
+    (``rewriter_env._placeholder_source_env``: its environment and ``agent.env``,
+    credential names dropped), and a miss stays the literal, as on kiro-cli. One
+    exception: a key whose whole value names that key itself (``K: ${K}``) and
+    misses here is left out. The launcher lays the snapshot over the environment
+    the engine starts it with, which is the engine's own and can hold a value the
+    gateway never has (a credential broker's per-process session file, say); the
+    literal would cover it, and leaving the key out hands the server the engine's
+    own ``K``, if it has one. Any other miss keeps its literal, so no fixed text
+    around a reference is lost. Logged once per agent, server and key set, at
+    ``INFO``: it is the expected path for such a key, not a fault.
+    """
+    from kiro_crew.acp.kas_env_literals import _loggable_key_names
+    from kiro_crew.mcp_gateway.rewriter_env import (
+        _ENV_VAR_PLACEHOLDER,
+        _expand_env_placeholders,
+        _placeholder_key,
+        _placeholder_source_env,
+        _placeholder_value,
+    )
+
+    source = _placeholder_source_env()
+    out: dict[str, str] = {}
+    left: list[str] = []
+    for key, value in env.items():
+        ref = _ENV_VAR_PLACEHOLDER.fullmatch(value)
+        if (
+            ref is not None
+            and _placeholder_key(ref.group(1)) == _placeholder_key(key)
+            and _placeholder_value(source, ref.group(1)) is None
+        ):
+            left.append(key)
+            continue
+        out[key] = _expand_env_placeholders(value, source=source, server=server)
+    if left:
+        mark = (agent_id, server, tuple(sorted(left)))
+        with _LEFT_OUT_LOGGED_LOCK:
+            first = mark not in _LEFT_OUT_LOGGED
+            _LEFT_OUT_LOGGED.add(mark)
+        if first:
+            logger.info(
+                "agent %r: MCP server %r: env %s: a reference to the same name, which the "
+                "gateway does not have; left out of the launch, so the server gets the "
+                "engine's own value, if any",
+                agent_id,
+                server,
+                _loggable_key_names(left),
+            )
+    return out
 
 
 #: The session part of a shared launch reference. KAS keeps one MCP pool
@@ -323,8 +382,8 @@ def _shim_entry(
         "--version",
         version,
     ]
-    # The data home is a path, not a secret, and the engine passes only its
-    # default environment to a server, so the launcher learns it here.
+    # The data home is a path, not a secret. The entry names it so the launcher
+    # reads this gateway's snapshots whatever the engine's own environment holds.
     out["env"] = {**(projected.get("env") or {}), "KIROCREW_HOME": data_home}
     return out
 
@@ -345,12 +404,13 @@ def relay_withheld_env(
 
     A pointer goes under the server's own env: a key the spec sets, or one the
     wire kept (a relayed ``${NAME}``), wins. *complete* says every withheld value
-    went into the snapshot, so the caller's "not relaying env" log line has
-    nothing left to name. When the snapshot cannot be written the entry still
-    points at the launcher, with a reference no snapshot answers, so the server
-    refuses to start rather than run without its env. A server that only had
-    pointers pending is handed back as projected, so it starts as it would
-    without them.
+    went into the snapshot or, as a ``K: ${K}`` the gateway cannot resolve, was left
+    to the engine (:func:`_resolved_env`, which names it), so the caller's "not
+    relaying env" log line has nothing left to name. When the snapshot cannot be
+    written the entry still points at the launcher, with a reference no snapshot
+    answers, so the server refuses to start rather than run without its env. A
+    server that only had pointers pending is handed back as projected, so it
+    starts as it would without them.
     """
     if not session_key or not launchable(projected):
         return projected, False, False
@@ -460,15 +520,15 @@ def refuses_plain_http_headers() -> bool:
 def bridgeable(entry: Mapping[str, Any]) -> bool:
     """Whether a projected entry is a remote server the launcher can bridge to.
 
-    Streamable HTTP only: an ``sse`` entry speaks the older two-endpoint transport,
-    which the bridge (:mod:`kiro_crew.kas_http_bridge`) does not, so its headers
-    stay withheld. A url KAS itself would accept (:func:`kas_accepts_url`) is
-    bridged. So is plain ``http`` to another host, which KAS refuses but reaches
-    as the bridge's local stdio server, unless :func:`refuses_plain_http_headers`:
-    that bridge sends the headers in cleartext.
+    Its ``type`` does not matter: like KAS, the bridge (:mod:`kiro_crew.kas_http_bridge`)
+    speaks streamable HTTP and falls back to the older ``sse`` transport. A url KAS
+    itself would accept (:func:`kas_accepts_url`) is bridged. So is plain ``http``
+    to another host, which KAS refuses but reaches as the bridge's local stdio
+    server, unless :func:`refuses_plain_http_headers`: that bridge sends the
+    headers in cleartext.
     """
     url = entry.get("url")
-    if not isinstance(url, str) or entry.get("command") or entry.get("type") == "sse":
+    if not isinstance(url, str) or entry.get("command"):
         return False
     url = url.strip()  # as kas_accepts_url and bridge_url read it
     if not url.lower().startswith(("https://", "http://")):
@@ -798,6 +858,23 @@ def batch_snapshot_names(custom_agents: Any) -> list[str]:
             if all(ref):
                 names.append(snapshot_name(*ref))
     return names
+
+
+def retain_batch(custom_agents: Any) -> None:
+    """Take one more hold on each shared snapshot *custom_agents* references.
+
+    For an entry that repeats another entry's declaration without a projection of
+    its own (the KAS helper repeats its parent's block). A batch lists a name once
+    per entry that references it and :func:`discard_batch` releases it as often,
+    so the repeat must hold it too: releases then equal holds. A name nobody holds
+    (a per-write file, a projection that fell back to withholding) is left alone.
+    """
+    with _SHARE_LOCK:
+        for name in batch_snapshot_names(custom_agents):
+            for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF):
+                key = str(snapshot_dir(leaf) / name)
+                if key in _SHARED_HOLDS:
+                    _SHARED_HOLDS[key] += 1
 
 
 def discard_batch(custom_agents: Any, written: Any = ()) -> None:

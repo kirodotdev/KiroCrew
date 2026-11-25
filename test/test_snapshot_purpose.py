@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from test_snapshot import _setup_fake_kirocrew, unpinnable_argv
 
+from kiro_crew import snapshot as snap
 from kiro_crew.snapshot import (
     COMPONENTS,
     ComponentRefused,
@@ -132,7 +133,12 @@ class TestResolveComponents:
         assert "--purpose backup" in msg, "the refusal must say how to proceed"
 
     def test_backup_allows_everything(self):
-        assert resolve_components(None, Purpose.BACKUP) == list(COMPONENTS)
+        """Every component but the opt-in ones by default, and those when named."""
+        opt_in = list(snap._OPT_IN_COMPONENTS)
+        assert resolve_components(None, Purpose.BACKUP) == [
+            c for c in COMPONENTS if c not in opt_in
+        ]
+        assert resolve_components(opt_in, Purpose.BACKUP) == opt_in
 
     def test_a_full_share_bundle_is_refused_while_any_policy_is_unresolved(self):
         """`--purpose share` with no `--components` must not quietly ship config."""

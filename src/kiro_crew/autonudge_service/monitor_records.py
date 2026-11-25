@@ -23,7 +23,7 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING, Awaitable, Callable, Iterator, Mapping, Sequence
 
 from kiro_crew.autonudge_service.maintenance import (
     _DurabilityDrain,
@@ -53,6 +53,13 @@ from kiro_crew.autonudge_service.timers import (
     _current_task_or_none,
     _drained_bookkeeping,
     _run_admitted_transaction,
+)
+from kiro_crew.monitoring.also_wake import (
+    apply_also_wake_results,
+    claim_also_wake,
+    normalize_also_wake_on,
+    release_undelivered_also_wake,
+    replace_also_wake_on,
 )
 from kiro_crew.monitoring.decision import (
     decide_monitor,
@@ -129,6 +136,7 @@ async def add_monitor(
     budgets: MonitorBudgets,
     wake_instructions: str = "",
     wake_on_terminal: bool = False,
+    also_wake_on: Sequence[str] = (),
     now: float | None = None,
     replace_existing: bool = True,
     replace_stopped: bool = False,
@@ -157,6 +165,7 @@ async def add_monitor(
             budgets=budgets,
             wake_instructions=wake_instructions,
             wake_on_terminal=wake_on_terminal,
+            also_wake_on=also_wake_on,
             now=now,
             replace_existing=replace_existing,
             replace_stopped=replace_stopped,
@@ -192,6 +201,7 @@ async def _add_monitor_locked(
     budgets: MonitorBudgets,
     wake_instructions: str,
     wake_on_terminal: bool = False,
+    also_wake_on: Sequence[str] = (),
     now: float | None,
     replace_existing: bool,
     replace_stopped: bool = False,
@@ -290,6 +300,7 @@ async def _add_monitor_locked(
             if not kind_supports_objective(kind, objective):
                 raise ValueError(f"no monitored kind {kind!r} supports objective {objective!r}")
             validate_runtime_secs(budgets.max_runtime_secs)
+            extras = normalize_also_wake_on(kind, target, also_wake_on) if also_wake_on else []
             monitor = MonitorState(
                 kind=kind,
                 target=target,
@@ -300,6 +311,7 @@ async def _add_monitor_locked(
                 cadence_secs=cadence,
                 wake_instructions=wake_instructions,
                 wake_on_terminal=wake_on_terminal,
+                also_wake_on=extras,
                 next_probe_at=due,
             )
             loop = NudgeLoop(
@@ -500,11 +512,16 @@ async def apply_monitor_probe(
     *,
     now: float,
     config_generation: int,
+    also_wake_results: Mapping[str, MonitorProbeResult] | None = None,
 ) -> MonitorVerdict:
     """Persist one probe decision and any wake claim as one transition.
 
     A refusal that never reaches the decision engine carries no entries: no
     observation was judged, so the verdict has nothing to name.
+
+    *also_wake_results* are this tick's reads of the open extras. They are folded
+    before the decision, and an extra owing a wake takes the tick's one wake only
+    when the target's own decision neither woke nor stopped.
     """
     async with self._lock:
         loop = self._loops.get(monitor_id)
@@ -520,6 +537,7 @@ async def apply_monitor_probe(
         elif state.wake_in_flight:
             return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
         else:
+            apply_also_wake_results(staged_state, also_wake_results or {}, now=now)
             verdict = decide_monitor(staged_state, result.observation, now=now)
             decision = verdict.decision
             staged_state.probe_count += 1
@@ -587,6 +605,11 @@ async def apply_monitor_probe(
                     or "monitor_blocked"
                 )
                 staged_state.stopped_at = now
+            if claim_also_wake(staged_state, decision):
+                verdict = MonitorVerdict(
+                    decision=MonitorDecision.WAKE_ACTIONABLE, entries=verdict.entries
+                )
+                self._set_monitor_deadline(staged, 0.0)
         # Every probe advances durable inspection state and the next
         # deadline. Persist before publishing so a restart cannot restore
         # an overdue schedule and repeat an unchanged probe early.
@@ -797,9 +820,16 @@ async def update_monitor(
     budget_patch: dict[str, int] | None = None,
     wake_instructions: str | None = None,
     creation_surface: MonitorCreationSurface | None = None,
+    also_wake_on: Sequence[str] | None = None,
     _prior_snapshot_out: list[NudgeLoop] | None = None,
 ) -> NudgeLoop | None:
-    """Patch an active structured record without implicit revival."""
+    """Patch an active structured record without implicit revival.
+
+    ``also_wake_on`` REPLACES the extras list (``[]`` clears it) and is allowed
+    while a wake is in flight: it touches neither ``last_wake_fingerprint`` nor
+    ``wake_in_flight``, and bumps ``config_generation`` so a racing probe is
+    declined. A retarget onto a listed extra drops that entry.
+    """
     admission = self._admit_mutation(
         allow_multiple_persistence=_MONITOR_UPDATE_POST_COMMIT.get() is not None
     )
@@ -814,6 +844,7 @@ async def update_monitor(
             budget_patch=budget_patch,
             wake_instructions=wake_instructions,
             creation_surface=creation_surface,
+            also_wake_on=also_wake_on,
             _prior_snapshot_out=_prior_snapshot_out,
             admission=admission,
         ),
@@ -840,6 +871,7 @@ async def _update_monitor_admitted(
     budget_patch: dict[str, int] | None,
     wake_instructions: str | None,
     creation_surface: MonitorCreationSurface | None,
+    also_wake_on: Sequence[str] | None,
     _prior_snapshot_out: list[NudgeLoop] | None,
     admission: _MutationAdmission,
 ) -> NudgeLoop | None:
@@ -910,7 +942,18 @@ async def _update_monitor_admitted(
                 validate_runtime_secs(staged_state.budgets.max_runtime_secs)
             if wake_instructions is not None:
                 staged_state.wake_instructions = wake_instructions
+            extras = staged_state.also_wake_on
+            if also_wake_on is not None:
+                extras = normalize_also_wake_on(
+                    staged_state.kind, staged_state.target, also_wake_on
+                )
+            extras_changed = replace_also_wake_on(
+                staged_state, [extra for extra in extras if extra != staged_state.target]
+            )
+            if extras_changed and not reset_baseline:
+                staged_state.config_generation += 1
             if reset_baseline:
+                staged_state.also_wake_claim = {}
                 staged_state.config_generation += 1
                 staged_state.last_observation = {}
                 staged_state.last_observation_status = None
@@ -1149,6 +1192,7 @@ async def _record_monitor_turn_completion_admitted(
             staged_state.wake_count += 1
         staged_state.wake_in_flight = False
         staged_state.wake_delivery = None
+        staged_state.also_wake_claim = {}
         staged_state.completion_evidence_deadline = 0.0
         staged_state.last_completion_fingerprint = completion.fingerprint
         staged_state.last_completion_disposition = disposition
@@ -1237,6 +1281,7 @@ def _retain_accepted_terminal_completion(
     )
     if not accepted:
         self._accepted_monitor_turns.pop(loop.id, None)
+        release_undelivered_also_wake(state)
         state.wake_in_flight = False
         state.wake_delivery = None
         state.completion_evidence_deadline = 0.0
@@ -1301,6 +1346,7 @@ async def record_monitor_dispatch_failure(
         staged = deepcopy(loop)
         staged_state = staged.monitor
         assert staged_state is not None
+        release_undelivered_also_wake(staged_state)
         staged_state.wake_in_flight = False
         staged_state.completion_evidence_deadline = 0.0
         staged_state.wake_delivery = MonitorDispatchResult.UNAVAILABLE
@@ -1489,6 +1535,7 @@ async def record_monitor_completion_evidence_unavailable(
         assert staged_state is not None
         staged_state.wake_in_flight = False
         staged_state.wake_delivery = None
+        staged_state.also_wake_claim = {}
         staged_state.completion_evidence_deadline = 0.0
         if not terminal:
             staged.active = False
@@ -1510,6 +1557,7 @@ async def _deactivate_unwired_monitor(self: AutoNudgeService, loop_id: str) -> N
         staged = deepcopy(loop)
         staged.active = False
         assert staged.monitor is not None
+        release_undelivered_also_wake(staged.monitor)
         staged.monitor.wake_in_flight = False
         staged.monitor.wake_delivery = None
         staged.monitor.completion_evidence_deadline = 0.0

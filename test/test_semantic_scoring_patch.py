@@ -207,6 +207,27 @@ def test_another_process_commit_falls_back_to_a_rebuild(pair) -> None:
     assert {"project.foreign.fact", "project.local.fact"} <= keys
 
 
+def test_a_rebuild_stems_only_the_texts_another_process_changed(pair, monkeypatch) -> None:
+    store, reference = pair
+    _warm(store)
+    reference.set_semantic("project.item_3.fact", "changed tokyo zebra", 1.0, "user_explicit")
+    queries = _QUERIES + ["zebra"]
+    want = {query: reference._semantic_candidates_v1(query) for query in queries}
+    stemmed: list[str] = []
+    original = semantic._text_scoring._row_stem_tokens_uncached
+
+    def counting(text: str):
+        stemmed.append(text)
+        return original(text)
+
+    monkeypatch.setattr(semantic._text_scoring, "_row_stem_tokens_uncached", counting)
+    for query in queries:
+        assert store._semantic_candidates_v1(query) == want[query]
+    # Only the changed row's value is new text; the other 119 texts keep their terms.
+    assert stemmed == ['"changed tokyo zebra"']
+    _assert_matches_rebuild(store, reference)
+
+
 def test_a_rebuild_does_not_hold_the_db_lock(pair) -> None:
     store, _ = pair
     store._semantic_scoring = None
@@ -336,3 +357,14 @@ def test_the_term_index_vocabulary_is_bounded(monkeypatch) -> None:
         assert len(grown._terms) <= bound
     assert grown is None, "the index must be dropped once the vocabulary outgrows its bound"
     assert len(index._terms) > bound, "the drop happens past the bound, not before it"
+
+
+def test_a_seeded_build_past_the_vocabulary_bound_starts_over(monkeypatch) -> None:
+    monkeypatch.setattr(term_index, "VOCAB_GROWTH_SLACK", 0)
+    old = term_index.RowTermIndex.build(["stale"], np)
+    assert old is not None
+    texts = ["alpha", "gamma delta epsilon zeta"]
+    seeded = term_index.RowTermIndex.build(texts, np, previous=(old, ["stale"]))
+    fresh = term_index.RowTermIndex.build(texts, np)
+    assert seeded is not None and fresh is not None
+    assert seeded._terms == fresh._terms, "past the bound the old vocabulary is not carried"

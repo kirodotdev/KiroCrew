@@ -15,6 +15,7 @@ import os
 import shlex
 import stat
 import tempfile
+from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
@@ -107,6 +108,169 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
     except Exception:  # pragma: no cover - defensive, same posture as above
         logger.debug("could not resolve the kiro agents dir for sealing", exc_info=True)
     return (dir_targets, file_targets)
+
+
+def _resolved_kiro_mcp_registry_targets() -> list[str]:
+    """kiro-cli's user MCP registry (``settings/mcp.json``), sealed read-only as a file.
+
+    Every kiro-cli and KAS session that reads the user's MCP servers launches what this
+    file names, and the MCP page writes it from the gateway, so only the person changes
+    it: through the MCP page or a ``request_server`` card (the "agents ask before
+    changing gateway-trusted files" entries in ``docs/decisions/``). Read stays open.
+    The KAS engine only reads it. kiro-cli writes it from ``kiro-cli mcp add`` in a
+    terminal, which runs outside every sandbox, and from its in-chat ``/mcp`` command;
+    inside Crew the harness and its shell share one sandbox, so that in-chat write is
+    refused like its writes to the agents tree already are.
+
+    Both spellings: the one the gateway reads and writes (``$HOME/.kiro``) and the one
+    kiro-cli reads (``KIRO_HOME``, else ``~/.kiro``), retaining an accepted override's
+    unresolved spelling beside its resolved path so the parent guards pin its symlinks.
+    Every spelling also contributes its resolved path, even when absent, so both paths
+    are sealed. Resolving these targets makes no filesystem writes.
+    Not part of the agents targets, so the delegated-workspace guard
+    (``sandbox_delegation``) does not refuse a workspace that merely contains this file.
+    Never raises.
+    """
+    from kiro_crew.config.paths import kiro_home
+
+    spellings: list[str] = []
+    try:
+        spellings.append(os.path.normpath(str(Path.home() / ".kiro" / "settings" / "mcp.json")))
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        pass
+    try:
+        home = kiro_home()
+        spellings.append(os.path.normpath(str(home / "settings" / "mcp.json")))
+        override = os.environ.get("KIRO_HOME")
+        if override and Path(override).expanduser().resolve() == home:
+            spellings.append(
+                os.path.normpath(os.path.join(os.path.expanduser(override), "settings", "mcp.json"))
+            )
+    except Exception:
+        pass
+    for spelling in tuple(spellings):
+        try:
+            spellings.append(os.path.realpath(spelling))
+        except Exception:
+            pass
+    return list(dict.fromkeys(spellings))
+
+
+#: What an absent kiro-cli MCP registry is created with: the same "no servers" every
+#: reader (kiro-cli, KAS, the MCP page) gives an absent file.
+_EMPTY_KIRO_MCP_REGISTRY = b'{\n  "mcpServers": {}\n}\n'
+
+
+#: How many links a registry chain may pass through before it is left unsealed.
+_MAX_REGISTRY_LINK_HOPS = 40
+
+
+def _registry_chain_end(link: str, value: str) -> tuple[str, str] | None:
+    """The absent far end of the link chain at *link*, and its folder, or ``None``.
+
+    *value* is *link*'s own ``readlink``. Each further hop is read exactly once
+    with ``readlink`` and the next name is worked out from that value; only a
+    hop's FOLDER is resolved, never a name a hop was read from. ``None`` means
+    the chain reaches an existing non-link. Raises ``ValueError`` for a chain
+    longer than :data:`_MAX_REGISTRY_LINK_HOPS`, and ``OSError`` as the calls do.
+    """
+    current, hop_value = link, value
+    for _ in range(_MAX_REGISTRY_LINK_HOPS):
+        lexical = os.path.join(os.path.dirname(current), hop_value)
+        parent = os.path.realpath(os.path.dirname(lexical))
+        current = os.path.join(parent, os.path.basename(lexical))
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return current, parent
+        if not stat.S_ISLNK(mode):
+            return None
+        hop_value = os.readlink(current)
+    raise ValueError("too many links")
+
+
+def _materialize_kiro_mcp_registry() -> list[str]:
+    """Create an absent kiro-cli ``settings/mcp.json`` so the Linux seal has a file to bind.
+
+    The namespace launcher seals only a name that exists. An absent registry is created
+    only under a kiro home that exists, with ``settings`` made 0o700 when missing.
+    A dangling registry symlink is preserved and its absent referent is published only
+    when its resolved parent is a real directory; no referent parents are created. The
+    link is read once with ``readlink`` and the referent comes from that value, so no
+    link screen is followed by a second resolve of the same name.
+
+    Published through ``_publish_empty_ceiling`` (a 0o600 sibling temp, then ``os.link``),
+    so the name appears only once the whole document is in it: a full disk, a short write
+    or a kill mid-write leaves no file rather than an empty one that every later spawn
+    would skip and every reader would call corrupt. ``os.link`` never overwrites and never
+    follows the target name, so an existing file, or a link the person put there, is
+    never touched.
+
+    Never raises, unlike the crew-home ceilings: this file is not a governance ceiling,
+    and a spawn must not fail on it. A registry that cannot be created is logged and left
+    unsealed for this spawn; the file tools stay refused on it either way.
+    """
+    created: list[str] = []
+    targets = _resolved_kiro_mcp_registry_targets()
+    # The far end of every registry link is also a target (its resolved spelling).
+    # It is reached only through the link branch below, never through the plain
+    # branch's settings mkdir, so a dangling chain creates no folder at its end.
+    # Each link is read ONCE (``_registry_chain_end`` reads every further hop once
+    # too), and the far end is worked out from those values, never by resolving
+    # the registry name again: a link swapped after an ``islink`` screen would
+    # otherwise send the publish somewhere unscreened.
+    link_values: dict[str, str] = {}
+    referents: set[str] = set()
+    for target in targets:
+        with contextlib.suppress(OSError, ValueError):
+            link_values[target] = os.readlink(target)
+            # This resolve only SKIPS a target; it never chooses where to write.
+            referents.add(os.path.realpath(target))
+    for target in targets:
+        # Referents use only their existing parent, never the settings mkdir below.
+        if target in referents:
+            continue
+        link_value = link_values.get(target)  # None: not a link, the plain branch
+        if link_value is not None:
+            try:
+                end = _registry_chain_end(target, link_value)
+                if end is None:
+                    continue  # the chain reaches a real file: nothing to publish
+                referent, parent = end
+                referents.add(referent)
+                if stat.S_ISDIR(os.lstat(parent).st_mode) and _publish_empty_ceiling(
+                    referent, parent, _EMPTY_KIRO_MCP_REGISTRY
+                ):
+                    created.append(referent)
+                    continue
+            except (OSError, ValueError):
+                pass
+            logger.warning(
+                "could not create the referent of %s; registry left unsealed for this spawn",
+                safe_terminal_line(target),
+            )
+            continue
+        settings = os.path.dirname(target)
+        if os.path.lexists(target) or not os.path.isdir(os.path.dirname(settings)):
+            continue
+        try:
+            if not os.path.lexists(settings):
+                os.mkdir(settings, 0o700)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            logger.warning(
+                "could not create %s to seal it read-only: %s",
+                safe_terminal_line(target),
+                exc.strerror or exc,
+            )
+            continue
+        if _publish_empty_ceiling(target, settings, _EMPTY_KIRO_MCP_REGISTRY):
+            created.append(target)
+        elif not os.path.lexists(target):
+            # Absent after a failed publish, so nothing raced in: really unsealed.
+            logger.warning("could not create %s to seal it read-only", safe_terminal_line(target))
+    return created
 
 
 class SandboxCeilingUnsealable(RuntimeError):

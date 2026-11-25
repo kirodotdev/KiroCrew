@@ -31,8 +31,11 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard, launch_tuning, pi_steer_turn, transport_framing
-from kiro_crew.acp.client_claude_session import (
+from kiro_crew.acp.client_claude_session import (  # noqa: F401 -- CLAUDE_ACP_TESTED_VERSION
     CLAUDE_ACP_STEERING_MIN_VERSION,
+    CLAUDE_ACP_TESTED_INSTALL,
+    CLAUDE_ACP_TESTED_RANGE,
+    CLAUDE_ACP_TESTED_VERSION,
     _adapter_version_at_least,
 )
 from kiro_crew.acp.client_timeouts import (
@@ -179,12 +182,6 @@ GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 CODEX_ACP_TESTED_VERSION = "2.3.0"
 CODEX_ACP_TESTED_RANGE = ((2, 0, 0), (3, 0, 0))
 
-#: The claude-agent-acp release the Real Adapter Contract lane pins in
-#: ``test/real_adapters/package.json``, which the live claude captures report. Its
-#: releases are 0.x, where each minor line can break, so the tested range is 0.94.x.
-CLAUDE_ACP_TESTED_VERSION = "0.94.0"
-CLAUDE_ACP_TESTED_RANGE = ((0, 94, 0), (0, 95, 0))
-
 #: The pi-acp release the same lane pins (spawning pi 1.4.0), which the live pi captures
 #: report. It is 0.0.x, where each patch can break, so the range is that release.
 PI_ACP_TESTED_VERSION = "0.0.34"
@@ -222,11 +219,7 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
         f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]}"
         f"@{CODEX_ACP_TESTED_RANGE[0][0]}",
     ),
-    ACP_BACKEND_CLAUDE: (
-        CLAUDE_ACP_TESTED_RANGE,
-        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]}"
-        f"@{CLAUDE_ACP_TESTED_VERSION}",
-    ),
+    ACP_BACKEND_CLAUDE: (CLAUDE_ACP_TESTED_RANGE, CLAUDE_ACP_TESTED_INSTALL),
     ACP_BACKEND_PI: (
         PI_ACP_TESTED_RANGE,
         f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_PI]}@{PI_ACP_TESTED_VERSION}",

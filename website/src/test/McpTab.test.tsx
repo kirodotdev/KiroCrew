@@ -876,6 +876,19 @@ describe('McpTab disabled-in-config rows', () => {
     expect(chip.getAttribute('title')).toBe('Copied')
   })
 
+  it('shows a path holding markup or placeholders exactly as stored (#22834)', async () => {
+    // The path is stored text: <Trans> must never parse it as markup or fill
+    // its placeholders, in the line or in its plain-text title twin.
+    const odd = '~/<i>x</i>/{{file}}/mcp.json'
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig({ disabledInFile: odd })])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
+    expect(where).toHaveTextContent(`Disabled in ${odd}. Editing this file lifts its disable`)
+    expect(within(where).getByTestId('mcp-disabled-in-config-path')).toHaveTextContent(odd)
+    expect(where.querySelector('i')).toBeNull()
+  })
+
   it('names the shared MCP config when the backend cannot name the file', async () => {
     mockApi.mcpServers.mockResolvedValue([disabledInConfig({ disabledInFile: null })])
     renderTab()

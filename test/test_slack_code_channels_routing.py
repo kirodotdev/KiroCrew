@@ -8,6 +8,8 @@ recorded-payload fake; see ``slack_code_channels_helpers``.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -1247,6 +1249,10 @@ async def test_the_first_message_is_the_request_alone_with_the_framing_as_contex
     # A preview request goes to an html view, not an upload or a screenshot.
     assert f"call {code_tools.SET_VIEW} with type html" in entry["content"]
     assert "self-contained HTML document" in entry["content"]
+    # A diff, asked for or offered, opens in the Code tab, not as a pasted code block.
+    assert f"call {code_tools.SET_VIEW} with type diff" in entry["content"]
+    assert "'Show me the diff'" in entry["content"]
+    assert "Never paste the diff into a message" in entry["content"]
 
 
 async def test_a_binding_that_cannot_be_saved_leaves_no_session_behind(
@@ -1429,6 +1435,38 @@ async def test_queued_uploads_survive_the_turns_ahead_of_them(env: Env, tmp_path
     slot.queue_depth = 0
     await routing._temps_on_turn_end(binding, turn)
     assert not any(u.exists() for u in uploads)
+
+
+def test_a_refused_attachment_temp_delete_is_logged_without_its_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A delete the OS refuses (Windows: a scanner holding the file) logs one
+    WARNING naming the error and no path; a missing file stays silent."""
+    held, gone, freed = (tmp_path / f"{n}.png" for n in ("held", "gone", "freed"))
+    held.write_bytes(b"png")
+    freed.write_bytes(b"png")
+    real_unlink = os.unlink
+
+    def unlink(path: str) -> None:
+        if path == str(held):
+            raise PermissionError(13, "Permission denied", path)
+        real_unlink(path)
+
+    # Scoped to the call: a fixture teardown's rmtree calls os.unlink(dir_fd=).
+    with (
+        monkeypatch.context() as patched,
+        caplog.at_level(logging.DEBUG, logger="kiro_crew.slack.code_channels.routing"),
+    ):
+        patched.setattr(os, "unlink", unlink)
+        routing._unlink_all([str(held), str(gone), str(freed)])
+    records = [r for r in caplog.records if r.name == "kiro_crew.slack.code_channels.routing"]
+    assert len(records) == 1, [r.getMessage() for r in records]
+    record = records[0]
+    message = record.getMessage()
+    assert record.levelno == logging.WARNING
+    assert "PermissionError" in message and "errno=13" in message
+    assert str(tmp_path) not in message and "held" not in message
+    assert held.exists() and not freed.exists()
 
 
 def test_the_queue_drain_check_reads_the_real_slot_property() -> None:

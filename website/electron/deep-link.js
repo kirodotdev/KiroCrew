@@ -133,7 +133,7 @@ function resolveDeepLink(raw) {
     if (!CREW_SLOT_KEY_RE.test(sid)) return refuse("invalid sid");
     const crew = url.searchParams.get("crew") || "";
     if (!CREW_ID_RE.test(crew)) return { ok: true, route: "/chat?crewError=1", slotKey: "" };
-    return { ok: true, route: `/chat?crew=${crew}&crewSid=${encodeURIComponent(sid)}`, slotKey: sid };
+    return { ok: true, route: crewChatRoute(crew, sid), slotKey: sid };
   }
 
   if (host === "apps") {
@@ -241,6 +241,21 @@ const CREW_SLOT_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // src/kiro_crew/instances/registry.py; a test pins the two).
 const CREW_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
+/**
+ * The dashboard route that opens session *sid* on crew *crew*, or "" when either
+ * fails the crew link's rules above. `openDashboardSession` sends the same
+ * route for a session an app window shown from that crew names.
+ *
+ * @param {string} crew crew id.
+ * @param {string} sid the session's key on that crew.
+ * @returns {string}
+ */
+function crewChatRoute(crew, sid) {
+  if (typeof crew !== "string" || !CREW_ID_RE.test(crew)) return "";
+  if (typeof sid !== "string" || !CREW_SLOT_KEY_RE.test(sid)) return "";
+  return `/chat?crew=${crew}&crewSid=${encodeURIComponent(sid)}`;
+}
+
 // App names: the manifest's kebab-case grammar, `KEBAB_RE` in
 // src/kiro_crew/apps/manifest_names.py, which every door that admits an app
 // enforces. It is checked here with plain logic rather than a regex, because
@@ -337,6 +352,7 @@ function markTouchesNonAscii(chars, i) {
 
 module.exports = {
   SCHEME,
+  crewChatRoute,
   deepLinkFromArgv,
   isAppName,
   isCrewName,

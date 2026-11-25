@@ -350,9 +350,9 @@ export default function ComputerUseLiveView() {
       // Strictly read-only and never steals focus or claims Escape (see the
       // module doc): it coexists ALONGSIDE a focused composer rather than in
       // front of it, so it must not register as an Escape-owning surface to
-      // composer/chat-input/stopKey.ts's generic `[role="dialog"]` probe —
+      // chat-input/escapeOwners.ts's generic `[role="dialog"]` probe —
       // that probe exists for surfaces which, unlike this one, DO claim
-      // Escape for themselves (issue #22315, HOLD item 4). Scoped to this one
+      // Escape for themselves. Scoped to this one
       // component rather than widened to "non-modal dialogs" in general,
       // because SessionControlHost is also a non-modal `role="dialog"` that
       // deliberately lets Escape reach the document unstopped (its onKeyDown

@@ -202,6 +202,8 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       }>,
     // Vector memory
     vectorSemantic: (store?: string) => fetch('/api/memory/semantic' + memoryStoreQuery(store)).then(j),
+    /** The rows whose key or value contains `q`, at most `limit` of them. */
+    vectorSemanticSearch: (q: string, limit = 20) => fetch('/api/memory/semantic?' + new URLSearchParams({ q, limit: String(limit) })).then(j) as Promise<{ entries: { key: string; value_json?: unknown; confidence: number; source?: string }[] }>,
     vectorSemanticWrite: (key: string, value: unknown, store?: string) => put('/api/memory/semantic' + memoryStoreQuery(store), { key, value, source: 'user_explicit' }).then(j),
     vectorSemanticDelete: (key: string, store?: string) => del('/api/memory/semantic/' + encodeURIComponent(key) + memoryStoreQuery(store)),
     vectorEpisodic: (limit = 50, offset = 0, tags?: string, store?: string) => fetch('/api/memory/episodic?limit=' + limit + '&offset=' + offset + (tags ? '&tags=' + encodeURIComponent(tags) : '') + memoryStoreQuery(store, '&')).then(j),

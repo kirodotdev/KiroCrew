@@ -23,6 +23,8 @@ from denied_commands_security_helpers import (
 )
 from named_cases_helpers import named_cases
 
+from kiro_crew.security import argv_floor as _argv_floor
+
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
@@ -197,10 +199,52 @@ class TestSelfProtectionKillTargetScoping:
                 "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
                 "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
             ),
+            # A same-line assignment of literal text is resolved, so a name joined
+            # from such assignments is the name itself.
+            *_named(
+                "test_a_name_joined_from_literal_assignments_is_a_kill",
+                'kill $(a=kiro; b=crew; pgrep -f "$a$b")',
+                'kill $(case x in x) :;; esac; a=kiro; b=crew; pgrep -f "$a$b")',
+                f'a=kiro; b=crew; {_PK} -f "$a$b"',
+            ),
         ],
     )
     def test_kill_spellings_that_name_the_cli_are_kills(self, origin, cmd):
         assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        ['kill $(pgrep -f "$pattern")', "kill $(pgrep -f otherproduct)"],
+        ids=["pattern-variable", "another-product"],
+    )
+    def test_a_lookup_by_a_pattern_variable_or_another_name_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'kill $(pgrep -f "$(printf kiro)$(printf crew)")',
+            'kill $(case x in x) :;; esac; pgrep -f "$(printf kiro)$(printf crew)")',
+            'kill $(x=$(printf kiro); pgrep -f "${x}crew")',
+            "kill $(pgrep -f kiro{c..c}rew)",
+            "kill $(pidof kiro{,}crew)",
+            f"{_PK} -f kiro{{c..c}}rew",
+            f'{_PK} -f "$(printf kiro)$(printf crew)"',
+        ],
+        ids=[
+            "printed-halves",
+            "printed-halves-after-esac",
+            "printed-assignment",
+            "brace-sequence",
+            "pidof-brace-list",
+            "pkill-brace-sequence",
+            "pkill-printed-halves",
+        ],
+    )
+    def test_an_assembled_lookup_target_remains_residual(self, cmd):
+        # A stated residual of this floor: a target the command assembles from what a
+        # substitution prints, or from a brace expansion, is not worked out.
+        assert _denied_by(cmd) != _RULE_KILL, cmd
 
     def test_nested_shell_payload_bare_kill_allowed(self):
         # Descending must not widen: a bare PID kill inside a payload is still
@@ -271,6 +315,42 @@ class TestSelfProtectionKillTargetScoping:
                 (f"X={_NAME}; ${{X}} {_TOK}", _RULE_MINT),
                 (f"X={_NAME}; $X>/tmp/x {_TOK}", _RULE_MINT),
                 (f"P={_PK}; $P -f {_NAME}", _RULE_KILL),
+            ),
+            # PowerShell's `$name = value`, however its `=` or `;` is spaced, binds the name for a
+            # later use by the mint; a value that is not the verb keeps the command allowed.
+            # A bare value after `=` runs a command and binds nothing, alone or with more words.
+            # The name an assignment writes is never read as its earlier value.
+            # Bash runs the same words as a command or a test, so each line's bash reading
+            # is judged too and still refuses what it refused before.
+            *_named(
+                "test_powershell_assignment_resolves",
+                (f"$t = '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f'$t = "{_TOK}"; {_NAME} $t', _RULE_MINT),
+                (f"$t='{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t= '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t ='{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t = 'doctor'; $t = '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"T=doctor; $T = '{_TOK}'; {_NAME} $T", _RULE_MINT),
+                (f"$x = '{_NAME}'; & $x {_TOK}", _RULE_MINT),
+                (f"$a = 'x';$t='{_TOK}';{_NAME} $t", _RULE_MINT),
+                (f"$a = '{_TOK}'; $b = $a; {_NAME} $b", _RULE_MINT),
+                (f"$t = '{_TOK}'; $t = '' | {_NAME} $t", _RULE_MINT),
+                (f"echo \"$( $t = '{_TOK}'; {_NAME} $t )\"", _RULE_MINT),
+                (f"$t = 'doctor'; {_NAME} $t", None),
+                (f'[ "$m" = {_TOK} ] || {_NAME} $m', None),
+                (f"T={_TOK}; [ $T = doctor ] || {_NAME} $T", _RULE_MINT),
+                (f"T={_TOK}; $T = doctor; {_NAME} $T", _RULE_MINT),
+                (f"$t = 'x'; t+={_TOK}; {_NAME} $t", _RULE_MINT),
+                (f"T={_TOK}; $BASH = 'x'; echo \"{_NAME} $T\" | $BASH", _RULE_MINT),
+                (f"${_NAME} = 'x'; ${_NAME} {_TOK}", _RULE_MINT),
+                (f"$out = {_NAME} doctor; $out -match '{_TOK}'", None),
+                (f"$out = ({_NAME} doctor); $out -match '{_TOK}'", None),
+                (f"$s = {_NAME} status | out-string; $s -match '{_TOK}'", None),
+                (f"$out = {_NAME} ; $out -match '{_TOK}'", None),
+                (f"$out = {_NAME}\n$out -match '{_TOK}'", None),
+                (f"$t = {_TOK}; {_NAME} $t", None),
+                (f"$cli = '{_NAME}'\n$cli = Join-Path '/tmp' '{_TOK}'", None),
+                (f"$a = '{_NAME}'; $b = $a; $b = Join-Path '/tmp' '{_TOK}'", None),
             ),
             # A carrier's quoted script that assigns the name and then uses it is read
             # as a script of its own, so the assignment resolves inside it.
@@ -685,8 +765,168 @@ class TestSelfProtectionKillTargetScoping:
     def test_expanded_or_executing_spelling_blocked(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
 
+    @pytest.mark.parametrize(
+        ("program", "args", "rule"),
+        [
+            ("/usr/bin/p*ll", f"-f {_NAME}", _RULE_KILL),
+            ("kiro*rew", _TOK, _RULE_MINT),
+        ],
+    )
+    @pytest.mark.parametrize("directory", [False, True])
+    @pytest.mark.parametrize(
+        "redirect",
+        ["", "<<<x/", "</tmp/", ">/tmp/", ">>/tmp/", "<<<'x/'", "<input", ">output"],
+    )
+    def test_slash_glob_at_program_position_still_reads_as_a_program(
+        self, program, args, rule, directory, redirect
+    ):
+        # Outside a `for` list a trailing slash proves nothing: bash runs a function
+        # named `p*ll/`, and a redirect target's slash is not the program's.
+        command = f"{program}{'/' if directory else ''}{redirect} {args}"
+        assert _denied_by(command) == rule
+
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            # The loop value is rewritten back into a program path, then run.
+            (f"for w in /usr/bin/p*ll/; do ${{w%/}} -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/local/bin/kiro*rew/; do ${{w%/}} {_TOK}; done", _RULE_MINT),
+            (f"for w in /usr/bin/p*ll/; do $w -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/bin/p*ll/; do $(dirname $w/z) -f {_NAME}; done", _RULE_KILL),
+            (f'for w in /usr/bin/p*ll/; do eval "${{w%/}} -f {_NAME}"; done', _RULE_KILL),
+            (
+                f"function p*ll/ {{ /usr/bin/pkill \"$@\"; }}; 'p*ll/' -f {_NAME}",
+                _RULE_KILL,
+            ),
+            # The printed loop value is rewritten downstream and run by a shell.
+            (
+                f'for w in /usr/bin/p[k]ill/; do echo "$w -f {_NAME}"; done'
+                " | sed 's@/ -f@ -f@' | /bin/ba?h",
+                _RULE_KILL,
+            ),
+            (
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln -s {_NAME} \"$w/z\"; done' 2>&1 | bash",
+                _RULE_KILL,
+            ),
+            (f"for w in /usr/bin/p*ll/; do echo $w {_NAME}; done > /tmp/x.sh", _RULE_KILL),
+            # `for` is only an echo argument; the glued word after `;` is the program.
+            (
+                f'function p*ll/ {{ /usr/bin/p?ill "$@"; }}; echo for w in x;p*ll/ -f {_NAME}',
+                _RULE_KILL,
+            ),
+            (f"echo for w in x&&kiro*rew/ {_TOK}", _RULE_MINT),
+            # A `{ …; }` loop body, with a decoy `do` later in an echo argument.
+            (
+                'for w in a/; { function p*ll/ { /usr/bin/p?ill "$@"; }; '
+                f"'p*ll/' -f {_NAME}; }}; echo do done",
+                _RULE_KILL,
+            ),
+            (f"for w in a/; {{ 'kiro*rew/' {_TOK}; }}; echo do done", _RULE_MINT),
+            # An outer frame shadows a body program, then a nested shell runs the loop.
+            (
+                "ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln $w {_NAME}; done'",
+                _RULE_KILL,
+            ),
+            # The same, with the whole command itself shaped as a `for` loop.
+            (
+                "for w in a/; do ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/bin/p*ll/; do ln $v {_NAME}; done'; done",
+                _RULE_KILL,
+            ),
+            (
+                "for w in a/; do ln() { ${1%/} $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/local/bin/kiro*rew/; do ln $v {_TOK}; done'; done",
+                _RULE_MINT,
+            ),
+            # A body program that stores its output (`printf -v`) and then runs it.
+            (
+                f'for w in /usr/bin/pkil*/; do printf -v cmd "%.14s -f {_NAME}" "$w"; $cmd; done',
+                _RULE_KILL,
+            ),
+        ],
+    )
+    def test_directory_glob_whose_value_can_run_still_denied(self, cmd, rule):
+        assert _denied_by(cmd) == rule
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "x=w; ${!x%/} -f t",
+            "declare -n r=w; ${r%/} -f t",
+            "x=$w/z; ${x%//z} -f t",
+            "eval $w",
+            "$w -f t",
+            "echo `basename $w`",
+            "for v in $w; do $v -f t; done",
+            "echo $w/z | sed s@//z@@",
+            "ln -s t $w/z 2>&1",
+            "echo $w/z >> /tmp/x.sh",
+        ],
+    )
+    def test_loop_value_that_can_be_rewritten_grants_no_exemption(self, body):
+        # The exemption is withdrawn for the whole frame, not only when the target
+        # sits in the same command as the glob.
+        from kiro_crew.security.argv_floor_self import _for_list_directory_globs, _self_frames
+
+        text = f"for w in /usr/bin/p*ll/; do {body}; done"
+        frames = _self_frames(text)
+        assert all(
+            not _for_list_directory_globs(tokens, text, src == text) for src, tokens in frames
+        )
+
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do ln -sfn /opt/{_NAME}/y $w/z; done",
+            f'for w in /srv/x/*/; do ln -sfn /path/to/{_NAME}/thing "$w/z"; done',
+            f"for w in /a/*/ /b/*/\ndo echo ${{w}}/q {_NAME}; done",
+            f"for w in */; do echo {_NAME}; done",
+            f"for w in '/opt/x/*/'; do echo {_NAME}; done",
+            f'for w in "/opt/x/*/"; do echo {_NAME}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_a_kill_verb(self, cmd):
+        # A glob ending in `/` expands only to directories, so it can never run
+        # pkill/killall; the later product-named path is not its target.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"/usr/bin/p*ll -f {_NAME}",
+            f"for w in /a/*; do echo {_NAME}; done",
+        ],
+    )
+    def test_glob_that_can_name_a_file_still_reads_as_a_kill_verb(self, cmd):
+        assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do echo {_TOK}; done",
+            f"for w in */; do echo {_TOK}; done",
+            f"for w in '/opt/x/*/'; do echo {_TOK}; done",
+            f'for w in "/opt/x/*/"; do echo {_TOK}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_the_cli(self, cmd):
+        # Same reading for the mint rule: a glob ending in `/` cannot run the CLI.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"* {_TOK}",
+            f"/usr/local/bin/kiro*rew {_TOK}",
+            f"for w in /a/*; do echo {_TOK}; done",
+        ],
+    )
+    def test_glob_that_can_name_the_cli_still_mints(self, cmd):
+        assert _denied_by(cmd) == _RULE_MINT
 
     @pytest.mark.parametrize(
         "cmd",
@@ -1439,3 +1679,24 @@ class TestWindowsKillByNamePrograms:
     def test_a_windows_kill_is_read_where_the_pkill_twin_is(self, cmd, verb):
         windows = _denied_by(cmd.format(verb=verb, n=_NAME))
         assert windows == _denied_by(cmd.format(verb="pkill -f", n=_NAME)) == _RULE_KILL
+
+
+_X = "x" * 6000
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "$a0 = 'x'; "
+        + " ".join(f"$a{i} = $a{i - 1}$a{i - 1};" for i in range(1, 21))
+        + f" {_NAME} $a20",
+        f"$a = '{_X}'; {_NAME} doctor \"{'$a' * 6000}\"",
+        f"$a = '{_X[:3000]}'; $b = {'$a' * 3000}; {_NAME} $b",
+    ],
+    ids=["doubled-each-step", "repeated-in-one-word", "repeated-in-one-value"],
+)
+def test_a_powershell_reading_never_outgrows_the_line(line):
+    # A bound name is read only as a whole word and copied only whole, so no word of
+    # the reading grows past the line, however often the line repeats the name.
+    spoken = _argv_floor._powershell_tokens(line)
+    assert spoken is not None and max(map(len, spoken)) <= len(line)

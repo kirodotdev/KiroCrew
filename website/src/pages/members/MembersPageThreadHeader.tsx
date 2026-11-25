@@ -9,7 +9,7 @@
  * makes that picture stale — re-shoot with `scripts/capture-feature-previews.mjs`.
  */
 import { type NavigateFunction, type Location, type SetURLSearchParams } from 'react-router-dom'
-import { ArrowLeft, ChevronRight } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Search } from 'lucide-react'
 import { PanelLeftLight, PanelLeftSolid, PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
@@ -22,6 +22,7 @@ import BotLinkedChannels from './BotLinkedChannels'
 import CrewmateSwitcher, { CrewmateUnreadColumn } from './CrewmateSwitcher'
 import { createPortal } from 'react-dom'
 import { uiLocation } from '../../uiLocations/uiLocation'
+import { historySearchHint } from '../../components/chatHistorySearch/searchShortcut'
 import { type MembersPageProfileFlight, type MembersPageProfileState } from './MembersPageProfile'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageThreadState, type MembersPageThreadView } from './MembersPageThread'
@@ -49,6 +50,8 @@ interface MembersPageThreadHeaderProps {
   createHeld: string | null
   importHeld: boolean
   active: MemberRosterRow
+  /** Opens the bot chat's history search; absent while no bot chat is mounted. */
+  onOpenSearch?: () => void
 }
 
 /** The side panel's opener. Icon-only, like the chat page's side-panel toggle,
@@ -79,10 +82,33 @@ function PanelOpener({ inBar, pressed, onToggle }: { inBar: boolean; pressed: bo
   )
 }
 
+/** The chat's history search, the shortcut's visible way in. Its tip names
+ *  the shortcut; its own component for the same reason as `PanelOpener`. */
+function SearchOpener({ inBar, onOpen }: { inBar: boolean; onOpen: () => void }) {
+  const { t } = useTranslation()
+  const hint = historySearchHint()
+  const tip = useLabelTip(hint.tip)
+  return (
+    <HeaderControl
+      inBar={inBar}
+      chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
+      barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+      onClick={onOpen}
+      aria-label={t('components.chatHistorySearch.open')}
+      aria-keyshortcuts={hint.keyshortcuts}
+      data-testid="member-header-search"
+      {...tip.handlers}
+    >
+      <Search size={inBar ? 18 : 15} />
+      {tip.bubble}
+    </HeaderControl>
+  )
+}
+
 /** The thread header, portaled into the shell's top bar while the page has one there. */
 export function MembersPageThreadHeader({
   layout, profileCard, drawers, rosterView, thread, threadView, rosterSignals, profileFlight, navigation,
-  navigate, location, setSearchParams, profile, openQuick, createHeld, importHeld, active,
+  navigate, location, setSearchParams, profile, openQuick, createHeld, importHeld, active, onOpenSearch,
 }: MembersPageThreadHeaderProps) {
   const { t } = useTranslation()
   const { rosterPinned, switcherSlotRef, setRosterPin, panelVisible, showOpener } = layout
@@ -352,11 +378,14 @@ export function MembersPageThreadHeader({
             (#18325): there a bare icon sat on scrolled text. Bare in the
             shell bar, like the bell beside it and the Sessions bar. */}
         {/* A Bot chat has no session menu, so its channel link's pause,
-            unlink and connect live here, beside the opener, while it has a
-            link or a channel it can connect to. Only on
+            unlink and connect live here, beside the opener (a link to the
+            channel settings while nothing can be connected). Only on
             the CONFIRMED slot: these rows write, and a cached or roster key
             can name a session the thread endpoint refused. */}
-        {confirmedSlot && <BotLinkedChannels slotKey={confirmedSlot} inBar={headerInBar} />}
+        {/* Two peers at most (`max-two-buttons-per-row`): with the channel
+            chip on screen, Search is the first row of its menu; without it,
+            Search is a button of its own in the chip's place. */}
+        <BotLinkedChannels slotKey={confirmedSlot} inBar={headerInBar} onOpenSearch={onOpenSearch} searchFallback={onOpenSearch && <SearchOpener inBar={headerInBar} onOpen={onOpenSearch} />} />
         {showOpener && <PanelOpener inBar={headerInBar} pressed={panelVisible} onToggle={togglePanel} />}
       </div>
       {/* The unread column (issue #19045), hanging under the switcher

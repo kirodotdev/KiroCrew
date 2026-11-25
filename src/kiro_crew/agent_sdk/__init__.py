@@ -115,6 +115,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     kas_engine_verdict,
     kas_start_was_refused,
     spec_with_default_crew_servers,
+    spec_withholds_server_whole,
 )
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
@@ -163,6 +164,15 @@ def shell_command_from_tool_params(params: dict) -> str | None:
     from kiro_crew.acp.types import _command_from_tool_params as _command
 
     return _command(params)
+
+
+def is_harness_web_fetch(tool_id: str) -> bool:
+    """Whether *tool_id* (``<backend>#<tool>``) names its harness's own web-fetch built-in."""
+    # Imported lazily for the same reason as fits_tool_result.
+    from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES, split_harness_tool_id
+
+    tool = split_harness_tool_id(tool_id)
+    return tool is not None and tool[1] in HARNESS_TOOL_TABLES[tool[0]].get("web_fetch", ())
 
 
 def published_stderr_tail(
@@ -258,6 +268,7 @@ class AgentTurnUsage(Protocol):
 __all__ = [
     "published_stderr_tail",
     "spec_with_default_crew_servers",
+    "spec_withholds_server_whole",
     "CODEX_CLI_ADAPTER_MISSING",
     "CODEX_CLI_OVERRIDE_UNUSABLE",
     "CODEX_CLI_UNRESOLVED",

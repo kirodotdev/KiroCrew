@@ -83,6 +83,10 @@ def test_a_host_no_point_may_claim_is_refused(host: str) -> None:
         (_entry(id=""), "missing id"),
         (_entry(id="Bad Id"), "storage-safe slug"),
         (_entry(entry=""), "missing entry"),
+        (_entry(page={"param": "url"}), "entry or page, not both"),
+        (_entry(entry="", page="url"), "page must be"),
+        (_entry(entry="", page={"param": "url", "route": "/apps/x"}), "page must be"),
+        (_entry(entry="", page={"param": "Bad Param"}), "page.param must be a storage-safe slug"),
     ],
 )
 def test_a_malformed_entry_is_refused(data: dict[str, Any], needle: str) -> None:
@@ -110,6 +114,25 @@ def test_the_entry_cannot_leave_the_app_root(tmp_path: Any) -> None:
     )
     errors = m.validate(tmp_path)
     assert any("contributes.linkOpen entry" in e for e in errors), errors
+
+
+def test_a_page_entry_is_serialized_and_needs_a_ui_page() -> None:
+    cfg = LinkOpenConfig.from_dict(_entry(entry="", page={"param": "url"}))
+    assert cfg.validate() == []
+    # Serialized, so the signing payload covers where the link is handed.
+    want = {"id": "open", "page": {"param": "url"}, "hosts": ["tickets.example.com"]}
+    assert cfg.to_dict() == want
+    data: dict[str, Any] = {
+        "name": APP,
+        "version": "1.0.0",
+        "description": "d",
+        "contributes": {"linkOpen": [cfg.to_dict()]},
+    }
+    data["ui"] = {"pages": [{"route": f"/apps/{APP}", "label": "Tickets"}]}
+    # A page with no bundle is a placeholder, which reads no link.
+    assert any("page needs ui.entry" in e for e in AppManifest.from_dict(data).validate())
+    data["ui"]["entry"] = "dist/index.mjs"
+    assert not [e for e in AppManifest.from_dict(data).validate() if "linkOpen" in e]
 
 
 # Grants
@@ -188,6 +211,12 @@ def test_the_resolver_follows_the_link_open_grant(granted: dict[str, Any]) -> No
     assert lof.resolve_link_open(APP, "open") is None
     granted["hosts"] = ["tickets.example.com"]
     granted["enabled"] = False
+    assert lof.resolve_link_open(APP, "open") is None
+
+
+def test_a_page_entry_gets_no_frame(granted: dict[str, Any]) -> None:
+    # A page entry has no module: nothing is minted for it, whatever the grant says.
+    lof.get_app_manifest(APP).contributes.linkOpen[0].entry = ""
     assert lof.resolve_link_open(APP, "open") is None
 
 

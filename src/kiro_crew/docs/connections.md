@@ -469,17 +469,23 @@ the feature off entirely.
 
 Only `error` and `timeout` count. A status carrying no verdict is ignored rather than
 counted either way — including `needs_auth`, because counting that would quarantine
-every OAuth server you have not signed into yet.
+every OAuth server you have not signed into yet. An `error` from a server that
+started and answered its handshake with an error (an expired upstream sign-in, say)
+is not counted either: the server is refusing, not hanging, so its row shows the
+error and the next probe tries it again.
 
 **Quarantine reports; it does not unmount.** The server stays configured and stays
 mounted, and nothing writes `disabled` on your behalf — that key is your choice, and
 a counter that flipped it would be indistinguishable from you having switched the
 server off by hand.
 
-To clear one: fix the underlying problem, then use the row's reset control. It clears
-the counter as well as the flag, so a reset server does not sit one failure away from
-crossing again. Resetting a server with nothing on file reports that rather than
-claiming success.
+To clear one: fix the underlying problem. If the fix changes how the server starts
+(its command, arguments, environment or URL, as an update to a new version path
+does), nothing else is needed: the next check tries the new setup, and one success
+clears the quarantine. If you fixed it some other way, use the row's reset control.
+It clears the counter as well as the flag, so a reset server does not sit one failure
+away from crossing again. Resetting a server with nothing on file reports that rather
+than claiming success.
 
 **If you are an agent:** a quarantined server means the tool you want has been
 unreachable for several consecutive checks, so retrying the same call is unlikely to
@@ -518,8 +524,10 @@ The **Sharing** view, beside **Servers** under the card, holds the rest. In
 the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
 which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
 server runs and approves exactly that launch; the row's **Details** shows it, with
-env names only, never a secret value. When a server's PATH changes, Details names
-the folders added and removed. A row's state is one of:
+env names only, never a secret value. A row's switch takes effect at the next
+Kiro Crew restart, and the page says so. Until then the server keeps running the
+way it did, even when you turn sharing on at the top. When a server's PATH
+changes, Details names the folders added and removed. A row's state is one of:
 
 | State | Meaning |
 |---|---|

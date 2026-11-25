@@ -148,6 +148,9 @@ def register(app: web.Application) -> None:
     # system routes' owner.
     app.router.add_get("/api/tailnet/mobile", handlers.api_tailnet_mobile_status)
     app.router.add_post("/api/tailnet/mobile/configure", handlers.api_tailnet_mobile_configure)
+    app.router.add_post(
+        "/api/tailnet/mobile/clear-overrides", handlers.api_tailnet_mobile_clear_overrides
+    )
     app.router.add_post("/api/tailnet/mobile/publish", handlers.api_tailnet_mobile_publish)
     app.router.add_post("/api/tailnet/mobile/unpublish", handlers.api_tailnet_mobile_unpublish)
     app.router.add_post("/api/tailnet/mobile/qr", handlers.api_tailnet_mobile_qr)

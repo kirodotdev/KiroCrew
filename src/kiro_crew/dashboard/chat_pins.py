@@ -86,6 +86,20 @@ def _redacted_pin(pin: dict) -> dict:
     }
 
 
+def slot_pins(state: DashboardState, slot_key: str, request_app: str) -> list[dict]:
+    """The pins of *slot_key* that *request_app* may see, unredacted, in store order.
+
+    Record-level app ownership: app callers only see pins they created.
+    Legacy records (no origin_app) and dashboard-created records (origin_app="")
+    are visible ONLY to dashboard callers (request_app == ""), who see every pin
+    in slots they own.
+    """
+    pins = [p for p in list(state._chat_pins) if p.get("slot_key") == slot_key]
+    if request_app:
+        pins = [p for p in pins if p.get("origin_app", "") == request_app]
+    return pins
+
+
 async def api_chat_pins_list(request: web.Request) -> web.Response:
     """GET /api/chat/pins?slot=<slot_key> — list pinned messages."""
     state: DashboardState = request.app["state"]
@@ -98,16 +112,7 @@ async def api_chat_pins_list(request: web.Request) -> web.Response:
     denied = _authorize_app_slot(request, state, slot_key, "chat.pins_list")
     if denied is not None:
         return denied
-    request_app = request.get("app", "")
-    pins = [p for p in state._chat_pins if p["slot_key"] == slot_key]
-    # Record-level app ownership: app callers only see pins they created.
-    # Legacy records (no origin_app) and dashboard-created records (origin_app="")
-    # are visible ONLY to dashboard callers (request_app == "").
-    if request_app:
-        pins = [p for p in pins if p.get("origin_app", "") == request_app]
-    else:
-        # Dashboard callers see all pins in slots they own (full owner view).
-        pass
+    pins = slot_pins(state, slot_key, request.get("app", ""))
     # Sort by pinned_at ascending
     pins.sort(key=lambda p: p.get("pinned_at", ""))
     # Re-redact previews at the output boundary (see _redacted_pin).

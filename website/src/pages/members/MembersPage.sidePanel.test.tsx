@@ -35,6 +35,8 @@ vi.mock('../../api/client', () => ({
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
     // The side panel opens Files only for a slot confirmed to run locally.
     chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
+    // Nothing to connect to and no link: the header shows no channel chip.
+    channelTargets: vi.fn(() => Promise.resolve([])),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
@@ -180,13 +182,14 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend }: {
+  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend, onOpenProfileTab }: {
     target: { slug?: string; member?: string }
     displayName: string
     preview?: boolean
     onPreviewGone?: (gone: boolean) => void
     onAct?: (text: string) => void
     onSend?: (text: string) => Promise<unknown>
+    onOpenProfileTab?: () => void
   }) => (
     <div
       data-testid="crew-dashboard-stub"
@@ -205,6 +208,10 @@ vi.mock('./CrewDynamicDashboard', () => ({
         data-testid="crew-dashboard-stub-send"
         onClick={() => { if (onSend) void onSend('Approve the plan'); else onAct?.('Approve the plan') }}
       >send</button>
+      {/* The one-click-send badge's "change on Profile" press. */}
+      {onOpenProfileTab && (
+        <button type="button" data-testid="crew-dashboard-stub-profile" onClick={onOpenProfileTab}>profile</button>
+      )}
     </div>
   ),
 }))
@@ -244,11 +251,19 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
+/** The opener the stub pane hands the page, as ChatPane hands its search's. */
+const paneSearchOpen = vi.hoisted(() => ({ fn: (() => {}) as () => void }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
   function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown } & Record<string, unknown>) {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
+    const register = rest.onHistorySearchOpener as ((fn: (() => void) | null) => void) | undefined
+    useEffect(() => {
+      if (!register) return
+      register(paneSearchOpen.fn)
+      return () => register(null)
+    }, [register])
     return (
       <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
         {slotKey}
@@ -323,6 +338,8 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // A case may hold the channel read pending; every other case wants it answered.
+  vi.mocked(api.channelTargets).mockImplementation(() => Promise.resolve([]))
   resetApiMocks()
   __resetErrorJournalForTests()
   __resetNavSeamForTests()
@@ -416,6 +433,33 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(slot).toHaveClass('absolute', 'top-[calc(0.5rem+42px)]')
     expect(slot).not.toHaveClass('top-full')
     expect(screen.getByTestId('crewmate-switcher').className).toContain('h-[42px]')
+  })
+
+  it("the header's Search button opens the bot chat's search and names the shortcut as a hint", async () => {
+    paneSearchOpen.fn = vi.fn()
+    // While the channel read has not answered there is no chip and no set-up
+    // link, so Search is the header's button of its own. Once it answers
+    // "nothing", the set-up link takes that place instead (BotLinkedChannels).
+    vi.mocked(api.channelTargets).mockImplementation(() => new Promise(() => {}))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const button = await screen.findByTestId('member-header-search')
+    expect(button).toHaveAccessibleName('Search')
+    expect(button.getAttribute('aria-keyshortcuts')).toBe('Control+F')
+    fireEvent.mouseEnter(button)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Search (Ctrl+F)')
+    fireEvent.click(button)
+    expect(paneSearchOpen.fn).toHaveBeenCalledTimes(1)
+  })
+
+  it("the side panel's + menu Search opens the bot chat's search", async () => {
+    paneSearchOpen.fn = vi.fn()
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const add = await screen.findByRole('button', { name: 'Open side panel tab' }, PANE_READY)
+    act(() => { fireEvent.pointerDown(add, { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Search' }))
+    expect(paneSearchOpen.fn).toHaveBeenCalledTimes(1)
   })
 
   it('the panel opener names itself in an instant tip on hover, not a delayed native title (issue #27335)', async () => {
@@ -770,6 +814,36 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(call[1]).toBe('member-oncall')
       expect(call[8]).toBe('dashboard_card')
       expect(readPaneDraft('member-oncall').text).not.toContain('Approve the plan')
+    })
+
+    it('on a phone, the badge press puts the overlay away so the Profile card it opens is on screen', async () => {
+      // The overlay is fixed above the thread column the floating card opens
+      // in; left up, the press opened a card behind it and looked dead.
+      const orig = window.matchMedia
+      try {
+        window.matchMedia = vi.fn().mockImplementation((q: string) => ({
+          matches: /max-width/.test(q),
+          media: q,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }))
+        setWindowWidth(390)
+        await renderPage([row({ bound: true, slot_key: 'member-oncall', dashboard_card_send: true })], 'kirocrew', { route: '/members?member=oncall' })
+        await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+        fireEvent.click(screen.getByTestId('member-panel-toggle'))
+        expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'overlay')
+        fireEvent.click(await screen.findByTestId('crew-dashboard-stub-profile', undefined, PANE_READY))
+        expect(await screen.findByTestId('crew-profile-modal')).toBeInTheDocument()
+        expect(await screen.findByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'profile')
+        await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      } finally {
+        window.matchMedia = orig
+        setWindowWidth(WIDE_WINDOW)
+      }
     })
   })
 

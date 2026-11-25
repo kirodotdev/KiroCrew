@@ -59,6 +59,8 @@ class _ChatSlot:
         "_dismissed_hydrated",
         "_dismissed_txn_depth",
         "_dismissed_txn_pending",
+        "source_links_off",
+        "_source_links_off_hydrated",
         "_closing",
         "_close_recorded",
         "credential_evidence",
@@ -117,6 +119,8 @@ class _ChatSlot:
         "_pending",
         "_pending_consumers",
         "_pending_release_deferred",
+        "_stream_epoch",
+        "_stream_handoffs",
         "_queue",
         "_queue_persisted_sig",
         "_queue_persist_inflight",
@@ -426,6 +430,8 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    source_links_off: bool
+    _source_links_off_hydrated: bool
     # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
     _row_summary_memo: tuple[Any, ...] | None
     _row_redacted_memo: tuple[Any, ...] | None
@@ -606,6 +612,8 @@ class _ChatSlot:
     _pending: list[dict[str, str]]
     _pending_consumers: int
     _pending_release_deferred: bool
+    _stream_epoch: int
+    _stream_handoffs: dict[int, list[dict[str, str]]]
     _queue: list[dict[str, Any]]
     _queue_persisted_sig: str
     _queue_persist_inflight: bool
@@ -1535,6 +1543,7 @@ class _ChatSlot:
     load_window = _slot_transcript.load_window
     loaded_messages = _slot_transcript.loaded_messages
     release_saved_head = _slot_transcript.release_saved_head
+    _fold_head = _slot_transcript._fold_head
     sidebar_messages = _slot_transcript.sidebar_messages
     to_dict = _slot_transcript.to_dict
 

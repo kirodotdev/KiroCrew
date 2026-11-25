@@ -879,7 +879,13 @@ shipped builtin's execution exemption and leaving the boot-warmed first-party
 name and MCP-server sets stale until the next restart. Symmetrically,
 `register_builtin_apps` stands down when a user-installed app already occupies the
 directory, leaving their install untouched, because taking it over is
-unrecoverable.
+unrecoverable. Until the wheel copy is released (§ Former built-in adoption), that
+built-in still serves the name: its routes register and every hook root chooser
+resolves the shipped package. A local or git build named like a built-in is a
+legitimate way to test one, so it is not refused; `builtin_shadow.shadowed_builtin_notice`
+names the situation instead, appended to the install result's `message` and set as
+`shadowedBuiltin` on the app's `/api/apps` and `kirocrew app info` row, with the App
+Store step added when the name is pinned for adoption.
 
 Frontend badges and affordances read the same three fields
 (`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
@@ -1393,11 +1399,15 @@ host agent.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 
-A granted server normally lands in the agent's `allowedTools` (auto-approve):
-the user asked for that server explicitly, and for an unattended app agent a
-prompt resolves to "rejected", so granting it means granting its use.
+A grant mounts the whole server (`@server` in `tools`) but auto-approves only the
+tools its own `autoApprove` names, one literal `@server/<tool>` entry each in
+`allowedTools` (a glob verb is skipped). That entry is the only carrier: the
+registration's last pass strips an app map's server `autoApprove`
+(`honour_owner_written=False`). A tool left out of the list asks before it runs,
+which is what an app's per-tool approval setting promises; for an unattended app
+agent that ask resolves to "rejected". A `mountOnly` grant writes no entry.
 
-**Except where the enterprise ceiling forbids it.** Auto-approve is the one path
+**Each entry is also intersected with the enterprise ceiling.** Auto-approve is the one path
 that never reaches `hooks.on_tool_call`: kiro-cli only sends
 `session/request_permission` for tools it must ask about, and the governance deny
 hangs off that request. Writing a ceiling-denied server into `allowedTools` would
@@ -1410,7 +1420,7 @@ So the grant is intersected with Level 1 POLICY at policy-write time
 
 | Ceiling | Result |
 |---|---|
-| permits | auto-approved, as before |
+| permits | the tools the grant's `autoApprove` names are auto-approved; the rest ask |
 | **denies** | stays in `tools` (the grant is not discarded) but NOT in `allowedTools`, which forces every call through `request_permission`, where the gate denies it |
 | absent (standalone) | unchanged behaviour |
 
@@ -2474,7 +2484,7 @@ site, not one added quietly.
 
 **An update of an enabled app runs `setup.onEnable` again.** An update swaps in a
 fresh copy of the app's files, which never carries `node_modules` or `.venv` (only
-`data/` and `.app_secret` move across), and keeps the app enabled, so whatever
+`data/` and `.app_secret` stay), and keeps the app enabled, so whatever
 `onEnable` installed into the installed folder is gone. `onInstall` cannot put it
 back: it runs in the registry clone before the copy, and not at all for a
 local-path update. So every route that updates an installed app re-runs the NEW
@@ -3098,7 +3108,8 @@ and the consent reconcile) is decorated `@holds_app_record_locks` and calls
 spans its read, its checks and its replace; `_write_installed` also takes it.
 `app_record_lock` is a cross-process `platform_compat.file_lock` on a sidecar,
 `<data home>/app-record-locks/<name>.lock`, never on `installed.json` (replaced
-via `os.replace`) nor inside the app tree (moved aside by an update). It is
+via `os.replace`) nor inside the app tree (replaced by an install or uninstall; an update
+replaces every entry of it but `data/` and `.app_secret`). It is
 reentrant within one thread, bounded, and fails closed: a lock that cannot be
 taken raises, so no writer runs unserialized. On the event-loop thread the
 acquire is single-shot, as `file_lock` is everywhere.
@@ -3109,7 +3120,18 @@ owner has approved for each app are stored in
 `member-records/app-grants/<app>.json` (`{"api": [...], "events": [...]}`,
 `apps.protected_app_state`), outside the app's own tree: code in the app's
 sandbox can write `apps/<name>/`, and `member-records/` is masked in every
-sandbox mode. Every
+sandbox mode. The owner's approval of an app's `ui.startup` module is kept
+the same way, in `member-records/app-startup/<app>.json` (`apps.startup_modules`),
+as `{version, entry, digest, files}` with per-file SHA-256 hashes. An uninstall
+snapshots, forgets and on failure restores it with the approved set. An owner install
+or update with no `ui.startup` forgets it in the record-writing transaction and
+restores it if that transaction fails. A committed withdrawal emits SEL
+`app_startup_revoke` (`completed`, with `install dropped ui.startup` or
+`update dropped ui.startup`) through the approval verb's audit helper. The lifecycle
+result's `message`, carried by the HTTP response and printed by the CLI, says that
+startup approval was withdrawn and UI files are served without its checks. Keeping
+`ui.startup` keeps the record; a failed transaction emits no completed withdrawal.
+A direct edit of `app.json` never withdraws this record or bypasses serving checks. Every
 enforcement point -- `token_auth._app_api_allowlist`,
 `ws_event_scope._read_declared_events`, and the hook context's event bus via
 `approved_manifest_permissions` -- grants only entries the live manifest
@@ -4656,7 +4678,36 @@ declared file through `pinned_fs.open_in_pinned_parent`, gates the descriptor on
 descriptor and answers with the same `default-src 'none'; sandbox` policy and `nosniff`.
 It differs in serving the wider `_ALLOWED_EXTENSIONS` set (`.js`/`.json`/`.mjs`/`.css`/`.map` and fonts)
 and in being UNAUTHENTICATED, which is why it streams in `_UI_STREAM_CHUNK` pieces
-instead of buffering.
+instead of buffering for unapproved apps. Every UI file of an app with a startup
+approval is buffered: `startup_modules.approved_module` reads it once from the pinned
+descriptor (at most `_UI_MAX_BYTES`) and compares those bytes' SHA-256 to `files[rel]`.
+The stored `digest` must equal SHA-256 over the map's sorted `rel + NUL` and raw file
+hashes. Both the tree inventory and record map are limited by `_MAX_UI_FILES` (4,096).
+The parser rejects an over-cap map before validating entries or recomputing its digest;
+the approval writer runs that same parser before storing a record. Invalid entries
+name the offending path. App-list admission inventories once, refuses differing path
+sets without file reads, and stops at the first mismatching file or size-cap error.
+No other UI file is opened during serving, and stat metadata is never a cache
+key. The handler sends exactly the checked buffer; its ETag carries the approved
+digest. Verified responses omit `Last-Modified` and require that ETag for a 304;
+a wildcard returns the full verified bytes. All served types, including images and
+fonts, take this check. Startup mounts use `/apps/<name>/ui/startup:<digest>/<entry>`,
+with the digest supplied only on an admitted app-list row; the mount key includes
+name, version and digest. Relative imports inherit the prefix, which requires a
+current approval with that digest, including after revocation or re-approval.
+The route strips a strictly validated prefix before applying the same path,
+extension, containment and descriptor guards. Absolute imports, climbs out of the
+prefix and fetch-and-eval in already-approved code can reach ordinary UI URLs.
+Only ordinary URLs with an absent record leave serving unchecked. Unknown, changed or unavailable
+files, unreadable records, missing `files` or inconsistent maps answer 409 with
+`code`, `reason` and `remedy`, never file bytes. Unsafe app names retain 404 with no
+reflected remedy; refusal logs quote request paths and exceptions. The remedy names
+`kirocrew app startup <name>` to approve the current code and
+`kirocrew app startup <name> --revoke`, which also works without a declared startup
+entry. The app-list reader uses the same parser but treats these faults as no
+approval (`needs-approval`). The eight permits bound concurrent reads, hashes and
+checked buffers; the file-count cap bounds per-entry map validation
+([security](security.md), *App startup-module approvals*).
 
 **Text files go gzip-encoded.** A `_GZIP_EXTENSIONS` file (`.mjs`/`.js`/`.css`/`.json`/
 `.svg`/`.map`) of at least `_GZIP_MIN_BYTES` is sent `Content-Encoding: gzip` when
@@ -4664,7 +4715,8 @@ instead of buffering.
 `gzip` entry decides, `q=0` included, and `*` counts only when gzip is not named, so
 `gzip;q=0, *` gets identity. Each
 streamed chunk passes through one per-request `zlib` compressor off the event loop, so
-memory stays one chunk plus the compressor's state, and the body goes chunked (its
+memory holds one chunk plus the compressor's state and, for approved apps, the checked
+file buffer and its response reader. The body goes chunked (its
 length is not known up front); the `remaining` cap still bounds the bytes read. A file
 that hits EOF short of its validated size (truncated under the descriptor) aborts the
 connection instead of finishing the gzip member, since no `Content-Length` would expose
@@ -5416,7 +5468,9 @@ The boundary:
   `linkPreviewHosts` and `linkPreviewTextPatterns`, in the app's
   `approved-grants.json` beside `api` and `events` (`apps/link_preview_grants.py`).
   Hosts are stored normalized (lowercase, IDNA, no trailing dot) and a public suffix
-  or bare TLD is refused at manifest validation; a pattern's entry is
+  or bare TLD is refused at manifest validation. A provider may list any number of
+  hosts: `claimsHost` matches a link in one set
+  lookup per label of its host, whatever the list's length. A pattern's entry is
   `<id>:<flags without g>:<source>`, so any change to it is a widening. An update
   that widens either family is held back until the owner approves it on the App
   Detail page; narrowing applies at once. A third family, `linkPreviewFullUrl`
@@ -5514,7 +5568,9 @@ owner each:
   this package ships register at the bottom of the module.
 - **One frame runtime.** The document is `_RUNTIME` (config island, sub-path mount,
   capability and renewal, `ctx.fetch`, module load, `init` / `capability` /
-  `theme` / `dispose`, the link bridge, `escape`) plus `_INVOCATION` plus the
+  `theme` / `dispose`, the link bridge, which posts a middle or modified click
+  with `tab: true` as the widget shim does so the dashboard opens a new tab for it
+  rather than one of its own pages in place, `escape`) plus `_INVOCATION` plus the
   point's script, which defines `POINT = { ctx, accepts(handler), missing, message(m) }`.
 - **The invocation contract**, for a point whose work starts with one user act.
   The host mints a string `invocationId` per act and sends it in the point's own
@@ -5671,7 +5727,8 @@ Writers: `apps/app_frame.py` (the point), `apps/message_action_grants.py`,
 ## 18d. A claimed link opens in the app only after the user chooses it
 
 `contributes.linkOpen[]` (`{ id, entry, hosts, fullUrl? }`, one entry per app) lets
-an app open a clicked link in its own frame. It is a point on §18b's shared frame:
+an app open a clicked link in its own frame, or, with `page: { param }` instead of
+`entry`, on its own dashboard page. It is a point on §18b's shared frame:
 `register_frame_point("linkOpen", resolve_link_open, LINK_OPEN_POINT_SCRIPT)` and
 `register_point_grants(LINK_OPEN_GRANT_FAMILIES, link_open_grant_entries)`; nothing of
 the frame, the capability, the fetch or the invocation contract is its own. The rules:
@@ -5720,11 +5777,34 @@ the frame, the capability, the fetch or the invocation contract is its own. The 
   refuses (403) a host the live grant no longer covers, or a whole URL the owner has
   not approved, so a tab holding an older app list cannot hand the app what the
   owner took back.
+- **Page entry.** `page: { param }` (a slug, the same rule as `id`) replaces `entry`;
+  declaring both, or neither, is refused, and the app must declare `ui.entry` and a
+  `ui.pages` entry (AppHost mounts `ui.entry`; without it the page is a placeholder).
+  Choosing the app opens no dialog and no frame (`resolve_link_open` serves nothing
+  for an entry without `entry`, so nothing is minted): the host builds
+  `<route>?<param>=<url>` with the same stripped or whole URL, where `<route>` is
+  `appNavTarget(app).route` (`appNav.ts`), the one destination the rail and the
+  palette use and the app pop-out id; an app with no target, or an orphaned one, is
+  not held. A live pop-out of that route gets the path over the `kirocrew-app-popout`
+  channel (`navigatePopout`, message `navigate`) and loads it in its own window
+  (`AppPopoutFrame`): a document load, because an installed page gets no router and
+  a push that changes only the query would not reach it, so the page's in-page state
+  is replaced and `beforeunload` is its one guard. Then the pop-out is focused
+  (`focusPopout`, which the browser may refuse without a handle). Otherwise the
+  window navigates in-app through `useGuardedLeave`, so a host page holding work is
+  asked first and a refusal opens nothing. An app's page, and a core pop-out page
+  (Projects, Channels), registers no such guard, so while one is on screen
+  (`appRouteOf` with `hasPopoutPage`) a page entry's click is not held unless its
+  destination is popped out, and a pop-out that closed while the question was open
+  sends the choice to the browser. The mint admission above applies to frame entries
+  only: an app page is an ordinary component in the dashboard's tree with the
+  owner's session, so it has no mint to admit.
 - **Manifest.** `hosts` 1 to 64; `entry` contained in the app root; the block is
   serialized, so it is covered by the signing payload.
 
 Writers: `apps/manifest_contributes.py` (`LinkOpenConfig`), `apps/link_open_grants.py`,
-`apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`.
+`apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`,
+`website/src/utils/popoutController.ts` (`navigate`), `website/src/pages/AppPopoutFrame.tsx`.
 
 ## 18e. A composer action inserts only into an empty composer, only text with nothing to resolve; the app sees nothing and sends nothing
 
@@ -6612,14 +6692,15 @@ not by a prediction of it. A first install with nothing preserved carries the
 source's `data/` as itself, in both.
 
 What stands at `data` once the gateway's part is done must be something the
-app's data directory can be — and something the gateway can move: `app_data_dir`
-is `mkdir(exist_ok=True)` at that name, and every update moves that directory
-aside to `.<name>-data-tmp` beside the app directory and puts it back after the
-copy. A real directory satisfies both. A link at that name is refused whatever
-it resolves to: `mkdir` may follow a link to a directory, but the move relocates
-the link itself, a relative link relocated out of its tree dangles, nothing is
-put back, and the directory it named is retired — and deleted — with the old
-tree on the update's own success path. A shipped FILE named `data` and a
+app's data directory can be — and something the gateway can keep or move whole:
+`app_data_dir` is `mkdir(exist_ok=True)` at that name, every update leaves that
+directory where it is while it replaces the app's other root entries, and an
+install over kept data moves it aside to `.<name>-data-tmp` beside the app
+directory and puts it back after the copy. A real directory satisfies both. A
+link at that name is refused whatever it resolves to: `mkdir` may follow a link
+to a directory, but an in-tree directory it names is retired — and deleted —
+with the old entries on the update's own success path, and a relative link
+relocated out of its tree dangles. A shipped FILE named `data` and a
 dangling link are refused for the `mkdir` alone. That question is asked of the
 copied tree **before `installed.json` is written**
 (`gateway_data_dir_obstruction`): `install_app` refuses and removes its copy,
@@ -6630,8 +6711,7 @@ installed `data` that is already a link or a file (an install from before this
 refusal, or the app's own runtime replacing its directory) is refused by
 `update_app`'s preflight **before its transaction opens** — the same question,
 asked of the installed tree, with the old tree and record untouched — instead of
-being skipped by the move-aside and deleted with the retired tree on the update's
-success path; `preserved_data_awaits` never counts a link as a preserved
+losing what it names with the retired entries on the update's success path; `preserved_data_awaits` never counts a link as a preserved
 directory. The same question is asked by `install_app`, of an app directory
 already standing at its destination with no record (a prior default uninstall's
 leftover, or an orphaned partial copy), **before its transaction opens**: a
@@ -6648,44 +6728,86 @@ With a preserved `data/` awaiting, the shipped entry is replaced by the
 directory that is put back, and the same source installs.
 
 **What a killed update leaves.** `update_app` holds a token
-(`<pid>-<8 hex>`) in `.<name>-update-inflight` across the swap, moves the live tree
-to `.<name>-update-old-<pid>-<8 hex>`, writes the new `installed.json`, and only then
-removes the retired tree and its token. A hard kill after the record is durable
-leaves either both or the token alone. No admissible app name starts with a dot,
+(`<pid>-<8 hex>`) in `.<name>-update-inflight` across the swap and never moves the
+app directory, its `data/` or its `.app_secret`, so a sandbox already running keeps
+the fences it placed on them. Under the token's stem it builds the new tree in
+`.<name>-update-new-<stem>` (`copy_app_tree_as_installed`, then the copied
+`installed.json` removed), moves every other root entry of the app directory into
+a new `.<name>-update-out-<stem>` — `installed.json` first, `data` and `.app_secret`
+excluded by `lstat` identity, never by name — and renames it
+`.<name>-update-old-<stem>` once all are out. It then moves the new entries in,
+puts back what a crashed sibling left at `.<name>-data-tmp` / `.<name>-secret-tmp`,
+writes the new `installed.json`, and only then removes the `-update-old-` tree, the
+emptied `-update-new-` tree and its token. Every move is `os.replace`, and none
+resolves through a directory the update did not check: the app directory is pinned
+(`backend_runtime.provisioning._PinnedDir`, the keep-data uninstall's pin, via
+`manager_tree._pin`) before the transaction opens — a link at it, or at an ancestor
+since it was made canonical, refuses the update with an SEL `app_dir_pin` record and
+nothing moved — and
+`-update-out-` the moment it is made, `-update-new-` the moment its copy is done.
+Every listing of the three goes through the held descriptor and every move between
+them through `src_dir_fd`/`dst_dir_fd` (on Windows, the pin's identity re-check and
+then the path rename); the copy into `-update-new-` itself stays by path, as the
+install's copy is. The rename to `-update-old-` is followed by a check that the name
+still names the pinned tree, and the app directory is re-checked before the new
+record is written; either failing rolls the update back. The rollback and the
+recovery share one restore (`manager_tree._restore_old_entries`), through the same
+pins (recovery pins the app directory and the retired tree it finds): move what was
+moved in back into `-update-new-`, rename `-update-old-` back to `-update-out-`
+while that name still names the pinned tree, move its entries back with
+`installed.json` last (a name already taken stops it, logged `recovery_ambiguous`),
+then remove `-update-out-` and `-update-new-`, each only while its name still names
+the pinned tree. A rolled-back update leaves what
+it put back from `.<name>-data-tmp` in `data/`. A hard kill leaves one of four
+states, told apart by name and never by a tree's content: S0, a `-update-new-`
+tree, or an `-update-out-` tree that holds no record, beside the live record; S1,
+an `-update-out-` tree holding the record (no
+live record); S2, an `-update-old-` tree and no live record; S3, an `-update-old-`
+tree beside the new record. `recover_interrupted_adoption` restores S1 (the last
+two restore steps) and S2 (all of them) before APPLY, idempotently. A swap of the
+earlier shape, which moved the whole tree and set `data/` aside (no app
+directory, or `.<name>-data-tmp` / `.<name>-secret-tmp` beside an `-update-old-`
+tree), takes the branch that puts that shape back; an S2 killed before the
+put-back takes it too. A regular update killed in S1 or S2 is left with no
+record, as a killed update always was. No admissible app name starts with a dot,
 so every walk of `apps_dir()` skips a dot-prefixed entry
 (`manager_records._is_sidecar_entry`: `list_apps`, `owning_app_for_agent`,
 `detect_orphaned_builtins`, the config-key scan, the session-approval consent scan,
 the dev-mode scan, the trust-grant import, the frame-source scan, the public app-id
 scan and the chat-launch declarer scan); otherwise the retired tree's record lists the app twice.
-A retired tree or token is one whose name ends in exactly that generated
+A sibling tree or token is one whose name ends in exactly that generated
 `<pid>-<8 hex>` stem (`manager_adopt._retired_trees`, `swap_leftover_names`): a
 bare prefix match would take the sidecars of an app named
 `<name>-update-old-<digits>` as `<name>`'s.
 `manager.sweep_interrupted_updates`, a tracked task `_kick_interrupted_update_sweep`
 starts after the listener serves, runs `sweep_completed_swap_leftovers` for every
-name that has a marker or a retired tree, under its `app_lifecycle_lock`. Before
+name that has a marker or a sibling tree, under its `app_lifecycle_lock`. Before
 APPLY only the pinned or marked names with no record and a marker are swept
 (`builtin_adoption.apply_builtin_adoptions`), since `builtin_released` reads the
-marker as a swap in flight; with no record the sweep deletes no tree. It unlinks
+marker as a swap in flight; with no record the sweep deletes no tree, an
+`-update-new-` one included. It unlinks
 each token whose process is gone (`platform_compat.pid_exists`; this process, a
 live pid and any other stem all count as alive), and only when the marker
-directory is then empty removes it and every retired tree of a dead process. A retired tree goes only
-beside a readable live record in an app directory that is not a link, since the
-swap then completed and `data/` and `.app_secret` were already put back. With no
-record the marker goes only when nothing is set aside (no retired tree,
-`.<name>-data-tmp` or `.<name>-secret-tmp`): it is what keeps
+directory is then empty removes it and every sibling tree of a dead process. A
+sibling tree (`-update-new-`, `-update-out-` or `-update-old-`) goes only beside a
+readable live record in an app directory that is not a link, since none then holds
+what the live app needs. With no record the marker goes only when nothing is set
+aside (no `-update-out-` or `-update-old-` tree, `.<name>-data-tmp` or
+`.<name>-secret-tmp`): it is what keeps
 `recover_interrupted_adoption` and `register_builtin_apps` acting on a killed
 swap's files. `.<name>-data-tmp` and `.<name>-secret-tmp` are never touched.
 
-**Data in two places.** An update whose move-aside or rollback stopped part-way
-(a file held open on Windows) leaves `data/` partial beside a `.<name>-data-tmp`
-that may be the only complete copy. `update_app` refuses that state before its
+**Data in two places.** An install or uninstall whose move-aside stopped part-way
+(a file held open on Windows), or an update of the earlier shape, leaves `data/`
+partial beside a `.<name>-data-tmp` that may be the only complete copy. `update_app` refuses that state before its
 transaction opens, naming both paths, with an SEL `data_in_two_places` record: it
 deletes neither copy, and the user moves what they need back into `data/`. With no
 `data/`, the copy is what the update puts back.
 
 Writers: `apps/manager_install.py::install_app`, `update_app`,
-`apps/manager_tree.py::copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`;
+`apps/manager_tree.py::copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`,
+`_update_trees`, `_move_out_old_entries`, `_move_in_new_entries`, `_restore_old_entries`;
+`apps/manager_adopt.py::recover_interrupted_adoption`, `_sweep_dead_leftovers`;
 `apps/registry.py::_run_app_build`,
 `apps/registry_pipeline/install.py::install_from_registry` (the refusal's two
 call sites). Tests:
@@ -6697,7 +6819,13 @@ shipped `data` link, the root `data` file refused before the record),
 (and its link and junction siblings),
 `TestCopyAppTree::test_data_in_two_places_refuses_the_update_and_deletes_neither_copy`,
 `test/test_app_manager_installed_tree.py::TestCopyAppTreeAsInstalled`,
-`test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
+`test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`,
+`test/test_app_update_keeps_data_in_place.py` (the app directory, `data/` and
+`.app_secret` keep their identity across an update and an adoption; a running Linux
+sandbox keeps its seal and mask across an update; the rollback at each swap step;
+a hard kill at every forward and restore step settling whole; the taken-name stop;
+the no-record sweep; the earlier-shape recovery; the case-folded `Data/`),
+`test/test_app_update_swap_leftovers.py`.
 
 
 
@@ -7598,6 +7726,15 @@ folder update would silently drop the app's listing provenance. A marketplace
 app has no update path until one resolves, verifies and re-confirms a new
 version.
 
+`update_app` refuses a new version whose `app.json` fails validation with
+`app_update_invalid`, the validator's errors as `error`, before anything is
+replaced; `install_from_registry` passes a failed result's code through. A new
+version whose only refusal is a `minKiroCrewVersion` above this build gets
+`kirocrew_version_too_old` instead, since updating Kiro Crew clears it. The
+App Store's row update and Update All key off that code to name the app and say
+that only its maker can fix it, with the validator's words on the next line
+(`pages/apps/useAppUpdates.ts`).
+
 Two owner-only routes in `apps/routes_market_install.py` drive those calls.
 `POST /api/apps/market/install` (`{ref, version?, account?, registry?}`) runs `prepare_market_install`
 in the executor and answers `{stagingId, confirm}`; it installs nothing.
@@ -8003,7 +8140,9 @@ stream, so `run` streams with `person_only_directive_refuser`
 (`dashboard/session_directive_apply.py`, as a cron turn and a workflow step do): a
 completed `set_project`, `reset_conversation`, `chat_tag` or `suggest_followup`
 call is refused with `refuse_user_origin_directive` (its wording, and a SEL `denied`
-row on the turn's key), and the refusals lead the reply. Nothing is applied.
+row on the turn's key), and the refusals lead the reply. Nothing is applied. The
+reply loses each line that only quotes a directive marker
+(`session_directive.strip_quoted_markers`), which the model read in a tool result.
 
 **Untrusted text** (`apps/untrusted_text_sdk.UntrustedTextSDK`, `ctx.untrusted`).
 Always present, built in `AppContext.__post_init__` from `name`, because it adds no
@@ -8119,6 +8258,35 @@ cannot tell a Bot it was not given from one that does not exist:
 
 A disabled app holds no Bot scope: `apps/bot_grants.app_bot_scopes` reads
 `is_app_enabled` on every call (pinned by `test_app_bot_disabled_token.py`).
+
+**The `tools` scope (preview `bot_chat_app_tools`, off by default).** A third scope
+mounts servers the app offers in `contributes.botChatServers` on the own chat of each
+ticked Bot. A Bot's chat runs on the shared `kirocrew-mate-conductor`, and its spec is
+built per session the way a Bot's worker spec is: `acp/session_mcp_crewmate.
+_crewmate_conductor_spec` (array hosts) and the KAS projection both call
+`bot_chat_app_tools.conductor_session_spec`, which adds an `<app>:<server>` entry
+read from the app agent's rendered spec only while the preview is on, the app is
+enabled, the scope is approved and the Bot is ticked. The shared conductor file is
+never written. Each Bot chat's agent process records the servers it was started
+with; the bot-grants PUT, enable, disable, update, uninstall and a switch of the
+preview each call `after_app_change`, which compares every live Bot chat with that
+record: a Bot that lost a server gets a queued no-replay discard (its next turn starts
+a fresh conversation without the old tool names), and a Bot whose servers were added
+or whose entries changed reloads in place. The preview reads through
+`edition_locks.feature_previews`, so it is off on LTS whatever is stored. A Bot chat
+on a harness outside `ACP_BACKENDS_MATE_WORKER_KIT` gets no app server: the array
+projection adds them only when its caller passes `bot_app_tools_carried` (the mirrors
+and the mirrorless member path pass `backend in ACP_BACKENDS_MATE_WORKER_KIT`), and
+Kiro CLI, which reads `--agent` off disk, never reaches `conductor_session_spec`. On
+any such harness the
+allocation door (`session_allocation_parts/get_or_create`) hands the provider's
+`mate_worker_kit_supported` to `bot_chat_app_tools.note_harness_without_app_tools`,
+which tells that chat once when the Bot has app tools turned on. This
+narrows `docs/decisions/2026-11-02-a-crewmates-worker-carries-its-template-policy.md`
+("the conductor takes nothing from the file") and
+`docs/decisions/2026-11-04-conductors-stay-simple-and-new-abilities-go-to-workers.md`
+("a mate's conductor mounts only Crew's own MCP servers") for this one case, as
+`docs/decisions/2026-11-23-bot-chats-may-mount-owner-approved-app-servers.md` records.
 
 The app's requests still pass the path gate, so it also declares `/api/members` in
 `permissions.api`. The token allowlist, CORS and frame-ancestors are unchanged.
@@ -8357,13 +8525,21 @@ only remove first-party status, never grant it. It gates:
   adoption state is read only when the catalog lists a key a packaged skill
   claims for an app, and then once per catalog TTL),
   so an adopted app shows only its repository's `skills/<name>/<skill>` copies and
-  an uninstalled one none. A copy already installed stays on disk, hidden;
+  an uninstalled one none. A copy already installed stays on disk, hidden. The
+  claim outlives the packaged copy: a key's app comes from `builtin_skills/` while
+  the copy ships there, else from the shipped table `data/packaged_skill_apps.json`
+  (`skills_builtin_provenance._recorded_skill_apps`, data like the pin table). So
+  removing a former built-in deletes its `builtin_skills/` copies outright: a host
+  that installed one keeps it hidden, and a host that never had it gets none, where
+  a kept copy would be installed on every fresh host as a skill naming an app it
+  does not have. `test_released_builtin_skill_copies.py` holds the table to every
+  packaged skill naming an app and every app it names to a pin row;
 - `register_builtin_apps`: a released name with no record, or an adopted record,
   gets no directory, record, snapshot or secret. A shadowing user app is not
   released and keeps the stand-down warning. A pinned name with no record while
   its swap is still in flight (a hard-killed swap recovery left ambiguous) is not
   released either, and registers nothing: a fresh record would put a reset app
-  over the tree, data and secret the swap set aside.
+  over the old files the swap left beside the app directory.
 
 **The seam level.** `apps/app_sdk_level.APP_SDK_LEVEL` is the App Kit seam level the
 gateway provides (§32), and every pin's `minAppSdkLevel` is at least 1. A pin whose
@@ -8458,7 +8634,8 @@ hooks, backends and crons) is network-free and consumes only a `staged` ledger: 
 `blocked` one returns at once, so a refusal that never clears costs a boot nothing.
 Per pin, under `app_lifecycle_lock`:
 recovery of a hard-killed swap (`manager.recover_interrupted_adoption`, only on an
-unambiguous state: one retired tree, data in one place); finalize when a
+unambiguous state: one `-update-out-` or `-update-old-` tree, and for a swap of the
+earlier shape data in one place); finalize when a
 `granting` marker meets an already-swapped record (what the kill left after the
 record goes in the sweep after the listener serves, see "What a killed update
 leaves"); a record whose data is in two
@@ -9108,7 +9285,12 @@ host carries no import of a store another program wrote:
 dashboard window and routes it to that session (`/chat?sid=`), or only raises it for
 `""`, and resolves true only when the dashboard is there to show it, so a caller keeps a
 notification it could not act on (`website/electron/dashboard-session.js`, the same
-check the kirocrew:// deep link uses). `openExternal(url)` hands an `https:` link to the
+check the kirocrew:// deep link uses). A window a crew serves (`gatewayChoice`) names a
+session on that crew: the crew comes from the window's own target, never the page, and the
+dashboard gets the crew link's route (`/chat?crew=<id>&crewSid=<key>`, refused before the
+window moves when the key or id fails the crew link's rules), so a crew's key never opens a
+same-named local session; true there means the dashboard has the link, which can still
+refuse it as a crew link is refused. `openExternal(url)` hands an `https:` link to the
 OS browser and nothing else. Both move the user's focus, so each is answered only while
 the user is acting in the sender: the shell saw a mouse or key press start in that window
 within the last 2 s (Electron's `input-event` `mouseDown` or `rawKeyDown`, not a release or
@@ -9489,12 +9671,14 @@ the installed manifests. A declaration applies whether the app is enabled or not
 app's credential is still on disk.
 
 **Wherever the data is.** The lifecycle moves `data/` to `apps/.<name>-data-tmp/` while an
-install or update replaces the app's files, and a default uninstall removes `app.json` and
-keeps `data/`. So every entry is declared at both `apps/<name>/data/<entry>` and
-`apps/.<name>-data-tmp/<entry>`, and `credential_masks.remember_declaration` keeps the
-declaration in `apps/.<name>-credential-masks.json` beside the app directory. It runs on
-every `manager_records._write_installed` (best-effort) and, strictly, before
-`update_app` and a keep-data `uninstall_app` move the data: a record that cannot be
+install over kept data or a keep-data uninstall replaces the app's files (an update leaves
+`data/` in place and only replaces the app's other root entries), and a default uninstall
+removes `app.json` and keeps `data/`. So every entry is declared at both
+`apps/<name>/data/<entry>` and `apps/.<name>-data-tmp/<entry>`, and
+`credential_masks.remember_declaration` keeps the declaration in
+`apps/.<name>-credential-masks.json` beside the app directory. It runs on every
+`manager_records._write_installed` (best-effort) and, strictly, before `update_app`
+moves the old `app.json` out and before a keep-data `uninstall_app` moves the data: a record that cannot be
 written refuses the update or uninstall before anything moves. Only a manifest that reads
 cleanly (`_clean_declaration`: a regular file under the size cap, a JSON object with the
 right `name` and a valid declaration) changes the record, and one declaring nothing
@@ -9523,8 +9707,9 @@ that spawn, but on disk the leaf then sits at a name no mask covers, so the next
 read it there. One of those pins moves to the end of the stages: the folder of each app
 that declares a mask, `apps/<app>`, is taken out of `parent_pins` and bound over itself
 after every mask (`mask_parent_pins`, `pin_mask_parents`, the last mask stage), so the set
-of pinned folders is unchanged. An update replaces that folder from the gateway's
-namespace and renames `data/` into the new one, and a mount stays on the mount it was
+of pinned folders is unchanged. A keep-data uninstall, and an install over the data it
+kept, replace that folder from the gateway's namespace and rename `data/` into the new one
+(an update leaves the folder in place), and a mount stays on the mount it was
 placed through: a mask or a `data/` pin placed through a pin of the old folder would be
 left with the retired folder, and a running session would read the restored credential
 plain. With the app folder unpinned while the rest are placed, they sit on the mount the
@@ -9533,7 +9718,8 @@ matched to an app folder by the folder it resolves to, so a linked data-home spe
 one reached by walking a seal through its link, moves too, while a link entry, pinned as
 itself, stays with the pins placed first; one spelling per folder is bound, none above
 another, so the mount count does not compound. The limit, stated:
-the replacement `apps/<app>` is created after the spawn, so a session already running can
+the replacement `apps/<app>` either one creates comes after the spawn, so a session
+already running can
 rename it until its next spawn; closing that needs a layout change, not another pin.
 `test_seal_parent_pin_real_sandbox.py` checks the refusals and the mask across that move
 in a real namespace. No seal or keystone disposition reads a declaration, the
@@ -9567,7 +9753,10 @@ or record that is there but does not read cleanly (`_read_declaration`: not a re
 file under the size cap, unparseable, another app's `name`, an invalid entry) fences its
 app's whole `data/` and move-aside directory and what is beneath them
 (`ToolGateLeaves.unreadable`, which gets no artifact rule), and an `apps/` that exists
-but cannot be listed fences `apps/`. Only a declared leaf's own directory gets the
+but cannot be listed fences `apps/`. `tool_gate_home_rows` reads the shipped built-ins'
+manifests again the same way, so a built-in whose `app.json` did not read at import
+fences its app's data until it reads, then its declared rows; a manifest read that
+fails is not cached. Only a declared leaf's own directory gets the
 `.tmp` / `.lock` rule, so for a directory entry that is `data/` itself, as for a
 built-in's. No listed row can name anything outside `apps/<name>/data/` or
 `apps/.<name>-data-tmp/`, and `security.sensitive_home_dirs()` keeps only the static
@@ -9615,7 +9804,7 @@ runtime `valid_entries` drops the covered one and keeps the directory). Before e
 spawn `sandbox_staging._materialize_declared_mask_dirs` creates every absent declared
 directory (0700) in each of the app's data directories that is a real directory:
 `apps/<name>/data/` and the move-aside `apps/.<name>-data-tmp/`, which holds the data while
-an install, update or keep-data uninstall replaces the tree and is moved back as a whole.
+an install over kept data or a keep-data uninstall replaces the tree and is moved back as a whole.
 It never creates `apps/<name>` or a data directory itself: the lifecycle moves the data
 aside and back by rename, and a `data/` made while it is away would turn the move back into
 a move into it (a keep-data uninstall restores with `shutil.move` once the app tree is
@@ -9639,11 +9828,12 @@ manifest rather than run the app with the directory unmasked; `scripts/adoption_
 reports a directory entry as a level-8 use.
 
 **Residual.** An agent's file tools cannot rewrite a fencing `app.json` or record (the
-write-only rows above, #38959), but the installed tree is still sandbox-writable, so a
-mask is as strong as the manifest that declares it: an agent's shell that rewrites an
-installed app's `app.json` drops that app's masks from the next spawn, as it could
-rewrite the app's code. Sealing an installed tree is a sandbox widening for the operator
-to choose. A declared file absent
+write-only rows above, #38959), and every installed `app.json` is also sealed read-only
+in the agent's sandbox (`app_manifest_files`, security.md). The rest of the installed
+tree is still sandbox-writable, so an agent's shell that rewrites a retained record
+drops the fence it holds on data left behind, as it could rewrite the app's code.
+Sealing the rest of an installed tree is a sandbox widening for the operator to
+choose. A declared file absent
 at spawn is not masked for that spawn, as for a core file leaf. Likewise a session that
 started while nothing of an app was on disk (before its install, or after a purge) carries
 none of its masks, directory entries included: a namespace gains no mount after launch, so
@@ -9762,8 +9952,8 @@ every installed `apps/<dir>/app.json`, the name taken from where it sits), the
 per-manifest cache, the two spellings (`apps/<name>/data/<entry>` and the lifecycle's
 `apps/.<name>-data-tmp/<entry>`) and the retained record are §37's, unchanged. The
 lifecycle refreshes the record at the same three points (`_write_installed`
-best-effort, `update_app` and a keep-data `uninstall_app` strictly, before the data
-moves). `AppManifest.validate` refuses a bad entry, `signing_payload` covers a non-empty
+best-effort, `update_app` and a keep-data `uninstall_app` strictly, before the old
+manifest or the data moves). `AppManifest.validate` refuses a bad entry, `signing_payload` covers a non-empty
 declaration (sorted; absent when empty) and `to_dict` and the built-in snapshot keep it.
 The two declarations never read each other's records. One cross-check joins them: an
 entry at or beneath one of the same manifest's `credentialMasks` entries is refused
@@ -9819,18 +10009,25 @@ canonical root (`sandbox_plan.fold_crew_home_alias`), as the namespace plan fold
 lifts no core seal. The staged spelling is not handed back. An in-gateway backend (both
 built-ins below) runs outside every sandbox and is unaffected.
 
-**Residual.** §37's: the agent's file tools are refused a fencing `app.json` or record,
-but the installed tree is sandbox-writable, so an agent's shell that rewrites an
-installed app's `app.json` drops its declaration from the next spawn. A file inside a
+**Residual.** §37's: every installed `app.json` is sealed, but the rest of the
+installed tree, the retained records included, is sandbox-writable. A file inside a
 declared directory that already had a second hard link elsewhere before the seal is
 writable through that other name, as for a core `READONLY` directory. A link at a
 component below the data home refuses every sandboxed spawn on the host until it is
-replaced with a real directory, as for a credential mask. A Linux sandbox already running
-when the lifecycle moves the app's data (an update, a keep-data uninstall, an adoption)
-keeps its seals where it placed them: the move-aside spelling, absent at its spawn, is
-not sealed for it, and the data moved back into the new `apps/<name>` is reached through
-a parent its pinned seals (and a mask beneath them) are not attached under, until it
-respawns. New spawns seal what they find, and a Linux spawn made while
+replaced with a real directory, as for a credential mask. An update or an adoption never moves
+`apps/<name>`, its `data/` or its `.app_secret` (§22), so a Linux sandbox already running
+keeps its seals and masks on them across one, except in the cases below. Seals and masks
+are mounts: one placed through a folder that is later replaced, or on a spelling the data
+later leaves, can be missed where the data is then reached. So a step that moves the
+app's data or replaces `apps/<name>` can leave a Linux sandbox that was already running
+without the seals and masks it placed, until it respawns: a keep-data uninstall or an
+install over kept data (each replaces `apps/<name>` and moves the data aside and back),
+any step that puts data found at the move-aside name back into an `apps/<name>` that stood
+at the sandbox's spawn (an update, an adoption, an install once its copy has made the new
+folder, a failure restore), and the recovery of a killed adoption whose old entries had all
+moved out (an `old` tree) and that finds anything at a move-aside name (it puts the retired
+tree in place of `apps/<name>`). New spawns seal what
+they find, and a Linux spawn made while
 `apps/<name>/data` is absent (the data held aside, or never created) finds an absent
 declared directory it does not create, so the tool gate is its only fence there until
 the data is back.
@@ -9865,6 +10062,7 @@ name in the expiry log), `sandbox_aliases.py`, `sandbox_argv.py`,
 `apps/builtins/spec_builder/backend/decisions.py`. Tests:
 `test/test_app_agent_readonly_dirs.py` (including a real Linux namespace spawn that
 gets `EROFS` writing a declared directory and keeps writing its sibling),
+`test/test_app_update_keeps_data_in_place.py::test_a_running_sandbox_keeps_its_seal_and_mask_across_an_update`,
 `src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_decision_ledger.py`.
 
 ## 40. The backend SDK: public host controls for an app's own Python (seam level 7)

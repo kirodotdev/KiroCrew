@@ -1,8 +1,9 @@
 """Argparse definitions for the ``Start here``, ``Run the gateway`` and ``Set it up`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: doctor, service,
-status, usage, restart, stop, gateway-pid, logs, token, logout, ledger-sweep, tmp, update,
-setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level parser and
+status, usage, restart, stop, gateway-pid, mcp, logs, token, logout, ledger-sweep, tmp,
+update, setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level
+parser and
 calls every registrar in the command line's registration order, so a new command of these
 sections gets a registrar here and a call there. The ``gateway`` command's own arguments
 stay in ``cli.py``: ``pod.runtime_boot.target_supports_flag`` reads them from that file.
@@ -209,8 +210,9 @@ def register_stop_parser(sub: _Commands) -> None:
 
 def register_restart_parser(sub: _Commands) -> None:
     # restart — service-aware: restarts the systemd/launchd service if active,
-    # otherwise SIGTERMs the foreground gateway and respawns it detached so the
-    # shell returns immediately. Mirrors `stop`.
+    # otherwise asks the foreground gateway to restart itself in place (POSIX),
+    # falling back to a stop and a detached spawn, so the shell returns
+    # immediately. Mirrors `stop`.
     restart_parser = cli_help.add_command(sub, "restart")
     restart_parser.add_argument(
         "--port",
@@ -264,6 +266,23 @@ def register_gateway_pid_parser(sub: _Commands) -> None:
     )
 
 
+def register_mcp_parser(sub: _Commands) -> None:
+    # mcp reload <server> -- retire one MCP server's pooled backends on the
+    # running MCP gateway daemon, so the next session to attach boots a fresh
+    # process. For a boot-time input the pool key cannot see (a token file, an
+    # env key left out of the identity hash); config edits already apply live.
+    mcp_parser = cli_help.add_command(sub, "mcp")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+    reload_parser = mcp_sub.add_parser(
+        "reload",
+        help="Recycle one server's running backends; idle ones stop now, busy ones finish first",
+    )
+    reload_parser.add_argument(
+        "server",
+        help="MCP server name, as it appears in mcp.json (its slash-free alias also works)",
+    )
+
+
 def register_service_parser(sub: _Commands) -> None:
     # service — install/uninstall/status as a system-level systemd unit (Linux,
     # /etc/systemd/system/, requires sudo) or launchd LaunchAgent (macOS,
@@ -271,7 +290,21 @@ def register_service_parser(sub: _Commands) -> None:
     # auto-restarts on crash, and auto-starts on boot.
     svc_parser = cli_help.add_command(sub, "service")
     svc_sub = svc_parser.add_subparsers(dest="service_action")
-    svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
+    install = svc_sub.add_parser(
+        "install", help="Install and start the gateway service (sudo on Linux)"
+    )
+    # No default mode: with neither flag the install keeps what the installed
+    # service already starts with (service.controller.install_service).
+    install.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Start the service's gateway with `gateway --headless`: no dashboard, "
+            "loopback only. Kept by a later `service install` run without the flag; "
+            "--no-headless installs the service with the dashboard again."
+        ),
+    )
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
 

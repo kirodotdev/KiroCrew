@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -33,7 +34,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from test_mate_worker_dispatch import _create, _fresh_create_budget, crewmate  # noqa: F401
 
-from kiro_crew import kept_grants
+from kiro_crew import atomic_write, kept_grants
 from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
 from kiro_crew.dashboard import chat_persistence, chat_trust_restart
 from kiro_crew.dashboard import server as srv
@@ -698,3 +699,44 @@ class TestTheWorkersFollowTheirCreator:
         await _pick(state, KEY, row["meta"]["approval_mode"])
         assert lead._trust is True
         assert worker._trust is True
+
+
+class TestATurnedOffModeIsOnDiskBeforeItIsAnswered:
+    @pytest.mark.asyncio
+    async def test_normal_answers_only_after_the_removal_is_synced_off_the_loop(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state = await _booted_with_mode(home, "trust")
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.owner_id = ""
+        state._flush_dirty_slots()
+        assert _record(home).exists()
+        loop_thread = threading.get_ident()
+        release = threading.Event()
+        calls: list[tuple[int, bool, bool]] = []
+        real = atomic_write.fsync_dir
+
+        def _held_sync(path, **kwargs) -> None:
+            gone = not _record(home).exists()
+            calls.append((threading.get_ident(), gone, state.push_slots_update.called))
+            if gone:
+                # Bounded: released below, or the test has already failed.
+                release.wait(timeout=30)
+            real(path, **kwargs)
+
+        monkeypatch.setattr(kept_grants, "fsync_dir", _held_sync, raising=False)
+        state.push_slots_update.reset_mock()
+        pick = asyncio.ensure_future(_pick(state, KEY, "normal"))
+        try:
+            await async_wait_until(lambda: any(gone for _, gone, _ in calls))
+            # The sync that makes the removal durable is held, and the answer waits on it.
+            assert not pick.done()
+        finally:
+            release.set()
+        await await_until(pick, what="the Normal pick")
+        assert state.get_slot(KEY)._trust is False
+        assert loop_thread not in {thread for thread, _, _ in calls}
+        # The slots update the picker shows comes after that sync, with the answer.
+        assert not any(pushed for _, gone, pushed in calls if gone)
+        assert state.push_slots_update.called

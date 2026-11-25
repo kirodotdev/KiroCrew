@@ -17,7 +17,6 @@ cannot disagree about which PRs qualify:
 Prose docs are exactly these paths:
 
     docs/**/*.md
-    src/kiro_crew/docs/**/*.md
     website/docs/**/*.md
     README.md            (repository root only)
     CONTRIBUTING.md      (repository root only)
@@ -25,6 +24,14 @@ Prose docs are exactly these paths:
 Anything else, including a script or an asset under ``docs/``, means the diff
 is NOT docs-only. A rename counts both its old and its new path, so moving code
 into ``docs/`` is not docs-only either.
+
+Markdown under ``src/`` is package data, not prose: ``setup.cfg``
+(``[options.package_data]``) and ``MANIFEST.in`` ship it in the wheel, and
+product code reads it at run time (``src/kiro_crew/docs/*.md`` through
+``mcp_guide.search_docs`` and the tips catalog). A change to it changes what
+Build Wheel produces, and can fail a test that reaches the page through product
+code and so names no doc, which ``readers`` cannot find. No doc tree lies under
+``src/``, so such a change runs everything.
 
 Usage:
     docs_only.py classify [--expect-files N] < input
@@ -64,7 +71,8 @@ import sys
 # The compare endpoint lists at most 300 files; a larger PR is never excused.
 MAX_FILES = 250
 
-_DOC_TREES = ("docs/", "src/kiro_crew/docs/", "website/docs/")
+# None under ``src/``: what ships in the package is not prose (module doc).
+_DOC_TREES = ("docs/", "website/docs/")
 _ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})
 
 # A test can read any doc without naming it: by globbing or filtering on the
@@ -152,6 +160,31 @@ def _read(root: str, rel: str) -> str:
         return ""
 
 
+def _helper_imports(helpers: list[str]) -> "re.Pattern[str]":
+    """An import of one of ``helpers``: by bare name, relative name, or a dotted
+    path through a ``test``/``tests`` package."""
+    return re.compile(
+        r"\b(?:import|from)\s+(?:\.+|(?:[\w.]*\.)?tests?\.)?(?:%s)\b"
+        % "|".join(map(re.escape, helpers))
+    )
+
+
+def _imports_one(imports: "re.Pattern[str]", text: str) -> bool:
+    """``bool(imports.search(text))``, tried only where a match can start.
+
+    Every match starts with the word ``import`` or ``from``, so the pattern is
+    tried at each place the text holds one of them instead of at every
+    character, which is what makes it slow on a file that imports no helper.
+    """
+    for word in ("import", "from"):
+        at = text.find(word)
+        while at != -1:
+            if imports.match(text, at):
+                return True
+            at = text.find(word, at + 1)
+    return False
+
+
 def readers(changed: list[str], root: str | None = None) -> list[str]:
     """Test files that could read one of ``changed`` docs (see the module doc)."""
     root = root or _repo_root()
@@ -187,12 +220,9 @@ def readers(changed: list[str], root: str | None = None) -> list[str]:
     # through the tests that import it: by bare name, relative name, or a
     # dotted path through a ``test``/``tests`` package.
     if helpers:
-        imports = re.compile(
-            r"\b(?:import|from)\s+(?:\.+|(?:[\w.]*\.)?tests?\.)?(?:%s)\b"
-            % "|".join(map(re.escape, helpers))
-        )
+        imports = _helper_imports(helpers)
         for rel, text in texts.items():
-            if os.path.basename(rel).startswith("test_") and imports.search(text):
+            if os.path.basename(rel).startswith("test_") and _imports_one(imports, text):
                 picked.add(rel)
 
     frontend = _walk(root, "website/src", lambda n: n.endswith((".test.ts", ".test.tsx")))

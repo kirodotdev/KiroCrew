@@ -113,6 +113,7 @@ export type {
   KasLoginSources,
   KasLoginDeviceSession,
   KasLoginPollResult,
+  KasLoginProfile,
   KasLoginLoopbackSession,
   AgentImportCategory,
   AgentImportSource,
@@ -166,6 +167,7 @@ export type {
   TailnetMobileMutation,
   MobileConnectMethodsData,
   TailnetMobileConfigure,
+  TailnetMobileOverride,
   TailnetMobileQr,
 } from './client/remoteAccess'
 export type {
@@ -202,6 +204,7 @@ export type {
 export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
 export type { ArchiveEntry, MessageSearchHit, MessageSearchParams, MessageSearchResponse, MessageSearchResult } from './client/sessions'
+export type { ChatHistoryAroundResponse, ChatHistoryHit, ChatHistoryKind, ChatHistorySearchParams, ChatHistorySearchResponse } from './client/chat'
 export type {
   McpShareReason,
   McpShareRecommendation,
@@ -214,6 +217,7 @@ export type {
   CrewmateExportChoices,
   CrewmateExportPreview,
   MemberRosterRow,
+  MemberHeldLimit,
   MemberActivityEntry,
   MemberGoals,
   MemberGoal,

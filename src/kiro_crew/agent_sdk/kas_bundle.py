@@ -67,10 +67,13 @@ if TYPE_CHECKING:
     )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
+KAS_PIN_AL2_VERSION = _pin.KAS_PIN_AL2_VERSION
 KAS_PIN_MANIFEST_SHA256 = _pin.KAS_PIN_MANIFEST_SHA256
+KAS_PIN_MANIFESTS = _pin.KAS_PIN_MANIFESTS
 KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION = _pin.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION
 KAS_VERSION_OVERRIDE_ENV = _pin.KAS_VERSION_OVERRIDE_ENV
 pinned_version = _pin.pinned_version
+host_pin_version = _pin.host_pin_version
 engine_spec_permissions_supported = _pin.engine_spec_permissions_supported
 
 #: Attribute -> the dotted name of the module that owns it. Names, not modules: the
@@ -100,7 +103,9 @@ _OWNED: dict[str, str] = {
 
 __all__ = [
     "KAS_BUNDLE_SIGN_IN_REMEDY",
+    "KAS_PIN_AL2_VERSION",
     "KAS_PIN_MANIFEST_SHA256",
+    "KAS_PIN_MANIFESTS",
     "KAS_PIN_VERSION",
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
@@ -109,6 +114,7 @@ __all__ = [
     "engine_install_snapshot",
     "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
+    "host_pin_version",
     "host_unsupported_reason",
     "install_pinned_engine",
     "installed_engine_label",

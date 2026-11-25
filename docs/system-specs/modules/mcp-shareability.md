@@ -44,7 +44,8 @@ The bulk stub action consults whichever of the two the global sharing switch mak
 A routed server's backend runs in one fixed folder outside the session sandbox
 (`daemon/launch.py::_backend_work_dir` ignores the session's work dir on purpose:
 an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server that
-works on the project's files would therefore act on the wrong project once routed.
+reads the folder it starts in, like git or file search, would therefore read the
+wrong project once routed.
 No detector decides which servers do: the operator answers per server in MCP
 Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 `not_used`, or absent for unanswered).
@@ -175,7 +176,7 @@ Absent or corrupt cache reads as empty, which costs a re-evaluation and never a 
 
 ## When evaluation happens, and what it costs
 
-`mcp_gateway/evaluate.py` owns the one policy question the layers below refuse to answer: which servers are worth paying for. Only servers whose stored measurement is missing or taken under a different identity are provoked, so the steady state is a file read and a newly installed MCP costs two spawns once. A single pass provokes at most **two** servers — four short-lived processes, fanned out under the prober's own concurrency ceiling — so a machine that just had twenty MCPs added covers them over ten probes instead of paying forty spawns inside one request. Until a server is measured it reads as `unknown`, which is the honest answer rather than a delay.
+`mcp_gateway/evaluate.py` owns the one policy question the layers below refuse to answer: which servers are worth paying for. Only servers whose stored measurement is missing or taken under a different identity are provoked, so the steady state is a file read and a newly installed MCP costs two spawns once. A single pass provokes at most **two** servers — four short-lived processes, fanned out under the prober's own concurrency ceiling — so a machine that just had twenty MCPs added covers them over ten probes instead of paying forty spawns inside one request. Until a server is measured it reads as `unknown`, which is the honest answer rather than a delay. Names that start the same process (command plus args) are measured one after another, and never while a probe of one of them runs: each pre-flight holds `mcp_discovery.same_process_lock` across both of its spawns, taken before its fan-out slot, so a server that allows only one copy is not refused its second spawn and left unmeasured.
 
 It runs from `POST /api/mcp/probe` — the explicit action that already spawns every configured server — and never while rendering a page. A failure there is swallowed: the probe's own contract is status and tools, and a shareability problem must not cost the operator the answer they asked for.
 

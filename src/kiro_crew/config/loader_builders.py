@@ -222,6 +222,11 @@ def _default_memory_mode_from(raw: object) -> str:
     return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
 
 
+def _default_approval_mode_from(raw: object) -> str:
+    """The stored start mode for the owner's new chats; anything else reads as ``normal``."""
+    return raw if isinstance(raw, str) and raw in _sections.DEFAULT_APPROVAL_MODES else "normal"
+
+
 def _folder_sort_from(raw: object, default: str) -> str:
     """Normalize the sidebar folder sort mode; anything unknown is *default*, ``custom``.
 
@@ -1415,6 +1420,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
     )
     return DashboardConfig(
         url=section.get("url"),
+        # Unclamped integers reach the startup check. Shared validation warns and
+        # removes wrong types (default 0, off), but coerces "8443" and 8443.0 to 8443.
+        entry_port=section.read("entry_port", _safe_int),
         tailscale=_tailscale_config_from(
             dashboard_data.get("tailscale"),
             _degraded,
@@ -1499,9 +1507,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
         side_panel_always_open=section.read("side_panel_always_open", _safe_bool),
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
+        show_bot_sessions_in_list=section.read("show_bot_sessions_in_list", _safe_bool),
         auto_open_conductor_board=section.read("auto_open_conductor_board", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
+        default_approval_mode=_default_approval_mode_from(section.get("default_approval_mode")),
         new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
         widget_density=section.get("widget_density"),
         browser_local_origins=_sections.coerce_browser_local_origins(
@@ -1511,6 +1521,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         preferred_language=section.get("preferred_language"),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
+        fork_inherits_pin=section.get("fork_inherits_pin"),
         terminal=section.get("terminal"),
         default_project=section.get("default_project"),
         session_folder_root=_session_folder_root_or_empty(section.get("session_folder_root")),
@@ -1528,6 +1539,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
+        expand_linked_items=section.read("expand_linked_items", _safe_bool),
         command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
         channels_enabled=section.read("channels_enabled", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),

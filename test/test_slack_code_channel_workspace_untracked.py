@@ -11,7 +11,7 @@ import pytest
 
 from kiro_crew import pinned_fs
 from kiro_crew.slack.code_channels.workspace import diff as diff_mod
-from kiro_crew.slack.code_channels.workspace.diff import OMITTED, render_untracked
+from kiro_crew.slack.code_channels.workspace.diff import OMITTED, UNREAD, render_untracked
 
 #: Whether this platform renders an untracked file's content (see the parent module).
 UNTRACKED_RENDERED = pinned_fs.supports_pinned_walk()
@@ -23,10 +23,11 @@ def test_render_untracked_refuses_unsafe_paths(tmp_path):
     if UNTRACKED_RENDERED:
         assert shown.endswith(b"@@ -0,0 +1,2 @@\n+a\n+b\n")
     else:
-        assert shown == OMITTED
+        assert shown == UNREAD
     assert render_untracked(str(tmp_path), "../ok.txt", budget=10_000) == OMITTED
     assert render_untracked(str(tmp_path), "bad\nname", budget=10_000) == OMITTED
-    assert render_untracked(str(tmp_path), "ok.txt", budget=10) == OMITTED
+    too_large = render_untracked(str(tmp_path), "ok.txt", budget=10)
+    assert too_large == (OMITTED if UNTRACKED_RENDERED else UNREAD)
 
 
 @pytest.mark.skipif(

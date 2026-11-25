@@ -341,8 +341,22 @@ class TestProcessTreeHelpers:
             return b"4242 4243\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "check_output", _fake_check_output)
+        monkeypatch.setattr(
+            acp_client.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
+        )
         assert _direct_children(2**30) == [4242, 4243]
-        assert calls and calls[0][:2] == ["pgrep", "-P"]
+        assert calls and calls[0][:2] == ["/usr/bin/pgrep", "-P"]
+
+    def test_direct_children_without_a_system_pgrep_spawns_nothing(self, monkeypatch):
+        """No pgrep in the system directories means no answer, never a PATH lookup."""
+        monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", False)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            acp_client.subprocess_mod, "check_output", lambda cmd, **kw: calls.append(cmd)
+        )
+        monkeypatch.setattr(acp_client.platform_compat, "trusted_system_bin", lambda name: None)
+        assert _direct_children(2**30) == []
+        assert calls == []
 
     def test_direct_children_swallows_pgrep_failure(self, monkeypatch):
         monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", False)
@@ -773,6 +787,7 @@ class TestEnsureReady:
         client._kill_process = AsyncMock(side_effect=lambda **kw: order.append(f"kill {kw}"))
         client._reset_state = MagicMock(side_effect=lambda: order.append("reset"))
         client._process_tree_confirmed_dead = True
+        client._process = MagicMock()
 
         await client.shutdown()
 
@@ -783,7 +798,9 @@ class TestEnsureReady:
             f"kill {{'force': True, 'exit_grace': {_EOF_EXIT_GRACE_SECS!r}}}",
             "reset",
         ]
-        # A stale confirmation from an earlier kill does not survive into this one.
+        # A stale confirmation from an earlier kill does not survive into a kill of
+        # a live process. (With no process left, the reaping reset's verdict stands:
+        # test_bot_chat_app_stop_confirmation.)
         assert client._process_tree_confirmed_dead is False
 
 

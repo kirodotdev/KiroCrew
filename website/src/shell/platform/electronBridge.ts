@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { isMacElectron, MAC_FULLSCREEN_TOP_RESERVE_PX } from '../../lib/electron'
+import { electronPlatform, isMacElectron, MAC_FULLSCREEN_TOP_RESERVE_PX } from '../../lib/electron'
 
 /**
  * The shell's calls into the Electron preload bridge (`window.electronAPI`).
@@ -63,6 +63,29 @@ export function subscribeNativeHistoryStep(onStep: (delta: -1 | 1) => void): (()
   if (!electronAPI?.onHistoryStep) return
   return electronAPI.onHistoryStep(delta => {
     if (delta === -1 || delta === 1) onStep(delta)
+  })
+}
+
+/**
+ * Windows and Linux fullscreen hides the caption buttons and the menu bar, and
+ * F11 is the only way out, so the shell says so each time the window enters
+ * it. `onEnter` runs on the way in, `onLeave` on the way out. macOS keeps its
+ * own reveal-on-hover controls, and a fullscreen a page's video raised leaves
+ * on Esc, so neither gets the hint. Undefined when there is no bridge.
+ */
+export function subscribeFullScreenExitHint(onEnter: () => void, onLeave: () => void): (() => void) | undefined {
+  if (!window.kirocrew?.isElectron || electronPlatform() === 'darwin') return
+  const api = window.electronAPI
+  if (!api?.onFullScreenChanged) return
+  let hinted = false
+  return api.onFullScreenChanged((fs, _overlap, pageRaised) => {
+    if (fs && !pageRaised && !hinted) {
+      hinted = true
+      onEnter()
+    } else if (!fs && hinted) {
+      hinted = false
+      onLeave()
+    }
   })
 }
 

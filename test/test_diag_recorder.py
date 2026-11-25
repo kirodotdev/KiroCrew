@@ -209,6 +209,43 @@ def test_missing_procfs_yields_null_fields_not_guesses(tmp_path: Path) -> None:
     assert row["mem_total_mb"] is None
 
 
+def test_a_windows_row_carries_the_commit_charge_and_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Windows host can reach its commit limit with physical memory still free.
+
+    ``meminfo`` is null there, so these two fields are what a bundle taken after
+    such a stall shows it by; an unreadable reading is null, never a guess.
+    """
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(rec, "_read_posture", lambda: {})
+    mib = 1024 * 1024
+    commit = (73_098 * mib, 14_467 * mib)
+    monkeypatch.setattr(platform_compat, "system_commit", lambda: commit)
+
+    row = _make(tmp_path).sample_now()
+    assert (row["commit_used_mb"], row["commit_limit_mb"]) == (58_631.0, 73_098.0)
+
+    monkeypatch.setattr(platform_compat, "system_commit", lambda: None)
+    row = _make(tmp_path).sample_now()
+    assert (row["commit_used_mb"], row["commit_limit_mb"]) == (None, None)
+
+
+def test_a_row_off_windows_has_no_commit_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Linux and macOS rows keep their shape: the commit fields are Windows-only."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(rec, "_read_posture", lambda: {})
+
+    row = _make(tmp_path).sample_now()
+    assert not [key for key in row if key.startswith("commit_")]
+
+
 def test_mount_usage_is_reported_per_watched_mount(tmp_path: Path) -> None:
     recorder = rec.Recorder(
         config_dir=tmp_path / "home",

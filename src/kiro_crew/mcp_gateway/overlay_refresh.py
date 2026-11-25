@@ -1,14 +1,21 @@
-"""Rebuild the agent overlays after an app writes agent specs, without a restart.
+"""Rebuild the agent overlays after agent specs change, without a restart.
 
 The gateway builds ``<mcp_gateway.overlay_dir>/*.json`` once, when its broker
 starts. An app registered later (install, reinstall, enable, update) writes its
 agent specs into ``~/.kiro/agents`` after that pass, so its agents had no
 overlay -- and no gateway-routed MCP servers -- until the next gateway start.
+A Bot's own file edited later (a change card that adds or changes a
+gateway-routed server on it) likewise left its ``mates/<id>.json`` overlay on
+the start pass's content.
 
 The broker owner (the gateway process) registers one refresher here while it
-serves a broker; the app lifecycle calls :func:`refresh_after_agent_change`
-after it registered agents. With no broker running nothing is registered and
-the call does nothing: there is no overlay to keep current, and the next broker
+serves a broker. Two callers run their spec write as the refresh's
+``register`` step: the app lifecycle, when it registers agents, and the
+capabilities save (``dashboard/handlers/agent_capabilities.py``), when it gives a
+Bot that owns its file a gateway-routed server; that save's change card says a
+restart is needed unless the refresh applied and its ``serving_stub_servers``
+holds every such server. With no broker running nothing is registered and the
+call does nothing: there is no overlay to keep current, and the next broker
 start builds it from scratch.
 """
 
@@ -53,8 +60,9 @@ async def refresh_after_agent_change(register: Callable[[], Awaitable[bool]]) ->
     """Run *register* (True if it wrote specs), then the refresh, under one lock.
 
     Never raises: a failed refresh leaves the overlays as they were, which is what the
-    next gateway start repairs, and it must not fail the app action that called
-    it. Returns the refresher's result, or ``None``.
+    next gateway start repairs, and it must not fail the action that called it
+    (a caller keeps what *register* raised itself). Returns the refresher's
+    result, or ``None``.
     """
     refresher = _refresher
     if refresher is None:
@@ -62,7 +70,7 @@ async def refresh_after_agent_change(register: Callable[[], Awaitable[bool]]) ->
     try:
         return await refresher(register)
     except Exception:  # noqa: BLE001 - best-effort; the next start rebuilds it
-        logger.warning("mcp-gateway: overlay refresh after an app change failed", exc_info=True)
+        logger.warning("mcp-gateway: overlay refresh after an agent change failed", exc_info=True)
         return None
 
 

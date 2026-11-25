@@ -76,6 +76,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
+import { clickOptimizeAsync } from './optimizeRow'
 
 function makeStore(
   activeSlot: string,
@@ -619,7 +620,7 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
       fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
       await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
       // Enter the optimizing (readOnly) state and wait for it.
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' })) })
+      await clickOptimizeAsync()
       await waitFor(() => expect(ta).toHaveAttribute('readonly'))
 
       const caret = 'please review @src/main.ts'.length
@@ -1041,7 +1042,7 @@ async function optimizePageWith(optimized: string, prepare: () => Promise<HTMLTe
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     const ta = await prepare()
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' })) })
+    await clickOptimizeAsync()
     await waitFor(() => expect(calls).toBe(1))
     await waitFor(() => expect(ta).not.toHaveAttribute('readonly'))
     return ta

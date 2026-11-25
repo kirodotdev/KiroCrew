@@ -777,7 +777,7 @@ def _sync_read_state(
     if kind == KIND_MCP_SERVER:
         from kiro_crew.dashboard.handlers.request_server_page import server_state
 
-        return server_state(p["server"])
+        return server_state(p["server"], p)
     if kind == catalog.KIND_MCP_ADD_CUSTOM:
         return {
             "exists": {name: _mcp_exists(name) for name in p["servers"]},
@@ -1030,16 +1030,27 @@ async def undo_survivors(
     return [n for n in names if await asyncio.to_thread(_mcp_scopes, n)]
 
 
-def _connection_grant_fingerprint(slug: str) -> list[int] | None:
-    """``[mtime_ns, size]`` of the provider's token artifact; stats only, never opened."""
-    from kiro_crew import mcp_grant
+def _connection_grant_fingerprint(slug: str) -> list[int] | dict[str, Any] | None:
+    """Which grant the provider holds now; stats and entry digests only, nothing opened.
+
+    ``[mtime_ns, size]`` of kiro-cli's token artifact. While chats run on KAS with
+    sign-ins saved, Crew's grant vault is read too, at the url a KAS chat reads it
+    at (the Connections status view's rule, ``connections.status``), and a sign-in
+    held there makes it ``{"kiroCli": <stamp or None>, "kas": <entry digest>}``, so a
+    new sign-in in either store reads as a different grant.
+    """
+    from kiro_crew import mcp_grant, mcp_grant_kas
+    from kiro_crew.connections.mint_kas import kas_chat_sign_in_urls, kas_signs_in
     from kiro_crew.connections.registry import get_visible_providers
 
     provider = next((p for p in get_visible_providers() if p.get("slug") == slug), None)
     if provider is None:
         return None
     stamp = mcp_grant.grant_fingerprint(str(provider["mcp_url"]))
-    return list(stamp) if stamp is not None else None
+    kiro_cli = list(stamp) if stamp is not None else None
+    vault_url = kas_chat_sign_in_urls([provider]).get(slug) if kas_signs_in() else None
+    saved = mcp_grant_kas.kas_grant_fingerprint(vault_url) if vault_url is not None else None
+    return kiro_cli if saved is None else {"kiroCli": kiro_cli, "kas": saved}
 
 
 async def read_state(
@@ -1213,7 +1224,7 @@ async def _mcp_detail(params: dict[str, Any]) -> dict[str, Any]:
 
         registry = await asyncio.to_thread(_get_registry)
         provider = registry.get(params["provider"])
-        if provider is None or not provider.is_available():
+        if provider is None or not await asyncio.to_thread(provider.is_available):
             return {}
         detail = await asyncio.wait_for(provider.fetch_detail(params["id"]), timeout=8)
     except Exception:

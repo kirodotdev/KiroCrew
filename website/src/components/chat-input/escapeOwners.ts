@@ -1,8 +1,9 @@
-/* Shared Escape-precedence probe for the composer (issue #22315).
+/* Shared Escape-precedence probe for the composer.
  *
  * The composer binds Escape to two things that must YIELD to anything already
- * holding Escape on the page: stopping the running turn (stopKey.ts) and
- * discarding a live/draining dictation (voice.ts). Both ask the same question
+ * holding Escape on the page: cancelling an in-flight optimize
+ * (optimizeEscape.ts) and discarding a live/draining dictation (voice.ts).
+ * Escape never stops a running turn. Both ask the same question
  * — "is some other surface the current Escape owner?" — so they ask it in ONE
  * place rather than each carrying its own copy of the selector (the drift a
  * second copy invites: one gets a carve-out, the other does not, and the two
@@ -23,7 +24,7 @@
  *     (MarkdownPanel) and the in-session message-search bar are the two such
  *     surfaces today: both close on Escape from a document listener that does
  *     not stop the event, so without this marker a single Escape would BOTH
- *     close the surface AND stop the turn / discard dictation. The attribute
+ *     close the surface AND cancel an optimize / discard dictation. The attribute
  *     is set by the surface only while it actually owns Escape.
  *
  * Surfaces registered on the Escape stack (hooks/useEscapeLayer) are ordered
@@ -32,21 +33,21 @@
  * The notification banner is deliberately NOT marked. Its window handler
  * already skips an Escape whose `defaultPrevented` is set, and both composer
  * claimants preventDefault the Escape they take before it bubbles to
- * document. So a focused composer keeps its own Escape (stop the turn,
- * discard the dictation) and the card stays; marking the banner would make
+ * document. So a focused composer keeps its own Escape (cancel the
+ * optimize, discard the dictation) and the card stays; marking the banner would make
  * one pending card silently disable both bindings.
  *
  * `[data-escape-passthrough]` opts a surface OUT even though it carries
  * `role="dialog"`: ComputerUseLiveView is a strictly read-only panel open
  * ALONGSIDE a focused composer that never steals focus or claims Escape, so
- * the probe must not treat it as an owner (issue #22315, HOLD item 4).
+ * the probe must not treat it as an owner.
  *
  * SessionControlHost deliberately stays in the `[role="dialog"]` set: it is a
  * non-modal dialog that does NOT steal focus and lets Escape reach the
  * document unstopped (its onKeyDown is `if (e.key !== 'Escape')
  * e.stopPropagation()`, and its document Escape listener closes without
  * preventDefault), so it relies on THIS probe to keep one Escape from both
- * closing it and stopping the turn.
+ * closing it and discarding a dictation.
  */
 
 /** True when a surface other than the composer currently owns Escape. The

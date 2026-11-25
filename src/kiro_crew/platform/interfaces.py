@@ -16,7 +16,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -456,6 +456,33 @@ class IdentityProvider(Protocol):
 
     def credential_watch_paths(self) -> List[Path]: ...
 
+    def credential_freshness(self) -> "CredentialFreshness | None":
+        """Whether the host's own sign-in, which the edition's tools use, has expired.
+
+        WIRED: the cron callback (``slack/gateway_runtime/cron_fire.py``) asks
+        before it starts a scheduled agent turn, through
+        ``kiro_crew.preflight.expired_host_credential``, off the event loop. When
+        the answer says ``expired``, the run is not started and its owner is
+        told ``remedy``; every scheduled agent turn waits, also one that calls
+        none of the edition's tools. ``None``: nothing to check. Public default
+        = ``None``, so every run starts. Read the credential, never
+        guess: a credential that cannot be read is not expired. v1 method
+        addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class CredentialFreshness:
+    """The host sign-in reading :meth:`IdentityProvider.credential_freshness` returns.
+
+    ``remedy`` is shown to the person as it is: what expired and how to sign in
+    again, in plain words.
+    """
+
+    expired: bool
+    remedy: str
+
 
 @dataclass(frozen=True)
 class WorkloadIdentity:
@@ -627,6 +654,21 @@ class McpToolingProvider(Protocol):
         spawns the server, so only the name crosses the wire. Return only names
         whose values carry no secret, such as a launcher's loopback address.
         The public Default returns an empty set.
+        """
+        ...
+
+    def custom_agent_servers(self) -> Tuple[str, ...]:
+        """Names of :meth:`extra_mcp_servers` entries a custom agent's session also mounts.
+
+        WIRED: ``acp.default_crew_servers.with_default_crew_servers`` adds each named
+        server that :meth:`extra_mcp_servers` supplies on this host to the spec a
+        session runs on a custom agent (a user-level spec Crew did not write), under
+        the same opt-outs as Crew's own servers. It is added at spawn, never written
+        into the user's file, never auto-approved, and not added while a wildcard in
+        the agent's own ``allowedTools`` would approve it unasked. Which spawns add
+        it, and so the spec an edition check that reports where it is mounted
+        judges, is ``acp.default_crew_servers.session_spec_on(backend, agent, spec)``.
+        The public Default returns ``()``.
         """
         ...
 
@@ -952,7 +994,9 @@ class CapabilityManager(Protocol):
     mid-mutation, and a tight read bound on ``list_*``/``registry`` — the
     dashboard polls those, so a stalled unbounded read would accumulate pending
     gateway tasks, the same wedge class this prevents). Only the sync
-    ``available()`` probe is unwrapped (it does no I/O). That wrapper
+    ``available()`` probe (no subprocess or network call; at most a cheap PATH
+    lookup while a CLI is missing) and the optional, I/O-free
+    ``unavailable_reason()`` are unwrapped. That wrapper
     (``platform.capability_bound.BoundedCapabilityManager``)
     is applied at CONTEXT COMPOSITION — ``PlatformContext.__post_init__`` binds
     every ``CapabilityManager`` once — so EVERY reader of
@@ -966,7 +1010,19 @@ class CapabilityManager(Protocol):
     """
 
     def available(self) -> bool:
-        """True when this edition provides a capability manager."""
+        """True when this edition provides a capability manager.
+
+        Asked on every request, never cached by the core, so a manager whose
+        package-manager CLI is installed after the gateway started is used from
+        the next request. A manager that can be unavailable for a reason its user
+        can fix MAY also offer an OPTIONAL synchronous, I/O-free
+        ``unavailable_reason() -> str``: one short plain-text sentence saying why
+        and what to do, or ``""`` while available. It is asked only right after
+        ``available()`` returned False, so it reads the state that probe left.
+        MCP discovery search shows it as the edition provider's ``unavailable``
+        outcome; a manager without the op (the public Default) is left out of the
+        search silently.
+        """
         ...
 
     async def list_mcp(self) -> List[Dict[str, Any]]:

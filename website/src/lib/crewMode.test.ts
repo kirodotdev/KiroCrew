@@ -3,7 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  liveMateThreads, busySlotKeys, slackRowHidden, showsAsCrewMode,
+  liveMateThreads, mateThreadsHidingSessions, busySlotKeys, slackRowHidden, showsAsCrewMode,
 } from './crewMode'
 import { applyLockedControls } from '../utils/editionLocks'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -366,6 +366,17 @@ describe("a Bot's sessions in the person's lists", () => {
   it('leaves them out whatever an old switch stamp on the mate thread says', () => {
     expect(crewModeView(stale).map(r => r.key)).toEqual(['mate', 'orphan', 'plain'])
     expect([...crewMemberKeys(stale)].sort()).toEqual(['deep', 'mw'])
+  })
+
+  it("keeps them in when the mate thread says its Bot's sessions are listed", () => {
+    const listed = rows.map(r => (r.key === 'mate' ? { ...r, bot_sessions_listed: true } : r))
+    expect(crewModeView(listed).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
+    expect([...crewMemberKeys(listed)]).toEqual([])
+    expect(mateThreadsHidingSessions(listed).size).toBe(0)
+    const state = { dashboard: { slots: listed }, chat: {} } as never
+    expect(selectPersonSlots(state).map(r => r.key)).toContain('mw')
+    // The page still never opens one on its own.
+    expect(autoOpenRows(listed).map(r => r.key)).toEqual(['mate', 'plain'])
   })
 
   it('reads the mate threads from the full store when the list holds none', () => {

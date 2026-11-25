@@ -60,6 +60,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import kiro_crew.security.redaction as redaction
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
+from kiro_crew.security.redaction_structured import charsets
 
 if TYPE_CHECKING:
     from kiro_crew.security.redaction_structured.model import Hit
@@ -395,15 +397,71 @@ class StreamRead:
 _TAG_HEAD = "[REDACTED"
 
 
+def ends_word(c: str) -> bool:
+    """Whether *c* ends a word for the stream's holds: a blank, or a non-ASCII
+    character that no reader folds onto ASCII. Every anchor literal and credential
+    is ASCII, so a CJK character, which writing in those scripts puts where English
+    puts a blank, cannot sit inside one. A character a label match folds onto an
+    ASCII letter (``ſ`` reads as ``s`` under :func:`.charsets.ascii_lower` and a
+    case-blind regex) can, so it stays inside the word. So does a default-ignorable
+    character (``U+200B``): it renders as nothing, and the credential plan reads a
+    token through it."""
+    if c.isspace():
+        return True
+    if c.isascii() or ord(c) in DEFAULT_IGNORABLE:
+        return False
+    folds = (charsets.ascii_lower(c), c.casefold(), c.lower(), c.upper())
+    return not any(f.isascii() for f in folds)
+
+
+def word_start(buf: str, pos: int) -> int:
+    """*pos* moved back to the start of the word it falls in (see :func:`ends_word`).
+
+    The stream snaps the detectors' fixed tail hold back to here. Snapping to a
+    blank alone held a whole Chinese or Japanese paragraph back from the live chat,
+    since that prose has none."""
+    return _last_word_end(buf, pos) + 1
+
+
+#: Every ASCII character :func:`ends_word` accepts (each one ``str.isspace`` accepts).
+#: Any other ASCII character stays inside a word.
+_ASCII_BLANKS = " \n\t\r\x0b\x0c\x1c\x1d\x1e\x1f"
+
+
+def _last_word_end(buf: str, end: int | None = None) -> int:
+    """The index of the last character of ``buf[:end]`` that :func:`ends_word`, or -1.
+
+    The stream asks this of its whole buffer on every feed, and a long run with no
+    blank (a key body, a base64 line) is common, so no character is checked one at
+    a time unless it might end a word. ``str.rfind`` finds the last ASCII blank.
+    After it only a non-ASCII character can end a word, so windows that double
+    backwards from ``end`` skip any slice ``str.isascii`` accepts, and check the
+    others a character at a time: the work stays linear in the distance walked back."""
+    hi = len(buf) if end is None else end
+    blank = -1
+    for c in _ASCII_BLANKS:
+        blank = max(blank, buf.rfind(c, blank + 1, hi))
+    size = 64
+    while hi > blank + 1:
+        lo = max(blank + 1, hi - size)
+        if not buf[lo:hi].isascii():
+            for i in range(hi - 1, lo - 1, -1):
+                if ends_word(buf[i]):
+                    return i
+        hi, size = lo, size * 2
+    return blank
+
+
 def _tail_cut(buf: str, base: int, cut: int) -> int:
-    """The fixed tail hold, ending at the last word: ``cut`` moved up past the last blank.
+    """The fixed tail hold, ending at the last word: ``cut`` moved up past the last
+    character that ends a word (:func:`ends_word`).
 
     A partial anchor literal is one word (``ghp_``, ``eyJ``, ``https://``, a key
     spelling); an anchor that spans a blank (a private-key header, a labelled key
     and its value) is a unit the detectors report undecided, or one the passes'
     own stream holds keep. So only the last word needs holding.
     """
-    blank = max(buf.rfind(c) for c in " \t\r\n")
+    blank = _last_word_end(buf)
     if blank == -1:
         return cut
     # A redaction tag holds a blank; a cut inside one would hand half a tag to a
@@ -477,8 +535,10 @@ def stream_read(
         for h in resolved:
             # A hit not committed yet keeps the text it was decided from (its
             # anchor) buffered, so the window that commits it decides it alike.
+            # A cut right at its end, with more text after it, would commit the
+            # hit without the character it was decided by (a closing quote).
             first = h.start if h.anchor < 0 else min(h.start, h.anchor)
-            if first < cut < h.end:
+            if first < cut < h.end or first < cut == h.end < n:
                 cut = max(base, first)
                 moved = undecided = True
     return StreamRead(cut - base, undecided=undecided, armour_blocks=blocks)

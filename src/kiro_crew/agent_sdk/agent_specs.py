@@ -5,8 +5,9 @@ The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
 The shared execution-prompt reader (``context_assembly.agent_spec``) takes KAS's
-prompt spelling, ``file://`` expansion and path check here too, and a script cron's
-MCP client (``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
+prompt spelling, ``file://`` expansion and path check here too, the dashboard's
+unread-prompt notice its wording and backend gate, and a script cron's MCP client
+(``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
 Application code may not import ``kiro_crew.acp``
 (``scripts/check_agent_sdk_boundary.py``), so this module is the one seam they
 reach those reads through.
@@ -86,6 +87,29 @@ def is_unsafe_prompt_path(path: Path) -> bool:
     return kas_prompt_paths.is_unsafe_prompt_path(path)
 
 
+def prompt_unread_notice(agent: str, paths: list[Path]) -> str:
+    """The session-start notice for a ``file://`` prompt the session runs without (``acp.kas_prompt``)."""
+    from kiro_crew.acp import kas_prompt
+
+    return kas_prompt.prompt_unread_notice(agent, paths)
+
+
+def prompt_only_in_context_block(provider: object) -> bool:
+    """Whether *provider*'s harness gets a custom agent's prompt from the ``[AGENT SYSTEM PROMPT]`` block alone.
+
+    True for a ``mirror`` projection, whose mirror rules ``prompt`` withheld, and a
+    ``broker-only`` one (pi), which is handed no spec. False for ``native`` (kiro-cli
+    reads the spec's prompt itself), ``external`` (KAS is sent the prompt in its wire
+    spec and names an unread file itself) and a backend whose declaration
+    ``backend_mcp_ability`` cannot read, about which nothing is established.
+    """
+    from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    projection = ability_for(capabilities_of(provider).backend).projection
+    return projection in ("mirror", "broker-only")
+
+
 def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
     """Whether *agents_dir* holds no spec at all for *agent_id*. Blocking.
 
@@ -97,15 +121,21 @@ def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
     return kas_agents.agent_spec_absent(agents_dir, agent_id)
 
 
-def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
+def session_mcp_server_is_disabled(
+    name: str, agent: str | None, *, work_dir: str | Path | None = None, session_key: str = ""
+) -> bool:
     """Whether MCP server *name* is switched off whole for a session as *agent*.
 
     ``acp.session_mcp.session_mcp_server_is_disabled``: blocking, and never
-    raises (an unreadable source switches nothing off).
+    raises (an unreadable source switches nothing off). *work_dir* is the checkout
+    the agent's spec is read from, and *session_key* the session, so a crewmate's
+    worker is read from the spec built for it, as that reader takes them.
     """
     from kiro_crew.acp import session_mcp
 
-    return session_mcp.session_mcp_server_is_disabled(name, agent)
+    return session_mcp.session_mcp_server_is_disabled(
+        name, agent, work_dir=work_dir, session_key=session_key
+    )
 
 
 def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]]:
@@ -118,6 +148,30 @@ def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]
     from kiro_crew.acp import session_mcp
 
     return session_mcp.session_mcp_disabled_tools(None, spec=spec)
+
+
+def unusable_disabled_tools(spec: dict[str, Any]) -> list[str]:
+    """Launched servers in *spec* whose ``disabledTools`` is set but malformed, sorted.
+
+    ``acp.kas_tool_limits.disabled_tool_exclusions``'s refusal list: a value that is
+    not a list of non-blank tool names carries no restriction, so a caller refuses
+    the server rather than launch it whole. Never raises.
+    """
+    from kiro_crew.acp import kas_tool_limits
+
+    return kas_tool_limits.disabled_tool_exclusions(spec)[1]
+
+
+def global_mcp_servers() -> dict[str, Any]:
+    """The ``mcpServers`` map of the user's global Kiro MCP settings, ``{}`` when unread.
+
+    ``acp.session_mcp._global_settings``, the file the dashboard's switch-offs land
+    in for a server a spec does not own. Blocking, and never raises.
+    """
+    from kiro_crew.acp import session_mcp
+
+    servers = session_mcp._global_settings().get("mcpServers")
+    return servers if isinstance(servers, dict) else {}
 
 
 def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
@@ -294,3 +348,17 @@ def plain_http_headers_refused(url: str) -> bool:
         and not kas_env_launch.kas_accepts_url(url)
         and kas_env_launch.refuses_plain_http_headers()
     )
+
+
+def stamp_session_label(entry: dict[str, Any], label: str) -> dict[str, Any]:
+    """*entry* (an MCP server entry the caller owns) carrying *label* as its session label.
+
+    Drops the session-label marker and sets the label env var, the same spelling
+    every harness hands a server (``acp.session_label``). Mutates and returns *entry*.
+    """
+    from kiro_crew.acp.session_label import SESSION_LABEL_ENV, SESSION_LABEL_MARKER
+
+    entry.pop(SESSION_LABEL_MARKER, None)
+    env = entry.get("env")
+    entry["env"] = {**(env if isinstance(env, dict) else {}), SESSION_LABEL_ENV: label}
+    return entry

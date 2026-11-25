@@ -25,6 +25,9 @@ WITHDRAWN_TAB = "This Code tab was withdrawn.\n"
 #: The first wait before that replacement is tried again, doubling to the cap.
 WITHDRAW_BACKOFF_SECS = 60.0
 WITHDRAW_BACKOFF_MAX_SECS = 1800.0
+#: How long :meth:`CodeTab.show_code_tab` waits for the channel's pass: well
+#: under the MCP forwarder's 60-second call timeout (a pass also reads PRs and CI).
+SHOW_WAIT_SECS = 30.0
 
 
 def _tell_owner(record: WorkspaceRecord) -> None:
@@ -57,8 +60,14 @@ class CodeTab:
         _withdraw_wait: dict[str, tuple[float, float]]
         #: Channels whose owner was told a Code tab could not be withdrawn.
         _withdraw_told: set[str]
+        #: ``channel key -> whether the last pass's Code tab is up``.
+        _diff_up: dict[str, bool]
+        #: ``channel key -> the running refresh loop`` (``schedule_refresh``).
+        _tasks: dict[str, asyncio.Future[None]]
 
         def _lock(self, key: str) -> asyncio.Lock: ...
+
+        def schedule_refresh(self, binding: Any, *, delay: float = 0.0) -> None: ...
 
         def _board_still_admitted(self, binding: Any) -> bool: ...
 
@@ -77,6 +86,27 @@ class CodeTab:
             self, method: str, record: WorkspaceRecord, *args: Any, **kwargs: Any
         ) -> Any: ...
 
+    async def show_code_tab(self, binding: Any) -> bool | None:
+        """Publish the Code tab now, as a turn's end does; True when it holds a diff.
+
+        For ``code_channel_set_view`` type diff. The pass is the channel's own
+        refresh, serialized with every other (``schedule_refresh``), so the tab
+        keeps this one writer and every gate a refresh asks. ``None``: the pass
+        outlasted :data:`SHOW_WAIT_SECS` (slow PR or CI reads) and goes on alone.
+        """
+        key = f"{binding.team_id or ''}:{binding.channel_id or ''}"
+        # Only this call's passes answer: an older tab whose replacement fails to
+        # send must not read as showing the diff asked for.
+        self._diff_up.pop(key, None)
+        self.schedule_refresh(binding)
+        task = self._tasks.get(key)
+        if task is not None:
+            # asyncio.wait cancels nothing: a timeout (or the call ending) leaves the pass running.
+            done, _ = await asyncio.wait({task}, timeout=SHOW_WAIT_SECS)
+            if not done:
+                return None
+        return self._diff_up.get(key, False)
+
     async def _publish_diff(
         self,
         record: WorkspaceRecord,
@@ -94,6 +124,7 @@ class CodeTab:
         helper agents' commits, so when no channel-only diff can be built it is
         taken down.
         """
+        self._diff_up[record.key] = False  # until this pass's tab is known to be up
         if record.slack_off:
             return True
         if not record.worktree:
@@ -130,6 +161,7 @@ class CodeTab:
             # is the channel's own: the stored digest may predate a send whose
             # answer was lost, so the channel-only tab is sent to replace it.
             self._note_tab(record, board)
+            self._diff_up[record.key] = bool(record.view_id)
             return True
         gate = (lambda: self._board_still_admitted(binding)) if board is not None else None
         prior = record.diff_workers
@@ -173,6 +205,7 @@ class CodeTab:
         if isinstance(view_id, str) and view_id:
             record.view_id = view_id
         self._note_tab(record, board)
+        self._diff_up[record.key] = True
         return True
 
     async def _owe_tab(self, record: WorkspaceRecord) -> bool:

@@ -1,10 +1,11 @@
-"""An app credential on the Crew API: recognised, and refused by tier.
+"""An app credential on the Crew API: recognised, served on its routes, refused elsewhere.
 
 An app credential is the access token local authorization issues for a grant the owner
 approved. Token auth recognises a valid one on a Crew API path (``/v1/`` except the
-frozen ``/v1/chat/completions``) and answers ``403 owner_only`` there: no route serves
-an app yet. One that does not verify stays a 401. Outside the Crew API the
-``Authorization`` header is not read, so the credential opens nothing.
+frozen ``/v1/chat/completions``). It reaches the handler of a route that serves apps
+(``crew_api_auth.APP_SERVED_ROUTES``) and is answered ``403`` on every other. One that
+does not verify stays a 401. Outside the Crew API the ``Authorization`` header is not
+read, so the credential opens nothing.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
     clear_nonces,
 )
 
-from kiro_crew.dashboard import crew_api_auth
+from kiro_crew.dashboard import crew_api_auth, crew_api_scopes
 from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
@@ -55,9 +56,15 @@ OWNER_ROUTES = [
     ("GET", "/v1/crew/owner/approvals/apr_0123456789abcdef"),
     ("POST", "/v1/crew/owner/approvals/apr_0123456789abcdef/decision"),
 ]
-#: Every Crew API path an app credential is tried on: the Owner routes, the Public
-#: route that serves the owner alone, and a path no route answers.
-CREW_API_ROUTES = [*OWNER_ROUTES, ("GET", "/v1/models"), ("POST", "/v1/responses")]
+#: A Crew API path the gateway registers no route for.
+UNSERVED = "/v1/conversations"
+#: Every Crew API path an app credential is refused on by tier: the Owner routes, the
+#: Public route that serves the owner alone, and a path no route answers.
+CREW_API_ROUTES = [
+    *OWNER_ROUTES,
+    ("POST", "/v1/responses"),
+    ("POST", UNSERVED),
+]
 
 
 class Clock:
@@ -167,6 +174,22 @@ def _assert_401(resp, ran: bool) -> None:
     assert error["message"].endswith(CREDENTIAL_HINT)
 
 
+def _assert_refused(resp, ran: bool, code: str, message: str) -> None:
+    """A 401 that names *code* and opens with *message*. The challenge never changes."""
+    assert ran is False
+    assert resp.status == 401
+    assert resp.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+    assert resp.headers["X-Auth-Required"] == "true"
+    error = _error(resp)
+    assert (error["type"], error["code"]) == ("authentication_error", code)
+    assert error["message"] == f"{message} {CREDENTIAL_HINT}"
+
+
+def _answer(resp) -> tuple:
+    """Everything a caller can read from *resp*."""
+    return resp.status, resp.body, tuple(sorted(resp.headers.items()))
+
+
 def _b64(data: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
 
@@ -204,9 +227,85 @@ async def test_a_valid_app_credential_is_403_owner_only_on_every_crew_api_path(
     assert audit.log_api_access.call_count == 1
     assert row["caller"] == f"app:{tokens['grant_id']}"
     # The path no route answers has no row in the scope table, and the row says so.
-    why = "owner_only:no-row" if path == "/v1/responses" else "owner_only"
+    why = "owner_only:no-row" if path == UNSERVED else "owner_only"
     assert (row["outcome"], row["error"]) == ("denied", why)
     assert row["resources"] == f"{path} client_id={CLIENT}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["responses:write", "artifacts:read"])
+async def test_a_valid_app_credential_reaches_the_models_handler(
+    store, clock, audit, scope
+) -> None:
+    tokens = _grant(store, clock, scope=scope)
+    resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    assert (resp.status, ran) == (200, True)
+    assert audit.log_api_access.call_count == 1
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"]) == (
+        f"app:{tokens['grant_id']}",
+        "allowed",
+        "",
+    )
+    assert row["resources"] == f"/v1/models client_id={CLIENT}"
+    # The handler's caller is the grant, with its verified credential, and no session.
+    published = _published(request)
+    assert published["user"] == f"app:{tokens['grant_id']}"
+    assert published["is_dashboard_user"] is False
+    assert published[crew_api_scopes.CREDENTIAL_KEY].grant_id == tokens["grant_id"]
+    assert "auth_token" not in published
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_app_credential_gets_no_session(store, clock) -> None:
+    """The steps the allow path leaves out judge a session, and it makes none.
+
+    The peer pin's place is taken by the direct-request rule
+    (``test_an_app_credential_from_another_address_is_401``), and the installed-app
+    allowlist's by the served list (``test_only_a_listed_route_serves_an_app_credential``,
+    ``test_an_app_credential_opens_nothing_outside_the_crew_api``).
+    """
+    tokens = _grant(store, clock)
+    cookie = {COOKIE: _session_token("owner")}
+    resp, request, ran = await _send(
+        path="/v1/models", headers=_bearer(tokens["access_token"]), cookies=cookie
+    )
+    assert (resp.status, ran) == (200, True)
+    # No link is redeemed: no cookie is minted and no session token is published.
+    assert not resp.cookies
+    published = _published(request)
+    assert "auth_token" not in published
+    # The owner's cookie beside it is not read: the caller stays the grant.
+    assert published["user"] == f"app:{tokens['grant_id']}"
+    assert published["is_dashboard_user"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_grant_is_401_on_the_next_call(store, clock) -> None:
+    tokens = _grant(store, clock)
+    headers = _bearer(tokens["access_token"])
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    assert (resp.status, ran) == (200, True)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+
+
+@pytest.mark.asyncio
+async def test_only_a_listed_route_serves_an_app_credential(
+    store, clock, audit, monkeypatch
+) -> None:
+    token = _grant(store, clock)["access_token"]
+    # Off the list, the owner-only list refuses it before its row is read.
+    monkeypatch.setattr(crew_api_auth, "APP_SERVED_ROUTES", frozenset())
+    resp, _, ran = await _send(path="/v1/models", headers=_bearer(token))
+    assert (resp.status, ran, _error(resp)["code"]) == (403, False, "owner_only")
+    assert audit.log_api_access.call_args.kwargs["error"] == "owner_only"
+    # Off both lists the row alone would admit it, and it is still refused.
+    monkeypatch.setattr(crew_api_auth, "OWNER_ONLY_PUBLIC_ROUTES", {})
+    resp, _, ran = await _send(path="/v1/models", headers=_bearer(token))
+    assert (resp.status, ran, _error(resp)["code"]) == (403, False, "owner_only")
+    assert audit.log_api_access.call_args.kwargs["error"] == "owner_only:no-app-route"
 
 
 @pytest.mark.asyncio
@@ -247,16 +346,14 @@ async def test_an_owner_cookie_beside_an_app_credential_changes_nothing(store, c
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
-    ["expired", "other-key", "typ", "alg-none", "revoked", "client-id", "tampered", "no-grant"],
+    ["other-key", "typ", "alg-none", "client-id", "tampered", "no-grant"],
 )
 async def test_an_app_token_that_does_not_verify_is_401(
     store, clock, audit, tmp_path, case
 ) -> None:
     tokens = _grant(store, clock)
     token = tokens["access_token"]
-    if case == "expired":
-        clock.now += la.ACCESS_TTL_SECS + 1
-    elif case == "other-key":
+    if case == "other-key":
         other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"x" * 32, clock)
         token = _grant(other, clock)["access_token"]
     elif case == "typ":
@@ -264,8 +361,6 @@ async def test_an_app_token_that_does_not_verify_is_401(
     elif case == "alg-none":
         head = _b64({"alg": "none", "typ": la.TOKEN_TYP})
         token = f"{head}.{token.split('.')[1]}."
-    elif case == "revoked":
-        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
     elif case == "client-id":
         token = _resigned(store, token, client_id="another-app")
     elif case == "tampered":
@@ -285,6 +380,252 @@ async def test_an_app_token_in_the_query_is_401_like_any_query_credential(store,
     resp, request, ran = await _send(path="/v1/models", query={"token": token})
     _assert_401(resp, ran)
     assert "app" not in _published(request)
+
+
+# ── a token this gateway signed is told why it was refused ───────────────────
+
+
+def _forged(token: str) -> str:
+    """*token* with a signature this gateway did not make."""
+    return token[:-2] + ("AA" if token[-2:] != "AA" else "BB")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/crew/owner/bots", "/v1/models"])
+async def test_a_signed_token_in_date_whose_grant_is_revoked_is_401_token_revoked(
+    store, clock, audit, path
+) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    resp, request, ran = await _send(path=path, headers=_bearer(tokens["access_token"]))
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+    assert "app" not in _published(request) and "user" not in _published(request)
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"], row["resources"]) == (
+        f"app:{tokens['grant_id']}",
+        "denied",
+        "token-revoked",
+        path,
+    )
+    assert audit.log_api_access.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_refresh_token_revokes_and_the_access_token_is_token_revoked(
+    store, clock
+) -> None:
+    tokens = _grant(store, clock)
+    renewed = store.refresh(CLIENT, tokens["refresh_token"], "", ISSUER)
+    with pytest.raises(la.AuthError):
+        store.refresh(CLIENT, tokens["refresh_token"], "", ISSUER)
+    resp, _, ran = await _send(path="/v1/models", headers=_bearer(renewed["access_token"]))
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True], ids=["grant-active", "grant-revoked"])
+async def test_a_signed_token_past_its_expiry_is_401_invalid_token_that_says_expired(
+    store, clock, audit, revoked
+) -> None:
+    """The expiry is judged before the grant, so a revocation does not change the answer."""
+    tokens = _grant(store, clock)
+    if revoked:
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    clock.now += la.ACCESS_TTL_SECS + 1
+    resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    _assert_refused(resp, ran, "invalid_token", "The access token has expired.")
+    assert "app" not in _published(request)
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"]) == (
+        f"app:{tokens['grant_id']}",
+        "denied",
+        "token-expired",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_token_reads_expired_once_its_own_lifetime_is_over(store, clock) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    headers = _bearer(tokens["access_token"])
+    clock.now += la.ACCESS_TTL_SECS - 1
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    _assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
+    clock.now += 1
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    _assert_refused(resp, ran, "invalid_token", "The access token has expired.")
+
+
+@pytest.mark.asyncio
+async def test_no_token_without_this_gateways_signature_learns_anything_about_a_grant(
+    store, clock, audit, tmp_path, monkeypatch
+) -> None:
+    """Every token below gets one answer, byte for byte: the one a random string gets.
+
+    Each names a grant that is revoked, or is past its expiry, or both. None carries a
+    signature this gateway made over those claims, so none is told so.
+    """
+    tokens = _grant(store, clock)
+    token = tokens["access_token"]
+    grant_id = tokens["grant_id"]
+    assert store.revoke_grant(grant_id, caller="U_HOST_OWNER") is True
+    other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"x" * 32, clock)
+    foreign = _grant(other, clock)["access_token"]
+    candidates = {
+        "random": "not.a.token",
+        "tampered signature": _forged(token),
+        "another gateway's token": foreign,
+        "another gateway's, naming the revoked grant": _resigned(other, foreign, grant_id=grant_id),
+        "another gateway's, past its expiry": _resigned(other, foreign, exp=int(clock.now) - 10),
+        "tampered signature, past its expiry": _forged(
+            _resigned(store, token, exp=int(clock.now) - 10)
+        ),
+        "unsigned": f"{_b64({'alg': 'none', 'typ': la.TOKEN_TYP})}.{token.split('.')[1]}.",
+        "signed, grant has no record": _resigned(store, token, grant_id="grt_0000000000000000"),
+    }
+    reads: list[int] = []
+    real_load = store._load
+    monkeypatch.setattr(store, "_load", lambda: reads.append(1) or real_load())
+    sent = {"X-Request-Id": "req_same0001"}
+    answers = {}
+    for name, candidate in candidates.items():
+        before = len(reads)
+        resp, request, ran = await _send(path="/v1/models", headers={**_bearer(candidate), **sent})
+        _assert_401(resp, ran)
+        assert "app" not in _published(request), name
+        answers[name] = _answer(resp)
+        if name != "signed, grant has no record":
+            # The record is not opened for a token this gateway did not sign.
+            assert len(reads) == before, name
+    assert len(set(answers.values())) == 1, answers
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_cannot_be_read_answers_a_revoked_token_as_a_random_one(
+    store, clock, audit, monkeypatch
+) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+
+    def _unreadable():
+        raise OSError("record unreadable")
+
+    monkeypatch.setattr(store, "_load", _unreadable)
+    sent = {"X-Request-Id": "req_same0001"}
+    answers = []
+    for token in (tokens["access_token"], "not.a.token"):
+        resp, request, ran = await _send(path="/v1/models", headers={**_bearer(token), **sent})
+        _assert_401(resp, ran)
+        assert "app" not in _published(request)
+        answers.append(_answer(resp))
+    assert answers[0] == answers[1]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({"X-Forwarded-For": "203.0.113.7"}, id="x-forwarded-for"),
+        pytest.param({"Forwarded": "for=203.0.113.7"}, id="forwarded"),
+        pytest.param({"X-Real-IP": "203.0.113.7"}, id="x-real-ip"),
+    ],
+)
+async def test_a_forwarded_revoked_or_expired_token_is_answered_exactly_as_a_forged_one(
+    store, clock, audit, state, extra
+) -> None:
+    tokens = _grant(store, clock)
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    sent = {**extra, "X-Request-Id": "req_same0001"}
+    answers = []
+    for token in (tokens["access_token"], _forged(tokens["access_token"])):
+        resp, request, ran = await _send(path="/v1/models", headers={**_bearer(token), **sent})
+        _assert_401(resp, ran)
+        assert "app" not in _published(request)
+        answers.append(_answer(resp))
+    assert answers[0] == answers[1]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+async def test_a_revoked_or_expired_token_the_relay_delivered_gets_no_reason(
+    store, clock, audit, state
+) -> None:
+    tokens = _grant(store, clock)
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    request = _make_request(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    relayed = RelayCaller(kiro_user_id="kiro-user.owner-0001", kind=RelayCallerKind.OWNER)
+    request.get = lambda key, default=None: relayed if key == RELAY_CALLER_KEY else default
+    assert await crew_api_auth.judge_app_credential(request, tokens["access_token"]) is None
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+async def test_a_revoked_or_expired_token_from_another_address_gets_no_reason(
+    store, clock, audit, state
+) -> None:
+    tokens = _grant(store, clock)
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    resp, request, ran = await _send(
+        path="/v1/models", headers=_bearer(tokens["access_token"]), remote="203.0.113.7"
+    )
+    assert (resp.status, ran) == (401, False)
+    assert _error(resp)["code"] == "invalid_token"
+    assert "expired" not in _error(resp)["message"] and "revoked" not in _error(resp)["message"]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["revoked", "expired"])
+async def test_a_refused_signed_token_is_in_no_audit_row_no_log_line_and_no_answer(
+    store, clock, audit, caplog, state
+) -> None:
+    tokens = _grant(store, clock)
+    token = tokens["access_token"]
+    if state == "revoked":
+        assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    else:
+        clock.now += la.ACCESS_TTL_SECS + 1
+    caplog.set_level(logging.DEBUG)
+    resp, _, _ = await _send(path="/v1/models", headers=_bearer(token))
+    assert resp.status == 401
+    written = (
+        repr(audit.log_api_access.call_args_list)
+        + caplog.text
+        + resp.body.decode()
+        + repr(dict(resp.headers))
+    )
+    for piece in (token, token[:12], token[-12:], *token.split("."), tokens["refresh_token"]):
+        assert piece not in written
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_check_that_raises_is_401_like_a_random_token(
+    store, clock, audit, monkeypatch
+) -> None:
+    tokens = _grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+
+    def _raises(token):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(store, "refused_as", _raises)
+    resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    _assert_401(resp, ran)
+    audit.log_api_access.assert_not_called()
 
 
 # ── only from this machine ───────────────────────────────────────────────────
@@ -316,7 +657,7 @@ async def test_an_app_credential_the_relay_delivered_is_401(store, clock, audit)
     relayed = RelayCaller(kiro_user_id="kiro-user.owner-0001", kind=RelayCallerKind.OWNER)
     request.get = lambda key, default=None: relayed if key == RELAY_CALLER_KEY else default
     # ``None``: not an app credential here, so the caller's own 401 answers it.
-    assert await crew_api_auth.refuse_app_credential(request, tokens["access_token"]) is None
+    assert await crew_api_auth.judge_app_credential(request, tokens["access_token"]) is None
     assert "app" not in _published(request)
     assert audit.log_api_access.call_args.kwargs["error"] == "not-direct-local"
 
@@ -365,8 +706,8 @@ async def test_an_app_credential_opens_nothing_outside_the_crew_api(
     store, clock, monkeypatch, path
 ) -> None:
     tokens = _grant(store, clock)
-    asked = Mock(wraps=crew_api_auth.refuse_app_credential)
-    monkeypatch.setattr(crew_api_auth, "refuse_app_credential", asked)
+    asked = Mock(wraps=crew_api_auth.judge_app_credential)
+    monkeypatch.setattr(crew_api_auth, "judge_app_credential", asked)
     with_credential, request, ran = await _send(
         path=path, method="POST", headers=_bearer(tokens["access_token"])
     )
@@ -456,7 +797,7 @@ async def test_a_hostile_client_id_reaches_the_audit_row_cleaned_and_no_identity
 
     monkeypatch.setattr(store, "verify", _verify)
     resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
-    assert (resp.status, ran) == (403, False)
+    assert (resp.status, ran) == (200, True)
     row = audit.log_api_access.call_args.kwargs
     assert "\n" not in row["resources"] and "\r" not in row["resources"]
     assert "\x00" not in row["resources"]

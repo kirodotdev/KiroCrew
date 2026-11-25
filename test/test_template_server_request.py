@@ -31,6 +31,8 @@ from kiro_crew.dashboard.handlers import template_server_request as tsr
 from kiro_crew.mate_capability_catalog import AdditionError as CatalogAdditionError
 
 AGENT = {"X-Test-Auth": "internal", "X-Session-Key": SK}
+#: The real caller lookup, which the ``env`` fixture replaces.
+_CALLER_TEMPLATE = tsr._caller_template
 
 #: The official registry's install plan for "io.example/fetch". Never sent by the agent.
 REGISTRY_ENTRY = {"command": "uvx", "args": ["mcp-server-fetch"]}
@@ -58,7 +60,7 @@ def env(tmp_path, monkeypatch):
     }
 
     monkeypatch.setattr(
-        tsr, "_caller_template", lambda state, slot_key, sk: (seen["template"], "", "")
+        tsr, "_caller_template", lambda state, slot_key, sk, backend: (seen["template"], "", "")
     )
 
     async def backend(state, sk):
@@ -368,6 +370,31 @@ def test_an_unattended_turn_is_refused_with_its_reason(env, tmp_path, mark, code
     assert env["resolved"] == []
 
 
+@pytest.mark.parametrize(
+    "backend,worker,remedy",
+    [("codex", False, True), ("codex", True, False), ("kas", False, False)],
+)
+def test_only_a_bots_own_codex_chat_is_told_how_to_get_request_capabilities(
+    env, tmp_path, monkeypatch, backend, worker, remedy
+):
+    # On Codex a Bot's chat gets request_capabilities only through the kirocrew-core
+    # stub; a worker never mounts it, and KAS mounts it directly.
+    from kiro_crew import members
+    from kiro_crew.dashboard import mate_thread_wakes
+
+    monkeypatch.setattr(tsr, "_caller_template", _CALLER_TEMPLATE)
+    monkeypatch.setattr(mate_thread_wakes, "is_crewmate_thread", lambda slot: True)
+    monkeypatch.setattr(members, "is_crewmate_worker_session", lambda key: worker)
+    env["backend"] = backend
+    store = CardStore(tmp_path / "c.json")
+
+    status, body = _run(store, lambda c: _request(c))
+    assert (status, body["code"]) == (403, "crewmate_caller"), body
+    assert body["error"].startswith("a Bot asks for its worker's servers with request_capabilities")
+    assert ("Share for kirocrew-core" in body["error"]) is remedy
+    assert env["resolved"] == []
+
+
 def test_an_unsupported_template_is_refused_with_the_record_s_reason(env, tmp_path):
     env["template"] = "aim-installed-agent"
     env["backend"] = "kiro"
@@ -531,7 +558,7 @@ def test_the_caller_template_is_the_one_its_session_runs_on(monkeypatch):
         "read_session_execution",
         lambda key: _Exec("kirocrew-worker"),
     )
-    assert tsr._caller_template(_state_with(slot), SLOT, SK) == (
+    assert tsr._caller_template(_state_with(slot), SLOT, SK, "") == (
         "kirocrew-worker",
         "",
         "",
@@ -546,7 +573,7 @@ def test_a_crewmate_is_sent_to_request_capabilities(monkeypatch):
     monkeypatch.setattr(members, "is_crewmate_worker_session", lambda key: False)
     monkeypatch.setattr(mate_worker, "is_mate_owned_agent", lambda name: name == "mate-file")
     monkeypatch.setattr(execution_context, "read_session_execution", lambda key: _Exec("mate-file"))
-    template, code, message = tsr._caller_template(_state_with(slot), SLOT, SK)
+    template, code, message = tsr._caller_template(_state_with(slot), SLOT, SK, "")
     assert (template, code) == ("", "crewmate_caller")
     assert "request_capabilities" in message
 

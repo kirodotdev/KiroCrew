@@ -18,7 +18,10 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-from service_helpers import _clear_sudo_user  # noqa: F401 -- an autouse fixture, found by name
+from service_helpers import (  # noqa: F401 -- autouse fixtures, found by name
+    _clear_sudo_user,
+    _posix_installer_path,
+)
 
 from kiro_crew.service import common, controller
 from kiro_crew.service.common import Platform, service_environment
@@ -92,6 +95,8 @@ def _install(plat: Platform) -> int:
         patch.object(controller.linux, "enable_service_account_linger", return_value=None),
         patch.object(controller.macos, "install", MagicMock(return_value=None)),
         patch.object(controller, "headless_auth_warning", return_value=""),
+        # The mode an install keeps is read from the host's own service.
+        patch.object(controller, "installed_headless", return_value=False),
     ):
         return controller.install_service()
 

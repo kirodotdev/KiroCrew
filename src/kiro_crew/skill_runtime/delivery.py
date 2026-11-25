@@ -164,9 +164,7 @@ def split_triggered(
         meta = loader._readable_frontmatter(skill_file, within=within)
         if meta is None:
             continue
-        if within is not None:
-            enforced.append(name)
-        elif meta.get("inject_on_trigger", "").strip().lower() == "false":
+        if within is None and meta.get("inject_on_trigger", "").strip().lower() == "false":
             pointer_only.append(name)
         else:
             enforced.append(name)
@@ -322,12 +320,10 @@ def get_context(
             project_dir=project_dir,
             project_body_budget=project_body_budget,
         )
-    # get_always_skills() returns the _iter() identifier — the same value
-    # list_skills() exposes as "key" (the dir-relative path, e.g.
-    # "team-capabilities/build-helper"), NOT the frontmatter "name". So the
-    # pinned check below, _record_use() (also called with the _iter
-    # identifier), and _rank_key()'s score(s["key"]) are all consistently
-    # keyed by "key" — there is no key/name mismatch here.
+    # Pinned rows are keyed by "key" (the dir-relative path, e.g.
+    # "team-capabilities/build-helper"), NOT the frontmatter "name": the same
+    # identifier the usage ledger records through _record_use() and
+    # _rank_key() scores, so the pinned check, usage and ranking agree.
     pinned = {str(s["key"]) for s in all_skills if s.get("always")}
 
     parts: list[str] = []
@@ -414,10 +410,8 @@ def get_context(
         return "[Skills:]\n" + "\n\n---\n\n".join(items) + "\n[End of skills]\n\n"
 
     required = wrap(parts)
-    if required_parts_out is not None:
-        if required:
-            required_parts_out.append(required)
-        parts = []
+    if required_parts_out is not None and required:
+        required_parts_out.append(required)
     # Without a split consumer, required bodies still spend the total
     # allowance before optional entries. They are never clipped to fit it.
     # The discovery notice is charged here too, so an incomplete catalog cannot

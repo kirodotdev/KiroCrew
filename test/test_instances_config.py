@@ -55,6 +55,14 @@ class TestConfig:
             "probe_failure_threshold": 3,
             "default_destination": "",
             "managed_env_endpoint": "",
+            "managed_env_start_url": "",
+            "managed_env_profile_arn": "",
+            "managed_env_ssh_region": "",
+            "managed_env_kas_endpoint": "",
+            "managed_env_kas_control_plane_endpoint": "",
+            "managed_env_kas_region": "",
+            "managed_env_box_token_path": "",
+            "managed_env_box_env_drop": [],
         }
         paths = {e.path for e in SCHEMA_REGISTRY}
         for p in (

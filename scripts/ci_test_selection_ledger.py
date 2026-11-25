@@ -12,7 +12,7 @@ for a person and never a switch: nothing may turn selection on, or make a tier
 skippable, from this ledger alone. Turning selection off on it is safe.
 
 A verdict is the scorer's JSON for one PR run (`schema` 1: `verdict`, `tiers`,
-`would_skip`), read from the run's `--artifact`, or from `<--verdict-dir>/<run
+`would_skip`, and `covered` when the scorer wrote it), read from the run's `--artifact`, or from `<--verdict-dir>/<run
 id>.json` when it was scored offline. A failing test file the verdict lists in
 `would_skip` is a MISS.
 
@@ -55,9 +55,19 @@ appends only what the ledger does not hold; a rerun appends a fresh observation
 of the whole run, and the report reads each run's newest attempt only:
 
     {"kind": "run", "run", "attempt", "source", "fork", "pr", "head", "date",
-     "verdict", "tiers": {tier: files}}
+     "verdict", "tiers": {tier: files}, "covered": {cause: rows}}
     {"kind": "failure", <the same seven>, "file", "tier", "miss", "rerun_green", "main_red"}
     {"kind": "skip", <the same seven>, "reason"}
+
+`covered` is the verdict's own: what let the diff be narrowed where a rule
+would else fall back. A git status letter (`A`, `D`, `M`, `R`) counts the
+changed docs and frontend paths whose readers took the place of a fall-back
+(`scripts/ci_test_data_readers.py`); `added_test` counts the test files the
+diff adds. Any key of letters and underscores is kept as written, so a cause
+the scorer names later needs no change here. A verdict written before the
+scorer had the field reads as none, and so does a run row without it. The
+summary splits the `select` runs and every miss by it, so a cause that lets
+misses through shows before selection is turned on.
 
 Rows are joined and deduplicated only on values every later pass reads the same:
 the run id and attempt, the run's creation `date`, and `source`, which is `<head
@@ -146,6 +156,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -236,6 +247,7 @@ _TIMING_FAILURE = re.compile(
 )
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
+_STATUS = re.compile(r"[A-Za-z_]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
@@ -259,10 +271,23 @@ def _files(value: object) -> set[str] | None:
     return set(value)
 
 
+def _covered(value: object) -> dict[str, int] | None:
+    """A `covered` table, `{cause: rows}` with every count above zero, else None."""
+    if not isinstance(value, dict):
+        return None
+    for status, rows in value.items():
+        if not isinstance(status, str) or not _STATUS.fullmatch(status):
+            return None
+        if not _is_int(rows) or rows < 1:
+            return None
+    return dict(sorted(value.items()))
+
+
 def parse_verdict(text: str) -> Row | None:
     """A verdict's `verdict`, `tiers` and `would_skip`, None unless each has its fixed shape.
 
     `windows` is the parsed block, or the reason the run has no Windows half.
+    `covered` is the verdict's table, empty for a verdict that has none.
     """
     try:
         doc = json.loads(text)
@@ -273,6 +298,9 @@ def parse_verdict(text: str) -> Row | None:
     raw, skip = doc.get("tiers"), _files(doc.get("would_skip"))
     if doc.get("verdict") not in ("select", "full") or not isinstance(raw, dict) or skip is None:
         return None
+    covered = _covered(doc.get("covered", {}))
+    if covered is None:
+        return None
     tiers: dict[str, set[str]] = {}
     for tier, listed in raw.items():
         files = _files(listed)
@@ -282,7 +310,13 @@ def parse_verdict(text: str) -> Row | None:
     windows: Row | str = NO_WINDOWS_BLOCK
     if doc.get("windows") is not None:
         windows = parse_windows(doc["windows"]) or BAD_WINDOWS_BLOCK
-    return {"verdict": doc["verdict"], "tiers": tiers, "would_skip": skip, "windows": windows}
+    return {
+        "verdict": doc["verdict"],
+        "tiers": tiers,
+        "would_skip": skip,
+        "windows": windows,
+        "covered": covered,
+    }
 
 
 def parse_windows(block: object) -> Row | None:
@@ -379,7 +413,8 @@ class Verdicts:
 
 def _only_json(archive: bytes) -> str | None:
     """The text of the JSON file an archive holds and nothing else; "" for any other
-    archive (never a valid verdict), None for bytes that are no archive.
+    archive (never a valid verdict), None for bytes that are no archive or whose
+    member does not unpack.
 
     Nothing is unpacked on the archive's word for its size: the one member is
     read through to `MAX_VERDICT_BYTES` and no further.
@@ -394,7 +429,8 @@ def _only_json(archive: bytes) -> str | None:
             with held.open(members[0]) as member:
                 text = shadow.capped(member, MAX_VERDICT_BYTES)
             return "" if text is None else text.decode("utf-8", errors="replace")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, zlib.error, EOFError):
+        # Damaged on the way or in the making: what it held cannot be known.
         return None
     except (OSError, ValueError, RuntimeError):
         return ""
@@ -654,6 +690,7 @@ def run_rows(key: Row, verdict: Row, failing: dict[str, bool], main_red: set[str
             **key,
             "verdict": verdict["verdict"],
             "tiers": {tier: len(files) for tier, files in sorted(tiers.items())},
+            "covered": verdict.get("covered", {}),
         }
     ]
     for test_file in sorted(failing):
@@ -811,12 +848,18 @@ def recorded_lanes(rows: list[Row]) -> tuple[dict[int, int], dict[int, int]]:
     return linux, windows
 
 
+class BudgetSpent(Exception):
+    """A pass is at a limit of its budget: the call it was about to make is not made."""
+
+
 class Budget:
     """What one pass may spend of the REST requests every job of the repository shares.
 
     `most` is the calls this pass makes at most (0: no limit) and `reserve` what
     the pool must keep (0: not checked). The pool is read from `/rate_limit`,
     which costs nothing, before the pass and again every `RECHECK_CALLS` calls.
+    Both are checked before each call, so a pass never makes a call past either;
+    the run it was reading is then left whole for a later pass.
     """
 
     def __init__(self, most: int, reserve: int, root: Path) -> None:
@@ -846,7 +889,7 @@ class Budget:
         return None
 
     def ended(self) -> str | None:
-        """Why the pass takes no further run, None while it may."""
+        """Why the pass makes no further call, None while it may."""
         if self.most and self.spent >= self.most:
             return f"this pass has made its {self.most} calls ({self.spent})"
         if self.reserve and self.spent - self._checked >= RECHECK_CALLS:
@@ -869,6 +912,9 @@ class Budget:
                 # One reader may go through another: the outermost is the call.
                 if inside[0]:
                     return call(*args, **kwargs)
+                ended = self.ended()
+                if ended:
+                    raise BudgetSpent(ended)
                 self.spent += 1
                 inside[0] = True
                 try:
@@ -899,8 +945,22 @@ def collect(
     the lanes the ledger lacks are written: a Windows half is collected for an
     attempt whose Linux half an earlier pass recorded, without repeating it.
     Every row passes `valid_row`, so the ledger never holds a line a later pass
-    refuses. A run the ledger holds costs no call beyond the listing.
+    refuses. A run the ledger holds costs no call beyond the listing. A run the
+    budget ends in the middle of yields nothing: no part of it is recorded.
     """
+    try:
+        yield from _each_run(args, recorded, root, budget)
+    except BudgetSpent as spent:
+        print(f"stopped early: {spent}; a later pass reads the rest", file=sys.stderr)
+
+
+def _each_run(
+    args: argparse.Namespace,
+    recorded: tuple[dict[int, int], dict[int, int]],
+    root: Path,
+    budget: Budget,
+) -> Iterator[list[Row]]:
+    """`collect`, without the end a spent budget puts to it."""
     parse = shadow._nodeid_parser()
     red_since, red_files = main_red_files(root)
     verdicts = Verdicts(root, args.artifact)
@@ -1050,6 +1110,7 @@ def valid_row(row: object) -> bool:
             and isinstance(tiers, dict)
             and all(isinstance(t, str) and _TIER.fullmatch(t) for t in tiers)
             and all(_is_int(n) and n >= 0 for n in tiers.values())
+            and _covered(row.get("covered", {})) is not None
         )
     if kind == "failure":
         tier = row.get("tier")
@@ -1195,6 +1256,10 @@ def _where(row: Row) -> list[object]:
     return [pr, row["head"][:12], row["run"], row["file"]]
 
 
+def _covered_cell(covered: dict[str, int]) -> str:
+    return " ".join(f"{cause}:{rows}" for cause, rows in sorted(covered.items()))
+
+
 def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> str:
     runs = [row for row in rows if row["kind"] == "run"]
     select = [row for row in runs if row["verdict"] == "select"]
@@ -1202,12 +1267,18 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
     days = [_when(row) for row in fitted]
     span = (max(days) - min(days)).total_seconds() / 86400 if days else 0.0
     skipped = Counter(row["reason"] for row in rows if row["kind"] == "skip")
+    covered = {(row["run"], row["attempt"]): row.get("covered", {}) for row in runs}
+    by_status = Counter(status for row in fitted for status in row.get("covered", {}))
     lines = [
         f"Runs fitted: {len(fitted)} with a `select` verdict; {len(runs) - len(select)} more "
         f"had a `full` verdict. Days of data: {span:.1f}. "
         f"Fork runs, reported but not fitted: {len(select) - len(fitted)}.",
         f"Runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
+        + ".",
+        "Fitted runs by what their verdict covered, a status of a docs or frontend path "
+        f"or an added test file (a run counts under each it has): none {sum(1 for r in fitted if not r.get('covered'))}"
+        + "".join(f"; {cell(status)}: {n}" for status, n in sorted(by_status.items()))
         + ".",
         "",
     ]
@@ -1241,10 +1312,12 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
                     *_where(row),
                     row["tier"],
                     ", ".join(k for k in ("rerun_green", "main_red", "shared") if row[k]),
+                    _covered_cell(covered.get((row["run"], row["attempt"]), {})),
                 ]
                 for row in picked
             ]
-            lines += ["", *_table(["PR", "Head", "Run", "File", "Tier", "Not diff-caused"], body)]
+            head = ["PR", "Head", "Run", "File", "Tier", "Not diff-caused", "Covered paths"]
+            lines += ["", *_table(head, body)]
     return "\n".join(lines)
 
 

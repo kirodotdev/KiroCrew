@@ -89,6 +89,7 @@ def test_the_one_session_spawn_still_prepares_its_session(monkeypatch, tmp_path)
     session = _Session()
     session._install_idle_reader = lambda: None  # type: ignore[attr-defined]
     session._model = ""  # type: ignore[attr-defined]
+    session._extra_env = {}  # type: ignore[attr-defined]
     ctx = SpawnContext(
         agent="kirocrew", work_dir=tmp_path, model=None, environ={}, home=tmp_path, session=session
     )

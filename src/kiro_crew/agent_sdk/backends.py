@@ -188,6 +188,8 @@ with no row here.
      - driver-internal (whether the model is a launch argument, so the startup
        apply sends nothing and a mid-session switch relaunches the process and
        reloads the session)
+   * - ``ACP_BACKENDS_MODEL_PER_SESSION``
+     - semantic question (``SessionCapabilities.takes_model_per_session``)
    * - ``ACP_BACKENDS_EFFORT_AT_LAUNCH``
      - driver-internal (whether the reasoning effort is a launch argument, so a
        change relaunches the process and reloads the session)
@@ -273,7 +275,8 @@ with no row here.
        the dashboard's compaction card folds)
    * - ``ACP_BACKENDS_TOOL_TITLE_REFINEMENT``
      - semantic question (``SessionCapabilities.refines_tool_call_titles``: whether
-       a Crew-spawned subagent's card takes a ``tool_call_update``'s title)
+       a Crew-spawned subagent's card, or a channel turn's task card, takes a
+       ``tool_call_update``'s title)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.runs_own_slash_commands``)
    * - ``ACP_BACKENDS_NATIVE_WORKFLOWS``
@@ -307,6 +310,9 @@ with no row here.
    * - ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``
      - pre-session registry query (whether a per-template MCP addition reaches a
        session of a template Crew does not own)
+   * - ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY``
+     - driver-internal (whether a mirror's shared translation adds Crew's own
+       servers to a custom agent's spec before it builds the ``session/new`` array)
    * - ``ACP_BACKENDS_SPEC_FILE_GRANTS``
      - pre-session registry query (whether a start on a crew-bound spec Crew does
        not own is refused while the file's grants exceed the ceiling)
@@ -345,8 +351,9 @@ with no row here.
      - semantic question (``SessionCapabilities.crew_fires_spec_observer_hooks``)
    * - ``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``
      - driver-internal (whether the direct client stamps the spec's shell and
-       write allowlists on its own permission requests, and the claude seed adds
-       the ``permissions.ask`` rules that make those calls reach the gate)
+       write allowlists on its own permission requests; the claude seed adds
+       the ``permissions.ask`` rules that make those calls reach the gate, and
+       opencode's seeded ``"*": "ask"`` already does)
    * - ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``
      - context assembly (whether Crew puts the agent spec's ``file://`` steering
        and the global and project steering trees into the prompt, asked by
@@ -1428,6 +1435,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     COPILOT_VERIFIED_VERSION,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     STRANDS_NODE_FLOOR,
+    STRANDS_PYTHON_CRT_REQUIREMENT,
     STRANDS_PYTHON_REQUIREMENT,
     STRANDS_VERIFIED_VERSION,
     SelfServedLaunch,
@@ -1438,6 +1446,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
 from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
+    ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -1482,6 +1491,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_FAST_MODE_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_PER_SESSION,
     ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,

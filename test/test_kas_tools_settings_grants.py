@@ -214,7 +214,7 @@ def test_a_command_that_is_not_read_only_stays_refused(work: Path, command: str)
 def test_a_deny_kas_cannot_carry_keeps_read_only_commands_refused(work: Path) -> None:
     """kiro-cli checks ``deniedCommands`` before ``autoAllowReadonly``. A deny with
     no KAS spelling does not travel, so the read-only exception is not recorded."""
-    settings = {"shell": {**_SHELL, "deniedCommands": ["(cat|head) private\\.txt"]}}
+    settings = {"shell": {**_SHELL, "deniedCommands": ["cat private\\.txt|head private\\.txt"]}}
     entry = kas_agents.to_client_custom_agent("probe", _spec(settings), "p")
     assert CREW_SHELL_READONLY_KEY not in entry
     verdict = _judge(_own_request(_shell("cat private.txt"), _spec(settings), work))

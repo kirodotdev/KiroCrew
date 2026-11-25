@@ -286,6 +286,8 @@ class SshTunnelManager:
     _resolve_transport = _transport._resolve_transport
     _resolve_chained_transport = _transport._resolve_chained_transport
     _with_parent = _transport._with_parent
+    _with_resolved_target = _transport._with_resolved_target
+    _with_dialled_target = _transport._with_dialled_target
     _peer_gateway_id = _transport._peer_gateway_id
     _peer_identity = _transport._peer_identity
     _chain_cycle_reason = _transport._chain_cycle_reason

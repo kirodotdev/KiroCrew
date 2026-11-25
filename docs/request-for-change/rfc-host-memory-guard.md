@@ -201,8 +201,11 @@ Three changes make it act before a swapless host thrashes:
    The kernel then charges the container's memory to an ancestor above the
    mount, so the free figure is the host's `MemAvailable` and the container's
    limit is never read; no file in view shows whether that ancestor sets one.
-   There, the stall of Crew's own tasks is the evidence: a `tight` or `ample`
-   reading counts as the `psi-cgroup` trigger when that visible cgroup's own
+   An ample host reading reports posture `unknown`; tight and critical host
+   readings keep those postures. The resource and spawn-floor lines name the
+   unreadable limit while admission keeps using the host figure. There, the stall
+   of Crew's own tasks is the evidence: a host figure that classifies as `tight`
+   or `ample` counts as the `psi-cgroup` trigger when that visible cgroup's own
    `memory.pressure` shows every task in it stalled 10% or more of the time
    since the last sample, the growth of its `full` `total=` counter over the
    time between two samples. That file counts the stalls of
@@ -365,7 +368,7 @@ runs out, the kernel kills a biased session host or tool → the gateway (score
 |---|---|---|
 | Linux, cgroup v2 with delegation | the kernel OOM-kills inside one agent scope at 65% RAM; several scopes can still sum past RAM | same scope limit; the guard also runs at host level, and the log line names which layer acted |
 | Linux, no cgroup (v1 or no delegation) | nothing acts until the kernel OOM killer, which may never fire before thrash | the guard stops the heaviest test tree at critical / PSI stall; #22683 stays below it |
-| Linux, a container whose memory cgroup is out of view (its limit sits on an ancestor above the cgroup mount) | nothing acts until the kernel OOM-kills inside the container's limit; posture reads the host's free memory, so it stays `ample` | the guard stops the heaviest test tree when the visible cgroup's `memory.pressure` stalls 10% of the time between two samples (§4.1 point 2, `psi-cgroup`) |
+| Linux, a container whose memory cgroup is out of view (its limit sits on an ancestor above the cgroup mount) | nothing acts until the kernel OOM-kills inside the container's limit; posture reads the host's free memory, so it stays `ample` | an `ample` host reading reports posture `unknown` while `tight` and `critical` stay visible; the report names the unreadable container limit; the guard stops the heaviest test tree when the visible cgroup's `memory.pressure` stalls 10% of the time between two samples (§4.1 point 2, `psi-cgroup`) |
 | macOS | toasts only; no `/proc`, no `oom_score_adj` | the guard picks a victim the same way (RSS via libproc, `_get_rss_mb` in `runtime_process_tree.py`) and writes the log line and chat notice saying it could not stop the tree on this host; **no stop, no ledger event**. Reason: `terminate_pids_pinned` signals nothing off Linux, and a pid-only kill there has a reuse window |
 | Windows | toasts only | same as macOS: log line and chat notice, no stop |
 
@@ -506,14 +509,15 @@ PR A:
 6. Cool-down skips a just-stopped session while another has a candidate, and
    picks it when it is the only one.
 7. Trigger: `critical` fires; `tight` with PSI `full avg10 ≥ 10` fires; PSI
-   alone on `ample` does not; while the memory cgroup is out of view, a
-   `tight` or `ample` reading fires `psi-cgroup` when the visible cgroup
-   stalled 10% or more of the time since the last sample, and the first
-   reading, or one after a missing reading, is only a baseline; a kernel
-   booted with the memory controller off is never out of view, and a missing
-   `/proc/cgroups` row is no evidence of that; a missing PSI file
-   fails open; `resource_critical_gb = 0` disables the guard, including on a
-   `tight` reading with PSI `full avg10 ≥ 10`.
+   alone on `ample` does not; while the memory cgroup is out of view, an
+   `ample` host figure reports posture `unknown`, `tight` and `critical` keep
+   their postures, and a host figure classifying as `tight` or `ample` fires
+   `psi-cgroup` when the visible cgroup stalled 10% or more of the time since
+   the last sample. The first reading, or one after a missing reading, is only
+   a baseline; a kernel booted with the memory controller off is never out of
+   view, and a missing `/proc/cgroups` row is no evidence of that; a missing
+   PSI file fails open; `resource_critical_gb = 0` disables the guard,
+   including on a `tight` reading with PSI `full avg10 ≥ 10`.
 8. Sampling drops to 5 s on tight/critical and while the memory cgroup is out
    of view, and returns to 30 s on ample.
 9. The kill path does not run on the event loop (executor called; loop not
@@ -542,7 +546,7 @@ PR B:
 - Stopping on macOS and Windows (a later PR, §4.6).
 - Node test runners in tier 1 (later tuning, §4.2).
 - Per-child disk usage by walking trees (§5.3).
-- Any change to the idle RSS recycle, the spawn floor, or the `create` 409.
+- Any change to the idle RSS recycle, the spawn-floor admission decision, or the `create` 409.
 - A `host_pressure` record or any ledger record of host state.
 - Automatic deletion of anything by the gateway: disk cleanup is the
   conductor's, through its own workers, inside the §5.4 bounds.

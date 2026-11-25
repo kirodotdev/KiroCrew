@@ -1,6 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { buildMenuTemplate } = require("../app-menu");
+const { TEXT_SIZE_TIERS, DEFAULT_TEXT_SIZE_PX } = require("../text-size");
 
 // Every action callback stubbed with a call recorder.
 function makeDeps(overrides = {}) {
@@ -26,6 +27,8 @@ function makeDeps(overrides = {}) {
     promptRemoteHost: record("promptRemoteHost"),
     refreshToken: record("refreshToken"),
     openConfigFile: record("openConfigFile"),
+    currentFontSize: DEFAULT_TEXT_SIZE_PX, // seeds which tier reads as checked
+    setFontSize: record("setFontSize"),
     ...overrides,
   };
   return { deps, calls };
@@ -291,6 +294,59 @@ for (const isMac of [true, false]) {
       assert.strictEqual(item.id, "keep-on-top");
       assert.strictEqual(item.checked, alwaysOnTop, `checked follows alwaysOnTop=${alwaysOnTop}`);
       assert.strictEqual(item.accelerator, undefined, "deliberately ships no accelerator");
+    }
+  });
+
+  test(`${os}: View holds the four content text size tiers as flat radio items`, () => {
+    const { deps } = makeDeps({ isMac });
+    const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+    for (const tier of TEXT_SIZE_TIERS) {
+      const item = view.submenu.find((i) => i.label === tier.label);
+      assert.ok(item, `${tier.label} present directly in the View submenu`);
+      assert.strictEqual(item.type, "radio");
+      assert.strictEqual(item.id, tier.id);
+      // Flat, not nested: app-menu:execute addresses an item by a top-level
+      // menu id plus a flat index, so a submenu here would be unreachable.
+      assert.strictEqual(item.submenu, undefined, `${tier.label} opens no submenu`);
+      assert.strictEqual(item.accelerator, undefined, "deliberately ships no accelerator");
+    }
+  });
+
+  test(`${os}: exactly the tier matching the injected size reads as checked`, () => {
+    for (const current of TEXT_SIZE_TIERS) {
+      const { deps } = makeDeps({ isMac, currentFontSize: current.px });
+      const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+      const checked = TEXT_SIZE_TIERS.filter(
+        (tier) => view.submenu.find((i) => i.id === tier.id).checked,
+      );
+      assert.deepStrictEqual(
+        checked.map((tier) => tier.id),
+        [current.id],
+        `only ${current.id} is checked at ${current.px}px`,
+      );
+    }
+  });
+
+  // A stored size off the ladder must not check a tier, and must not throw.
+  // The window chrome falls back to the default before it reaches the menu, so
+  // this is the belt to that braces.
+  test(`${os}: an unsupported injected size checks no tier`, () => {
+    for (const current of [13, 0, undefined, null, NaN, "16"]) {
+      const { deps } = makeDeps({ isMac, currentFontSize: current });
+      const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+      const checked = TEXT_SIZE_TIERS.filter(
+        (tier) => view.submenu.find((i) => i.id === tier.id).checked,
+      );
+      assert.deepStrictEqual(checked, [], `nothing checked at ${String(current)}`);
+    }
+  });
+
+  test(`${os}: clicking a tier hands its px to the injected setter`, () => {
+    for (const tier of TEXT_SIZE_TIERS) {
+      const picked = [];
+      const { deps } = makeDeps({ isMac, setFontSize: (px) => picked.push(px) });
+      findItem(buildMenuTemplate(deps), (i) => i.id === tier.id).click();
+      assert.deepStrictEqual(picked, [tier.px], `${tier.id} sets ${tier.px}`);
     }
   });
 

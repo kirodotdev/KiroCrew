@@ -28,7 +28,7 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers_parts.backend_errors import is_context_overflow_error
-from kiro_crew.llm_helpers_parts.model_fallback import first_advertised_fallback
+from kiro_crew.llm_helpers_parts.model_fallback import reactive_model_candidate
 from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
 from kiro_crew.llm_helpers_parts.turn_usage import (
     _billing_stats,
@@ -306,9 +306,8 @@ async def run_bg_oneliner(
             # neither the rejected id nor "auto", only when the raise-time
             # classifier tagged a rejected model AND named an advertised set.
             rejected = getattr(exc, "rejected_model", None)
-            advertised = getattr(exc, "advertised", None) or []
             fallback = (
-                first_advertised_fallback(advertised, rejected)
+                reactive_model_candidate(exc, rejected)
                 if rejected and not strict_model and retry_rejected_model
                 else None
             )
@@ -477,10 +476,31 @@ def _record_background_crew_log(
         )
 
 
+async def _delete_retired_conversation_record(client: Any, session_id: str, key: str) -> None:
+    """Delete the backend's own record of a retired helper conversation nobody continues.
+
+    The provider's ``cleanup_session`` removes that one session's native record
+    (a Codex rollout, a kiro-cli replay log) and needs no live process. An empty
+    id deletes nothing. Never raises ``Exception``.
+    """
+    cleanup = getattr(client, "cleanup_session", None)
+    if not session_id or not callable(cleanup):
+        return
+    try:
+        await cleanup(session_id)
+    except Exception:
+        logger.debug("deleting %s's retired conversation record failed", key, exc_info=True)
+
+
 async def _cleanup_memory_consolidation_session(
-    sessions: Any, key: str, memory_store: str, log: Any
+    sessions: Any, key: str, memory_store: str, log: Any, *, client: Any = None
 ) -> None:
-    """Retire one generated runtime before removing its private artifacts."""
+    """Retire one generated runtime before removing its private artifacts.
+
+    *client* is the provider the turn ran on, when one was acquired: once the
+    retirement returns, its conversation's native record is deleted too.
+    """
+    session_id = str(getattr(client, "session_id", "") or "")
     try:
         await sessions.remove(key)
     except Exception:
@@ -497,6 +517,7 @@ async def _cleanup_memory_consolidation_session(
         await asyncio.to_thread(log.delete_memory_consolidation_session, key, memory_store)
     except Exception:
         logger.debug("memory consolidation artifact cleanup failed", exc_info=True)
+    await _delete_retired_conversation_record(client, session_id, key)
 
 
 async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> None:
@@ -510,8 +531,10 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     its own ``AcpClient`` outside ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` raises
     ``NotImplementedError``), ``reset`` replaces the process,
     and the key's stateless classification means the next turn starts with no
-    history. The same two steps ``WorkerPool.reset`` uses for a reused pool
-    worker.
+    history; once that reset returns, the old conversation's native record (its id
+    read before either path ran) is deleted through ``cleanup_session``, since a
+    reset of a persistent provider only ends its process. ``WorkerPool.reset``
+    takes the same two paths for a reused pool worker.
 
     Logs at INFO which path ran, once per call. Never raises ``Exception``.
     """
@@ -519,6 +542,7 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
         await sessions.end_children_for(key)
     except Exception:
         logger.debug("ending %s's children before a fresh conversation failed", key, exc_info=True)
+    retired_session_id = str(getattr(client, "session_id", "") or "")
     new_conversation = getattr(client, "new_conversation", None)
     if callable(new_conversation):
         try:
@@ -536,6 +560,7 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
         )
         return
     logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
+    await _delete_retired_conversation_record(client, retired_session_id, key)
 
 
 async def repair_lite_spec(sessions: Any) -> None:
@@ -797,7 +822,9 @@ async def background_turn(
         except Exception:
             logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
-            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            await _cleanup_memory_consolidation_session(
+                sessions, key, memory_store, log, client=client
+            )
         raise
     if unconfirmed:
         logger.warning(
@@ -822,7 +849,9 @@ async def background_turn(
             except Exception:
                 logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
-            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            await _cleanup_memory_consolidation_session(
+                sessions, key, memory_store, log, client=client
+            )
         raise _lite_spec_refusal(key)
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
@@ -915,7 +944,9 @@ async def background_turn(
         finally:
             try:
                 if memory_store:
-                    await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+                    await _cleanup_memory_consolidation_session(
+                        sessions, key, memory_store, log, client=client
+                    )
                 elif fresh:
                     # The fresh conversation above already emptied the context.
                     pass

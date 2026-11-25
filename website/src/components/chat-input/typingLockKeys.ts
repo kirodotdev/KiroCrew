@@ -1,32 +1,32 @@
 import { useEffect } from 'react'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import type { useImeGuard } from '../../hooks/useImeGuard'
-import type { StopTurnOnEscape } from './stopKey'
+import type { ComposerEscapeKey } from './optimizeEscape'
 
 /**
- * The keys a typing-locked composer still answers, and only for a running
- * turn: a bare Escape stops it and the send binding steers it. Nothing here
- * edits the draft.
+ * The send key a non-editable rich composer still answers. A running-turn
+ * typing lock routes it to steer; a streaming dictation lock routes it to send.
+ * Neither path edits the draft.
  *
- * A typing-locked rich editor is not editable either, so Lexical drops its
- * keys and focus falls to the page body. For a running turn the composer still
- * answers the send binding (steer), as the textarea's handler does: a press
- * aimed inside it, or at the body while it last held focus.
+ * Lexical drops key events once it is non-editable, so this listener accepts a
+ * press aimed inside that editor, or at the page body while it last held focus.
  */
-export function useTypingLockKeys({ lockedRich, isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime }: {
+export function useTypingLockKeys({ lockedRich, isRunning, allowIdleSend = false, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, escapeKey, ime }: {
   lockedRich: boolean
   isRunning: boolean
+  allowIdleSend?: boolean
   sendOnEnter: SendMode
   connected: boolean
-  fireComposer: () => void
+  fireComposer: (alternate?: boolean) => void
   wrapperRef: React.RefObject<HTMLDivElement>
   ownsFocusRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
-  stopTurnOnEscape: StopTurnOnEscape
+  /** The composer's bare-Escape gate: it cancels an in-flight optimize, never the turn. */
+  escapeKey: ComposerEscapeKey
   ime: ReturnType<typeof useImeGuard>
 }): (e: React.KeyboardEvent<HTMLTextAreaElement>) => void {
   useEffect(() => {
-    if (!lockedRich || !isRunning) return
+    if (!lockedRich || (!isRunning && !allowIdleSend)) return
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return
       const target = e.target as Element | null
@@ -35,28 +35,28 @@ export function useTypingLockKeys({ lockedRich, isRunning, sendOnEnter, connecte
       const editor = target?.closest?.('[data-lexical-composer]') ?? null
       const inEditor = !!editor && !!wrapperRef.current?.contains(editor)
       if (!inEditor && !(target === document.body && ownsFocusRef.current)) return
-      const bare = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+      const command = e.metaKey || e.ctrlKey
       const sendKey = sendOnEnter === 'ctrl-enter'
-        ? e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey
-        : e.key === 'Enter' && bare
+        ? e.key === 'Enter' && command && !e.shiftKey
+        : e.key === 'Enter' && !e.shiftKey && !(sendOnEnter === 'enter-ctrl-newline' && command)
       if (!sendKey || e.isComposing || e.keyCode === 229) return
       e.preventDefault()
-      if (!e.repeat && connected && !optimizingRef.current) fireComposer()
+      if (!e.repeat && connected && !optimizingRef.current) fireComposer(sendOnEnter === 'enter' && command)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [lockedRich, isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef])
+  }, [lockedRich, isRunning, allowIdleSend, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef])
   return (e) => {
     if (!isRunning) return
-    const bare = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
-    if (e.key === 'Escape' && bare) {
-      stopTurnOnEscape(e, { native: e.nativeEvent, composing: ime.isComposing(e) })
+    const command = e.metaKey || e.ctrlKey
+    if (e.key === 'Escape' && !command && !e.altKey && !e.shiftKey) {
+      escapeKey(e, { native: e.nativeEvent, composing: ime.isComposing(e) })
       return
     }
     const sendKey = sendOnEnter === 'ctrl-enter'
-      ? e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey
-      : e.key === 'Enter' && bare
+      ? e.key === 'Enter' && command && !e.shiftKey
+      : e.key === 'Enter' && !e.shiftKey && !(sendOnEnter === 'enter-ctrl-newline' && command)
     if (!sendKey || !ime.claimEnter(e)) return
-    if (!e.repeat && connected && !optimizingRef.current) fireComposer()
+    if (!e.repeat && connected && !optimizingRef.current) fireComposer(sendOnEnter === 'enter' && command)
   }
 }

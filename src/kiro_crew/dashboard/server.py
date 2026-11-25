@@ -309,10 +309,15 @@ from kiro_crew.dashboard.server_runtime.listener import (  # noqa: F401
     _start_unix_site,
 )
 from kiro_crew.dashboard.server_runtime.listener_claims import (  # noqa: F401
+    _arm_entry_listener_guards,
     _arm_listener_guard,
     _arm_secondary_listener_guard,
+    _close_entry_port,
+    _entry_listener_probe,
+    _listener_closed_before_arming,
     _live_sibling_port,
     _note_listener_sidecar,
+    _reclose_entry_listeners,
     _reconcile_listener_publication,
     _register_listener_guard_shutdown,
     _republish_listener_sidecar,
@@ -1047,6 +1052,24 @@ async def start_dashboard(
         _served_port = port or _dashboard_sock.getsockname()[1]
         app["served_port"] = _served_port
 
+        # Loaded before the app backends start, so a dashboard.entry_port value
+        # that can never be served stops the start before any backend is spawned
+        # and before the gateway's own port serves. The bind, and its refusal of a
+        # port in use, stay in entry_gate.start after the gateway's own site.
+        # Off the loop: the load reads and validates config.json from disk.
+        _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        from kiro_crew.dashboard import entry_gate
+
+        # The SSM port counts only when its listener is configured to run.
+        _entry_ssm_port = (
+            _cfg.dashboard.shared_crew.ssm_port
+            if _shared_crew_preview and _cfg.dashboard.shared_crew.ssm
+            else None
+        )
+        entry_gate.configured_port(
+            _cfg.dashboard.entry_port, _dashboard_sock.getsockname()[1], _entry_ssm_port
+        )
+
         await _start_app_backends(app, state)
 
         # Edition-contributed dashboard routes + background services (CPP
@@ -1109,7 +1132,6 @@ async def start_dashboard(
         # Off by default; resolved in a thread so the daemon call cannot stall the
         # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
         # validated.
-        _cfg = KiroCrewConfig.load()
         _ts_cfg = _cfg.dashboard.tailscale
         _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
         _tailnet_trust = await _resolve_tailnet_trust(_cfg)
@@ -1215,6 +1237,10 @@ async def start_dashboard(
 
             app[HEADLESS_KEY] = True
 
+        # The entry port's gate holder, empty until the port is bound after the
+        # gateway's own (dashboard/entry_gate.py).
+        _entry_ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
+
         # The ordered chain and the dashboard_url token-auth invariant live with the
         # headless chain in one owner, so the two cannot drift apart unseen.
         _install_dashboard_middlewares(
@@ -1308,6 +1334,16 @@ async def start_dashboard(
         # socket's own kernel-assigned name.
         site = web.SockSite(runner, _dashboard_sock)
         await site.start()
+        # The entry port, when the owner set one. Inside this guard: a port that
+        # cannot be bound stops the start, and the cleanup below closes what was
+        # opened.
+        _entry_sites = await entry_gate.start(
+            _entry_ref,
+            runner,
+            _cfg.dashboard.entry_port,
+            _dashboard_sock.getsockname()[1],
+            ssm_port=_entry_ssm_port,
+        )
     except BaseException:
         # Every post-reservation failure must release both the app processes and
         # the socket before another process can claim this trusted origin.
@@ -1327,6 +1363,35 @@ async def start_dashboard(
     # The listener is up -- keep it up. One failed accept() on Windows would
     # otherwise close it for the life of the process (see listener_guard).
     _arm_listener_guard(state, runner, site)
+    _arm_entry_listener_guards(state, runner, _entry_sites, _entry_ref)
+    # The entry binds above are awaits, so a listener may have died before its
+    # guard was armed. Such a guard has no name to rebind: stop here, before
+    # anything is published. The gateway's own listener exits as a guard that
+    # cannot rebind does; an entry listener stops the start as an entry port that
+    # cannot be bound does.
+    _closed = _listener_closed_before_arming(state)
+    if _closed:
+        logger.critical(
+            "The %s listener closed during startup, before its guard was armed; "
+            "the gateway does not start",
+            "gateway's own" if _closed == "primary" else "entry port's",
+        )
+        # Before the first await: a guard still armed would rebind a listener
+        # while the cleanup closes it. Newest first; the cleanup hook's second
+        # stop of each guard does nothing.
+        for _armed in (*reversed(state._entry_listener_guards), state._listener_guard):
+            if _armed is not None:
+                _armed.stop()
+        with contextlib.suppress(Exception):
+            await runner.cleanup()
+        with contextlib.suppress(Exception):
+            await _stop_spawned_backends()
+        _dashboard_sock.close()
+        if _closed == "primary":
+            raise SystemExit(LISTENER_LOST_EXIT_CODE)
+        raise entry_gate.EntryPortError(
+            "an entry port listener closed before the gateway finished starting"
+        )
     start_shared_crew_maintenance()
     # One-time prune of the crewmates an enrol-on-mount agent sync generated
     # from the user's own specs (see crewmate_prune_migration). Kicked here,
@@ -1350,7 +1415,9 @@ async def start_dashboard(
     # binding the second family on it lands on an unrelated ephemeral port while
     # the sidecar is filed under the real one -- which would publish coverage for
     # an address nothing listens on and leave the real one free for anyone to take.
-    _bound_port = _resolved_bound_port(runner, port)
+    # It is the port of the socket this gateway reserved, not the first address of
+    # the runner: the runner holds other listeners too, in an order a rebind changes.
+    _bound_port = _served_port
     # The gateway announces this to the MCP gateway daemon it owns.
     state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (POSIX only;
@@ -1513,7 +1580,7 @@ async def start_dashboard(
     await cautious_boot.pause_before("MCP server probe")
     # Held in state._background_tasks: the loop keeps only a weak reference to a
     # task, so a dropped one can be garbage-collected before the probe finishes.
-    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
+    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state))
     state._background_tasks.add(probe_task)
     probe_task.add_done_callback(state._background_tasks.discard)
 
@@ -1605,6 +1672,14 @@ async def start_dashboard(
     from kiro_crew.dashboard import approve_for_me
 
     approve_for_me.install(state)
+    # The account's hidden models can change on another Kiro client, or land after
+    # a picker's first read; an open picker then reads again.
+    from kiro_crew.agent_sdk import kas_model_catalog
+    from kiro_crew.dashboard.handlers.models_cold_probe import MODELS_CHANGED_EVENT
+
+    kas_model_catalog.on_hidden_models_changed(
+        functools.partial(state.broadcast_ws, MODELS_CHANGED_EVENT, {})
+    )
 
     await _notify_restart_dropped_grant(state)
 

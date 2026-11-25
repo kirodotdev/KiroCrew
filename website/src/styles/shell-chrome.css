@@ -248,7 +248,7 @@
    button + gap + a `Local` chip + gap + dropdown = 139px, so the rung fires just
    above that. Dropping the chip NAMES buys ~43px each and keeps every chip, its
    state icon and its unread badge on screen; each chip carries the crew name in
-   `aria-label`/`title`, so nothing becomes unreachable.
+   `aria-label` and its hover hint, so nothing becomes unreachable.
    Scoped to `.tb-left` because the chip markup is shared with the full-width
    strip bar, which is not in this group and has room for its labels.
    Deliberately NOT `display:none` on the chip row: the dropdown's aggregate

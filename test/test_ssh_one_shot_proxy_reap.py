@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -319,3 +321,32 @@ def test_one_shot_ssh_never_starts_a_shared_connection() -> None:
     """A shared connection it started would keep its proxy in the group ended at exit."""
     argv = tm._build_ssh_argv("crew-host", "true")
     assert "ControlMaster=no" in argv  # wokeignore:rule=master
+
+
+@pytest.mark.xdist_group(name="subprocess_spawn")
+def test_the_stdin_leader_hands_the_request_to_the_backgrounded_command():
+    # Without keep_stdin the backgrounded command reads /dev/null.
+    # cat, not an interpreter: this module's other cases already start those.
+    echo = [shutil.which("cat") or "cat"]
+    kept = subprocess.run(
+        tm.under_group_leader(echo, keep_stdin=True),
+        input="request\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        start_new_session=True,
+        check=False,
+    )
+    assert (kept.returncode, kept.stdout) == (0, "request\n")
+    plain = subprocess.run(
+        tm.under_group_leader(echo),
+        input="request\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        start_new_session=True,
+        check=False,
+    )
+    assert plain.stdout == ""

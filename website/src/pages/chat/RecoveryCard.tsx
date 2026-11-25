@@ -241,10 +241,12 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
   }
 
   if (kind === 'manual') {
+    // One card covers Continue after an interruption and after a clean finish, so
+    // the detail claims neither; past tense because it outlives the turn.
     return {
       kind,
       title: i18nT('pages.chat.recoveryCard.continued_by_you'),
-      detail: i18nT('pages.chat.recoveryCard.resuming_the_interrupted_turn'),
+      detail: i18nT('pages.chat.recoveryCard.sent_without_a_new_instruction'),
       chip: '',
       body,
     }

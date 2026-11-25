@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -93,6 +94,13 @@ def restart(monkeypatch, tmp_path, holder):
         cli_server.platform_compat, "find_listening_pids", lambda port: [UNALLOCATABLE_PID]
     )
     monkeypatch.setattr(cli_server, "_wait_for_pids_exit", lambda *a, **kw: [])
+    # These tests pin the stop-and-spawn path, which a gateway that cannot restart
+    # in place reaches; the in-place restart is pinned in test_cli_restart_in_place.py.
+    # ``_restart`` imports that module when it runs, so a stand-in that declines is
+    # what it finds, and this file needs no import of the module itself.
+    declines = types.ModuleType("kiro_crew.cli_restart_in_place")
+    declines.restart_in_place = lambda port, *, headless: False  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kiro_crew.cli_restart_in_place", declines)
     # ``_refuse_if_lock_held`` is the real one: this home (``tmp_path``) has no
     # ``gateway.lock`` holder once the faked stop returns, as after a real stop.
     monkeypatch.setattr(cli_server, "_wait_gateway_ready", lambda *a: (cli_server._READY_OK, None))
@@ -462,19 +470,35 @@ def test_restart_access_output(restart, holder, monkeypatch, capsys, terminal, h
         assert output.out == headline + "\n🔑 Sign in: run kirocrew token for a sign-in link\n"
 
 
-def test_service_restart_reads_no_argv(restart, holder, monkeypatch, capsys):
-    """The unit's own command line starts the replacement, so nothing is read."""
+@pytest.mark.parametrize("unit_headless", [True, False, None])
+def test_service_restart_reads_no_argv(restart, holder, monkeypatch, capsys, unit_headless):
+    """The unit's own command line starts the replacement, so no process is read.
+
+    The line printed after it follows the service's start command: a headless
+    one names the API and the credential command, never a sign-in link. One
+    that cannot be read says the mode is unknown, then prints the ordinary line.
+    """
     monkeypatch.setattr(cli_server, "resolve_client_port", lambda port: 7000)
     monkeypatch.setattr(cli_server.sys.stdout, "isatty", lambda: False)
     monkeypatch.setattr(cli_server.service_controller, "restart_service", lambda: True)
-    holder.argv = ["kirocrew", "gateway", "--headless"]
+    monkeypatch.setattr(
+        cli_server.service_controller, "restarted_headless", lambda report: unit_headless
+    )
+    # The live process says the opposite of the unit: it is not what is read.
+    holder.argv = ["kirocrew", "gateway", *([] if unit_headless else ["--headless"])]
     cli_server._restart(None)
     assert holder.reads == []
     restart[0].assert_not_called()
     restart[1].assert_not_called()
-    assert capsys.readouterr().out == (
-        "✅ Restarted kirocrew service.\n\n🔑 Sign in: run kirocrew token for a sign-in link\n"
+    access = (
+        "👻 Headless: API on http://127.0.0.1:7000/v1\n"
+        "   Credential for a Crew API client: kirocrew token --bearer --port 7000\n"
+        if unit_headless
+        else "\n🔑 Sign in: run kirocrew token for a sign-in link\n"
     )
+    if unit_headless is None:
+        access = "   mode: unknown (the service's start command could not be read)\n" + access
+    assert capsys.readouterr().out == "✅ Restarted kirocrew service.\n" + access
 
 
 @pytest.mark.parametrize("headless", [True, False])

@@ -75,6 +75,7 @@ from kiro_crew.session_pid_orphan_scan import (
     _is_sweepable_orphan_mcp,
     _is_sweepable_orphan_work,
     _linux_pid_age,
+    _trusted_ps,
 )
 from kiro_crew.session_pid_provider_kill import (
     _root_identity_holds,
@@ -1033,7 +1034,7 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                 cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
             else:
                 cmdline = subprocess.check_output(
-                    ["ps", "-o", "command=", "-p", str(pid)],
+                    [_trusted_ps(), "-o", "command=", "-p", str(pid)],
                     stderr=subprocess.DEVNULL,
                     timeout=2,
                 )
@@ -1116,7 +1117,7 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                         live_cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
                     else:
                         live_cmdline = subprocess.check_output(
-                            ["ps", "-o", "command=", "-p", str(pid)],
+                            [_trusted_ps(), "-o", "command=", "-p", str(pid)],
                             stderr=subprocess.DEVNULL,
                             timeout=2,
                         )

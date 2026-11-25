@@ -435,8 +435,14 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 # closes exactly that with an explicitly terminal `interrupted`.
                 _publish()
 
-    async def _collect_judge_evidence(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+    async def _collect_judge_evidence(
+        loop: NudgeLoop, targets: list[str]
+    ) -> tuple[list[dict], int, dict]:
         """The wake judge's evidence for one tick: new worker rows, plus the probe.
+
+        *targets* are the ones the tick chose to read (``_judge_tick_is_quiet``), so
+        a session the default brief reads around is never read here, and its refusal
+        never reaches this collector's drop count.
 
         A closure rather than a method on the service, for the reason ``_fire`` and
         ``_monitor_owner_session_id`` are: authorizing a transcript read needs
@@ -546,13 +552,11 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 payload["observed_at"] = float(at)
             return payload
 
-        targets = _judge.parse_targets(
-            _judge.spec_of(loop), loop.message, watched=_judge.watched_pr_subject(loop)
-        )
         # Pruned to the targets this tick actually reads, not merely copied. The
-        # collector only ever ADDS a key, the targets come from ``loop.message``, and
-        # ``asdict`` persists whatever the map holds, so without this a retarget
-        # leaves the departed target's cursor in the store for the life of the loop.
+        # collector only ever ADDS a key, the tick parses the targets from
+        # ``loop.message``, and ``asdict`` persists whatever the map holds, so without
+        # this a retarget leaves the departed target's cursor in the store for the life
+        # of the loop.
         #
         # Pruning at the write is what bounds retention in the process doing the
         # writing. The load cap is not that bound: it keeps an arbitrary 16, so it
@@ -973,7 +977,25 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
             settled = getattr(loop.monitor, "outcome", None) if loop.monitor else None
             decided = getattr(settled, "value", settled) or owed
             merged = decided == "success"
-            if merged:
+            if getattr(loop.monitor, "kind", "") == "work-ledger":
+                # A work-ledger patrol ends when every item is closed; there is no
+                # pull request, so the wording below would invent one. An accepted
+                # board needs nothing from the user and stays passive like a merge.
+                if decided == "success":
+                    title = "Patrol finished — every task was accepted"
+                    body = (
+                        f"The work-ledger patrol stopped after {loop.cycle_count} cycles "
+                        "because every task is closed and accepted. The conductor's "
+                        "final report is in its session. No action needed."
+                    )
+                else:
+                    title = "Patrol finished — some tasks were not accepted"
+                    body = (
+                        f"The work-ledger patrol stopped after {loop.cycle_count} cycles "
+                        "because every task is closed, and at least one was rejected or "
+                        "abandoned. Read the conductor's final report in its session."
+                    )
+            elif merged:
                 title = "Monitoring loop finished — what it was watching is done"
                 body = (
                     f"The loop stopped after {loop.cycle_count} cycles because "

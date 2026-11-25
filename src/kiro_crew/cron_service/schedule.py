@@ -482,6 +482,11 @@ _UNIT_DAYS = {
     "week": 7,
     "weeks": 7,
 }
+_ISO_ZONED_FORMATS = tuple(
+    f"%Y-%m-%d{sep}{clock}%z"
+    for sep in ("T", " ")
+    for clock in ("%H:%M", "%H:%M:%S", "%H:%M:%S.%f")
+)
 
 
 def _wall_clock_resolution_error(value: datetime, tz: tzinfo, tz_name: str) -> str | None:
@@ -600,7 +605,19 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
         except ValueError:
             continue
 
-    return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
+    # ISO 8601 with a zone ("Z" or "+02:00"), as scripts write it: already an instant
+    if not tomorrow:
+        for fmt in _ISO_ZONED_FORMATS:
+            try:
+                return seams.datetime.strptime(text, fmt).timestamp()
+            except ValueError:
+                continue
+
+    return (
+        f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', "
+        "'tomorrow 9am', '2026-11-22 09:00', '2026-11-22T05:20:00Z', "
+        "'2026-11-22T07:20:00+02:00'"
+    )
 
 
 def _job_tz(job: CronJob) -> tzinfo:

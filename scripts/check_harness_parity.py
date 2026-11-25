@@ -489,10 +489,14 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
     "ACP_BACKENDS_CWD_BOUND_SESSIONS": "standard ACP: whether session/load is sent for a moved cwd",
     "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
+    "ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY": (
+        "Crew-side: which servers Crew puts in the standard session/new array"
+    ),
     "ACP_BACKENDS_NO_MCP_INIT_FRAMES": "Crew-side: how long Crew drains after session/new",
     "ACP_BACKENDS_REMOTE_MCP_OAUTH": "off the wire: the agent file's remote-server oauth block",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_MODEL_AT_LAUNCH": "off the wire: the model is a launch argument",
+    "ACP_BACKENDS_MODEL_PER_SESSION": "standard ACP: the model request names its session",
     "ACP_BACKENDS_EFFORT_AT_LAUNCH": "off the wire: the effort is a launch argument",
     "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",

@@ -16,6 +16,7 @@ from decimal import Decimal
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
 
@@ -30,6 +31,10 @@ def cfg(tmp_path, monkeypatch) -> PodConfig:
     return PodConfig.load()
 
 
+# Where the trusted lookup is faked to find journalctl, on any CI host.
+_TRUSTED_JOURNALCTL = "/usr/bin/journalctl"
+
+
 class _FakeJournal:
     """A user journal of (wall-clock microseconds, line) for one unit."""
 
@@ -38,7 +43,7 @@ class _FakeJournal:
         self.argvs: list[list[str]] = []
 
     def run(self, argv, **_kw) -> subprocess.CompletedProcess:
-        assert argv[0] == "journalctl"
+        assert argv[0] == _TRUSTED_JOURNALCTL
         self.argvs.append(list(argv))
         since_usec = 0
         for arg in argv:
@@ -56,6 +61,7 @@ def journal(monkeypatch) -> _FakeJournal:
     monkeypatch.setattr(rt, "IS_MACOS", False)
     monkeypatch.setattr(rt, "IS_WINDOWS", False)
     monkeypatch.setattr(rt, "require_systemd", lambda: None)
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda _name: _TRUSTED_JOURNALCTL)
     monkeypatch.setattr(rt.subprocess, "run", fake.run)
     return fake
 

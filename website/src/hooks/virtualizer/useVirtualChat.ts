@@ -342,6 +342,7 @@ export function useVirtualChat<T>(
   useFollowPlacementPins({
     itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, getStableIdRef,
     setWindowRange, shiftRetainedRange: view.shiftRetainedRange, follow, pinning,
+    stageLeadingOverscan: ops.stageLeadingOverscan,
   })
 
   // Passive effects: the DOM observers.

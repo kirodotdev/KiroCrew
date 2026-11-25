@@ -81,9 +81,14 @@ from kiro_crew.agent_sdk.kas_project_hooks import (  # noqa: F401,E402 - re-expo
     kas_project_hooks_state,
 )
 
-# Re-exported for the modules that import these from spec_hooks; they live in a
-# sibling only to keep this module under its line cap. The sibling imports this
-# module's seams lazily, so the two load in either order.
+# Re-exported for the modules that import these from spec_hooks; they live in
+# siblings only to keep this module under its line cap. spec_hooks_reproject imports
+# this module's seams lazily, so the two load in either order.
+from kiro_crew.agent_sdk.spec_hooks_post_tool import (  # noqa: E402,F401
+    PostToolIdentity,
+    post_tool_hook_tool_id,
+    post_tool_identity,
+)
 from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
     ClaimToken,
     UnattendedClaim,
@@ -476,87 +481,6 @@ def envelope_named_tool_id(tool_id: str) -> bool:
 
     parts = split_harness_tool_id(tool_id)
     return parts is not None and parts[0] in ENVELOPE_NAMED_TOOL_BACKENDS
-
-
-def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: bool) -> str:
-    """The tool id a finished call's PostToolUse spec hooks match on, or "".
-
-    kiro-cli matches a postToolUse hook against its own tool name. KAS's tool-call
-    frame names no built-in tool (its ``_meta.kiro.toolId`` is set for a few
-    non-built-in ones only) and titles the call in prose, so the title alone
-    meets no tool matcher a spec writes. The call is named by what the turn
-    learned of it instead: the id its permission request stated
-    (*harness_tool_id*), else, for a call the frame classified as a shell
-    command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
-    kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
-
-    claude names its shell call the same way, as its frames carry no tool id. A codex
-    ``tool_call`` event carries its own id (``codex#exec_command``, ``codex#apply_patch``,
-    :func:`kiro_crew.acp._dispatch_parts.tool_call_identity.codex_tool_name`), so the
-    fallback names only a codex call that event left unnamed; a codex MCP call is
-    kind ``execute`` too, but its MCP marker classifies it not shell.
-
-    "" on a backend whose harness runs the spec's hooks itself, and for a call
-    nothing names, which keeps the title matching it had.
-    """
-    if not capabilities_of(provider).crew_fires_spec_observer_hooks:
-        return ""
-    if harness_tool_id:
-        return harness_tool_id
-    if not is_shell:
-        return ""
-    # circular import: see spec_hook_tool_names.
-    from kiro_crew.acp.harness_tool_names import ENVELOPE_NAMED_TOOL_BACKENDS
-    from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
-
-    # On Strands the shell verdict a card carries is the CLI's guess from the tool
-    # name, so only the id the gate envelope stated names the call.
-    if capabilities_of(provider).backend in ENVELOPE_NAMED_TOOL_BACKENDS:
-        return ""
-
-    shell_ids = KAS_TOOL_IDS_BY_KIRO_TOOL.get("execute_bash") or ()
-    return shell_ids[0] if shell_ids else ""
-
-
-class PostToolIdentity(NamedTuple):
-    """What a finished call's PostToolUse hooks are matched on, kept per call.
-
-    The harness id (:func:`post_tool_hook_tool_id`), and the call's canonical tool
-    name and trusted MCP server, so a spec matcher written ``@server/tool`` meets an
-    MCP call by those forms as it does on PreToolUse
-    (``hooks.pre_tool_match_names``).
-    """
-
-    tool_id: str = ""
-    tool_identity: str = ""
-    mcp_server: str = ""
-
-
-def post_tool_identity(
-    provider: object,
-    event: object,
-    *,
-    is_shell: bool,
-    earlier: PostToolIdentity | None = None,
-) -> PostToolIdentity | None:
-    """*event*'s :class:`PostToolIdentity`, or ``None`` where Crew fires no
-    PostToolUse spec hooks.
-
-    *event* is the call's ``tool_call`` frame or its permission request; a field
-    the event leaves empty keeps what *earlier* recorded for the same call.
-    """
-    if not capabilities_of(provider).crew_fires_spec_observer_hooks:
-        return None
-    base = earlier or PostToolIdentity()
-    stated = getattr(event, "harness_tool_id", "") or ""
-    tool_id = post_tool_hook_tool_id(provider, harness_tool_id=stated, is_shell=is_shell)
-    identity = getattr(event, "tool_name", "") or ""
-    server = getattr(event, "mcp_server_name", "") or ""
-    return PostToolIdentity(
-        tool_id=tool_id or base.tool_id,
-        tool_identity=identity if isinstance(identity, str) and identity else base.tool_identity,
-        mcp_server=server if isinstance(server, str) and server else base.mcp_server,
-    )
 
 
 def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
@@ -1340,6 +1264,7 @@ def crew_fired_spec_hooks(
     session_key: str = "",
     discards_mcp_oauth: bool = False,
     withholds_oauth_secret: bool = False,
+    sends_oauth_secret: bool = False,
     governance_session_key: str = "",
     governance_app: str | None = None,
     kas_checkout: str | None = None,
@@ -1358,7 +1283,9 @@ def crew_fired_spec_hooks(
     engine Crew knows drops a remote MCP server's ``oauth`` block.
     *withholds_oauth_secret* is true for every KAS session: its projection sends
     nothing, on any engine, from a block that names a ``clientSecret`` or keeps no
-    key it can send. *session_key*
+    key it can send, except that *sends_oauth_secret* (the engine announced
+    ``mcpOAuthClientSecret``) lets a confidential block with a ``clientId``
+    through without its secret. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
     *governance_session_key* and *governance_app* are the session and app the KAS
     projection judged a ``trustedAgents`` allow for, so the notice judges it alike.
@@ -1377,6 +1304,7 @@ def crew_fired_spec_hooks(
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
         withholds_oauth_secret=withholds_oauth_secret,
+        sends_oauth_secret=sends_oauth_secret,
         session_key=governance_session_key,
         governance_app=governance_app,
     )
@@ -1617,6 +1545,7 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     ``allowedPaths`` past theirs (``kas_unread_commands.allowed_paths_notice``).
     A Bot's worker gets its own deny wording (``kas_tool_view.deny_sentences``).
     """
+    from kiro_crew.acp.kas_deny_cli_forms import split_sent_as_cli
     from kiro_crew.acp.kas_unread_commands import allowed_paths_notice, over_limit_notice
     from kiro_crew.agent_sdk.kas_tool_view import (
         allow_exclude_limit,
@@ -1628,6 +1557,8 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
     from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
+    # A deny entry sent as kiro-cli sends it says what it refuses, never "no effect".
+    sent_as_cli, keys = split_sent_as_cli(agent, keys, agent == MATE_WORKER_AGENT)
     judged, deny_rest, keys = split_deny_notices(keys)
     over_limit, keys = over_limit_notice(agent, keys)
     unread = [key for key in keys if MARK in key]
@@ -1642,7 +1573,9 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
     )
     unread_paths, keys = allowed_paths_notice(agent, keys)
-    named = [text for text in (entries if unread else "", unread_paths, over_limit) if text]
+    named = [
+        text for text in (entries if unread else "", unread_paths, over_limit, *sent_as_cli) if text
+    ]
     if named and not keys and not judged and not deny_rest:
         return "ℹ️ " + " ".join(named)
     # Crew's own gate still refuses what a marked allowlist leaves out, so it is
@@ -1677,10 +1610,12 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         noun = "server" if len(servers) == 1 else "servers"
         notice += f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this backend yet."
     if "permissions" in keys:
+        notice += " A permissions block is not sent at all when it is malformed or too large."
+    if "permissions.policies" in keys:
         notice += (
-            " A permissions block is not sent at all when it names a policies bundle "
-            "or is malformed or too large. With a policies bundle, the agent's shell "
-            "and file tools also ask for approval even where allowedTools grants them."
+            " Allow rules beside a policies bundle aren't used, so those tools ask first. "
+            "To skip the ask, write the rules out without the bundle, or list the tools "
+            "in allowedTools."
         )
     if any(key.startswith("permissions.rules[") for key in keys):
         notice += (
@@ -1756,7 +1691,7 @@ async def turn_spec_hooks(
     session_key = provider_session_key(provider)
     # The keys the session runs without, read as the chat turn reads them.
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
+    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth, sends_mcp_client_secret
 
     on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
     try:
@@ -1768,6 +1703,7 @@ async def turn_spec_hooks(
                 translates_tools_settings=on_kas,
                 discards_mcp_oauth=on_kas and discards_mcp_oauth(provider),
                 withholds_oauth_secret=on_kas,
+                sends_oauth_secret=on_kas and sends_mcp_client_secret(provider),
                 session_key=session_key,
                 kas_checkout=kas_hook_checkout(provider) if project_hooks else None,
             )

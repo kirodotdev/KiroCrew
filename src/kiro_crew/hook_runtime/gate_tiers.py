@@ -128,8 +128,8 @@ class GateFacts:
         #: hook held (``ToolCall.spec_hook_held``); no deny tier consults it.
         self.pre_tool_hooks_fire = pre_tool_hooks_fire
         #: Why this call will ask when no row decides it, for the person who
-        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
-        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        #: answers the prompt. Set by :func:`grant_spec_builtin` and the parent-limits
+        #: row; the fall-through ``allow`` carries it as its reason. Never read to decide.
         self.ask_note = ""
         self._memo: dict[str, Any] = {}
 
@@ -605,11 +605,12 @@ def _rule_sensitive_path(facts: GateFacts, target: str) -> str | None:
     tool, not a file, so resolving it as a path is a category error that under a
     resolver stall refused the call fail-closed with a "Path:" wording naming no
     path. Only an exact verified-identity match is spared; any other title, and
-    every argument, stays gated.
+    every argument, stays gated. A proven fetch's URL title is spared too (``names_fetch_url``).
     """
     return (
         sensitive_path_refusal(target)
         if target not in (facts.exempt_command, facts.exempt_identity)
+        and not (target == facts.judged_normalized and facts.call.names_fetch_url(target))
         else None
     )
 

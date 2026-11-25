@@ -1,5 +1,8 @@
 """Connected computers: starting a chat on a computer, and missing enforcement.
 
+* B06 -- a computer that cannot confine commands to the shared folder is
+  unavailable with a plain reason; there is no unconfined fallback, and
+  sharing runs only on Linux for now.
 * B10 -- an offline computer refuses the start; the chat is not moved.
 * B12 -- a removed or revoked computer refuses the start; nothing is rebound.
 * flag -- a crafted start while the feature is off is refused before any
@@ -13,8 +16,9 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.connected_computers import flag, provider
+from kiro_crew.connected_computers import confinement, flag, provider
 from kiro_crew.connected_computers.broker import DeviceOffline
+from kiro_crew.connected_computers.confinement import ConfinementUnavailable
 from kiro_crew.connected_computers.devices import DeviceRegistry
 from kiro_crew.connected_computers.identity import install_fingerprint
 from kiro_crew.secrets.vault import SecretVault
@@ -54,6 +58,24 @@ def feature_on(monkeypatch):
 @pytest.fixture
 def registry(tmp_path):
     return DeviceRegistry(SecretVault(tmp_path / "vault-home"))
+
+
+class TestB06MissingEnforcement:
+    @pytest.mark.parametrize("platform", ["win32", "darwin", "freebsd14"])
+    def test_b06_an_unsupported_os_is_unavailable_with_a_reason(self, platform, monkeypatch):
+        """Linux only for now: macOS refuses exactly as Windows does, with no probe."""
+
+        def no_probe(name: str) -> None:
+            raise AssertionError("an unsupported OS looks up no sandbox tool")
+
+        monkeypatch.setattr(confinement, "_bin", no_probe)
+        with pytest.raises(ConfinementUnavailable, match="only on Linux"):
+            confinement.plan_for_this_machine(platform)
+
+    def test_b06_linux_without_bubblewrap_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(confinement, "_bin", lambda name: None)
+        with pytest.raises(ConfinementUnavailable, match="bubblewrap"):
+            confinement.plan_for_this_machine("linux")
 
 
 async def test_b10_an_offline_computer_refuses_and_the_chat_stays_bound(feature_on, registry):

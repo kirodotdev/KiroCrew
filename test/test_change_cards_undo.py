@@ -882,3 +882,34 @@ def test_connection_grant_fingerprint_reads_the_provider_token_artifact(monkeypa
     assert cards._connection_grant_fingerprint("nope") is None
     monkeypatch.setattr(mcp_grant, "grant_fingerprint", lambda url: None)
     assert cards._connection_grant_fingerprint("github") is None
+
+
+@pytest.mark.parametrize("kas_chats", [True, False])
+def test_connection_grant_fingerprint_reads_a_kas_held_sign_in(monkeypatch, kas_chats):
+    """On KAS chats a sign-in lives in Crew's grant vault, read at the KAS chat's url."""
+    from kiro_crew import mcp_grant, mcp_grant_kas
+    from kiro_crew.connections import mint_kas, registry
+
+    monkeypatch.setattr(
+        registry,
+        "get_visible_providers",
+        lambda: [{"slug": "github", "mcp_url": "https://example.test/mcp"}],
+    )
+    monkeypatch.setattr(mint_kas, "kas_signs_in", lambda entry=None: kas_chats)
+    monkeypatch.setattr(
+        mint_kas, "kas_chat_sign_in_urls", lambda providers: {"github": "https://spec.test/mcp"}
+    )
+    vault: dict[str, str] = {"https://spec.test/mcp": "rev-1"}
+    monkeypatch.setattr(mcp_grant_kas, "kas_grant_fingerprint", lambda url, **kw: vault.get(url))
+    stamp: dict[str, Any] = {"value": None}
+    monkeypatch.setattr(mcp_grant, "grant_fingerprint", lambda url: stamp["value"])
+
+    if not kas_chats:
+        # Off KAS no chat reads the vault, so neither does this.
+        assert cards._connection_grant_fingerprint("github") is None
+        return
+    assert cards._connection_grant_fingerprint("github") == {"kiroCli": None, "kas": "rev-1"}
+    stamp["value"] = (5, 6)
+    assert cards._connection_grant_fingerprint("github") == {"kiroCli": [5, 6], "kas": "rev-1"}
+    vault.clear()
+    assert cards._connection_grant_fingerprint("github") == [5, 6]

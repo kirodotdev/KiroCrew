@@ -8,3 +8,12 @@
 export function failedWithNoData(q: { data: unknown; errorUpdatedAt: number }): boolean {
   return q.data === undefined && q.errorUpdatedAt > 0
 }
+
+/**
+ * The same test for a read whose `null` is a reading with nothing in it (a
+ * cold cache): no usable data is held, and the last SETTLED outcome is an
+ * error. `failedWithNoData` is this test for queries with no null state.
+ */
+export function failedWithNoReading(q: { data: unknown; dataUpdatedAt: number; errorUpdatedAt: number }): boolean {
+  return (q.data === undefined || q.data === null) && q.errorUpdatedAt > q.dataUpdatedAt
+}

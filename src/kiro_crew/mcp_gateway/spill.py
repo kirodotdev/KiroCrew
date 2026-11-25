@@ -113,12 +113,17 @@ def maybe_spill_response(
     if not isinstance(content_list, list):
         return line
 
-    # Check if this looks like an MCP tools/call result
-    has_text_items = any(
-        isinstance(item, dict) and item.get("type") == "text" and "text" in item
+    # Only a tools/call result with a text item the cut below shortens: the sidecar
+    # holds what the cut leaves out, so a result whose bulk is an image beside short
+    # text (a browser screenshot asked inline) is forwarded whole and leaves no copy.
+    has_long_text = any(
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and isinstance(item.get("text"), str)
+        and len(item["text"].encode("utf-8", "surrogatepass")) > _INLINE_PREFIX_BYTES
         for item in content_list
     )
-    if not has_text_items:
+    if not has_long_text:
         return line
 
     # Spill the full text to file

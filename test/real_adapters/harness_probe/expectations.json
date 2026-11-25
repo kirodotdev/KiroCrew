@@ -31,7 +31,7 @@
     "goose": {
       "literal": "Y",
       "expansion": {"p-dollar": "L", "p-envprefix": "L"},
-      "ambient": ["goose-user"],
+      "ambient": [],
       "crew_tool_bytes_ceiling": 160000
     },
     "pi": {

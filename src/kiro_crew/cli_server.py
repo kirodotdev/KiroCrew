@@ -192,6 +192,8 @@ def _status(args: argparse.Namespace) -> None:
     print(f"  Sessions:    {data.get('sessions', 0)}")
     if data.get("session_map_writes_refused"):
         print(f"  Session map: {data.get('session_map_remedy', '')}")
+    if data.get("entry_port_closed"):
+        print("  Entry port:  closed; restart the gateway to open it again")
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")
@@ -594,13 +596,15 @@ def _service_cmd(args: argparse.Namespace) -> int:
     """
     action = getattr(args, "service_action", None)
     if action == "install":
-        rc = service_controller.install_service()
+        # True / False for --headless / --no-headless, None for neither (keep).
+        headless = getattr(args, "headless", None)
+        rc = service_controller.install_service(headless=headless)
         sel().log_api_access(
             caller="cli",
             operation="service_install",
             outcome="allowed" if rc == 0 else "error",
             source="cli",
-            resources=f"rc={rc}",
+            resources=f"rc={rc} headless={'keep' if headless is None else int(headless)}",
         )
         return rc
     if action == "uninstall":
@@ -907,6 +911,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_approve,
     )
     from kiro_crew.cli_server_restart import (  # noqa: F401
+        _POLL_EXITED,
+        _POLL_EXPIRED,
+        _POLL_SERVED,
         _READY_DIED,
         _READY_OK,
         _READY_TIMEOUT,
@@ -930,6 +937,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GatewayLogMark,
         _incumbent_from_lock_holder,
         _own_console_script,
+        _parent_pid,
+        _poll_until_serving,
+        _PollResult,
         _print_applying_update,
         _print_running_cron_runs,
         _print_still_starting,

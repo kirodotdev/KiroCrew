@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -594,6 +595,54 @@ class TestOptimizerEndpoint:
             "changed": True,
         }
         mock_sessions.release.assert_called_once_with("_optimizer")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("role_models", "role_efforts", "expected"),
+        [
+            ({"optimizer": "fast-model-1"}, {"optimizer": "low"}, ("fast-model-1", "low")),
+            # Unset: nothing is passed, so the start resolves the background pair.
+            ({"background": "bg-model-1"}, {"background": "high"}, (None, None)),
+        ],
+    )
+    async def test_the_session_starts_on_the_optimizer_role_pins(
+        self, monkeypatch, role_models, role_efforts, expected
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers import optimizer
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+
+        cfg = KiroCrewConfig()
+        cfg.agent.role_models = role_models
+        cfg.agent.role_efforts = role_efforts
+        monkeypatch.setattr(
+            optimizer, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg), raising=False
+        )
+
+        mock_client = AsyncMock()
+
+        async def fake_stream(prompt):
+            del prompt
+            yield MagicMock(kind=EVENT_TEXT_CHUNK, text="Refactor the parser module.")
+            yield MagicMock(kind=EVENT_COMPLETE)
+
+        mock_client.stream = fake_stream
+        mock_sessions = MagicMock()
+        mock_sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
+        mock_sessions.release = MagicMock()
+        mock_sessions.discard_conversation = AsyncMock(return_value=True)
+        mock_state = MagicMock()
+        mock_state.sessions = mock_sessions
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"prompt": "refactor the parser", "context": ""})
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+
+        assert json.loads(resp.body)["changed"] is True
+        kwargs = mock_sessions.get_or_create.call_args.kwargs
+        assert (kwargs.get("model"), kwargs.get("reasoning_effort_override")) == expected
 
 
 def _paste_mock_state(captured_prompt, reply_text):

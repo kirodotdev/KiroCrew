@@ -19,7 +19,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew.slack.code_channels.workspace import git_ops
-from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
+from kiro_crew.slack.code_channels.workspace.context_bar import (
+    PR_CI_UNREAD,
+    BarState,
+    build_items,
+)
 from kiro_crew.slack.code_channels.workspace.pr import PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceRecord
@@ -371,6 +375,88 @@ async def publish_resource(
         record.resource_hash = digest
 
 
+#: Channels (``record.key``) whose Slack refused ``pr_status`` itself: not asked
+#: again in this process. The rest of the channel carries on.
+_pr_status_held: set[str] = set()
+_MAX_HELD = 4096
+#: Slack's refusals of the value itself or of the request's shape: no retry cures
+#: them, so the channel is held. Every other answer (a rate limit, an outage,
+#: ``pr_link_failed``, an archive racing the pass, this gateway's own fences) is
+#: sent again on the next pass.
+_PR_STATUS_HOLD_CODES = frozenset({"invalid_pr_status", "invalid_arguments", "invalid_arg_name"})
+#: ``pr_status_hash`` after a write whose answer was lost: matches no digest, so
+#: the next pass sends again, and is not empty, so a pass with no PR still clears.
+_PR_STATUS_UNKNOWN = "unknown"
+
+
+async def publish_pr_status(
+    svc: WorkspaceService, record: WorkspaceRecord, binding: Any = None
+) -> None:
+    """Set the channel's ``pr_status`` from its OWN pull request, when that changed.
+
+    Only the workspace record's PR (the one ``agent_resource`` names) sets it;
+    nothing is read for it. The value is :func:`~.context_bar.pr_status_for` of
+    its real state with its last-read CI: an open PR whose checks no read has
+    settled sends nothing, so a failed read never turns ``blocked`` into
+    ``open``. When a status was sent and the channel has no PR any more, ``""``
+    clears it, once. The write asks the channel's activation right before it is
+    sent. Slack refusing the value itself (:data:`_PR_STATUS_HOLD_CODES`) holds it
+    for the channel; any other failure is sent again next pass.
+    """
+    from kiro_crew.slack.code_channels import surface
+    from kiro_crew.slack.code_channels.workspace.context_bar import (
+        PR_CI_UNREAD,
+        pr_status_for,
+    )
+
+    if record.slack_off or record.key in _pr_status_held:
+        return
+    if record.pr_number > 0 and record.pr_state:
+        if record.pr_state == "open" and record.pr_ci_read == PR_CI_UNREAD:
+            return  # an open PR whose checks no read has settled: the stored value stays
+        value = pr_status_for(
+            record.pr_state, record.pr_ci_read, record.pr_review, record.pr_mergeable
+        )
+        if value is None:
+            return
+        url = record.pr_url
+    elif record.pr_status_hash:
+        value, url = "", ""  # a status was shown and the channel has no PR any more
+    else:
+        return
+    digest = _digest(value, url)
+    if digest == record.pr_status_hash:
+        return
+    refused: list[str] = []
+    uncertain: list[bool] = []
+    answer = await call(
+        svc,
+        "set_pr_status",
+        record,
+        value,
+        fence=svc._write_fence(binding, board=False),
+        uncertain=uncertain,
+        refused=refused,
+    )
+    if answer is not None and answer is not _FENCED:
+        record.pr_status_hash = digest
+        return
+    if uncertain:
+        # Slack may have applied it (its answer was lost): what it shows is
+        # unknown, so the next pass sends again, a clear included.
+        record.pr_status_hash = _PR_STATUS_UNKNOWN
+        return
+    code = refused[-1] if refused else ""
+    if code in _PR_STATUS_HOLD_CODES:
+        # Records Slack's own refusal; a Stop since then records nothing.
+        if not surface.commit_if_not_stopped(record.channel_id):
+            return
+        if len(_pr_status_held) >= _MAX_HELD:
+            _pr_status_held.clear()
+        _pr_status_held.add(record.key)
+        logger.info("code channel %s: pr_status held (%s)", record.channel_id, code)
+
+
 def write_fence(svc: WorkspaceService, binding: Any, *, board: bool) -> Callable[[], bool] | None:
     """The scope a write must still pass right before it is sent.
 
@@ -446,6 +532,13 @@ async def refresh_pr(svc: WorkspaceService, record: WorkspaceRecord) -> None:
         same = pr.number == record.pr_number and record.pr_for == identity
         record.pr_number, record.pr_url = pr.number, pr.url
         record.pr_state, record.pr_ci = pr.state, pr.ci
+        record.pr_review = pr.review
+        # GitHub answers UNKNOWN ("") while it recomputes: the last settled answer stays.
+        record.pr_mergeable = pr.mergeable or (record.pr_mergeable if same else "")
+        if pr.ci_settled:
+            record.pr_ci_read = pr.ci
+        elif not same:
+            record.pr_ci_read = PR_CI_UNREAD  # a new PR whose CI no read has settled
         record.pr_title = pr.title or (record.pr_title if same else "")
         record.pr_for = identity
     elif lookup.status == "none" or record.pr_for != identity:
@@ -465,12 +558,14 @@ async def call(
     room_for: str = "",
     fence: Callable[[], bool] | None = None,
     uncertain: list[bool] | None = None,
+    refused: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """One write through the core's client. Returns its answer, or None when it failed.
 
     *uncertain*, when given, gets ``True`` appended for a failure Slack may
-    have applied anyway (its answer was lost: ``maybe_applied``).
+    have applied anyway (its answer was lost: ``maybe_applied``). *refused*,
+    when given, gets Slack's error code appended for a write Slack answered with one.
 
     The core's client maps Slack's answer to :class:`CodeChannelApiError` and
     hands every refusal to the feature's process latch itself. Here a
@@ -522,6 +617,8 @@ async def call(
             return _FENCED
         if uncertain is not None and exc.maybe_applied:
             uncertain.append(True)
+        if refused is not None:
+            refused.append(code)
         if code == "too_many_views" and room_for:
             from kiro_crew.slack.code_channels.views import is_pr_tab, make_room
 

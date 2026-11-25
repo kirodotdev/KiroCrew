@@ -340,6 +340,20 @@ async def test_trace_export_is_read_only_and_patch_refuses_it(tmp_config) -> Non
     assert "telemetry" not in _stored(tmp_config)
 
 
+async def test_the_entry_port_is_read_only_and_patch_refuses_it(tmp_config) -> None:
+    """It opens a listener for a proxy that forwards other machines, as the tunnel
+    switches open a way in, so the config file or `kirocrew config set` sets it."""
+    assert all_settings.generic_spec("dashboard.entry_port") is None
+    assert _editable_config_spec("dashboard.entry_port") is None
+    assert all_settings.descriptor(_BY_PATH["dashboard.entry_port"]) == {
+        "mode": "readonly",
+        "reason": all_settings.WHY_REACH,
+    }
+    status, body = await _send({"path": "dashboard.entry_port", "value": 8443})
+    assert status == 400, body
+    assert "entry_port" not in _stored(tmp_config).get("dashboard", {})
+
+
 def _dashboard_route_keys() -> set[str]:
     """The keys `PUT /api/dashboard/config` writes, read from its `_allowed` set."""
     import ast

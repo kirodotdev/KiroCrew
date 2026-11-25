@@ -893,6 +893,7 @@ def build_config(
         # could not read what they configured". Carry the observation
         # through so the caller can tell them apart.
         cfg = config_cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+        cfg._read_degraded_sections = frozenset()
         # An absent key, so an edition's ``default_stt()`` applies here too.
         cfg.stt.provider = _sections.default_stt_provider()
         agent_defaults = _sections.SectionReader(AgentConfig, {})
@@ -1122,9 +1123,13 @@ def build_config(
                     star_order=crew.read("star_order", _safe_int, lo=0, hi=STAR_ORDER_MAX),
                     # Strictly a bool, like ``starred``: a stray string reads as off.
                     dynamic_capabilities=crew.read("dynamic_capabilities", _safe_bool),
+                    # The owner's switch for conducting workers: a stray string
+                    # reads as off, the way every other per-Bot bool does.
+                    worker_conducts=crew.read("worker_conducts", _safe_bool),
                     # Hand-editable, and a safety switch: only a real bool is
                     # honoured; anything else reads as the default (off).
                     dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
+                    show_sessions_in_list=crew.read("show_sessions_in_list", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.
@@ -1380,6 +1385,7 @@ def build_config(
 
     cfg._base_unreadable = doc.base_unreadable
     cfg._overlay_unreadable = doc.overlay_unreadable
+    cfg._read_degraded_sections = frozenset(_degraded)
     return cfg
 
 
@@ -1473,6 +1479,16 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
             if carried is not None:
                 cfg.agent.default_agent = dispatch_kiro_agent(carried)
                 pending.add(MIGRATE_STAR_DEFAULT_TEMPLATE)
+
+        # Shared Slack access that predates ``verify_with_slack`` keeps its Slack
+        # check (see MIGRATE_SHARED_ACCESS_VERIFY). Decided on the BASE document;
+        # skipped where the overlay names the key, which then wins. In memory at
+        # once: the move only keeps the stricter check this load already ran with.
+        if _migration.shared_access_verify_due(
+            data, overlay=local_data
+        ) is not None and _migration.base_shared_access_verify_due(path):
+            cfg.slack.shared_access.verify_with_slack = True
+            pending.add(_migration.MIGRATE_SHARED_ACCESS_VERIFY)
 
         # One-shot launch migration for ``connections_ui`` (see the marker
         # constant's docstring). Decided on the BASE document, not the

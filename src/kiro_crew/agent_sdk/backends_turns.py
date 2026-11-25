@@ -745,8 +745,9 @@ ACP_BACKENDS_NATIVE_CHILD_CANCEL = frozenset({ACP_BACKEND_CLAUDE})
 # Backends whose ``tool_call_update`` carries a call's real title after a first
 # ``tool_call`` that named it before its input had streamed, so a Crew-spawned
 # subagent's Subagents card takes the refined title for that call's row, as the
-# dashboard's own tool row does (``SessionCapabilities.refines_tool_call_titles``,
-# read by ``subagent_manager.card_tool_titles``). claude is the member:
+# dashboard's own tool row does, and so does a channel turn's task card
+# (``SessionCapabilities.refines_tool_call_titles``, read by
+# ``subagent_manager.card_tool_titles`` and ``messaging.driver``). claude is the member:
 # claude-agent-acp reports each call first at the stream's start, with an empty
 # ``rawInput`` and the tool's generic title ("Terminal", "Edit", "Read File",
 # "Task"), and then as a ``tool_call_update`` with the call's ``title``, ``kind``

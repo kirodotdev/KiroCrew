@@ -201,14 +201,15 @@ def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
         )
     else:
         resolved = roster
-    # A server the operator said works on the project folder is never routed: a
+    # A server the operator kept one per chat is never routed: a
     # routed backend runs in one fixed directory, so it would act on the wrong one.
     cwd_use = _resolve_cwd_use(mcp_gateway_data)
     return [name for name in resolved if cwd_use.get(name) != _CWD_USES]
 
 
-#: ``mcp_gateway.cwd_use`` values: the operator's answer to "does this server
-#: work on the files of the project a chat runs in?". Absent means unanswered.
+#: ``mcp_gateway.cwd_use`` values: the operator's answer to "share this server
+#: across chats?". ``uses_cwd`` keeps one per chat because the server reads the
+#: folder it starts in; ``not_used`` shares it. Absent means unanswered.
 _CWD_USES = "uses_cwd"
 _CWD_NOT_USED = "not_used"
 _CWD_ANSWERS = frozenset({_CWD_USES, _CWD_NOT_USED})
@@ -788,8 +789,9 @@ class McpGatewayConfig:
         default_factory=dict,
         metadata=_meta(
             "Working Folder Answers",
-            "Per server, whether it works on the files of the project a chat runs "
-            "in: uses_cwd (it does) or not_used (it does not care which folder). "
+            "Per server, whether it reads the folder it starts in: uses_cwd (it "
+            "does, so each chat launches its own) or not_used (it can start in one "
+            "folder for all chats). "
             "A routed server runs in one fixed folder outside the project, shared "
             "by every chat, so MCP Management routes a server only after it is "
             "answered not_used, and a server answered uses_cwd is never routed. "
@@ -1153,6 +1155,83 @@ class InstancesConfig:
             "HTTPS base URL of the Kiro web service that lists, creates and connects your "
             "managed environments. Empty (the default): every call is refused and names "
             "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_start_url: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Sign-in Start URL",
+            "IAM Identity Center start URL whose Crew sign-in (Settings > Kiro account) the "
+            "managed-environment lane uses. Only that sign-in's token is sent to the service "
+            "endpoint. Signing in on this start URL turns off chat with the agent on this "
+            "computer while that sign-in is active. Empty (the default): the lane is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_profile_arn: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Kiro Profile",
+            "Kiro profile ARN pinned on the sign-in above, so that sign-in asks no control "
+            "plane for a profile, and sent with every call. Empty (the default): the lane "
+            "is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_ssh_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment SSH Region",
+            "AWS Region the Session Manager plugin is started in when ssh reaches a "
+            "managed environment. Empty (the default): a connect is refused and names "
+            "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Endpoint",
+            "HTTPS runtime endpoint the Crew on a new managed environment runs its engine "
+            "against. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_control_plane_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Control Plane",
+            "HTTPS control-plane endpoint for the engine of the Crew on a new managed "
+            "environment. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Region",
+            "Region the two engine endpoints above serve. Empty (the default): a launch is "
+            "refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_token_path: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Machine Token File",
+            "Absolute path, on the managed environment, of the machine token file its "
+            "image keeps fresh. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_env_drop: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Managed Environment Variables to Clear",
+            "Environment variable names the managed environment's image sets (its own "
+            "credentials or the machine token's variable) that are cleared before Crew "
+            "starts there. Empty by default.",
             tags=["remote-crew", "managed-environment"],
         ),
     )

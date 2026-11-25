@@ -95,7 +95,6 @@ thread_history_1
 apiKeyHelper
 initialPermissionMode
 permissionMode
-rate_limit_error
 supportsFastMode
 wslInheritsWindowsSettings
 

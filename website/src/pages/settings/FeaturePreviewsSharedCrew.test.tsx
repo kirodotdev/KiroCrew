@@ -286,7 +286,7 @@ describe('Connected computers on a shared Crew', () => {
     expect(computer).toHaveAttribute('aria-checked', 'false')
     expect(computer).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByText('Off on a shared Crew')).toBeInTheDocument()
-    expect(screen.getByText('Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.')).toBeInTheDocument()
+    expect(screen.getByText('Chats on this server can work in a folder on your own computer.')).toBeInTheDocument()
     fireEvent.click(computer)
     expect(localStorage.getItem(PREVIEW_CONNECTED_COMPUTERS)).toBe('1')
     expect(computer).toHaveAttribute('aria-checked', 'false')

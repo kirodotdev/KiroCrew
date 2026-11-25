@@ -139,8 +139,8 @@ export interface TranscriptRendererOptions {
   /** Open a directory in the host's side panel. Same #3300 blocker. */
   onFolderOpen?: (path: string) => void
   /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
-   *  Host-owned because it must close the find pane (which keeps the dock
-   *  unmounted while open) and rebind a background pane's slot to the active one
+   *  Host-owned because it must end the history search, as every tab opened
+   *  from the chat does, and rebind a background pane's slot to the active one
    *  before opening — neither reachable from the card. Absent (a side/embedded
    *  chat, a crew window) leaves the card's button inert, the same opt-in shape
    *  as the other host reveals above. */
@@ -695,8 +695,8 @@ export function createTranscriptRenderers(
         const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
         return ctx.row(
           <CrewmateMessage pos={pos}>
-            {/* Same cap as a crewmate bubble (72ch at the message font size). */}
-            <div className="max-w-[72ch]" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
+            {/* As wide as a crewmate bubble: the content column (--mc-content-width). */}
+            <div className="max-w-full" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
               <CardCornersContext.Provider value={crewmateCornerClass(pos)}>
                 <CardAuthorContext.Provider value={crewmate.label || crewmate.name}>
                   <ConversationCard message={m} slot={o.slot} shownAgainBelow={shownAgainBelow} />
@@ -806,6 +806,9 @@ export function createTranscriptRenderers(
               revealActions: o.revealActions,
               copyOnSelect: o.copyOnSelect,
               linkPreviews: o.linkPreviews,
+              // The heading inside the bubble names the same speaker as the
+              // group around it, not the product.
+              speakerName: crewmate.label || crewmate.name,
             })
             if (bubble === null) return null
             return ctx.row(

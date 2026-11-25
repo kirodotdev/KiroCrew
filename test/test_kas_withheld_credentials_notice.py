@@ -122,20 +122,16 @@ class TestTheProjectionRecordsWhatItWithheld:
         )
         return withheld
 
-    def test_a_remote_server_the_local_bridge_carries_is_not_recorded(self, tmp_path, monkeypatch):
-        """In a session the projection hands a streamable-HTTP server's headers to
-        the local bridge, which adds them on this machine, so the notice is recorded
-        after that step and must not claim the server starts without them."""
+    @pytest.mark.parametrize("transport", ["http", "sse"])
+    def test_a_remote_server_the_local_bridge_carries_is_not_recorded(
+        self, tmp_path, monkeypatch, transport
+    ):
+        """In a session the projection hands a remote server's headers to the local
+        bridge, which adds them on this machine, so the notice is recorded after that
+        step and must not claim the server starts without them."""
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        remote = {"type": "http", "url": "https://mcp.example/v1", "headers": {"X": "y"}}
+        remote = {"type": transport, "url": "https://mcp.example/v1", "headers": {"X": "y"}}
         assert self._collect_in_session(_servers(remote=remote)) == {}
-
-    def test_an_sse_server_the_bridge_cannot_carry_is_still_recorded(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        remote = {"type": "sse", "url": "https://mcp.example/sse", "headers": {"X": "y"}}
-        assert self._collect_in_session(_servers(remote=remote)) == {
-            "remote": ((), ("headers",), False)
-        }
 
     def test_a_server_that_lost_nothing_is_not_recorded(self):
         flags = {"command": "flags-mcp", "env": {"FEATURE_X_ENABLED": "true"}}
@@ -161,10 +157,10 @@ class TestTheProjectionRecordsWhatItWithheld:
 
     def test_build_kas_custom_agents_passes_the_collector_through(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        sse = {"type": "sse", "url": "https://mcp.example/sse", "headers": {"X": "y"}}
+        insecure = {"type": "http", "url": "http://mcp.example/v1"}
         withheld: WithheldOut = {}
-        build_kas_custom_agents(tmp_path, "a", _servers(sse=sse), withheld_out=withheld)
-        assert set(withheld) == {"sse"}
+        build_kas_custom_agents(tmp_path, "a", _servers(insecure=insecure), withheld_out=withheld)
+        assert set(withheld) == {"insecure"}
 
 
 class TestTheNotice:

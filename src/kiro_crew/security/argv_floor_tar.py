@@ -132,7 +132,7 @@ def _tar_archive_targets_self(operand: str) -> bool:
     if _glob_host_is_self(operand.strip(), host):  # read like a git remote host
         return True
     return _host_is_self(host, dns_fallback=False, match_globs=False) or _operand_targets_self(
-        t, host_position=True, dns=False, match_globs=False
+        t, host_position=True, dns=False, match_globs=False, file_operand=True
     )
 
 

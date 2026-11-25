@@ -239,6 +239,29 @@ def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
     slot._dismissed_hydrated = True
 
 
+def _restore_source_links_off(slot: "_ChatSlot", meta: Mapping[str, Any]) -> None:
+    """Take the session's chips-off switch from a READABLE metadata line.
+
+    For a binder that re-creates a slot and reads its line by hand instead of
+    through the codec's restore (the cron, channel and workflow binders). A truthy
+    value reads as on, as the codec's own reader takes it.
+    """
+    slot.source_links_off = bool(meta.get("source_links_off"))
+    slot._source_links_off_hydrated = True
+
+
+def _mark_source_links_off_unread(slot: "_ChatSlot") -> None:
+    """Mark a re-bound slot's chips-off switch as held only on disk.
+
+    The in-memory value may be a reused slot object's from another transcript, so
+    it is cleared. Until :func:`_restore_source_links_off` runs, the slot's saves
+    write the stored value back (``metadata_line.source_links_off_fold``), never
+    this one.
+    """
+    slot.source_links_off = False
+    slot._source_links_off_hydrated = False
+
+
 def _restored_mode(raw: object) -> str:
     """The mode a persisted slot comes back with, or "" for plain chat.
 

@@ -110,6 +110,7 @@ def build_message(
     conversation_reset: bool = False,
     tab_notices: list[Callable[[bool], None]] | None = None,
     include_channel_history: bool = True,
+    quick_prompts: bool = True,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -172,6 +173,9 @@ def build_message(
     only a thread parent does this: the parent is the one Slack text it was
     given, and the channel buffer is a different, wider read.
 
+    *quick_prompts* off sends a leading quick-prompt token as written: the
+    dashboard passes it for a chat option tap, whose label the model wrote.
+
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
     the caller. The essentials builder (and :meth:`build_session_context`,
@@ -188,7 +192,7 @@ def build_message(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew import session_head as _session_head
     from kiro_crew.agent_sdk import context_provider_of
-    from kiro_crew.essential_delivery import EssentialDelivery
+    from kiro_crew.essential_delivery import RULES_SLOT, EssentialDelivery
 
     # Before any blocking step: a build its cancelled turn left running on the
     # worker must not read after the session's next turn has.
@@ -196,7 +200,6 @@ def build_message(
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
-
     report_user_span = user_text_range is not None
     if user_text_range is None:
         user_text_range = (0, len(text))
@@ -255,6 +258,17 @@ def build_message(
         else ""
     )
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    # ``includeCrossSessionContext: false`` on the agent's spec drops the memory and
+    # lessons groups for every store-backed block this turn builds: the essentials,
+    # the session-start context, the post-compaction parts and the per-message
+    # lessons. The spec is the one the agent prompt is read from (the project, else
+    # the template directory, settled above), read once here. Only the project
+    # gates and ``build_session_context``, which names a parent's choice in
+    # [CONTEXT SCOPE], still take the caller's ``context_groups``.
+    keeps_stored = _inclusion._agent_includes_cross_session_context(
+        agent, project or template_dir, session_key
+    )
+    store_groups = _inclusion._spec_scoped_groups(keeps_stored, context_groups)
     hook_result = self.hooks.on_message(text)
 
     parts: list[str] = []
@@ -318,7 +332,7 @@ def build_message(
             template_dir=template_dir,
             workspace=workspace,
             blocks_reads=blocks_reads,
-            context_groups=context_groups,
+            context_groups=store_groups,
             native_documents=native_documents,
             native_envelope_out=_native_envelopes,
             execution_template=agent or "kirocrew",
@@ -404,9 +418,10 @@ def build_message(
                 project=project or template_dir,
                 mode=mode,
                 session_key=session_key,
-                is_cc=is_cc,
                 private_owner=bool(_private_owner),
                 session_start=not slim_resume,
+                provider_type=provider_type,
+                member_dispatch_mounted=member_dispatch_mounted,
             )
         )
         # Not when the harness holds this exact text as the agent's own prompt
@@ -424,7 +439,11 @@ def build_message(
             native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
         ):
             parts.append(_session_head.agent_prompt_block(block_prompt))
-        with ctx._prompt_build_embedding_deadline(bool(text), query=text):
+        # Recall ranks the user's own span, never the context a dispatcher put in
+        # front of it. Before any hook rewrite: the dashboard starts this same
+        # query's embed and memory reads ahead of the build, before hooks run.
+        _recall_query = _turn.recall_query(text, user_text_range)
+        with ctx._prompt_build_embedding_deadline(bool(text), query=_recall_query):
             session_ctx = self.build_session_context(
                 session_key,
                 agent=agent,
@@ -440,7 +459,7 @@ def build_message(
                 exclude_last_n=exclude_last_n,
                 model_window=model_window,
                 context_groups=context_groups,
-                query_text=text,
+                query_text=_recall_query,
                 conversation_reset=conversation_reset,
                 project=project,
                 # The desk argument, not the record's owner: the callee
@@ -451,6 +470,7 @@ def build_message(
                 steering_dirs=steering_dirs,
                 steering_off=steering_off,
                 _v2_essentials=_essentials,
+                _keeps_stored_context=keeps_stored,
                 member_dispatch_mounted=member_dispatch_mounted,
                 served_model=served_model,
                 native_documents=native_documents,
@@ -480,9 +500,10 @@ def build_message(
                 # Re-anchor the critical rules (UI output contracts): they sit
                 # deep in, and may be compacted out of, the restored transcript,
                 # and cost ~1.5K chars. Same variant and opt-out as session start.
+                # A re-injecting resume gets them from the post-compaction parts below.
                 _resume_rules = (
                     ctx._critical_rules_for(session_key, runtime_source)
-                    if ctx._agent_includes_crew_context(agent)
+                    if ctx._agent_includes_crew_context(agent) and not reinject_on_resume
                     else ""
                 )
                 # SLIM_RESUME leg of the member lifecycle (see the
@@ -536,7 +557,7 @@ def build_message(
                             project=project,
                             private_owner=bool(_private_owner),
                             blocks_reads=blocks_reads,
-                            context_groups=context_groups,
+                            context_groups=store_groups,
                             workspace=workspace,
                             memory_store=memory_store,
                             model_window=model_window,
@@ -568,10 +589,12 @@ def build_message(
                 # An empty group set means the spawning parent withheld memory,
                 # lessons and project, so the block holds only conduct; claiming
                 # "your memory" there makes the child look for content it lacks.
+                # The same holds for an agent whose spec opts out of memory and
+                # lessons (``includeCrossSessionContext: false``).
                 _opener = (
                     "This block holds the rules and runtime facts for this turn. "
                     "Use it to stay consistent but ONLY respond to the "
-                    if context_groups is not None and not context_groups
+                    if (context_groups is not None and not context_groups) or not keeps_stored
                     else "This is your memory, lessons, and conversation history from prior "
                     "sessions. Use it to stay consistent but ONLY respond to the "
                 )
@@ -688,7 +711,7 @@ def build_message(
                 private_owner=bool(_private_owner),
                 blocks_reads=blocks_reads,
                 minimal_context=minimal_context,
-                context_groups=context_groups,
+                context_groups=store_groups,
                 workspace=workspace,
                 memory_store=memory_store,
                 model_window=model_window,
@@ -927,13 +950,32 @@ def build_message(
         # a sub-agent with no project); its mapping only narrows the triggered
         # set, which, like scoped_skills, reads from *project* alone.
         template_root = project or template_dir
-        pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
-        if pinned is not None:
-            mapped = pinned
-        elif agent:
-            mapped = ctx.agent_skill_globs(agent, project_dir=template_root)
-        else:
-            mapped = []
+        mapped: list[str] = []
+        if triggered:
+            from kiro_crew.agent_discovery import SkillScopeResolutionError
+
+            try:
+                # Strict, as skill_search is: a scope that cannot be read
+                # admits no triggered skill rather than every one.
+                pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root, strict=True)
+                if pinned is not None:
+                    mapped = pinned
+                elif agent:
+                    # The session key names a Bot's worker's crewmate, whose
+                    # merged spec holds the worker's mapping.
+                    mapped = ctx.agent_skill_globs(
+                        agent,
+                        project_dir=template_root,
+                        strict=True,
+                        session_key=session_key or "",
+                    )
+            except SkillScopeResolutionError as exc:
+                logger.warning(
+                    "Triggered skills dropped: the skill scope of agent %r cannot be resolved: %s",
+                    agent,
+                    exc,
+                )
+                triggered = []
         if mapped:
             allowed = _mapped_trigger_keys(self.skills, project, mapped)
             triggered = [key for key in triggered if key in allowed]
@@ -1050,7 +1092,7 @@ def build_message(
             project=project,
             member=member,
             execution_context=execution_context,
-            context_groups=context_groups,
+            context_groups=store_groups,
         )
         if turn_lessons:
             parts.append(turn_lessons)
@@ -1124,7 +1166,9 @@ def build_message(
     # The current turn: a transform hook's output or the user's text, with quick
     # prompts expanded and forged boundaries scrubbed. Where the user's own text
     # lands is resolved there too, because only that step sees every transform.
-    _turn_neutralized, _user_bounds = _turn.user_turn(text, hook_result, user_text_range)
+    _turn_neutralized, _user_bounds = _turn.user_turn(
+        text, hook_result, user_text_range, quick_prompts=quick_prompts
+    )
     _turn_part_index = len(parts)
     if _user_bounds is not None:
         _user_part_index = len(parts)
@@ -1212,7 +1256,7 @@ def build_message(
                 context_provider.served_model,
                 mode,
                 blocks_reads,
-                None if context_groups is None else sorted(context_groups),
+                None if store_groups is None else sorted(store_groups),
                 minimal_context,
                 model_window,
                 ctx._agent_includes_crew_context(agent),
@@ -1223,11 +1267,10 @@ def build_message(
                 _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if native_documents else None
             ),
         )
-    elif (
+    if (
         delivery is not None
         and context_provider is not None
         and _rules_block
-        and not _private_owner
         # H6, ``is True``: only a provider that says so. One that does not say,
         # and any stand-in whose attributes answer truthy to everything, is
         # "not known" and keeps the block on every message.
@@ -1239,12 +1282,8 @@ def build_message(
         # this conversation has acknowledged it, and goes out again after
         # anything the delivery knows can drop it (a start, a clear, a
         # compaction, an agent switch, a cancel, a failed turn, another
-        # conversation). The delivery holds one envelope, so a member turn, whose
-        # essentials take it, keeps the block on every message.
-        # shortcut: a member turn whose essentials came out empty binds nothing,
-        # so a rules envelope an earlier turn with no owner had acknowledged on
-        # the same provider would still be taken out of it; upgrade with a
-        # second envelope slot in the delivery.
+        # conversation). It has its own slot, beside a member's essentials, so a
+        # member turn is sent it once per conversation too.
         try:
             delivery.bind(
                 _rules_block.translate(ctx._MULTIBYTE_TABLE),
@@ -1257,6 +1296,7 @@ def build_message(
                 # re-injection flag. The flag is also set for compactions the
                 # delivery did see, where it finds nothing left to void.
                 force=needs_reinjection,
+                slot=RULES_SLOT,
             )
         except Exception:  # noqa: BLE001 - a saving must never fail the build
             # Nothing was bound (the provider could not name its conversation),

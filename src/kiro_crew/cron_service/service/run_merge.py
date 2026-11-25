@@ -589,6 +589,7 @@ def _merge_terminal_state_locked(
         target.run_generation = run_generation
         target.last_status = last_status
         target.last_error = last_error
+        target.last_error_kind = ""
         target.last_run_ts = last_run_ts
         if parking:
             target.enabled = False

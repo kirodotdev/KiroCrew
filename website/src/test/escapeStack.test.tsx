@@ -6,6 +6,7 @@ import { LocalOverlayRoot } from '../components/overlayRoot'
 import { useEscapeLayer, type EscapeVerdict } from '../hooks/useEscapeLayer'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
+import { clickOptimize } from './optimizeRow'
 
 /**
  * The page-wide Escape stack (issue #25202). The first block pins the stack's
@@ -88,7 +89,7 @@ describe('Escape while the rich-text composer is locked for an optimize', () => 
   const startOptimize = async (index: number) => {
     const roots = await screen.findAllByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     act(() => { roots[index].focus() })
-    fireEvent.click(screen.getAllByRole('button', { name: 'Optimize prompt' })[index])
+    clickOptimize(index)
     await vi.waitFor(() => expect(roots[index].getAttribute('contenteditable')).toBe('false'))
   }
 

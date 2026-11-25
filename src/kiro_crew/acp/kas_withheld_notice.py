@@ -3,8 +3,8 @@
 KAS takes the agent spec over the ACP wire, so the projection
 (:func:`kiro_crew.acp.kas_agents._project_mcp_servers`) withholds every ``env``
 value it cannot prove is not a credential, and every ``headers`` block. A stdio
-server's env and a streamable-HTTP server's headers then reach it through Crew's
-local launcher, so what is left is a server that launcher did not carry. Every
+server's env and a remote server's headers then reach it through Crew's local
+launcher, so what is left is a server that launcher did not carry. Every
 such server keeps the projection's INFO log line, which names the field.
 
 The same notice names servers that will not run at all: in MCP registry mode,
@@ -18,7 +18,7 @@ For a server that does run, the chat gets a notice only when the user can fix it
 a stdio server Crew does not ship that lost env. Turning on Share for it in MCP
 Management hands it to the gateway, which starts it on this machine with its whole
 env. A server Share alone would not fix (a lost key the gateway does not forward),
-a remote server the bridge cannot carry (an ``sse`` one), and a server Crew or the
+a remote server whose headers the bridge did not carry, and a server Crew or the
 edition ships are left to the log line, so the chat never asks for a step its user
 cannot take there. That line names no config term: the server, the Share switch
 and where it is.

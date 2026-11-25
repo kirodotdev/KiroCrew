@@ -3,13 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearMountedMemberThreadSlot, setMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
 import { store } from '../../store'
 import { setActiveSlot } from '../../store/chatSlice'
-import { markSlotUnread, sseSlots } from '../../store/dashboardSlice'
+import { markSlotRead, markSlotUnread, sseSlots } from '../../store/dashboardSlice'
 import { relayPaneOpened, setActiveId } from '../../store/instancesSlice'
 import type { ChatSlot } from '../../types'
 import { emitComposeIntent } from '../../lib/composeIntent'
 import { _resetSlotReadRelayForTest, emitSlotRead } from '../../lib/slotReadRelay'
 import { attachFocusRelay, attendArrival, isSlotOnScreen, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, endSplitPaneFocus, focusedSlotForCurrentSurface } from './attention'
 import { noteRouteChange } from '../../lib/routeChange'
+import { holdChatTranscriptMount } from '../../lib/mountedChatTranscript'
+import { clearViewedThreadSlot, setViewedThreadSlot } from '../../lib/viewedThread'
 import type { SocketConnection } from './connection'
 
 describe('warm task brief focus signal', () => {
@@ -384,6 +386,72 @@ describe('compose intent re-arms the resume prefetch', () => {
     const hiddenBefore = sendIfOpen.mock.calls.length
     act(() => emitComposeIntent('chat-a'))
     expect(sendIfOpen).toHaveBeenCalledTimes(hiddenBefore)
+  })
+})
+
+describe('the retained active slot off the chat routes', () => {
+  const arrive = (slot: string) => {
+    const offScreen = vi.fn((s: string) => { store.dispatch(markSlotUnread({ slot: s })) })
+    attendArrival(slot, '2026-11-25T10:28:00Z', false, offScreen)
+    return offScreen
+  }
+  const atPath = (path: string, run: () => void) => {
+    const oldPath = window.location.pathname
+    window.history.pushState({}, '', path)
+    try { run() } finally {
+      window.history.pushState({}, '', oldPath || '/')
+      store.dispatch(setActiveSlot(null))
+      store.dispatch(markSlotRead('slot-kept'))
+    }
+  }
+
+  it('badges a reply on an app page with no transcript mounted', () => {
+    atPath('/apps/notes', () => {
+      store.dispatch(setActiveSlot('slot-kept'))
+      expect(isSlotOnScreen('slot-kept')).toBe(false)
+      expect(arrive('slot-kept')).toHaveBeenCalledWith('slot-kept')
+      expect(store.getState().dashboard.unreadSlots).toContain('slot-kept')
+    })
+  })
+
+  it('stays on screen on an app page while a ChatPage renders it', () => {
+    atPath('/apps/notes', () => {
+      store.dispatch(setActiveSlot('slot-kept'))
+      const release = holdChatTranscriptMount()
+      try {
+        expect(isSlotOnScreen('slot-kept')).toBe(true)
+        expect(arrive('slot-kept')).not.toHaveBeenCalled()
+      } finally { release() }
+      expect(isSlotOnScreen('slot-kept')).toBe(false)
+    })
+  })
+
+  it('stays on screen on a chat route with no transcript counted', () => {
+    atPath('/chat', () => {
+      store.dispatch(setActiveSlot('slot-kept'))
+      expect(isSlotOnScreen('slot-kept')).toBe(true)
+      expect(arrive('slot-kept')).not.toHaveBeenCalled()
+    })
+  })
+
+  it('keeps a viewed thread on screen on any route', () => {
+    atPath('/members', () => {
+      setViewedThreadSlot('slot-thread')
+      try { expect(isSlotOnScreen('slot-thread')).toBe(true) } finally { clearViewedThreadSlot('slot-thread') }
+    })
+  })
+
+  it('releases a transcript count once, however often release runs', () => {
+    atPath('/apps/notes', () => {
+      store.dispatch(setActiveSlot('slot-kept'))
+      const first = holdChatTranscriptMount()
+      const second = holdChatTranscriptMount()
+      first()
+      first()
+      expect(isSlotOnScreen('slot-kept')).toBe(true)
+      second()
+      expect(isSlotOnScreen('slot-kept')).toBe(false)
+    })
   })
 })
 

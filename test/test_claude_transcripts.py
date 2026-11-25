@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -160,6 +161,44 @@ def test_a_refused_or_failed_cleanup_logs_no_session_id_or_cwd(
     assert _delete(SID, store["work_dir"]) is False
     assert "failed to delete the session directory (Permission denied)" in caplog.text
     assert "refusing the file-history entry" in caplog.text
+    assert SID not in caplog.text
+    assert _project_name(store["work_dir"]) not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "kept",
+    [
+        pytest.param((), id="nothing_there"),
+        pytest.param(("transcript", "session directory", "file-history entry"), id="all_three"),
+        pytest.param(("file-history entry",), id="file_history_only"),
+    ],
+)
+def test_a_cleanup_that_found_nothing_says_so_in_one_record(
+    store, caplog: pytest.LogCaptureFixture, kept: tuple[str, ...]
+) -> None:
+    """A miss and a real delete both answer done; only a miss logs ``nothing to delete``."""
+    seeded = {
+        "transcript": store["project"] / f"{SID}.jsonl",
+        "session directory": store["project"] / SID,
+        "file-history entry": store["config"] / "file-history" / SID,
+    }
+    for label, path in seeded.items():
+        if label in kept:
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    caplog.set_level("DEBUG", logger="kiro_crew.agent_sdk.claude_transcripts")
+    assert _delete(SID, store["work_dir"]) is True
+    assert _seeded_gone(store)
+    misses = [
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.agent_sdk.claude_transcripts"
+        and r.getMessage() == "claude transcript cleanup: nothing to delete"
+    ]
+    assert len(misses) == (0 if kept else 1)
     assert SID not in caplog.text
     assert _project_name(store["work_dir"]) not in caplog.text
 

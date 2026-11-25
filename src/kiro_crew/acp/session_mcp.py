@@ -89,8 +89,12 @@ from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
-from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
-from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
+from kiro_crew.acp.session_mcp_crewmate import (
+    _crewmate_conductor_spec,
+    _crewmate_worker_spec,
+    crewmate_worker_switch_off_spec,
+)
+from kiro_crew.acp.session_mcp_env_refs import expand_entry_env, with_app_policy_markers
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
@@ -106,6 +110,8 @@ from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-export
     _named_path,
     _unreadable_reason,
 )
+from kiro_crew.acp.session_mcp_spec_check import refuse_contested_agent_spec  # noqa: F401
+from kiro_crew.acp.session_mcp_switch_offs import _project_restrictions, _with_restrictions
 from kiro_crew.acp.session_mcp_tools_allowlist import ToolsAllowlist, _tools_allowlist
 from kiro_crew.agent import (
     _mcp_registry_mode,
@@ -547,61 +553,6 @@ def _project_mcp_trusted(work_dir: str | Path | None) -> bool:
     return False
 
 
-def _project_restrictions(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """The switch-off keys of a project spec's ``mcpServers``, every other key withheld.
-
-    An allow list, not a deny list: ``disabledTools`` is kept, and ``disabled``
-    only as ``True`` when :func:`mcp_entry_is_muted` reads the entry as muted.
-    Everything else -- ``command``, ``args``, ``type``, ``env``, ``url``,
-    ``headers``, ``cwd``, ``timeout``, ``autoApprove`` and any key added later --
-    either launches a server or grants something, so none of it survives. An
-    entry left with neither key is dropped, and one that keeps a key carries no
-    ``command`` or ``url``, so :func:`acp_server_element` never mounts it.
-    """
-    raw = spec.get("mcpServers")
-    out: dict[str, dict[str, Any]] = {}
-    if not isinstance(raw, dict):
-        return out
-    for name, entry in raw.items():
-        if not isinstance(entry, dict):
-            continue
-        kept: dict[str, Any] = {}
-        tools = entry.get("disabledTools")
-        if isinstance(tools, list):
-            kept["disabledTools"] = list(tools)
-        if "disabled" in entry and mcp_entry_is_muted(entry):
-            kept["disabled"] = True
-        if kept:
-            out[str(name)] = kept
-    return out
-
-
-def _with_restrictions(
-    base: dict[str, Any], restrictions: dict[str, dict[str, Any]]
-) -> dict[str, Any]:
-    """*base* with *restrictions* layered on: tool lists joined, a mute wins.
-
-    Only ever narrows *base*. ``restrictions`` carries ``disabled`` solely as
-    ``True``, so a project entry cannot unmute a server *base* muted, and a name
-    *base* does not declare gains a switch-off-only entry that nothing mounts.
-    """
-    if not restrictions:
-        return base
-    raw = base.get("mcpServers")
-    servers: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
-    for name, kept in restrictions.items():
-        own = servers.get(name)
-        entry: dict[str, Any] = dict(own) if isinstance(own, dict) else {}
-        tools = kept.get("disabledTools")
-        if isinstance(tools, list):
-            prior = entry.get("disabledTools")
-            entry["disabledTools"] = [*(prior if isinstance(prior, list) else []), *tools]
-        if kept.get("disabled") is True:
-            entry["disabled"] = True
-        servers[name] = entry
-    return {**base, "mcpServers": servers}
-
-
 def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     """The user-level spec for *agent*, or ``None`` when absent, ambiguous or unreadable."""
     try:
@@ -633,44 +584,8 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
 
 
-def refuse_contested_agent_spec(agent: str | None) -> None:
-    """Refuse a start when differing user-level specs declare *agent*. Blocking.
-
-    :func:`_user_agent_spec` answers such a contest with ``None``, so a host that
-    reads its servers from here would start on Crew's control plane alone. This is
-    the one start check for every host that does not resolve the spec itself
-    (kiro-cli's native projection and KAS already refuse): it asks the resolver KAS
-    starts from, :func:`~kiro_crew.agent_discovery.declared_spec_claim`, and lets
-    its :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` propagate,
-    a pin that names none of the claimants included. That message names every
-    file and the pin command, and the start's caller wraps it so
-    ``ambiguity_meta`` finds it on the cause chain.
-
-    No refusal, the start goes on as before, for: one file, identical copies, a
-    pin that picks a claimant, no file at all, or a directory that cannot be read.
-    A checkout spec for *agent* is no exemption: a mirrored session never lets an
-    untrusted checkout pick its servers (:func:`_project_mcp_trusted`), so it still
-    reads the user level, and the contest would still drop its servers.
-    """
-    from kiro_crew.agent import is_registered_agent_name, kiro_agents_dir_path
-    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
-    from kiro_crew.config.paths import spec_dir_for
-
-    if not agent or not is_registered_agent_name(agent):
-        return
-    agents_dir = spec_dir_for(agent, kiro_agents_dir_path())
-    try:
-        declared_spec_claim(agents_dir, agent, operation="session_start_spec_check", source="acp")
-    except AmbiguousAgentSpecError as exc:
-        # No claimant on disk is the "no agent file" case, which is not refused here.
-        if exc.paths:
-            raise
-    except OSError:
-        return
-
-
 def _session_spec_and_snapshot_for(
-    agent: str, work_dir: str | Path | None = None
+    agent: str, work_dir: str | Path | None = None, *, default_crew_servers: bool = False
 ) -> tuple[dict[str, Any] | None, Any]:
     """:func:`_agent_spec_and_snapshot_for` as a mirrored session's array consumes it.
 
@@ -678,8 +593,11 @@ def _session_spec_and_snapshot_for(
     read that applies :func:`_project_mcp_trusted` to them. Crew-fired spec hooks
     apply the same verdict through :func:`trusted_project_agent_spec`; the
     unresolved-ref diagnostic on every host keeps the plain resolution.
+    *default_crew_servers* is :func:`session_mcp_projection`'s.
     """
-    spec, snapshot = _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
+    spec, snapshot = _agent_spec_and_snapshot_for(
+        agent, work_dir, mirrored_session=True, crew_defaults=default_crew_servers
+    )
     # The one read every array host's servers come from, so a template Crew does
     # not own gets its approved additions merged here, at spawn, and never in its
     # file (``template_mcp_additions.merge_at_spawn``). A derived or Crew-owned spec
@@ -688,7 +606,11 @@ def _session_spec_and_snapshot_for(
 
 
 def _agent_spec_and_snapshot_for(
-    agent: str, work_dir: str | Path | None = None, *, mirrored_session: bool = False
+    agent: str,
+    work_dir: str | Path | None = None,
+    *,
+    mirrored_session: bool = False,
+    crew_defaults: bool = False,
 ) -> tuple[dict[str, Any] | None, Any]:
     """The spec for *agent* AND the ``DerivedSpecSnapshot`` it was verified against.
 
@@ -715,7 +637,10 @@ def _agent_spec_and_snapshot_for(
     so its ``tools`` allowlist, its restrictions and every other field still apply
     and no project server launches. The verdict is taken inside this one read: a
     second scan of the checkout would let a spec that appears between the two
-    reach the array unchecked.
+    reach the array unchecked. *crew_defaults* gives the user-level spec Crew's
+    default servers (``default_crew_servers.with_default_crew_servers_in_array``)
+    before those switch-off keys are layered on, as KAS adds them; a spec only the
+    checkout declares gets none.
 
     Materializes first: a source checkout that skipped setup has no spec on disk
     at all, and the claude spawn path -- unlike kiro-cli's ``--agent`` one -- has
@@ -756,21 +681,29 @@ def _agent_spec_and_snapshot_for(
         # agent anyway: the gate REFUSES a checkout that declares one.
         return snapshot.spec, snapshot
     project = _project_spec_path_for(agent, work_dir)
+    checkout = None
     if project is not None:
-        spec = _read_agent_spec(project, operation="session_mcp_project_agent", source="unknown")
-        if not mirrored_session or spec is None or _project_mcp_trusted(work_dir):
-            return spec, None
+        checkout = _read_agent_spec(
+            project, operation="session_mcp_project_agent", source="unknown"
+        )
+        if not mirrored_session or checkout is None or _project_mcp_trusted(work_dir):
+            return checkout, None
         logger.info(
             "session MCP: the project spec for agent %r is not trusted to choose MCP"
             " servers; only the switch-off keys of its mcpServers are kept",
             agent,
         )
-        restrictions = _project_restrictions(spec)
-        user = _user_agent_spec(agent)
-        if user is not None:
-            return _with_restrictions(user, restrictions), None
-        return {**spec, "mcpServers": restrictions}, None
-    return _user_agent_spec(agent), None
+    user = _user_agent_spec(agent)
+    if crew_defaults:
+        from kiro_crew.acp.default_crew_servers import with_default_crew_servers_in_array
+
+        user = with_default_crew_servers_in_array(agent, user)
+    if checkout is None:
+        return user, None
+    restrictions = _project_restrictions(checkout)
+    if user is not None:
+        return _with_restrictions(user, restrictions), None
+    return {**checkout, "mcpServers": restrictions}, None
 
 
 def agent_spec_snapshot(
@@ -924,9 +857,12 @@ def session_mcp_disabled_servers(spec: Any, settings: Any) -> frozenset[str]:
 
 
 def session_mcp_server_is_disabled(
-    name: str, agent: str | None, *, work_dir: str | Path | None = None
+    name: str, agent: str | None, *, work_dir: str | Path | None = None, session_key: str = ""
 ) -> bool:
     """Whether *name* is switched off WHOLE for a session running as *agent*.
+
+    *session_key* names the session, so a crewmate's worker is answered from the spec
+    built for it, its Bot's file included (``crewmate_worker_switch_off_spec``).
 
     The reading form of :func:`session_mcp_disabled_servers`, for a caller that holds
     no parse of its own to pass in. ``AcpRuntime`` is that caller: it composes the
@@ -947,6 +883,7 @@ def session_mcp_server_is_disabled(
     contract :func:`session_mcp_disabled_tools` keeps.
     """
     spec = _agent_spec_for(agent, work_dir) if agent else None
+    spec = crewmate_worker_switch_off_spec(agent, spec, session_key)
     return name in session_mcp_disabled_servers(spec, _global_settings())
 
 
@@ -993,6 +930,8 @@ class SessionMcpProjection(NamedTuple):
     disabled_servers: frozenset[str]
     #: The ``tools`` allowlist the translated half was filtered by, so a caller
     #: appending elements of its own (pooled stubs) can hold them to the same one.
+    #: Its ``muted`` adds the servers the agent's own exclusions withhold whole, kept
+    #: out of ``disabled_servers``, which KAS's member paths read too.
     allowlist: ToolsAllowlist
     #: The ``agent.DerivedSpecSnapshot`` the spec above was verified against, or
     #: ``None`` for an agent that mirrors nothing. The array IS where an array-backed
@@ -1020,8 +959,15 @@ def session_mcp_projection(
     spec_policy_honoured: bool = False,
     worker_mcp_tool_limits_honoured: bool = False,
     worker_native_tool_limits_honoured: bool = False,
+    default_crew_servers: bool = False,
+    session_control_mounted: bool | None = None,
+    bot_app_tools_carried: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
+
+    *default_crew_servers* (a mirror in ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY``)
+    adds Crew's own servers to a custom agent's user-level spec, inside the one read
+    (:func:`_agent_spec_and_snapshot_for`).
 
     A backend that translates the spec, withholds part of it on the strength of the
     spec, and refuses individual calls on the strength of the spec must derive all
@@ -1039,24 +985,50 @@ def session_mcp_projection(
     a spec that appears between this read and a helper's cannot be translated by
     one helper and ignored by another.
 
+    *session_control_mounted* is whether the start this projection is for mounts
+    session control, for a crewmate's worker whose conducting kit must follow that
+    mount (``mate_worker.worker_session_spec``'s *mounted*); ``None`` reads the switch.
+
     Blocking (parses the spec and the global settings file once each), so callers
     run it off the event loop.
     """
-    spec, snapshot = _session_spec_and_snapshot_for(agent, work_dir) if agent else (None, None)
+    own_spec, snapshot = (
+        _session_spec_and_snapshot_for(agent, work_dir, default_crew_servers=default_crew_servers)
+        if agent
+        else (None, None)
+    )
     spec = _crewmate_worker_spec(
         agent,
-        spec,
+        own_spec,
         session_key,
         tool_limits_honoured=worker_tool_limits_honoured,
         spec_policy_honoured=spec_policy_honoured,
         mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
         native_tool_limits_honoured=worker_native_tool_limits_honoured,
+        mounted=session_control_mounted,
     )
+    # A Bot's own chat gets its app servers only on a host that carries a per-session
+    # spec (``ACP_BACKENDS_MATE_WORKER_KIT``, the caller's *bot_app_tools_carried*).
+    if bot_app_tools_carried:
+        spec = _crewmate_conductor_spec(agent, spec, session_key)
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings
     )
     disabled_servers = session_mcp_disabled_servers(spec, settings)
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    # The agent's own whole-server exclusions, stubs included. Judged before a crewmate
+    # worker's merge: the worker's limits keep their own path (session_mcp_crewmate).
+    declared = own_spec.get("mcpServers") if isinstance(own_spec, dict) else None
+    withheld = disabled_servers | withheld_whole(
+        own_spec,
+        (
+            *(declared if isinstance(declared, dict) else ()),
+            *CONTROL_PLANE_SERVERS,
+            *stub_server_names,
+        ),
+    )
     spec_tools = spec.get("tools") if isinstance(spec, dict) else None
     return SessionMcpProjection(
         servers=session_mcp_servers(
@@ -1064,12 +1036,12 @@ def session_mcp_projection(
             stub_server_names=stub_server_names,
             work_dir=work_dir,
             spec=spec,
-            muted=disabled_servers,
+            muted=withheld,
         ),
         restricted=session_mcp_restricted_servers(disabled_tools),
         disabled_tools=disabled_tools,
         disabled_servers=disabled_servers,
-        allowlist=_tools_allowlist(spec)._replace(muted=disabled_servers),
+        allowlist=_tools_allowlist(spec)._replace(muted=withheld),
         derived_spec_snapshot=snapshot,
         zero_tools=isinstance(spec_tools, list) and not spec_tools,
         agent_spec=spec,
@@ -1089,7 +1061,8 @@ def session_mcp_servers(
     A server switched off whole (*muted*, :func:`session_mcp_disabled_servers`) is
     never in the array: every element in it is a process the adapter launches, so a
     mute that only labelled the entry would still launch it. Not supplied, the set
-    is read from this call's spec and the global settings file.
+    is read from this call's spec and the global settings file, plus each server the
+    spec's own exclusions withhold whole (``default_crew_servers.withheld_whole``).
 
     Called only for a backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY``; every other
     harness reads the same spec itself and gets an empty array.
@@ -1209,15 +1182,19 @@ def session_mcp_servers(
         servers = {n: e for n, e in servers.items() if allow.grants(n)}
 
     if isinstance(muted, _Unread):
-        muted = session_mcp_disabled_servers(spec, _global_settings())
+        from kiro_crew.acp.default_crew_servers import withheld_whole
+
+        muted = session_mcp_disabled_servers(spec, _global_settings()) | withheld_whole(
+            spec, servers
+        )
     for name in sorted(set(servers) & {str(m) for m in muted}):
         logger.info("session MCP: withholding server %r -- it is switched off whole", name)
         servers.pop(name)
 
     out: list[dict[str, Any]] = []
-    for name in sorted(servers):
+    for name, entry in sorted(with_app_policy_markers(servers).items()):
         # The harness starts the element as written; kiro-cli parity (session_mcp_env_refs).
-        element = acp_server_element(name, expand_entry_env(name, servers[name]))
+        element = acp_server_element(name, expand_entry_env(name, entry))
         if element is not None:
             out.append(element)
     return out

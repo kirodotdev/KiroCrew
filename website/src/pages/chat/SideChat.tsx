@@ -31,6 +31,8 @@ import type { ChatMessage } from '../../types'
 import { searchableText } from '../../utils/searchableText'
 
 import { i18nT } from '../../i18n/t'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from './shared-crew/MessageByline'
 import { fmtNumber } from '../../i18n/format'
 const MAX_QUESTION_BYTES = 32_768
 // Max auto-grow height (px) for the side-question input before it scrolls.
@@ -249,6 +251,16 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
   // Stage exactly what the transcript renders: hidden widget bodies and protocol
   // markers stay out of the composer, trailing whitespace is removed, and leading
   // indentation remains intact for whitespace-sensitive Markdown.
+  // The transcript's one live region, the same decision the main chat makes:
+  // a side answer is spoken once when it lands, and the side question when it
+  // is sent. The shared scroller is not a live region, so without this a side
+  // answer would arrive in silence. Only the reader and the agent write a side
+  // conversation, so its first rows are its baseline.
+  const sideApprovals = useMemo(() => pendingApprovalsOf(transcript), [transcript])
+  const sideUserSpeaker = useUserRowSpeaker(transcript[transcript.length - 1]?.meta ?? undefined, slot, transcript[transcript.length - 1]?.content)
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    announcementTail(transcript), isBusy, undefined, `side:${slot}`, sideApprovals, transcript.length, sideUserSpeaker, transcript.length > 0,
+  )
   const renderedLastAnswer = transcript[lastIdx]?.role === 'assistant'
     ? searchableText(transcript[lastIdx])
     : ''
@@ -309,8 +321,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
   // key, so a side upload holds only the side Send. Finished paths are staged
   // on the slot's side draft beside the text (`stagedFiles`).
   const {
-    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadCount, uploadMutation,
-    cancelUpload, uploadFiles, dropTargetProps, uploadKey,
+    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadMutation,
+    uploadFiles, dropTargetProps, uploadKey,
   } = useSideChatUploads(slot)
   const onDraftChange = useCallback((next: string) => { writeSideChatDraft(slot, next); setLengthHint(null) }, [slot])
   // The collapsed paste blocks behind the `[ Paste #N · M lines ]` tokens in
@@ -961,7 +973,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
     // queued one is a card, so the server frame places both.
     const steer = isBusy && steerRequested
     sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null, ...(blocks.length || files.length ? { display: typed, pastes: blocks, files } : {}) })
-  }, [draft, pasteBlocks, stagedFiles, slot, sendMutation, isBusy, exceedsByteLimit])
+    announceSent(q)
+  }, [draft, pasteBlocks, stagedFiles, slot, sendMutation, isBusy, exceedsByteLimit, announceSent])
 
   const displayError = sendStatus?.error ?? localError
 
@@ -1041,6 +1054,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
         onArtifactOpen={onArtifactOpen}
         transcript={{
           sessionId: `side:${slot}`,
+          announcement,
           scrollerStyle: { paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8 },
           aboveRows: messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
@@ -1187,8 +1201,6 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
             promptStash={false}
             connected={connected}
             onUploadFiles={uploadFiles}
-            onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
-            uploadCount={uploadCount}
             uploadSlot={uploadKey}
             pendingFiles={stagedFiles}
             onRemoveFile={path => { writeSideChatFiles(slot, stagedFiles.filter(f => f !== path)) }}

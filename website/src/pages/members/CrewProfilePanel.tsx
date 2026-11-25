@@ -9,6 +9,7 @@ import Tablist, { type TablistTab } from '../../components/Tablist'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
 import CrewScheduleList from './CrewScheduleList'
+import CrewHeldLimits from './CrewHeldLimits'
 // Loaded on first open, so the export view stays out of the profile card's chunk.
 const CrewExportView = lazy(() => import('./CrewExportView'))
 import { cn } from '../../lib/utils'
@@ -194,6 +195,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   // The guide's reveal scope for the Profile tab: a `ui.show` step that
   // selects it completes the moment the tab is current.
   useGuideRevealScope('members.profile-tab', tab === 'profile')
+  // And for the Sessions tab, where the bot's "show in my Sessions" switch sits.
+  useGuideRevealScope('members.sessions-tab', tab === 'sessions')
   const [pushed, setPushed] = useState<Pushed | null>(null)
   // The tab-page stack and one host per level. `tabPagesRef` mirrors the stack
   // for the push callbacks, which decide "new level or retitle" synchronously.
@@ -492,8 +495,10 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               // find_ui locations: Schedules and Goals are where a mate shows
               // the user what wakes it and what it is after; the Profile tab
               // is also the step a guide to the Settings row (which lives on
-              // it) selects first.
+              // it) selects first, and the Sessions tab the step to the
+              // switch that lists this bot's sessions in the user's own list.
               segments={[
+                { key: 'sessions', label: t('pages.membersPage.profile_sessions_tab'), ...uiLocation('members.sessions-tab') },
                 { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
                 { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
                 { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
@@ -541,6 +546,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     <p className="text-[13px] text-muted">{t('pages.membersPage.profile_no_description')}</p>
                   ) : null}
                 </section>
+
+                <CrewHeldLimits member={p.member} schedules={p.schedules} schedulesLoading={p.schedulesLoading} schedulesError={p.schedulesError} />
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />

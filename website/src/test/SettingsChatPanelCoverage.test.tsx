@@ -33,6 +33,7 @@ const BASE_DASH = {
   quick_send: false,
   session_grid: false,
   tail_fork_enabled: false,
+  fork_inherits_pin: true,
   link_previews: false,
   mcp_app_panel: false,
   folder_suggestions_enabled: true,
@@ -798,6 +799,7 @@ describe('ChatPanel — Sessions', () => {
   it.each([
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],
+    ['Pin forks of pinned sessions', 'fork_inherits_pin', false],
     ['Restore Sessions', 'restore_sessions', true],
   ])('persists %s through the dashboard config', async (label, key, expected) => {
     wrap('sessions')
@@ -1383,6 +1385,32 @@ describe('ChatPanel — per-role reasoning effort', () => {
       expect(patchConfigMock).toHaveBeenCalledWith('agent.role_efforts.background', 'low')
     )
   })
+})
+
+describe('ChatPanel — Optimize prompt model and effort', () => {
+  it.each([
+    ['Optimize Prompt Model', 'claude-opus-4.8', 'agent.role_models.optimizer', 'claude-opus-4.8'],
+    ['Optimize Prompt Effort', 'High', 'agent.role_efforts.optimizer', 'high'],
+  ])('%s PATCHes its own config path', async (label, option, path, value) => {
+    // A reasoning-capable Background model, so the effort row is live unset.
+    seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+    wrap('composer')
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    await openSelect(label)
+    fireEvent.click(await screen.findByRole('option', { name: option }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(path, value))
+  })
+
+  it.each([['Optimize Prompt Model'], ['Optimize Prompt Effort']])(
+    '%s labels its unset value Same as Background',
+    async label => {
+      seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+      wrap('composer')
+      const opts = await openSelect(label)
+      expect(opts[0].textContent).toBe('Same as Background')
+      expect(screen.getByRole('combobox', { name: label })).toHaveTextContent('Same as Background')
+    }
+  )
 })
 
 describe('ChatPanel — About You and Power', () => {

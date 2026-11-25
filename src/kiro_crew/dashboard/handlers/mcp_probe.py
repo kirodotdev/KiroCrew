@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from aiohttp import web
 
@@ -48,9 +48,6 @@ from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.sel import sel
 from kiro_crew.session import process_shutdown_requested
 from kiro_crew.user_json import loads_mcp_config
-
-if TYPE_CHECKING:
-    from kiro_crew.session import SessionManager
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -87,11 +84,18 @@ def _quarantine_verdicts(rows: list[dict[str, Any]]) -> list[tuple[str, str, str
     the count: no handshake was attempted, so there is no outcome either way.
     This is the same rule that excludes ``needs_auth`` -- only a status that
     actually reports a handshake attempt may move the counter.
+
+    A ``refused`` row is dropped too. The server started and answered the
+    handshake with an error, such as an upstream sign-in that expired. The
+    quarantine exists to stop re-spawning a server that wedges, and this one
+    exits at once; counting it left a server excluded after its user signed in
+    again, since an excluded server is never probed back to ``ok``. Its row still
+    shows the error, and the next pass re-probes it.
     """
     return [
         (str(r.get("name") or ""), str(r.get("status") or ""), str(r.get("error") or ""))
         for r in rows
-        if str(r.get("name") or "") and str(r.get("probeMode") or "") != "declared"
+        if str(r.get("name") or "") and str(r.get("probeMode") or "") not in ("declared", "refused")
     ]
 
 
@@ -107,7 +111,7 @@ def _arm_reprobe(request: web.Request) -> None:
     actually prevents a second concurrent probe.
     """
     state: DashboardState = request.app["state"]
-    task = asyncio.create_task(_bg_mcp_probe(state.sessions))
+    task = asyncio.create_task(_bg_mcp_probe(state))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
@@ -130,10 +134,10 @@ def _edited_since_probe(servers: list[McpServerInfo]) -> dict[str, str]:
     not mark the edit handled by a probe that read the config before it.
 
     Keyed on the CACHED identity, so each edit arms at most once. Some rows are
-    never re-probed by ``probe_all`` (a quarantined server is left out of the
-    spawn set), so their entry stays mismatched indefinitely; comparing against
-    the current config instead would re-arm a full fan-out on every request for
-    as long as that lasts.
+    never re-probed by ``probe_all`` (one whose env names a ``secret://`` value is
+    refused before any spawn and never cached), so their entry stays mismatched
+    indefinitely; comparing against the current config instead would re-arm a
+    full fan-out on every request for as long as that lasts.
     """
     live = {s.name for s in servers if not s.disabled}
     for name in [n for n in _mcp_reprobe_armed_for if n not in live]:
@@ -174,7 +178,7 @@ def _probe_view() -> tuple[dict[str, bool], frozenset[str]]:
     from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 
     servers = list_servers()
-    held = _spawn_excluded()
+    held = _spawn_excluded(servers)
     probeable = frozenset(
         s.name
         for s in servers
@@ -244,35 +248,52 @@ def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
 
 
 def _annotate_agent_drops(rows: list[dict[str, Any]]) -> None:
-    """Stamp ``agentDropped`` onto rows the latest default-agent rebuild left out.
+    """Stamp what the latest default-agent rebuild left out onto its rows.
 
+    ``agentDropped`` on a server left out because its program was not found.
     Recorded keys may be raw spec names while rows use canonical aliases.
     Exact-name matches win over aliases; cached notes are refreshed each time.
+    ``ownEntryUnused`` on an edition server's row whose name the user's own entry
+    also declares for another server, which the agent therefore does not run.
+    A row the user switched off gets neither note: the record may predate the switch,
+    because a toggle runs no rebuild.
     """
-    from kiro_crew.mcp_dropped_servers import load_dropped
+    from kiro_crew.mcp_dropped_servers import load_dropped, load_unused_own
     from kiro_crew.mcp_utils import mcp_server_alias
 
     drops = load_dropped()
     aliased_drops = {mcp_server_alias(key): drop for key, drop in drops.items()}
+    unused = load_unused_own()
+    aliased_unused = {mcp_server_alias(key): rec for key, rec in unused.items()}
     for row in rows:
         row.pop("agentDropped", None)
+        row.pop("ownEntryUnused", None)
         name = row.get("name")
-        if not isinstance(name, str):
+        if not isinstance(name, str) or row.get("enabled") is False:
             continue
         drop = drops.get(name) or aliased_drops.get(mcp_server_alias(name))
         if drop is not None:
             row["agentDropped"] = drop
+        own = unused.get(name) or aliased_unused.get(mcp_server_alias(name))
+        if own is not None:
+            row["ownEntryUnused"] = own
 
 
-def _record_probe_verdicts(rows: list[dict[str, Any]]) -> None:
-    """Filter probe rows to eligible servers and fold them into the store.
+def _record_probe_verdicts(rows: list[dict[str, Any]], servers: list[McpServerInfo]) -> None:
+    """Fold probe rows into the store, each under the launch *servers* probed.
 
     One function so ONE ``to_thread`` covers both halves. Passing
     ``_quarantine_verdicts(rows)`` as an argument to ``to_thread`` evaluated it on
     the event loop, and that filter reads up to three MCP scope files to decide
     eligibility -- so the loop paid for those reads on every probe round.
+
+    *servers* are the probed objects the rows were built from; their launch is
+    what lets a changed command leave the quarantine (``mcp_quarantine``).
     """
-    mcp_quarantine.record_verdicts(_quarantine_verdicts(rows))
+    from kiro_crew.mcp_discovery import _probe_identity
+
+    launches = {s.name: _probe_identity(s) for s in servers}
+    mcp_quarantine.record_verdicts(_quarantine_verdicts(rows), launches)
 
 
 def _kirocrew_mcp_servers() -> dict[str, Any]:
@@ -430,7 +451,7 @@ def _invalid_flag_reason(entry: Any) -> str | None:
     return None if isinstance(flag, bool) else "invalid"
 
 
-async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
+async def _bg_mcp_probe(state: DashboardState | None) -> None:
     """Populate the MCP probe cache — SINGLE-FLIGHT.
 
     Two independent boot paths reach this: ``dashboard/server.py`` fires it as a
@@ -451,6 +472,10 @@ async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
     probe mid-handshake — the fan-out completes and the cache is populated for
     whoever asks next, which is what the boot path's
     "continuing without full probe" message already implies.
+
+    *state* is the dashboard the result is for: its sessions decide whether the
+    round overlapped a shutdown, and its open tabs are told when the cache is
+    filled. ``None`` probes with neither.
     """
     global _mcp_probe_task
 
@@ -459,13 +484,19 @@ async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
         await asyncio.shield(inflight)
         return
 
-    task = asyncio.ensure_future(_run_mcp_probe(sessions))
+    task = asyncio.ensure_future(_run_mcp_probe(state))
     _mcp_probe_task = task
     await asyncio.shield(task)
 
 
-async def _run_mcp_probe(sessions: SessionManager | None) -> None:
-    """The probe fan-out itself. Reached only through `_bg_mcp_probe`."""
+async def _run_mcp_probe(state: DashboardState | None) -> None:
+    """The probe fan-out itself. Reached only through `_bg_mcp_probe`.
+
+    A round that fills the cache pushes an ``mcp_servers`` refresh frame, so an
+    open MCP Servers tab re-reads ``GET /api/mcp`` and shows the verdicts without
+    a reload. That re-read finds the cache fresh and arms no further probe. A
+    round that fails pushes nothing: the cache it would announce did not change.
+    """
     global _mcp_probe_ts, _mcp_probe_in_progress
     _mcp_probe_in_progress = True
     try:
@@ -484,7 +515,9 @@ async def _run_mcp_probe(sessions: SessionManager | None) -> None:
         # unbounded gather here floods the loop's default executor during a
         # network blip and can starve the heartbeat into a watchdog _exit.
         probed = await probe_all()
-        overlapped_shutdown = process_shutdown_requested(sessions)
+        overlapped_shutdown = process_shutdown_requested(
+            state.sessions if state is not None else None
+        )
         result: list[dict[str, Any]] = []
         for s in probed:
             d = s.to_dict()
@@ -495,11 +528,13 @@ async def _run_mcp_probe(sessions: SessionManager | None) -> None:
             result.append(d)
         if result:
             if not overlapped_shutdown:
-                await asyncio.to_thread(_record_probe_verdicts, result)
+                await asyncio.to_thread(_record_probe_verdicts, result, probed)
             await asyncio.to_thread(_annotate_quarantine, result)
         _mcp_probe_cache[:] = result
         _mcp_probe_ts = time.time()
         logger.info("MCP probe complete: %d servers", len(result))
+        if state is not None:
+            state.push_refresh("mcp_servers")
     except Exception:
         logger.debug("Background MCP probe failed", exc_info=True)
     finally:
@@ -523,8 +558,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # Off the loop: it reads every scope's config file, like the other reads here.
     servers = await asyncio.to_thread(list_servers)
 
-    # Kick off a background re-probe if the handler cache is stale,
-    # so the next request gets fresh results.
+    # Kick off a background re-probe if the handler cache is stale. When it
+    # finishes, its refresh frame makes an open tab read this route again.
     now = time.time()
     stale = now - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS
 
@@ -535,8 +570,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     cached_by_name: dict[str, dict] = {s["name"]: s for s in _mcp_probe_cache}
 
     # Also re-probe if a new server appeared (e.g. fresh install from AIM
-    # Browse) so status transitions from "Unknown" to "ok"/"error" on the
-    # next page refresh without waiting out the cache TTL.
+    # Browse) so status transitions from "Unknown" to "ok"/"error" as soon as
+    # that probe finishes, without waiting out the cache TTL.
     #
     # Only consider rows probe_all() would actually PROBE. It never spawns a
     # consent-disabled server, so a disabled row enters _mcp_probe_cache only
@@ -771,7 +806,7 @@ async def _probed_rows(servers: list[Any], overlapped_shutdown: bool) -> list[di
         result.append(d)
     if result:
         if not overlapped_shutdown:
-            await asyncio.to_thread(_record_probe_verdicts, result)
+            await asyncio.to_thread(_record_probe_verdicts, result, servers)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
         await asyncio.to_thread(_annotate_unconfigured_connection, result)
@@ -1192,7 +1227,7 @@ async def api_mcp_probe_one(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "mcp_probe_one")
     if denied is not None:
         return denied
-    from kiro_crew.mcp_discovery import _note_denied_env, list_servers
+    from kiro_crew.mcp_discovery import _note_denied_env, list_servers, same_process_lock
     from kiro_crew.mcp_discovery_probe import probe_server
 
     name = request.match_info["name"]
@@ -1204,8 +1239,10 @@ async def api_mcp_probe_one(request: web.Request) -> web.Response:
         )
     server = matches[0]
     # probe_server refuses a consent-disabled server itself (no spawn, stale
-    # refusals dropped), so every row takes the same path here.
-    await probe_server(server)
+    # refusals dropped), so every row takes the same path here. The lock waits
+    # out a pass that is checking another name of the same process right now.
+    async with same_process_lock(server):
+        await probe_server(server)
     # The same post-probe note probe_all gives a failed row, so the row this
     # returns does not read as a broken server when a policy dropped its env.
     _note_denied_env(server)

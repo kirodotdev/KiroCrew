@@ -75,6 +75,7 @@ from ._shared import (
     _redact_memory_field,
     guard_owner_surface_routes,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
     resolve_lesson_memory_store,
 )
 
@@ -212,7 +213,13 @@ async def _prepare_member_lesson_store(store: str) -> web.Response | None:
 
 
 async def _surface_lesson_saved(
-    request: web.Request, state: DashboardState, sk: str, rule: str, outcome: str
+    request: web.Request,
+    state: DashboardState,
+    sk: str,
+    rule: str,
+    outcome: str,
+    key: str | None = None,
+    store: str = "",
 ) -> None:
     """Draw a lesson the AGENT just saved in the conversation it saved it from.
 
@@ -233,7 +240,7 @@ async def _surface_lesson_saved(
         if not slot_key:
             return
         await chat_cards.load_conversation_window(state, {"slot_key": slot_key})
-        chat_cards.record_lesson_saved(state, slot_key, rule, outcome)
+        chat_cards.record_lesson_saved(state, slot_key, rule, outcome, key=key, store=store)
     except Exception:
         logger.warning("could not draw a saved lesson in its conversation", exc_info=True)
 
@@ -279,6 +286,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     from kiro_crew.learn import Lesson, lesson_contains_injection  # noqa: F811
     from kiro_crew.vector_memory_runtime.write_outcomes import SemanticRejectCode
 
+    denied = await require_owner_for_dashboard_caller(request, "lessons.create")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     # Default cap: lesson fields are short strings (MAX_SHORT_STRING-bounded).
     body, body_err = await read_bounded_json(request)
@@ -562,6 +572,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         outcome = result.outcome.value
         reason = result.reason
         stored = result.stored
+        # The row this write landed on, so the chat's saved-lesson row can open it.
+        saved_key = result.key
         if origin is not None and origin.gate.loggable:
             await asyncio.to_thread(record_origin_gate, vs, origin.gate, session_key=sk)
         # Redacted through the SAME chain this handler already applies to a lesson's
@@ -748,6 +760,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # This store never answers ``deduped``, so there is no winner to name.
         winner = None
         winner_repo_scope = None
+        # JSONL rows have no semantic key to open.
+        saved_key = None
     # Refreshed unconditionally, and deliberately so. Gating the push on the
     # write having landed would be wrong: a DECLINING
     # outcome can still have mutated the store. ``write_lesson``'s second pass
@@ -786,7 +800,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             logger.debug("memory change announcement failed", exc_info=True)
     # One chat row per write that changed the store; the recorder drops every
     # other outcome, and a caller with no chat of its own draws nothing.
-    await _surface_lesson_saved(request, state, sk, rule, outcome)
+    await _surface_lesson_saved(request, state, sk, rule, outcome, saved_key, store=_lesson_silo)
     # ``ok`` answers the question the caller actually asked -- is the lesson I
     # submitted in the store -- so it stays true for a no-op re-submit (it is stored,
     # there was simply nothing to write) and turns false when a dedup rule or
@@ -815,6 +829,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
 
 async def api_lessons_delete(request: web.Request) -> web.Response:
     """DELETE /api/lessons — remove lessons by substring."""
+    denied = await require_owner_for_dashboard_caller(request, "lessons.delete")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     # Require the SAME session recognition as ``api_lessons_create``, via the
     # shared ``_recognize_session`` gate. Before this gate, deleting a lesson
@@ -1054,6 +1071,9 @@ async def api_lessons_update(request: web.Request) -> web.Response:
     JSONL fallback the route answers ``unsupported`` and a re-tier stays a delete
     plus an add.
     """
+    denied = await require_owner_for_dashboard_caller(request, "lessons.update")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
@@ -1286,6 +1306,12 @@ async def api_lessons(request: web.Request) -> web.Response:
     window, so a workspace union is not strictly the newest rows across both
     stores.
     """
+    # Lessons steer the owner's agent turns: another dashboard session (one that
+    # is neither the owner nor a teammate) holds the same empty app claim and
+    # would otherwise pass as "the operator's browser" below.
+    denied = await require_owner_for_dashboard_caller(request, "lessons.list")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     # Parsed before any store is resolved: a 400 should not have paid for a
     # silo's first ``init()``.

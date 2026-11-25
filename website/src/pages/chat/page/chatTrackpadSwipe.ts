@@ -16,7 +16,6 @@ interface ChatPanelTrackpadSwipeOptions {
    *  phone and in embed frames, where there is no column to drag. */
   activitySlot: HTMLElement | null
   activityOpen: boolean
-  searchOpen: boolean
   sidePanelDock: 'right' | 'bottom'
   toggleAct: () => void
   dispatch: AppDispatch
@@ -42,14 +41,14 @@ interface ChatPanelTrackpadSwipeOptions {
  *
  * Bound on the shell grid that holds both the chat and the column, so a run
  * keeps going when the panel arrives under the pointer. Only for a right-docked
- * panel, never while the find pane holds the dock or in an embed frame, and
+ * panel, never in an embed frame, and
  * only while Settings → Chat → Side panel allows the swipe (`useSidePanelSwipe`). The
  * left sessions drawer is a phone surface; on desktop the sessions list is a
  * column with no gesture. A rightward run with the panel closed, or a leftward
  * one with it open, is left to the browser.
  */
 export function useChatPanelTrackpadSwipe({
-  isMobile, embedded, activitySlot, activityOpen, searchOpen, sidePanelDock, toggleAct, dispatch, activeSlot,
+  isMobile, embedded, activitySlot, activityOpen, sidePanelDock, toggleAct, dispatch, activeSlot,
 }: ChatPanelTrackpadSwipeOptions) {
   const deskX = useMotionValue(0)
   const deskSpacerW = useMotionValue(0)
@@ -70,7 +69,7 @@ export function useChatPanelTrackpadSwipe({
   useLayoutEffect(() => (deskSlide ? beginPanelSlide() : undefined), [deskSlide])
 
   const swipeAllowed = useSidePanelSwipe()
-  const enabled = swipeAllowed && !isMobile && !embedded && !!activitySlot && !searchOpen && sidePanelDock === 'right'
+  const enabled = swipeAllowed && !isMobile && !embedded && !!activitySlot && sidePanelDock === 'right'
   const rootRef = useMemo(() => ({ current: activitySlot?.parentElement ?? null }), [activitySlot])
   // Updated during render, so a callback that outlives a session switch reads
   // the session now on screen, not the one it started in.

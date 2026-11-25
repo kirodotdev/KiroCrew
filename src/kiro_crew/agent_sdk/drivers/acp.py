@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
+    from contextlib import AbstractContextManager
 
     from kiro_crew.agent_sdk.context import ContextPromptProvider
     from kiro_crew.providers.acp import AcpProvider
@@ -58,6 +59,8 @@ __all__ = [
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
     "spec_with_default_crew_servers",
+    "spec_withholds_server_whole",
+    "default_crew_servers_pass",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_honours_session_options",
@@ -196,6 +199,22 @@ def resolve_usable_model(preferred: str, advertised: object, *, backend: str = "
     from kiro_crew.acp.client import resolve_usable_model as _impl
 
     return _impl(preferred, advertised, backend=backend)  # type: ignore[arg-type]
+
+
+async def apply_configured_model(handle: object, configured_model: str, *, backend: str) -> None:
+    """Put a session that has just started on its configured model.
+
+    Thin delegation to
+    :func:`kiro_crew.acp.session_handle_model_selection.apply_configured_model`, the
+    function a process's own first session goes through, so a sub-agent's session on
+    its parent's process (``subagent_parts/model_choice.py``) reaches it through the
+    SDK surface instead of importing the ACP layer. *handle* is the session the
+    caller already holds; *backend* stays a plain string. Function-local import for
+    the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.session_handle_model_selection import apply_configured_model as _impl
+
+    await _impl(handle, configured_model, backend=backend)  # type: ignore[arg-type]
 
 
 def build_acp_provider(
@@ -518,9 +537,10 @@ def narrowed_agent_permissions(
     """*derived* with the ``deny`` and ``ask`` rules of the authored block *inherited* first.
 
     *inherited* is read with the parser KAS's projection uses
-    (``parse_user_permissions``), so a block it refuses whole on every session -- a
-    named policy bundle, an unknown key, a capability KAS does not define -- yields
-    no rule: none of its rules ever applied. Duplicates are dropped, so a writer
+    (``parse_user_permissions``), so a block it refuses whole on every session -- an
+    unknown key, a capability KAS does not define -- yields no rule: none of its
+    rules ever applied. A named policy bundle is left out with the ``allow`` rules
+    beside it, so its ``deny`` and ``ask`` rules are carried. Duplicates are dropped, so a writer
     that runs over its own output does not grow the list.
 
     The block returned is one that same projection accepts, because a refused block
@@ -615,18 +635,19 @@ def agent_spec_mcp_refs(
     *backends* narrows the rows to those ids, for a caller that asks about one
     backend: each row costs a full translation of the spec.
 
-    On kiro-cli and KAS, the two backends that run the spec's own servers, the
-    refs are judged against the spec with Crew's default servers added
-    (:func:`kiro_crew.acp.default_crew_servers.with_default_crew_servers`), as a
-    spawn on a custom agent runs it, so a user's agent that relies on them is not
-    reported for ``@kirocrew-core``. KAS adds them in its own projected agent
-    whatever the skill view does. kiro-cli adds them only in the skill view, so
-    they count there only while a spawn would project one
+    Each row judges the spec a session on that backend runs
+    (:func:`kiro_crew.acp.default_crew_servers.session_spec_on`, the one list of
+    the spawns that add Crew's default servers to a custom agent), so a user's
+    agent that relies on them is not reported for ``@kirocrew-core`` where its
+    spawn gets them. KAS adds them, after the template's approved additions, in its
+    own projected agent whatever the skill view does. kiro-cli adds them only in
+    the skill view, so they count there only while a spawn would project one
     (:func:`kiro_crew.acp.skill_projection.next_spawn_projects_skill_view`:
     projection switched on and the view ceiling not reached); otherwise the spawn
-    falls back to the authored agent and the spec as written is judged. Every
-    other backend is judged on the spec as written, because no projection there
-    adds them. On kiro-cli and KAS a server the
+    falls back to the authored agent and the spec as written is judged. A mirror in
+    ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY`` adds them, refs included, to the
+    copy the array read here is built from, recording nothing, and its row judges
+    that copy. Every other backend is judged on the spec as written. On kiro-cli and KAS a server the
     global settings ``mcp.json`` defines also counts, but only for a spec that
     states ``includeMcpJson: true`` (or ``useLegacyMcpJson: true``); a spec that
     states neither key, or false, is judged without that file.
@@ -635,10 +656,10 @@ def agent_spec_mcp_refs(
     be resolved is omitted rather than reported wrongly. Function-local imports
     for the same boot-path reason as every other function here.
     """
-    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld
+    from kiro_crew.acp.default_crew_servers import session_spec_on
+    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld, drop_opted_out
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
     from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
     from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
     from kiro_crew.providers.mirrors import has_mirror, mirror_for
@@ -646,7 +667,6 @@ def agent_spec_mcp_refs(
     spec = agent_spec_snapshot(agent)
     if not spec:
         return False, []
-    spawned = _with_default_crew_servers(agent, spec)
     rows: list[tuple[str, list[str], bool]] = []
     for backend in selectable_backend_values() if backends is None else backends:
         try:
@@ -656,21 +676,19 @@ def agent_spec_mcp_refs(
                 params = mirror.session_params(agent, permission_surface_owned=True)
                 raw = params.get("mcpServers")
                 wire = list(raw) if isinstance(raw, list) else []
-            adds_defaults = backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
-            if adds_defaults and backend == ACP_BACKEND_KIRO:
-                # kiro-cli adds them only through the skill view, so a spawn that
-                # falls back to the authored agent runs without them. Asked here,
-                # for the kiro-cli row alone: the doctor calls this once per agent.
-                from kiro_crew.acp.skill_projection import next_spawn_projects_skill_view
-
-                adds_defaults = next_spawn_projects_skill_view()
-            judged = spawned if adds_defaults else spec
-            # Same filter as the runtime detector, so doctor's per-backend rows
-            # and a session's report agree on a gate-withheld server.
-            unresolved = drop_gate_withheld(
-                unresolved_server_refs(
-                    judged, wire, backend=backend, mcp_json=mcp_json_server_names(spec, backend)
-                )
+            judged = session_spec_on(backend, agent, spec)
+            # Same filters as the runtime detector, so doctor's per-backend rows and a
+            # session's report agree on a gate-withheld or an excluded server.
+            unresolved = drop_opted_out(
+                judged,
+                drop_gate_withheld(
+                    unresolved_server_refs(
+                        judged,
+                        wire,
+                        backend=backend,
+                        mcp_json=mcp_json_server_names(spec, backend),
+                    )
+                ),
             )
         except Exception:
             continue
@@ -721,6 +739,20 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
 def spec_with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
     """*spec* with Crew's default servers added, for a read-only check; see :func:`_with_default_crew_servers`."""
     return _with_default_crew_servers(agent, spec)
+
+
+def default_crew_servers_pass() -> AbstractContextManager[None]:
+    """:func:`kiro_crew.acp.default_crew_servers.one_pass`, for a check that walks many agents."""
+    from kiro_crew.acp.default_crew_servers import one_pass
+
+    return one_pass()
+
+
+def spec_withholds_server_whole(spec: Any, server: str) -> bool:
+    """Whether *spec* excludes *server* whole; see :func:`kiro_crew.acp.default_crew_servers.withheld_whole`."""
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    return bool(withheld_whole(spec, [server]))
 
 
 def kiro_cli_resolves() -> bool:

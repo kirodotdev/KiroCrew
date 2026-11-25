@@ -251,7 +251,10 @@ def test_the_live_member_projection_keeps_the_ledger_beside_the_dashboard(
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
     spec = _install(which, tmp_path, monkeypatch)
-    out = to_client_custom_agent(spec["name"], spec, "p", member_dispatch=True)
+    # A member DM's key: the projection grants the member set by it.
+    out = to_client_custom_agent(
+        spec["name"], spec, "p", member_dispatch=True, session_key="dashboard_member-pixel"
+    )
     assert "@kirocrew-work" in out["tools"]
     assert "@kirocrew-dashboard" in out["tools"]
     assert "mcp-work" in out["mcpServers"]["kirocrew-work"]["args"]

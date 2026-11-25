@@ -6,9 +6,11 @@ and error translation. This
 provider surfaces that seam inside MCP discovery so a companion edition's
 registry shows up next to the official MCP registry with a provider badge.
 
-On the public build the Default manager reports ``available() → False`` and
-this provider is simply never registered — external installs only see the
-official registry.
+The provider is always registered and asks the manager on every search: on the
+public build the Default manager reports ``available() → False``, so external
+installs only ever search the official registry, while an edition manager that
+becomes available later (its CLI installed after the gateway started) is
+searched from the next request.
 
 The manager is injected as a zero-arg factory rather than imported from the
 dashboard layer so ``kiro_crew.mcp_providers`` stays importable standalone
@@ -112,6 +114,23 @@ class CapabilityProvider:
             return bool(self._manager_factory().available())
         except Exception:
             return False
+
+    def unavailable_reason(self) -> str:
+        """Why the edition manager cannot be searched right now, or ``""``.
+
+        The manager's optional ``unavailable_reason()`` (see
+        ``CapabilityManager.available``), passed through without asking
+        ``available()`` again: the registry asks only after :meth:`is_available`
+        returned False, and the op reads the state that probe left. The public
+        Default has no such op, so a build without an edition package manager says
+        nothing here and its search carries no outcome for this provider.
+        """
+        try:
+            read = getattr(self._manager_factory(), "unavailable_reason", None)
+            reason = read() if callable(read) else ""
+        except Exception:
+            return ""
+        return reason if isinstance(reason, str) else ""
 
     async def _list_entries(self, query: str | None = None) -> list[dict[str, str | bool]]:
         """Registry rows, optionally asking the manager to filter first.

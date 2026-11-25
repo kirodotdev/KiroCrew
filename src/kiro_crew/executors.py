@@ -7,9 +7,9 @@ stall.  This module gives that work separate, bounded pools, and names the
 default executor's threads ``mc-default`` so profilers like py-spy can
 attribute blocking work to this gateway.
 
-A started ``run_in_executor`` future cannot be cancelled, so each pool's size
-caps how many wedged calls it can hold, and excess work queues among its own
-kind.  The main pools:
+A started ``run_in_executor`` future cannot be cancelled, so each pool's size caps how many
+wedged calls it can hold, and excess work queues among its own kind.  Every thread pool here
+is an ``EnqueueOnlyThreadPoolExecutor``, whose ``submit`` only enqueues.  The main pools:
 
 * :func:`maintenance_executor` -- the fast periodic sweeps (orphaned MCP/PID
   cleanup) and agent-overlay rewrites.  These MUST stay responsive: the orphan
@@ -60,6 +60,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from typing import Any, Awaitable, Callable, TypeVar
 
+from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor
 from kiro_crew.subprocess_pool import SubprocessPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -413,15 +414,13 @@ def configure_default_executor() -> None:
     * Keeps Python's default cap (``min(32, cpu_count + 4)``).
     * Names threads ``mc-default`` so they appear labeled in profilers like
       py-spy, instead of the anonymous ``ThreadPoolExecutor-N_M``.
+    * Its ``submit`` only enqueues (:class:`EnqueueOnlyThreadPoolExecutor`).
 
     It does NOT keep the default executor free for the loop's own I/O: most
     blocking call sites still route onto it.
     """
     loop = asyncio.get_running_loop()
-    pool = ThreadPoolExecutor(
-        max_workers=None,  # keep Python's default: min(32, cpu_count + 4)
-        thread_name_prefix="mc-default",
-    )
+    pool = EnqueueOnlyThreadPoolExecutor(max_workers=None, thread_name_prefix="mc-default")
     loop.set_default_executor(pool)
 
 
@@ -437,7 +436,7 @@ def maintenance_executor() -> ThreadPoolExecutor:
     if _pool is None:
         with _lock:
             if _pool is None:
-                _pool = ThreadPoolExecutor(
+                _pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_MAINT_WORKERS,
                     thread_name_prefix="mc-maint",
                 )
@@ -457,7 +456,7 @@ def subprocess_executor() -> ThreadPoolExecutor:
     if _subprocess_pool is None:
         with _lock:
             if _subprocess_pool is None:
-                _subprocess_pool = ThreadPoolExecutor(
+                _subprocess_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_SUBPROCESS_WORKERS,
                     thread_name_prefix="mc-subproc",
                 )
@@ -486,7 +485,7 @@ def kiro_spawn_executor() -> ThreadPoolExecutor:
     if _kiro_spawn_pool is None:
         with _lock:
             if _kiro_spawn_pool is None:
-                _kiro_spawn_pool = ThreadPoolExecutor(
+                _kiro_spawn_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_KIRO_SPAWN_WORKERS,
                     thread_name_prefix="mc-kirospawn",
                 )
@@ -500,7 +499,7 @@ def mcp_probe_executor() -> ThreadPoolExecutor:
     if _mcp_probe_pool is None:
         with _lock:
             if _mcp_probe_pool is None:
-                _mcp_probe_pool = ThreadPoolExecutor(
+                _mcp_probe_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=5, thread_name_prefix="mc-mcpprobe"
                 )
                 atexit.register(shutdown_maintenance_executor)
@@ -518,7 +517,7 @@ def cron_executor() -> ThreadPoolExecutor:
     if _cron_pool is None:
         with _lock:
             if _cron_pool is None:
-                _cron_pool = ThreadPoolExecutor(
+                _cron_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_CRON_WORKERS,
                     thread_name_prefix="mc-cron",
                 )
@@ -548,7 +547,7 @@ def discovery_executor() -> ThreadPoolExecutor:
     if _discovery_pool is None:
         with _lock:
             if _discovery_pool is None:
-                _discovery_pool = ThreadPoolExecutor(
+                _discovery_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_DISCOVERY_WORKERS,
                     thread_name_prefix="mc-discovery",
                 )
@@ -568,7 +567,7 @@ def static_asset_executor() -> ThreadPoolExecutor:
     if _static_asset_pool is None:
         with _lock:
             if _static_asset_pool is None:
-                _static_asset_pool = ThreadPoolExecutor(
+                _static_asset_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_STATIC_ASSET_WORKERS,
                     thread_name_prefix="mc-static",
                 )
@@ -587,7 +586,7 @@ def local_auth_executor() -> ThreadPoolExecutor:
     if _local_auth_pool is None:
         with _lock:
             if _local_auth_pool is None:
-                _local_auth_pool = ThreadPoolExecutor(
+                _local_auth_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_LOCAL_AUTH_WORKERS,
                     thread_name_prefix="mc-localauth",
                 )
@@ -606,7 +605,7 @@ def relay_viewer_executor() -> ThreadPoolExecutor:
     if _relay_viewer_pool is None:
         with _lock:
             if _relay_viewer_pool is None:
-                _relay_viewer_pool = ThreadPoolExecutor(
+                _relay_viewer_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_RELAY_VIEWER_WORKERS,
                     thread_name_prefix="mc-relayview",
                 )
@@ -626,7 +625,7 @@ def image_executor() -> ThreadPoolExecutor:
     if _image_pool is None:
         with _lock:
             if _image_pool is None:
-                _image_pool = ThreadPoolExecutor(
+                _image_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_IMAGE_WORKERS,
                     thread_name_prefix="mc-image",
                 )
@@ -651,7 +650,7 @@ def stt_executor() -> ThreadPoolExecutor:
     if _stt_pool is None:
         with _lock:
             if _stt_pool is None:
-                _stt_pool = ThreadPoolExecutor(
+                _stt_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_STT_WORKERS,
                     thread_name_prefix="mc-stt",
                 )
@@ -700,7 +699,7 @@ def path_probe_executor() -> ThreadPoolExecutor:
     if _path_probe_pool is None:
         with _lock:
             if _path_probe_pool is None:
-                _path_probe_pool = ThreadPoolExecutor(
+                _path_probe_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_PATH_PROBE_WORKERS,
                     thread_name_prefix="mc-pathprobe",
                 )
@@ -720,7 +719,7 @@ def path_transfer_executor() -> ThreadPoolExecutor:
     if _path_transfer_pool is None:
         with _lock:
             if _path_transfer_pool is None:
-                _path_transfer_pool = ThreadPoolExecutor(
+                _path_transfer_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_PATH_TRANSFER_WORKERS,
                     thread_name_prefix="mc-pathxfer",
                 )
@@ -762,7 +761,7 @@ def crew_log_executor() -> ThreadPoolExecutor:
                 # Lazy: the writer module stays off the boot path until the pool exists.
                 from kiro_crew.crew_log.writer import DEFAULT_LIMITS
 
-                _crew_log_pool = ThreadPoolExecutor(
+                _crew_log_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=DEFAULT_LIMITS.lanes,
                     thread_name_prefix="mc-crewlog",
                 )
@@ -783,7 +782,7 @@ def memory_preparation_executor() -> ThreadPoolExecutor:
     A fresh pool per pass because a stopped pass's worker cannot be cancelled:
     a shared single slot would queue the next gateway's pass behind it.
     """
-    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="mc-memprep")
+    return EnqueueOnlyThreadPoolExecutor(max_workers=1, thread_name_prefix="mc-memprep")
 
 
 def update_executor() -> ThreadPoolExecutor:
@@ -799,7 +798,7 @@ def update_executor() -> ThreadPoolExecutor:
     if _update_pool is None:
         with _lock:
             if _update_pool is None:
-                _update_pool = ThreadPoolExecutor(
+                _update_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_UPDATE_WORKERS,
                     thread_name_prefix="mc-update",
                 )
@@ -819,7 +818,7 @@ def embed_executor() -> ThreadPoolExecutor:
     if _embed_pool is None:
         with _lock:
             if _embed_pool is None:
-                _embed_pool = ThreadPoolExecutor(
+                _embed_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_EMBED_WORKERS,
                     thread_name_prefix="mc-embed",
                 )
@@ -837,7 +836,7 @@ def memory_background_executor() -> ThreadPoolExecutor:
     if _memory_background_pool is None:
         with _lock:
             if _memory_background_pool is None:
-                _memory_background_pool = ThreadPoolExecutor(
+                _memory_background_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=(
                         _MAX_MEMORY_BACKGROUND_WORKERS
                         + _MEMORY_BACKGROUND_LOOP_THREADS
@@ -863,7 +862,7 @@ def governance_executor() -> ThreadPoolExecutor:
     if _governance_pool is None:
         with _lock:
             if _governance_pool is None:
-                _governance_pool = ThreadPoolExecutor(
+                _governance_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_GOVERNANCE_WORKERS,
                     thread_name_prefix="mc-gov",
                 )
@@ -885,7 +884,7 @@ def cron_gate_executor() -> ThreadPoolExecutor:
     if _cron_gate_pool is None:
         with _lock:
             if _cron_gate_pool is None:
-                _cron_gate_pool = ThreadPoolExecutor(
+                _cron_gate_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_CRON_GATE_WORKERS,
                     thread_name_prefix="mc-crongate",
                 )
@@ -905,7 +904,7 @@ def tool_gate_executor() -> ThreadPoolExecutor:
     if _tool_gate_pool is None:
         with _lock:
             if _tool_gate_pool is None:
-                _tool_gate_pool = ThreadPoolExecutor(
+                _tool_gate_pool = EnqueueOnlyThreadPoolExecutor(
                     max_workers=_MAX_TOOL_GATE_WORKERS,
                     thread_name_prefix="mc-toolgate",
                 )
@@ -1238,13 +1237,14 @@ RECALL_TIMEOUT_SECS = 9.0  # Finish before the MCP HTTP client's ten-second time
 def recall_executor() -> ThreadPoolExecutor:
     """Retrieval cannot occupy the workers needed for prompt preparation."""
     global _recall_pool
-    with _lock:
-        if _recall_pool is None:
-            _recall_pool = ThreadPoolExecutor(
-                max_workers=_MAX_EMBED_WORKERS, thread_name_prefix="mc-recall"
-            )
-            atexit.register(shutdown_maintenance_executor)
-        return _recall_pool
+    if _recall_pool is None:
+        with _lock:
+            if _recall_pool is None:
+                _recall_pool = EnqueueOnlyThreadPoolExecutor(
+                    max_workers=_MAX_EMBED_WORKERS, thread_name_prefix="mc-recall"
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _recall_pool
 
 
 async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:

@@ -297,7 +297,24 @@ def test_codex_picker_lists_the_live_session_advertised_ids(tmp_path) -> None:
     assert _names(rows) == ["auto", "gpt-5.4", "gpt-5.4-codex", "gpt-5.5"]
     assert rows[1]["display_name"] == "gpt-5.4"
     assert rows[1]["description"] == "Flagship"
-    assert all(isinstance(r["context_window"], int) and r["context_window"] > 0 for r in rows)
+    assert all(
+        r.get("context_window") == model_registry.model_window(r["model_name"]) for r in rows
+    )
+
+
+def test_codex_picker_rows_claim_no_window_no_source_knows(monkeypatch) -> None:
+    """codex-acp's list carries no window, and the dashboard learns a row's window as
+    the model's real one: an id no source knows claims none rather than the 1M budget
+    reference, so the meter reads unknown until the first ``usage_update``."""
+    model_registry.refresh_advertised_models("codex", ["gpt-6.2-sol[medium]", "gpt-6.2-sol[ultra]"])
+    known = {"auto": 200_000}
+    monkeypatch.setattr(model_registry, "model_window", lambda mid, **_: known.get(mid))
+
+    rows = agents._advertised_backend_models(_request(), ACP_BACKEND_CODEX)
+
+    assert _names(rows) == ["auto", "gpt-6.2-sol[medium]", "gpt-6.2-sol[ultra]"]
+    assert rows[0]["context_window"] == 200_000
+    assert ["context_window" in r for r in rows[1:]] == [False, False]
 
 
 def test_codex_picker_reads_the_cross_session_cache_when_no_session_is_live() -> None:

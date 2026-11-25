@@ -415,6 +415,11 @@ the boot prints its error and serves anyway.
   and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*`, `FEISHU_*` and non-AWS
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.
+  It also drops every inherited temp or scratch variable (`TMPDIR`, `TMP`, `TEMP`,
+  `KIROCREW_SCRATCH`, `KIRO_CHAT_LOG_FILE`) that points under the caller's scratch
+  root: in an agent session those name its scratch, which the sandbox masks, so a
+  `pod exec` child (`eval` builds its workspace there) would hand its agent a
+  directory that does not exist. A temp dir outside that root is kept.
   Pod HOME is `0700`; `config.json` is `0600`. Where the config content check
   applies, the seed and restart step endorses the floored config in the pod's own
   data home, so a restart is not shown as an outside edit; a raw edit made in the

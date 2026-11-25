@@ -1019,6 +1019,7 @@ class GatewayOrchestrator:
     _cron_run_single = _cron_turn._cron_run_single
     # gateway_runtime/cron_delivery.py
     _deliver_cron_agent_result = _cron_delivery._deliver_cron_agent_result
+    _deliver_cron_reminder = _cron_delivery._deliver_cron_reminder
     # gateway_runtime/heartbeat_turns.py
     _init_heartbeat = _heartbeat._init_heartbeat
     # gateway_runtime/nudge_channel_fire.py

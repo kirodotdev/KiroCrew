@@ -154,7 +154,9 @@ def extract_evidence(
     if kind == KIND_CREWMATE_CAPABILITIES and step_index == 0:
         return pick("preview_token")
     if kind == KIND_CREWMATE_CAPABILITIES:
-        return pick("revision")
+        # And whether the Bot's new gateway-routed server waits for a gateway
+        # restart, which the applied record shows (``complete_apply``).
+        return pick("revision", "gateway_restart_required")
     if kind == KIND_TEMPLATE_MCP_SERVER:
         # The card the addition was recorded under: its Undo removes only that one.
         return pick("card_id")
@@ -592,6 +594,8 @@ def describe_manual_change(
         servers = b.get("servers")
         servers = servers if isinstance(servers, dict) else {}
         return f"added custom MCP server(s) {s(', '.join(str(k) for k in servers))}"
+    if route == ("POST", "/api/mcp/project-file"):
+        return f"added MCP server {s(b.get('name'))} to {s(b.get('file'))} in a chat folder"
     if route == ("POST", "/api/mcp/remove"):
         return f"removed MCP server {s(b.get('name'))}"
     if route == ("POST", "/api/mcp/apply"):
@@ -669,6 +673,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("DELETE", "/api/members/{slug}/dashboard/template"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
+        ("POST", "/api/mcp/project-file"),
         ("POST", "/api/mcp/remove"),
         ("POST", "/api/mcp/apply"),
         ("POST", "/api/mcp/toggle"),

@@ -203,6 +203,37 @@ def test_the_grant_row_reports_approved_and_waiting(monkeypatch: pytest.MonkeyPa
     assert g.link_preview_grant_row("x", {"contributes": {}}) == {}
 
 
+def test_a_long_host_list_keeps_first_seen_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No host cap: de-duplication and the staged split stay exact over 20,000 hosts."""
+    hosts = [f"h{i}.example.com" for i in range(20_000)]
+    # Every host again, upper-cased and with a trailing dot: normalizes to a repeat.
+    raw = hosts + [f"H{i}.Example.COM." for i in range(20_000)]
+    assert g.normalized_hosts(raw) == hosts
+
+    def staged(name: str, family: str, read: Any) -> list[str]:
+        return read()[::2]
+
+    monkeypatch.setattr("kiro_crew.apps.manager_records.staged_app_grants", staged)
+    row = g.link_preview_grant_row("cards-app", _manifest(raw))["linkPreviewGrant"]
+    assert row["hosts"] == hosts[::2]
+    assert row["stagedHosts"] == hosts[1::2]
+
+
+def test_an_update_over_a_long_host_list_keeps_exactly_the_still_declared_approvals() -> None:
+    """No host cap: the approved set after an update stays exact over 20,000 hosts."""
+    approved_hosts = [f"h{i}.example.com" for i in range(0, 20_000, 2)]
+    old = pg.grant_source(_manifest(approved_hosts))
+    # The update declares every third host: the even ones stay, the odd ones are new.
+    new_hosts = [f"h{i}.example.com" for i in range(0, 20_000, 3)]
+    new = pg.grant_source(_manifest(new_hosts))
+    approved = _approved_grants_after_manifest_change(
+        existing_approved=_declared_grant_entries(old), old_permissions=old, new_permissions=new
+    )
+    assert approved["linkPreviewHosts"] == [f"h{i}.example.com" for i in range(0, 20_000, 6)]
+    held = _held_back_entries(approved, new)["linkPreviewHosts"]
+    assert held == [f"h{i}.example.com" for i in range(0, 20_000, 3) if i % 2]
+
+
 def test_revoking_the_grant_stops_the_frame_and_its_renewal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

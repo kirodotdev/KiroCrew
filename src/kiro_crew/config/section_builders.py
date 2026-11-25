@@ -671,6 +671,16 @@ def _build_instances_config(
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
         managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
+        managed_env_start_url=section.read("managed_env_start_url", _safe_str),
+        managed_env_profile_arn=section.read("managed_env_profile_arn", _safe_str),
+        managed_env_ssh_region=section.read("managed_env_ssh_region", _safe_str),
+        managed_env_kas_endpoint=section.read("managed_env_kas_endpoint", _safe_str),
+        managed_env_kas_control_plane_endpoint=section.read(
+            "managed_env_kas_control_plane_endpoint", _safe_str
+        ),
+        managed_env_kas_region=section.read("managed_env_kas_region", _safe_str),
+        managed_env_box_token_path=section.read("managed_env_box_token_path", _safe_str),
+        managed_env_box_env_drop=_name_list(section.get("managed_env_box_env_drop")),
     )
 
 
@@ -864,6 +874,12 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
+        # Default False for both: an unparseable value must never let a Slack thread
+        # dispatch work, nor admit a public channel's members to what it shows.
+        thread_conductor=section.read("thread_conductor", _safe_bool),
+        thread_conductor_public_channels=section.read(
+            "thread_conductor_public_channels", _safe_bool
+        ),
         # Default False: an unparseable value must never add user scopes or PKCE.
         slack_mcp=section.read("slack_mcp", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
@@ -872,11 +888,12 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
 
 
 def _build_shared_access(raw: object) -> SlackSharedAccessConfig:
-    """``slack.shared_access``: on only for a literal ``true``, ids well-formed."""
+    """``slack.shared_access``: switches on only for a literal ``true``, ids well-formed."""
     data = _safe_dict(raw)
     return SlackSharedAccessConfig(
         enabled=data.get("enabled") is True,
         user_ids=shared_user_ids(data.get("user_ids")),
+        verify_with_slack=data.get("verify_with_slack") is True,
     )
 
 
@@ -1014,6 +1031,7 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         reactions_enabled=bool(section.get("reactions_enabled")),
         show_thinking=bool(section.get("show_thinking")),
+        show_timing_footer=bool(section.get("show_timing_footer")),
     )
 
 

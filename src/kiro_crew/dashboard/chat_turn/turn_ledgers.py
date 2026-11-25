@@ -7,7 +7,11 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_delivery import MIRROR_REPLY_ONLY_META_KEY, attachment_meta
+from kiro_crew.dashboard.chat_delivery import (
+    EXPANSIONS_OFF_META_KEY,
+    MIRROR_REPLY_ONLY_META_KEY,
+    attachment_meta,
+)
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
@@ -169,6 +173,9 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    if turn._expansions_off:
+        # The same holds for a tap's mentions: the retry keeps them as text.
+        _recovery_meta[EXPANSIONS_OFF_META_KEY] = True
     if turn._turn_start_background:
         # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
         # waits on its retry either, so the retry starts BACKGROUND too.

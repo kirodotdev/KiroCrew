@@ -20,6 +20,11 @@ reports costs one ``chat.update``.
 * **Later publishes** edit that message with ``chat.update`` only when the digest
   moved. A message Slack does not have any more (``message_not_found``,
   ``cant_update_message``) is reposted and pinned again.
+* **A Conductor thread's board stays at the bottom.** It is not pinned, so when
+  it changes and the thread has a newer reply under it, it is posted again at
+  the bottom, the new ts stored, and the old message deleted (one Slack will not
+  delete is edited to a one-line pointer, and that thread's board is edited in
+  place from then on). A stamp-only refresh never moves it.
 * **Waiting on you.** A worker that newly waits on a person (a report with
   ``reason`` ``needs_human`` / ``approval``, or a tool approval pending on its
   session) gets ONE threaded reply under the board that mentions the owner. Sent
@@ -200,6 +205,13 @@ async def publish(
         _retry_at[room] = MIN_EDIT_GAP_SECS - (now - last)
         changed = stale = False
         done = "deferred"
+    moved_from = ""
+    if thread and ts and changed and room not in _move_refused:
+        # A thread's board is not pinned, so replies bury it: a board that has
+        # newer replies under it is posted again at the bottom, the old one deleted.
+        # Only a change moves it; a stamp-only refresh edits in place.
+        if await _buried(slack, channel, anchor, ts):
+            moved_from, ts = ts, ""
     if changed or stale:
         text = render.fallback_text(snapshot)
         dropped_tabs = False
@@ -287,6 +299,8 @@ async def publish(
                 _unsaved_ts.clear()
             _unsaved_ts[room] = ts
             logger.warning("code channel %s: board pointer not stored", room, exc_info=True)
+        if moved_from and ts != moved_from:
+            await _retire(slack, channel, moved_from, admits, room=room)
     if not thread:
         # A thread's board is not pinned: ``pins:write`` is a code-channel scope, and
         # a pin on a thread reply would surface in the whole channel.
@@ -391,6 +405,11 @@ PIN_SCOPE = "pins:write"
 _pin_refused_unscoped: set[str] = set()
 #: Channels whose last board answer no retry cures (see :func:`_failed`).
 _refused: set[str] = set()
+#: Conductor threads whose old board Slack would not delete (in this process): their
+#: board is edited in place from then on, so a refused delete never leaves a trail.
+_move_refused: set[str] = set()
+#: The one line an old board that could not be deleted is edited to.
+MOVED_TEXT = "The work board moved to the latest message in this thread."
 #: What Slack holds but the surface store could not record (its write failed):
 #: the board message's ts and the needs-you alert tokens already threaded. Read in
 #: place of the store's older value until a write succeeds, so a failed write
@@ -501,6 +520,7 @@ def forget(channel: str) -> None:
         table.pop(channel, None)
     _plan_refused.discard(channel)
     _refused.discard(channel)
+    _move_refused.discard(channel)
     _pin_refused_unscoped.discard(channel)
     _tabs_refused.discard(channel)
 
@@ -669,6 +689,78 @@ async def _send(
     if not _writable(channel, admits, **into, **gate):
         return None
     return str(await slack.post_blocks(channel, blocks, text, **into) or "")
+
+
+async def _buried(slack: Any, channel: str, anchor: str, board_ts: str) -> bool:
+    """Whether the thread has a reply newer than the board (a failed read: no).
+
+    One ``conversations.replies`` read, bounded to after the board, made only when
+    the board is about to change (at most once per :data:`MIN_EDIT_GAP_SECS`).
+    """
+    from kiro_crew.slack.code_channels.comments import _ts_key
+
+    try:
+        replies = await slack.fetch_thread_replies(
+            channel, anchor, limit=2, warn_on_pagination=False, oldest=board_ts
+        )
+    except Exception:
+        logger.debug("conductor thread %s/%s: replies unread", channel, anchor, exc_info=True)
+        return False
+    after = _ts_key(board_ts)
+    # Slack lists the thread's parent first whatever the bound: it is never "newer".
+    return any(
+        _ts_key(str(m.get("ts") or "")) > after
+        for m in replies or []
+        if isinstance(m, dict) and m.get("ts") != anchor
+    )
+
+
+async def _retire(
+    slack: Any, channel: str, old_ts: str, admits: Callable[[], bool] | None, *, room: str
+) -> None:
+    """Delete the board a move left behind; one Slack will not delete becomes a pointer.
+
+    Already gone counts as deleted. A permanent delete refusal or an old board
+    left without a pointer stops moving this thread's board in this process.
+    A transient delete failure with a successful pointer edit permits more moves.
+    """
+    if len(_move_refused) > _MAX_TRACKED:
+        _move_refused.clear()
+    gate = {"room": room} if room != channel else {}
+    if not _writable(channel, admits, ts=old_ts, **gate):
+        # shortcut: a Stop or scope change between the post and the delete leaves the
+        # old board up; upgrade to a pending-delete record if that shows up in practice.
+        _move_refused.add(room)
+        return
+    try:
+        await slack.delete_message(channel, old_ts)
+        return
+    except Exception as exc:
+        code = _code(exc)
+        if code == "message_not_found":
+            return
+        transient = is_retryable_slack_error(exc) or code in _BOARD_TRANSIENT
+        logger.warning(
+            "conductor thread %s: old board not deleted (%s); %s",
+            room,
+            code or exc,
+            "marked moved" if transient else "marked moved, editing in place from now on",
+        )
+        if not transient:
+            _move_refused.add(room)
+    if not _writable(channel, admits, ts=old_ts, **gate):
+        _move_refused.add(room)
+        return
+    try:
+        await slack.update_message(
+            channel,
+            old_ts,
+            MOVED_TEXT,
+            [{"type": "context", "elements": [{"type": "mrkdwn", "text": MOVED_TEXT}]}],
+        )
+    except Exception as exc:
+        _move_refused.add(room)
+        logger.info("conductor thread %s: old board not marked moved: %s", room, _code(exc) or exc)
 
 
 async def _pin(slack: Any, channel: str, ts: str, admits: Callable[[], bool] | None) -> bool | None:

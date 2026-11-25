@@ -962,6 +962,20 @@ class ChannelManager:
 # ── Channel Agent Execution Loop ──
 
 
+def _session_agent_kwargs(agent_name: str) -> dict[str, Any]:
+    """``get_or_create``'s agent arguments: a crewmate (``default``) runs its template.
+
+    Passed raw, a crewmate name reached the skill view as an agent with no spec.
+    Blocking (config read): run it off the event loop.
+    """
+    if not agent_name:
+        return {"agent": None}
+    from kiro_crew.cli_chat import _resolve_cli_agent
+
+    kiro_agent, crew_agent, _model, _store = _resolve_cli_agent(KiroCrewConfig.load(), agent_name)
+    return {"agent": kiro_agent, "crew_agent": crew_agent}
+
+
 async def run_channel_agent(
     agent: ChannelAgent,
     channel: Channel,
@@ -978,7 +992,7 @@ async def run_channel_agent(
     try:
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
-            agent=agent.agent_name or None,
+            **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
             approval_policy=agent.approval_policy.value,
         )
         # This lease is released only when the member dies, so a busy probe reading the
@@ -1176,7 +1190,7 @@ async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:
     try:
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
-            agent=agent.agent_name or None,
+            **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
             approval_policy=agent.approval_policy.value,
         )
     except Exception:
@@ -1238,7 +1252,7 @@ async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
     try:
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
-            agent=agent.agent_name or None,
+            **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
             approval_policy=agent.approval_policy.value,
         )
     except Exception:

@@ -157,7 +157,7 @@ def test_the_prompt_sends_a_withheld_grant_question_to_the_page_that_answers_it(
     """Kiro Crew withholds ``allowedTools`` / ``autoApprove`` grants with only a
     security-log record, so an agent recommended them as the fix for approval
     prompts. The always-read prompt bullet names that, and the search it names
-    lands on the page with the working path (a KAS ``permissions.yaml`` rule)."""
+    lands on the page with the working path (the dashboard's Always allow)."""
     from pathlib import Path
 
     prompt = (Path(mcp_guide.__file__).parent / "config" / "prompt.md").read_text("utf-8")
@@ -166,8 +166,24 @@ def test_the_prompt_sends_a_withheld_grant_question_to_the_page_that_answers_it(
     query = bullet.split('`search_docs` "', 1)[1].split('"', 1)[0]
     top, *_rest = mcp_guide.search_docs(query)["results"]
     assert top["page"] == "tool-approvals"
+
+
+def test_the_tool_approvals_page_leads_with_the_dashboards_always_allow():
+    """The page names the dashboard's Always allow controls by the labels the
+    dashboard shows, and before any ``permissions.yaml`` rule: an Always allow call
+    is still judged by Kiro Crew's gate, while a KAS ``allow`` rule skips it."""
+    from pathlib import Path
+
+    locales = Path(__file__).resolve().parents[1] / "website" / "src" / "i18n" / "locales"
+    manual = json.loads((locales / "en.manual.json").read_text(encoding="utf-8"))
+    english = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+    toggle = manual["pages"]["overview"]["mcpTab"]["always_allow"]
+    card_menu = english["components"]["trustDropdown"]["trust"]
+    card_choice = manual["components"]["trustDropdown"]["always_allow_this_tool"]
     page = mcp_guide.search_docs(page="tool-approvals")["text"]
-    assert "permissions.yaml" in page and "capability: mcp" in page
+    for label in (toggle, card_menu, card_choice):
+        assert f"**{label}**" in page, label
+    assert page.index(f"**{toggle}**") < page.index("permissions.yaml")
 
 
 def test_the_documented_permissions_rule_is_the_shape_crew_already_sends_kas():

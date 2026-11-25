@@ -88,7 +88,7 @@ vi.mock('../hooks/useVoiceInput', () => ({
     // re-render. A per-render snapshot would go stale, because a composer
     // keystroke does not re-render the page or the voice atom.
     get partial() { return voice.partial },
-    sampleRef: { current: { level: 0, centroid: 0.5, onset: 0 } },
+    sampleRef: { current: { level: 0, onset: 0 } },
     })
   },
   voiceInputSupported: true,

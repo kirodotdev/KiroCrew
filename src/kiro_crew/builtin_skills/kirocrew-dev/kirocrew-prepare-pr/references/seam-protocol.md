@@ -37,8 +37,7 @@ branches:
 - Optional `resolution:` records a strategy switch (below).
 
 A disposition counts as a fix when its DECLARED outcome is `fixed`, `removed` or
-`reverted`. `pr_findings.py` reads the outcome from exactly two places, never from prose
-(sample and counts: `code-quality/impl/D5-FORMAT-SURVEY.md`):
+`reverted`. `pr_findings.py` reads the outcome from exactly two places, never from prose:
 
 - the **first quoted line** of the disposition: `> fixed in <sha>`, `> Fixed: ...`,
   `> removed in <sha>`, `> **fixed** in <sha>`, `> Rebutted: ...`, `> deferred #N`,

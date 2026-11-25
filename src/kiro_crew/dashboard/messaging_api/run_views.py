@@ -277,6 +277,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             unverified = getattr(info, "served_model_unverified", None)
             if isinstance(unverified, bool):
                 data["served_model_unverified"] = unverified
+        # A run whose session had none of Crew's tools, on any outcome: the note the
+        # completion event carries (``SubagentInfo.crew_tools_withheld_note``).
+        withheld = getattr(info, "crew_tools_withheld_note", "")
+        if isinstance(withheld, str) and withheld:
+            data["crew_tools_withheld"] = withheld
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):
@@ -402,6 +407,11 @@ def _awaiting_spawn_approval(info: object) -> bool:
 
 async def api_spawn_list(request: web.Request) -> web.Response:
     """GET /api/spawn — list all subagents."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.list")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})

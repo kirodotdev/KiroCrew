@@ -61,11 +61,11 @@ describe('Select-to-Ask', () => {
     const ask = screen.getByRole('button', { name: 'Ask about this' })
     expect(ask).toBeInTheDocument()
     // The label says what happens to the selection; WHERE the question lands
-    // (and that nothing is sent yet) is the hint's job, since a first-time
-    // reader has not met the panel. It is the tooltip AND the accessible
-    // description, so keyboard/screen-reader users get it too.
+    // is the hint's job, since a first-time reader has not met the panel. It
+    // is the tooltip AND the accessible description, so keyboard/screen-reader
+    // users get it too.
     expect(ask).toHaveAttribute('title', expect.stringContaining('Side Chat'))
-    expect(ask).toHaveAccessibleDescription(/nothing is sent/)
+    expect(ask).toHaveAccessibleDescription('Opens Side Chat with the selection quoted')
     // The description node is a sibling, not a child: the button's own text is the label.
     expect(ask).toHaveTextContent(/^Ask about this$/)
   })

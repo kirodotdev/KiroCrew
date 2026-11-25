@@ -82,6 +82,21 @@ describe('restartGateway', () => {
     expect(ask.mock.calls[0][0].confirmLabel).toBe(i18nT('components.updateFoundModal.restart_anyway'))
   })
 
+  it('names the work the gateway says a restart would cut', async () => {
+    const ask = stubAppConfirm(false)
+    fetchMock.mockResolvedValue(res(409, {
+      ...WORK,
+      holders: [{ kind: 'script', name: 'nightly-sync', since_secs: 21, count: 1 }],
+      holders_more: 0,
+    }))
+
+    await api.restartGateway().catch(() => undefined)
+
+    const text = confirmText(ask.mock.calls[0][0])
+    expect(text).toContain(i18nT('components.updateFoundModal.work_running_busy', { active: 3 }))
+    expect(text).toContain('nightly-sync')
+  })
+
   it('keeps the tab once across a keepTab restart, through the confirm, and never for a plain one', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))

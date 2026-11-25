@@ -46,6 +46,12 @@ check only timed out.
   (``model_registry.refresh_kiro_catalog``), so a stored pin's native/foreign
   verdict and the cost badge work on this route as they do on the relay. No
   window is fed: the rows carry none.
+* **The account's hidden models ride as a row flag.** Crew declares the
+  ``sharedModelPicker`` client capability, so the engine lists every served model
+  and states the ones the account hid from its Kiro model picker as a row of its
+  connection view (``acp/kas_shared_model_picker.py``, recorded beside the
+  catalog). Each such model's row carries ``hidden_by_account: true``; the chat
+  picker leaves it out, the Bot and role pickers keep it.
 * **No entitlement narrowing.** The kiro-cli path narrows its catalog to what a
   live session advertises because ``--list-models`` prints the same rows for
   every tier. The select is not that: the engine lists what the signed-in
@@ -104,8 +110,16 @@ def _vault_signed_in() -> bool:
     return vault_holds_identity(warn=False)
 
 
-def _picker_row(row: dict[str, Any]) -> dict[str, Any]:
-    """One catalog row as the picker wire row, with only the fields a source backs."""
+def _picker_row(
+    row: dict[str, Any], hidden_by_account: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """One catalog row as the picker wire row, with only the fields a source backs.
+
+    ``hidden_by_account: true`` marks a model the account hid from its Kiro model
+    picker (``acp.kas_shared_model_picker``). The row stays in the list: the chat
+    picker leaves such a model out, the Bot and role pickers keep it, and a slot
+    already on it keeps naming it.
+    """
     model_id = row["model_name"]
     out: dict[str, Any] = {
         "model_name": model_id,
@@ -117,6 +131,8 @@ def _picker_row(row: dict[str, Any]) -> dict[str, Any]:
     window = model_registry.model_window(model_id)
     if window:
         out["context_window"] = window
+    if model_id in hidden_by_account:
+        out["hidden_by_account"] = True
     return out
 
 
@@ -227,7 +243,8 @@ async def _serve_recording(
         # cache again. Cold is the answer the recording gives.
         if await asyncio.to_thread(kas_model_catalog.vault_identity) != identity:
             return cold if cold is not None else _cold_response(marked=not start_probe)
-    return web.json_response([_picker_row(row) for row in rows])
+    hidden = frozenset(kas_model_catalog.recorded_hidden_models_snapshot(identity) or ())
+    return web.json_response([_picker_row(row, hidden) for row in rows])
 
 
 def _cold_response(*, marked: bool) -> web.Response:

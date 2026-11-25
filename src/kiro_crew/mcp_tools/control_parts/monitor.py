@@ -23,6 +23,7 @@ from kiro_crew.autonudge_judge import screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.mcp_tools.control_parts.directive import _emit_directive
+from kiro_crew.monitoring.also_wake import ALSO_WAKE_KIND_REFUSAL, ALSO_WAKE_KINDS
 from kiro_crew.monitoring.limits import runtime_ceiling_secs
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_AGENT_TURNS,
@@ -302,7 +303,9 @@ def _monitor_context_refusal(
     return f"Error: {message}"
 
 
-def _arming_preflight_refusal(tool_name: str, session_key: str) -> str:
+def _arming_preflight_refusal(
+    tool_name: str, session_key: str, *, also_wake_on: bool = False
+) -> str:
     """Refuse IN BAND when the turn boundary is certain to refuse this call.
 
     Two causes are certain from one reading: the session cannot host a loop at
@@ -338,6 +341,9 @@ def _arming_preflight_refusal(tool_name: str, session_key: str) -> str:
     The retained-stop half covers the STRUCTURED record, the only one the endpoint
     reports an outcome for. A paused legacy timer loop reads as ``autonudge_loop`` with no outcome
     and is left to the existing create-only refusal.
+
+    *also_wake_on* marks a ``monitor_update`` carrying that field, which the same
+    reading refuses on a plain loop or on a watch of another kind.
     """
     if mcp_core.directive_capture_active():
         return ""
@@ -366,6 +372,16 @@ def _arming_preflight_refusal(tool_name: str, session_key: str) -> str:
             f"time. Tell the user in this turn that {not_done}, and do NOT report "
             "monitoring as started or changed. A persistent session can host the loop."
         )
+    if also_wake_on:
+        monitor_kind = (reading.get("monitor") or {}).get("kind")
+        if isinstance(reading.get("autonudge_loop"), dict):
+            return (
+                "monitor_update: NOT applied — also_wake_on is available only on a "
+                "structured watch (monitor_watch), and this session runs a plain "
+                "monitor_start loop; nothing was changed."
+            )
+        if isinstance(monitor_kind, str) and monitor_kind not in ALSO_WAKE_KINDS:
+            return f"monitor_update: NOT applied — {ALSO_WAKE_KIND_REFUSAL}."
     if reading.get("active"):
         return ""
     if tool_name == "monitor_update":
@@ -447,6 +463,29 @@ def _parsed_pull_request_target(kind: Any, raw: Any) -> tuple[str, str]:
         return "", f"Error: {exc}"
 
 
+def _parsed_also_wake_on(
+    args: dict[str, Any], kind: Any, target: str
+) -> tuple[list[str] | None, str]:
+    """Return the normalized ``also_wake_on`` list (``None`` when absent), or an error.
+
+    Entries are parsed by the GitHub rules, the one kind that takes the field; an
+    entry equal to *target* (empty on an update) or a repeat collapses.
+    """
+    raw = args.get("also_wake_on")
+    if raw is None:
+        return None, ""
+    if kind not in ALSO_WAKE_KINDS:
+        return None, f"Error: {ALSO_WAKE_KIND_REFUSAL}."
+    extras: list[str] = []
+    for entry in raw:
+        extra, error = _parsed_pull_request_target("github_pull_request", entry)
+        if error:
+            return None, f"{error} (also_wake_on)"
+        if extra != target and extra not in extras:
+            extras.append(extra)
+    return extras, ""
+
+
 def monitor_watch(name: str, args: dict[str, Any]) -> str:
     """Validate and emit a session-bound structured monitor directive."""
     args = validate_tool_args(args, MONITOR_WATCH_SCHEMA)
@@ -466,6 +505,9 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
     target, target_error = _parsed_pull_request_target(args["kind"], args["target"])
     if target_error:
         return target_error
+    also_wake_on, also_wake_error = _parsed_also_wake_on(args, args["kind"], target)
+    if also_wake_error:
+        return also_wake_error
     # AFTER target validation so a malformed target keeps its own specific error,
     # and before the directive is emitted so the model is never handed a
     # success-shaped ack for an arm a retained stop guarantees will be refused.
@@ -497,6 +539,8 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
         "wake_instructions": str(args.get("wake_instructions") or "").strip(),
         "wake_on_terminal": bool(args.get("wake_on_terminal") or False),
     }
+    if also_wake_on:
+        payload["also_wake_on"] = also_wake_on
     return _emit_directive(
         "monitor_watch",
         payload,
@@ -576,6 +620,9 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
         "cadence_secs",
         "wake_instructions",
         "wake_on_terminal",
+        "also_wake_on",
+        "also_wake_state",
+        "also_wake_claim",
         "last_observation_status",
         "last_observation_reason_code",
         "last_fingerprint",
@@ -744,6 +791,12 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
     # armed, observes nothing" state the service's own fold exists to prevent.
     if str(args.get("watch") or "").strip():
         patch["watch"] = str(args["watch"]).strip()
+    # Parsed by the GitHub rules here; the applier re-checks against the watch's kind.
+    also_wake_on, also_wake_error = _parsed_also_wake_on(args, "github_pull_request", "")
+    if also_wake_error:
+        return f"monitor_update: {also_wake_error.removeprefix('Error: ')}"
+    if also_wake_on is not None:
+        patch["also_wake_on"] = also_wake_on
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
@@ -752,14 +805,16 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             "monitor_update: nothing to change — pass at least one of "
             "message, interval_secs, max_cycles, max_runtime_secs, target, "
             "objective, max_agent_turns, max_tokens, max_provider_errors, "
-            "wake_instructions, banner, judge, watch."
+            "wake_instructions, banner, judge, watch, also_wake_on."
         )
     # AFTER the empty-patch no-op so that more specific answer still wins. A
     # retained stop cannot be updated either: ``update_monitor`` answers "not found
     # or already terminal" at the turn boundary, and unlike the two arming
     # directives a refused monitor_update gets no transcript notice at all — so
     # without this the retarget failure is invisible to both the model and the user.
-    preflight_refusal = _arming_preflight_refusal("monitor_update", sk)
+    preflight_refusal = _arming_preflight_refusal(
+        "monitor_update", sk, also_wake_on="also_wake_on" in patch
+    )
     if preflight_refusal:
         return preflight_refusal
     return _emit_directive(

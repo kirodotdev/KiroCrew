@@ -477,7 +477,11 @@ Rules:
   from the page's global chords — but that isolation follows the React tree, so
   an overlay rendered as a *sibling* of `<Modal>` is outside it. See
   [Keyboard isolation](#keyboard-isolation-dialogs-and-the-overlays-above-them).
-- Dynamic content that updates in place (streaming messages, notifications) uses
+- A virtualized transcript is not a live region. Scrolling mounts and unmounts
+  rows, so `aria-live` on the scroller would announce old messages again. New
+  messages are spoken through the one stable, offscreen polite live region in
+  `TranscriptLiveRegion`, with `useTranscriptAnnouncement` deciding when its
+  text changes. Small status regions that update in place still use
   `aria-live="polite"`.
 - A navigation rail (a column of buttons that each open a section or page) gives the
   row of the open destination `aria-current="page"` and no other row. A class or an

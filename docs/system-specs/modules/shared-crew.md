@@ -665,6 +665,10 @@ agent's question cards included. `GET /api/terminal/sessions` answers a teammate
 route refuses them with `owner_only`. A test fails when a Terminal route is
 registered outside those prefixes.
 
+`/api/managed-environments/*` is owner-only for teammates through
+`teammate_access.is_owner_only_for_teammates`; `/api/cloud/*` refuses a teammate on a
+`kiro_managed_env` job.
+
 Three things stay the machine owner's (`is_owner_only_for_teammates`). The
 Terminal's own surface; it is a UI boundary, not a sandbox, since YOLO, cron scripts
 and app installs, all open to a teammate, reach the host too. Every route the relay
@@ -675,8 +679,9 @@ app's own credential mints and the relay viewer; shutdown; and a path not in
 canonical form. Each is a credential that would outlive the teammate's access, or the
 gateway process, so one table holds a teammate on any path to the boundary the relay
 holds every remote caller to. Plus a channel connection's writes
-(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
-connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
+(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, which creates, changes or removes
+the connection, and linking WhatsApp or Weixin), which hold the channel's token; the
+multi-agent channels under `/api/channels` hold none and stay open to a teammate; and a cron
 job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
 a channel and sending through it stay open. And managing who may reach the
 Crew: `routes_invites._owner_refusal` admits only the local operator or this
@@ -690,8 +695,10 @@ refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, 
 the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
-`instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
-`dm_policy`, so a new allow-list is covered by its name). Reading the Remote Control
+`instances` and `tunnel` subtrees, the `dashboard.entry_port` listener key, and any
+key segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered
+by its name; `dashboard.entry_port` has no rule on that route, so the route refuses
+the owner too, 400 `field not editable`). Reading the Remote Control
 state stays open. The teammate's screens follow the same line: an owner-only control
 is hidden or replaced by an "Only the Crew's owner can …" notice
 (`useViewerIsNotOwner`), never offered and then refused: Secrets, Remote Control's
@@ -699,6 +706,9 @@ Turn off, remote crew management, Channels' connection forms and `/terminal` sho
 the notice; Connect your phone is not offered; Voice drops the host install command;
 Privacy says the data stays on the Crew's computer; People reads "Shared with your
 team" and names an owner known only by machine name "Crew owner".
+
+The managed-environment lane never removes Remote Crew rows; a gone environment's row
+is removed with Remove.
 
 A teammate is not the owner for redaction. The owner's credential-redaction OFF
 covers only what the owner alone sees
@@ -1814,7 +1824,9 @@ spacing while keystrokes continue, so a trailing report lands after the last one
 an edit that leaves the draft empty, and a send, report `draft: 'empty'` at once.
 `useComposerTypingLock` reads the lease and the viewer; when someone else holds
 it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
-stays as it was, and so does focus), replaces the button row with
+stays as it was, and so does focus), gives its text column the look of a
+disabled input (hover fill, editor at 40%,
+not-allowed cursor; the draft can still be selected and copied), replaces the button row with
 `TypingLockBanner` ("<name> is typing…", the only place typing is named; the
 box's placeholder stays empty; a line beside Take over says Take over types in their place and their draft stays with them), and keeps only Stop and Steer for a running turn.
 When the lease ends the box unlocks in place. A send refused `composer_locked` restores the draft and records the refusal

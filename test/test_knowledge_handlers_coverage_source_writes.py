@@ -1,19 +1,23 @@
 """Coverage tests for the Knowledge Library handlers that write into or delete a source.
 
 Covers the agent-document route, ingest-text (including the ingestion gate it holds
-across the body read), source delete, the URL-fetch branch of source sync, and the
-background agent sync task that branch starts. Shared harness pieces come from
+across the body read), a staged temp file the OS will not remove on the ingest-text
+and upload routes and the URL sync, source delete, the URL-fetch branch of source
+sync, and the background agent sync task that branch starts. Shared harness pieces come from
 ``knowledge_handlers_coverage_helpers.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import FormData
 from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture is requested by name
     MODULE,
     _cfg,
@@ -24,10 +28,14 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
-from kiro_crew.knowledge.ingestion import FileTooLargeError, IngestionPipeline
+from kiro_crew.knowledge.ingestion import (
+    FileTooLargeError,
+    ImportChunkBudgetError,
+    IngestionPipeline,
+)
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.url_fetch import FetchedPage
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # An ingest failure, and whether the handler logs it at ERROR: the pipeline already
 # warned about an oversized file, so that one is not logged a second time.
@@ -49,6 +57,33 @@ def _listed_test_hosts(_floor_monkeypatch):
     that gate lets the URL through.
     """
     _floor_monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com", "e.test"])
+
+
+@pytest.fixture
+def held_staged(monkeypatch):
+    """Make ``Path.unlink`` refuse the staged temp files of the ingest routes and
+    the URL sync the way Windows refuses a file another process opened without
+    delete sharing; every other path is removed as usual. Yields the refused
+    paths and removes them after."""
+    held: list[Path] = []
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name.startswith(("agent_sync_", "kn_", "url_sync_")):
+            held.append(self)
+            raise PermissionError(errno.EACCES, "held by another process", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    yield held
+    for path in set(held):
+        os.unlink(path)
+
+
+def _warnings_naming(caplog, path: Path) -> int:
+    return sum(
+        1 for r in caplog.records if r.levelno == logging.WARNING and str(path) in r.getMessage()
+    )
 
 
 class TestAddAgentDocumentRoute:
@@ -304,6 +339,25 @@ class TestIngestText:
         assert bool([r for r in caplog.records if r.name == kh.logger.name]) is logs_error
 
     @pytest.mark.asyncio
+    async def test_a_staged_file_the_os_will_not_remove_keeps_the_answer(
+        self, store, held_staged, caplog
+    ):
+        """On Windows a scanner or indexer can hold the staged copy of the text, so
+        removing it fails after the ingest already succeeded. The caller still gets
+        its job id, and one warning names the file left behind."""
+        sid = store.add_source("s", "web", "https://example.com")
+        pipeline = MagicMock(ingest_file=AsyncMock(return_value="job-9"))
+        with caplog.at_level(logging.WARNING, logger=kh.logger.name):
+            async with _client(_make_app(store, pipeline=pipeline)) as client:
+                resp = await client.post(
+                    f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "hello"}
+                )
+                assert resp.status == 200
+                assert (await resp.json())["job_id"] == "job-9"
+        assert len(held_staged) == 1
+        assert _warnings_naming(caplog, held_staged[0]) == 1
+
+    @pytest.mark.asyncio
     async def test_the_gate_is_held_from_the_lookup_through_the_ingest(self, store, monkeypatch):
         """The body read is an await between the source lookup and the ingest,
         and the handler holds the store's ingestion gate across it: a
@@ -332,6 +386,65 @@ class TestIngestText:
         # flake-ok: 0.05 s bounds the probe; the handler drops the gate before it answers
         with store.maintenance_window(timeout=0.05) as quiescent:
             assert quiescent is True, "the gate stayed held after the request answered"
+
+
+# the upload route's staged file
+
+# Each exit that removes the staged upload: (file name, bytes, status, body).
+_UPLOAD_EXITS = {
+    "processing": ("notes.md", b"# notes\n", 200, None),
+    "rejected_archive": (
+        "deck.docx",
+        b"PK\x03\x04" + bytes(60),
+        400,
+        {"error": ".docx archive rejected (bad_archive)"},
+    ),
+    "import_budget": ("notes.md", b"# notes\n", 429, None),
+    "failure": ("notes.md", b"# notes\n", 500, {"error": "internal server error"}),
+}
+
+
+class TestUploadStagedFileTheOsWillNotRemove:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exit_", list(_UPLOAD_EXITS))
+    async def test_the_answer_is_kept_and_the_file_named(
+        self, store, held_staged, caplog, monkeypatch, exit_
+    ):
+        """Each place the upload route removes its staged copy, the background
+        ingest's included, is best effort: a copy the OS refuses to remove is left
+        with one warning naming it, and the answer the route built still reaches
+        the caller."""
+        filename, data, status, body = _UPLOAD_EXITS[exit_]
+        pipeline = MagicMock(
+            reserve_import_budget=AsyncMock(return_value=None),
+            ingest_file=AsyncMock(return_value="job-1"),
+        )
+        if exit_ == "import_budget":
+            pipeline.reserve_import_budget.side_effect = ImportChunkBudgetError(
+                budget=50, window_secs=60.0, spent=60
+            )
+        if exit_ == "failure":
+            monkeypatch.setattr(
+                f"{MODULE}._add_source_unique", MagicMock(side_effect=RuntimeError("boom"))
+            )
+        app = _make_app(store, pipeline=pipeline)
+        app.router.add_post("/api/knowledge/ingest", kh.ingest_file)
+        form = FormData()
+        form.add_field("file", data, filename=filename)
+        with caplog.at_level(logging.WARNING, logger=kh.logger.name):
+            async with _client(app) as client:
+                resp = await client.post("/api/knowledge/ingest", data=form)
+                assert resp.status == status
+                answer = await resp.json()
+            # The processing exit removes its copy in the background ingest, after the
+            # route answered; the other exits removed it before answering.
+            await async_wait_until(
+                lambda: held_staged, describe=lambda: "the staged file's removal"
+            )
+        if body is not None:
+            assert answer == body
+        assert len(held_staged) == 1
+        assert _warnings_naming(caplog, held_staged[0]) == 1
 
 
 # source delete / agent sync
@@ -477,6 +590,25 @@ class TestBackgroundAgentSync:
         row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "synced"
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
+
+    @pytest.mark.asyncio
+    async def test_a_staged_page_the_os_will_not_remove_keeps_the_synced_status(
+        self, store, held_staged, caplog, monkeypatch
+    ):
+        """The page ingested, so a staged copy the OS refuses to remove is left with
+        one warning naming it, and the source still reads 'synced', not 'error'."""
+        sid = store.add_source("s", "web", "https://example.com")
+        monkeypatch.setattr(
+            f"{MODULE}.fetch_page",
+            AsyncMock(return_value=FetchedPage("https://example.com", "fetched body", ".txt")),
+        )
+        pipeline = MagicMock(ingest_file=AsyncMock(return_value="j1"))
+        with caplog.at_level(logging.WARNING, logger=kh.logger.name):
+            await kh._background_url_sync(sid, "https://example.com", "S", store, pipeline)
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "synced"
+        assert len(held_staged) == 1
+        assert _warnings_naming(caplog, held_staged[0]) == 1
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("exc, logs_error", _INGEST_FAILURES, ids=_INGEST_FAILURE_IDS)

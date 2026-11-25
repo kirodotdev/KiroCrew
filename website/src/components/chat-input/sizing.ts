@@ -148,12 +148,12 @@ function measuredAtOtherWidth(el: HTMLTextAreaElement): boolean {
  *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
  *  so this function's only write to the live element is its FINAL height.
  *
- *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
- *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
- *  caret and IME state have to survive the swap), and `sr-only` is a 1px clip — a
- *  textarea one pixel wide reports a `scrollHeight` of the better part of a
- *  viewport, which this function would then clamp to `cap` and WRITE BACK as an
- *  inline height. That height outlives the parking (nothing re-measures until
+ *  `parked` is a hard precondition, not an optimisation. Voice hold mode keeps
+ *  the textarea mounted inside an `sr-only` box (value, caret and IME state have
+ *  to survive the swap), and `sr-only` is a 1px clip — a textarea one pixel wide
+ *  reports a `scrollHeight` of the better part of a viewport, which this function
+ *  would then clamp to `cap` and WRITE BACK as an inline height. That height
+ *  outlives the parking (nothing re-measures until
  *  `value` changes again), so a single voice round-trip left the composer stuck
  *  at the 140px ceiling with an empty box, on a surface whose only way to shrink
  *  it — the drag handle's double-click — does not exist under a finger. */
@@ -361,17 +361,19 @@ export function useInputAreaKeyboardLift() {
 }
 
 /** The strips stacked above the textarea (staged files and folders, session
- *  refs): their measured heights, the drag floor they raise, and the manual
- *  height's transient adjustment when one appears or leaves. */
-export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessionRefs, setManualHeight, dragMinHRef }: {
+ *  refs, running uploads): their measured heights, the drag floor they raise,
+ *  and the manual height's transient adjustment when one appears or leaves. */
+export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessionRefs, uploadsRunning, setManualHeight, dragMinHRef }: {
   pendingFilesCount: number
   pendingDirsCount: number
   hasSessionRefs: boolean
+  uploadsRunning: boolean
   setManualHeight: (update: (h: number | null) => number | null) => void
   dragMinHRef: React.MutableRefObject<number>
 }) {
   const [fileStripRef, fileStripH] = useMeasuredHeight<HTMLDivElement>()
   const [sessionStripRef, sessionStripH] = useMeasuredHeight<HTMLDivElement>()
+  const [uploadStripRef, uploadStripH] = useMeasuredHeight<HTMLDivElement>()
   /** Combined height of every strip currently stacked above the textarea,
    *  MEASURED rather than predicted from the strips' Tailwind classes. The
    *  manual-resize floor and the transient height adjustment below both work off
@@ -384,7 +386,7 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
    *  is simply taller when measured, instead of needing a second predicted
    *  height, which is how the third constant came to exist in the first place.
    */
-  const stripH = fileStripH + sessionStripH
+  const stripH = fileStripH + sessionStripH + uploadStripH
   /** Whether `stripH` describes what is actually on screen right now.
    *
    *  A measured height arrives one commit AFTER the strip mounts: the ref
@@ -394,15 +396,15 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
    *  on every mount that already had something staged. Waiting for a mounted
    *  strip to report a non-zero box makes the first value a BASELINE rather
    *  than a change. */
-  const stripsMounted = pendingFilesCount > 0 || pendingDirsCount > 0 || hasSessionRefs
+  const stripsMounted = pendingFilesCount > 0 || pendingDirsCount > 0 || hasSessionRefs || uploadsRunning
   const stripHSettled = stripsMounted ? stripH > 0 : stripH === 0
   const prevStripH = useRef<number | null>(null)
   const dragMinH = INPUT_DRAG_MIN_H + stripH
   dragMinHRef.current = dragMinH
   // Adjust height transiently when a strip appears/disappears (not persisted —
-  // staged files and session refs are both session-scoped). Diffing the TOTAL
-  // rather than a per-strip boolean keeps the arithmetic correct when both
-  // strips change in the same commit (e.g. send clears files and refs at once).
+  // staged files, session refs and uploads are session-scoped). Diffing the
+  // TOTAL keeps the arithmetic correct when several strips change in the
+  // same commit (e.g. an upload completes and stages its file).
   useLayoutEffect(() => {
     if (!stripHSettled) return
     const prev = prevStripH.current
@@ -413,7 +415,7 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
     setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h + (stripH - prev)) : h)
   }, [stripH, stripHSettled, setManualHeight])
 
-  return { fileStripRef, sessionStripRef, stripH }
+  return { fileStripRef, sessionStripRef, uploadStripRef, stripH }
 }
 
 /** Content-driven height for the textarea: every re-measure, and the paste

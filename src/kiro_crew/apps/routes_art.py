@@ -583,6 +583,10 @@ async def _fetch_git_blob(
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
+            except asyncio.CancelledError:
+                # A gateway shutdown must not leave the clone running with no owner.
+                await platform_compat.kill_and_reap(proc)
+                raise
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.communicate()

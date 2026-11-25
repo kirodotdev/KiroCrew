@@ -342,12 +342,12 @@ async def _run_inner_impl(
     #
     # The one sharing decision (``_sharing_plan``), which admission also read
     # to price this start: template execution, not ``keep``, the eligibility
-    # predicate, and no model / reasoning-effort pin.
+    # predicate, no reasoning-effort pin, and a model only where the parent's
+    # runtime takes one per session.
     #
     # An UNPINNED start may take a model from ``model.route``'s derived tiers
     # (``decisions.model_route_derive``, off by default). Decided before the
-    # sharing plan, which reads the routed model as a pin: a routed model
-    # cannot be applied to the parent's already-started runtime.
+    # sharing plan, which reads the routed model as a pin.
     await _route_unpinned_start(info, kind, self._manager._sessions)
     plan = self._manager._sharing_plan(
         info, child_aws_profile=await self._resolve_child_aws_profile(info)
@@ -456,7 +456,9 @@ async def _run_inner_impl(
     # that can say what its MCP servers reported — before the run spends its
     # turn budget hunting a tool that was never mounted. Logged for the
     # operator AND carried into the prompt below, because the run that does
-    # the hunting never reads the log.
+    # the hunting never reads the log. A settings file that withheld the whole
+    # array is read first, since it is then the one reason every server is missing.
+    info.crew_tools_withheld = await self._crew_tools_withheld_reason(info, client)
     mcp_problems = self._warn_unusable_mcp_servers(info, client)
 
     # Fail CLOSED on a continuation that did not actually resume. Identity is
@@ -488,7 +490,7 @@ async def _run_inner_impl(
     # A server the session could not mount is stated before the task, so the
     # run never spends a turn discovering the absence for itself. Empty for a
     # healthy session, which leaves this prompt exactly as it was.
-    message = self._spawn_mcp_notice(mcp_problems) + message
+    message = self._spawn_mcp_notice(mcp_problems, info.crew_tools_withheld) + message
     # A spec field the claude session does not apply is named the same way.
     notice = await _session.spec_builtin_tools_notice(
         client, info, session_key, fresh=is_new and not _resumed
@@ -581,6 +583,9 @@ async def _run_inner_impl(
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
+    from kiro_crew.agent_sdk.kas_child_finished import (
+        is_finished_child_call as _child_call_finished,
+    )
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
     from kiro_crew.hook_output import bounded_hook_output
     from kiro_crew.hooks import pre_tool_match_names
@@ -666,11 +671,14 @@ async def _run_inner_impl(
     _person_rejected = [False]
     _refusal_resumes = [0]
     # Whether the model wrote or called anything after the latest refusal.
-    # opencode answers ``reject_once`` by ending a clean turn ``end_turn`` on
-    # the refusal itself, which leaves it unanswered; other harnesses go on
-    # after a reject, so only opencode's clean ending is read as one.
+    # A harness with ``ends_turn_on_permission_reject`` (opencode, on
+    # ``reject_once``) ends a clean turn ``end_turn`` on the refusal itself,
+    # which leaves it unanswered; other harnesses go on after a reject, so only
+    # that clean ending is read as one.
     _refusal_answered = [False]
-    _reject_ends_turn = getattr(client, "is_opencode_backend", False) is True
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    _reject_ends_turn = capabilities_of(client).ends_turn_on_permission_reject
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -1071,8 +1079,10 @@ async def _run_inner_impl(
                     # Two attempts per candidate
                     # (FALLBACK_CANDIDATE_ATTEMPTS), ~2s backoff each —
                     # NOT the exponential same-model curve; see
-                    # llm_helpers Case 2.75 for the rationale.
-                    if not _fb_state.chain:
+                    # llm_helpers Case 2.75 for the rationale. Kiro's
+                    # per-user rate limit is shared by every model: a swap
+                    # cannot clear it, so it surfaces as its own error.
+                    if not _fb_state.chain or getattr(exc, "user_rate_limit", False) is True:
                         raise
                     if not _fb_state.should_retry_active():
                         _cand = await advance_fallback_candidate(
@@ -1158,14 +1168,19 @@ async def _run_inner_impl(
     # The harness the run is on: opencode names a Crew tool only in its title.
     _harness = getattr(getattr(client, "client", None), "backend", None)
     _harness = _harness if isinstance(_harness, str) else None
-    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_PI
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    _fused_names = _harness is not None and (
+        capabilities_for(_harness).names_crew_tools_by_fused_name
+    )
 
     def _harness_servers() -> tuple[str, ...]:
-        # pi and claude name a Crew tool only by a fused name, read as Crew's only
-        # for a server the session handed the harness; read at each dispatch, since
-        # a respawn hands the servers again.
+        # A harness with ``names_crew_tools_by_fused_name`` (pi, claude) names a
+        # Crew tool only by a fused name, read as Crew's only for a server the
+        # session handed the harness; read at each dispatch, since a respawn hands
+        # the servers again.
         names = getattr(getattr(client, "client", None), "_harness_mcp_server_names", None)
-        if _harness not in (ACP_BACKEND_PI, ACP_BACKEND_CLAUDE) or not callable(names):
+        if not _fused_names or not callable(names):
             return ()
         found = names()
         return tuple(found) if isinstance(found, (tuple, list)) else ()
@@ -1490,12 +1505,27 @@ async def _run_inner_impl(
         elif event.kind == EVENT_TOOL_CALL_UPDATE:
             self._manager._note_tool_update(info, event)
             await _card_titles.refine(self._manager, info, event)
-        elif event.kind == EVENT_TOOL_RESULT:
-            # A FINAL result means the tool is done: drop the attribution
-            # snapshot so a later idle stretch is not judged against a
-            # command that has already returned. A non-final progress frame
-            # is not the end of the tool — the gate is in _note_tool_result.
-            self._manager._note_tool_result(info, event)
+        elif event.kind == EVENT_TOOL_RESULT or _child_call_finished(event, client):
+            if event.kind != EVENT_TOOL_RESULT:
+                # A native sub-agent's finished call (``acp.kas_child_finished``):
+                # no tool_call frame named it here, so its event names it now.
+                _pending_tools[event.tool_call_id] = (
+                    getattr(event, "hook_subject", "") or ""
+                ).removeprefix("Running: ")
+                _named = post_tool_identity(
+                    client,
+                    event,
+                    is_shell=bool(event.is_shell),
+                    earlier=_pending_tool_ids.get(event.tool_call_id),
+                )
+                if _named is not None:
+                    _pending_tool_ids[event.tool_call_id] = _named
+            else:
+                # A FINAL result means the tool is done: drop the attribution
+                # snapshot so a later idle stretch is not judged against a
+                # command that has already returned. A non-final progress frame
+                # is not the end of the tool — the gate is in _note_tool_result.
+                self._manager._note_tool_result(info, event)
             # Fire PostToolUse hooks (parity with chat_runner). Until this
             # branch existed, hooks registered for subagent-spawned tools
             # received PreToolUse but never PostToolUse — losing the
@@ -1553,12 +1583,14 @@ async def _run_inner_impl(
     # current prompt stats are still the authoritative billing record.
     usage.settle()
 
-    # kiro-cli's [STEERING steer-…] ack is protocol, not the run's answer: drop
-    # it before the completion result and the result.txt rewrite both read it.
+    # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are
+    # protocol, not the run's answer: drop them before the completion result and
+    # the result.txt rewrite both read it.
     # Imported here: this body runs on kiro_crew.subagent's globals.
     from kiro_crew.messaging.driver import strip_steering_markers
+    from kiro_crew.session_directive import strip_quoted_markers
 
-    result_text = strip_steering_markers(result_text)
+    result_text = strip_quoted_markers(strip_steering_markers(result_text))
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
     # Read before the fallback annotation, which is not a reply.

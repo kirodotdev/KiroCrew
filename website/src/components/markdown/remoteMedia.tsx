@@ -5,6 +5,7 @@ import type { Element as HastElement } from 'hast'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { spa } from './elements'
+import { QuotedContentCtx } from './contexts'
 
 /**
  * REMOTE (http/https) markdown images always render as click-to-load
@@ -276,6 +277,7 @@ function collectRemotes(node?: HastElement): string[] {
 
 export function DeferredMedia({ tag, node, children, onError }: { tag: 'video' | 'audio'; node?: HastElement; children?: React.ReactNode; onError?: () => void }) {
   const [approved, setApproved] = useState(false)
+  const quoted = useContext(QuotedContentCtx)
   // <video controls>/<audio controls> are focusable in their own right, so the
   // approved element itself receives the focus the button gave up.
   const approvedMediaRef = useApprovalFocus<HTMLVideoElement & HTMLAudioElement>(approved)
@@ -304,6 +306,8 @@ export function DeferredMedia({ tag, node, children, onError }: { tag: 'video' |
     setApprovedSig(sig)
     setApproved(false)
   }
+  // A quoted copy never offers to load media: its description stands in (QuotedContentCtx).
+  if (quoted) return description ? <span>{description}</span> : null
   if (remotes.some(isGatewayRouteMediaUrl)) return <GatewayMediaRefused />
   if (!approved && remotes.length > 0) {
     return (

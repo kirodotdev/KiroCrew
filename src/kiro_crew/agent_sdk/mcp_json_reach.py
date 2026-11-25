@@ -79,6 +79,42 @@ def includes_mcp_json(spec: Any, backend: str) -> bool:
     return UNSTATED_OPT_IN if stated is None else stated
 
 
+def spec_opts_into_mcp_json(backend: str) -> bool:
+    """Whether *backend* mounts ``mcp.json`` servers when an agent spec opts in.
+
+    kiro-cli and KAS; for them the folder's ``.kiro/settings/mcp.json`` loads only
+    on that opt-in (:func:`agent_includes_mcp_json`).
+    """
+    return backend in _MCP_JSON_HOSTS
+
+
+def agent_includes_mcp_json(agent: str, backend: str, work_dir: str) -> bool:
+    """:func:`includes_mcp_json` for the spec a session of *agent* in *work_dir* reads.
+
+    The spec is the one *backend* runs: for KAS the spec its projection hands the
+    engine (``acp.harness.kas.resolve_projected_spec``: a user-level spec wins over
+    a checkout spec of the same name, and a checkout-only spec keeps only the keys
+    KAS honours from a checkout); for kiro-cli the one the session projection
+    reads (``acp.session_mcp.agent_spec_snapshot``, checkout first, then user
+    level). Blocking. An unreadable spec answers False.
+    """
+    from kiro_crew.acp.session_mcp import agent_spec_snapshot
+
+    spec: dict[str, Any] | None
+    try:
+        if backend == ACP_BACKEND_KAS:
+            from kiro_crew.acp.harness.kas import resolve_projected_spec
+            from kiro_crew.config.paths import kiro_agents_dir
+
+            spec = resolve_projected_spec(kiro_agents_dir(), agent, work_dir)[0]
+        else:
+            spec = agent_spec_snapshot(agent, work_dir=work_dir)
+    except Exception:  # noqa: BLE001 - an unknown spec opts into nothing
+        logger.debug("mcp.json reach: spec read failed for %s", agent, exc_info=True)
+        return False
+    return includes_mcp_json(spec, backend)
+
+
 def _settings_servers(work_dir: str | Path | None) -> list[Mapping[str, Any]]:
     # The files a session's restrictions are read from, global first. One that
     # cannot be read drops the checkout's file, as the KAS projection does

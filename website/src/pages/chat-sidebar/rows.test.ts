@@ -466,6 +466,20 @@ describe('the lane order', () => {
     const rows = buildSidebarRows(inputs([local('m', { title: 'beta' }), local('n', { title: 'alpha' })], { sortKey: 'name-asc' }))
     expect(keys(rows.filteredSlots)).toEqual(['n', 'm'])
   })
+
+  it('lifts the running rows under "In progress, then newest" and drops one back when its turn ends', () => {
+    const longTurn = local('long', { last_turn_ts: iso(30 * MINUTE) })
+    const idle = local('idle', { last_turn_ts: iso(MINUTE) })
+    const working = peer('w', { running: true, last_turn_ts: iso(20 * MINUTE) })
+    const during = inputs([idle, longTurn, working], { local: { running: new Set(['long']) } })
+    // Newest first ranks a long turn by when it began, so an idle chat passes it.
+    expect(keys(buildSidebarRows(during).filteredSlots)).toEqual(['idle', 'inst-a:w', 'long'])
+    const lifted = buildSidebarRows({ ...during, sortKey: 'active-then-date' })
+    expect(keys(lifted.filteredSlots)).toEqual(['inst-a:w', 'long', 'idle'])
+    // Only the running set changes, so the next build re-sorts on it alone.
+    const after = { ...during, sortKey: 'active-then-date' as const, local: { ...during.local, running: new Set<string>() } }
+    expect(keys(buildSidebarRows(after, lifted).filteredSlots)).toEqual(['inst-a:w', 'idle', 'long'])
+  })
 })
 
 // ── lanes and folders ───────────────────────────────────────────────────────
@@ -772,6 +786,11 @@ describe('the dormant split', () => {
     const byName = buildSidebarRows(inputs([fresh, dormant], { sortKey: 'name-asc' }))
     expect(byName.staleSplit([fresh, dormant], stale).stale).toEqual([])
   })
+
+  it('folds under "In progress, then newest" as under newest first', () => {
+    const rows = buildSidebarRows(inputs([fresh, dormant], { sortKey: 'active-then-date' }))
+    expect(keys(rows.staleSplit(rows.filteredSlots, stale).stale)).toEqual(['dormant'])
+  })
 })
 
 // ── identity ─────────────────────────────────────────────────────────────────
@@ -880,6 +899,9 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     const second = buildSidebarRows(withLocal('unread', new Set(['c']))(rebuilt()), first)
     expect(second.laneOrder).toBe(first.laneOrder)
     expect(second.isRowFolderHidden).toBe(first.isRowFolderHidden)
+    // Only "In progress, then newest" orders by the running set.
+    const third = buildSidebarRows(withLocal('running', new Set(['c']))(rebuilt()), first)
+    expect(third.laneOrder).toBe(first.laneOrder)
   })
 
   // Exactly ONE leaf input changes per row. Built incrementally from the previous

@@ -191,7 +191,7 @@ function pointInRegions(regions, x, y) {
  *   now?: () => number,
  *   reservations?: {isReserved: (a: string) => boolean, onChange: (fn: () => void) => () => void},
  *   displayMemoryPath?: string,
- *   showDashboardSession?: (slotKey: string) => boolean,
+ *   showDashboardSession?: (slotKey: string, crewId: string) => boolean,
  *   openExternal?: (url: string) => void,
  *   timers?: {setInterval?: Function, clearInterval?: Function, setTimeout?: Function, clearTimeout?: Function},
  *   registerCaptureSurface?: (wc: object, url: string) => boolean,
@@ -524,6 +524,11 @@ function createAppWindowHost(deps) {
     const background = decl.kind === "background";
     return {
       ...bounds,
+      // macOS shows a window on another app's full-screen Space only when it is a
+      // non-activating panel, so an overlay or panel is one there (as Mochi's pet and
+      // chat panel are). `type` values are per platform: "panel" is not a legal value
+      // on Windows or Linux, and a background window is never shown.
+      ...(platform === "darwin" && !background ? { type: "panel" } : {}),
       frame: false,
       transparent: overlay || decl.transparent === true,
       alwaysOnTop: !background,
@@ -674,6 +679,9 @@ function createAppWindowHost(deps) {
       // Not in the user's screenshots, recordings or screen shares.
       win.setContentProtection(true);
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      // Above a full-screen app and ordinary always-on-top windows on macOS, where
+      // the default "floating" level sits beneath them.
+      if (platform === "darwin") win.setAlwaysOnTop(true, "screen-saver");
     } else if (decl.kind === "panel") {
       win.setAlwaysOnTop(true, "floating");
       // A panel opened beside a box belongs to it, and the box (an avatar on an
@@ -1431,7 +1439,8 @@ function createAppWindowHost(deps) {
       if (!rec || suspended || typeof slotKey !== "string" || slotKey.length > MAX_SLOT_KEY_LENGTH) return false;
       if (!deps.showDashboardSession) return false;
       try {
-        return deps.showDashboardSession(slotKey) === true;
+        const crewId = rec.target.instanceId === SELF_GATEWAY ? "" : rec.target.instanceId;
+        return deps.showDashboardSession(slotKey, crewId) === true;
       } catch {
         return false;
       }

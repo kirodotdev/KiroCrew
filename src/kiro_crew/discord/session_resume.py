@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import TYPE_CHECKING, cast
 
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
@@ -18,11 +19,13 @@ from kiro_crew.messaging.session_resume import (
     RoutingDecision,
     SessionChoice,
     SessionResumeController,
+    resolve_session_choices,
     same_bucket_origin_keys,
     session_title_of,
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -47,6 +50,20 @@ _DISCORD_COPY = ResumeCopy(
     unlink_command="!unlink",
     conversation_noun="Discord conversation",
 )
+
+
+#: Prefix of the option value a ``/sessions`` or ``/bot`` suggestion sends. The
+#: value is the session's KEY, not its title: a title is shortened and redacted
+#: for display, and the shortened text does not match the search it came from.
+SUGGESTION_KEY_PREFIX = "session-key:"
+
+
+def suggested_key(query: str) -> str | None:
+    """The session key a picked suggestion's value names, or None for free text."""
+    stripped = query.strip()
+    if not stripped.startswith(SUGGESTION_KEY_PREFIX):
+        return None
+    return stripped[len(SUGGESTION_KEY_PREFIX) :] or None
 
 
 def _picker_owner(user_id: str, channel_id: str) -> str:
@@ -252,7 +269,14 @@ class _DiscordBotSurface(_DiscordResumeSurface):
         )
 
     def picker_heading(self, query: str, total: int) -> str:
-        return f"🤖 **Your Bots** ({total})\nReplies from its own thread come back here."
+        # Only a Bot whose thread is open with a message in it is offered (see
+        # ``show_bot_picker``), so the heading says how the others get here:
+        # without it a Bot never opened is missing from the list with no word.
+        return (
+            f"🤖 **Your Bots** ({total})\nReplies from its own thread come back here.\n"
+            "Bot not listed? Open it once on the dashboard's Bots page and send it "
+            "a message, then run `!bot` again."
+        )
 
 
 class DiscordSessionResume:
@@ -343,13 +367,38 @@ class DiscordSessionResume:
         query: str = "",
         native_key: str = "",
     ) -> None:
+        is_owner = self.is_owner(user_id)
+        surface = _DiscordResumeSurface(client, channel_id)
+        key = suggested_key(query)
+        choices: tuple[SessionChoice, ...] | None = None
+        if key is not None:
+            # A picked suggestion names its session by key: offer that session
+            # alone, and only if it is still one the picker would list. The key
+            # is internal, so the picker's copy is written as for no query.
+            query, choices = "", ()
+            if is_owner and self.conv_log is not None:
+                try:
+                    listed, _total, _note = await resolve_session_choices(
+                        self.conv_log,
+                        "",
+                        _safe_discord_text,
+                        limit=sys.maxsize,
+                        sessions=self.sessions,
+                        native_key=native_key,
+                    )
+                except Exception:
+                    logger.exception("discord sessions: history listing failed")
+                    await surface.say("⚠ Recent sessions are unavailable.")
+                    return
+                choices = tuple(c for c in listed if c.key == key)
         await self._controller.show_picker(
-            _DiscordResumeSurface(client, channel_id),
+            surface,
             caller=user_id,
             picker_owner=_picker_owner(user_id, channel_id),
-            is_owner=self.is_owner(user_id),
+            is_owner=is_owner,
             query=query,
             native_key=native_key,
+            choices=choices,
         )
 
     async def show_bot_picker(
@@ -366,19 +415,21 @@ class DiscordSessionResume:
         signed mirror row, same replay). A query naming one Bot binds it at once.
         """
         is_owner = self.is_owner(user_id)
-        choices = self._bot_choices(query) if is_owner else ()
-        if choices and self.conv_log is not None:
-            # A thread opened but never written to has no transcript, and the
-            # commit refuses a pick with none, so it is not offered either.
-            has_log = self.conv_log.has_log
-            kept = [c for c in choices if await asyncio.to_thread(has_log, c.key)]
-            choices = tuple(kept)
+        key = suggested_key(query)
+        choices = (
+            await self._offerable_bot_choices("" if key is not None else query) if is_owner else ()
+        )
+        if key is not None:
+            # A picked suggestion names its Bot thread by key, so it binds that
+            # one thread even when its title was shortened for display.
+            choices = tuple(c for c in choices if c.key == key)
         posted = await self._controller.show_picker(
             _DiscordBotSurface(client, channel_id),
             caller=user_id,
             picker_owner=_picker_owner(user_id, channel_id),
             is_owner=is_owner,
-            query=query,
+            # The key is internal, so the picker's copy is written as for no query.
+            query="" if key is not None else query,
             choices=choices,
         )
         if posted is None or not query.strip() or len(choices) != 1:
@@ -393,6 +444,50 @@ class DiscordSessionResume:
             index=0,
             native_key=native_key,
         )
+
+    async def suggestions(
+        self, command: str, user_id: str, query: str, *, native_key: str, limit: int
+    ) -> tuple[SessionChoice, ...]:
+        """Type-ahead matches for ``/sessions`` or ``/bot``: the owner's alone.
+
+        The same lists the two pickers offer, so a suggestion is never a session
+        the picker would refuse to show. Empty for anyone but the owner. WHERE the
+        titles may be shown (a DM only) is the caller's check.
+        """
+        if not self.is_owner(user_id) or self.conv_log is None:
+            return ()
+        if command == "bot":
+            found = (await self._offerable_bot_choices(query))[:limit]
+        else:
+            listed, _total, _note = await resolve_session_choices(
+                self.conv_log,
+                query,
+                _safe_discord_text,
+                limit=limit,
+                sessions=self.sessions,
+                native_key=native_key,
+            )
+            found = tuple(listed)
+        sel().log_api_access(
+            caller=user_id,
+            operation="discord.sessions_data_access",
+            outcome="allowed",
+            source="discord",
+            resources=f"{len(found)} {command} suggestions read",
+        )
+        return found
+
+    async def _offerable_bot_choices(self, query: str) -> tuple[SessionChoice, ...]:
+        """:meth:`_bot_choices`, keeping only threads that have a transcript.
+
+        A thread opened but never written to has no transcript, and the commit
+        refuses a pick with none, so it is not offered either.
+        """
+        choices = self._bot_choices(query)
+        if not choices or self.conv_log is None:
+            return choices
+        has_log = self.conv_log.has_log
+        return tuple([c for c in choices if await asyncio.to_thread(has_log, c.key)])
 
     def _bot_choices(self, query: str) -> tuple[SessionChoice, ...]:
         """Each Bot's own thread open on the dashboard, filtered by *query*.

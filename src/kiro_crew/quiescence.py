@@ -131,10 +131,11 @@ class Quiescence:
     def named_holders(self) -> tuple[list[dict[str, object]], int]:
         """The first holders as JSON entries, and how many more there are.
 
-        HOST ONLY. A name identifies another session's or job's work, so it goes
-        to a caller entitled to see all of them (the restart idle check, which
-        takes the local secret on loopback) and never into :meth:`payload`, a
-        broadcast or a log line, which reach every dashboard client and app.
+        A name identifies another session's or job's work, so it goes only to a
+        caller entitled to see all of them (the restart idle check, which takes
+        the local secret on loopback, and the owner-gated restart refusal) and
+        never into :meth:`payload`, a broadcast or a log line, which reach every
+        dashboard client and app.
         """
         return work_holders.payload(self.holders)
 

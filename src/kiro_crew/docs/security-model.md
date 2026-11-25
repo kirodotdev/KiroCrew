@@ -195,7 +195,9 @@ prompt. What anyone else can see stays redacted whatever the switch says: a
 channel or group with other members, a Shared Crew teammate, an allowlist link
 or an app. With the switch on, redaction applies to your own views too. It masks
 only values that grant access, including the credential value inside a URL, and
-it recognizes credential families in plaintext and in base64.
+it recognizes credential families in plaintext and in base64. It also matches a
+credential with invisible characters inside it, such as a zero-width space or a
+soft hyphen.
 
 Redaction is not the request-blocking checks. The credential checks on commands
 and URLs run with the switch on or off. A URL the checks flag is a rendering

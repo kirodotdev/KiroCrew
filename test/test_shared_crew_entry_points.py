@@ -262,7 +262,7 @@ async def test_taskrunner_retry_is_admitted_like_start(monkeypatch):
         retried.append(task_id)
 
     runner = SimpleNamespace(_runs={"t-1": object()}, _agent="", retry_from_task=retry_from_task)
-    monkeypatch.setattr(taskrunner, "_require_taskrunner_owner", owner)
+    monkeypatch.setattr(taskrunner, "require_owner_for_dashboard_caller", owner)
     monkeypatch.setattr(taskrunner, "_admit_existing_run", refuse)
     request = make_mocked_request(
         "POST",
@@ -307,7 +307,9 @@ async def test_taskrunner_resume_inherits_admitted_principal(monkeypatch, endpoi
     runner = SimpleNamespace(
         _runs={"t-1": object()}, _agent="", retry_from_task=run, execute_plan=run
     )
-    monkeypatch.setattr(taskrunner, "_require_taskrunner_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        taskrunner, "require_owner_for_dashboard_caller", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(taskrunner, "_admit_existing_run", AsyncMock(return_value=admission))
     monkeypatch.setattr(taskrunner, "_gate_auto_approve", AsyncMock(return_value=False))
     request = make_mocked_request(

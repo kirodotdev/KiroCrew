@@ -693,6 +693,7 @@ def write_lesson(
         LessonWriteOutcome.ENRICHED if matched else LessonWriteOutcome.INSERTED,
         superseded=tuple(superseded),
         applies=effective_applies,
+        key=key,
     )
 
 

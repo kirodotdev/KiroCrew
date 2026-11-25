@@ -1,5 +1,6 @@
 import { CheckCircle2, Download, Loader2, MicOff, MoreHorizontal, RotateCcw, X } from 'lucide-react'
-import { useId } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 
 import ErrorNotice from './ErrorNotice'
 
@@ -12,6 +13,10 @@ import { i18nT } from '../i18n/t'
 import { downloadLabel } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
 import type { KeptRecording } from '../hooks/useVoiceInput'
+import { useReducedMotion } from '../hooks/useReducedMotion'
+
+/** Seconds a silent drain must last before its notice appears. */
+const DRAIN_NOTICE_DELAY_S = 0.8
 interface Props {
   /** True while actively capturing audio. */
   recording: boolean
@@ -106,6 +111,41 @@ function renderNoticeText(notice: NonNullable<Props['notice']>) {
       </button>
       {notice.text.slice(end)}
     </>
+  )
+}
+
+function DelayedDrainNotice({ active, children }: { active: boolean; children: ReactNode }) {
+  const reduceMotion = useReducedMotion()
+  const [ready, setReady] = useState(active && reduceMotion)
+
+  useEffect(() => {
+    if (!active) {
+      setReady(false)
+      return
+    }
+    if (reduceMotion) {
+      setReady(true)
+      return
+    }
+    const timer = setTimeout(() => setReady(true), DRAIN_NOTICE_DELAY_S * 1000)
+    return () => clearTimeout(timer)
+  }, [active, reduceMotion])
+
+  return (
+    <AnimatePresence initial={false}>
+      {active && ready && (
+        <motion.div
+          key="draining"
+          initial={false}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={reduceMotion ? undefined : { height: 0, opacity: 0 }}
+          transition={reduceMotion ? { duration: 0 } : { duration: 0.2, ease: 'easeOut' }}
+          className="overflow-hidden"
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -292,14 +332,30 @@ export default function VoiceStatusBar({ recording, level, muted = false, onTogg
         </div>
       )
     }
-    if (drainCancel) {
-      // The drain before the backend has announced a stage. There is no figure
-      // to report and no stage to name, so the line says only the true thing —
-      // something is being waited on and the words are safe — and the exit sits
-      // beside it. Without this the strip renders nothing at all, and a composer
-      // that accepts no dictation while showing no reason is the shape a user
-      // reads as broken.
+    if (notice && !drainCancel) {
       return (
+        <div
+          role="status"
+          data-testid="voice-status-notice"
+          className={`flex items-start gap-2 px-3 py-1.5 text-[12px] leading-snug border-b border-border bg-chrome/50 ${notice.tone === 'ok' ? 'text-ok' : 'text-muted'}`}
+        >
+          {notice.tone === 'ok' ? <CheckCircle2 size={13} className="shrink-0 mt-0.5" aria-hidden="true" /> : <MicOff size={13} className="shrink-0 mt-0.5" aria-hidden="true" />}
+          {/* Wraps rather than truncates: the chat name is the row's only action,
+              and a `truncate` span clipped the whole button behind "…" at pane
+              width whenever the auto-generated title did not fit. */}
+          <span className="flex-1 min-w-0 break-words">{renderNoticeText(notice)}</span>
+        </div>
+      )
+    }
+    // The drain before the backend has announced a stage. There is no figure
+    // to report and no stage to name, so the line says only the true thing —
+    // something is being waited on and the words are safe — and the exit sits
+    // beside it. Without this the strip renders nothing at all, and a composer
+    // that accepts no dictation while showing no reason is the shape a user
+    // reads as broken. It appears only after a short delay, since most drains
+    // end within a fraction of a second, and folds away when the final lands.
+    return (
+      <DelayedDrainNotice active={!!drainCancel}>
         <div
           role="status"
           data-testid="voice-status-draining"
@@ -313,21 +369,7 @@ export default function VoiceStatusBar({ recording, level, muted = false, onTogg
           </span>
           {cancelButton}
         </div>
-      )
-    }
-    if (!notice) return null
-    return (
-      <div
-        role="status"
-        data-testid="voice-status-notice"
-        className={`flex items-start gap-2 px-3 py-1.5 text-[12px] leading-snug border-b border-border bg-chrome/50 ${notice.tone === 'ok' ? 'text-ok' : 'text-muted'}`}
-      >
-        {notice.tone === 'ok' ? <CheckCircle2 size={13} className="shrink-0 mt-0.5" aria-hidden="true" /> : <MicOff size={13} className="shrink-0 mt-0.5" aria-hidden="true" />}
-        {/* Wraps rather than truncates: the chat name is the row's only action,
-            and a `truncate` span clipped the whole button behind "…" at pane
-            width whenever the auto-generated title did not fit. */}
-        <span className="flex-1 min-w-0 break-words">{renderNoticeText(notice)}</span>
-      </div>
+      </DelayedDrainNotice>
     )
   }
 

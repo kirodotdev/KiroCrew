@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _NO_RESPONSE,
         ACTIVATION_REVIEW,
         STOP_REASON_CANCELLED,
+        STOP_REASON_REFUSAL,
         DashboardState,
         PostedOptions,
         _append_footer_actions,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         _reply_by_voice,
         _safe_final_update,
         _SlackTurn,
+        annotate_model_fallback,
         auto_title,
         build_timing_footer,
         count_redaction_tags,
@@ -201,6 +203,23 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 )
             turn.release_permit()
             return
+
+        # A V2 refusal fallback dropped the refused model's streamed text mid-turn
+        # (``_AnswerStream.on_model_fallback``). If the fallback then answered,
+        # ``accumulated`` holds that answer; if it did not, restore the refused
+        # text so the reader still sees the provider's own words. Either way,
+        # prepend the engine-fallback notice -- the shared spelling reads this
+        # turn's fallback walk off the provider and names the model that answered.
+        if answer.refused_drop:
+            # Restore the refused text ONLY when the turn did not answer (a
+            # refusal terminal): a fallback that answered with tool work alone
+            # ends ``end_turn`` with no text, and restoring the refusal there
+            # would show it under a notice saying another model answered.
+            if _stop_reason == STOP_REASON_REFUSAL and not answer.accumulated.strip():
+                answer.accumulated = answer.last_refused
+            answer.accumulated = annotate_model_fallback(
+                answer.accumulated, client, stop_reason=_stop_reason
+            )
 
         # Strip any inline <thinking> tags that leaked into the text
         _untrimmed = ""
@@ -427,7 +446,11 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 # turn strikes the buttons with a ``chat.update`` on that ts.
                 _footer_inline = await answer.seal(
                     clean_text,
-                    redacted=bool(_render_redacted or exfil_warnings or cred_warnings),
+                    # A refusal drop forces the overwrite: the refused text was
+                    # appended to the live stream, and only this path rewrites it.
+                    redacted=bool(
+                        _render_redacted or exfil_warnings or cred_warnings or answer.refused_drop
+                    ),
                     footer_blocks=None if options else _build_footer(None)[0],
                 )
                 if _answer_text_to_send:

@@ -227,6 +227,13 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     _worktree_note = "" if _flush_only else str(getattr(info, "worktree_note", "") or "")
     if _worktree_note:
         no_tools_note = f"{no_tools_note}\n{_worktree_note}" if no_tools_note else _worktree_note
+    # A run whose session got none of Crew's tools, because a settings file in its
+    # folder withheld them, says so and why on any outcome: the parent and the
+    # person reading its chat otherwise see only a worker that had no tools.
+    _withheld = "" if _flush_only else getattr(info, "crew_tools_withheld_note", "")
+    if isinstance(_withheld, str) and _withheld:
+        _withheld_note = f"Warning: Agent `{info.id}` {_withheld}"
+        no_tools_note = f"{no_tools_note}\n{_withheld_note}" if no_tools_note else _withheld_note
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"

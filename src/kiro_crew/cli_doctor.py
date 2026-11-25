@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import __version__ as _mc_version
 from kiro_crew import agent as _agent
 from kiro_crew import (  # noqa: F401
+    agent_scratch,
     agent_state,
     dep_sync,
     diagnostics,
@@ -141,6 +142,7 @@ from kiro_crew.cli_doctor_parts.mcp_sections import (
     _doctor_gated_off_mcps,
     _doctor_mcp_governance,
     _doctor_mcp_tools,
+    _doctor_unused_own_entries,
     _doctor_whoami_governance,
     _spec_gate_closed,
 )
@@ -247,6 +249,7 @@ from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.platform.governance import (
     CU_MCP_SERVER,
     may_skip_gate_now,
+    withheld_by_auto_deny_tools,
     withheld_by_confirm_tools,
 )
 from kiro_crew.platform.tool_names import (
@@ -509,10 +512,18 @@ def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
     backend or as the crewmate backend. Both fields arrive already resolved by the
     loader's selection gate. Positive tests, so a harness added later does not
     inherit a fatal row for a binary it never runs.
+
+    The KAS route is the spawn's own (``kas_bundle.kas_spawn_takes_bundle``), not
+    ``agent.kas_bundle`` alone: a build that prefers the engine runs the bundle with
+    the setting unset. Blocking (resolves kiro-cli and the sign-in stores).
+    shortcut: judged with no Bot pin, as the other role checks here read only the
+    two role fields; pass a pin if doctor learns ``agents.<name>.acp_backend``.
     """
     selected = (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
     kiro_role = ACP_BACKEND_KIRO in selected
-    relay_kas_role = not cfg.agent.kas_bundle and ACP_BACKEND_KAS in selected
+    relay_kas_role = ACP_BACKEND_KAS in selected and not kas_bundle.kas_spawn_takes_bundle(
+        cfg.agent
+    )
     return kiro_role, relay_kas_role
 
 
@@ -660,7 +671,7 @@ def _doctor(
         # traceback at the one moment the user is already trying to report a
         # failure, so fail with a readable message and a nonzero status instead.
         try:
-            result = diagnostics.collect_bundle(version_alignment=alignment)
+            result = diagnostics.collect_bundle(version_alignment=alignment, outside_gateway=True)
         except OSError as exc:
             print(f"  ❌ could not write the diagnostics bundle: {exc}")
             print("     Check that ~/.kiro/crew is writable and has free space.")
@@ -869,6 +880,8 @@ def _doctor(
         print("  model pins:  ✅ no unusable spellings in agent specs")
     # The same specs' allowedCommands entries Kiro Crew's own gate cannot read.
     agents._doctor_unreadable_allowed_commands(cfg, proj or None, issues)
+    # The same specs' shell and write allowlists, which a Codex session does not apply.
+    agents._doctor_codex_unenforced_allowlists(cfg, proj or None, issues)
 
     # ── Config ──
     dashboard = services._doctor_configuration(cfg, issues)
@@ -990,15 +1003,14 @@ def _doctor(
         # _doctor_gated_off_mcps).
         gated_off = _doctor_gated_off_mcps()
         _doctor_mcp_tools(agent_path, issues, gated_off=gated_off)
+        _doctor_unused_own_entries()
         # After the probe, deliberately: the probe reporting green is the exact
         # condition this section exists to explain.
         _doctor_mcp_governance(agent_path, issues, gated_off=gated_off)
     # After the probe for the same reason: the probe starts kirocrew-core outside
     # kiro-cli's own sandbox, so it passes on the host where that sandbox stops every
     # session. Fatal only when a selected role spawns kiro-cli.
-    confinement._doctor_kiro_sandbox_blocks_crew_mcp(
-        issues, required=any(_selected_roles_run_kiro_cli(cfg))
-    )
+    confinement._doctor_kiro_sandbox_blocks_crew_mcp(issues, required=kiro_role or relay_kas_role)
 
     # ── Python Runtime ──
     print("\nRuntime")

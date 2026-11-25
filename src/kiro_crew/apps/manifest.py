@@ -83,7 +83,6 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_OPEN_HOSTS,
-    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
@@ -640,6 +639,19 @@ class AppManifest:
         if refusal:
             report_path(refusal, f"ui.entry {refusal}: {self.ui.entry!r}")
 
+        if self.ui.startup:
+            refusal = path_refusal(self.ui.startup)
+            if refusal:
+                report_path(refusal, f"ui.startup {refusal}: {self.ui.startup!r}")
+            # The same rule admission applies on every read: a plain script path the
+            # browser cannot normalize out of ui/. Local import: startup_modules
+            # imports the app records module, which imports this one.
+            from kiro_crew.apps.startup_modules import entry_refusal
+
+            startup_refusal = entry_refusal(self.ui.startup)
+            if startup_refusal:
+                errors.append(f"ui.startup refused: {startup_refusal}")
+
         refusal = path_refusal(self.backend.entryPoint)
         if refusal:
             report_path(refusal, f"backend.entryPoint {refusal}: {self.backend.entryPoint!r}")
@@ -669,9 +681,15 @@ class AppManifest:
                     refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
                 )
         for link_open in self.contributes.linkOpen:
-            refusal = path_refusal(link_open.entry)
+            refusal = path_refusal(link_open.entry) if link_open.entry else ""
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+            # The link opens on the app's own page, so there must be one (AppHost
+            # mounts ``ui.entry``; without it the page is a placeholder).
+            if link_open.page_param and not (self.ui.entry and self.ui.pages):
+                errors.append(
+                    f"contributes.linkOpen[{link_open.id}]: page needs ui.entry and ui.pages"
+                )
         # A composer-action entry is imported by the same frame bootstrap.
         for composer in self.contributes.composerActions:
             refusal = path_refusal(composer.entry)

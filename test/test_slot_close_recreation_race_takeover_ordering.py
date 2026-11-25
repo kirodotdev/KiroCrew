@@ -760,7 +760,8 @@ async def test_handover_append_tightens_a_persistent_replacement_line(tmp_path):
     state.get_or_create_slot(NAME)
     # The replacement's line, as its own first save would have written it.
     record = ExecutionContext(None, MemoryStoreRef("default"), "template", "").to_record()
-    assert state.conversation_log.update_metadata_if(
+    assert await asyncio.to_thread(
+        state.conversation_log.update_metadata_if,
         history_key,
         {
             "memory_mode": "persistent",

@@ -24,6 +24,10 @@ vi.mock('../../components/crew/CrewMonitoredAvatar', () => ({
   ),
 }))
 
+vi.mock('./CrewHeldLimits', () => ({
+  default: ({ member }: { member: { name: string } }) => <section data-testid="held-limits-stub">{member.name}</section>,
+}))
+
 vi.mock('./CrewExportView', () => ({
   default: ({ slug, member, name, mode, onDirtyChange }: { slug: string; member: string; name?: string; mode?: string; onDirtyChange?: (d: boolean) => void }) => (
     <div data-testid="export-view-stub" data-mode={mode ?? 'export'} data-name={name ?? ''}>
@@ -209,20 +213,28 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByTestId('crew-profile-model')).toBeNull()
   })
 
-  it('carries a guide marker on its Schedules, Goals and Profile tabs and nowhere else', () => {
+  it('carries a guide marker on its Sessions, Schedules, Goals and Profile tabs and nowhere else', () => {
     // Schedules and Goals are where a mate's welcome tour points; Profile is also
-    // the step a guide to the Settings row takes first. The permission picker the
+    // the step a guide to the Settings row takes first, and Sessions the step to
+    // the bot's own Sessions-list switch. The permission picker the
     // card holds is answered in words, not guided (it is a trust root); the
     // settings body is a slot here, so its row is absent.
     setup()
     const marked = Array.from(document.querySelectorAll('[data-ui-location]'))
     expect(marked.map(el => el.getAttribute('data-ui-location'))).toEqual([
+      'members.sessions-tab',
       'members.schedule-tab',
       'members.goals-tab',
       'members.profile-tab',
     ])
     for (const el of marked) expect(el).toHaveAttribute('role', 'tab')
-    expect(marked[2]).toBe(screen.getByRole('tab', { name: 'Profile' }))
+    expect(marked[3]).toBe(screen.getByRole('tab', { name: 'Profile' }))
+  })
+
+  it('puts the bot\'s held limits directly under About', () => {
+    setup()
+    const held = screen.getByTestId('held-limits-stub')
+    expect(screen.getByTestId('crew-profile-about').nextElementSibling).toBe(held)
   })
 
   it('says there is no description instead of rendering an empty card', () => {

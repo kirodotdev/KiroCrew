@@ -1470,12 +1470,14 @@ class TestLinkedThreadRouting:
             _directive_channel_origin,
             _directive_source_channels,
             _commands_off,
+            _expansions_off,
             _slack_voice,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
             assert _directive_source_channels == ("C1",)
             assert _commands_off is False
+            assert _expansions_off is False
             assert _slack_voice is None
             ran.append(text)
 
