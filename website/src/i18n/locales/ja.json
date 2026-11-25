@@ -8889,7 +8889,11 @@
       "reasoning_effort": "推論エフォート",
       "smarter": "スマート",
       "use_configured_default": "デフォルトのエフォートを使用（{{level}}）",
-      "use_default_effort": "デフォルトのエフォートを使用"
+      "use_default_effort": "デフォルトのエフォートを使用",
+      "not_offered_runs": "{{running}}（このモデルは{{level}}に対応していません）",
+      "not_offered_model_own": "モデルがエフォートを決定します（このモデルは{{level}}に対応していません）",
+      "not_offered_short": "{{level}}は非対応",
+      "model_own_short": "モデルが決定"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "チームに固有のアプリを検出するために組織レジストリを追加",

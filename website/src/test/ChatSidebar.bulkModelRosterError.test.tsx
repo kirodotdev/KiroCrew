@@ -105,6 +105,8 @@ const LIVE_ROSTER = [
 /** The adapter's own cache slot: a good list from an earlier live fetch. */
 const MODELS_CACHE_KEY = 'kc.acp.models.v1'
 
+let lastQc: QueryClient
+
 function renderSidebar(slots: Record<string, unknown>[] = SLOTS) {
   const defaults = createTestStore().getState()
   const store = createTestStore({
@@ -124,6 +126,7 @@ function renderSidebar(slots: Record<string, unknown>[] = SLOTS) {
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  lastQc = qc
   qc.setQueryData(['chat-folders'], [])
   qc.setQueryData(['tag-columns'], [])
   const tree = (list: Record<string, unknown>[]) => (
@@ -483,6 +486,20 @@ describe('ChatSidebar — Switch All Sessions effort', () => {
     expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model and effort: B')
     fireEvent.click(switchBtn())
     await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('opus-4.8', true, 'high'))
+  })
+
+  it('asks every session for its effort answer again after a switch lands', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar(ON_OPUS)
+    lastQc.setQueryData(['slot-selection-capabilities', 'k-a'], { known: true, effort_supported: true })
+    lastQc.setQueryData(['slot-selection-capabilities', 'k-b'], { known: true, effort_supported: true })
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    await pickEffort('High')
+    fireEvent.click(switchBtn())
+    await waitFor(() => expect(lastQc.getQueryState(['slot-selection-capabilities', 'k-a'])?.isInvalidated).toBe(true))
+    expect(lastQc.getQueryState(['slot-selection-capabilities', 'k-b'])?.isInvalidated).toBe(true)
   })
 
   it('offers no Default row: a session goes back to its default from its own dropdown', async () => {

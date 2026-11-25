@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { effortLabel } from './ChatInput'
@@ -58,6 +58,7 @@ interface Props {
  *  live levels from /api/effort-levels (keyed by slot so a model switch is
  *  reflected on remount). */
 export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded, levelsOverride, writeEffort, onWriteError }: Props) {
+  const queryClient = useQueryClient()
   const { data: liveLevels = FALLBACK_LEVELS } = useQuery({
     queryKey: ['effort-levels', slot],
     queryFn: () => api.effortLevels(slot).then(data =>
@@ -129,6 +130,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     return performSlotSwitch('reasoning_effort', slot, level,
       async () => {
         const r = await (writeEffort ? writeEffort(level) : api.chatSlotReasoningEffort(slot, level))
+        void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slot] })
         normalizedModel = r?.model
         return r?.reasoning_effort ?? level
       },
@@ -137,7 +139,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
         reasoning_effort: value,
         ...(normalizedModel ? { model: normalizedModel } : {}),
       })))
-  }, [slot, dispatch, writeEffort])
+  }, [slot, dispatch, writeEffort, queryClient])
 
   const announcePersistFailure = useCallback((error: unknown, failedLevel: string) => {
     // A superseded request may still reject after a newer pick was staged or

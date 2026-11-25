@@ -59,6 +59,7 @@ function harness(over: Partial<Opts> = {}) {
 beforeEach(() => {
   apiMock.updateKirocrewAgent.mockReset()
   apiMock.projectGit.mockReset()
+  apiMock.kirocrewConfig.mockReset()
 })
 
 describe('pinning the shown model to the agent', () => {
@@ -137,6 +138,70 @@ describe('effort control gate on the capability read', () => {
     const peerDown = Object.assign(new Error('peer unavailable'), { status: 503 })
     hook.rerender({ ...base, selectionCapabilitiesQ: { isError: true, error: peerDown } })
     expect(hook.result.current.effortSupported).toBe(false)
+  })
+})
+
+describe('a picked level the serving model does not offer (#42115)', () => {
+  it('names the level that runs, and keeps the pick on the slot', () => {
+    const { opts, hook } = harness({
+      currentSlot: { key: 'slot-a', agent: 'builder', model: 'm-2', reasoning_effort: 'max' } as ChatSlot,
+    })
+    expect(hook.result.current.effectiveEffort).toBe('max')
+    expect(hook.result.current.effortNotOffered).toBe('')
+    hook.rerender({
+      ...opts,
+      selectionCapabilities: {
+        known: true, effort_supported: true, effort_levels: ['low', 'high'],
+        effort_unapplied: 'max', effort_running: 'high',
+      } as never,
+    })
+    expect(hook.result.current.effectiveEffort).toBe('high')
+    expect(hook.result.current.effortNotOffered).toBe('max')
+    expect(opts.currentSlot?.reasoning_effort).toBe('max')
+  })
+
+  it('uses the server pair when the inherited default differs from the resolved crew level', async () => {
+    apiMock.kirocrewConfig.mockResolvedValue({ agent: { reasoning_effort: 'medium' } })
+    const { opts, hook } = harness()
+    const provider = {
+      ...(opts.provider as object),
+      capabilities: { reasoningEffort: true },
+    }
+    hook.rerender({
+      ...opts,
+      provider: provider as never,
+      selectionCapabilities: {
+        known: true, effort_supported: true, effort_levels: ['low', 'high'],
+        effort_unapplied: 'max', effort_running: 'high', effort_inherited: true,
+      } as never,
+    })
+    await waitFor(() => expect(hook.result.current.defaultEffort).toBe('medium'))
+    expect(hook.result.current.effectiveEffort).toBe('high')
+    expect(hook.result.current.effortNotOffered).toBe('max')
+  })
+
+  it('drops the pick\'s pair once the pick is cleared elsewhere', async () => {
+    apiMock.kirocrewConfig.mockResolvedValue({ agent: { reasoning_effort: 'medium' } })
+    const picked = { key: 'slot-a', agent: 'builder', model: 'm-2', reasoning_effort: 'max' } as ChatSlot
+    const { opts, hook } = harness({ currentSlot: picked })
+    // The answer cached for the pick: checked for `max`, not for an inherited level.
+    const pickCaps = {
+      known: true, effort_supported: true, effort_levels: ['low', 'high'],
+      effort_unapplied: 'max', effort_running: 'high',
+    } as never
+    const withEffort = {
+      ...opts,
+      provider: { ...(opts.provider as object), capabilities: { reasoningEffort: true } } as never,
+      selectionCapabilities: pickCaps,
+    }
+    hook.rerender(withEffort)
+    await waitFor(() => expect(hook.result.current.defaultEffort).toBe('medium'))
+    expect(hook.result.current.effectiveEffort).toBe('high')
+    expect(hook.result.current.effortNotOffered).toBe('max')
+    // Another tab clears the pick; the slot updates before the answer does.
+    hook.rerender({ ...withEffort, currentSlot: { ...picked, reasoning_effort: undefined } as ChatSlot })
+    expect(hook.result.current.effectiveEffort).toBe('medium')
+    expect(hook.result.current.effortNotOffered).toBe('')
   })
 })
 

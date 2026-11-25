@@ -492,6 +492,15 @@ describe('CrewProfileSettings model and effort', () => {
     expect(rowValue('reasoning_effort')).toHaveTextContent('High')
   })
 
+  it('asks every session for its effort answer again after an effort save', async () => {
+    setup(member({ model: 'claude-opus-5' }))
+    lastQc.setQueryData(['slot-selection-capabilities', 'member-oncall'], { known: true, effort_supported: true })
+    lastQc.setQueryData(['slot-selection-capabilities', 'other-thread'], { known: true, effort_supported: true })
+    pick('reasoning_effort', 'High')
+    await waitFor(() => expect(lastQc.getQueryState(['slot-selection-capabilities', 'member-oncall'])?.isInvalidated).toBe(true))
+    expect(lastQc.getQueryState(['slot-selection-capabilities', 'other-thread'])?.isInvalidated).toBe(true)
+  })
+
   it('names the model an inherited pin resolves to, on the Inherited option itself', async () => {
     setup(member())
     const p = open('model')

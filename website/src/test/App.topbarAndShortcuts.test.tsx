@@ -595,6 +595,24 @@ describe('onCycleReasoningEffort keyboard shortcut (#5120)', () => {
       store.getState().dashboard.slots.find((s: { key: string }) => s.key === 'slot-1')?.reasoning_effort,
     ).toBe(''))
   })
+
+  it.each([
+    ['forward', 'D', 'KeyD'],
+    ['backward', 'C', 'KeyC'],
+  ])('asks the slot for its effort answer again after a cycled level lands (%s)', async (_direction, key, code) => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    ;(api.chatSlotReasoningEffort as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', reasoning_effort: 'low' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: true, effort_supported: true, effort_levels: ['low', 'high'] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key, code, altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(queryClient.getQueryState(['slot-selection-capabilities', 'slot-1'])?.isInvalidated).toBe(true))
+  })
 })
 
 describe('onCycleReasoningEffort follows the session\'s harness', () => {

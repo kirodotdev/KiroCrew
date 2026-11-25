@@ -129,6 +129,30 @@ export function effortOffOnAuto(
 }
 
 /**
+ * The level a chip names in place of `shown` (the slot's level, else the
+ * default), and the level the serving model does not offer.
+ *
+ * The slot keeps a level the model does not offer, for a model that does, and
+ * the live session reports `effort_unapplied` (that level) with `effort_running`
+ * (what runs, `''` when the model decides and the level has no name). The chip then names
+ * what runs. For a slot's own pick, the report must name `shown` so a stale
+ * capability answer cannot replace a newer pick. For an inherited level, the
+ * chip trusts only a pair the server computed for an inherited level
+ * (`effort_inherited`), because the server resolves crew pins that `shown`
+ * may not include, and a pair it computed for a pick says nothing about the
+ * level a slot with no pick inherits. Anything else leaves `shown` as it is.
+ */
+export function effortInForce(
+  shown: string,
+  caps: { effort_unapplied?: string; effort_running?: string; effort_inherited?: boolean } | undefined,
+  shownIsOwnPick: boolean,
+): { level: string; notOffered: string } {
+  const unapplied = caps?.effort_unapplied
+  if (!unapplied || (shownIsOwnPick ? unapplied !== shown : !caps?.effort_inherited)) return { level: shown, notOffered: '' }
+  return { level: caps?.effort_running || '', notOffered: unapplied }
+}
+
+/**
  * Did the slot's selection-capability read actually FAIL?
  *
  * A 404 is not a failure: the gateway answers `slot_not_found` while a new chat's

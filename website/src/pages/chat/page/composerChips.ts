@@ -6,7 +6,7 @@ import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort } from '
 import { useDefaultEffort } from '../../../hooks/useDefaultEffort'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import { i18nT } from '../../../i18n/t'
-import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
+import { effortInForce, effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
 import { modelHealthKey, useModelsUnconfirmed } from '../../../providers/modelListHealth'
@@ -32,7 +32,7 @@ interface ComposerChipsOptions {
   selectionCapabilitiesQ: {
     isError: boolean
     error?: unknown
-    data?: { models_backend?: string; effort_supported?: boolean | null; effort_levels?: string[] }
+    data?: { models_backend?: string; effort_supported?: boolean | null; effort_levels?: string[]; effort_unapplied?: string; effort_running?: string; effort_inherited?: boolean }
   }
   dispatch: AppDispatch
   queryClient: QueryClient
@@ -197,11 +197,17 @@ export function useComposerChips({
   // "Default", which read as "the model decides" and hid the real setting.
   const defaultEffort = useDefaultEffort(provider.capabilities.reasoningEffort)
   // Effort actually in force for the active slot: per-slot override, else the
-  // configured default. Display only — the slot's raw value still drives the
-  // picker so "no override" stays distinguishable from an explicit pick.
-  const effectiveEffort = currentSlot?.reasoning_effort || legacyCodexEffort(
+  // configured default, else what runs when the model does not offer that
+  // level. Display only — the slot's raw value still drives the picker so "no
+  // override" stays distinguishable from an explicit pick.
+  const ownEffort = currentSlot?.reasoning_effort || legacyCodexEffort(
     currentSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  )
+  const { level: effectiveEffort, notOffered: effortNotOffered } = effortInForce(
+    ownEffort || defaultEffort,
+    effortCaps,
+    !!ownEffort,
+  )
   // Branch label for the active project chip. The user can check out a
   // different branch outside the dashboard at any time, so this refetches on a
   // slow interval and on window focus rather than being read once. A failure
@@ -227,7 +233,7 @@ export function useComposerChips({
   return {
     shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, effortAutoNote,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
-    defaultEffort, effectiveEffort,
+    defaultEffort, effectiveEffort, effortNotOffered,
     _slotProject, projectGit, projectGitError, projectBranch,
   }
 }

@@ -4,7 +4,7 @@
 import { useState, useRef, useMemo, useId } from 'react'
 import { Cpu } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ModelDropdownList from '../../components/ModelDropdownList'
@@ -40,6 +40,7 @@ export function useBulkModelSwitch({ localSlots, slots }: {
   slots: Slot[]
 }) {
   // Bulk model switch — apply one model to every live session at once.
+  const queryClient = useQueryClient()
   const [bulkModelOpen, setBulkModelOpen] = useState(false)
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
@@ -172,6 +173,9 @@ export function useBulkModelSwitch({ localSlots, slots }: {
       // ones it left alone, and `effort_deferred` for the ones that run the new
       // effort only from their next start. Any of them keeps the panel open,
       // naming its sessions, instead of reading as a switch that fully applied.
+      // Each chip compares its slot's pick with its effort answer, so every
+      // session's answer is asked again for the new model and level.
+      void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities'] })
       const outcome = {
         switched: res.switched ?? [],
         busy: res.skipped_running ?? [],

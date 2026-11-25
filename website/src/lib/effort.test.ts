@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { ApiError } from '../api/apiError'
-import { effortOffOnAuto, selectionCapabilitiesFailed } from './effort'
+import { effortInForce, effortOffOnAuto, selectionCapabilitiesFailed } from './effort'
 
 describe('selectionCapabilitiesFailed', () => {
   it('is false when the read has not errored', () => {
@@ -43,5 +43,40 @@ describe('effortOffOnAuto', () => {
 
   it('leaves a failed capability read to its own notice', () => {
     expect(effortOffOnAuto(true, false, true, 'auto')).toBe(false)
+  })
+})
+
+// #42115: a level the serving model does not offer stays on the slot, and the
+// chip names what runs instead.
+describe('effortInForce', () => {
+  it('names what runs when the session reports the shown own pick unapplied', () => {
+    expect(effortInForce('max', { effort_unapplied: 'max', effort_running: 'high' }, true))
+      .toEqual({ level: 'high', notOffered: 'max' })
+  })
+
+  it('takes the session report for an inherited level', () => {
+    expect(effortInForce('medium', { effort_unapplied: 'max', effort_running: 'high', effort_inherited: true }, false))
+      .toEqual({ level: 'high', notOffered: 'max' })
+  })
+
+  it('ignores a report checked for a pick when the slot has none', () => {
+    // A pick cleared elsewhere leaves the answer for the old pick cached.
+    expect(effortInForce('medium', { effort_unapplied: 'max', effort_running: 'high' }, false))
+      .toEqual({ level: 'medium', notOffered: '' })
+  })
+
+  it('names no level when the model runs its own', () => {
+    expect(effortInForce('max', { effort_unapplied: 'max', effort_running: '' }, true))
+      .toEqual({ level: '', notOffered: 'max' })
+    expect(effortInForce('max', { effort_unapplied: 'max' }, true))
+      .toEqual({ level: '', notOffered: 'max' })
+  })
+
+  it('leaves the shown level alone otherwise', () => {
+    expect(effortInForce('high', undefined, true)).toEqual({ level: 'high', notOffered: '' })
+    expect(effortInForce('high', {}, true)).toEqual({ level: 'high', notOffered: '' })
+    // A newer pick than the one the session reported keeps its own name.
+    expect(effortInForce('low', { effort_unapplied: 'max', effort_running: 'high' }, true))
+      .toEqual({ level: 'low', notOffered: '' })
   })
 })

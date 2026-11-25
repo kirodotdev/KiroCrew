@@ -9120,7 +9120,11 @@
       "reasoning_effort": "Denkaufwand",
       "smarter": "Intelligenter",
       "use_configured_default": "Standardaufwand verwenden ({{level}})",
-      "use_default_effort": "Standardaufwand verwenden"
+      "use_default_effort": "Standardaufwand verwenden",
+      "not_offered_runs": "{{running}} ({{level}} bietet dieses Modell nicht an)",
+      "not_offered_model_own": "Das Modell legt den Aufwand fest ({{level}} bietet dieses Modell nicht an)",
+      "not_offered_short": "{{level}} nicht angeboten",
+      "model_own_short": "Modell entscheidet"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Fügen Sie eine Organisations-Registry hinzu, um teamspezifische Apps zu entdecken",

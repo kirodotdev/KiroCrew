@@ -9351,7 +9351,11 @@
       "reasoning_effort": "Esforço de raciocínio",
       "smarter": "Mais inteligente",
       "use_configured_default": "Usar o esforço padrão ({{level}})",
-      "use_default_effort": "Usar o esforço padrão"
+      "use_default_effort": "Usar o esforço padrão",
+      "not_offered_runs": "{{running}} (este modelo não oferece {{level}})",
+      "not_offered_model_own": "O modelo decide o nível de esforço (este modelo não oferece {{level}})",
+      "not_offered_short": "{{level}} não disponível",
+      "model_own_short": "O modelo decide"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Adicione um registro da organização para descobrir apps específicos da equipe",

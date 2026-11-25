@@ -338,6 +338,8 @@ from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # n
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _approve_for_me_field,
     _configured_backend_for_slot,
+    _effort_unapplied_fields,
+    _inherited_effort,
     _own_models_field,
     _push_live_effort,
     _restart_for_approve_for_me,

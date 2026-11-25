@@ -56,7 +56,9 @@ if TYPE_CHECKING:
         own_models_backend,
         read_bounded_json,
         relay_archive_refusal,
+        resolve_agent_bindings,
         resolve_effective_model,
+        resolve_session_agent_bindings,
         sel,
         set_effort_overlay_clear_mark,
         slot_not_found,
@@ -104,6 +106,57 @@ async def _own_models_field(backend: str, config: Any = None) -> dict[str, str]:
     config = config if config is not None else await asyncio.to_thread(KiroCrewConfig.load)
     own = own_models_backend(backend, config.agent.acp_backend)
     return {} if own is None else {"models_backend": own}
+
+
+def _effort_unapplied_fields(unapplied: object, inherited: bool = False) -> dict[str, str | bool]:
+    """``effort_unapplied`` / ``effort_running`` for ``effort_left_unapplied``'s answer.
+
+    Both values reach the composer chip, so each must be a level the dashboard
+    knows (``""`` for the model's own); anything else reports nothing.
+    ``effort_inherited`` marks a pair checked for the inherited level rather
+    than the slot's own pick, so a chip with no pick trusts only such a pair.
+    """
+    if not (isinstance(unapplied, tuple) and len(unapplied) == 2):
+        return {}
+    stored, running = unapplied
+    known = get_reasoning_effort_values()
+    if not (isinstance(stored, str) and stored and stored in known):
+        return {}
+    if not (isinstance(running, str) and running in known):
+        running = ""
+    fields: dict[str, str | bool] = {"effort_unapplied": stored, "effort_running": running}
+    if inherited:
+        fields["effort_inherited"] = True
+    return fields
+
+
+def _inherited_effort(config: KiroCrewConfig, slot: _ChatSlot) -> str:
+    """The level a session on *slot* inherits, or ``""`` when its selection does not resolve.
+
+    The selection resolves as turn admission resolves it, and the level as
+    the provider factory then resolves it: a template selection runs under
+    no crew, so a crewmate that shares the template's name lends it no pin.
+    Reads files, so callers run it off the event loop. A failure checks no
+    level and leaves the response intact.
+    """
+    try:
+        bindings = resolve_session_agent_bindings(
+            resolve_agent_bindings,
+            config,
+            effective_session_key(slot),
+            slot.agent or None,
+            slot.project or None,
+            agent_kind=slot.agent_kind,
+        )
+        crew = "" if bindings.selection_kind == "template" else bindings.resolved_alias
+        return config.resolve_session_effort(bindings.kiro_agent or slot.agent or None, crew)
+    except Exception:
+        logger.debug(
+            "selection capabilities: could not resolve slot %s's inherited effort",
+            slot.key,
+            exc_info=True,
+        )
+        return ""
 
 
 async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Response:
@@ -196,6 +249,19 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             ),
             source="local fallback",
         )
+    # The slot's level stays picked when this model does not offer it; the
+    # composer chip names the level that runs instead. With no pick the chip
+    # names the level a session on this slot inherits, from the crew its
+    # selection resolves to (none for a template), so that level is checked
+    # the same way.
+    live_config: KiroCrewConfig | None = None
+    stored_effort = slot.reasoning_effort
+    if supported and not stored_effort:
+        live_config = await asyncio.to_thread(KiroCrewConfig.load)
+        stored_effort = await asyncio.to_thread(_inherited_effort, live_config, slot)
+    unapplied = (
+        provider.effort_left_unapplied(stored_effort) if supported and stored_effort else None
+    )
     ultracode = provider.ultracode_enabled()
     fast = provider.fast_mode_enabled()
     # Asked only of a switch that reads off: the harness names no blocker for one on.
@@ -207,7 +273,11 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             "effort_supported": supported and bool(levels),
             "effort_levels": levels,
             "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
-            **await _own_models_field(backend),
+            **await _own_models_field(backend, live_config),
+            # Present only while the session runs another level than the slot's
+            # (or the inherited one), because this model does not offer it: that
+            # level and the one that runs (``""``: the model's own, no name).
+            **_effort_unapplied_fields(unapplied, inherited=not slot.reasoning_effort),
             # Each present only while the session advertises that switch.
             **({} if ultracode is None else {"ultracode": ultracode}),
             **({} if fast is None else {"fast": fast}),

@@ -81,6 +81,15 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         /** `null` before a session reports, where only a live session on its harness can say. */
         effort_supported?: boolean | null
         effort_levels?: string[]
+        /** The slot's level when this model does not offer it, so the session runs
+         *  another one; present only then. The slot keeps it for a model that does. */
+        effort_unapplied?: string
+        /** The level the session runs instead (`''`: the model's own, which has no
+         *  name); present only beside `effort_unapplied`. */
+        effort_running?: string
+        /** `true` when that pair was checked for the level a slot with no pick
+         *  inherits; absent for a pair checked for the slot's own pick. */
+        effort_inherited?: boolean
         model_effort_pair_ids?: boolean
         /** Present when this session's harness lists other models than the configured backend. */
         models_backend?: string

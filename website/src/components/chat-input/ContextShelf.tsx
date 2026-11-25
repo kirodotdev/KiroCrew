@@ -452,7 +452,7 @@ export function ContextUsageControl({ contextPct, contextUnknown = false, contex
 /** The model chip. It names the level in force beside the model; the level is
  *  CHANGED inside the model picker the chip opens (model and effort are one
  *  control, docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md). */
-export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, harnessBackend, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
+export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, effortNotOffered = '', hasEffort, harnessBackend, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
   modelName: string
   harnessBackend?: string
   modelIsJevRouted?: boolean
@@ -460,6 +460,8 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   modelIsAutoChosen?: boolean
   reasoningEffort?: string
   effortIsDefault: boolean
+  /** The slot's level when the model does not offer it; `reasoningEffort` is then what runs. */
+  effortNotOffered?: string
   hasEffort?: boolean
   isRunning: boolean
   shelfTiny: boolean
@@ -473,9 +475,15 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   // state too -- one suffix, appended to each branch.
   // A default and an override show the same level on the chip; the
   // name says which one it is (the picker's own "Default · High").
-  const effortShown = effortIsDefault
-    ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(reasoningEffort || '') })
-    : effortLabel(reasoningEffort || '')
+  // A level the model does not offer stays picked for a model that does, so the
+  // chip names what runs and the name says the pick is not offered here.
+  const effortShown = effortNotOffered
+    ? reasoningEffort
+      ? i18nT('components.reasoningEffortDropdown.not_offered_runs', { running: effortLabel(reasoningEffort), level: effortLabel(effortNotOffered) })
+      : i18nT('components.reasoningEffortDropdown.not_offered_model_own', { level: effortLabel(effortNotOffered) })
+    : effortIsDefault
+      ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(reasoningEffort || '') })
+      : effortLabel(reasoningEffort || '')
   // The chip stays enabled while a response runs -- a pick then is committed
   // and applied from the next message (the gateway answers `deferred: true`;
   // the running reply finishes on the model it started with), the project
@@ -570,11 +578,24 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         something the user needs at a glance, and the hover / accessible
         name above still says which. With no level known (the model
         decides), there is nothing concrete to show, so the segment is
-        left out. */}
-    {hasEffort && !shelfTiny && !!reasoningEffort && (
+        left out -- unless the pick is not offered, where the chip must
+        still say what runs instead: that the model decides. */}
+    {hasEffort && !shelfTiny && (!!reasoningEffort || !!effortNotOffered) && (
       <>
         <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-        <span className="opacity-60 shrink-0">{effortLabel(reasoningEffort)}</span>
+        <span className="opacity-60 shrink-0">
+          {reasoningEffort ? effortLabel(reasoningEffort) : i18nT('components.reasoningEffortDropdown.model_own_short')}
+        </span>
+      </>
+    )}
+    {/* A level the model does not offer stays picked, so the chip says so in
+        words on its face, not only in the hover / accessible name above. */}
+    {hasEffort && !shelfTiny && !!effortNotOffered && (
+      <>
+        <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
+        <span className="opacity-60 shrink-0" data-testid="composer-model-chip-effort-not-offered">
+          {i18nT('components.reasoningEffortDropdown.not_offered_short', { level: effortLabel(effortNotOffered) })}
+        </span>
       </>
     )}
   </button>

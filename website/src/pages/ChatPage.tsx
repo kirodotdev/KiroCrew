@@ -888,7 +888,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, effortAutoNote,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
-    defaultEffort, effectiveEffort,
+    defaultEffort, effectiveEffort, effortNotOffered,
     _slotProject, projectGit, projectGitError, projectBranch,
   } = useComposerChips({
     currentSlot,
@@ -1335,7 +1335,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               mentionKeyEdit={mentionKeyEdit} optimizerMentionGuard={optimizerMentionGuard} mentionEditRange={mentionEditRange} removeDirChip={removeDirChip} removeFileChip={removeFileChip} selectPickedFile={selectPickedFile}
               followupAddToSession={followupAddToSession} followupStartInNewChat={followupStartInNewChat} followupStartInWorktree={followupStartInWorktree} displayMode={displayMode}
               _modelPinActive={_modelPinActive} _modelPinAgent={_modelPinAgent} _modelPinPinned={_modelPinPinned} _pinShownModel={_pinShownModel} _slotProject={_slotProject}
-              defaultEffort={defaultEffort} effectiveEffort={effectiveEffort} effortLevelsOverride={effortLevelsOverride} effortSupported={effortSupported} effortAutoNote={effortAutoNote} modelMarker={modelMarker}
+              defaultEffort={defaultEffort} effectiveEffort={effectiveEffort} effortNotOffered={effortNotOffered} effortLevelsOverride={effortLevelsOverride} effortSupported={effortSupported} effortAutoNote={effortAutoNote} modelMarker={modelMarker}
               pinModelToAgentMut={pinModelToAgentMut} projectBranch={projectBranch} projectGit={projectGit} projectGitError={projectGitError} shownModel={shownModel}
               cardOwnsRecovery={cardOwnsRecovery} resumeAfterSignIn={resumeAfterSignIn} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
               endQuoteFlight={endQuoteFlight} flyingQuote={flyingQuote} inputAreaRef={inputAreaRef} isAtBottom={isAtBottom} answerQuestionCard={answerQuestionCard}

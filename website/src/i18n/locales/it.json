@@ -9351,7 +9351,11 @@
       "reasoning_effort": "Livello di ragionamento",
       "smarter": "Più intelligente",
       "use_configured_default": "Usa il livello predefinito ({{level}})",
-      "use_default_effort": "Usa il livello predefinito"
+      "use_default_effort": "Usa il livello predefinito",
+      "not_offered_runs": "{{running}} (questo modello non offre {{level}})",
+      "not_offered_model_own": "Il modello decide il livello (questo modello non offre {{level}})",
+      "not_offered_short": "{{level}} non disponibile",
+      "model_own_short": "Decide il modello"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Aggiungi un registry dell'organizzazione per scoprire app specifiche del team",

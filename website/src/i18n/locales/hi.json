@@ -9120,7 +9120,11 @@
       "reasoning_effort": "रीज़निंग प्रयास",
       "smarter": "अधिक स्मार्ट",
       "use_configured_default": "डिफ़ॉल्ट प्रयास उपयोग करो ({{level}})",
-      "use_default_effort": "डिफ़ॉल्ट प्रयास उपयोग करो"
+      "use_default_effort": "डिफ़ॉल्ट प्रयास उपयोग करो",
+      "not_offered_runs": "{{running}} (यह मॉडल {{level}} नहीं देता)",
+      "not_offered_model_own": "मॉडल प्रयास का स्तर तय करता है (यह मॉडल {{level}} नहीं देता)",
+      "not_offered_short": "{{level}} उपलब्ध नहीं",
+      "model_own_short": "मॉडल तय करता है"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "टीम-विशिष्ट ऐप्स खोजने के लिए संगठन की रजिस्ट्री जोड़ें",
