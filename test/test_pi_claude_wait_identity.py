@@ -27,6 +27,12 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.providers.acp_turns import _to_llm_event
 
+
+@pytest.fixture(autouse=True)
+def _close_managers(close_subagent_managers) -> None:
+    """Every manager built here opens tasks.db; close it at teardown, not at GC."""
+
+
 #: The servers a stock pi or claude Crew session hands its harness.
 _CREW_SERVERS = ("kirocrew-core", "kirocrew-cron")
 
