@@ -53,13 +53,13 @@ export function useOpenInAppPath(): (path: string) => void {
       // and tell a failed lookup from a confirmed deletion.
       const switchOrResume = (key: string) => {
         const closedKey = sessionKeyFrom(key)
-        void dispatch(switchSlot({ key, announceOnMissing: true, quietOnMissing: closedKey !== null })).then(action => {
+        void dispatch(switchSlot({ key, announceOnMissing: true, quietOnMissing: closedKey !== null, leaveSplit: true })).then(action => {
           if (!closedKey || !switchSlot.rejected.match(action) || !action.payload || !isMissingSlotError(action.payload)) return
           // A later switch owns the pane now; do not pull it back.
           const stillCurrent = () => appStore.getState().chat.slotSwitchLatestRequestId === action.meta.requestId
           if (!stillCurrent()) return
           const showActionError = (message: string) => { dispatch(setAgentSwitchNotice({ message, error: true })) }
-          void openClosedSession({ key: closedKey, title: closedKey }, dispatch, showActionError, stillCurrent).then(outcome => {
+          void openClosedSession({ key: closedKey, title: closedKey, leaveSplit: true }, dispatch, showActionError, stillCurrent).then(outcome => {
             if (outcome === 'failed' && stillCurrent()) {
               showActionError(i18nT('components.markdownRenderer.closed_session_open_failed', { name: closedKey }))
             }

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, renderHook, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useActiveSlotState } from '../../pages/chat/page/activeSlotState'
 import { useAppSelector } from '../../store'
 import AgentSwitchNoticeBanner from '../../components/AgentSwitchNoticeBanner'
 import { Provider } from 'react-redux'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { createTestStore } from '../../test/helpers'
 import { relayPaneOpened, setActiveId } from '../../store/instancesSlice'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
@@ -166,10 +168,12 @@ describe('useOpenInAppPath', () => {
     const detail = vi.spyOn(api, 'chatSlotDetail').mockRejectedValue(new ApiError(404, 'not found'))
     const meta = vi.spyOn(api, 'sessionMeta').mockResolvedValue({ key: 'chat-9-1785000000', title: 'Old run' })
     const resume = vi.spyOn(api, 'resumeChatSlot').mockResolvedValue({ ok: false, key: 'chat-9-1785000000' } as never)
+    const resumeFromHistory = vi.spyOn(chatActions, 'resumeFromHistory')
     const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000'])
     await act(async () => { open('/chat?sid=chat-9-1785000000') })
     expect(detail).toHaveBeenCalledWith('chat-9-1785000000', expect.anything())
     expect(meta).toHaveBeenCalledWith('chat-9-1785000000')
+    expect(resumeFromHistory).toHaveBeenCalledWith({ key: 'chat-9-1785000000', title: 'Old run', leaveSplit: true })
     expect(resume).toHaveBeenCalledWith('chat-9-1785000000', 'Old run')
     expect(store.getState().chat.switchSlotGone).toBeNull()
     expect(here).toBe('/chat')
@@ -245,6 +249,46 @@ describe('useOpenInAppPath', () => {
     expect(meta).not.toHaveBeenCalled()
     expect(store.getState().chat.activeSlot).toBe('chat-2-1785000000')
     meta.mockRestore()
+  })
+
+  it('leaves Split View and shows the open session named by a link', async () => {
+    const keys = ['chat-1-1785000000', 'chat-2-1785000000', 'chat-3-1785000000']
+    const base = createTestStore().getState()
+    const store = createTestStore({
+      dashboard: { ...base.dashboard, slotsLoaded: true, slots: keys.map(key => ({ key, title: key })) as never },
+      chat: { ...base.chat, activeSlot: keys[0] },
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    vi.spyOn(api, 'chatSlotDetail').mockResolvedValue({ messages: [], running: false } as never)
+    const { result, unmount } = renderHook(() => {
+      const activeSlot = useAppSelector(s => s.chat.activeSlot)
+      const navigate = useNavigate()
+      const [searchParams] = useSearchParams()
+      const state = useActiveSlotState({ activeSlot, navigate, searchParams })
+      return { ...state, activeSlot, open: useOpenInAppPath() }
+    }, {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          <Provider store={store}>
+            <MemoryRouter initialEntries={[`/chat?sid=${keys[0]}`]}>
+              <NavigationLeaveGuardProvider>{children}</NavigationLeaveGuardProvider>
+            </MemoryRouter>
+          </Provider>
+        </QueryClientProvider>
+      ),
+    })
+    try {
+      act(() => { result.current.setSplitMode(true) })
+      expect(result.current.splitMode).toBe(true)
+      const leaveSplitSeq = store.getState().chat.leaveSplitSeq ?? 0
+      await act(async () => { result.current.open(`/chat?sid=${keys[2]}`) })
+      expect(store.getState().chat.leaveSplitSeq).toBe(leaveSplitSeq + 1)
+      expect(result.current.splitMode).toBe(false)
+      expect(result.current.activeSlot).toBe(keys[2])
+    } finally {
+      unmount()
+      queryClient.clear()
+    }
   })
 
   it('switches to a session the roster does not list yet when the server has it open', async () => {

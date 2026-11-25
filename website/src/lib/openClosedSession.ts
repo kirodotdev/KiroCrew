@@ -5,7 +5,7 @@ import { resumeFromHistory } from '../store/chatSlice'
 
 /** Recheck a closed session on a click. A failed lookup is not proof of deletion. */
 export async function openClosedSession(
-  { key, title }: { key: string; title: string },
+  { key, title, leaveSplit }: { key: string; title: string; leaveSplit?: boolean },
   dispatch: AppDispatch,
   showActionError: (message: string) => void,
   stillCurrent?: () => boolean,
@@ -22,6 +22,6 @@ export async function openClosedSession(
     return 'gone'
   }
   // The resume payload keeps its raw title (the key when untitled), never the label.
-  void dispatch(resumeFromHistory({ key: row.key, title: row.title || row.key }))
+  void dispatch(resumeFromHistory({ key: row.key, title: row.title || row.key, ...(leaveSplit !== undefined ? { leaveSplit } : {}) }))
   return 'opened'
 }
