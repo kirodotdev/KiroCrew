@@ -93,6 +93,7 @@ from .argv_floor_ssh import (
     _command_value_names_self_endpoint,
     _dequoted,
     _env_assignment,
+    _exact_read_may_add_refusal,
     _executed_value_forms,
     _exported_environment,
     _FrameEnvironment,
@@ -320,6 +321,10 @@ _REENTRY_CHAIN: "ContextVar[tuple[int, frozenset[str], frozenset[str]]]" = Conte
 #: -- and once True, which can only ADD refusals.  A read nested in either (a
 #: carried command, a double-quoted substitution body) inherits the pass's value.
 _GLUE_SPLIT: "ContextVar[bool]" = ContextVar("git_tar_floor_glue_split", default=False)
+
+#: True to match same-line variable names in their submitted case, False to match
+#: them lowercased as main does; judged both ways, so the exact read only ADDS.
+_EXACT_VARS: "ContextVar[bool]" = ContextVar("git_tar_floor_exact_vars", default=True)
 
 
 def _reenter_floors(command: str, *, alias: "str | None" = None, literal: bool = False) -> bool:
@@ -1035,47 +1040,72 @@ def _tar_words_target_self(
 def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bool:
     """True if *text_lower* starts a git/tar network transport to THIS host.
 
-    The ssh pre-walk and payload reader expose hidden transports and inherited environments.
-    FAIL-CLOSED: an unparseable transport is refused. If payload discovery raises,
-    analysis degrades to the top-level frame; a carried command that names a literal
-    self host is still re-entered (``_command_value_dials_self``) and refused when
-    a floor refuses it or cannot read it.  The outermost read opens the memo every
-    read nested in it shares (``_READ_MEMO``) and keeps *raw_text*, the command as
-    submitted (*text_lower* when not given), for them all (``_RAW_COMMAND``).
+    The ssh pre-walk and payload reader expose hidden transports and inherited
+    environments. FAIL-CLOSED: an unparseable transport is refused. If payload
+    discovery raises, analysis degrades to the top-level frame; a carried command
+    that names a literal self host is still re-entered (``_command_value_dials_self``)
+    and refused when a floor refuses it or cannot read it. The outermost read opens
+    the memo every nested read shares (``_READ_MEMO``) and keeps *raw_text*, the
+    command as submitted (*text_lower* when not given), for them all (``_RAW_COMMAND``).
 
     The outermost read runs the as-written command under both command-boundary
-    splits -- the exact boundaries (``_GLUE_SPLIT`` False), so no refusal reachable
-    without the glued-operator splitter is lost, and the glued-split boundaries
-    (``_GLUE_SPLIT`` True), which only ADD boundaries -- each pass with its own memo
-    and its own environment tracking, and refuses if any pass refuses. When a ``<<``
-    is present it then runs one more reading with every here-document body and its
-    closing line removed (``_heredoc_body_quotes_literal``, found on the words as
-    written when *raw_text* is that command), again under both splits, so a quote
-    inside a body cannot pair across its closing line with the text after it. Every
-    reading only ADDS refusals: a newly over-refused shape is the worst case, never
-    a newly allowed one.
+    splits -- exact (``_GLUE_SPLIT`` False), so no refusal reachable without the
+    glued-operator splitter is lost, and glued-split (``_GLUE_SPLIT`` True), which
+    only ADDS boundaries -- each with its own memo and environment tracking, and
+    refuses if any pass refuses. When a ``<<`` is present it then runs one more
+    reading with every here-document body and its closing line removed
+    (``_heredoc_body_quotes_literal``), again under both splits, so a quote inside a
+    body cannot pair across its closing line with the text after it. Every reading
+    only ADDS refusals: a newly over-refused shape is the worst case, never allowed.
     """
     if _READ_MEMO.get() is not None:
         return _git_tar_read(text_lower)
     raw = _RAW_COMMAND.set(text_lower if raw_text is None else raw_text)
     try:
-        for glue in (False, True):
-            memo = _READ_MEMO.set({})
-            split = _GLUE_SPLIT.set(glue)
+        # Union of two readings, refuse on either: main's lowered-variable read
+        # and the exact-case read (which can only ADD a refusal). The exact read
+        # differs only where a ``$`` reference resolves against a same-line
+        # assignment whose NAME carries upper case; with none it repeats main.
+        exact_can_differ = (
+            raw_text is not None
+            and raw_text != text_lower
+            and "$" in text_lower
+            and _exact_read_may_add_refusal(text_lower, raw_text)
+        )
+        passes = (False, True) if exact_can_differ else (False,)
+        for exact in passes:
+            token = _EXACT_VARS.set(exact)
             try:
-                if _git_tar_read(text_lower, typed=True):
+                if _git_tar_read_passes(text_lower, raw_text):
                     return True
             finally:
-                _GLUE_SPLIT.reset(split)
-                _READ_MEMO.reset(memo)
-        if "<<" not in text_lower:
-            return False
-        cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
-        reset_raw = _shell_normalizer._heredoc_body_quotes_literal(cased or text_lower)
-        reset = reset_raw.lower()
-        if reset == text_lower:
-            return False
-        _RAW_COMMAND.set(reset_raw)
+                _EXACT_VARS.reset(token)
+        return False
+    finally:
+        _RAW_COMMAND.reset(raw)
+
+
+def _git_tar_read_passes(text_lower: str, raw_text: "str | None") -> bool:
+    """Every command-boundary and here-document reading for the current
+    ``_EXACT_VARS`` setting; True if any refuses (each reading only ADDS one)."""
+    for glue in (False, True):
+        memo = _READ_MEMO.set({})
+        split = _GLUE_SPLIT.set(glue)
+        try:
+            if _git_tar_read(text_lower, typed=True):
+                return True
+        finally:
+            _GLUE_SPLIT.reset(split)
+            _READ_MEMO.reset(memo)
+    if "<<" not in text_lower:
+        return False
+    cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+    reset_raw = _shell_normalizer._heredoc_body_quotes_literal(cased or text_lower)
+    reset = reset_raw.lower()
+    if reset == text_lower:
+        return False
+    restore = _RAW_COMMAND.set(reset_raw)
+    try:
         for glue in (False, True):
             memo = _READ_MEMO.set({})
             split = _GLUE_SPLIT.set(glue)
@@ -1087,7 +1117,7 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 _READ_MEMO.reset(memo)
         return False
     finally:
-        _RAW_COMMAND.reset(raw)
+        _RAW_COMMAND.reset(restore)
 
 
 def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
@@ -1099,15 +1129,18 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     from .shell_commands import _double_quoted_substitution_bodies, read_commands
 
     raw = _RAW_COMMAND.get()
-    unmasked = _ssh_floor_unmasked_text(text_lower)
+    # Pass the submitted command (original case) so same-line variable names
+    # resolve case-sensitively. It aligns only for the outermost, as-typed read; a
+    # carried command's text does not match it, so that read falls to the fail-closed
+    # resolution. An all-lowercase line aligns too, so it reads as on main.
+    unmasked = _ssh_floor_unmasked_text(text_lower, raw if _EXACT_VARS.get() else None)
     text_lower = _mask_quoted_separators(unmasked)
-    # A quick gate that is a SUPERSET of every spelling the walk below can read
-    # as git/tar: a literal ``git``/``tar`` once quote and backslash splices are
-    # removed (``gi''t``, ``"git"``, ``g\it``), or any expansion machinery that
-    # lets the shell build the verb from other text -- globs and braces
-    # (``g*t``, ``/usr/bin/g?t``), ``$`` and backticks.  A quote alone names no
-    # verb, so prose with an apostrophe stops here.  The character classes are
-    # the self floor's own (``argv_floor_self``), so nothing new is matched here.
+    # A quick gate that is a SUPERSET of every spelling the walk below can read as
+    # git/tar: a literal ``git``/``tar`` once quote and backslash splices are removed
+    # (``gi''t``, ``"git"``, ``g\it``), or any expansion machinery that builds the
+    # verb from other text -- globs and braces (``g*t``, ``/usr/bin/g?t``), ``$`` and
+    # backticks. A quote alone names no verb, so prose with an apostrophe stops here.
+    # The character classes are the self floor's own, so nothing new is matched here.
     unquoted = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", _shell_join_continuations(text_lower))
     if (
         "git" not in unquoted
@@ -1115,13 +1148,12 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         and not _SELF_FLOOR_MACHINERY_RE.search(text_lower)
     ):
         return False
-    # The mask above keeps double-quoted text as data, but bash runs a ``$(...)``
-    # there, so each such body is judged as a command line of its own, as the
-    # ssh floor judges it.
+    # The mask keeps double-quoted text as data, but bash runs a ``$(...)`` there,
+    # so each such body is judged as its own command line, as the ssh floor does.
     if any(map(_is_git_tar_to_self, _double_quoted_substitution_bodies(unmasked))):
         return True
-    # A shell function is not followed into its body: call arguments are not
-    # bound, as on main.  A literal self dial in a body is read like a plain command.
+    # A shell function is not followed into its body: call arguments are not bound,
+    # as on main. A literal self dial in a body is read like a plain command.
 
     def _payload_key(source: str) -> "tuple[tuple[str, ...], ...]":
         return tuple(
@@ -1135,10 +1167,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         It tells ordinary prose from a real potential self-dial for the two
         callers that fail closed on an input they cannot fully read: the capped
         main loop and the open-quote backstop below.  The signal is any of:
-        (1) a literal self host the floor already knows -- loopback, this host's
-        own cached names and the self addresses, and the ``$(hostname`` /
-        `` `hostname `` / ``$hostname`` self-hostname forms
-        (``_value_names_literal_self``); (2) an ``ext::`` / ``ssh://`` /
+        (1) a literal self host the floor already knows -- loopback, this host's own
+        cached names and the self addresses, and the ``$(hostname`` / `` `hostname ``
+        / ``$hostname`` forms (``_value_names_literal_self``); (2) an ``ext::`` / ``ssh://`` /
         ``core.sshCommand`` / ``GIT_SSH`` override shape that can redirect the
         transport to this host; (3) a ``$`` expansion the shell could build a
         host from at run time, read from the command as submitted

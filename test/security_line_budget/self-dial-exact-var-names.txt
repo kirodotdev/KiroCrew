@@ -1,0 +1,10 @@
++178
+The ssh-to-self and git/tar-to-self floors read a same-line shell variable
+assignment matching the variable NAME exactly as bash does, case included, so a
+command cannot put this host in one spelling and a remote in a differently-cased
+spelling of the same letters and have the floor resolve the remote. The
+submitted-case read is used only to ADD a refusal: a reference takes its lowered
+(main) value unless the exact-case value names this host, in which case the
+exact-case value is used. So the floor refuses a self-dial the lowered read would
+miss and never turns a refusal main makes into an allow. A nested carried command
+with no submitted copy keeps the lowered read.
