@@ -249,6 +249,14 @@ def test_an_ordinary_file_behind_a_loopback_share_stays_allowed(path: str) -> No
 
 
 @pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("base", _loopback_shares(HOME))
+def test_a_relative_path_under_a_loopback_share_base_dir_is_refused(base: str) -> None:
+    assert security.is_sensitive_path(r".aws\credentials", base_dir=base)
+    assert security.sensitive_path_refusal(r".docker\config.json", base_dir=base) is not None
+    assert not security.is_sensitive_path(r"proj\a.txt", base_dir=base)
+
+
+@pytest.mark.usefixtures("windows")
 @pytest.mark.parametrize("path", _loopback_shares(CRED))
 def test_without_the_fold_a_loopback_share_is_allowed(
     monkeypatch: pytest.MonkeyPatch, path: str

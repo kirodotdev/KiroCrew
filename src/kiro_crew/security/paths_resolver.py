@@ -724,15 +724,47 @@ _WIN_LOOPBACK_ADMIN_SHARE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DOT_DOT_SEGMENT_RE = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
+
+
+def _fold_loopback_admin_share(path: str) -> str:
+    """Fold a loopback admin-share prefix to its drive (``\\\\localhost\\C$\\x`` -> ``C:\\x``).
+
+    Only the prefix is rewritten, so a glob after it survives: governance folds an
+    operator's path PATTERN with this too, which keeps a rule written in the share
+    spelling meeting the folded item. Identity off Windows.
+    """
+    if not _ON_WINDOWS:
+        return path
+    m = _WIN_LOOPBACK_ADMIN_SHARE_RE.match(path)
+    if m is None:
+        return path
+    rest = path[m.end() :]
+    # A device form (``\\.\UNC\``, ``\\?\UNC\``, ``\??\UNC\``) is rooted above the
+    # share, so a ``..`` after it can leave ``localhost\C$`` for another host, where
+    # ``C:\..`` stays on the drive. Such a path is not the drive path: leave it.
+    if "unc" in m[0].lower() and _DOT_DOT_SEGMENT_RE.search(rest):
+        return path
+    return m[1].upper() + ":" + (rest or "\\")
+
+
+def _fold_windows_namespace(path: str) -> str:
+    """``_fold_windows_alias`` without the loopback-share fold; identity off Windows.
+
+    The item governance also matches a rule against as written, so a rule that names
+    a share in a spelling the loopback fold cannot rewrite (``\\\\*\\C$\\x``) keeps
+    meeting what it met before that fold existed.
+    """
+    if not _ON_WINDOWS:
+        return path
+    folded = _WIN_LOCAL_NS_RE.sub("", path, count=1)
+    folded += "\\" if folded != path and len(folded) == 2 else ""  # bare volume -> drive root
+    return _WIN_DEFAULT_STREAM_RE.sub("", folded)
+
 
 def _fold_windows_alias(path: str) -> str:
     """Lexically fold a Windows alias of a local path to its plain spelling; identity off Windows."""
-    if not _ON_WINDOWS:
-        return path
-    folded = _WIN_LOOPBACK_ADMIN_SHARE_RE.sub(lambda m: m[1].upper() + ":", path, count=1)
-    folded = _WIN_LOCAL_NS_RE.sub("", folded, count=1)
-    folded += "\\" if folded != path and len(folded) == 2 else ""  # bare volume -> drive root
-    return _WIN_DEFAULT_STREAM_RE.sub("", folded)
+    return _fold_windows_namespace(_fold_loopback_admin_share(path))
 
 
 def _trim_windows_name_ends(path: str) -> str:

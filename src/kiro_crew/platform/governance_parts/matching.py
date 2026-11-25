@@ -96,7 +96,8 @@ def _match_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
     prefer narrower patterns.
 
     Only the ITEM is normalized (``_norm_item``: expand → absolutize → lexically
-    collapse ``.``/``..``); the PATTERN is only ``~``/``$VAR``-expanded and is
+    collapse ``.``/``..``); the PATTERN is only ``~``/``$VAR``-expanded, has a
+    Windows loopback admin-share prefix folded to its drive, and is otherwise
     matched verbatim.  Normalizing the item — never the pattern — does two jobs
     and avoids one trap:
 
@@ -145,7 +146,34 @@ def _match_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
     if isinstance(item, GuestPath):
         norm = guest_norm(item)
         return norm is not None and fnmatch.fnmatchcase(norm, _expand(pattern))
-    return _match_local_path(_norm_item(item), _expand(pattern), any_case=any_case)
+    from kiro_crew.security.paths_resolver import (
+        _WIN_LOOPBACK_ADMIN_SHARE_RE,
+        _fold_loopback_admin_share,
+    )
+
+    # The anchored item meets the rule twice. Once with the loopback-share prefix of
+    # both folded to its drive, so ``\\localhost\C$\x`` and ``C:\x`` meet one rule
+    # whichever spelling either uses, a relative item under a share CWD included.
+    # Once as written, the comparison made without that fold, so a glob it cannot
+    # rewrite (``\\*\C$\x\**``) meets everything it met before: the fold only adds
+    # matches. Only the prefix changes, so the authored globs stay verbatim.
+    # The share prefix is folded before anchoring as well: Win32 ``abspath`` reads a
+    # leading ``\??\`` as root-relative (``C:\??\UNC\localhost\C$\x``), after which
+    # the anchored fold sees no prefix to rewrite.
+    # A share spelling the fold leaves as written (a device form with ``..``) stays
+    # so once anchored too: anchoring clamps that ``..`` where Win32 does not.
+    norm = _norm_item(item)
+    pre = _fold_loopback_admin_share(item)
+    if pre != item:
+        folded = _fold_loopback_admin_share(_norm_item(pre))
+    elif _WIN_LOOPBACK_ADMIN_SHARE_RE.match(item):
+        folded = norm
+    else:
+        folded = _fold_loopback_admin_share(norm)
+    pattern = _expand(pattern)
+    if _match_local_path(folded, _fold_loopback_admin_share(pattern), any_case=any_case):
+        return True
+    return _match_local_path(norm, pattern, any_case=any_case)
 
 
 def _match_denied_path(item: str, pattern: str) -> bool:
@@ -156,16 +184,8 @@ def _match_denied_path(item: str, pattern: str) -> bool:
     ``private`` and ``Private`` are two directories. Folding case in an allow would
     admit the one the operator did not name; folding it in a deny refuses at most
     a directory the operator did not name, which fails closed.
-
-    A deny also meets the item before ``_fold_windows_alias``: a deny written in a
-    spelling the fold rewrites (``\\\\localhost\\C$\\x``) keeps refusing that
-    spelling, so the fold only ever adds paths a deny refuses.
     """
-    if _match_path(item, pattern, any_case=True):
-        return True
-    if isinstance(item, GuestPath):
-        return False
-    return _match_local_path(os.path.abspath(_expand(item)), _expand(pattern), any_case=True)
+    return _match_path(item, pattern, any_case=True)
 
 
 def _match_host(item: str, pattern: str) -> bool:
@@ -335,12 +355,14 @@ def _norm_item(path_str: str) -> str:
 
     1. ``_expand`` — ``~`` / ``$VAR`` substitution.
     2. on Windows, fold a namespace or default-stream alias of a local path to its
-       plain spelling (``_fold_windows_alias``, the keystone's own fold):
+       plain spelling (``_fold_windows_namespace``, the keystone's fold less its
+       loopback step):
        ``\\\\?\\C:\\x``, ``\\\\.\\C:\\x``, ``//?/C:/x``, ``\\??\\C:\\x`` and
        ``C:\\x::$DATA`` all open ``C:\\x``, so each would otherwise dodge a deny
        naming ``C:\\x`` and satisfy no allow that names it. A loopback admin share
-       (``\\\\localhost\\C$\\x``) folds to ``C:\\x`` too; any other UNC, volume GUID
-       and named-stream spellings stay as written. Identity off Windows.
+       (``\\\\localhost\\C$\\x``) stays as written here; ``_match_path`` folds it
+       once the item is anchored. Other UNC, volume GUID and named-stream spellings
+       stay as written. Identity off Windows.
     3. ``os.path.abspath`` — anchor a relative path (e.g. ``../../etc/passwd`` or
        ``etc/passwd``) to the host CWD so it cannot dodge an absolute DENY glob by
        failing to match; ``abspath`` also runs ``normpath``, collapsing ``..``.
@@ -358,9 +380,9 @@ def _norm_item(path_str: str) -> str:
     best-effort anchor; the resolved ``is_sensitive_path`` keystone remains the
     authoritative block for the trust-root / credential dirs.
     """
-    from kiro_crew.security.paths_resolver import _fold_windows_alias
+    from kiro_crew.security.paths_resolver import _fold_windows_namespace
 
-    p = os.path.abspath(_fold_windows_alias(_expand(path_str)))
+    p = os.path.abspath(_fold_windows_namespace(_expand(path_str)))
     if p.startswith("//") and not p.startswith("///"):
         p = p[1:]
     return p

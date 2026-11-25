@@ -214,6 +214,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
     "script_hooks": ("_script_hook_enabled_from",),
     "tool_identity": ("ToolCall",),
     "hook_dispatch": ("hook_tool_input",),
+    "search_targets": ("_search_deny_targets",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
@@ -252,7 +253,10 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``safe_file_identity`` takes a keyword-only ``hold=None`` (an ``ExitStack`` that
 #: keeps the sampled descriptor open, so a replaced inode's number cannot be
 #: reused before the next sample), so its callers fit too.
-_BASE_SHAPE_DIGEST = "2f457c7b64470c2221cb447d314c0bbd7b73e607b9f47352b95409c24ff1678d"
+#: ``_normalize_search_path`` and ``_search_deny_target`` take a keyword-only
+#: ``loopback=True`` (``loopback=False`` leaves a loopback admin share as written,
+#: which ``_search_deny_targets`` also matches), so their callers fit too.
+_BASE_SHAPE_DIGEST = "c5a5cef80e4a51b1c82d844e91951b24fe17b84b21db8fe2ce0d7721513c1429"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

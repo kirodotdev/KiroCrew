@@ -956,6 +956,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.paths_resolver import (  # noqa: F401
         _CHILD_FAULT_WARN_STREAK,
+        _DOT_DOT_SEGMENT_RE,
         _FS_BLOCKING_SYSCALLS,
         _FS_BLOCKING_SYSCALLS_BY_ARCH,
         _ON_WINDOWS,
@@ -973,6 +974,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNC_PREFIX_RE,
         _WIN_DEFAULT_STREAM_RE,
         _WIN_LOCAL_NS_RE,
+        _WIN_LOOPBACK_ADMIN_SHARE_RE,
         _absolutized,
         _child_blocked_in_filesystem,
         _child_budget,
@@ -981,6 +983,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _child_fault_warned,
         _child_request,
         _extend_cooldown,
+        _fold_loopback_admin_share,
+        _fold_windows_namespace,
         _inline_bounded,
         _is_unc_path,
         _judgment_budget,

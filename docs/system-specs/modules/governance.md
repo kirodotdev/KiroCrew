@@ -137,11 +137,24 @@ can reorder strictness or redefine matching):
 
   **Path matcher — Windows namespace aliases.** On Windows `_norm_item` first
   folds a namespace or default-stream alias of a local path to its plain
-  spelling with the keystone's own `_fold_windows_alias`: `\\?\C:\x`,
-  `\\.\C:\x`, `//?/C:/x`, `\??\C:\x` and `C:\x::$DATA` all open `C:\x`, so none
-  of them dodges a deny naming `C:\x`. UNC, volume GUID and named-stream
-  spellings stay as written, as they do in the keystone; off Windows nothing is
-  folded.
+  spelling with `_fold_windows_namespace` (the keystone's `_fold_windows_alias`
+  less its loopback step): `\\?\C:\x`, `\\.\C:\x`, `//?/C:/x`, `\??\C:\x` and
+  `C:\x::$DATA` all open `C:\x`, so none of them dodges a deny naming `C:\x`.
+  A loopback admin share (`\\localhost\C$\x`) opens `C:\x` too. `_match_path`
+  folds it before and again after anchoring the item: before, because Win32
+  `abspath` re-roots `\??\UNC\...` under the CWD's drive; after, so a relative
+  item under a loopback-share CWD counts. Because an operator may write a rule in that spelling, it folds
+  the PATTERN's loopback-share prefix the same way (`_fold_loopback_admin_share`,
+  prefix only, globs untouched): a deny or an allow written `\\localhost\C$\x\**`
+  keeps meeting what it names. The anchored item is also matched against the
+  pattern as written, which is the comparison made without the loopback fold,
+  so a glob the fold cannot rewrite (`\\*\C$\x\**`, `\\localhost\[CD]$\x\**`,
+  `\\?\UNC\localhost\C$\x\**`) meets everything it met before: the fold only adds
+  matches. A device form (`\\.\UNC\`, `\\?\UNC\`, `\??\UNC\`) followed by a `..`
+  segment is not folded at all: Win32 roots it above the share, so `..` can
+  reach another host, where `C:\..` stays on the drive. Other UNC, volume GUID
+  and named-stream spellings stay as written, as they do in the keystone; off
+  Windows nothing is folded.
 
   **Path matcher — remote-workspace targets.** A remote workspace's file tools
   act on a Linux guest, so their targets are matched as the guest's POSIX paths

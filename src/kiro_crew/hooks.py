@@ -214,6 +214,7 @@ from kiro_crew.hook_runtime.search_targets import (  # noqa: F401
     _is_search_shaped,
     _normalize_search_path,
     _search_deny_target,
+    _search_deny_targets,
 )
 from kiro_crew.hook_runtime.stream_caps import (  # noqa: F401
     _communicate_capped,
