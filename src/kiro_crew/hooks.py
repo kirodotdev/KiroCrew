@@ -306,6 +306,7 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for call
     edit_target_candidates,
     is_edit_call,
     target_paths,
+    unanchored_denial,
 )
 from kiro_crew.security import (  # noqa: F401 - the path owners read these
     audit_bash_exfiltration,

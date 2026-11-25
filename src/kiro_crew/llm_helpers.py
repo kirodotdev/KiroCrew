@@ -312,6 +312,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         is_document_writing_tool,
         mcp_document_body_keys,
         split_document_bodies,
+        unanchored_denial,
     )
     from kiro_crew.security import (  # noqa: F401
         MAX_SCANNABLE_COMMAND_CHARS,

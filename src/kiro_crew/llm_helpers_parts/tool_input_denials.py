@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from kiro_crew.hooks import _normalize_tool_name
-from kiro_crew.platform.tool_paths import edit_target_candidates
+from kiro_crew.platform.tool_paths import edit_target_candidates, unanchored_denial
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
@@ -307,12 +307,7 @@ def _edit_target_denial(
             "",
         )
     if candidates.unanchored:
-        return (
-            "path",
-            "Blocked: file edit names a relative target path that cannot be "
-            "verified (deny-by-default)",
-            "",
-        )
+        return ("path", unanchored_denial(candidates), "")
     if not candidates:
         return (
             "path",

@@ -26,6 +26,7 @@ from kiro_crew.platform.governance_parts.matching import (
     _WINDOWS_PATHS,
     _expand,
     _Marker,
+    _path_allowed,
     _url_host,
 )
 
@@ -237,7 +238,11 @@ class ScopedRuleset:
         """Rule 1 — within a single level."""
         match = _MATCHERS[self.matcher]
         if self.mode == MODE_ALLOW:
-            ok = any(match(item, pat) for pat in self.allow)
+            if self.matcher == "path":
+                # Every reading of a Windows ``%VAR%`` item must be covered.
+                ok = _path_allowed(item, self.allow)
+            else:
+                ok = any(match(item, pat) for pat in self.allow)
             reason = f"{item!r} {'in' if ok else 'not in'} allow-set"
             if not ok and isinstance(item, _Marker):
                 # A marker names no real target, so its own refusal says why.

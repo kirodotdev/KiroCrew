@@ -70,6 +70,7 @@ if TYPE_CHECKING:
         sensitive_write_path_refusal,
         target_paths,
         title_is_trusted_mcp_identity,
+        unanchored_denial,
         untruncated_shell_title,
     )
 
@@ -727,10 +728,7 @@ def _tier_write_protected(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
             # a workspace symlink can point it at a protected file no gate would
             # recognize under its unanchored spelling -- deny as unverifiable, same
             # fail-closed shape as truncation.
-            return ToolHookResult.deny(
-                "Blocked: file edit names a relative target path that "
-                "cannot be verified (deny-by-default)"
-            )
+            return ToolHookResult.deny(unanchored_denial(candidates))
         if not candidates:
             # Mirrored from the always-enforced tier: a declared file edit whose
             # params and content block together name no target has no proven target

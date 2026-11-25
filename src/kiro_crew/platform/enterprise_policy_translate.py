@@ -98,7 +98,7 @@ import yaml  # type: ignore[import-untyped]
 from kiro_crew.platform.governance import _ORDINAL_SCALES, MODE_ALLOW, MODE_DENY
 from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
 from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
-from kiro_crew.platform.governance_parts.matching import _MATCHERS, _expand
+from kiro_crew.platform.governance_parts.matching import _MATCHERS, _expand, _path_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -662,11 +662,17 @@ def _converted(patterns: List[str], role: str, row: Managed) -> List[str]:
 
 
 def _admits(patterns: List[str], entry: str, row: Managed = _DEFAULT_ROW) -> bool:
-    """Does the allowed set *patterns* admit the literal *entry*?"""
-    return any(
-        _key(p, row) == _key(entry, row) or (_is_glob(p, row) and _matches(entry, p, row))
-        for p in patterns
-    )
+    """Does the allowed set *patterns* admit the literal *entry*?
+
+    An allow admits, so a path entry goes through ``_path_allowed``: a Windows
+    ``%VAR%`` entry must be covered on every reading.
+    """
+    if any(_key(p, row) == _key(entry, row) for p in patterns):
+        return True
+    globs = [p for p in patterns if _is_glob(p, row)]
+    if row.matcher == "path":
+        return bool(globs) and _path_allowed(entry, globs)
+    return any(_matches(entry, p, row) for p in globs)
 
 
 def _intersect(sets: List[List[str]], capability: str, row: Managed = _DEFAULT_ROW) -> List[str]:
