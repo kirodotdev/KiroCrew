@@ -2704,7 +2704,11 @@ unless the opener names a tab (`openProfile(tab)`: the quiet-chat link and a mat
 session's breadcrumb ask for Sessions; the side panel's send badge and the sidebar
 bot row menu ask for Profile). No
 tab carries a count, and there is no placeholder tab for a view that does not
-exist yet.
+exist yet. When the side panel is an overlay (a phone, or a window too narrow to
+dock it), the send badge closes the overlay before it opens the card: the overlay
+sits above the thread column the floating card opens in. The badge carries a
+Dismiss button that hides it on every bot's tab for good on that browser
+(`mc-dashboard-card-send-badge-dismissed`); the switch itself stays on Profile.
 
 **Profile** shows only the face and name in its head. Its body carries the crew
 description (two lines with a pushed full-text page); when the registry read fails,
