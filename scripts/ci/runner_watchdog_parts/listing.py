@@ -29,6 +29,7 @@ from runner_watchdog import (
     REPO_LISTING_MAX_PAGES,
     REPO_LISTING_MAX_WINDOWS,
     REPO_LISTING_RESULT_CEILING,
+    UNJUDGED_IDS_NAMED,
     Api,
     ApiError,
     _safe_text,
@@ -375,6 +376,35 @@ def _heal_eligible_shape(run: dict[str, Any], repo: str) -> bool:
     )
 
 
+def _attempt_started(run: dict[str, Any]) -> datetime:
+    """When the run's current attempt began: the newer of ``created_at`` and ``run_started_at``.
+
+    A re-run keeps the ``created_at`` of the run it re-runs and moves ``run_started_at``
+    to the attempt, so the attempt is what a queued job of it has waited since.
+    """
+    created = parse_timestamp(str(run["created_at"]))
+    started_raw = run.get("run_started_at")
+    return max(created, parse_timestamp(str(started_raw))) if started_raw else created
+
+
+def _human_only_shape(run: dict[str, Any], repo: str) -> bool:
+    """Whether a stuck job in this run could only be recovered by a person, from the listing.
+
+    The mirror of ``_heal_eligible_shape`` for the reads ``LIVE_EXEMPT_CLASSIFY_READS``
+    holds, and priority only in the same way: the verdict still comes from the run's
+    jobs. It is the condition ``_mark_heal_exempt`` applies -- a workflow not declared
+    heal-safe for the run's event -- on a run that has jobs at all. A fork's run is left
+    out: no token can re-run it and it is reported as a fork, never as needing a human.
+    """
+    workflow = _workflow_of(run)
+    return (
+        workflow is not None
+        and _may_hold_jobs(run)
+        and not is_fork_run(run, repo)
+        and not heal_safe_declared(workflow, _safe_text(run.get("event")))
+    )
+
+
 def _can_carry_a_slow_start(run: dict[str, Any], policy: Policy) -> bool:
     """Whether a run could hold a served start that waited past ``saturation_wait``.
 
@@ -452,10 +482,7 @@ def drop_ghost_runs(
     ghosts = 0
     oldest: datetime | None = None
     for run in runs:
-        created = parse_timestamp(str(run["created_at"]))
-        started_raw = run.get("run_started_at")
-        started = parse_timestamp(str(started_raw)) if started_raw else created
-        newest = max(created, started)
+        newest = _attempt_started(run)
         if policy.now - newest >= runner_watchdog.GHOST_AFTER:
             ghosts += 1
             oldest = newest if oldest is None or newest < oldest else oldest
@@ -527,6 +554,21 @@ def live_runs_within_read_bound(
     # classifies fewer orphans and leaves more unread capable runs holding the heal.
     oldest = runner_watchdog.LIVE_CLASSIFY_READS - len(reserved)
     banded = sum(1 for run in reserved if _can_carry_a_slow_start(run, policy))
+    # Taken out of the pool before the heal-eligible runs are ranked, so a saturated
+    # fleet cannot spend the whole bound on runs the watchdog could heal while a run
+    # only a person can recover goes unread. `queued` first: no job of that attempt
+    # has started. Then the attempt that started longest ago.
+    human_only = sorted(
+        (
+            run
+            for run in pool
+            if _human_only_shape(run, policy.repo)
+            and policy.now - _attempt_started(run) >= policy.orphan_after
+        ),
+        key=lambda run: (_safe_text(run.get("status")) != "queued", _attempt_started(run)),
+    )[: max(0, min(runner_watchdog.LIVE_EXEMPT_CLASSIFY_READS, oldest))]
+    human_only_ids = {run["id"] for run in human_only}
+    pool = [run for run in pool if run["id"] not in human_only_ids]
     # One line, emitted here rather than before the reserve is computed: the split it
     # names has to be the split this tick actually took. Interpolating the constants
     # earlier printed 40/10 on a tick that then spent 47/3, so the read-budget
@@ -534,7 +576,9 @@ def live_runs_within_read_bound(
     log(
         f"::notice::{len(runs)} live runs reached the per-tick live job-read cap of "
         f"{runner_watchdog.LIVE_CLASSIFY_READS}; the {oldest} classified are drawn actionable-shaped "
-        "first (heal-eligible and past the orphan threshold) then oldest first, and "
+        "first (heal-eligible and past the orphan threshold) then oldest first, "
+        f"{len(human_only)} of them held for runs of a heal-exempt workflow past the "
+        "threshold (queued first, then the oldest attempt), and "
         f"{len(reserved)} reads are reserved for the newest runs able to hold a start "
         f"that waited {_fmt_delta(policy.saturation_wait)} ({banded} of them can), whose "
         "served CodeBuild starts are the dispatch evidence; the rest wait for the next "
@@ -559,7 +603,7 @@ def live_runs_within_read_bound(
 
     eligible = [run for run in pool if actionable_shape(run)]
     rest = [run for run in pool if not actionable_shape(run)]
-    classified = (eligible + rest)[:oldest]
+    classified = human_only + (eligible + rest)[: oldest - len(human_only)]
     # The caller reads jobs in the order given and the sweep's log is read
     # chronologically, so the whole selection is sorted by age. Sorting the classify
     # slice alone was enough only while the reserve was the newest runs outright; the
@@ -591,6 +635,7 @@ def top_up_unread_evidence(
     log: Callable[[str], None] = print,
     *,
     read_jobs: Callable[[int], list[dict[str, Any]]] | None = None,
+    on_read: Callable[[int, list[dict[str, Any]]], None] | None = None,
 ) -> tuple[int, int]:
     """Read the unread runs that hold the partial-evidence hold, when that buys a heal.
 
@@ -609,6 +654,10 @@ def top_up_unread_evidence(
     for no heal. The set is judged at ``policy.now``: a run under the age line at this
     call is not read, and if it crosses the line before a later judgement it turns the
     hold on from that moment, which is the same rule the hold itself follows.
+
+    ``on_read``, when given, receives each run id with the jobs just read for it, so
+    the caller can classify the run from the read this function already paid for: a
+    run read here and not classified is an orphan nobody is told about.
 
     Returns ``(read, unread)``: how many runs were read, and how many capable runs are
     still unread because the set exceeded the bound.
@@ -634,9 +683,53 @@ def top_up_unread_evidence(
         "on the saturation question they hold open"
     )
     for _created, run_id in capable:
-        evidence.absorb(reader(run_id), policy)
+        jobs = reader(run_id)
+        evidence.absorb(jobs, policy)
         evidence.unread_candidates.pop(run_id, None)
+        if on_read is not None:
+            on_read(run_id, jobs)
     return len(capable), 0
+
+
+def unjudged_queued_runs(
+    runs: list[dict[str, Any]], judged: set[int], policy: Policy
+) -> list[dict[str, Any]]:
+    """The listed runs that look stuck and that this tick gave no verdict, oldest attempt first.
+
+    From the listing rows alone, so it costs no read: a live run in status `queued`
+    whose attempt started at least ``orphan_after`` ago has had no job start for that
+    long. What the row cannot say is whether the waiting job is CodeBuild-routed, or
+    lost or merely slow, and a run in status `in_progress` holding one queued job is
+    not seen at all. So this is "not judged", never "orphaned". Ghosts are left out:
+    nothing can be done about them.
+    """
+    live = drop_ghost_runs(runs, policy, lambda _line: None)
+    return sorted(
+        (
+            run
+            for run in live
+            if int(run["id"]) not in judged
+            and _safe_text(run.get("status")) == "queued"
+            and policy.now - _attempt_started(run) >= policy.orphan_after
+        ),
+        key=_attempt_started,
+    )
+
+
+def unjudged_line(unjudged: list[dict[str, Any]], policy: Policy) -> str:
+    """The one log line a tick prints about ``unjudged_queued_runs``, also when there are none.
+
+    Printed on every tick so the count can be read across ticks; it carries no outcome.
+    """
+    named = ", ".join(str(int(run["id"])) for run in unjudged[:UNJUDGED_IDS_NAMED])
+    more = len(unjudged) - UNJUDGED_IDS_NAMED
+    return (
+        f"unjudged queued runs this tick: {len(unjudged)} listed run(s) in status queued "
+        f"whose attempt started {_fmt_delta(policy.orphan_after)} or more ago got no verdict "
+        "(their jobs were not read, so each may be an orphan or a slow start)"
+        + (f": {named}" if named else "")
+        + (f" and {more} more" if more > 0 else "")
+    )
 
 
 def list_recent_cancelled_runs(
