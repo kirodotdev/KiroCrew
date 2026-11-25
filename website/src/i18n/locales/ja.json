@@ -22950,6 +22950,7 @@
       "linked_to": "{{label}} とリンク中",
       "linked_to_paused": "{{label}} とリンク中 · 返信は一時停止中",
       "connect_channel": "チャネルに接続",
+      "open_messaging_channels": "チャットプラットフォームを開く",
       "dashboard_kept_last_good": "このダッシュボードの新しいバージョンは読み込めなかったため、最後に読み込めたものを表示しています。",
       "dashboard_none_yet": "この Bot のダッシュボードはまだ設定されていません。",
       "dashboard_empty_region": "{{name}} のダッシュボード: まだページが選ばれていません",

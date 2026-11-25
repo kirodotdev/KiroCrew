@@ -1447,3 +1447,22 @@ class TestAgentCommand:
         assert any("No agent named" in t for t, _ in cli.sent)
         await d.handle_message(self._msg("hi"))
         assert sess.last_agent == "kirocrew"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["!agent", "!agents", "/agents"])
+    async def test_bare_agent_points_at_bot(self, monkeypatch, command) -> None:
+        # A user who calls their Bots "agents" must be told where Bots are.
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, _ = _dispatcher({"u1"})
+        assert not cli.sent
+        await d.handle_message(self._msg(command))
+        assert "isn't a command" not in cli.sent[-1][0]
+        assert cli.sent[-1][0].endswith("Looking for a Bot? Send `!bot` in a DM.")
+
+    @pytest.mark.asyncio
+    async def test_agent_switch_carries_no_bot_hint(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!agents beta"))
+        assert any("Agent set to `beta`" in t for t, _ in cli.sent)
+        assert not any("Looking for a Bot?" in t for t, _ in cli.sent)

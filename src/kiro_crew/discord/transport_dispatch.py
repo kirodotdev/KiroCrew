@@ -747,6 +747,11 @@ class DiscordDispatcher:
                     session_key=lambda: self._session_key(user_id, thread_id),
                     prefix="!",
                 )
+            if not parse_command_argument(text):
+                # A user who thinks of their Bots as agents lands here, and a
+                # Bot is not a Kiro agent this reply could name. Inline, so the
+                # facade binds no name the composition pin does not list.
+                agent_reply += "\n\nLooking for a Bot? Send `!bot` in a DM."
             await say(agent_reply)
             return monitor_result
         # A lone `!queue` / `!steer` is a directive missing its message body, and

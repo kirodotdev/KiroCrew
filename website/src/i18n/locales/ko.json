@@ -22950,6 +22950,7 @@
       "linked_to": "{{label}}에 연결됨",
       "linked_to_paused": "{{label}}에 연결됨 · 답장 일시 중지됨",
       "connect_channel": "채널에 연결",
+      "open_messaging_channels": "채팅 플랫폼 열기",
       "dashboard_kept_last_good": "이 대시보드의 최신 버전을 불러오지 못해, 마지막으로 불러온 버전을 표시합니다.",
       "dashboard_none_yet": "이 Bot의 대시보드가 아직 설정되지 않았습니다.",
       "dashboard_empty_region": "{{name}}의 대시보드: 아직 선택된 페이지가 없습니다",

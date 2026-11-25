@@ -24747,6 +24747,7 @@
       "linked_to": "Связано с {{label}}",
       "linked_to_paused": "Связано с {{label}} · ответы приостановлены",
       "connect_channel": "Подключить канал",
+      "open_messaging_channels": "Открой «Чат-платформы»",
       "dashboard_kept_last_good": "Более новая версия этой панели не загрузилась, поэтому показана последняя загруженная.",
       "dashboard_none_yet": "Для этого Bot панель пока не настроена.",
       "dashboard_empty_region": "Панель {{name}}: страница ещё не выбрана",
