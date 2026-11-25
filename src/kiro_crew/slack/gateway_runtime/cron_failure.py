@@ -304,16 +304,18 @@ async def _alert_cron_failure(
         # output, so both are scrubbed once, ahead of either surface and
         # of either branch below.
         label = _scrubbed(job.name)
-        headline = (
-            "Not run" if awaiting_sign_in else "Blocked by policy" if denied else "Run failed"
-        )
+        if awaiting_sign_in:
+            headline, kind = "Not run", "sign-in"
+        elif denied:
+            headline, kind = "Blocked by policy", "denied"
+        else:
+            headline, kind = "Run failed", "failed"
         if exit_code is not None and not denied:
             # Said once, here, so the fenced body is only what the command wrote.
             headline = f"Run failed with exit code {exit_code}"
         # Denials and failures hash apart so a policy denial does not read
         # as a dup of a same-worded crash (and vice versa); so do exit codes.
         reason = text if exit_code is None else f"{exit_code}:{text}"
-        kind = "sign-in" if awaiting_sign_in else "denied" if denied else "failed"
         fh = _result_hash(f"{kind}:{reason}")
         # Every call site counted the run already, so the streak is the counter.
         streak = job.consecutive_failures
@@ -685,7 +687,7 @@ async def _cron_single_failure(
         # case counting again would pause on arithmetic rather than
         # on five distinct failures, or the failure belonged to a
         # shared runtime rather than to this job.
-        if not _gate_counted and _job_owns_failure:
+        if _charges:
             _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         if job.auto_paused:
             logger.warning(
@@ -737,9 +739,8 @@ async def _cron_single_failure(
             alert_title = f"Cron: {job.name}"
             alert_title, _ = redact_exfiltration_urls(alert_title)
             alert_title, _ = redact_credentials(alert_title)
-            # Carry the reason, matching the suppressed-duplicate body
-            # below: without it the FIRST alert — the one the user
-            # actually reads — was the least informative of the two.
+            # Carry the reason, as the suppressed-duplicate body above
+            # does: the FIRST alert is the one the user actually reads.
             self.dashboard_state.notify(
                 "cron",
                 alert_title,
@@ -831,7 +832,7 @@ async def _cron_single_failure(
     # timeout handler. For the same reason it defers when the gate
     # verdict already counted THIS run, or when the failure belonged
     # to a runtime this job was sharing rather than to the job.
-    if not _gate_counted and _job_owns_failure:
+    if _charges:
         _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
     if job.auto_paused:
         logger.warning(
@@ -845,13 +846,12 @@ async def _cron_single_failure(
     self._advance_failure_dedup(
         job, fh, channel_delivered=channel_delivered, slack_failed=slack_failed
     )
-    # The SEL record was nested INSIDE the advance condition before
-    # this refactor, so a Slack exception suppressed the audit line as
-    # well as the anchor. Preserved verbatim rather than quietly
-    # widened -- whether the audit should be unconditional (the
-    # script/command alert logs it either way) is a behaviour question,
-    # not a consolidation one. Restating the condition is what makes
-    # that gating visible instead of implied by indentation.
+    # The SEL record takes `_advance_failure_dedup`'s condition, so a
+    # Slack exception withholds the audit line as well as the anchor.
+    # Whether the audit should be unconditional (the script/command
+    # alert logs it either way) is a behaviour question, not a
+    # consolidation one. Restating the condition is what makes that
+    # gating visible.
     if channel_delivered or not slack_failed:
         # SEL logging is best-effort — never mask the original
         # exception if audit logging itself fails.
