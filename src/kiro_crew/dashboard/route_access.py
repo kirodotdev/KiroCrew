@@ -164,6 +164,10 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # first-party session is answered 404. Reads only.
     # Contract test: test_crew_api_grant_self.py.
     ("GET", "/v1/crew/grant"): RouteAccess("crew_api.grant.read", PREVIEW),
+    # A verified app credential lists the Bots of its grant; otherwise the owner gate
+    # and then the machine owner alone, who lists every Bot. Reads only.
+    # Contract test: test_crew_api_bots.py.
+    ("GET", "/v1/crew/bots"): RouteAccess("crew_api.bots.list", PREVIEW),
     # Owner dashboard only (handlers/project_mcp_approve.py); the mcp.project_server
     # card's Apply. Records the approval and restarts open chats.
     ("POST", "/api/mcp/project-servers/approve"): RouteAccess(

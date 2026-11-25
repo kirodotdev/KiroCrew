@@ -23,6 +23,8 @@ the machine owner and a verified app credential; the app's ``agents`` come from 
 grant alone.
 ``/v1/crew/grant`` is not behind ``owner_route``: it serves an app credential its own
 grant and answers a first-party session 404 (``crew_api_grant_self``).
+``/v1/crew/bots`` serves a verified app credential the Bots of its grant and the
+machine owner every Bot (``crew_api_bots``).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import crew_api_approvals, crew_api_grant_requests, handlers
+from kiro_crew.dashboard.crew_api_bots import api_bots
 from kiro_crew.dashboard.crew_api_grant_self import api_grant_self
 from kiro_crew.dashboard.crew_api_instance import api_capabilities, api_info
 from kiro_crew.dashboard.crew_api_models import api_models
@@ -90,3 +93,4 @@ def register(app: web.Application) -> None:
     app.router.add_get("/v1/crew/capabilities", api_capabilities)
     app.router.add_get("/v1/crew/info", api_info)
     app.router.add_get("/v1/crew/grant", api_grant_self)
+    app.router.add_get("/v1/crew/bots", api_bots)

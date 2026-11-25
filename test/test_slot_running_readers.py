@@ -146,6 +146,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The app's Bot list reports a reserved thread as busy, like the
                 # owner's roster does.
                 ("handlers/members_app.py", "app_bot_list"),
+                # The Crew API's Bot list reports it the same way.
+                ("crew_api_bots.py", "_list_bots"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
                 ("chat_turn/session_reset.py", "_arm_pending_reset_retry"),

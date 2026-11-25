@@ -23,7 +23,6 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
-from kiro_crew.members import is_dispatchable_member_name
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +54,13 @@ def _grant_request(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _existing_bots() -> set[str]:
-    """Bot ids from a confirmed config read, without a fallback roster."""
+async def _existing_bots() -> dict[str, str | None]:
+    """The Bots this Kiro Crew has and which Bot each is (its member id), from a
+    confirmed config read, without a fallback roster."""
     config = await asyncio.to_thread(KiroCrewConfig.load)
     if config.degraded_sections & {DEGRADED_WHOLE_CONFIG, "agents"}:
         raise ValueError("the Bot roster is degraded")
-    return {name for name in config.agents if is_dispatchable_member_name(name)}
+    return la.bot_identities(config)
 
 
 def _error(status: int, code: str, message: str) -> web.Response:
@@ -258,15 +258,24 @@ async def decide_grant_request(request: web.Request) -> web.Response:
             existing = await _existing_bots()
         except Exception:
             return _error(*_UNAVAILABLE)
-        if not set(bots) <= existing:
+        if not set(bots) <= set(existing):
             return _error(400, "invalid_request", "bots names a Bot this Kiro Crew does not have")
+        # Kept with the grant: which Bot each name is now, from that same read.
+        identities: dict[str, str | None] | None = existing
+    else:
+        identities = None
     # Token auth set this subject; _host_owner_refusal proved it is the host owner's.
     subject = str(request["user"])
     try:
         # The store is built in the worker thread too: its path lookup can touch disk.
         view = await asyncio.to_thread(
             lambda: la.gateway_local_authorization().decide(
-                request_id, approve, scopes if approve else None, bots=bots, caller=subject
+                request_id,
+                approve,
+                scopes if approve else None,
+                bots=bots,
+                identities=identities,
+                caller=subject,
             )
         )
     except la.UnknownRequest:

@@ -205,6 +205,7 @@ def test_the_routes_that_serve_an_app_credential() -> None:
     assert crew_api_auth.APP_SERVED_ROUTES == {
         MODELS,
         ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
         ("GET", "/v1/crew/capabilities"),
         ("GET", "/v1/crew/info"),
     }

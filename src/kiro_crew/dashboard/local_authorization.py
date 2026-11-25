@@ -230,6 +230,19 @@ def _grant_bots(ids: Any) -> dict[str, Any]:
     return {"mode": "selected", "ids": list(ids)}
 
 
+def bot_identities(config: Any) -> dict[str, str | None]:
+    """Which Bot each name is, in one read of *config*: each Bot a turn can name, in
+    config order, with the member id its record holds. ``""`` is a Bot that has none
+    and ``None`` a record whose member id is not text; neither is ever in a grant's
+    range."""
+    ids: dict[str, str | None] = {}
+    for name, agent in config.agents.items():
+        if is_dispatchable_member_name(name):
+            member_id = getattr(agent, "member_id", "")
+            ids[name] = member_id if isinstance(member_id, str) else None
+    return ids
+
+
 def validate_bots(bots: list[str]) -> None:
     """Validate exact model ids by the Bot name rule, without reading any roster."""
     if (
@@ -484,6 +497,40 @@ class LocalAuthorization:
         not work now."""
         return next((row for row in self.grants() if row["grant_id"] == grant_id), None)
 
+    def bots_in_range(self, grant_id: str, now_is: Mapping[str, str | None]) -> list[str]:
+        """The Bots grant *grant_id* may use now, in the grant's order.
+
+        The one place that decides it, for every route that hands a grant its Bots.
+        *now_is* is :func:`bot_identities` of the config read now. A name the owner
+        gave is in range only when the Bot had a member id when the owner gave it and
+        a Bot of that name holds the same member id now. A Bot made later under the
+        same name holds another, so it is not in range, unless it was made from
+        the memory store the deleted Bot left behind, which gives it that Bot's
+        member id (``member_memory_adopt``).
+
+        So a Bot with no member id is never in range, the default agent of an
+        ordinary install included, and a grant recorded without member ids has no
+        Bot. A grant that does not work now has none.
+        """
+        now = self._clock()
+        with _LOCK:
+            grant = self._load()["grants"].get(grant_id)
+        if (
+            grant is None
+            or grant["status"] != "active"
+            or min(grant["refresh_expires_at"], grant["expires_at"]) <= now
+        ):
+            return []
+        given = grant.get("bot_member_ids")
+        if not isinstance(given, dict):
+            return []
+
+        def same_bot(name: str) -> bool:
+            then = given.get(name)
+            return isinstance(then, str) and bool(then) and now_is.get(name) == then
+
+        return [name for name in grant.get("bots", {}).get("ids", ()) if same_bot(name)]
+
     def decide(
         self,
         request_id: str,
@@ -491,11 +538,14 @@ class LocalAuthorization:
         scopes: list[str] | None = None,
         *,
         bots: list[str] | None = None,
+        identities: Mapping[str, str | None] | None = None,
         caller: str,
     ) -> dict[str, Any]:
         """The owner's answer, audited under *caller*, the subject token auth gave whoever
         answered. *scopes* left out gives every scope asked for. *bots* left out gives
-        no Bot: a Bot is never given by default. Raises :class:`UnknownRequest`,
+        no Bot: a Bot is never given by default. *identities* says which Bot each given
+        name is now; that is kept with the grant, and :meth:`bots_in_range` gives a
+        name only to that same Bot. Raises :class:`UnknownRequest`,
         :class:`RequestAlreadyAnswered`, :class:`ScopesNotRequested` or
         :class:`BotsNotRequested`; anything else means the record could not be used."""
         _require_subject(caller)
@@ -518,6 +568,11 @@ class LocalAuthorization:
             rec["status"] = "approved" if approve else "denied"
             rec["granted_scopes"] = granted if approve else []
             rec["granted_bots"] = given if approve else []
+            # Which Bot each name was when the owner gave it: its member id. Never in an
+            # answer. One whose member id is unknown is kept as ``None``, which is never
+            # in range.
+            known = identities if approve and identities is not None else {}
+            rec["granted_bot_member_ids"] = {name: known.get(name) for name in given if approve}
             rec["decided_at"] = int(now)
             # The kind of caller, never a token. Only the Owner API answers today.
             rec["decided_by"] = {"kind": "owner", "via": "api"}
@@ -606,6 +661,7 @@ class LocalAuthorization:
                 "client_name": rec["client_name"],
                 "scopes": list(rec["granted_scopes"]),
                 "bots": _grant_bots(rec.get("granted_bots", ())),
+                "bot_member_ids": dict(rec.get("granted_bot_member_ids", {})),
                 "status": "active",
                 "created_at": now,
                 "expires_at": now + REFRESH_MAX_SECS,

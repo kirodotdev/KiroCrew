@@ -729,7 +729,8 @@ _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: pure read either: it calls ``MemberEventLogService.ensure`` for every row
 #: and ``reconcile_member_config`` appends to the member log. Every
 #: ``/api/members`` route (and its Crew API twin) reaches the same rows, so both wait.
-_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members", "/v1/crew/owner/bots")
+#: ``/v1/crew/bots`` lists the same rows to an app and waits for the same reason.
+_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members", "/v1/crew/owner/bots", "/v1/crew/bots")
 
 
 # Strong references to in-flight warm tasks, so the loop cannot collect one

@@ -34,7 +34,7 @@ Endpoints an app calls with a credential the user granted it.
 | [`GET /v1/crew/approvals`](public-approvals.md#get-v1crewapprovals) | List approvals (read only) | Planned | stable |
 | [`GET /v1/crew/approvals/{approval_id}`](public-approvals.md#get-v1crewapprovalsapproval_id) | Read one approval | Planned | stable |
 | [`POST /v1/crew/approvals/{approval_id}/decision`](public-approvals.md#post-v1crewapprovalsapproval_iddecision) | Answer an approval (embed credential only) | Planned | stable |
-| [`GET /v1/crew/bots`](public-bots.md#get-v1crewbots) | List Bots and their status | Planned | preview |
+| [`GET /v1/crew/bots`](public-bots.md#get-v1crewbots) | List Bots and their status | Available now: owner and apps | preview |
 | [`POST /v1/crew/bots`](public-bots.md#post-v1crewbots) | Create a helper Bot | Planned | stable |
 | [`GET /v1/crew/bots/{bot_id}/goals`](public-bots.md#get-v1crewbotsbot_idgoals) | Read a Bot's goals, key results and readings | Planned | preview |
 | [`GET /v1/crew/bots/{bot_id}/reports`](public-bots.md#get-v1crewbotsbot_idreports) | List a Bot's weekly and monthly reports | Planned | preview |
