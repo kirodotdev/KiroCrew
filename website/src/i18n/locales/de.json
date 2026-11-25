@@ -11610,12 +11610,17 @@
     },
     "appWidget": {
       "frame_label": "{{title}}, von {{app}}",
+      "from_app": "Von {{app}}",
       "reason_bad_use": "Dieses Widget nennt „{{use}}“, das ist kein App-Widget-Name.",
-      "reason_no_app": "Dieses Widget braucht die App {{app}}, die nicht installiert oder nicht aktiviert ist.",
+      "reason_not_installed": "Dieses Widget braucht die App {{app}}, die nicht installiert ist.",
+      "reason_app_off": "Dieses Widget braucht die App {{app}}, die ausgeschaltet ist.",
       "reason_no_widget": "Die App {{app}} hat kein Widget namens „{{use}}“.",
       "reason_too_large": "Die Daten dieses Widgets sind zu groß zum Anzeigen.",
       "reason_not_object": "Die Daten dieses Widgets sind ungültig, daher kann es nicht angezeigt werden.",
+      "reason_apps_unavailable": "Die Apps konnten nicht geladen werden, daher kann dieses Widget nicht angezeigt werden.",
       "reason_failed": "Die App {{app}} konnte dieses Widget nicht anzeigen.",
+      "install_app": "{{app}} installieren",
+      "turn_on_app": "{{app}} einschalten",
       "show_data": "Daten des Widgets anzeigen"
     },
     "messageActions": {

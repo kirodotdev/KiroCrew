@@ -11870,12 +11870,17 @@
     },
     "appWidget": {
       "frame_label": "{{title}}, de {{app}}",
+      "from_app": "De {{app}}",
       "reason_bad_use": "Este widget indica «{{use}}», que no es un nombre de widget de app.",
-      "reason_no_app": "Este widget necesita la app {{app}}, que no está instalada o no está activada.",
+      "reason_not_installed": "Este widget necesita la app {{app}}, que no está instalada.",
+      "reason_app_off": "Este widget necesita la app {{app}}, que está desactivada.",
       "reason_no_widget": "La app {{app}} no tiene ningún widget llamado «{{use}}».",
       "reason_too_large": "Los datos de este widget son demasiado grandes para mostrarlos.",
       "reason_not_object": "Los datos de este widget no son válidos, así que no se puede mostrar.",
+      "reason_apps_unavailable": "No se pudieron cargar las apps, así que este widget no se puede mostrar.",
       "reason_failed": "La app {{app}} no pudo mostrar este widget.",
+      "install_app": "Instalar {{app}}",
+      "turn_on_app": "Activar {{app}}",
       "show_data": "Mostrar los datos del widget"
     },
     "messageActions": {

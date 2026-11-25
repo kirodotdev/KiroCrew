@@ -6712,10 +6712,17 @@ serialized, so it is covered by the signing payload, and `widgets` is in
   and reports its height with `widget.resize`, clamped to 40 to 800 pixels. A
   theme change on the root element posts `theme`. A message over 4 KB or past the
   burst allowance is dropped; `capabilityExpired` is not answered.
-- **Fallback.** A bad `use`, no enabled app of that name, no such widget, a body
-  that is not one JSON object within the cap, a refused mint, a frame that fails,
-  navigates away or is not ready in time: each draws `AppWidgetFallback`, which
-  names the reason and keeps the payload in a closed `<details>` block.
+- **Links.** The frame opens a link only through `useFrameLinkBridge`, with the
+  refusal `WidgetFrame` uses: the renderer passes the reply's blocked-link records
+  and pending flag, so a link the reply draws as a Blocked link chip opens nothing,
+  and no web link opens while the records are pending.
+- **Fallback.** A bad `use`, an app that is not installed, an app that is turned
+  off, no such widget, a body that is not one JSON object within the cap, an app
+  list that does not load, a refused mint, a frame that fails, navigates away or is
+  not ready in time: each draws `AppWidgetFallback`, which names the reason and
+  keeps the payload in a closed `<details>` block. The not-installed and turned-off
+  cards link to `/apps/detail/<app>`, through the page-leave check. The three load
+  failures render through `ErrorNotice` with the agent hand-off.
 
 Writers: `apps/manifest_widgets.py`, `apps/widget_frame.py`, `apps/app_frame.py`,
 `widget_parse.py`, `widget_artifacts.py`, `website/src/appWidgets/*`,

@@ -42,11 +42,29 @@ export function parseWidgetUse(use: string): AppWidgetRef | null {
   return m ? { appName: m[1], widgetId: m[2] } : null
 }
 
+/** Why a `use` tag names no drawable widget, when the app list says so. */
+export type UnresolvedReason = 'not-installed' | 'app-off' | 'no-widget'
+
+function findApp(apps: readonly AppLike[], appName: string): AppLike | undefined {
+  return apps.find((a) => a && a.name === appName)
+}
+
+/** The name the user knows app `appName` by, from `apps`, or `appName` itself. */
+export function appLabelFor(apps: readonly AppLike[], appName: string): string {
+  const app = findApp(apps, appName)
+  const label = (typeof app?.displayName === 'string' && app.displayName)
+    || (typeof app?.manifest?.displayName === 'string' && app.manifest.displayName)
+    || appName
+  return String(label).slice(0, 80)
+}
+
 /** The declared widget `ref` names, from an enabled app in `apps`; else why not:
- *  `no-app` when no enabled app has that name, `no-widget` when it declares no such widget. */
-export function resolveAppWidget(apps: readonly AppLike[], ref: AppWidgetRef): ResolvedAppWidget | 'no-app' | 'no-widget' {
-  const app = apps.find((a) => a && a.name === ref.appName)
-  if (!app || app.enabled === false) return 'no-app'
+ *  `not-installed` when no app has that name, `app-off` when the app is turned off,
+ *  `no-widget` when it declares no such widget. */
+export function resolveAppWidget(apps: readonly AppLike[], ref: AppWidgetRef): ResolvedAppWidget | UnresolvedReason {
+  const app = findApp(apps, ref.appName)
+  if (!app) return 'not-installed'
+  if (app.enabled === false) return 'app-off'
   const declared = app.manifest?.contributes?.widgets
   if (!Array.isArray(declared)) return 'no-widget'
   for (const raw of declared.slice(0, MAX_WIDGETS_PER_APP)) {
@@ -54,10 +72,7 @@ export function resolveAppWidget(apps: readonly AppLike[], ref: AppWidgetRef): R
     const w = raw as Record<string, unknown>
     if (w.id !== ref.widgetId) continue
     const title = typeof w.title === 'string' && w.title.length <= MAX_WIDGET_TITLE ? w.title : ''
-    const label = (typeof app.displayName === 'string' && app.displayName)
-      || (typeof app.manifest?.displayName === 'string' && app.manifest.displayName)
-      || ref.appName
-    return { ...ref, appLabel: String(label).slice(0, 80), title }
+    return { ...ref, appLabel: appLabelFor(apps, ref.appName), title }
   }
   return 'no-widget'
 }

@@ -8,15 +8,28 @@
  * backend, and none is ever renewed.
  *
  * Every way the widget cannot be drawn ends in the same fallback card, which says
- * why and keeps the payload readable: the app is not installed or not enabled, it
- * declares no such widget, the payload is not one JSON object within the cap, the
- * mint is refused, or the frame does not say `ready` in time.
+ * why and keeps the payload readable: the app is not installed, it is turned off,
+ * it declares no such widget, the payload is not one JSON object within the cap,
+ * the app list does not load, the mint is refused, or the frame does not say
+ * `ready` in time. The first two link to the app's page, where the user can
+ * install it or turn it on. The last three are load failures, so they render
+ * through `ErrorNotice`.
+ *
+ * The frame opens a link only through the host, and refuses one the reply's own
+ * text draws as a Blocked link chip, or any link while those records are pending,
+ * as `WidgetFrame` does.
  *
  * @module appWidgets/AppWidget
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { MouseEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Link, useInRouterContext, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
+import ErrorNotice from '../components/ErrorNotice'
+import { useGuardedLeave } from '../components/NavigationLeaveGuard'
+import { blockedLinkFor, type BlockedLink } from '../components/blockedLinkRecords'
+import { withBase } from '../lib/basePath'
 import { i18nT } from '../i18n/t'
 import { useNearViewport } from '../hooks/useNearViewport'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
@@ -30,6 +43,7 @@ import {
   type Minted,
 } from '../appFrame/sandboxFrame'
 import {
+  appLabelFor,
   parseWidgetProps,
   parseWidgetUse,
   resolveAppWidget,
@@ -47,7 +61,11 @@ export const MAX_HEIGHT = 800
 /** Largest message the frame may send, as JSON text. */
 const MAX_FRAME_MESSAGE_BYTES = 4096
 
-export type FallbackReason = 'bad-use' | 'no-app' | 'no-widget' | 'too-large' | 'not-object' | 'failed'
+export type FallbackReason =
+  | 'bad-use' | 'not-installed' | 'app-off' | 'no-widget' | 'too-large' | 'not-object'
+  | 'apps-unavailable' | 'failed'
+
+const NO_BLOCKED: readonly BlockedLink[] = []
 
 /** Overridable in tests: how a widget frame is minted. */
 type Mint = (appName: string, widgetId: string) => Promise<Minted>
@@ -62,13 +80,17 @@ function selectApps(d: unknown): unknown[] {
   return Array.isArray(apps) ? apps : []
 }
 
-export default function AppWidget({ use, body, title }: {
+export default function AppWidget({ use, body, title, blockedLinks = NO_BLOCKED, linksPending = false }: {
   /** The tag's `use` attribute, as written. */
   use: string
   /** The tag's body, as written: the JSON payload. */
   body: string
   /** The tag's `title`, or the block's default title. */
   title?: string
+  /** The reply's blocked-link records: the frame opens no link that matches one. */
+  blockedLinks?: readonly BlockedLink[]
+  /** The reply's records are not known yet, so the frame opens no web link. */
+  linksPending?: boolean
 }) {
   const ref = useMemo(() => parseWidgetUse(use), [use])
   const parsed = useMemo(() => parseWidgetProps(body), [body])
@@ -89,23 +111,38 @@ export default function AppWidget({ use, body, title }: {
   else if (!parsed.ok) reason = parsed.reason
   else if (typeof resolved === 'string') reason = resolved
   // The app list failed to load, so the widget cannot be found.
-  else if (!isPending && !resolved) reason = 'failed'
+  else if (!isPending && !resolved) reason = 'apps-unavailable'
   else if (failed) reason = 'failed'
 
   const heading = title && title !== 'Widget' ? title : (widget?.title || use)
-  if (reason) return <AppWidgetFallback title={heading} use={use} reason={reason} body={body} appLabel={widget?.appLabel} />
+  if (reason) {
+    const appLabel = widget?.appLabel ?? (ref && apps ? appLabelFor(apps as never[], ref.appName) : undefined)
+    return <AppWidgetFallback title={heading} use={use} reason={reason} body={body} appLabel={appLabel} />
+  }
   if (!widget || !parsed.ok) {
     // The app list is still loading.
     return <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2 text-[12px] text-muted" aria-busy="true" data-testid="app-widget-loading">{heading}</section>
   }
   // Keyed by the tag: a frame renders its payload once, so a changed body is a new frame.
-  return <AppWidgetFrame key={`${use}\n${body}`} widget={widget} props={parsed.props} heading={heading} onFailed={() => setFailed(true)} />
+  return (
+    <AppWidgetFrame
+      key={`${use}\n${body}`}
+      widget={widget}
+      props={parsed.props}
+      heading={heading}
+      blockedLinks={blockedLinks}
+      linksPending={linksPending}
+      onFailed={() => setFailed(true)}
+    />
+  )
 }
 
-function AppWidgetFrame({ widget, props, heading, onFailed }: {
+function AppWidgetFrame({ widget, props, heading, blockedLinks, linksPending, onFailed }: {
   widget: ResolvedAppWidget
   props: Record<string, unknown>
   heading: string
+  blockedLinks: readonly BlockedLink[]
+  linksPending: boolean
   onFailed: () => void
 }) {
   const boxRef = useRef<HTMLElement | null>(null)
@@ -115,7 +152,13 @@ function AppWidgetFrame({ widget, props, heading, onFailed }: {
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
   const onFailedRef = useRef(onFailed)
   onFailedRef.current = onFailed
-  const chip = useFrameLinkBridge([frameRef])
+  // A link the reply's own text draws as a Blocked link chip opens nothing, and
+  // no web link opens while the reply's records are pending.
+  const refuseLink = useCallback(
+    (url: string) => linksPending || blockedLinkFor(url, blockedLinks) !== null,
+    [linksPending, blockedLinks],
+  )
+  const chip = useFrameLinkBridge([frameRef], undefined, undefined, undefined, refuseLink)
 
   useEffect(() => {
     const slot = slotRef.current
@@ -206,7 +249,7 @@ function AppWidgetFrame({ widget, props, heading, onFailed }: {
     >
       <div className="flex items-center justify-between px-3 pt-2 text-[12px]">
         <span className="truncate font-semibold text-muted">{heading}</span>
-        <span className="shrink-0 text-[11px] text-muted">{widget.appLabel}</span>
+        <span className="shrink-0 text-[11px] text-muted">{i18nT('components.appWidget.from_app', { app: widget.appLabel })}</span>
       </div>
       <div ref={slotRef} style={{ height }} data-testid="app-widget-slot" />
       {chip}
@@ -218,12 +261,52 @@ function AppWidgetFrame({ widget, props, heading, onFailed }: {
 function fallbackText(reason: FallbackReason, app: string, use: string): string {
   switch (reason) {
     case 'bad-use': return i18nT('components.appWidget.reason_bad_use', { use })
-    case 'no-app': return i18nT('components.appWidget.reason_no_app', { app })
+    case 'not-installed': return i18nT('components.appWidget.reason_not_installed', { app })
+    case 'app-off': return i18nT('components.appWidget.reason_app_off', { app })
     case 'no-widget': return i18nT('components.appWidget.reason_no_widget', { app, use })
     case 'too-large': return i18nT('components.appWidget.reason_too_large')
     case 'not-object': return i18nT('components.appWidget.reason_not_object')
+    case 'apps-unavailable': return i18nT('components.appWidget.reason_apps_unavailable')
     case 'failed': return i18nT('components.appWidget.reason_failed', { app })
   }
+}
+
+function isPlainPrimaryClick(e: MouseEvent<HTMLAnchorElement>): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+}
+
+const ACTION_CLASS = 'mt-1 inline-block text-[12px] text-accent hover:underline'
+
+/** A link to the app's page, where the user installs it or turns it on. */
+function AppPageLink({ appName, label }: { appName: string; label: string }) {
+  const to = `/apps/detail/${encodeURIComponent(appName)}`
+  // A reply drawn outside the dashboard's router (an app's own page) has no
+  // in-place navigation, so the app's page opens in a new tab.
+  if (!useInRouterContext()) {
+    return <a href={withBase(to)} target="_blank" rel="noopener noreferrer" className={ACTION_CLASS} data-testid="app-widget-app-link">{label}</a>
+  }
+  return <GuardedAppPageLink to={to} label={label} />
+}
+
+function GuardedAppPageLink({ to, label }: { to: string; label: string }) {
+  const navigate = useNavigate()
+  const guardedLeave = useGuardedLeave()
+  return (
+    <Link
+      to={to}
+      className={ACTION_CLASS}
+      data-testid="app-widget-app-link"
+      onClick={(e) => {
+        // Leaving the chat unmounts it, so the page's leave check is asked first,
+        // as SettingsLink does. A modified or middle click opens a new tab.
+        if (!isPlainPrimaryClick(e)) return
+        e.preventDefault()
+        guardedLeave(() => navigate(to), to)
+      }}
+    >
+      {label}
+    </Link>
+  )
 }
 
 export function AppWidgetFallback({ title, use, reason, body, appLabel }: {
@@ -233,15 +316,22 @@ export function AppWidgetFallback({ title, use, reason, body, appLabel }: {
   body: string
   appLabel?: string
 }) {
-  const app = appLabel || use.split(':', 1)[0] || use
+  const appName = use.split(':', 1)[0] || use
+  const app = appLabel || appName
   const why = fallbackText(reason, app, use)
+  const loadFailed = reason === 'failed' || reason === 'apps-unavailable'
   return (
     <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2" role="note" data-testid="app-widget-fallback" data-reason={reason}>
       <div className="text-[12px] font-semibold text-muted truncate">{title}</div>
-      <p className="mt-1 text-[12px] text-fg">{why}</p>
+      {loadFailed
+        // The rest of the chat works and the payload stays below, so the loss is partial.
+        ? <ErrorNotice impact="partial" className="mt-1" message={why} askAgent testId="app-widget-error" />
+        : <p className="mt-1 text-[12px] text-text-strong">{why}</p>}
+      {reason === 'not-installed' && <AppPageLink appName={appName} label={i18nT('components.appWidget.install_app', { app })} />}
+      {reason === 'app-off' && <AppPageLink appName={appName} label={i18nT('components.appWidget.turn_on_app', { app })} />}
       <details className="mt-1 text-[12px]">
         <summary className="cursor-pointer text-muted">{i18nT('components.appWidget.show_data')}</summary>
-        <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1 font-mono text-[11px] text-fg">{body.trim()}</pre>
+        <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1 font-mono text-[11px] text-text-strong">{body.trim()}</pre>
       </details>
     </section>
   )

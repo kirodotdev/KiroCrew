@@ -11350,12 +11350,17 @@
     },
     "appWidget": {
       "frame_label": "{{title}}, {{app}} 제공",
+      "from_app": "{{app}} 제공",
       "reason_bad_use": "이 위젯은 ‘{{use}}’를 지정하지만 이는 앱 위젯 이름이 아닙니다.",
-      "reason_no_app": "이 위젯에는 {{app}} 앱이 필요하지만 설치되어 있지 않거나 켜져 있지 않습니다.",
+      "reason_not_installed": "이 위젯에는 {{app}} 앱이 필요하지만 설치되어 있지 않습니다.",
+      "reason_app_off": "이 위젯에는 {{app}} 앱이 필요하지만 꺼져 있습니다.",
       "reason_no_widget": "{{app}} 앱에 ‘{{use}}’ 위젯이 없습니다.",
       "reason_too_large": "이 위젯의 데이터가 너무 커서 표시할 수 없습니다.",
       "reason_not_object": "이 위젯의 데이터가 올바르지 않아 표시할 수 없습니다.",
+      "reason_apps_unavailable": "앱을 불러오지 못해 이 위젯을 표시할 수 없습니다.",
       "reason_failed": "{{app}} 앱이 이 위젯을 표시하지 못했습니다.",
+      "install_app": "{{app}} 설치",
+      "turn_on_app": "{{app}} 켜기",
       "show_data": "위젯 데이터 보기"
     },
     "messageActions": {

@@ -11350,12 +11350,17 @@
     },
     "appWidget": {
       "frame_label": "{{title}}（{{app}} より）",
+      "from_app": "{{app}} から",
       "reason_bad_use": "このウィジェットは「{{use}}」を指定していますが、これはアプリのウィジェット名ではありません。",
-      "reason_no_app": "このウィジェットには {{app}} アプリが必要ですが、インストールされていないかオンになっていません。",
+      "reason_not_installed": "このウィジェットには {{app}} アプリが必要ですが、インストールされていません。",
+      "reason_app_off": "このウィジェットには {{app}} アプリが必要ですが、オフになっています。",
       "reason_no_widget": "{{app}} アプリには「{{use}}」という名前のウィジェットがありません。",
       "reason_too_large": "このウィジェットのデータは大きすぎて表示できません。",
       "reason_not_object": "このウィジェットのデータが無効なため、表示できません。",
+      "reason_apps_unavailable": "アプリを読み込めなかったため、このウィジェットを表示できません。",
       "reason_failed": "{{app}} アプリはこのウィジェットを表示できませんでした。",
+      "install_app": "{{app}} をインストール",
+      "turn_on_app": "{{app}} をオンにする",
       "show_data": "ウィジェットのデータを表示"
     },
     "messageActions": {
