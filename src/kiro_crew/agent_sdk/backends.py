@@ -1432,6 +1432,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     COPILOT_VERIFIED_VERSION,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     STRANDS_NODE_FLOOR,
+    STRANDS_PYTHON_CRT_REQUIREMENT,
     STRANDS_PYTHON_REQUIREMENT,
     STRANDS_VERIFIED_VERSION,
     SelfServedLaunch,
