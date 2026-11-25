@@ -671,11 +671,14 @@ async def _run_inner_impl(
     _person_rejected = [False]
     _refusal_resumes = [0]
     # Whether the model wrote or called anything after the latest refusal.
-    # opencode answers ``reject_once`` by ending a clean turn ``end_turn`` on
-    # the refusal itself, which leaves it unanswered; other harnesses go on
-    # after a reject, so only opencode's clean ending is read as one.
+    # A harness with ``ends_turn_on_permission_reject`` (opencode, on
+    # ``reject_once``) ends a clean turn ``end_turn`` on the refusal itself,
+    # which leaves it unanswered; other harnesses go on after a reject, so only
+    # that clean ending is read as one.
     _refusal_answered = [False]
-    _reject_ends_turn = getattr(client, "is_opencode_backend", False) is True
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    _reject_ends_turn = capabilities_of(client).ends_turn_on_permission_reject
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport

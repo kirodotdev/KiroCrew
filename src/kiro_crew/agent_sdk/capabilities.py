@@ -56,6 +56,7 @@ from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -321,6 +322,15 @@ class SessionCapabilities:
     #: on a landed turn, so a wrong guess repeats it instead of losing it.
     keeps_prompt_on_unlanded_turn: bool
 
+    #: Whether the harness answers a rejected permission request by ending a
+    #: clean ``end_turn`` on the refusal itself, leaving it unanswered, so a
+    #: sub-agent turn that ends that way is read as ending on the refusal.
+    #:
+    #: True for opencode, whose ``reject_once`` ends the turn. False everywhere
+    #: else, an unknown backend included: there the harness goes on after a
+    #: reject, and a clean ending is not read as one.
+    ends_turn_on_permission_reject: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -366,6 +376,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         crew_sends_persona_prompt=is_claude_backend_name(backend),
         loads_steering_natively=backend == ACP_BACKEND_KAS,
         keeps_prompt_on_unlanded_turn=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
+        ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -407,6 +418,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     crew_sends_persona_prompt=False,
     loads_steering_natively=False,
     keeps_prompt_on_unlanded_turn=False,
+    ends_turn_on_permission_reject=False,
     keeps_session_across_compaction=False,
 )
 
