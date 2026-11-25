@@ -4074,7 +4074,7 @@
       "desc_exit": "Exit the chat session",
       "desc_experiment": "Toggle experimental features",
       "desc_fork": "Continue in a copy of this conversation",
-      "desc_fork_temporary": "No memory, learns nothing new",
+      "desc_fork_temporary": "A copy that saves no memory",
       "desc_help": "Show available commands",
       "desc_hooks": "View configured context hooks",
       "desc_issue": "Report an issue or bug",

@@ -9720,7 +9720,7 @@
       "desc_exit": "Die Chat-Sitzung verlassen",
       "desc_experiment": "Experimentelle Funktionen umschalten",
       "desc_fork": "In einer Kopie dieser Unterhaltung weitermachen",
-      "desc_fork_temporary": "Ohne Erinnerungen, lernt nichts Neues",
+      "desc_fork_temporary": "Eine Kopie, die sich nichts merkt",
       "desc_help": "Verfügbare Befehle anzeigen",
       "desc_hooks": "Konfigurierte Kontext-Hooks ansehen",
       "desc_issue": "Ein Problem oder einen Fehler melden",
