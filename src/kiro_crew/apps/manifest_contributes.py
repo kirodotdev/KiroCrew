@@ -653,9 +653,6 @@ class PanelTabConfig:
 #: provider, and a link matches the FIRST provider whose hosts list it, so a second
 #: provider in the same app would only ever shadow or be shadowed by the first.
 MAX_LINK_PREVIEWS_PER_APP = 1
-#: Host patterns per provider. Bounded because the detector tests every hovered link
-#: against every pattern of every enabled app.
-_MAX_LINK_PREVIEW_HOSTS = 64
 #: Plain-text patterns per provider, and the longest pattern source. Every pattern
 #: of every enabled app scans every rendered chat message, so both are small. The
 #: dashboard refuses a pattern whose backtracking it cannot bound before it ever
@@ -766,7 +763,7 @@ class LinkPreviewConfig:
             errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
         if not self.entry:
             errors.append(f"{where}: missing entry")
-        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_PREVIEW_HOSTS))
+        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, None))
         if self.bad_full_url:
             errors.append(f"{where}: fullUrl must be true or false")
         if self.bad_text_patterns:

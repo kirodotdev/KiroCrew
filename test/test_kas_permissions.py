@@ -30,11 +30,14 @@ from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import (
     CAPABILITY_BY_TOOL,
     CEILING_REFS_BY_CAPABILITY,
+    CREW_ANSWERED_BUILTINS_KEY,
     KAS_CAPABILITIES,
     META_CAPABILITY_EXPANSION,
     WITHHELD_CAPABILITIES,
     WITHHELD_FROM_AUTO_APPROVE,
     allowed_tools_to_permissions,
+    authored_restricted_capabilities,
+    crew_answered_commands,
     merge_user_permissions,
 )
 from kiro_crew.agent import _seed_kas_permissions
@@ -1011,16 +1014,144 @@ class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
         future = dict(narrowed, excludeHosts=["*.internal"])
         assert _merge({"rules": [future]}, derived=_DERIVED) == _DERIVED
 
-    def test_a_policy_bundle_reference_refuses_the_block(self):
-        """``policies`` is well formed, and that is the problem: KAS expands a named
-        bundle inline into allow rules held on the backend, so the grant is not in
-        this block and there is nothing here to intersect with the ceiling. The
-        shipped ``dev-shell`` bundle alone carries shell allows."""
+    def test_an_allow_beside_a_policy_bundle_is_still_refused(self):
+        """KAS expands a named bundle into allow rules held on the backend, so the
+        grant is not in this block and there is nothing here to intersect with the
+        ceiling; an allow written beside one stays home with it."""
         block = {
             "rules": [{"capability": "web_search", "effect": "allow"}],
             "policies": ["dev-shell"],
         }
         assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            {"capability": "mcp", "match": ["srv/delete_*"], "effect": "deny"},
+            {"capability": "mcp", "match": ["srv/write"], "effect": "ask"},
+            {"capability": "shell", "match": ["rm *"], "effect": "deny"},
+        ],
+        ids=["mcp-deny", "mcp-ask", "shell-deny"],
+    )
+    def test_a_deny_or_ask_beside_a_policy_bundle_travels_without_it(self, rule):
+        """A deny or ask only narrows, so the bundle is left out and the rule is
+        sent as written, the allow beside it still left out."""
+        allow = {"capability": "web_search", "effect": "allow"}
+        block = {"rules": [rule, allow], "policies": ["read-only-shell"]}
+        merged = _merge(block, derived=_DERIVED)
+        assert merged == {"rules": [rule, *_DERIVED["rules"]]}
+
+    def test_a_block_without_a_bundle_is_read_as_before(self):
+        rules = [
+            {"capability": "mcp", "match": ["srv/delete_*"], "effect": "deny"},
+            {"capability": "web_search", "effect": "allow"},
+        ]
+        assert _merge({"rules": rules}, derived=_DERIVED) == {"rules": [*rules, *_DERIVED["rules"]]}
+
+    def test_a_policy_bundle_left_out_is_logged_and_audited_once(self, caplog):
+        audited = []
+        block = {
+            "rules": [
+                {"capability": "mcp", "match": ["srv/x"], "effect": "deny"},
+                {"capability": "web_search", "effect": "allow"},
+            ],
+            "policies": ["read-only-shell"],
+        }
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.kas_permissions"):
+            merge_user_permissions(
+                _DERIVED,
+                block,
+                ceiling_permits=_UNGOVERNED,
+                allowlist_present=False,
+                agent_id="a",
+                audit_decision=lambda refs, outcome, reason: audited.append((refs, outcome)),
+            )
+        assert ("read-only-shell", "withheld") in audited
+        assert [r.getMessage() for r in caplog.records if "read-only-shell" in r.getMessage()] == [
+            "agent 'a': leaving out its policies bundle read-only-shell and the 1 allow rule(s) "
+            "beside it; its deny and ask rules still travel"
+        ]
+
+    def test_a_bundle_kas_does_not_ship_is_logged_without_its_name(self, caplog):
+        block = {"rules": [], "policies": ["my-secret-bundle"]}
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.kas_permissions"):
+            merge_user_permissions(
+                _DERIVED, block, ceiling_permits=_UNGOVERNED, allowlist_present=False
+            )
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "another bundle" in logged and "my-secret-bundle" not in logged
+
+    def test_a_policies_list_holding_a_non_id_still_refuses_the_block(self):
+        block = {"rules": [{"capability": "web_search", "effect": "deny"}], "policies": ["x", 1]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_a_shell_deny_beside_a_bundle_reaches_kas_and_restricts_only_shell(self):
+        """The deny reaches KAS, which refuses the call with no prompt, and only the
+        capability the author restricted stays out of Crew's answers: the read
+        grant beside it is answered as if no bundle were named."""
+        deny = {"capability": "shell", "match": ["rm *"], "effect": "deny"}
+        spec = {
+            "prompt": "p",
+            "allowedTools": ["fs_read", "shell"],
+            "permissions": {"rules": [deny], "policies": ["dev-shell"]},
+        }
+        out = to_client_custom_agent("a", spec, "p")
+        assert deny in out["permissions"]["rules"]
+        assert "policies" not in out["permissions"]
+        assert authored_restricted_capabilities(spec["permissions"], None) == frozenset({"shell"})
+
+    def test_the_allows_reach_kas_once_the_bundle_is_removed(self):
+        """The way forward the notice names: write the allows out without a bundle."""
+        mcp = {"capability": "mcp", "match": ["srv/*"], "effect": "allow"}
+        shell = {"capability": "shell", "match": ["git status"], "effect": "allow"}
+        with_bundle = {"policies": ["read-only-shell"], "rules": [mcp, shell]}
+        written_out = {"rules": [mcp, shell]}
+        sent = to_client_custom_agent("a", {"prompt": "p", "permissions": with_bundle}, "p")
+        assert mcp not in sent.get("permissions", {}).get("rules", [])
+        assert crew_answered_commands(None, with_bundle) == []
+        sent = to_client_custom_agent("a", {"prompt": "p", "permissions": written_out}, "p")
+        assert mcp in sent["permissions"]["rules"]
+        assert crew_answered_commands(None, written_out) == ["git status"]
+
+    def test_allowed_tools_grants_are_answered_beside_a_bundle(self):
+        """The other way forward: grants in ``allowedTools`` hold beside a bundle."""
+        spec = {
+            "prompt": "p",
+            "allowedTools": ["@srv", "fs_read", "fs_write", "shell"],
+            "permissions": {
+                "policies": ["read-only-shell"],
+                "rules": [{"capability": "web_search", "effect": "deny"}],
+            },
+        }
+        out = to_client_custom_agent("a", spec, "p")
+        assert {"capability": "mcp", "match": ["srv/*"], "effect": "allow"} in out["permissions"][
+            "rules"
+        ]
+        assert out[CREW_ANSWERED_BUILTINS_KEY] == ["execute_bash", "fs_read", "fs_write"]
+
+    def test_a_refusal_beside_a_bundle_names_the_rule_by_its_authored_index(self):
+        """An allow left out beside a bundle keeps its place, so the reason names
+        the rule the author wrote at that index."""
+        from kiro_crew.agent_sdk.kas_tool_view import permissions_block_refusal
+
+        block = {
+            "policies": ["dev-shell"],
+            "rules": [
+                {"capability": "fs_read", "effect": "allow"},
+                {"capability": "nope", "effect": "deny"},
+            ],
+        }
+        assert permissions_block_refusal(block).startswith("rule 1 ")
+
+    def test_a_bundle_with_no_rules_reads_as_an_empty_rule_list(self):
+        block = {"policies": ["dev-shell"]}
+        assert kas_permissions.projection_accepts(block)
+        assert authored_restricted_capabilities(block, None) == frozenset()
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_a_bundle_beside_only_allows_restricts_nothing(self):
+        block = {"rules": [{"capability": "fs_read", "effect": "allow"}], "policies": ["dev-shell"]}
+        assert authored_restricted_capabilities(block, None) == frozenset()
 
     def test_an_empty_policies_array_references_nothing_and_is_not_a_refusal(self):
         block = {"rules": [{"capability": "web_search", "effect": "allow"}], "policies": []}

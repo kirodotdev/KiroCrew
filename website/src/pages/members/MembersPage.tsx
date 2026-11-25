@@ -976,7 +976,9 @@ export default function MembersPage() {
           because the hook's own loading dialog lives inside the lazy chunk. When no
           edit is requested the fallback is null, so a closed dialog renders nothing. */}
       <Suspense fallback={editingCrew ? <CrewEditorChunkLoading /> : null}>
-        <CrewEditorModal ctl={crewEditor} />
+        {/* The editor's way to this bot's Profile card: close the editor, open
+            the card on its Profile tab. The editor's guard has asked by now. */}
+        <CrewEditorModal ctl={crewEditor} onOpenProfile={() => { crewEditing.closeCrewEditor(); openProfile('profile') }} />
       </Suspense>
     </div>
     </RunInTerminalScope.Provider>
