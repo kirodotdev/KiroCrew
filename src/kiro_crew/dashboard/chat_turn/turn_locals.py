@@ -97,6 +97,7 @@ class _ChatTurn:
     _directive_source_channels: "tuple[str, ...]"
     _directive_owner_origin: "bool"
     _commands_off: "bool"
+    _expansions_off: "bool"
     _recovery_echo_owed: "bool"
     _card_origin: "bool"
     _prompt_on_channel: "bool"
@@ -406,6 +407,7 @@ class _ChatTurn:
         _directive_owner_origin: "bool",
         _directive_source_channels: "tuple[str, ...]" = (),
         _commands_off: "bool",
+        _expansions_off: "bool",
         _recovery_echo_owed: "bool",
         _card_origin: "bool",
         _prompt_on_channel: "bool" = False,
@@ -447,6 +449,7 @@ class _ChatTurn:
         self._directive_source_channels = tuple(_directive_source_channels)
         self._directive_owner_origin = _directive_owner_origin
         self._commands_off = _commands_off
+        self._expansions_off = _expansions_off
         self._recovery_echo_owed = _recovery_echo_owed
         self._card_origin = _card_origin
         self._prompt_on_channel = _prompt_on_channel

@@ -1154,6 +1154,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # prompt offers no tool that applier would refuse.
                 directive_user_origin=bool(turn._directive_user_origin),
                 **_thread_parent_kwargs,
+                # A chat option tap's leading ``/token`` stays the label it is.
+                quick_prompts=not turn._expansions_off,
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
