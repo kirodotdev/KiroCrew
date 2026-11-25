@@ -207,7 +207,9 @@ the warm reaper reads each adopted row's session (`fail_refused_sign_ins`), so t
 row turns `failed` / `mint_sign_in_rejected` within one poll instead of waiting out
 the TTL, and the card says the provider did not accept the sign-in. A grant on disk
 still wins over the frame, because a server can fail its own start after a good
-exchange. So a refused row means no grant was observed or proven, and the card fences
+exchange. That grant is kiro-cli's, as the row's watcher reads, on every
+backend: a warm row is a kiro-cli sign-in, and a Connect that signs in on the KAS engine
+never adopts one, so the reaper does not read the vault. So a refused row means no grant was observed or proven, and the card fences
 any grant files still on disk the way it fences `mint_grant_unproven`: a reconnect
 whose check disproved the stored grant does not read Connected beside the refusal.
 A return address relayed from the card holds that tab's wait when the
@@ -1482,6 +1484,11 @@ unreadable config get no line. Off KAS the card's verdict does not read the vaul
 (`status._grant_presence_maps`), since no other chat does: a grant only the vault
 holds reads not connected, and Connect signs in on kiro-cli. The MCP Servers row
 still reads it as Signed in, because its probe counts both stores on every backend.
+A `connection.connect` change card records which grant it saw by the same rule
+(`change_cards_readers._connection_grant_fingerprint`): kiro-cli's token stat, and while
+the card's verdict reads the vault, the digest of the vault's tokens entry at that url
+(`mcp_grant_kas.kas_grant_fingerprint`, ciphertext only, never decrypted), so a new
+sign-in in either store reads as a different grant.
 
 A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` while chats run
 on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`) carries
