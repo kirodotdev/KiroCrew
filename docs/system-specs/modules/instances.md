@@ -556,7 +556,7 @@ cannot drift.
 | `instances.max_recovery_attempts` | `8` | Consecutive self-heal attempts before the tunnel is left disconnected. Below 1 falls back to the default; above `MAX_RECOVERY_ATTEMPTS_CEILING` (100) is clamped with a warning, so a pathological setting cannot turn bounded self-heal into a near-infinite retry loop. |
 | `instances.recover_backoff_max_secs` | `30.0` | Cap on the per-attempt backoff. Non-positive falls back to the default; above `RECOVER_BACKOFF_MAX_CEILING_SECS` (300) is clamped, bounding the worst-case wall-clock recovery window. |
 | `instances.probe_failure_threshold` | `3` | Consecutive health-probe failures before a non-forwarding tunnel is torn down. Below 1 falls back to the default. |
-| `instances.managed_env_endpoint` | `""` | HTTPS base URL of the Kiro managed-environment service (`kiro_crew.managed_env`); plain `http://` only to a loopback host. Read only while the `crew_client` feature preview is on, so never on an LTS build (`managed_env/settings.read_settings`). Empty or malformed, every call raises `SettingsMissing`, which names the key. No route or dashboard entry calls the client yet. |
+| `instances.managed_env_endpoint` | `""` | HTTPS base URL of the Kiro managed-environment service (`kiro_crew.managed_env`); plain `http://` only to a loopback host. Read only while the `crew_client` feature preview is on, so never on an LTS build (`managed_env/settings.read_settings`). Empty or malformed, every call raises `SettingsMissing`, which names the key. The `/api/managed-environments/*` routes (`managed_env/routes.py`) call it, and Remote Crew's launch form and row actions call those routes. |
 
 ```bash
 kirocrew config set instances.warm_set_cap 3

@@ -1415,6 +1415,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
     )
     return DashboardConfig(
         url=section.get("url"),
+        # Unclamped integers reach the startup check. Shared validation warns and
+        # removes wrong types (default 0, off), but coerces "8443" and 8443.0 to 8443.
+        entry_port=section.read("entry_port", _safe_int),
         tailscale=_tailscale_config_from(
             dashboard_data.get("tailscale"),
             _degraded,

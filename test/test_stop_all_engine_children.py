@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from engine_turn_helpers import live_reading_says_kas
-from handlers_messaging_coverage_helpers import _payload, _Req, _run
+from handlers_messaging_coverage_helpers import _OWNER_SUBJECT, _payload, _Req, _run
 from kas_engine_child_helpers import _agents_dir, _batch, _default_spec
 from kas_engine_child_helpers import _handle as _session_handle
 from kas_engine_child_helpers import _own, _setting, _write
@@ -54,6 +54,8 @@ def _state(tmp_path: Path, crew_running: int) -> Any:
     from chat_test_helpers import _make_state
 
     state = _make_state(tmp_path)
+    # The owner presses Stop all: ``_Req`` carries the owner's subject.
+    state.owner_id = _OWNER_SUBJECT
     state.sessions.is_compacting = MagicMock(return_value=False)
     state.sessions.stop_turn = AsyncMock(return_value="stopped")
     state.subagents = MagicMock()

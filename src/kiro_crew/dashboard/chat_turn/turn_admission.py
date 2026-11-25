@@ -843,6 +843,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # runs on the worktree, under the dispatch lock it still holds.
             selected_binding = _current_binding(turn)
             turn.selected_binding = selected_binding
+        # A worker whose session this turn starts, or runs for the first time, on
+        # the conducting kit holds no posture looser than its Profile's (never
+        # raised); checked again after the claim, once the start is known. Before the
+        # claim, only a start predicted to mount session control is held, read once
+        # the folder the start runs in is chosen.
+        from kiro_crew.dashboard.crewmate_approval import (
+            predicted_start_mounts,
+            tighten_for_conducting,
+        )
+
+        start_mounts = await predicted_start_mounts(state, slot, loaded_cfg)
+        tighten_for_conducting(
+            state, slot, loaded_cfg, execution_context, start_mounts=start_mounts
+        )
 
     # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
     # self-heal must NOT run the default agent — that generic-substitution is
@@ -1683,6 +1697,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 "text": f"Session created · {agent_label} · {model_label}",
             },
         )
+
+    # The session's start is known now: a Bot's worker whose start took the
+    # conducting kit is held to its Profile here, before the policy below is stored
+    # from its posture, whatever the admission's config predicted.
+    if bindings is not None and loaded_cfg is not None:
+        from kiro_crew.dashboard.crewmate_approval import tighten_for_conducting
+
+        tighten_for_conducting(state, slot, loaded_cfg, turn.execution_context)
 
     # Propagate trust/YOLO to session so subagents inherit auto-approve.
     # A scoped grant is excluded on purpose — see _persistable_session_policy.

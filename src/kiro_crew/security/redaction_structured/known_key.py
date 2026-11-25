@@ -31,7 +31,20 @@ Only that run is replaced.
 
 from __future__ import annotations
 
-from .charsets import ALNUM, B64STD, DIGITS, ascii_lower, cached, run_end, run_start
+import unicodedata
+from bisect import bisect_left
+
+from .charsets import (
+    ALNUM,
+    B64STD,
+    DIGITS,
+    ascii_lower,
+    breaks_word,
+    cached,
+    fold_wide,
+    run_end,
+    run_start,
+)
 from .checks import is_placeholder, reads_as_example_words
 from .model import PLAN_TAGS, TAIL_B64RUN, Hit
 from .table import TABLE, KnownKeyRow
@@ -82,6 +95,9 @@ _INLINE_BEFORE = frozenset(" \t;&|(")
 # segment included.
 _MIDLINE_BEFORE = frozenset(" \t*|(,;?&/")
 _QUOTES = "\"'"
+# A character before a key that an input shape needs as it is (a JSON quote, an XML
+# tag), even in its full-width form.
+_PREV_READ = frozenset(_QUOTES + "<")
 # How the text around an unquoted value reads (:func:`_reads_as_code`): code that names
 # variables, a file of written values, or a line-start mapping (YAML, ini).
 _CODE = "code"
@@ -154,15 +170,38 @@ def gate_words(rows: tuple[KnownKeyRow, ...]) -> tuple[str, ...]:
     return tuple(sorted({max(_words(key), key=len) for row in rows for key in row.keys}))
 
 
+def _wide_stop(ch: str) -> bool:
+    """CJK punctuation or a CJK blank (``，`` ``。`` ``）`` ``\\u3000``) ends an unquoted
+    value: category P or Z in the CJK symbols block or the full-width and half-width
+    forms block. Other punctuation (``’``, ``—``, ``§``, the ellipsis) stays in it."""
+    o = ord(ch)
+    return (0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF) and unicodedata.category(ch)[0] in "PZ"
+
+
 class _Reader:
-    def __init__(self, text: str, final: bool) -> None:
+    """*text* is the copy the readers parse for structure; *orig* is the text as
+    written, which every value is read from. In the pass as written the two are one
+    text and *cjk* is off; the CJK pass (:func:`detect_known_keys`) reads *text*
+    through :func:`.charsets.fold_wide` (one index for one) with *cjk* on."""
+
+    def __init__(self, text: str, final: bool, orig: str | None = None) -> None:
         self.text = text
+        self.orig = text if orig is None else orig
+        self.cjk = orig is not None
         self.n = len(text)
         self.final = final
 
     def at(self, j: int) -> str:
         if j < self.n:
             return self.text[j]
+        if not self.final:
+            raise _More
+        return ""
+
+    def raw(self, j: int) -> str:
+        """:meth:`at` on the text as written."""
+        if j < self.n:
+            return self.orig[j]
         if not self.final:
             raise _More
         return ""
@@ -208,18 +247,21 @@ def _reads_as_code(value: str, key: str, context: str) -> bool:
 
 
 def _closes(rd: _Reader, e: int, closer: str) -> bool:
-    return rd.at(e) == closer[0] and (len(closer) == 1 or rd.at(e + 1) == closer[1])
+    """Whether *closer* closes the value at *e*, read as written: a quote (``"``,
+    ``\\"``) closes only as the quote that opened it was written, and a closing tag only
+    as ``</key>`` written in ASCII."""
+    return all(rd.raw(e + k) == ch for k, ch in enumerate(closer))
 
 
 def _literal_gate(
     rd: _Reader, vs: int, closer: str, key: str, context: str = _CODE
 ) -> tuple[int, int, str] | None:
     """A written credential value after a credential label (gate ``secret_literal``)."""
-    text, n = rd.text, rd.n
+    text, n = rd.orig, rd.n
     if closer:
         e = vs
         while True:
-            ch = rd.at(e)
+            ch = rd.raw(e)
             if ch in ("", "\n", "\r") or e - vs > LITERAL_MAX or _closes(rd, e, closer):
                 break
             e += 1
@@ -230,7 +272,12 @@ def _literal_gate(
             return None
     else:
         e = vs
-        while e < n and text[e] not in _LITERAL_STOPS and e - vs <= LITERAL_MAX:
+        while (
+            e < n
+            and text[e] not in _LITERAL_STOPS
+            and not (rd.cjk and _wide_stop(text[e]))
+            and e - vs <= LITERAL_MAX
+        ):
             e += 1
         if e == n and not rd.final:
             raise _More
@@ -262,7 +309,7 @@ def _literal_gate(
 def _gate(
     rd: _Reader, vs: int, gate: str, closer: str, key: str = "", context: str = _CODE
 ) -> tuple[int, int, str] | None:
-    text, n = rd.text, rd.n
+    text, n = rd.orig, rd.n
     if gate == "secret_literal":
         return _literal_gate(rd, vs, closer, key, context)
     if gate == "aws_secret_40":
@@ -272,11 +319,10 @@ def _gate(
         if e - vs != SECRET_LEN:
             return None
         if closer:
-            for k, ch in enumerate(closer):
-                if rd.at(e + k) != ch:
-                    return None
+            if not _closes(rd, e, closer):
+                return None
         else:
-            nxt = rd.at(e)
+            nxt = rd.raw(e)
             # A full stop is outside the secret's alphabet, so it ends the value: a
             # sentence's end, or a file suffix (``...=<secret>.txt``).
             if nxt == ".":
@@ -294,7 +340,7 @@ def _gate(
     if e - vs < SESSION_MIN:
         return None
     p = e
-    while p - e < 2 and rd.at(p) == "=":
+    while p - e < 2 and rd.raw(p) == "=":
         p += 1
     if is_placeholder(text[vs:e]):
         return None
@@ -310,11 +356,13 @@ def _value_after_sep(
 ) -> tuple[int, int, str] | None:
     """Read an optional quote, then gate the value."""
     ch = rd.at(j)
+    # The value closes on its opening quote as written (``"`` on ``"``, ``＂`` on ``＂``).
     if ch and ch in _QUOTES:
-        return _gate(rd, j + 1, gate, ch if gate in _QUOTED_GATES else "", key)
+        return _gate(rd, j + 1, gate, rd.raw(j) if gate in _QUOTED_GATES else "", key)
     if ch == "\\" and rd.at(j + 1) == '"':
         # An escaped quote closes the value too: the escape stays with it.
-        return _gate(rd, j + 2, gate, '\\"' if gate in _QUOTED_GATES else "", key)
+        closer = rd.raw(j) + rd.raw(j + 1)
+        return _gate(rd, j + 2, gate, closer if gate in _QUOTED_GATES else "", key)
     return _gate(rd, j, gate, "", key, context)
 
 
@@ -335,25 +383,64 @@ def _line_lead_ok(text: str, ks: int) -> bool:
 
 
 def _read(rd: _Reader, ks: int, ke: int, key: str, row: KnownKeyRow) -> tuple[int, int, str] | None:
+    """:func:`_read_input`, except that in the CJK pass an unquoted value that starts
+    with a Han, kana or Hangul character is taken by no key: that is a sentence
+    (``token：请参考文档``). A value starting with another non-ASCII character (an
+    accented letter, an emoji, a full-width symbol) is read as usual."""
+    found = _read_input(rd, ks, ke, key, row)
+    if found is None or not rd.cjk or row.gate != "secret_literal":
+        return found
+    vs = found[0]
+    if vs >= rd.n or not _cjk_text(rd.orig[vs]) or rd.text[vs - 1] in _QUOTES:
+        return found
+    return None
+
+
+# Han, kana and Hangul: the scripts a CJK sentence is written in.
+_CJK_TEXT_RANGES = (
+    (0x4E00, 0x9FFF),
+    (0x3400, 0x4DBF),
+    (0xF900, 0xFAFF),
+    (0x20000, 0x2FFFF),
+    (0x3040, 0x30FF),
+    (0x31F0, 0x31FF),
+    (0xFF66, 0xFF9F),
+    (0xAC00, 0xD7AF),
+    (0x1100, 0x11FF),
+    (0x3130, 0x318F),
+)
+
+
+def _cjk_text(ch: str) -> bool:
+    """Whether *ch* is a Han, kana or Hangul character."""
+    o = ord(ch)
+    return any(lo <= o <= hi for lo, hi in _CJK_TEXT_RANGES)
+
+
+def _read_input(
+    rd: _Reader, ks: int, ke: int, key: str, row: KnownKeyRow
+) -> tuple[int, int, str] | None:
     """The gated value span for the key token ``text[ks:ke]``, from the input it sits in."""
     j: int | None
     k: int | None
     text = rd.text
     prev = text[ks - 1] if ks > 0 else ""
+    # In the CJK pass, CJK text or punctuation right before a key separates it as a
+    # blank would.
+    if rd.cjk and prev and prev not in _PREV_READ and breaks_word(rd.orig[ks - 1]):
+        prev = " "
     nxt = rd.at(ke)
     gate = row.gate
     # XML element.
     if "xml_element" in row.inputs and prev == "<" and nxt == ">":
+        # The closing tag is read as written, in ASCII, in both passes.
         close = "</" + key + ">"
         if gate == "secret_literal":
             # A written value ends at its own closing tag (``<token>`` in prose is no
             # element).
-            found = _gate(rd, ke + 1, gate, "<", key)
-            if found is None:
+            found = _gate(rd, ke + 1, gate, close[0], key)
+            if found is None or not _closes(rd, found[1], close):
                 return None
-            for k, ch in enumerate(close):
-                if rd.at(found[1] + k) != ch:
-                    return None
             return found
         return _gate(rd, ke + 1, gate, close if gate == "aws_secret_40" else "")
     # JSON / dict member, plain or with escaped quotes.
@@ -437,27 +524,89 @@ def _read(rd: _Reader, ks: int, ke: int, key: str, row: KnownKeyRow) -> tuple[in
 def detect_known_keys(
     text: str, rows: tuple[KnownKeyRow, ...], final: bool, low: str | None = None
 ) -> tuple[list[Hit], list[int]]:
-    hits: list[Hit] = []
-    opens: list[int] = []
+    """Known-key hits and open units in *text*.
+
+    The text is read as written first, exactly as a text with no CJK in it. A text that
+    holds a full-width form, or CJK text right before a key, is then read again through
+    the fold with the CJK rules (:class:`_Reader`). That pass only adds: every hit as
+    written is kept, and a hit of the CJK pass is kept when it overlaps no hit as
+    written and no hit as written starts at its key, or when it reaches at least to the
+    end of every hit as written it overlaps and past at least one of them. Resolve
+    masks overlapping hits as their union, so a text the first pass masks is masked at
+    least as far. The open units of both passes hold the stream.
+    """
     if not rows:
-        return hits, opens
+        return [], []
     if low is None:
         low = ascii_lower(text)
-    # Gate: no key word in the text means no search string can be there either.
-    for word in cached(rows, gate_words):
-        if word in low:
-            break
-    else:
+    found: list[tuple[int, Hit]] = []
+    opens: list[int] = []
+    cjk_before = False
+    if _names_a_key(low, rows):
+        found, opens, cjk_before = _scan(_Reader(text, final), low, rows)
+    hits = [hit for _, hit in found]
+    if text.isascii():
         return hits, opens
+    wide = fold_wide(text)
+    if wide == text and not cjk_before:
+        return hits, opens
+    wide_low = ascii_lower(wide)
+    if not _names_a_key(wide_low, rows):
+        return hits, opens
+    more, more_opens, _ = _scan(_Reader(wide, final, text), wide_low, rows)
+    starts = {ks for ks, _ in found}
+    # Hits as written by start, with the largest end so far. They can overlap each
+    # other (a key inside another key's value), so each CJK hit walks back from the
+    # last one that starts before its end until no earlier one can reach its start.
+    # Each value has a length bound, so the walk stays short.
+    by_start = sorted(hits, key=lambda h: h.start)
+    begins = [h.start for h in by_start]
+    reach: list[int] = []
+    for h in by_start:
+        reach.append(max(reach[-1], h.end) if reach else h.end)
+    added: list[Hit] = []
+    for ks, hit in more:
+        over: list[Hit] = []
+        j = bisect_left(begins, hit.end) - 1
+        while j >= 0 and reach[j] > hit.start:
+            if by_start[j].end > hit.start:
+                over.append(by_start[j])
+            j -= 1
+        if not over:
+            if ks not in starts:
+                added.append(hit)
+        elif all(h.end <= hit.end for h in over) and any(
+            hit.start < h.start or h.end < hit.end for h in over
+        ):
+            # A longer read of a value the first pass masked only the head of
+            # (``password=＂abc,def＂``, where the head holds the quote): resolve masks
+            # the union, so no hit as written shrinks.
+            added.append(hit)
+    return hits + added, opens + more_opens
+
+
+def _names_a_key(low: str, rows: tuple[KnownKeyRow, ...]) -> bool:
+    """Gate: no key word in the text means no search string can be there either."""
+    return any(word in low for word in cached(rows, gate_words))
+
+
+def _scan(
+    rd: _Reader, low: str, rows: tuple[KnownKeyRow, ...]
+) -> tuple[list[tuple[int, Hit]], list[int], bool]:
+    """Each key's hit with its key start, the open units, and whether CJK text sits
+    right before a key (:func:`.charsets.breaks_word`)."""
+    text, final, n = rd.text, rd.final, rd.n
     search, known = _prepared(rows)
-    rd = _Reader(text, final)
-    n = len(text)
+    hits: list[tuple[int, Hit]] = []
+    opens: list[int] = []
+    cjk_before = False
     seen: set[int] = set()
     for sp in search:
         i = low.find(sp)
         while i != -1:
             ks = run_start(text, i, KEY_CHARS, KEY_MAX + 1)
             ke = run_end(text, i + len(sp), KEY_CHARS, KEY_MAX + 1)
+            cjk_before = cjk_before or (ks > 0 and breaks_word(text[ks - 1]))
             if ks in seen or ke - ks > KEY_MAX:
                 i = low.find(sp, i + 1)
                 continue
@@ -476,6 +625,7 @@ def detect_known_keys(
                     found = None
                 if found is not None:
                     vs, ve, tail = found
-                    hits.append(Hit(vs, ve, row.id, row.tier, "known_key", "known_key", tail=tail))
+                    hit = Hit(vs, ve, row.id, row.tier, "known_key", "known_key", tail=tail)
+                    hits.append((ks, hit))
             i = low.find(sp, i + 1)
-    return hits, opens
+    return hits, opens, cjk_before

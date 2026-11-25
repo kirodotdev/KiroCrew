@@ -206,7 +206,8 @@
           },
           "400": {"$ref": "#/components/responses/Error"},
           "401": {"$ref": "#/components/responses/Error"},
-          "403": {"$ref": "#/components/responses/Error"}
+          "403": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
         }
       }
     },
@@ -233,7 +234,8 @@
           },
           "401": {"$ref": "#/components/responses/Error"},
           "403": {"$ref": "#/components/responses/Error"},
-          "404": {"$ref": "#/components/responses/Error"}
+          "404": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
         }
       }
     },
@@ -268,7 +270,8 @@
           "401": {"$ref": "#/components/responses/Error"},
           "403": {"$ref": "#/components/responses/Error"},
           "404": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
         }
       }
     }
@@ -388,7 +391,7 @@
           },
           "status": {"const": "active", "description": "A revoked grant is not listed"},
           "created_at": {"type": "integer"},
-          "expires_at": {"type": "integer", "description": "When the grant ends by itself"}
+          "expires_at": {"type": "integer", "description": "The latest the grant can last; it ends earlier when its refresh token runs out unused"}
         }
       },
       "GrantList": {
@@ -425,11 +428,11 @@
         "type": "object",
         "required": ["id", "object", "namespace", "conversation", "state", "created_at"],
         "properties": {
-          "id": {"type": "string", "pattern": "^apr_[0-9a-f]{32}$", "description": "Given by the gateway the first time an Owner route sees the request; held in memory for this gateway process only. After a restart an old id is 404"},
+          "id": {"type": "string", "pattern": "^apr_[0-9a-f]{32}$", "description": "Given by the gateway the first time an Owner route sees the request; kept on disk with its state, its times, why it expired and its session, so an old id is still readable after a restart"},
           "object": {"const": "approval"},
           "namespace": {"const": "default", "description": "Stored on every record; one fixed value today"},
           "conversation": {"type": ["string", "null"], "description": "The session the request was raised in; null for a request with no session, such as a cron job's"},
-          "client_id": {"type": ["string", "null"], "description": "The app that owns that session; null for the owner's own"},
+          "client_id": {"type": ["string", "null"], "description": "The app that owns that session; null for the owner's own, and null on every record from before a gateway restart"},
           "tool": {"type": "string", "maxLength": 200},
           "reason": {"type": "string", "maxLength": 500, "description": "Redacted and cut short"},
           "arguments": {
@@ -440,10 +443,10 @@
           "state": {"$ref": "#/components/schemas/ApprovalState"},
           "created_at": {"type": "integer", "description": "When the gateway gave the id"},
           "decided_at": {"type": ["integer", "null"]},
-          "expired_reason": {"enum": ["timeout", null], "description": "Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting"},
+          "expired_reason": {"enum": ["timeout", "gateway_restart", null], "description": "Only with state expired. timeout: nobody answered, the turn was cancelled, or the request stopped waiting. gateway_restart: after a restart, a row still pending on disk reads expired whether its request was still waiting or had ended without its ending being written."},
           "decided_by": {
             "type": ["object", "null"],
-            "description": "Who answered through this API. Null while pending and for an ending made elsewhere (the dashboard, a Stop)",
+            "description": "Who answered through this API. Null while pending, for an ending made elsewhere (the dashboard, a Stop), and on every record from before a gateway restart",
             "properties": {
               "kind": {"type": "string"},
               "principal": {"type": "string"},

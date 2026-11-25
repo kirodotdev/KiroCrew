@@ -484,7 +484,11 @@ dedup, same per-event and total caps. Fourteen triggers are accepted, each in
 kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
 Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
 `packages/kiro-agent/src/hooks/trigger-names.ts`, plus `PreCompact` and
-`PostCompact` from the pinned engine, matched without regard to case. Five map onto the five kiro-cli event
+`PostCompact` from the pinned engine, matched without regard to case. The engine's
+`PermissionRequest` trigger (`permissionRequest`) is not one of them: on the engine a
+hook there can allow or deny the permission request itself, and Kiro Crew keeps that
+answer in its own approval flow, so such a hook is skipped with an
+`unknown trigger` warning; to refuse a tool call, use a `PreToolUse` hook. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,

@@ -19,9 +19,13 @@ import { join } from 'node:path'
  * 1. `sticky right-0` + `bg-card` on BOTH cells (transparent cells show the
  *    scrolling columns through the pin).
  * 2. The overflow gate on the seam (a permanent seam lies on a table that fits).
- * 3. The row-state overlay: even rows mirror `.table-striped`'s `--card-hl`
- *    zebra, odd rows mirror the hover tint via the named row group — losing it
- *    makes the pinned cell ignore zebra/hover while the rest of the row paints.
+ * 3. The row-state overlay: even rows (odd `i`) mirror the `--card-hl` zebra,
+ *    odd rows mirror the hover tint via the named row group — losing it makes
+ *    the pinned cell ignore zebra/hover while the rest of the row paints. The
+ *    rows set that zebra themselves (no `.table-striped`, whose `nth-child`
+ *    an open tool list's extra row would shift), from the same `i % 2` as the
+ *    overlay, and each server's `<tbody>` is the hover group, so the row and
+ *    its open tool list stripe and tint together (#42050).
  * 4. The observed content node: auto layout means the rows set scrollWidth,
  *    which a ResizeObserver on the scroller's own box never reports, so
  *    without it the seam goes stale when the rendered content changes width.
@@ -40,7 +44,9 @@ describe('McpTab servers table sticky Actions column', () => {
   it('measures the real scroller and observes the auto-layout table', async () => {
     const src = await loadSource()
     expect(src).toMatch(/<div ref=\{attachMcpScroller\} className="overflow-x-auto">/)
-    expect(src).toMatch(/<table ref=\{attachMcpTable\} className="w-full border-collapse table-striped">/)
+    expect(src).toMatch(/<table ref=\{attachMcpTable\} className="w-full border-collapse">/)
+    // The open tool list sizes to the scroller through a container just outside it.
+    expect(src).toMatch(/<div className="@container">\s*<div ref=\{attachMcpScroller\}/)
   })
 
   it('pins the Actions header cell with an overflow-gated seam', async () => {
@@ -61,8 +67,13 @@ describe('McpTab servers table sticky Actions column', () => {
     expect(cls).toContain('sticky')
     expect(cls).toContain('right-0')
     expect(cls).toContain('bg-card')
-    // The row names the group the overlay listens to…
-    expect(src).toMatch(/<tr key=\{s\.name\} className=\{`group\/mcprow hover:bg-bg-hover /)
+    // Each server's <tbody> names the group the overlay listens to…
+    expect(src).toMatch(/<tbody key=\{s\.name\} className="group\/mcprow">\s*<tr className=\{`\$\{zebra\} transition-colors align-top`\}/)
+    // …its rows carry the zebra on even rows and the group's hover on odd rows,
+    // the server row and its open tool list alike…
+    expect(src).toContain("const zebra = i % 2 === 1 ? 'bg-[var(--card-hl)]' : 'group-hover/mcprow:bg-bg-hover'")
+    expect(src).toMatch(/<tr key="tools" className=\{`\$\{zebra\} transition-colors`\}/)
+    expect(src).not.toContain('table-striped')
     // …and the overlay mirrors zebra on even rows, hover on odd rows.
     const overlay = src.match(/<div aria-hidden className=\{`absolute inset-0 -z-10 transition-colors ([^`]*)`\} \/>/)
     expect(overlay, 'the row-state overlay is gone from the Actions cell').toBeTruthy()
@@ -74,8 +85,8 @@ describe('McpTab servers table sticky Actions column', () => {
     const seamRe = /\{mcpTableEdges\.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" \/>\}/g
     expect(src.match(seamRe)?.length, 'both pinned cells carry the gated 1px seam child (a border-l never travels under border-collapse)').toBe(2)
     // The header fade blends into the card; the body fade ramps toward the
-    // surface it abuts — hover tint on odd rows (zebra outranks hover on even
-    // rows, so those keep from-card).
+    // surface it abuts — hover tint on odd rows (even rows' `zebra` has no
+    // hover tint, so those keep from-card).
     expect(src).toMatch(/\{mcpTableEdges\.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" \/>\}/)
     const bodyFade = src.match(/\{mcpTableEdges\.right && <div aria-hidden="true" className=\{`([^`]*)`\} \/>\}/)
     expect(bodyFade, 'the body cell fade is gone or lost its row-state conditional').toBeTruthy()

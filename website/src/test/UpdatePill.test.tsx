@@ -98,6 +98,13 @@ describe('UpdatePill', () => {
     fireEvent.click(pill()!)
     expect(navigate).toHaveBeenCalledWith('/settings/about')
   })
+
+  it('shows its hint in the page, since the desktop drag band never paints a title', async () => {
+    await mount({ status: { update_available: true } })
+    expect(pill()).not.toHaveAttribute('title')
+    act(() => { pill()!.focus() })
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(i18nT('components.updatePill.open_update_settings'))
+  })
 })
 
 describe('UpdatePill leave guard and phone label', () => {
@@ -152,10 +159,10 @@ describe('UpdatePill leave guard and phone label', () => {
     expect(pill()!.querySelector('.tb-drop-update-label')).toBeNull()
     expect(pill()).toHaveTextContent('Update available')
     // Bounded, so a long label or locale truncates instead of crowding the
-    // crewmate header out of a 320px bar; the full label stays in the title.
+    // crewmate header out of a 320px bar; the full label stays in the hint.
     expect(pill()!.className).toMatch(/(^|\s)max-w-\[88px\](\s|$)/)
     expect(pill()!.className).toMatch(/(^|\s)min-w-0(\s|$)/)
     expect(pill()!.querySelector('span')!.className).toMatch(/(^|\s)truncate(\s|$)/)
-    expect(pill()).toHaveAttribute('title', 'Update available')
+    expect(pill()).toHaveAccessibleDescription('Update available')
   })
 })

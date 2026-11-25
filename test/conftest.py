@@ -384,6 +384,9 @@ from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and imp
 from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_bot_chat_app_tools_state,
 )
+from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_computer_use_warning,
+)
 from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_connected_computers_state,
 )
@@ -398,6 +401,9 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
     _reset_managed_server_tool_spellings,
     _reset_mcp_probe_same_process_locks,
     _reset_mcp_sources_read_snapshot,
+)
+from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_unsaved_relay_instance_ids,
 )
 
 # The in-memory Slack client and the Slack state resets.

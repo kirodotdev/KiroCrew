@@ -323,8 +323,6 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'stash-prompt': 'components.promptStash.shortcut_label',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
-  // Reused: the composer's Stop button, which this key presses.
-  'stop-turn': 'components.chatInput.stop_generation',
   'take-back-steer': 'hooks.useKeyboardShortcuts.take_back_steer',
   'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',
   'notification-next': 'hooks.useKeyboardShortcuts.next_notification',
@@ -1336,8 +1334,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       if (e.key !== 'Escape') return
       const { voicePlaying, voicePreparing } = appStore.getState().chat
       if (!voicePlaying && !voicePreparing) return
-      // Spent on speech: the composer's Escape-to-stop gate reads this and
-      // leaves the running turn alone (utils/speechStopKey.ts, #22315).
+      // Spent on speech: the composer's Escape gate and the page-wide Escape
+      // layers read this and leave the press alone (utils/speechStopKey.ts).
       noteEscapeStoppedSpeech(e)
       window.dispatchEvent(new Event('voice-stop'))
     }

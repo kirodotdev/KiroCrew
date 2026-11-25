@@ -50,8 +50,11 @@ from kiro_crew.acp.mcp_session_report import (
     roster_names,
 )
 from kiro_crew.acp.mcp_start_wait import (
+    APP_SERVER_WAIT_SECS,
     first_prompt_brief_wait,
     left_to_first_turn,
+    own_app_servers,
+    owning_app_for_start,
     person_waits,
     policy_hidden_servers,
 )
@@ -71,7 +74,11 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
-from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
+from kiro_crew.acp.session_handle_mcp import (
+    MOUNTED_MCP_WAIT_SECS,
+    KasGovernanceOffError,
+    wait_own_app_servers,
+)
 from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored, host_refused
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
@@ -287,6 +294,26 @@ async def load_session(
     mirrored = None
     # The KAS crewmate worker's stub names, set beside its one overlay lookup.
     worker_stubs: frozenset[str] | None = None
+    member_withheld = False
+    if member_session_key:
+        # circular import: members' module graph is heavy; resolved at call
+        # time, same as create_session().
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        # Asked on the resume path for the reason it is asked on create, and it
+        # matters MORE here: session/load re-initializes the session's servers, so
+        # an unasked question would re-mount a switched-off server onto a
+        # conversation whose session/new withheld it. Asked before the array is
+        # built, so a mirrored host's projection gives a crewmate worker the
+        # conducting kit only on a resume that mounts it, and keyed by the session,
+        # so a worker's Bot's file is read as its spec reads it.
+        member_withheld = await asyncio.to_thread(
+            session_mcp_server_is_disabled,
+            MEMBER_DISPATCH_SERVER,
+            active_agent,
+            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+            session_key=session_key or "",
+        )
     if has_mirror(self.acp_backend):
         mirrored = await self._mirrored_session_mcp(
             active_agent,
@@ -296,6 +323,7 @@ async def load_session(
             permission_surface_owned=(
                 harness_state is not None and self._harness.permission_surface_owned(harness_state)
             ),
+            session_control_mounted=bool(member_session_key) and not member_withheld,
             harness_state=harness_state,
         )
     # The Connection bridge snapshots the array below wrote, for shutdown.
@@ -331,7 +359,6 @@ async def load_session(
         mcp_servers = await self._session_label_elements(
             mcp_servers, active_agent, session_work_dir, session_key
         )
-    member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
     member_mounted = False
@@ -339,20 +366,8 @@ async def load_session(
     # Kiro construction path is untouched by this capability (H13).
     panel_mounted = False
     if member_session_key:
-        # circular import: members' module graph is heavy; resolved at call
-        # time, same as create_session().
         from kiro_crew.members import MEMBER_DISPATCH_SERVER, member_dispatch_session_server
 
-        # Asked on the resume path for the reason it is asked on create, and it
-        # matters MORE here: session/load re-initializes the session's servers, so
-        # an unasked question would re-mount a switched-off server onto a
-        # conversation whose session/new withheld it.
-        member_withheld = await asyncio.to_thread(
-            session_mcp_server_is_disabled,
-            MEMBER_DISPATCH_SERVER,
-            active_agent,
-            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
-        )
         member_entry = (
             None
             if member_withheld
@@ -672,6 +687,7 @@ async def load_session(
         self._fold_mcp_frame(resume_sid, msg)
     if harness_state is not None:
         self._session_harness_states[resume_sid] = harness_state
+    if harness_state is not None or self._harness.checks_stateless_session_start:
         try:
             # A restored session carries the mode it was left in, so it is checked
             # again before its first prompt. A refusal ends only this session.
@@ -1098,12 +1114,21 @@ async def _wait_managed_mcp(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if expects_report else 0.0,
             )
+        # An app agent's own app servers first, whoever is waiting: its prompt is
+        # written around their tools. Bounded, never required (``own_app_servers``).
+        # The agent's own id, not its wire alias: the lookup knows the declared name.
+        owner_app = await asyncio.to_thread(owning_app_for_start, agent)
+        app_own = own_app_servers(params, wire_agent, owner_app)
+        if app_own:
+            await wait_own_app_servers(handle, app_own, APP_SERVER_WAIT_SECS)
         # Best effort, never required: a slow or dead one must not block the start.
         # Which servers, and why not the user's own when a person is waiting:
         # ``first_prompt_brief_wait``.
         brief = first_prompt_brief_wait(
             params, wire_agent, required, start_priority, focus_resume=focus_resume
         )
+        # Waited for above already, on its own bound.
+        brief = tuple(name for name in brief if name not in app_own)
         if brief:
             await handle.wait_mounted_mcp(brief, MOUNTED_MCP_WAIT_SECS)
         # The agent's own servers a person-waited start skipped: its first turn
@@ -1111,6 +1136,9 @@ async def _wait_managed_mcp(
         left, more = left_to_first_turn(
             params, wire_agent, required, start_priority, focus_resume=focus_resume
         )
+        # An app server the start already waited for on its own bound is not held
+        # for again by the first turn: the two waits would add up.
+        left = tuple(name for name in left if name not in app_own)
         if left:
             report = handle.mcp_session_report()
             report.left_to_turn, report.left_omitted = left, more

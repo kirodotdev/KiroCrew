@@ -380,6 +380,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]` | Toggle an installed app into/out of dev mode (no-store UI serving + live reload on file change). See [App Dev Mode](#app-dev-mode). |
 | `kirocrew app import <package-dir> [--out DIR] [--name NAME] [--install]` | Convert a manifest-declared plugin package into an app directory, reporting every kind that has no target. Reads and copies only; nothing in the package is executed. See [plugin-import.md](plugin-import.md). |
 | `kirocrew app info <name>` | Show app details |
+| `kirocrew app startup <name> [--revoke]` | Approve (or withdraw) an app's `ui.startup` module at its current version and the SHA-256 of its `ui/` scripts, so the owner's dashboard mounts it on every load. Writes `member-records/app-startup/<name>.json` (`apps.protected_app_state`), which the agent sandbox hides in every mode, and refuses a process that shows agent confinement. It is an operator verb with no MCP tool on purpose: an agent must not approve code that runs in the owner's dashboard. See [`ui.startup`](../../app-kit/manifest-reference.md#uistartup--code-that-runs-while-the-dashboard-is-open). |
 | `kirocrew app init <name> [--dir DIR] [--backend] [--ui] [--cron]` | Scaffold a new app (name in kebab-case) into `--dir` (default: current directory). `--backend` includes a backend stub, `--ui` a UI frontend (ESM + Vite), `--cron` a sample cron job |
 | `kirocrew learn add/list/remove` | Manage learned corrections. `add` takes `--category` (default `knowledge`) and `--negative` (what not to do). `remove --repo-scope SCOPE` removes only lessons carrying that repo scope (`""` targets only unscoped ones); without it a matching substring removes the lesson at every scope. `add --applies always\|on_topic` states the lesson's tier with the same two values, the same `LEARN_ADD_SCHEMA` check and the same origin gate as the `learn_add` tool's `applies` field; omitted, the row is unstated. `remove <query>` that matches no lesson writes `No lessons match: <query>` to stderr and exits 1, so a script can tell a miss from a delete. `add` refused because `memory.persistence_enabled` or `memory.writes_enabled` is off writes `Lesson NOT saved: ...` to stderr and exits 1, like a store refusal. |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file. `--fresh` ignores the checkpoint and starts over; `--no-test` skips the build/test verification after each step. A host that cannot sandbox the run's planning session (`SandboxUnavailableError`, `SandboxCeilingUnsealable`) prints `❌ Task failed (<name>): ` and the refusal's own text as one stderr line and exits 1; the traceback is logged at DEBUG only |
@@ -2253,7 +2254,9 @@ are talking to:
    `KIROCREW_PORT=<pod-port>` while the inherited `KIROCREW_BOUND_PORT`
    still names the spawning live gateway, and the bound value outranking it
    would walk pod `token`/`status`/`logout` into the live plane.
-   (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright.)
+   (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright, and
+   drops every inherited temp or scratch key that points under the caller's
+   scratch root, `agent_scratch.drop_inherited_scratch_env`.)
 3. `KIROCREW_BOUND_PORT`, when it parses as an int — the port the parent
    gateway actually bound, exported once, the moment the port is reserved
    (`dashboard.server._reserve_dashboard_port`); only the headless

@@ -54,6 +54,27 @@ _SLACK_FILE_DOMAIN = "slack.com"
 # bounded, where aiohttp's 5-minute default is not.
 _FILE_DOWNLOAD_TIMEOUT_SECS = 60
 
+# Redirect hops ``download_file`` follows by hand. Slack's file and sign-in
+# redirects take one or two; more than this is a loop.
+_FILE_DOWNLOAD_MAX_REDIRECTS = 3
+
+
+def _check_slack_file_url(url: str, refusal: str) -> None:
+    """Raise ``ValueError(refusal)`` unless *url* may carry the bot token:
+    HTTPS, a host inside :data:`_SLACK_FILE_DOMAIN`, and the default port."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid Slack file URL") from exc
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not (host == _SLACK_FILE_DOMAIN or host.endswith(f".{_SLACK_FILE_DOMAIN}"))
+        or port not in (None, 443)
+    ):
+        raise ValueError(refusal)
+
 
 #: Block Kit fields and block types that make SLACK'S OWN SERVERS fetch remote
 #: media, which the `unfurl_*` flags do not govern: they suppress previews Slack
@@ -1363,42 +1384,56 @@ class RealSlackClient(SlackClientOps):
 
         The URL comes from the inbound event envelope, not from us, so it is
         validated before the bot token is attached to a request for it: HTTPS,
-        a host inside :data:`_SLACK_FILE_DOMAIN`, and the default port. Redirects
-        are refused rather than followed, because aiohttp replays an explicitly
-        set ``Authorization`` header across a redirect — so following one would
-        let an allowed URL bounce a bot-level workspace credential to an
-        arbitrary host, and the host check would have been true only of the hop
-        that did not carry the bytes. Mirrors
-        ``discord/client.py::download_attachment``, which guards its (credential
-        -free) CDN fetch the same way.
+        a host inside :data:`_SLACK_FILE_DOMAIN`, and the default port.
+
+        Redirects are followed by hand, at most ``_FILE_DOWNLOAD_MAX_REDIRECTS``
+        hops, and each hop's target passes the same check before the token is
+        sent to it. aiohttp's own redirect handling stays off because it
+        replays an explicitly set ``Authorization`` header to any host; a hop
+        that leaves Slack is refused with the token never sent to it. When
+        Slack answers a redirect with an HTML page (its sign-in page, which is
+        where it sends a token that lacks ``files:read``), the error names that
+        scope instead of saving the page as the file. Mirrors
+        ``discord/client.py::download_attachment``, which guards its
+        (credential-free) CDN fetch the same way.
         """
-        try:
-            parsed = urllib.parse.urlsplit(url)
-            port = parsed.port
-        except ValueError as exc:
-            raise ValueError("invalid Slack file URL") from exc
-        host = (parsed.hostname or "").lower()
-        if (
-            parsed.scheme != "https"
-            or not (host == _SLACK_FILE_DOMAIN or host.endswith(f".{_SLACK_FILE_DOMAIN}"))
-            or port not in (None, 443)
-        ):
-            raise ValueError("refusing non-Slack file URL")
+        _check_slack_file_url(url, "refusing non-Slack file URL")
 
         headers = {"Authorization": f"Bearer {self._web.token}"}
         timeout = aiohttp.ClientTimeout(total=_FILE_DOWNLOAD_TIMEOUT_SECS)
+        redirected = False
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(
-                url, headers=headers, allow_redirects=False, proxy=resolve_proxy(url)
-            ) as resp:
-                if 300 <= resp.status < 400:
-                    raise ValueError("refusing redirected Slack file URL")
-                resp.raise_for_status()
-                # Off-loop: a 20 MiB document is ~2,500 write() calls, and this
-                # runs on the gateway's single event loop.
-                fh = await asyncio.to_thread(open, dest, "wb")
-                try:
-                    async for chunk in resp.content.iter_chunked(8192):
-                        await asyncio.to_thread(fh.write, chunk)
-                finally:
-                    await asyncio.to_thread(fh.close)
+            for _ in range(_FILE_DOWNLOAD_MAX_REDIRECTS + 1):
+                async with session.get(
+                    url, headers=headers, allow_redirects=False, proxy=resolve_proxy(url)
+                ) as resp:
+                    if 300 <= resp.status < 400:
+                        location = resp.headers.get("Location", "")
+                        if not location:
+                            raise ValueError("Slack file redirect has no Location")
+                        url = urllib.parse.urljoin(url, location)
+                        _check_slack_file_url(
+                            url, "refusing Slack file redirect to a non-Slack URL"
+                        )
+                        redirected = True
+                        continue
+                    resp.raise_for_status()
+                    if redirected and resp.content_type == "text/html":
+                        logger.warning(
+                            "Slack file download was redirected to an HTML page;"
+                            " the bot token likely lacks the files:read scope"
+                        )
+                        raise ValueError(
+                            "Slack sent a sign-in page instead of the file: add the"
+                            " files:read bot scope to the Slack app and reinstall it"
+                        )
+                    # Off-loop: a 20 MiB document is ~2,500 write() calls, and this
+                    # runs on the gateway's single event loop.
+                    fh = await asyncio.to_thread(open, dest, "wb")
+                    try:
+                        async for chunk in resp.content.iter_chunked(8192):
+                            await asyncio.to_thread(fh.write, chunk)
+                    finally:
+                        await asyncio.to_thread(fh.close)
+                    return
+        raise ValueError("too many Slack file redirects")

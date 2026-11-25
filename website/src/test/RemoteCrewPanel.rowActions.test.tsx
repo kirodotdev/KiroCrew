@@ -115,6 +115,11 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     throw new Error('edition bug')
   }
   registerCrewRowActions({ provisionerId: 'seam_panel_broken', menuItems: Throws, detail: Throws })
+  registerCrewRowActions({
+    provisionerId: 'seam_panel_labelled',
+    detail: DevSpaceDetail,
+    managedBy: () => 'DevSpace · Remove keeps it running',
+  })
 
   const DEVSPACE_CREW = {
     ...MANUAL_INSTANCE,
@@ -139,6 +144,18 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     expect(startSpy).toHaveBeenCalledWith('ds1')
     // The core's own Remove still sits beside it.
     expect(screen.getByRole('button', { name: /Remove research/i })).toBeInTheDocument()
+  })
+
+  it("a contribution's managedBy replaces the does-not-manage line", async () => {
+    const labelled = { ...DEVSPACE_CREW, id: 'ds5', name: 'labelled', provisioner_id: 'seam_panel_labelled' }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [labelled, MANUAL_INSTANCE] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openRowMenu(u, /details for labelled/i)
+    expect(await screen.findByText('DevSpace · Remove keeps it running')).toBeInTheDocument()
+    await openRowMenu(u, /details for dev-box-1/i)
+    expect(await screen.findByText(/does not manage this crew/)).toBeInTheDocument()
   })
 
   it('draws nothing for a chained row that carries the same stamp', async () => {

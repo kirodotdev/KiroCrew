@@ -564,6 +564,37 @@ describe('usePanelTabs', () => {
     }
   })
 
+  it('never persists a focus on an on-demand tab (keepFocusIds), so a reload cannot bring it back', async () => {
+    const SEARCH = 'on-demand-search'
+    const ON_DEMAND = [SEARCH]
+    const stored = (): { activeId: string | null; recent?: unknown[] } => JSON.parse(localStorage.getItem('mc-panel-tabs:chat-od')!)
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => usePanelTabs('chat-od', mock.descriptors, { keepFocusIds: ON_DEMAND }))
+      act(() => result.current.openView('files'))
+      act(() => result.current.openView('logs'))
+      act(() => result.current.setActive(SEARCH))
+      // In memory the strip keeps the focus while the search is open.
+      expect(result.current.activeId).toBe(SEARCH)
+      // A pinned-view sync keeps it too.
+      act(() => result.current.syncPinned(['files']))
+      expect(result.current.activeId).toBe(SEARCH)
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(stored().activeId).toBe('logs')
+      expect(stored().recent).not.toContain(SEARCH)
+    } finally {
+      vi.useRealTimers()
+    }
+    vi.resetModules()
+    const fresh = await import('../hooks/usePanelTabs')
+    try {
+      const { result } = renderHook(() => fresh.usePanelTabs('chat-od', mock.descriptors, { keepFocusIds: ON_DEMAND }))
+      expect(result.current.activeId).toBe('logs')
+    } finally {
+      fresh.__resetPanelTabs()
+    }
+  })
+
   it('closeAll clears tabs and focus; setOrder replaces the strip order wholesale', () => {
     const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
     act(() => result.current.openView('files'))

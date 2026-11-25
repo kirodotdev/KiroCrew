@@ -1130,4 +1130,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "policy cannot be composed lists no name. The CLI repeats it on what "
         "it prints.",
     ),
+    (
+        "A chat's history search results",
+        "dashboard/chat_history_search.py",
+        "The excerpt each search hit shows in the browser, cut from a transcript "
+        "row. The row's text passes both redactors (exfiltration URLs and "
+        "credentials) whole before URLs are shortened and the excerpt is cut, so "
+        "a credential inside a long URL never reaches the excerpt.",
+    ),
 )

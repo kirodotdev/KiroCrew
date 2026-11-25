@@ -288,6 +288,7 @@ DECLARED_SITES = frozenset(
         ("skills_builtin_provenance.py", "installed_skill_currency"),
         ("skills_builtin_sync.py", "_dispose_superseded_slot"),
         ("skills_builtin_sync.py", "_ensure_builtin_skills"),
+        ("skills_builtin_sync.py", "_resolve_claim"),
         ("skills_builtin_sync.py", "remove_retired_conductor_skill"),
         ("skills_candidate_tree.py", "_candidate_has_symlink"),
         ("skills_discovery.py", "_iter_skill_files.probe"),

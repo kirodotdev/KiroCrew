@@ -73,6 +73,14 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
         "chat.source_links_off.change", UNSTABLE
     ),
+    # Dashboard user, or the slot's owner app through the slot-ownership checkpoint
+    # (chat_history_search.py); bounded transcript reads, writes nothing.
+    ("GET", "/api/chat/slots/{slot}/history/search"): RouteAccess(
+        "chat.history_search.read", UNSTABLE
+    ),
+    ("GET", "/api/chat/slots/{slot}/history/around"): RouteAccess(
+        "chat.history_around.read", UNSTABLE
+    ),
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
     ("GET", "/v1/crew/owner/grants"): RouteAccess("crew_api.grants.list", PREVIEW),
@@ -80,6 +88,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # teammate (teammate_access), 404 while the crew_client preview is off. The list
     # calls the service's List on every read, so it is not a `.read`.
     ("GET", "/api/managed-environments/list"): RouteAccess("managed_environments.list", UNSTABLE),
+    ("GET", "/api/managed-environments/ssh-config"): RouteAccess(
+        "managed_environments.ssh_config.read", UNSTABLE
+    ),
     ("POST", "/api/managed-environments/ssh-config"): RouteAccess(
         "managed_environments.ssh_config.write", UNSTABLE
     ),
@@ -89,6 +100,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Stop, resume or delete one environment this Crew made.
     ("POST", "/api/managed-environments/{sandbox_id}/{action}"): RouteAccess(
         "managed_environments.change", UNSTABLE
+    ),
+    # Owner dashboard only (handlers/tailnet_mobile.py _guard); removes only the listed
+    # phone-access keys from config.local.json.
+    ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(
+        "tailnet.mobile.clear_overrides", UNSTABLE
     ),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
@@ -108,4 +124,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/connected-computers/local/off"): RouteAccess(
         "connected_computers.off", UNSTABLE
     ),
+    # Owner gate, then the machine owner alone; reads the model catalog, writes nothing.
+    # Contract test: test_crew_api_instance.py.
+    ("GET", "/v1/crew/capabilities"): RouteAccess("crew_api.capabilities.read", PREVIEW),
+    # Owner gate, then the machine owner alone. The first call on a data home makes
+    # and keeps the instance id (relay_client.lease.crew_instance_id), so the verb is
+    # not ``read``; it changes nothing after that.
+    ("GET", "/v1/crew/info"): RouteAccess("crew_api.info.resolve", PREVIEW),
 }

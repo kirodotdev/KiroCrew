@@ -80,7 +80,7 @@ import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
 import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { stagedProjectTurnKey } from '../../../components/chat-input/stagedProject'
-import type { SteerEscape } from '../../../components/chat-input/stopKey'
+import type { SteerEscape } from '../../../components/chat-input/steerEscape'
 import type { QueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 
 /**
@@ -194,7 +194,6 @@ interface ComposerDockViewProps {
   handleCapture: () => Promise<void>
   handleFileOpen: ReturnType<typeof useChatPageResourcesController>['handleFileOpen']
   handleOptimizeResult: (slot: string | null, optimized: string) => void
-  search: ReturnType<typeof useChatPageResourcesController>['search']
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
   /** Live uploads `cancelUpload` aborts: above zero the control is offered,
    *  above one its label names the count. */
@@ -357,7 +356,7 @@ export default function ComposerDockView({
   setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, onJumpToQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
-  handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
+  handleFileOpen, handleOptimizeResult, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
   followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, composerSend, pickModel, setProject, projectSwitching, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
@@ -475,14 +474,12 @@ export default function ComposerDockView({
                   bar is redundant when the activity sidebar is actually SHOWING
                   its own view (Subagents / Workflows), but on any OTHER tab
                   (Files, Changes, Logs, Artifacts) hiding it would lose the live
-                  roster entirely. The condition mirrors the SidePanel's own
-                  render guard (`activityOpen && !search.isOpen`) — so opening the
-                  find pane, which UNMOUNTS the panel, re-shows the bar — and
-                  reads the live panel tab (`tabsCtl`), NOT the Redux
+                  roster entirely. The condition reads the panel's open state
+                  and the live panel tab (`tabsCtl`), NOT the Redux
                   `activityTab`, which only tracks programmatic openActivityToTab
                   calls and goes stale when the user clicks a tab in the panel. */}
-              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
-              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
+              {!(activityOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
+              {!(activityOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack key={activeSlot} messages={queuedMessages} onCancel={handleCancelQueued} onCancelAll={handleCancelAllQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onEditOpen={handleEditOpenQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>

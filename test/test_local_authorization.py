@@ -521,8 +521,12 @@ def test_grants_lists_what_works_now_oldest_first_and_no_secret(store, clock, tm
 
     store.revoke_grant(first["grant_id"], caller=SUBJECT)
     assert [g["grant_id"] for g in store.grants()] == [second["grant_id"]]
-    clock.now += la.REFRESH_MAX_SECS
-    assert store.grants() == []
+    # Unused for the idle time, its refresh has run out: it can mint no token again,
+    # so it is not listed, well before the grant's own end.
+    clock.now += la.REFRESH_IDLE_SECS - 1
+    assert [g["grant_id"] for g in store.grants()] == [second["grant_id"]]
+    clock.now += 1
+    assert store.grants() == [] and la.REFRESH_IDLE_SECS < la.REFRESH_MAX_SECS
 
 
 def test_a_restart_keeps_grants_and_pending_requests(store, clock, tmp_path):

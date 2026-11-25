@@ -263,7 +263,7 @@ class TestRuntimeMemberDispatchDisabled:
 
         seen: list[tuple[str, object]] = []
 
-        def _capture(name, _agent, *, work_dir=None):
+        def _capture(name, _agent, *, work_dir=None, session_key=""):
             seen.append((name, work_dir))
             return False
 

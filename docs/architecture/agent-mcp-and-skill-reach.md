@@ -115,6 +115,19 @@ to custom agents, needs an explicit owner decision.
   line copied when it was added; every other server keeps the line its file
   recorded
   (`docs/system-specs/modules/crew-mode.md`, "Conductor and worker").
+- **When the mate's owner lets its workers conduct** (`agents.<name>.worker_conducts`,
+  off by default). A worker the mate's own thread opened then also gets, at
+  session start: the dashboard session-control server as a session-level entry,
+  the way the thread gets it (`members.mounts_session_control`, never from the
+  spec); the conductor-mode dashboard grants, the conductor's work-ledger
+  grants and the `worker.conducts` prompt piece on its projected spec
+  (`mate_worker_conducts.conducting_worker_kit`, through the governance ceiling
+  and the mate's own revocations and held limits); and the `goal-conductor` skill mapped
+  only when the spec already maps a `skill://` entry, since an unmapped worker
+  reaches the whole catalog, that skill included. A worker a worker opened, and
+  every worker of a mate whose switch is off, gets none of it
+  (`docs/system-specs/modules/crew-mode.md`, "A Bot's worker conducts only when
+  its owner says so").
 - **How a new server or skill gets there.** Only by adding it to that mate:
   in chat, when the mate asks with `request_capabilities` and the user applies
   the card (`src/kiro_crew/mcp_mate.py`), or in the mate's **Abilities**

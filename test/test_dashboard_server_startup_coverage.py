@@ -15,6 +15,7 @@ import asyncio
 import errno
 import functools
 import importlib
+import json
 import logging
 import os
 import socket
@@ -1007,6 +1008,37 @@ class TestStartDashboardWiring:
                 )
             runner.cleanup.assert_awaited_once_with()
             sweep.assert_awaited_once_with()
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_entry_port_stops_the_start_before_any_backend_or_serve(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A dashboard.entry_port that can never be served stops the boot first.
+
+        The gateway's own port is the wrong value here, a refusal on every platform.
+        """
+        from kiro_crew.dashboard import entry_gate
+
+        reserved_socket = _fake_reserved_socket()
+        (tmp_path / "config.json").write_text(
+            json.dumps({"dashboard": {"entry_port": reserved_socket.getsockname()[1]}})
+        )
+        build_runner = MagicMock()
+        monkeypatch.setattr(srv, "build_hardened_runner", build_runner)
+        spawn = MagicMock(return_value=[])
+        try:
+            with pytest.raises(entry_gate.EntryPortError):
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                    backend_start_side_effect=spawn,
+                )
+            spawn.assert_not_called()
+            build_runner.assert_not_called()
             reserved_socket.close.assert_called_once_with()
         finally:
             await _cancel_stray_tasks()

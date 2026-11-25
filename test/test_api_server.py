@@ -500,6 +500,49 @@ class TestStartApiServerWiring:
             await runner.cleanup()
 
     @pytest.mark.asyncio
+    async def test_a_set_entry_port_is_not_opened_and_warns(self, tmp_path, monkeypatch, caplog):
+        """The API-only server never opens dashboard.entry_port, and says so."""
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.server as _srv
+        import kiro_crew.dashboard.state as _st
+        import kiro_crew.kiro_prerequisite as _prerequisite
+
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        (tmp_path / "config.json").write_text(json.dumps({"dashboard": {"entry_port": 18443}}))
+        service = MagicMock()
+        service.close = AsyncMock()
+        service.seed_sessions_baseline = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            _prerequisite, "KiroPrerequisiteService", MagicMock(return_value=service)
+        )
+
+        from kiro_crew.dashboard.server import start_api_server
+
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.server"):
+            runner, _state = await start_api_server(
+                sessions=MagicMock(count=0),
+                crons=MagicMock(
+                    list_jobs=MagicMock(return_value=[]),
+                    list_jobs_async=AsyncMock(return_value=[]),
+                    status=MagicMock(return_value={}),
+                ),
+                lessons=MagicMock(load_all=MagicMock(return_value=[])),
+                port=0,
+                assume_kiro_ready=True,
+            )
+        try:
+            assert any(
+                "dashboard.entry_port 18443" in r.getMessage()
+                and "does not open the entry port" in r.getMessage()
+                for r in caplog.records
+            )
+            assert all(addr[1] != 18443 for addr in runner.addresses)
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
     async def test_server_has_audit_middleware_and_hook_store(self, tmp_path, monkeypatch):
         import kiro_crew.config.loader as _loader
         import kiro_crew.dashboard.server as _srv

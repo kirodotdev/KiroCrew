@@ -731,3 +731,29 @@ def test_the_allowlist_prime_skips_dashboard_tokens(monkeypatch):
     monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda name: calls.append(name) or ())
     asyncio.run(token_auth._prime_app_api_allowlist(""))
     assert calls == []
+
+
+def _link_preview_source(tmp_path, sub, version, hosts):
+    src = _source(tmp_path, sub, version)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    manifest["contributes"] = {
+        "linkPreviews": [{"id": "cards", "entry": "dist/lp.mjs", "hosts": hosts}]
+    }
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    return src
+
+
+def test_approving_part_of_a_long_host_list_keeps_order_and_holds_the_rest(tmp_path, app_home):
+    """No host cap: approving shown hosts stays exact over 20,000 declared hosts."""
+    hosts = [f"h{i}.example.com" for i in range(20_000)]
+    assert install_app(_link_preview_source(tmp_path, "v1", "1.0.0", hosts[:10_000])).ok
+    assert enable_app(APP).ok
+    assert update_app(_link_preview_source(tmp_path, "v2", "2.0.0", hosts)).ok
+
+    shown = hosts[10_000::2]
+    assert enable_app(APP, grants_consent={"linkPreviewHosts": shown}).ok
+
+    approved = hosts[:10_000] + shown
+    assert get_app(APP)["approvedGrants"]["linkPreviewHosts"] == approved
+    # Only those are granted: the hosts the owner was not shown stay held back.
+    assert staged_app_grants(APP, "linkPreviewHosts", lambda: hosts) == approved

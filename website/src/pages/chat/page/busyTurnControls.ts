@@ -75,6 +75,8 @@ interface BusyTurnControlsOptions {
   /** Reports a Stop the server refused (a cron run this caller may not cancel)
    *  or could not reach, on the page's action-error notice. */
   showActionError?: (message: string, title?: string) => void
+  /** Speak a steered message through the transcript's live region, as a plain send is. */
+  announceSent?: (markdown: string) => void
 }
 
 /**
@@ -109,6 +111,7 @@ export function useBusyTurnControls({
   dispatch,
   onSlashRefused,
   showActionError,
+  announceSent,
 }: BusyTurnControlsOptions) {
   const { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, saveDrafts } = stores
   const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pendingSessionsRef, setPendingSessions, pickedFileTokens, mergeSlotTokens } = staging
@@ -141,8 +144,9 @@ export function useBusyTurnControls({
     const steerSendId = mintSendId()
     drainPendingChunks()
     dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
+    announceSent?.(text)
     steerMutation.mutate({ text, sendId: steerSendId, slot, auto, baseAtPress: baseRevisionFor(slot) })
-  }, [steerMutation, dispatch])
+  }, [steerMutation, dispatch, announceSent])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing for the next one. Mirrors send()'s payload prep so pending
@@ -295,6 +299,7 @@ export function useBusyTurnControls({
     // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
     drainPendingChunks()
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId, ...(steerFiles ? { files: steerFiles } : {}), ...(steerQuote ? { quote: steerQuote } : {}) } }))
+    announceSent?.(llmTxt)
     // The optimistic bubble above stays a STEER bubble for an `auto` send: steer
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
@@ -318,7 +323,7 @@ export function useBusyTurnControls({
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]; delete sessionRefDrafts.current[activeSlot]
     saveDrafts()
     return verdict
-  }, [activeSlot, slotRunning, connected, forkUnavailable, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashRefused,
+  }, [activeSlot, slotRunning, connected, forkUnavailable, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashRefused, announceSent,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, composerMountedRef, inputRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts,
     pendingFilesRef, pasteBlocksRef, pendingSessionsRef, setPasteBlocks, setPendingFiles, setPendingSessions, pickedFileTokens])
@@ -447,8 +452,7 @@ export function useBusyTurnControls({
       () => press(true),
     )
   }
-  // The composer's Escape takes the pending steers back one per press, newest
-  // first, and holds its stop until those take-backs are armed.
+  // The composer's Escape takes the pending steers back one per press, newest first.
   const steerEscape = useSteerEscape({
     slot: activeSlot,
     messages,
@@ -458,7 +462,6 @@ export function useBusyTurnControls({
     runEpoch: slotRunEpoch,
     onSteerAction: handleSteerAction,
     pending: steerActionPending,
-    stop: stopTurn,
   })
   /** A question card's answer that could not be delivered (a 404): kept for an explicit retry. */
   const keepQuestionAnswer = (text: string, questions?: { question: string }[]) => {

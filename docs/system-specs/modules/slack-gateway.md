@@ -342,7 +342,7 @@ there; the responsibilities below live in private owners under
 | `slack/gateway_runtime/update_apply.py` | Staging an update unattended: the managed-venv wheel built beside the running install. Nothing here rewrites the running tree or restarts |
 | `slack/gateway_runtime/nudge_wiring.py` | Building and starting AutoNudge: the fire and monitor dispatchers, the observer that persists and publishes loop transitions, the wake judge's evidence readers, the held and expired notices |
 | `slack/gateway_runtime/nudge_dashboard_fire.py` | One nudge or monitor wake into a dashboard slot: the slot turn, the work-ledger wake steer, the fire-time mode and crew-boundary refusals |
-| `slack/gateway_runtime/nudge_channel_fire.py` | One unattended nudge turn into a channel session: a Slack thread, or a DM channel through the shared DM adapter, with the monitor completion accounting (`_delivery_result` and `_monitor_completion_hook`, which the dashboard fire path uses too). Both Slack branches apply the turn's session directives as the loop's own wake (`build_directive_consumer(wake_loop_id=loop.id)`): the structured wake through its `TurnDriver`, the plain prompt-loop wake by handing a `messaging.directive_tracker.DirectiveTracker` to `stream_and_collect(on_event=...)`, so `autonudge_stop`, `monitor_update` and `nothing_to_do` take effect inside the wake turn instead of being reported as requested and dropped. A plain wake has no human-steer path: an applied terminal directive suppresses its collected reply, including text streamed after the directive; nothing is posted to Slack and replay records an empty assistant response while retaining the wake and turn accounting. Refused or nonterminal directives do not suppress replies. The plain wake's collected reply loses each line that only quotes a directive marker (`session_directive.strip_quoted_markers`) before it is posted or logged |
+| `slack/gateway_runtime/nudge_channel_fire.py` | One unattended nudge turn into a channel session: a Slack thread, or a DM channel through the shared DM adapter, with the monitor completion accounting (`_delivery_result` and `_monitor_completion_hook`, which the dashboard fire path uses too). Both Slack branches apply the turn's session directives as the loop's own wake (`build_directive_consumer(wake_loop_id=loop.id)`): the structured wake through its `TurnDriver`, the plain prompt-loop wake by handing a `messaging.directive_tracker.DirectiveTracker` to `stream_and_collect(on_event=...)`, so `autonudge_stop`, `monitor_update` and `nothing_to_do` take effect inside the wake turn instead of being reported as requested and dropped. A plain wake has no human-steer path: an applied terminal directive suppresses its collected reply, including text streamed after the directive; nothing is posted to Slack and replay records an empty assistant response while retaining the wake and turn accounting. Refused or nonterminal directives do not suppress replies. The plain wake's collected reply loses each line that only quotes a directive marker (`session_directive.strip_quoted_markers`) before it is posted or logged. The plain wake asks the thread agent's own spec PreToolUse hooks first on each permission request (`channel_spec_hooks.SessionSpecGate`) |
 | `slack/gateway_runtime/turn_approvals.py` | The tool-approval callbacks unattended and channel turns ask: the interactive approval that races the dashboard prompt against the Slack owner DM, the attached-client check, and the heartbeat's read-only gate |
 | `slack/gateway_runtime/service_boot.py` | Constructing the long-lived services and running the gateway: the memory, skills, hooks, context, history and session stack, the task runner, the dashboard or API-only server, `run` from boot to shutdown, and the post-bind session-start sizing log |
 | `slack/gateway_runtime/heartbeat_turns.py` | Building and starting the heartbeat service and each heartbeat turn, with `_persist_turn_row`, the per-turn usage row the background surfaces record |
@@ -359,7 +359,7 @@ there; the responsibilities below live in private owners under
 | `slack/gateway_runtime/subagent_wiring.py` | Building the sub-agent manager and the callbacks it reports through (`_init_subagents`): the status and event frames, spawn approval, the orphan notices, and `_subagent_done`, the one consumer every terminal report goes through, which resolves the parent's tab, composes the report, peeks at the wave, then hands the completion to the digest and its delivery route; the manager reads made off the loop, the scale coalescer, the slot a workflow step's spawn answers to |
 | `slack/gateway_runtime/subagent_report.py` | What a sub-agent completion says: `_compose_subagent_completion` (status, detail, announce and card facts, pure apart from redaction) and the wave digest `_subagent_wave_digest`, synchronous from reading the wave's record to the hold-or-flush decision |
 | `slack/gateway_runtime/subagent_injection.py` | Delivering a sub-agent completion into its parent: the tab that shows it (a turn, a queued card, the bell once the tab closed), a channel or session parent with no tab, a cron parent, and the bell; the inline-collected verdict every route asks (`_inline_verdict`), its park and settle at the parent turn's release (`_park_inline`, `_settle_inline`, `_finish_parked`), and the routing a fresh and a parked completion share (`_parent_tab`, `_route_completion`); the cron parent's idle cleanup after its last sub-agent (`_reset_cron_parent_when_idle`), which leaves a session whose permit a cron run's own task holds (`_cron_runs_holding`) to that run's finalizer; the delivery marks a queued or dispatched hand-off owes |
-| `slack/gateway_runtime/runtime_charge.py` | Charging a runtime death only to whoever caused it: the cron gate verdict (`_apply_gate_verdict`), the cron failure attribution and substitute-streak hand-over (`_cron_failure_attribution`), the indivisible hand-over and charge (`_charge_failure`), and the completion injection's retry (`_inject_with_retry`), whose death arms reset the parent only for its own runtime |
+| `slack/gateway_runtime/runtime_charge.py` | Charging a runtime death only to whoever caused it: the cron gate verdict (`_apply_gate_verdict`), the cron failure attribution and substitute-streak hand-over (`_cron_failure_attribution`), the indivisible hand-over and charge (`_charge_failure`), and the completion injection's retry (`_inject_with_retry`), whose death arms reset the parent only for its own runtime, and whose every attempt, for a channel, session or `cron:` parent, asks the parent agent's own spec PreToolUse hooks first on each permission request (`channel_spec_hooks.SessionSpecGate`) |
 
 **One namespace.** `kiro_crew._facade_compose.compose`, called once after the class
 body with `GatewayOrchestrator` as its `host`, rebinds every function an owner defines -- its module functions, the orchestrator
@@ -799,7 +799,7 @@ take the hold in `cli.main` after argument parsing.
   user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
-- **The census names what it counts, for the host only.** `_in_flight_work_census`
+- **The census names what it counts, only to callers that already list that work.** `_in_flight_work_census`
   is the one definition of what is counted: it returns a `work_holders.Holder`
   (`kind`, `name`, `since_secs`, `count`) for every item, and
   `_in_flight_work_counts` is the sum over the holders of one walk.
@@ -817,7 +817,7 @@ take the hold in `cli.main` after argument parsing.
   `channel_handler`, `queued`, `approval`, `callback`, `refusal_write`,
   `update_build`, `task_runner`, or `unreadable` for a source that raised (its
   `name` says which source and nothing else). Only two kinds of work are
-  named, each by an identifier a list route already shows the one reader of
+  named, each by an identifier a list route already shows both readers of
   names: a dashboard slot's turn, queue or approval by its slot key (`key`,
   `running`, `queue_depth` and `pending_approval` in `GET /api/chat/slots`),
   and a script or command cron by its job name and age (`name`, `is_running`
@@ -826,11 +826,11 @@ take the hold in `cli.main` after argument parsing.
   schedule list leaves out (a goal check-in, the stale-wake job). A name is
   never message text, a session title or a path.
   - **Who may read a name.** A name identifies another session's or job's work,
-    which the slot-visibility filter withholds from an app token, so names have
-    ONE reader: `Quiescence.named_holders()`, called only by the host-only
-    `POST /api/restart/when-idle` (the local secret's `internal_auth` mark and a
-    loopback peer), whose busy answer carries the first five as `holders` and
-    the rest as the number `holders_more`. The secret proves the call came from
+    which the slot-visibility filter withholds from an app token, so names are
+    read only through `Quiescence.named_holders()`, by two callers, each of whose
+    answers carries the first five as `holders` and the rest as the number
+    `holders_more`. One is the host-only `POST /api/restart/when-idle` (the local
+    secret's `internal_auth` mark and a loopback peer), on its busy answer. The secret proves the call came from
     inside, not who made it, so the handler adds them only for a caller that
     declares no session and carries no app claim
     (`restart_gate._may_read_names`): the CLI on the host. A caller acting for a
@@ -838,11 +838,16 @@ take the hold in `cli.main` after argument parsing.
     tool call, with `X-Session-Key`) gets the counts alone. This is the caller
     `GET /api/crons` and `GET /api/chat/slots` already answer in full; a
     process that holds the raw secret and omits its session key is that caller
-    on every internal route, and this one tells it nothing those two do not. Everything a dashboard client or an
-    app can receive carries the counts alone: `Quiescence.payload()`,
-    `RestartAdmission.detail()` (the `update_progress` error step, a tier-0
-    event delivered to every app token, and the "Restart refused" log line) and
-    `POST /api/restart`'s `409 work_in_flight`.
+    on every internal route, and this one tells it nothing those two do not. The
+    other is `POST /api/restart`'s `409 work_in_flight`, which the owner gate
+    (`require_owner_dashboard_request`) answers only for the machine owner or a
+    Shared Crew teammate, both of whom `GET /api/chat/slots?crew=all` and
+    `GET /api/crons` already answer in full; an app token, an internal-secret
+    caller and a non-owner dashboard session are refused before the census is
+    read. Everything else a dashboard client or an app can receive carries the
+    counts alone: `Quiescence.payload()` and `RestartAdmission.detail()` (the
+    `update_progress` error step, a tier-0 event delivered to every app token,
+    and the "Restart refused" log line).
     `kirocrew restart --when-idle` prints the names after the counts only when
     its stdout is a terminal; a captured run (Remote Crew over SSH or SSM, whose
     output tail the calling dashboard relays) prints the counts alone.
@@ -933,9 +938,9 @@ take the hold in `cli.main` after argument parsing.
   (`KIROCREW_DESKTOP_GATEWAY`) skips the boot apply, because the desktop owns it.
   `POST /api/restart` is the user restart that brings an armed update in: the
   boot after its re-exec applies it. It answers `409 work_in_flight` with the counts
-  for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
+  and the named holders for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
   `website/src/api/client/updates.ts`: `restartGateway` posts `force: false`, shows
-  the counts (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
+  the counts and the named holders (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
   work_in_flight`, and sends `force: true` only after "Restart anyway"; a "no"
   rejects with a `WorkConfirmDeclined`, which every caller treats as a quiet
   cancel (no error shown). `applyUpdate` posts `{when: "next-start"}` and never
@@ -1446,7 +1451,7 @@ Each channel can have its own activation mode controlling when the bot responds:
 **Owner commands** (`!channel`):
 - `!channel` — show current channel activation mode and agent
 - `!channel always|mention|observe|off` — set activation mode, persisted to `config.json`
-- `!channel agent <name>` — set per-channel agent override
+- `!channel agent <name>` — set per-channel agent override. The name is a kiro agent or a Crew Bot (a `config.agents` key, matched like `!bot`); an exact Bot key wins, and an unknown name lists both
 - `!channel agent off` — remove per-channel agent override
 
 **Implementation**: `events.py:_route_message()` checks `orch._cfg.channel_config(channel)` before dispatching. The `@mention` prefix is stripped from text before sending to the LLM. `_persist_channel_config()` (`slack/handler_runtime/inbound.py`, re-exported by `slack/handler.py`) writes to `config.json` atomically via tmp+rename.
@@ -2809,7 +2814,15 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   message. The one message is posted with `thread_ts` set to the anchor and edited with
   `chat.update`; it is NOT pinned (`pins:write` is a code-channel scope and a pin on a
   thread reply would surface in the whole channel), and no permalink, live summary, tab
-  or `agents.*` call is made, so it needs no new scope. The look is `brief`: one row per
+  or `agents.*` call is made, so it needs no new scope. Unpinned, it would sink under
+  later replies, so when the board changes and one bounded `conversations.replies` read
+  (`publisher._buried`) shows a reply newer than it, the board is posted again at the
+  bottom, its new ts stored, and the old message deleted with `chat.delete`
+  (`publisher._retire`; already gone counts as deleted). An old board Slack will not
+  delete is edited to one pointer line (`publisher.MOVED_TEXT`), and a permanent refusal
+  puts the thread in `publisher._move_refused`, so its board is edited in place for the
+  rest of the process. A stamp-only refresh never moves the board, and a move waits out
+  the same edit gap as an edit. The look is `brief`: one row per
   worker with the title (linking the worker's dashboard chat), a one-word state, and its
   PR and CI; the plan look shows the same and an "Open in dashboard" link per task.
   `render.brief_snapshot` takes the summary, step, branch, approval wording and goal off
@@ -3186,7 +3199,10 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   Trust are owner-only by identity (`approval_picker.authorize`), so a shared user or another
   member changes nothing, and the Trust mutation is the same `set_channel_mode` on the
   conductor's slot (its lock and intent are keyed by room id), so a worker never runs above
-  the thread. `!stop` in the thread is decided in `routing._inbound_gate` before the
+  the thread. The conductor's own card in its thread (`thread_runtime.conductor_thread_of`
+  names the binding) carries the same "Trust this thread" (`TRUST_THREAD_CONFIRM`);
+  `approval_picker.handle_trust_call` finds the binding from the card's `thread_ts` and runs
+  the same gates and mutation as a code channel's card. `!stop` in the thread is decided in `routing._inbound_gate` before the
   code-channel gate (`thread_stop_gate`), whatever the channel's activation: the owner's pure `!stop`
   in a live thread passes `_route_message`'s activation-off and mention drops
   (`thread_stop_gate.is_owner_stop`), since Stop only removes work. The owner stops the conductor, its recorded workers and their sub-agents

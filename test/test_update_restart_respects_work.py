@@ -576,11 +576,29 @@ async def test_the_restart_endpoint_refuses_under_work_when_asked_not_to_interru
     body = _json(resp)
     assert body["code"] == "work_in_flight"
     assert body["turns"] == 1
-    # Every dashboard client can ask this, so it carries the counts and no name.
-    assert "holders" not in body
-    assert "chat" not in json.dumps({k: v for k, v in body.items() if k != "error"})
     assert body["force_available"] is True
     restarted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_restart_refusal_names_the_work_to_the_owner_who_asked(gateway, monkeypatch):
+    """The owner gate admits only callers that already list every slot and cron job."""
+    gateway.state._slots["chat-95"] = SimpleNamespace(task=None, _queue=[object()])
+    gateway.orch._running_script_ids.add("job-7f3a")
+    gateway.orch.cron_svc = SimpleNamespace(
+        get_job=lambda _id: SimpleNamespace(name="nightly-sync"),
+        running_since=lambda _id: None,
+    )
+    _restart_endpoint(gateway, monkeypatch)
+
+    resp = await updates.api_gateway_restart(_wired_request(gateway, {"force": False}))
+
+    assert resp.status == 409
+    body = _json(resp)
+    assert body["background"] == 1 and body["queued_messages"] == 1
+    named = {(h["kind"], h["name"]) for h in body.get("holders") or []}
+    assert named == {("script", "nightly-sync"), ("queued", "chat-95")}
+    assert body.get("holders_more") == 0
 
 
 @pytest.mark.asyncio

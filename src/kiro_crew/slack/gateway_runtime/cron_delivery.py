@@ -440,6 +440,80 @@ async def _deliver_cron_agent_result(
     return result_text
 
 
+async def _deliver_cron_reminder(self: GatewayOrchestrator, job: CronJob) -> str:
+    """Deliver a ``notify_only`` job's message as written: no agent turn, no tool.
+
+    The dashboard bell, then the channel the job was scheduled from, else Slack
+    (the job's channel or its owner's DM), the same legs an agent result takes.
+    The run is a success only once a leg delivered: a Slack send that fails with
+    no channel leg delivered, or no leg at all, records a failed run, so a
+    one-shot reminder is kept for its retry instead of consumed unseen.
+    """
+    text, _ = redact_exfiltration_urls(job.message)
+    text, _ = redact_credentials(text)
+    job.set_run_result(text)
+
+    def _record(error: str) -> str:
+        # A success, or a failure named by *error*; the text either way.
+        if error:
+            job.last_status = "error"
+            job.last_error = error
+            job.record_failure()
+        else:
+            job.last_status = "ok"
+            job.last_error = ""
+            job.record_success()
+        sel().log_tool_invocation(
+            session_key=f"cron:{job.id}",
+            tool_name="cron_reminder_deliver",
+            tool_kind="cron_message",
+            outcome="error" if error else "ok",
+            downstream_service="none",
+        )
+        return text
+
+    if job.silent or not text.strip():
+        return _record("")
+    bell = False
+    if self.dashboard_state:
+        title, _ = redact_exfiltration_urls(f"Reminder: {job.name}")
+        title, _ = redact_credentials(title)
+        self.dashboard_state.notify("cron", title, text, meta={"job_id": job.id})
+        bell = True
+    delivered = False
+    if not job.channel:
+        try:
+            delivered = await self._deliver_cron_to_channel(
+                job.session_key,
+                f"Reminder: {job.name}\n\n{text}",
+                actor_key=f"cron:{job.id}",
+                pin=(job.channel_type, job.target_id),
+            )
+        except Exception:
+            logger.error("Cron reminder '%s': channel delivery failed", job.name, exc_info=True)
+    slack_failed = False
+    if self.slack and not delivered:
+        try:
+            channel = job.channel
+            dm_user = self._cron_dm_user(job)
+            if not channel and dm_user:
+                channel = await self._open_dm_with_retry(dm_user, job.name)
+            if channel:
+                parts = render_for_slack(
+                    text, limit=_CRON_MSG_LIMIT, header=f"⏰ *Reminder: {job.name}*\n\n"
+                )
+                root = await self.slack.post_message(channel, parts[0], job.thread_ts)
+                for part in parts[1:]:
+                    await self.slack.post_message(channel, part, job.thread_ts or root)
+                delivered = True
+        except Exception:
+            slack_failed = True
+            logger.error("Cron reminder '%s': Slack delivery failed", job.name, exc_info=True)
+    if delivered or (bell and not slack_failed):
+        return _record("")
+    return _record("reminder was not delivered")
+
+
 # Slack Block Kit section.text hard limit is 3000 chars.
 # We split cron output at this boundary so each chunk fits in a section block.
 _CRON_MSG_LIMIT = 3000

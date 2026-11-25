@@ -41,7 +41,8 @@ _BOT_ALIASES = frozenset(("!bot", "/bot", "!bots", "/bots"))
 # ``!models`` (plural) is a typo-safe alias for the same reason.
 _MODEL_ALIASES = frozenset(("!model", "/model", "!models", "/models"))
 _STATUS_ALIASES = frozenset(("!status", "/status"))
-_AGENT_ALIASES = frozenset(("!agent", "/agent"))
+# ``!agents`` (plural) is a typo-safe alias for the same reason.
+_AGENT_ALIASES = frozenset(("!agent", "/agent", "!agents", "/agents"))
 
 _PREFIXES = ("!", "/")
 

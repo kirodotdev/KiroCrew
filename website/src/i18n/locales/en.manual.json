@@ -1941,7 +1941,12 @@
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
       "setting_up": "Setting up phone access…",
       "setup_action": "Set up & show QR",
-      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again."
+      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again.",
+      "fix_overrides": "Fix this",
+      "fix_overrides_title": "Remove these overrides?",
+      "fix_overrides_values": "config.local.json sets <local/>; config.json would apply <applies/>",
+      "fix_overrides_body": "Each key then takes its config.json value, and setup runs again. No other key in config.local.json changes.",
+      "fix_overrides_confirm": "Remove and retry"
     },
     "filePickerMenu": {
       "type_2_chars_to_search_files_enter_held": "Type 2+ chars to search files and folders… — Enter won’t send yet; press Esc, then Enter sends the message",
@@ -2401,10 +2406,7 @@
       "environment_load_failed": "Couldn't load the session environment picker",
       "compacting_context_stop_unavailable": "Compacting context — Stop is unavailable until it finishes",
       "click_again_to_force_stop_resets_session": "Click again to force stop (restarts the session; your messages stay, the agent keeps a recent excerpt)",
-      "esc_again_to_stop": "Esc again to stop",
       "esc_to_take_back_message": "Esc to take back your message",
-      "esc_to_take_back_message_and_stop": "Esc to take back your message and stop",
-      "stop_generation_esc": "Stop generation (Esc)",
       "reset_to_global": "Reset to global ({{pct}}%)",
       "following_global": "Following global ({{pct}}%)",
       "reset_to_agent_default": "Reset to the <agent/> agent's default ({{pct}}%)",
@@ -3632,18 +3634,6 @@
       "beside_hint": "Relaunches the agent behind every open chat so saved changes apply. Chats and their history stay; a reply in progress stops.",
       "restart_failed_because": "Could not restart — {{reason}}. Wait a moment, then press Apply & Restart again."
     },
-    "searchBar": {
-      "next": "Next ({{mod}})",
-      "no_results": "No results",
-      "previous": "Previous ({{mod}})",
-      "no_results_loaded_only": "No results in loaded history",
-      "results_loaded_only": "{{current}}/{{total}} results in loaded history"
-    },
-    "searchResultsList": {
-      "assistant": "Assistant",
-      "selected": "selected",
-      "you": "You"
-    },
     "secretField": {
       "hide": "Hide",
       "show": "Show"
@@ -3871,7 +3861,27 @@
     },
     "updateFoundModal": {
       "this_version_is_below_minimum": "This update is required — versions below {{version}} are no longer supported.",
-      "update_required": "Update required"
+      "update_required": "Update required",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_one": "{{n}} more",
+      "work_holders_more_other": "{{n}} more",
+      "work_kind_approval": "waiting for approval",
+      "work_kind_callback": "incoming message",
+      "work_kind_channel_handler": "channel message",
+      "work_kind_other": "other work",
+      "work_kind_queued": "queued messages",
+      "work_kind_refusal_write": "reply being sent",
+      "work_kind_script": "scheduled job",
+      "work_kind_subagent": "sub-agent",
+      "work_kind_task_runner": "task runner",
+      "work_kind_turn": "chat turn",
+      "work_kind_unreadable": "work that could not be checked",
+      "work_kind_update_build": "update build",
+      "work_kind_workflow": "workflow",
+      "work_running_now": "Running now: {{holders}}."
     },
     "updateModal": {
       "windows_installer_handoff": "A Windows installation window will show progress.",
@@ -6154,7 +6164,9 @@
         "fork_as_incognito": "Fork as incognito",
         "fork_as_temporary": "Fork as temporary",
         "copy_failed": "Copy failed",
-        "quote_message": "Quote message"
+        "quote_message": "Quote message",
+        "speaker_heading": "{{productName}}",
+        "quoted": "Quoted"
       },
       "messageContextMenu": {
         "copy_link_text": "Copy link text",
@@ -6390,7 +6402,7 @@
         "retry": "Retry"
       },
       "toolDetails": {
-        "details_unavailable_for_historical_tool_calls": "Details unavailable for historical tool calls.",
+        "details_unavailable_for_historical_tool_calls": "This earlier call's details weren't saved. Ask in the chat what it did.",
         "formatted": "Formatted",
         "no_input_or_output_captured_for_this_tool_call": "No input or output captured for this tool call.",
         "raw": "Raw",
@@ -6675,7 +6687,8 @@
         "more_actions": "More actions",
         "seed_from_conductor": "From the main chat",
         "seed_from_worker": "From a crew member",
-        "seed_from_session": "From another chat"
+        "seed_from_session": "From another chat",
+        "speaker_heading": "You"
       },
       "earlierMessagesBar": {
         "load_failed": "Couldn't load earlier messages",
@@ -7075,6 +7088,10 @@
         "replay_action_hand_back": "you handed back",
         "replay_action_page_moved": "page moved on",
         "replay_action_auto": "passed on its own"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}",
+        "approval": "{{speaker}} is waiting for your approval: {{operation}}"
       }
     },
     "chatPage": {
@@ -7123,7 +7140,6 @@
       "knowledge_context_not_kept": "Its knowledge context was not kept — re-pick it before you resend.",
       "more_actions": "More actions",
       "update_entry_load_failed": "Couldn't load the update entry. Check for updates in Settings.",
-      "no_results": "No results",
       "no_tools": "No tools",
       "open_activity_panel": "Open activity panel",
       "open_file": "Open file {{path}}",
@@ -7146,7 +7162,6 @@
       "tool_status_deferred": "Deferred",
       "tool_status_disabled": "Disabled",
       "tool_status_loaded": "Loaded this session",
-      "type_to_search_this_conversation": "Type to search this conversation.",
       "unknown_error": "unknown error",
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
@@ -7217,6 +7232,7 @@
       "could_not_check_restored_tabs": "Could not check whether every tab was restored after the last restart.",
       "could_not_start_fresh_session": "Couldn't start a fresh session",
       "could_not_repair_images": "Couldn't repair the images",
+      "could_not_edit_and_resend": "Couldn't edit and resend",
       "delivery_unconfirmed_option": "Delivery not confirmed — check the conversation above, then tap the suggestion again if it is missing.",
       "delivery_unconfirmed_comments": "Delivery not confirmed — send your comments again from the document if they aren’t in this conversation within a minute. Sending again sooner could duplicate them.",
       "delivery_unconfirmed_comments_overlay": "Delivery not confirmed — reopen the side panel and send your comments again if they aren’t in this conversation within a minute. Sending again sooner could duplicate them.",
@@ -7429,8 +7445,18 @@
       "lane_seed_failed": "Could not add the automatic columns.",
       "lane_seed_retry": "Try again",
       "lane_legacy_column_hint": "shows every session",
-      "already_on_model_one": "{{count}} session already uses this model",
-      "already_on_model_other": "{{count}} sessions already use this model",
+      "already_on_model_one": "{{count}} session already uses this model: {{names}}",
+      "already_on_model_other": "{{count}} sessions already use this model: {{names}}",
+      "already_on_model_and_effort_one": "{{count}} session already uses this model and effort: {{names}}",
+      "already_on_model_and_effort_other": "{{count}} sessions already use this model and effort: {{names}}",
+      "bulk_switch_effort_deferred_one": "{{count}} session switches to the new effort at its next restart: {{names}}",
+      "bulk_switch_effort_deferred_other": "{{count}} sessions switch to the new effort at their next restart: {{names}}",
+      "bulk_switch_switched_one": "Switched {{count}} session: {{names}}",
+      "bulk_switch_switched_other": "Switched {{count}} sessions: {{names}}",
+      "bulk_switch_skipped_busy_one": "{{count}} session was busy and was not switched: {{names}}",
+      "bulk_switch_skipped_busy_other": "{{count}} sessions were busy and were not switched: {{names}}",
+      "bulk_switch_busy_now_idle_one": "{{count}} of them is idle now, so Switch moves it without stopping a reply: {{names}}",
+      "bulk_switch_busy_now_idle_other": "{{count}} of them are idle now, so Switch moves them without stopping a reply: {{names}}",
       "switch_session_one": "Switch {{count}} session",
       "switch_session_other": "Switch {{count}} sessions",
       "retry_failed_session_one": "Retry {{count}} failed session",
@@ -8328,6 +8354,7 @@
       "review_approved": "Shared",
       "review_skipped": "Not shared",
       "review_skip": "Don't share",
+      "review_sharing": "Sharing…",
       "diff_added": "Added: {{tokens}}",
       "diff_removed": "Removed: {{tokens}}",
       "diff_env_added": "Env added: {{names}}",
@@ -8457,6 +8484,7 @@
         "always_allow_undo": "Turn off to ask before each call again.",
         "always_allow_hint": "Stop asking before each call of this tool. {{productName}}'s own safety rules still apply.",
         "always_allow_failed": "Could not change Always allow. Try again.",
+        "always_allow_on_count": "Always allowed: {{on}} of {{total}}",
         "always_allow_refused_asks_every_time": "Your settings ask before every call of this server's tools, so they can't be always allowed.",
         "always_allow_refused_set_elsewhere": "Always allow is managed by a local settings file on this computer, so it can't be changed here.",
         "always_allow_refused_crew_owned": "{{productName}}'s own tools always ask.",
@@ -9891,8 +9919,6 @@
         "default_auto": "Default (auto)",
         "double_click_to_edit": "Double-click to edit your messages",
         "double_click_to_edit_desc": "When off, a double-click on your message selects a word as in any text.",
-        "double_escape_to_stop": "Require a second Escape to stop the turn",
-        "double_escape_to_stop_desc": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn.",
         "scroll_on_send": "Jump to the bottom when you send",
         "scroll_on_send_desc": "When off, sending a message leaves the transcript where it is.",
         "followup_start_sends": "Send follow-ups with one click",
@@ -12626,6 +12652,8 @@
     "section_general": "General",
     "section_capabilities": "Abilities",
     "open_capabilities": "View abilities",
+    "more_on_profile": "{{name}}'s sessions, goals and permission are on its profile.",
+    "open_profile": "Open profile",
     "section_memory": "Memory",
     "section_danger": "Danger Zone",
     "tab_tools": "Tools",

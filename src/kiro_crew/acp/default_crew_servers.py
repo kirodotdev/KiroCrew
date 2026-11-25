@@ -125,17 +125,23 @@ def crew_added_servers(agent: str | None, spec: object) -> tuple[str, ...]:
 def one_pass() -> Iterator[None]:
     """Within the block, read the host state every agent shares once, not once per agent.
 
-    The edition's servers (``extra_mcp_servers()`` and ``mcp.json``) and kiro-cli's
-    skill-view admission are the same for every agent a skill-view preparation or a
-    doctor check walks. Outside a block each call reads them afresh, so nothing a
-    pass read outlives it. A nested block shares the outer one's reads.
+    The edition's servers (``extra_mcp_servers()`` and ``mcp.json``), the installed
+    apps' servers, each app's declared agents and kiro-cli's skill-view admission are
+    the same for every agent a skill-view preparation or a doctor check walks. The
+    apps' declared agents are what :func:`is_custom_agent` reads through
+    ``owning_app_for_agent``, kept by :func:`kiro_crew.build_reuse.one_build`, which
+    this block opens. Outside a block each call reads them afresh, so nothing a pass
+    read outlives it. A nested block shares the outer one's reads.
     """
     if _PASS.get() is not None:
         yield
         return
+    from kiro_crew.build_reuse import one_build
+
     token = _PASS.set({})
     try:
-        yield
+        with one_build():
+            yield
     finally:
         _PASS.reset(token)
 
@@ -555,8 +561,9 @@ def with_default_crew_servers(
         added = {k: e for k, e in added.items() if not narrowed_per_tool(spec, k)}
     elif spec_grants_tool_search(spec) and agent not in conductor_agents():
         added.update(
-            (key, entry)
-            for key, entry in _app_servers().items()
+            # A copy each: within a pass the read is shared by every agent.
+            (key, copy_json_document(entry))
+            for key, entry in _once("app_servers", _app_servers).items()
             if wanted(key) and not _wildcard_approves(spec, key)
         )
     if per_tool_limits_applied and agent not in conductor_agents():

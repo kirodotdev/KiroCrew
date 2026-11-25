@@ -44,6 +44,9 @@ from typing import get_args
 from unittest.mock import patch
 
 import pytest
+from tailnet_mobile_helpers import quiet_audit_fixture  # noqa: F401
+from tailnet_mobile_helpers import unrestricted_fixture  # noqa: F401
+from tailnet_mobile_helpers import _HOST, _OWNER, _PORT, _probe, _request
 
 from kiro_crew.dashboard import tailnet
 from kiro_crew.dashboard.handlers import tailnet_mobile
@@ -55,9 +58,6 @@ from kiro_crew.dashboard.token_auth import (
     generate_token,
 )
 
-_PORT = 5476
-_HOST = "desk.tail-abc.ts.net"
-
 
 def _owner_session_token(
     *, ttl_seconds: int = MAX_SESSION_TTL_SECS, peer_key: str = "", **extra: str
@@ -68,31 +68,6 @@ def _owner_session_token(
         ttl_seconds=ttl_seconds,
         peer_key=peer_key,
         extra=extra or None,
-    )
-
-
-def _probe(
-    *,
-    name: str = _HOST,
-    login: str = "owner@example.com",
-    installed: bool = True,
-    reachable: bool = True,
-    logged_in: bool = True,
-    https_enabled: bool | None = True,
-    detail: str = "",
-    stopped: bool = False,
-    refused_cli: str = "",
-) -> DaemonProbe:
-    return DaemonProbe(
-        name=name,
-        installed=installed,
-        reachable=reachable,
-        logged_in=logged_in,
-        detail=detail,
-        login=login,
-        stopped=stopped,
-        refused_cli=refused_cli,
-        https_enabled=https_enabled,
     )
 
 
@@ -554,106 +529,6 @@ class TestDurableMobileSetupConfig:
             tailnet_mobile._apply_mobile_setup_config(data, "owner@example.com")
 
 
-_OWNER = "owner@example.com"
-
-
-def _request(
-    *,
-    restricted: bool = False,
-    port: int = _PORT,
-    body: object = None,
-    app_identity: str | None = "",
-    user: str | None = _OWNER,
-    tailnet_host: str = "",
-    query_token: str = "",
-    cookie_token: str = "",
-    auth_token: str | None = None,
-):
-    """Minimal stand-in for the aiohttp request these handlers actually touch.
-
-    ``app_identity`` models what the auth middleware writes into ``request["app"]``:
-    ``""`` for a dashboard user (the default here), an app name for an app token,
-    and ``None`` for the key being ABSENT, i.e. the middleware never ran. A real
-    ``web.Request`` is a MutableMapping, which is why ``.get`` is implemented
-    rather than only the ``.app`` attribute.
-
-    ``user`` models the token subject the middleware resolved. It defaults to the
-    configured owner so the success paths read normally; pass a different id to
-    model a NON-owner dashboard user (a messaging-channel user who was handed a
-    presigned dashboard link), and ``None`` for no resolved subject at all.
-    ``tailnet_host`` models the name the RUNNING server trusted at startup. Empty
-    (the default) means the fixed allowlist does not carry the resolvable name,
-    so ``_derive_step`` reports ``restart_gateway``. Ready paths must set it.
-    ``query_token`` / ``cookie_token`` model the raw credential material.
-    ``auth_token`` models what the middleware published as the VALIDATED
-    credential (``request["auth_token"]``): defaults to ``query_token or
-    cookie_token`` (the normal middleware-prefer-query behaviour), but pass
-    ``auth_token=cookie_token`` explicitly to model the fallback path where the
-    query token was invalid and the middleware fell back to the cookie. Both
-    ``query_token`` and ``cookie_token`` empty (the default) exercises the
-    fail-closed no-readable-token path.
-    """
-
-    class _Req:
-        def __init__(self) -> None:
-            self.app = {
-                "port": port,
-                "state": SimpleNamespace(owner_id="owner@example.com"),
-                "tailnet_host": tailnet_host,
-                "tailnet_resolved_at": 1 if tailnet_host else 0,
-            }
-            self.remote = "127.0.0.1"
-            self.headers: dict[str, str] = {}
-            self.query: dict[str, str] = {"token": query_token} if query_token else {}
-            self.cookies: dict[str, str] = (
-                {f"mc_token_{port}": cookie_token} if cookie_token else {}
-            )
-            self._items: dict[str, object] = {}
-            if app_identity is not None:
-                self._items["app"] = app_identity
-            if user is not None:
-                self._items["user"] = user
-            # Publish the validated credential, mirroring token_auth middleware.
-            _auth = auth_token if auth_token is not None else (query_token or cookie_token)
-            if _auth:
-                self._items["auth_token"] = _auth
-
-        def get(self, key: str, default: object = None) -> object:
-            return self._items.get(key, default)
-
-        def __contains__(self, key: str) -> bool:
-            # A real web.Request is a MutableMapping, so authorization predicates
-            # legitimately use `"app" in request` to tell an ABSENT key (middleware
-            # never ran) from an empty one (a dashboard user). Without this the
-            # stand-in raises TypeError and the gate under test never runs.
-            return key in self._items
-
-        def __getitem__(self, key: str) -> object:
-            return self._items[key]
-
-        async def json(self):
-            if body is None:
-                raise ValueError("no body")
-            return body
-
-    req = _Req()
-    if restricted:
-        req.app["state"] = SimpleNamespace(owner_id="owner@example.com", _restricted=True)
-    return req
-
-
-@pytest.fixture
-def _unrestricted():
-    with patch.object(tailnet_mobile, "_is_restricted_session", return_value=False) as m:
-        yield m
-
-
-@pytest.fixture
-def _quiet_audit():
-    with patch.object(tailnet_mobile, "_audit") as m:
-        yield m
-
-
 @contextmanager
 def _machine(
     *,
@@ -814,7 +689,9 @@ class TestConfigureEndpoint:
             "dashboard.tailscale.trust_identity",
             "dashboard.qr_session_persist_across_restart",
         ]
-        assert set(payload) == {"error", "code", "fields"}
+        assert set(payload) == {"error", "code", "fields", "overrides"}
+        # No config.local.json sets them here, so no removal is offered.
+        assert payload["overrides"] == []
         # The base still receives the requested safe shape; removing the local
         # override later makes it effective without another setup mutation.
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -1570,6 +1447,7 @@ class TestRestrictedSessionRefused:
 
     _MUTATIONS = [
         tailnet_mobile.api_tailnet_mobile_configure,
+        tailnet_mobile.api_tailnet_mobile_clear_overrides,
         tailnet_mobile.api_tailnet_mobile_publish,
         tailnet_mobile.api_tailnet_mobile_unpublish,
         tailnet_mobile.api_tailnet_mobile_qr,

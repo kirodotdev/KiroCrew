@@ -516,8 +516,15 @@ reason each already captures; a caller that saw no terminal passes `None` and th
 line reads as answered. While Crew's own fallback marker is set, a promotion is
 worded as a move for this turn, because Crew restores its primary next run.
 Crew's refusal retry is dashboard-only, so there is no
-refusal card to suppress on those surfaces. Native Slack inbound runs through
-the dashboard's `_run_chat` and gets the dashboard behavior. The standalone
+refusal card to suppress on those surfaces. Native Slack inbound runs its own
+turn loop (`slack/handler_runtime/turn.py:_run_turn`), which reads only the V2
+refusal hop (`cause: refused`, not a promotion): `_AnswerStream.on_model_fallback`
+drops the refused model's streamed text, and `_deliver_answer` forces the final
+seal to overwrite the live message and prefixes the line through
+`annotate_model_fallback`. When no later hop answered (a `refusal` terminal with
+no text), the refused text is put back under the line, so the reply is never
+empty. A throttle or capacity hop keeps its partial text and prints no line
+there. The standalone
 channel transports (Telegram, WhatsApp, Discord, Webex, Slack transport mode,
 and the autonudge wake turn) run through `messaging/driver.TurnDriver`, which
 prints no fallback line, the engine's or Crew's own; the session's model state

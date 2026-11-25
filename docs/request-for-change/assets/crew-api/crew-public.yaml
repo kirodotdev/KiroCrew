@@ -30,7 +30,10 @@ info:
     - Extensions: x-crew-tier, x-crew-scope, x-crew-entitlement, x-crew-phase (1a / 1b / 2 / 3),
       x-crew-status (available: the gateway serves the operation; an operation without it is
       planned), x-crew-available-to (on an available operation: the callers the gateway serves
-      it to, owner alone or owner and app; both are used in crew-owner.yaml too), x-crew-stability (preview: a phase 1b operation whose shape may still change, with notice for
+      it to, owner alone or owner and app; both are used in crew-owner.yaml too),
+      x-crew-not-served-yet (on an available operation: the request-body fields, by path, the
+      request-headers and the response-headers described here that the gateway does not serve
+      yet), x-crew-stability (preview: a phase 1b operation whose shape may still change, with notice for
       the preview deprecation period before it does), x-crew-reuses (existing code that can be built
       on, at commit 8da9c340eb), x-crew-coverage (done/partial), x-crew-depends-on (open questions
       in the RFC).
@@ -199,6 +202,25 @@ paths:
       x-crew-phase: 1a
       x-crew-status: available
       x-crew-available-to: owner
+      x-crew-not-served-yet:
+        request-body:
+        - background
+        - conversation
+        - input[].content[].type=input_file
+        - input[].content[].type=input_image
+        - input[].type=function_call_output
+        - input[].type=mcp_approval_response
+        - previous_response_id
+        - reasoning.summary
+        - text.format.type=json_schema
+        - tool_choice=none
+        - tools
+        request-headers:
+        - Idempotency-Key
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_runner.py:765 (_run_chat)
       - src/kiro_crew/dashboard/openai_compat.py:757 (how _stream_response reads the queue)
@@ -963,6 +985,11 @@ paths:
       x-crew-available-to:
       - owner
       - app
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/agents.py:1388 (api_models)
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
@@ -1012,9 +1039,12 @@ paths:
       x-crew-tier: public
       x-crew-scope: any
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
+      x-crew-stability: preview
       description: Call this first. The result is what the engine reports, filtered by the gateway for the current
         API version and the caller's grant; a capability the gateway cannot confirm is not reported as available.
         Using a feature reported as false returns 422 capability_unavailable.
@@ -1061,9 +1091,12 @@ paths:
       x-crew-tier: public
       x-crew-scope: any
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers_system.py:228 (api_status)
       x-crew-coverage: done
+      x-crew-stability: preview
   /v1/crew/events:
     get:
       operationId: get_v1_crew_events

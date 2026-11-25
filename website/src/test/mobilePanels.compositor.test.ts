@@ -167,11 +167,10 @@ describe('both mobile chat panels — one element, two gestures', () => {
 
   it('the right gesture stays out of surfaces that would undo it', () => {
     const right = bindings.find(b => b.includes('x: sideOverlayX')) as string
-    // The actbar column owns the panel on desktop, and the find pane holds the
-    // dock exclusively — in both the store's mount predicate refuses to keep
-    // the panel open, so a committed drag would be reverted on the next render.
+    // The actbar column owns the panel on desktop, where the store's mount
+    // predicate refuses to keep the inline panel open, so a committed drag
+    // would be reverted on the next render.
     expect(right).toMatch(/enabled:.*!activitySlot/)
-    expect(right).toMatch(/enabled:.*!search\.isOpen/)
   })
 })
 

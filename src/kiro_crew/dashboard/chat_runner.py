@@ -225,6 +225,7 @@ from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     MIRROR_ECHO_OWED_META_KEY,
     _authorize_recipient,
     _mirror_upload_roots,
+    _name_local_attachments,
     _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
@@ -286,6 +287,7 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
     _on_permission_request,
     _operator_confirms_call,
+    _persistable_session_policy,
     _slot_is_trusted,
 )
 from kiro_crew.dashboard.chat_turn.tool_results import _on_child_tool_finished, _on_tool_result

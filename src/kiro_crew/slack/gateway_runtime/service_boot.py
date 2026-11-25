@@ -1558,9 +1558,13 @@ async def run(self: GatewayOrchestrator) -> None:
     if self._headless:
         # No page to open and no sign-in link to print: the address and how to get
         # a credential, which is never printed here.
+        from kiro_crew.dashboard.entry_gate import bound_port
         from kiro_crew.dashboard.headless import print_client_access
 
-        print_client_access(self._dashboard_port)
+        # The port the gateway bound, not a second read of the config.
+        print_client_access(
+            self._dashboard_port, bound_port(getattr(self._dashboard_runner, "app", None))
+        )
     elif not self._no_dashboard:
         try:
             host = resolve_dashboard_host(self._local_only, self._configured_host)

@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from aiohttp import web
@@ -52,7 +54,9 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     PendingEditBlocksSave,
+    config_local_path,
     config_path,
+    read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.dashboard import tailnet, tailnet_serve
@@ -661,6 +665,81 @@ def _effective_mobile_setup(cfg: KiroCrewConfig, login: str) -> tuple[bool, list
     return persistent, conflicts
 
 
+#: Every field :func:`_effective_mobile_setup` can name: the only keys the clear
+#: route removes, so no request reaches any other ``config.local.json`` key.
+_OVERLAY_SETUP_FIELDS = frozenset(
+    {
+        "dashboard.tailscale.enabled",
+        "dashboard.tailscale.trust_identity",
+        "dashboard.tailscale.allowed_logins",
+        "dashboard.qr_session_persist_across_restart",
+    }
+)
+
+
+def _holder(doc: object, field: str) -> dict | None:
+    """The object in *doc* that sets the dotted *field*'s last key, or ``None``."""
+    *parents, leaf = field.split(".")
+    node = doc
+    for part in parents:
+        node = node.get(part) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) and leaf in node else None
+
+
+def _overlay_overrides(conflicts: list[str]) -> list[dict[str, object]]:
+    """The *conflicts* ``config.local.json`` itself sets (blocking I/O).
+
+    Each row carries the overlay's value and the ``config.json`` value that
+    applies once the overlay entry is gone, so the owner sees both before
+    confirming the removal. A conflict the overlay does not set, or that
+    ``config.json`` does not set either, is left out: removing the overlay key
+    cannot fix it.
+    """
+    local = read_merged_config_files(config_local_path())
+    base = read_merged_config_files(config_path())
+    rows: list[dict[str, object]] = []
+    for field in conflicts:
+        leaf = field.rsplit(".", 1)[-1]
+        holder, applies = _holder(local, field), _holder(base, field)
+        if holder is not None and applies is not None:
+            rows.append({"field": field, "local": holder[leaf], "applies": applies[leaf]})
+    return rows
+
+
+async def _write_locked(
+    request: web.Request,
+    operation: str,
+    path: Path,
+    mutate: Callable[[dict], dict | None],
+    *,
+    stamp_meta: bool = True,
+) -> web.Response | None:
+    """One locked read-modify-write of *path*: the error response, or ``None``."""
+    try:
+        async with _get_config_lock():
+            await asyncio.to_thread(
+                update_config_locked, path, mutate=mutate, stamp_meta=stamp_meta
+            )
+    except ConfigReadError:
+        await _audit_async(request, operation, "error", "config-read-failed")
+        return web.json_response(
+            {"error": "failed to read config file", "code": "config_read_failed"}, status=500
+        )
+    except PendingEditBlocksSave:
+        # A ValueError, so ahead of the arm below; the dashboard chain answers it 409.
+        await _audit_async(request, operation, "error", "file-pending-review")
+        raise
+    except ValueError as exc:
+        await _audit_async(request, operation, "error", "config-invalid")
+        return web.json_response({"error": str(exc), "code": "config_invalid"}, status=500)
+    except OSError:
+        await _audit_async(request, operation, "error", "config-write-failed")
+        return web.json_response(
+            {"error": "failed to write config file", "code": "config_write_failed"}, status=500
+        )
+    return None
+
+
 def _running_tailnet_trust_ready(request: web.Request, login: str) -> bool:
     """Whether this process can enforce a persistent phone session right now.
 
@@ -735,26 +814,9 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
         )
         return data if changed else None
 
-    try:
-        async with _get_config_lock():
-            await asyncio.to_thread(update_config_locked, config_path(), mutate=_mutate)
-    except ConfigReadError:
-        await _audit_async(request, "tailnet.mobile.configure", "error", "config-read-failed")
-        return web.json_response(
-            {"error": "failed to read config file", "code": "config_read_failed"}, status=500
-        )
-    except PendingEditBlocksSave:
-        # A ValueError, so ahead of the arm below; the dashboard chain answers it 409.
-        await _audit_async(request, "tailnet.mobile.configure", "error", "file-pending-review")
-        raise
-    except ValueError as exc:
-        await _audit_async(request, "tailnet.mobile.configure", "error", "config-invalid")
-        return web.json_response({"error": str(exc), "code": "config_invalid"}, status=500)
-    except OSError:
-        await _audit_async(request, "tailnet.mobile.configure", "error", "config-write-failed")
-        return web.json_response(
-            {"error": "failed to write config file", "code": "config_write_failed"}, status=500
-        )
+    refusal = await _write_locked(request, "tailnet.mobile.configure", config_path(), _mutate)
+    if refusal is not None:
+        return refusal
 
     effective = await asyncio.to_thread(KiroCrewConfig.load)
     persistent, conflicts = _effective_mobile_setup(effective, probe.login)
@@ -766,6 +828,7 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
             "denied",
             "config-local-override",
         )
+        overrides = await asyncio.to_thread(_overlay_overrides, conflicts)
         return web.json_response(
             {
                 "error": (
@@ -775,6 +838,7 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
                 ),
                 "code": "config_overlay_conflict",
                 "fields": conflicts,
+                "overrides": overrides,
             },
             status=409,
         )
@@ -797,6 +861,57 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
     # ``persistent`` remain server-side inputs to restart/audit decisions; a
     # successful 2xx response already carries the success bit.
     return web.json_response({"restart_required": bool(result.get("restart_required"))})
+
+
+async def api_tailnet_mobile_clear_overrides(request: web.Request) -> web.Response:
+    """POST /api/tailnet/mobile/clear-overrides — the card's Fix this action.
+
+    Runs after the owner confirmed the ``overrides`` a ``config_overlay_conflict``
+    answer listed. It deletes exactly the requested keys from
+    ``config.local.json`` and takes only fields in :data:`_OVERLAY_SETUP_FIELDS`,
+    so no other overlay key can change. The card retries setup next, and that
+    retry is the re-check.
+    """
+    refusal = _guard(request)
+    if refusal is not None:
+        await _audit_async(
+            request, "tailnet.mobile.clear_overrides", "denied", "restricted-session"
+        )
+        return refusal
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    fields = body.get("fields") if isinstance(body, dict) else None
+    if not (
+        isinstance(fields, list)
+        and fields
+        and all(isinstance(field, str) and field in _OVERLAY_SETUP_FIELDS for field in fields)
+    ):
+        return web.json_response(
+            {"error": "fields must name phone-access settings", "code": "invalid_fields"},
+            status=400,
+        )
+    requested: list[str] = fields
+    removed: list[str] = []
+
+    def _drop(data: dict) -> dict | None:
+        for field in requested:
+            holder = _holder(data, field)
+            if holder is not None:
+                del holder[field.rsplit(".", 1)[-1]]
+                removed.append(field)
+        return data if removed else None
+
+    refusal = await _write_locked(
+        request, "tailnet.mobile.clear_overrides", config_local_path(), _drop, stamp_meta=False
+    )
+    if refusal is not None:
+        return refusal
+    await _audit_async(
+        request, "tailnet.mobile.clear_overrides", "success", ",".join(removed) or "none"
+    )
+    return web.json_response({"removed": removed})
 
 
 async def api_tailnet_mobile_publish(request: web.Request) -> web.Response:

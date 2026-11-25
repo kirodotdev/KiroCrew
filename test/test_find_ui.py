@@ -296,6 +296,55 @@ def test_a_zh_answer_found_by_a_term_is_labelled_in_chinese() -> None:
                 ("怎么分屏", "zh-CN", "setting:chat.split-view-session-grid"),
                 ("hide a bot from the sidebar", "en", "members.bot-sessions-switch"),
                 ("在侧边栏隐藏这个 bot", "zh-CN", "members.bot-sessions-switch"),
+                (
+                    "How do I turn off the recurring 'Goal / Needs you / Doing' message?",
+                    "en",
+                    "setting:chat.since-you-left-briefs",
+                ),
+                ("关闭回来时的总结", "zh-CN", "setting:chat.since-you-left-briefs"),
+                # How a model rewrote that question on a real KAS turn.
+                (
+                    "turn off recurring Goal / Needs you / Doing message check-ins",
+                    "en",
+                    "setting:chat.since-you-left-briefs",
+                ),
+            ],
+        ),
+        # The settings people asked about most, and what Slack users asked for,
+        # in their words; the English comes from settingsKeywords.ts.
+        *named_cases(
+            "test_asked_about_settings_are_found_by_newcomer_words",
+            ("query", "lang", "target"),
+            [
+                ("which model do new chats use", "en", "setting:chat.default-model"),
+                ("make answers shorter", "en", "setting:chat.response-verbosity"),
+                ("how do i log out", "en", "setting:kiro-account.kiro-sign-in"),
+                ("退出登录", "zh-CN", "setting:kiro-account.kiro-sign-in"),
+                (
+                    "turn off notification sound",
+                    "en",
+                    "setting:notifications.play-sound-on-new-notifications",
+                ),
+                ("answer in chinese", "en", "setting:chat.preferred-reply-language"),
+                ("用中文回答", "zh-CN", "setting:chat.preferred-reply-language"),
+                ("change ui language", "en", "setting:display.language"),
+                ("界面语言", "zh-CN", "setting:display.language"),
+                ("agent stopped after a while", "en", "setting:chat.turn-time-limit-seconds"),
+                ("上下文满了", "zh-CN", "setting:chat.auto-compact-threshold"),
+                ("switch to nightly", "en", "setting:about.update-channel"),
+                ("worker model", "en", "setting:chat.subagent-model"),
+                ("turn off conductor mode", "en", "setting:chat.start-new-chats-in-conductor-mode"),
+                ("关闭指挥模式", "zh-CN", "setting:chat.start-new-chats-in-conductor-mode"),
+                ("scroll to bottom", "en", "setting:chat.jump-to-the-bottom-when-you-send"),
+                ("show thinking in chat", "en", "setting:chat.show-thinking-inline"),
+                ("what's new", "en", "setting:about.release-notes"),
+                # One-word words GUIDE_ONE_WORD_TERMS keeps for find_ui.
+                ("colors", "en", "setting:display.theme"),
+                ("appearance", "en", "setting:display.theme"),
+                # Spoken replies, not the dictation switch that shares the Voice tab.
+                ("turn off read aloud", "en", "setting:voice.auto-speak-responses"),
+                # The session grid, not the diff layout that also says "split".
+                ("split view", "en", "setting:chat.split-view-session-grid"),
             ],
         ),
         *named_cases(
@@ -316,6 +365,27 @@ def test_a_zh_answer_found_by_a_term_is_labelled_in_chinese() -> None:
 )
 def test_newcomer_words_find_their_target(query: str, lang: str, target: str) -> None:
     assert _top(ui_index.find_ui(query, lang))["id"] == target
+
+
+def test_every_setting_has_english_search_words() -> None:
+    # A setting whose label is all find_ui knows misses every question asked in
+    # other words. Its words are in website/src/components/commandPalette/
+    # settingsKeywords.ts; the generator keeps only phrases of two or more words.
+    raw = json.loads(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
+    missing = [
+        loc["id"]
+        for loc in raw["locations"]
+        if loc["kind"] == "setting" and not (loc.get("terms") or {}).get("en")
+    ]
+    assert missing == []
+
+
+@pytest.mark.parametrize("word", ["apps", "time", "desktop", "remote"])
+def test_a_one_word_palette_entry_does_not_answer_for_a_setting(word: str) -> None:
+    # settingsKeywords.ts lists these for the palette's typeahead; as find_ui
+    # terms they would send a bare "apps" to a security switch.
+    d = ui_index.find_ui(word, "en")
+    assert not any(r["id"].startswith("setting:") for r in d["results"])
 
 
 # ── wave 2, slice 1: creating things and finding search ──
@@ -589,9 +659,11 @@ def test_context_words_disambiguate_instead_of_losing_the_match(
     ids = [r["id"] for r in d["results"]]
     assert ids[0] == target, d["results"]
     assert rival not in ids
-    # The two model controls in the chat may follow (the chip, and the bulk
-    # "change the model for all chats" item); never the rival in another place.
-    assert set(ids) <= {target, "chat.model-picker", "sessions.list-menu.switch-model"}, ids
+    # The model controls in the chat may follow (the chip, the bulk "change the
+    # model for all chats" item, and Default Model under Chat > Models); never
+    # the rival in another place.
+    allowed = {target, "chat.model-picker", "sessions.list-menu.switch-model"}
+    assert set(ids) <= allowed | {"setting:chat.default-model"}, ids
     assert d["ambiguous"] is False
 
 
@@ -607,6 +679,22 @@ def test_voice_language_offers_both_voice_language_rows_and_not_display(
     assert set(ids) == {"setting:voice.language", "setting:voice.language-2"}, ids
     assert "setting:display.language" not in ids
     assert d["ambiguous"] is True
+
+
+def test_bot_token_stays_a_choice_between_the_bot_token_settings() -> None:
+    # WeCom's palette list carries "bot token", but four other labels contain
+    # those words, so the generator keeps it out of WeCom's find_ui terms: the
+    # answer is a tie between the bot token rows, not the WeCom secret.
+    d = ui_index.find_ui("bot token", "en")
+    ids = [r["id"] for r in d["results"]]
+    assert d["ambiguous"] is True
+    assert set(ids[:4]) == {
+        "setting:channels.discord-bot-token",
+        "setting:channels.slack-bot-token-slack",
+        "setting:channels.telegram-bot-token",
+        "setting:channels.webex-bot-token-webex",
+    }, ids
+    assert ids[0] != "setting:channels.wecom-bot-secret"
 
 
 @pytest.mark.parametrize(

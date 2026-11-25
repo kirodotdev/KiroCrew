@@ -511,10 +511,18 @@ def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
     backend or as the crewmate backend. Both fields arrive already resolved by the
     loader's selection gate. Positive tests, so a harness added later does not
     inherit a fatal row for a binary it never runs.
+
+    The KAS route is the spawn's own (``kas_bundle.kas_spawn_takes_bundle``), not
+    ``agent.kas_bundle`` alone: a build that prefers the engine runs the bundle with
+    the setting unset. Blocking (resolves kiro-cli and the sign-in stores).
+    shortcut: judged with no Bot pin, as the other role checks here read only the
+    two role fields; pass a pin if doctor learns ``agents.<name>.acp_backend``.
     """
     selected = (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
     kiro_role = ACP_BACKEND_KIRO in selected
-    relay_kas_role = not cfg.agent.kas_bundle and ACP_BACKEND_KAS in selected
+    relay_kas_role = ACP_BACKEND_KAS in selected and not kas_bundle.kas_spawn_takes_bundle(
+        cfg.agent
+    )
     return kiro_role, relay_kas_role
 
 
@@ -999,9 +1007,7 @@ def _doctor(
     # After the probe for the same reason: the probe starts kirocrew-core outside
     # kiro-cli's own sandbox, so it passes on the host where that sandbox stops every
     # session. Fatal only when a selected role spawns kiro-cli.
-    confinement._doctor_kiro_sandbox_blocks_crew_mcp(
-        issues, required=any(_selected_roles_run_kiro_cli(cfg))
-    )
+    confinement._doctor_kiro_sandbox_blocks_crew_mcp(issues, required=kiro_role or relay_kas_role)
 
     # ── Python Runtime ──
     print("\nRuntime")

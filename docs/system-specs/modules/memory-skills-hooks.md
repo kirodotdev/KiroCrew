@@ -1424,7 +1424,10 @@ answers the name of the named store whose vector file `path` is, or `""` — the
 hand the crew schema to each: the eval runner's `ws/"vector_memory.db"`, the bench ingest
 path, the onboarding importer's `destination/"memory.db"`, and every `tmp_path` in the
 suite. The predicate answers `""` for all of those, for the literal
-`memory_stores/default/`, and for a malformed store name. Its containment test is
+`memory_stores/default/`, and for a malformed store name. On Windows it also answers
+`""`, without resolving, for a UNC folder `hooks.unc_probe_allowed` does not admit,
+unless the folder is spelled exactly as the resolved root names it: resolving a UNC path
+opens SMB to its host. Its containment test is
 IDENTITY (`parent.resolve() == memory_stores_root().resolve() / name`) rather than a
 resolved-parent check, for the reason `_named_store_dir` already refuses aliasing: with
 `memory_stores/acme` symlinked at `memory_stores/finance`, a parent check still sees the
@@ -4967,7 +4970,11 @@ edit still diverges. Without this carry an update turns full-body injection back
 on behind the user's back,
 the same reversion the auto-skill refine (`skill_runtime.auto_skills`)
 and update-approval (`skill_runtime.versions._rewrite_update_frontmatter`) paths
-already guard against on their own rewrites.
+already guard against on their own rewrites. A staging, copy or publish failure that
+leaves the name free puts the claimed tree back at its name, so the installed copy and
+its opt-out stay and the update is retried on the next sync. A diverged tree is set
+aside, and reported, once the packaged copy (or a concurrent sync's) holds the name,
+or when putting it back fails.
 
 **Retired generated skill cleanup.** `skills.remove_retired_conductor_skill()`
 removes `skills/conductor/SKILL.md` only when a descriptor-pinned, capped read has
@@ -7476,7 +7483,7 @@ supplies them, so a hook reads them with a default:
 | `subagent_id` | present **only** on an event fired by a spawned subagent; its id |
 | `parent_session_key` | present only on a subagent's event: the session that spawned it (it is that session's governance scope) |
 | `agent_role` | the agent template the firing session runs |
-| `session_id` | on an `extra_hooks` (agent spec) hook only: the firing session's ACP session id, under the stdin key kiro-cli's own hook payload uses, on every event Crew fires them on for a dashboard chat turn, a subagent run, the task runner's PreToolUse gate (`tool_permission.SpecHooks`), or the PreToolUse gate an agent-channel member, a native Slack turn or `kirocrew chat` asks before any approval (`channel_spec_hooks.pre_tool_refusal`). A subagent's hooks get the child's own id, read from its client when they fire; a call a harness-native nested child makes carries the id of the session it ran under. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Absent (and the env var unset) before `session/new` and on stored hooks |
+| `session_id` | on an `extra_hooks` (agent spec) hook only: the firing session's ACP session id, under the stdin key kiro-cli's own hook payload uses, on every event Crew fires them on for a dashboard chat turn, a subagent run, the task runner's PreToolUse gate (`tool_permission.SpecHooks`), or the PreToolUse gate an agent-channel member, a native Slack turn, `kirocrew chat`, a sub-agent report turn in its parent's session or a plain Slack auto-nudge asks before any approval (`channel_spec_hooks.pre_tool_refusal`). A subagent's hooks get the child's own id, read from its client when they fire; a call a harness-native nested child makes carries the id of the session it ran under. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Absent (and the env var unset) before `session/new` and on stored hooks |
 | `acp_session_id` | the same value as `session_id`, present exactly when it is; the key the first KAS release of this field used, kept for hooks written against it |
 
 A human's dashboard turn therefore carries `session_key` and no `subagent_id`.
@@ -7941,7 +7948,9 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
   own case-sensitive lookup. The two compaction triggers, `PreCompact` and
   `PostCompact` (and their camelCase spellings), come from the same table in the
   pinned engine 0.66.117's published bundle, for fourteen in all. That blob and
-  that bundle are the ones to re-read when adding a name
+  that bundle are the ones to re-read when adding a name. The bundle's
+  `PermissionRequest` and `permissionRequest` rows are left out on purpose
+  (`docs/decisions/2026-11-24-a-spec-hook-may-not-use-the-permissionrequest-trigger.md`)
 - `action` is `{"type": "command", "command": ...}` or
   `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
   non-empty string within `_MAX_HOOK_PAYLOAD_LEN`
@@ -8048,7 +8057,28 @@ requested page are assembled (`memory_edit._rows(..., page=...)`): a match
 outside the page has no fingerprint computed and its metadata row is not read,
 and with no search term its value is not decoded either. A search reads the
 three metadata fields it matches on (category, subject, predicate) through one
-join in the listing query, not one query per record. `POST /api/memory/records/refresh` resolves up to 500 exact
+join in the listing query, not one query per record.
+
+The memory page also sends `sort` (`updated`, `created`, `confidence`,
+`importance`, `key`, or `match`, which needs search words), `order`
+(`asc`/`desc`), `facets=1`, the repeatable facet filters `category`, `applies`,
+`scope`, `source` and `tag`, and the confidence range `conf_min`/`conf_max`
+(0–1). `memory_record_facets` owns their meaning. A lesson's category, applies
+tier and repo scope are read with the lesson tier's own helpers, so the page
+cannot disagree with injection. An unusable stored scope has the facet value
+`:unusable`, which no admissible scope can equal (a scope never holds `:`). Facet filters are part of the record query (`q`, `kind`,
+`filters`), so a "select all matching" preview reaches exactly the filtered
+rows. With a sort or facets, the listing makes one light pass that yields a
+summary per search match (`_rows(..., summaries=True)`). It then filters,
+counts and sorts those summaries and assembles only the requested page. Each
+facet group is counted with every other filter applied but its own, and the
+kind counts ignore the kind, so each tab shows what it would list. Rows that
+have no confidence (experiences) or no importance (facts and lessons) always
+come last under that sort, newest first, whichever way it runs. `match` is a
+word score from 0 to 1, with a key hit weighted above a text hit, and each
+entry of a `match` page carries it.
+
+`POST /api/memory/records/refresh` resolves up to 500 exact
 identities after a concurrent change without discarding the user's draft. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
 under the same normalized selector and selection caps as preview; deleted or

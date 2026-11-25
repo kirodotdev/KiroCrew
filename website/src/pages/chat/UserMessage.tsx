@@ -1,13 +1,14 @@
-import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
-import { ReactReduxContext } from 'react-redux'
-import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
-import { MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
+import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { parseSessionSeed } from '../../lib/crewSeed'
+import { MessageByline, OtherSenderBubble, SpeakerHeading, useSeedSender } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { readRelay } from './sessionRelay'
 import { pasteBlocksOf, unseededUserText } from './userMessageText'
 import SenderAvatar from './SenderAvatar'
 import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, ChevronRight, type LucideIcon } from 'lucide-react'
+import { useDoneFlash } from '../../hooks/useDoneFlash'
+import QuotedMark, { QUOTED_BTN_CLS } from './QuotedMark'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -552,6 +553,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   const sideOf = (draw: (other: boolean) => ReactNode) => (
     <OtherSenderBubble meta={meta} slotKey={slotKey}>{draw}</OtherSenderBubble>
   )
+  // Quote's done state. The quote lands in the composer, which can sit far
+  // from this row (a search preview beside the chat), so the row says it took
+  // for a moment. Above the early returns: it is a hook.
+  const [quoted, flashQuoted] = useDoneFlash()
   if (retractedAction) {
     const settleAnimated = !mountedRetracted && !reducedMotion
     // The meta field is free text from the transcript; anything unknown reads as
@@ -646,6 +651,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
       // the fold would otherwise continue inside an invisible textarea, with its
       // Send out of reach. The editor stays visible; the banner is simply absent.
       <div data-role="user" data-message-editing="" className="group/msg flex flex-col items-end max-w-full">
+        {/* Offscreen heading: the transcript is a flat run of bubbles, so a
+            screen reader arriving mid-conversation has nothing to navigate by
+            and no cue to who is speaking — the right/left alignment that says
+            it visually is announced as nothing. A heading per message makes the
+            turns the page's heading outline, which is how the H key steps
+            through a conversation. Offscreen because the visual design already
+            carries the speaker. */}
+        <SpeakerHeading meta={meta} slotKey={slotKey} relayedFrom={seed || relay ? (senderTitle || seedFrom || undefined) : undefined} />
         {/* `edit-grow` is a CSS grid auto-sizer: a hidden ::after mirror (fed by
             data-replicated-value) drives the grid track so the textarea grows
             with its own content — width AND height — exactly like the read-only
@@ -700,7 +713,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     // refused) as well as rejecting — both are a copy that did not happen.
     copyToClipboard(shownContent).then(ok => flash(ok ? 'ok' : 'failed'), () => flash('failed'))
   }
-  const quoteShown = () => onQuoteMessage?.(quotableContent)
+  const quoteShown = () => { onQuoteMessage?.(quotableContent); flashQuoted(true) }
   const copyLink = () => {
     if (!messageTs || !slotKey) return
     // Same error surface as Copy: a refused write is reported under the row,
@@ -843,6 +856,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
     <div data-role="user" data-user-side={other ? 'start' : undefined} className={`group/msg flex flex-col ${other ? 'items-start' : 'items-end'} max-w-full`}>
+      {/* Offscreen heading — see the editing branch above for why. */}
+      <SpeakerHeading meta={meta} slotKey={slotKey} relayedFrom={seed || relay ? (senderTitle || seedFrom || undefined) : undefined} />
       {/* User-typed line breaks (Shift+Enter) are preserved at the markdown
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
@@ -1035,14 +1050,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
         {quoteInRow && (
           <button
             onClick={quoteShown}
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
+            className={`inline-flex items-center gap-1 text-muted hover:text-text p-0.5 rounded transition-colors ${quoted ? QUOTED_BTN_CLS : ''}`}
             data-testid="quote-message"
             title={i18nT('pages.chat.userMessage.quote_message')}
             aria-label={i18nT('pages.chat.userMessage.quote_message')}
           >
-            <Quote size={14} />
+            {quoted ? <QuotedMark /> : <Quote size={14} />}
           </button>
         )}
+        {quoted && !quoteInRow && <span className="inline-flex items-center gap-1 p-0.5" data-testid="quote-done"><QuotedMark /></span>}
         <button
           onClick={copyMessage}
           className="text-muted hover:text-text p-0.5 rounded transition-colors"
@@ -1173,23 +1189,3 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
 })
 
 export default UserMessage
-
-const noopSubscribe = () => () => {}
-
-/**
- * Who a delivered message is from, by role (`seedSenderKey`), SUBSCRIBED to the
- * store when one is mounted, so a bubble drawn before the slots frame arrives is
- * relabelled when it does. Without a store the label is generic.
- */
-function useSeedSender(sender: string | undefined, slotKey: string | undefined): string {
-  const redux = useContext(ReactReduxContext)
-  const subscribe = redux ? redux.store.subscribe : noopSubscribe
-  const role = useSyncExternalStore<SeedSender | ''>(subscribe, () => {
-    if (!sender) return ''
-    const rows = ((redux?.store.getState() as { dashboard?: { slots?: SeedRow[] } } | undefined)?.dashboard?.slots) ?? []
-    return seedSender(rows, sender, slotKey)
-  })
-  if (role === 'conductor') return i18nT('pages.chat.userMessage.seed_from_conductor')
-  if (role === 'worker') return i18nT('pages.chat.userMessage.seed_from_worker')
-  return role ? i18nT('pages.chat.userMessage.seed_from_session') : ''
-}

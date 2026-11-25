@@ -647,6 +647,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, job: 'CronJob', session_key: 'str', client: 'LLMProvider', result_text: 'str', rh: 'str', _ctx_reading: 'Any', _turn_stats: 'dict[str, Any] | None') -> 'str'",
         ),
+        ("_deliver_cron_reminder", "async method", "(self, job: 'CronJob') -> 'str'"),
         ("_CRON_MSG_LIMIT", "value", "'int'"),
     ),
     "cron_failure": (

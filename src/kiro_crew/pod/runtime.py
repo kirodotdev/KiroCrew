@@ -1490,6 +1490,13 @@ def build_pod_env(
     # Same cross-plane guard for the companion host evidence (exported only
     # for specific-interface binds — see dashboard.server).
     env.pop("KIROCREW_BOUND_HOST", None)
+    # An agent session's temp dir is its scratch under the caller's data home,
+    # which every sandbox masks; a `pod exec` child that works there (`eval`
+    # builds its workspace under TMPDIR) would hand its agent a missing cwd.
+    # Only values under that scratch root go; the user's own temp dir stays.
+    from kiro_crew.agent_scratch import drop_inherited_scratch_env
+
+    drop_inherited_scratch_env(env)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

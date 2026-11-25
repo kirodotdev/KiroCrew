@@ -40,9 +40,21 @@ import {
 import { pickBoundSlot, useArtifactDetailPageCompanion } from './useArtifactDetailPageCompanion'
 import { useArtifactDetailPageMenu, ArtifactDetailPageHeader } from './ArtifactDetailPageHeader'
 import { ArtifactDetailPageBody } from './ArtifactDetailPageBody'
+import { lazyRetry } from '../components/lazyRetry'
 import { artifactCompanionContextPrompt } from '../components/artifactCompanionContext.prompt'
 
 export { isEditableKind }
+
+// The canvas page loads only when a canvas opens: this facade sits in the app's first
+// load, and every other artifact kind renders without it.
+// No hand-off: the hand-off navigates away, and the page state around a failed
+// chunk can still hold an unsent comment draft.
+const ArtifactDetailPageCanvas = lazyRetry(() => import('./ArtifactDetailPageCanvas'), {
+  layout: 'block',
+  title: () => i18nT('components.canvas.load_failed'),
+  scope: 'canvas-page',
+  askAgent: false,
+})
 
 export default function ArtifactDetailPage({ popout = false }: { popout?: boolean } = {}) {
   const stateRead = useArtifactDetailPageState()
@@ -365,6 +377,21 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     )
   }
   if (!artifact) return <>{confirmDialog}<div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div></>
+
+  // A canvas gets the whole page: the board fills it and its controls float over it.
+  if (artifact.kind === 'canvas') {
+    return (
+      <>
+        <ArtifactDetailPageCanvas artifact={artifact} popout={popout} stateRead={stateRead} documentRead={documentRead}
+          editorRead={editorRead} composerRead={composerRead} menuRead={menuRead} companionRead={companionRead}
+          isMobile={isMobile} panel={panel} setPanel={setPanel} sidebarUserToggledRef={sidebarUserToggledRef}
+          openCompanionChat={openCompanionChat} handleRevert={handleRevert} commentsRead={commentsRead} threadsRead={threadsRead}
+          commentsQuery={commentsQuery} durableComments={durableComments} commentCount={commentCount}
+          remoteSyncError={remoteSyncError} UpstreamSyncBanner={UpstreamSyncBanner} />
+        {confirmDialog}
+      </>
+    )
+  }
 
   return (
     <>

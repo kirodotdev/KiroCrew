@@ -303,6 +303,14 @@ class TokenStateManager:
         with self._lock:
             self._peer_bindings[key] = (peer_key, session_exp, proxied)
 
+    def mark_address_pin_proxied(self, token: str, peer_key: str) -> None:
+        """Record proxy use of a matching address pin without re-keying or renewing it."""
+        key = _token_pin_key(token)
+        with self._lock:
+            entry = self._peer_bindings.get(key)
+            if entry is not None and entry[0] == peer_key and peer_key.startswith("ip:"):
+                self._peer_bindings[key] = (entry[0], entry[1], True)
+
     def proxied_pin_observed(self, now: float) -> bool | None:
         """Report the pin scope of the sessions that are LIVE at *now*.
 

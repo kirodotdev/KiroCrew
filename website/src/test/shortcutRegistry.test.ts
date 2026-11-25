@@ -63,15 +63,13 @@ describe('shortcutRegistry — table invariants', () => {
     // A bare key would fire mid-typing from the global handler, so only an entry
     // whose own handler gates it may carry one, and each is pinned to its exact
     // chord: bare Escape stops speech from a capture-phase listener and takes
-    // back a pending steer or stops the running turn from the message box's
-    // own key gate, and bare
+    // back a pending steer from the message box's own key gate, bare
     // Up/Down move through the notification feed only while one of its rows has
     // focus, and Tab / Shift+Tab indent a list line only from the composer's
     // own key handler. None of them can be stored or rebound, so each is
     // code-dispatched.
     const bareKeyChords = new Map<string, Chord>([
       ['stop-speaking', { key: 'Escape' }],
-      ['stop-turn', { key: 'Escape' }],
       ['take-back-steer', { key: 'Escape' }],
       ['notification-prev', { key: 'ArrowUp' }],
       ['notification-next', { key: 'ArrowDown' }],

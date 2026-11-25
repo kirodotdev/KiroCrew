@@ -1,13 +1,14 @@
 """Lookups and sweeps over every ``meta.json`` of an ``ArtifactStore``.
 
 The lookups by upstream artifact id (one and the batch index) and by source path, the
-kind migration, and the retention sweep of auto-registered widgets.
+read-only kind lookup of one slug, the kind migration, and the retention sweep of
+auto-registered widgets.
 
 Each function here is an ``ArtifactStore`` method: the class binds it by name, so it
 reads the store's own state on the instance, and a patch of the method on the class or
 on an instance reaches every caller.
 
-Instance fields read: ``_lock``.
+Instance fields read: ``_lock``, ``_root``.
 Instance fields written: none.
 """
 
@@ -18,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from typing import List as _List
 
 from kiro_crew.artifact_store.model import Artifact, ArtifactError, ArtifactNotFoundError
-from kiro_crew.artifact_store.rules import _markdown_misclassification_reason
+from kiro_crew.artifact_store.rules import _markdown_misclassification_reason, _validate_slug
 from kiro_crew.artifacts_disk import MAX_AUTO_WIDGET_ARTIFACTS
 
 if TYPE_CHECKING:
@@ -284,6 +285,39 @@ def index_by_artifact_id(self: ArtifactStore) -> dict[str, str]:
             if not fm.upstream_provider:  # legacy bare-id fallback only
                 index.setdefault(fm.upstream_artifact_id, art.slug)
     return index
+
+
+#: The longest slug the store issues (``rules._SLUG_RE``).
+_SLUG_MAX = 80
+_SLUG_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def kind_of(self: ArtifactStore, slug: str) -> str | None:
+    """The ``kind`` recorded in *slug*'s meta.json, or None.
+
+    For a slug read from untrusted text (a chat link): it reads meta.json only,
+    never the body, and writes nothing. None for a slug outside the store's own
+    shape, a meta path that resolves outside the root, a missing artifact or an
+    unreadable record. The shape check is plain character tests, so it stands
+    without the store's slug regex; that validator runs too.
+    """
+    if (
+        not isinstance(slug, str)
+        or not 0 < len(slug) <= _SLUG_MAX
+        or not set(slug) <= _SLUG_CHARS
+        or slug[0] == "-"
+        or slug[-1] == "-"
+    ):
+        return None
+    try:
+        _validate_slug(slug)
+        root = self._root.resolve(strict=False)
+        path = (self._artifact_dir(slug) / "meta.json").resolve(strict=True)
+        if not path.is_relative_to(root) or path.parent.parent != root:
+            return None
+        return self._read_meta_file(path).kind
+    except (ArtifactError, OSError, ValueError, TypeError):
+        return None
 
 
 def find_by_source_path(self: ArtifactStore, source_path: str) -> Artifact | None:

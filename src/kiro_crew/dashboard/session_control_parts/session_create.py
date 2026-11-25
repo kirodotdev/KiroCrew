@@ -78,7 +78,6 @@ from kiro_crew.dashboard.state import (
     creator_slot_cap_refusal,
     note_new_worker,
     own_worker_member,
-    worker_cap_refusal,
 )
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.execution_context import (
@@ -93,6 +92,7 @@ from kiro_crew.execution_context import (
     revouch_at_verified_admission,
 )
 from kiro_crew.history import metadata_now_iso
+from kiro_crew.mate_worker_conducts import effective_worker_cap_refusal, holds_conducting_kit
 from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.security import redact, refuses
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
@@ -302,6 +302,9 @@ async def create_session(
     caller_slot = state.get_slot(caller_key)
     if caller_slot is None:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
+    # A Bot's conducting worker dispatches as its session started, never by the live
+    # switch: the kit its running handle took (rfc-bot-workers-conduct.md 5.2).
+    caller_conducts = holds_conducting_kit(state, caller_slot)
     via_code_channel = _refuse_ineligible_creator(state, caller_slot)
     # A code channel's conductor files its workers in the channel's own folder --
     # the folder its session is filed in -- beside that session, so the sidebar
@@ -401,7 +404,7 @@ async def create_session(
         # never moved home by a mate's conductor rule; a mate's home it would land
         # in is still refused below.
         conductor = not via_code_channel and await asyncio.to_thread(
-            _conducts_for_a_worker, caller_execution
+            _conducts_for_a_worker, caller_execution, caller_conducts
         )
         try:
             folder_id, project_folder_id = await mate_home_filing(
@@ -462,7 +465,7 @@ async def create_session(
         not via_code_channel
         and agent_kind in ("", "template")
         and await asyncio.to_thread(
-            _hands_off_to_own_worker, caller_execution, agent.strip(), agent_kind
+            _hands_off_to_own_worker, caller_execution, agent.strip(), agent_kind, caller_conducts
         )
     )
     if own_worker:
@@ -678,7 +681,7 @@ async def create_session(
     effort_is_crewmates_own = False
     child_is_crewmate = bool(agent.strip()) and bindings.selection_kind == "member"
     if (not model.strip() or not reasoning_effort) and not child_is_crewmate:
-        crewmate = _dispatching_crewmate(cfg, caller_execution)
+        crewmate = _dispatching_crewmate(cfg, caller_execution, caller_conducts)
         if crewmate is not None:
             worker_model, worker_effort = worker_session_defaults(crewmate)
             explicit_worker_effort = coerce_effort(crewmate.worker_reasoning_effort)
@@ -1200,9 +1203,10 @@ async def create_session(
     # everyone's 500.
     if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
         raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
-    # Then the Bot's own limit (`max_workers`, owner-set): asked of the child's
-    # own record, so a worker's own create is held to it too.
-    if (worker_reason := worker_cap_refusal(state, child_execution)) is not None:
+    # Then the Bot's own limit (`max_workers`, owner-set; 4 while its workers conduct
+    # and none is set): asked of the child's own record, so a worker is held to it too.
+    worker_reason = effective_worker_cap_refusal(state, child_execution, caller_conducts)
+    if worker_reason is not None:
         raise SessionControlError(worker_reason, code="bot_worker_cap_reached", status=409)
     # The dry run ends HERE, after the last refusal and before the first write.
     # Any new refusal gate belongs above this line, or the preview would pass a
@@ -1434,10 +1438,14 @@ async def create_session(
             bind_session_execution(session_key, child_execution, vouch=True)
             if own_worker:
                 # Before its first turn allocates: the worker runs on the
-                # crewmate's backend (``members.select_provider_backend``).
+                # crewmate's backend (``members.select_provider_backend``), and
+                # one the crewmate's own thread opened is thread-born, so it
+                # conducts when the crewmate's switch is on (``worker_conducts``).
                 from kiro_crew.mate_worker import note_worker_session
+                from kiro_crew.members import note_worker_lineage
 
                 note_worker_session(session_key, child_execution)
+                note_worker_lineage(session_key, caller_key)
             if via_code_channel:
                 # A code channel's worker: its lineage goes into the code-channel
                 # store, which the session cannot write, BEFORE the birth commits.
@@ -1697,7 +1705,7 @@ def _model_pin_refusal(model_name: str, backend: str) -> str | None:
 
 
 def _dispatching_crewmate(
-    cfg: KiroCrewConfig, caller_execution: ExecutionContext | None
+    cfg: KiroCrewConfig, caller_execution: ExecutionContext | None, kit: bool = False
 ) -> KiroCrewAgentConfig | None:
     """The ``config.agents`` record of the crewmate the caller runs as, or ``None``.
 
@@ -1708,15 +1716,23 @@ def _dispatching_crewmate(
     a crewmate dispatched keeps that crewmate's store but runs as the template,
     and its own children must not re-inherit a profile it does not carry; the
     id-less member's worker keeps ``member`` as its selection, so there the
-    template is what tells it apart. A caller with no record is no crewmate:
-    its slot's agent name is metadata a later write can change, not an
-    attested identity.
+    template is what tells it apart. The one template caller that IS answered as
+    its crewmate is the Bot's own worker holding the conducting kit (*kit*,
+    ``mate_worker_conducts.holds_conducting_kit``: thread-born, and its running
+    handle took the session-control mount at start), so until its next start its
+    children are the Bot's own workers as the thread's are. A caller with no
+    record is no crewmate: its slot's agent name is metadata a later write can
+    change, not an attested identity.
 
     Read-only: a lookup miss is ``None``, never a refusal, because inheriting a
     model is a convenience and a missing record simply leaves the default.
     """
+    from kiro_crew.mate_worker import is_own_worker_execution
+
     if caller_execution is not None:
-        if caller_execution.selection_kind != "member":
+        if caller_execution.selection_kind != "member" and not (
+            kit and is_own_worker_execution(caller_execution)
+        ):
             return None
         if caller_execution.member_id is not None:
             try:
@@ -1755,12 +1771,13 @@ def _inherited_project_dir(raw: str, workspace: str) -> str:
     return default_project_dir(workspace)
 
 
-def _conducts_for_a_worker(caller_execution: ExecutionContext | None) -> bool:
-    """Whether the caller is a crewmate's own chat running on the mate conductor.
+def _conducts_for_a_worker(caller_execution: ExecutionContext | None, kit: bool = False) -> bool:
+    """Whether the caller dispatches a crewmate's worker: its own chat on the mate
+    conductor, or a worker holding the conducting kit (*kit*, ``_dispatching_crewmate``).
 
-    That chat hands its work to the crewmate's worker (``kiro_crew.mate_worker``).
+    That caller hands its work to the crewmate's worker (``kiro_crew.mate_worker``).
     Read from the caller's protected execution record through
-    :func:`_dispatching_crewmate`, so a worker the crewmate already opened (a
+    :func:`_dispatching_crewmate`, so a plain worker the crewmate opened (a
     template selection) is not a conductor and its own children keep today's
     inheritance. Blocking config read; callers run it off the loop. Any failure
     answers False, which keeps the plain inheritance.
@@ -1769,14 +1786,14 @@ def _conducts_for_a_worker(caller_execution: ExecutionContext | None) -> bool:
 
     try:
         cfg = KiroCrewConfig.load()
-        crewmate = _dispatching_crewmate(cfg, caller_execution)
+        crewmate = _dispatching_crewmate(cfg, caller_execution, kit)
         return crewmate is not None and member_template_id(crewmate) == MATE_CONDUCTOR_AGENT
     except Exception:  # noqa: BLE001 - "not a conductor" is the conservative answer
         return False
 
 
 def _hands_off_to_own_worker(
-    caller_execution: ExecutionContext | None, requested: str, agent_kind: str
+    caller_execution: ExecutionContext | None, requested: str, agent_kind: str, kit: bool = False
 ) -> bool:
     """Whether this ``session_create`` opens the calling crewmate's own worker.
 
@@ -1788,13 +1805,13 @@ def _hands_off_to_own_worker(
     a name nothing resolves -- is the crewmate's worker. False for every caller
     that is not a conductor. Blocking config read; callers run it off the loop.
     """
-    if not _conducts_for_a_worker(caller_execution):
+    if not _conducts_for_a_worker(caller_execution, kit):
         return False
     if agent_kind == "template" or not requested:
         return True
     try:
         cfg = KiroCrewConfig.load()
-        own = _dispatching_crewmate(cfg, caller_execution)
+        own = _dispatching_crewmate(cfg, caller_execution, kit)
     except Exception:  # noqa: BLE001 - unreadable config: keep the named resolution
         return False
     named = cfg.agents.get(requested)

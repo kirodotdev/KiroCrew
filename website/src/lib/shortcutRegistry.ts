@@ -271,11 +271,9 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },
   // Bare Escape, handled by a capture-phase listener; listed for the reference.
   { id: 'stop-speaking', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
-  // Bare Escape in the message box while a turn runs, handled by the composer's
-  // own key gate (chat-input/stopKey.ts); listed for the reference.
-  { id: 'stop-turn', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
-  // Bare Escape in the message box while a steer the turn has not read is
-  // pending, handled by the same key gate; listed for the reference.
+  // Bare Escape in the message box while a steer the running turn has not read
+  // yet is pending, handled by the composer's own key gate
+  // (chat-input/steerEscape.ts); listed for the reference.
   { id: 'take-back-steer', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
   // Bare Up/Down, handled by NotificationFeed while one of its rows has focus
   // (inbox page and bell sheet); listed for the reference.
@@ -313,9 +311,9 @@ export type ShortcutOverrides = Partial<Record<string, Chord | null>>
 
 /**
  * A chord a user may store: a non-empty key plus at least one non-shift
- * modifier. A bare key or Shift+key would fire mid-typing. `stop-speaking`,
- * `stop-turn` and `take-back-steer` (bare Escape) are `code` entries and never
- * reach this check.
+ * modifier. A bare key or Shift+key would fire mid-typing. `stop-speaking`
+ * and `take-back-steer` (bare Escape) are `code` entries and never reach
+ * this check.
  */
 export function isValidChord(c: Partial<Chord> | null | undefined): c is Chord {
   if (!c || typeof c.key !== 'string' || c.key.trim() === '') return false

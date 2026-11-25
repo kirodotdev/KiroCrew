@@ -27,8 +27,10 @@
  *
  * Search terms are the words a person who has never seen the label would use
  * ("old chats" for Older Sessions). A registered location carries them in its
- * descriptor; a page, tab or setting carries them in {@link SEARCH_TERMS}, keyed
- * by its generated id. The generator rejects an unknown id or locale, a blank or
+ * descriptor; a page or tab carries them in {@link SEARCH_TERMS}, keyed by its
+ * generated id. A setting's English words are the command palette's
+ * (components/commandPalette/settingsKeywords.ts); SEARCH_TERMS carries only
+ * its other languages. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
 import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
@@ -67,7 +69,8 @@ export const UI_LOCATIONS = {
 /**
  * Search terms for generated locations (pages, tabs, Settings tabs and
  * sub-pages, settings), keyed by the id the index gives them. A registered
- * location puts its terms in its descriptor instead.
+ * location puts its terms in its descriptor instead. For a setting, English is
+ * refused here: its English words are in settingsKeywords.ts.
  */
 export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
   'page.chat': {
@@ -80,17 +83,19 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['reminder', 'reminders', 'scheduled jobs', 'scheduled tasks', 'cron', 'cron jobs', 'recurring tasks'],
     'zh-CN': ['提醒', '定时任务', '计划任务', '定时提醒'],
   },
+  // The catch-up brief a bot or conductor chat posts on return; people name it by
+  // its headings (Goal / Needs you / Doing), not by the setting's label.
+  'setting:chat.since-you-left-briefs': {
+    'zh-CN': ['回来时的进度简报', '目标 需要你 正在做 消息', '关闭回来时的总结', '欢迎回来的总结'],
+  },
   'setting:display.mode': {
-    en: ['dark mode', 'light mode', 'night mode', 'dark theme', 'light theme'],
     'zh-CN': ['深色模式', '暗色模式', '浅色模式', '夜间模式', '暗黑模式'],
   },
   'setting:display.theme': {
-    en: ['color theme', 'colour theme', 'colors', 'colours', 'appearance'],
     'zh-CN': ['配色', '颜色主题', '外观'],
   },
   // What users call the behaviour, whatever their platform names the tray.
   'setting:display.keep-running-in-the-background-after-closing-the-window': {
-    en: ['close to tray', 'quit on close', 'exit on close', 'run in background', 'system tray', 'close button'],
     'zh-CN': ['关闭到托盘', '关闭时退出', '后台运行', '系统托盘'],
   },
   'settings.tab.channels': {
@@ -127,23 +132,70 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
   // What people ask when their bots' sessions are missing from the Sessions
   // sidebar; the label alone ("Show all bots in my Sessions") matches none of it.
   'setting:chat.show-all-bots-in-my-sessions': {
-    en: [
-      "show my bots' sessions in my sessions list", 'show bot sessions in the sidebar', 'bot sessions missing from sidebar',
-      'bot sessions not showing', 'hide bot sessions', 'bot sessions in my sessions list',
-    ],
     'zh-CN': ['在会话列表显示 bot 的会话', 'bot 的会话不显示', '侧边栏看不到 bot 的会话', '机器人的会话不显示', '隐藏 bot 的会话'],
   },
   // The split-view button in the chat header shows only while this is on, so a
   // question about the missing button has to land here.
   'setting:chat.split-view-session-grid': {
-    en: ['split view', 'split screen', 'side by side sessions', 'session grid', 'two chats at once', 'split view button'],
     'zh-CN': ['分屏', '分屏视图', '并排显示会话', '会话网格', '同时看两个聊天'],
   },
   // The lasting way to silence a kind of notification (the keep-or-mute prompt
   // under a new channel's first notification is one-time).
   'setting:notifications.sources': {
-    en: ['turn off notifications', 'turn off these notifications', 'mute a notification source', 'stop getting notifications'],
     'zh-CN': ['关闭通知', '关闭这些通知', '屏蔽通知来源', '不再接收通知', '静音通知'],
+  },
+  // Chinese words for the settings people ask about most (the English ones
+  // live in settingsKeywords.ts).
+  'setting:chat.default-model': {
+    'zh-CN': ['新聊天用的模型', '用哪个模型', '默认用什么模型'],
+  },
+  'setting:chat.response-verbosity': {
+    'zh-CN': ['回答长短', '回答太长', '简短回答', '详细回答'],
+  },
+  'setting:kiro-account.kiro-sign-in': {
+    'zh-CN': ['退出登录', '切换账号', '换账号', '登录 kiro', '没有登录 kiro'],
+  },
+  'setting:notifications.play-sound-on-new-notifications': {
+    'zh-CN': ['通知声音', '提示音', '关闭提示音', '静音'],
+  },
+  'setting:chat.preferred-reply-language': {
+    'zh-CN': ['回复语言', '用中文回答', '用英文回答', '回答的语言'],
+  },
+  'setting:display.language': {
+    'zh-CN': ['界面语言', '切换语言', '改成中文', '显示语言'],
+  },
+  'setting:chat.turn-time-limit-seconds': {
+    'zh-CN': ['单轮时间上限', '运行超时', '跑太久被停', '回合超时'],
+  },
+  'setting:chat.auto-compact-threshold': {
+    'zh-CN': ['自动压缩', '上下文压缩', '上下文满了', '压缩阈值'],
+  },
+  'setting:about.update-channel': {
+    'zh-CN': ['更新渠道', '稳定版', '测试版', '每日构建'],
+  },
+  'setting:chat.subagent-model': {
+    'zh-CN': ['worker 模型', '子 agent 用的模型', '子任务模型'],
+  },
+  'setting:about.update-the-gateway-automatically': {
+    'zh-CN': ['自动更新', '关闭自动更新', '不要自动更新', '网关更新'],
+  },
+  'setting:about.install-app-updates-automatically': {
+    'zh-CN': ['自动更新', '关闭自动更新', '桌面应用自动更新'],
+  },
+  'setting:about.release-notes': {
+    'zh-CN': ['发布说明', 'changelog 在哪', '新功能'],
+  },
+  'setting:chat.start-new-chats-in-conductor-mode': {
+    'zh-CN': ['指挥模式', '关闭指挥模式', 'conductor 模式', '关闭 conductor'],
+  },
+  'setting:chat.show-thinking-inline': {
+    'zh-CN': ['在聊天里显示思考过程', '隐藏聊天里的思考过程', '显示推理过程'],
+  },
+  'setting:chat.jump-to-the-bottom-when-you-send': {
+    'zh-CN': ['滚动到底部', '自动滚动', '发送后跳到底部'],
+  },
+  'setting:voice.shortcut-key': {
+    'zh-CN': ['语音快捷键', '听写快捷键', '按键说话'],
   },
 }
 

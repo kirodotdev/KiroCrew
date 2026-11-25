@@ -14,8 +14,8 @@ afterEach(async () => {
 
 describe('count strings on search, install, delete and import surfaces', () => {
   it('picks the English singular and plural forms', () => {
-    expect(i18nT('components.searchBar.result_position', { current: 1, count: 1 })).toBe('1 of 1 result')
-    expect(i18nT('components.searchBar.result_position', { current: 3, count: 5 })).toBe('3 of 5 results')
+    expect(i18nT('components.chatHistorySearch.image_count', { count: 1 })).toBe('1 image')
+    expect(i18nT('components.chatHistorySearch.file_count', { count: 5 })).toBe('5 files')
     expect(i18nT('components.markdownPanel.match_position', { current: 2, total: 7 })).toBe('2 of 7')
     expect(i18nT('components.skillBrowserModal.installed_files', { count: 4 })).toBe('Installed 4 files')
     expect(i18nT('pages.knowledge.index.delete_items_permanently', { count: 1 })).toBe('Delete 1 item permanently?')
@@ -25,17 +25,11 @@ describe('count strings on search, install, delete and import surfaces', () => {
 
   it('translates them in German', async () => {
     await i18next.changeLanguage('de')
-    expect(i18nT('components.searchBar.result_position', { current: 3, count: 5 })).toBe('3 von 5 Ergebnissen')
+    expect(i18nT('components.chatHistorySearch.file_count', { count: 5 })).toBe('5 Dateien')
     expect(i18nT('components.markdownPanel.match_position', { current: 2, total: 7 })).toBe('2 von 7')
     expect(i18nT('components.skillBrowserModal.installed_files', { count: 4 })).toBe('4 Dateien installiert')
     expect(i18nT('pages.knowledge.index.delete_items_permanently', { count: 3 })).toBe('3 Elemente endgültig löschen?')
     expect(i18nT('components.agentImportFlow.source_item_count', { name: 'Claude Code', count: 1 })).toBe('Claude Code, 1 Element')
-  })
-
-  it('inflects the Hindi result noun from the total, not the position', async () => {
-    await i18next.changeLanguage('hi')
-    expect(i18nT('components.searchBar.result_position', { current: 1, count: 5 })).toBe('5 नतीजों में से 1')
-    expect(i18nT('components.searchBar.result_position', { current: 1, count: 1 })).toBe('1 नतीजे में से 1')
   })
 
   it('uses every Russian plural form', async () => {
@@ -48,7 +42,6 @@ describe('count strings on search, install, delete and import surfaces', () => {
   })
 
   it.each([
-    ['components/SearchBar.tsx', '} of ${matches.length} results`'],
     ['components/MarkdownPanelBody.tsx', '} of ${findCount}`'],
     ['components/SkillBrowserModal.tsx', '`Installed ${phase.fileCount} files`'],
     ['pages/knowledge/index.tsx', 'items permanently?`'],

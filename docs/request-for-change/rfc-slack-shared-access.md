@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Shared Slack access
 
-Status: partial. The 2026-11-05 decision is implemented in [#30760](https://github.com/kirodotdev/KiroCrew/pull/30760) (`slack.shared_access`, built in `config/section_builders.py`). The 2026-11-20 amendment, "A shared user's own code channel" below, is not built: on main `4158830b79` `_route_message` in `slack/events.py` skips `code_channel_dispatch` for a shared sender, who is refused in every code channel. Its implementation is open in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181).
+Status: partial. The 2026-11-05 decision is implemented in [#30760](https://github.com/kirodotdev/KiroCrew/pull/30760) (`slack.shared_access`, built in `config/section_builders.py`). The 2026-11-20 amendment, "A shared user's own code channel" below, is built in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181) (merged 2026-11-23, `2a4799ee2d`): `_route_message` in `slack/events.py` admits a shared user in a code channel they opened and refuses them, with a private notice, in any other (`slack/code_channels/shared_refusal.py`, `opener_admitted`, `shared_message_dropped`).
 
 ## Decision
 
@@ -126,8 +126,8 @@ above later.
 **Decision.** On 2026-11-20 the repository owner, who wrote this RFC, decided
 that a shared user may open code channels of their own and work in them, as part
 of adding people through shared access. The 2026-11-05 table kept code channels
-owner-only "for v1"; this amendment replaces that row. It takes effect when this
-amendment merges; the code is [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181).
+owner-only "for v1"; this amendment replaces that row. The code is
+[#40181](https://github.com/kirodotdev/KiroCrew/pull/40181), merged 2026-11-23.
 There is no new switch: with `slack.shared_access` on, it applies to every
 confirmed shared user.
 

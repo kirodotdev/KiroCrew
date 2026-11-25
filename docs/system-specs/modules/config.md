@@ -314,6 +314,23 @@ Profile card and read per request. A config that still holds an old
 `dashboard.crewmate_dynamic_capabilities` key loads unchanged; the key is not
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
+`agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
+bool the owner sets through `PUT /api/agents/{name}` (a non-bool is refused
+with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
+on `GET /api/members`, and read from the Bot's record at each worker's session
+start, never cached on the worker; a save that changes it reloads the Bot's
+workers so each reads it again soon (an idle one at once, a busy one at its turn
+end). On, each worker the Bot's own thread opens may conduct: it gets the
+thread's session-control mount, the conductor's ledger grants and rules, and its
+own `session_create` opens the Bot's worker. While it
+is on, the Bot's `agents.<name>.max_workers` always applies: 0 (no limit) reads
+as `BOT_MAX_WORKERS_CONDUCTING` (4, `config/sections_session.py`), read at each
+create, revive and fork; a limit the owner set is used as is, and with the
+switch off 0 still sets no limit. Owned by
+[crew-mode](crew-mode.md#conductor-and-worker) ("A Bot's worker conducts only
+when its owner says so") and
+[rfc-bot-workers-conduct](../../request-for-change/rfc-bot-workers-conduct.md).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` guides direct work and delegation using a concrete-value
@@ -3500,7 +3517,10 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, that must rebuild agent artifacts, or that set
 process-wide registry state
-live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` —
+`agents` (→ `dashboard/bot_chat_follow.py::follow_config_change`: a Bot's changed `model` or
+`reasoning_effort` clears its own chat's pick, after the session manager's applier),
+`agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
@@ -3561,8 +3581,8 @@ handlers answer HTTP 409 `agent_home_not_owned` (listed in learn-cron-dashboard.
 instead of recording a change the file never took. Every admitted or refused shared-home
 write is audited as the SEL `agent_home_write` operation, allowed or denied.
 The provider applier only schedules the switch: `reload_provider_factory` clears
-the session registry and then shuts the retired providers down one at a time,
-which can outlast the applier bound, and a timed-out applier is retried on the
+the session registry and then shuts the retired providers down concurrently,
+each shutdown waiting out its runtime's exit, which can outlast the applier bound, and a timed-out applier is retried on the
 next tick — a retried switch would clear the sessions created with the new
 provider in between. So the switch runs off the cycle as a task tracked in
 `state._background_tasks` (the same shape as a channel reconnect), the applier
@@ -5265,6 +5285,32 @@ Returns the effective config for a channel:
   "snapshot_dir": ""
 }
 ```
+
+`dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
+proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
+bind address is not configurable. It is for Linux and macOS only for now: on
+Windows a non-zero value stops the start of the regular or the headless
+`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
+while the SSM listener is configured to run, stops that start too
+(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+nor opens the port: it logs a warning and starts.
+The shared config validation replaces a wrong-typed value (for example `8443.5`,
+`"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It
+logs `Config: type mismatch at 'dashboard.entry_port': ...; using default`.
+Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
+float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
+A wrong value stops the start before any app backend is spawned. A port that
+cannot be bound also stops the gateway's start. The port opens in the regular and
+the headless `kirocrew gateway` only. The proxy must send a `Host` that names loopback
+(`127.0.0.1`, `[::1]` or `localhost`); the entry port answers a request to a Crew
+API route with any other `Host` with `400`, and many proxies pass the client's `Host` through unless told otherwise. The
+value is one per data home, so a second gateway started on the same data home
+(another `--port`) finds the entry port held and does not start (`EntryPortError`).
+`PATCH /api/config/kirocrew` does not change the key: `READONLY_REASONS` lists it
+read-only with reason `reach`, as it does `tunnel.enabled`, so it is set in the config
+file or with `kirocrew config set`.
+See [dashboard-token-auth.md](dashboard-token-auth.md) (*Entry port*).
 
 The `dashboard.url` field supplies the browser-facing/reverse-proxy origin and,
 when present, a candidate port; its origin is added to the CSRF/WebSocket allowlist.

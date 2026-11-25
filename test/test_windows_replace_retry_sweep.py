@@ -283,6 +283,8 @@ _CONVERTED: list[tuple[str, str]] = [
     ("snapshot_restore.py", "_save"),
     ("eval/bench/safepath.py", "write_text_atomic_nofollow"),
     ("eval/bench/provider_run.py", "_atomic_write"),
+    ("eval/tasks.py", "_copy_transcript"),
+    ("eval/tasks.py", "_write_record"),
     ("memory_provider/migration.py", "_atomic_write"),
     ("apps/builtins/auto_improvement/backend/store.py", "write_json_atomic"),
     ("apps/builtins/mochi/queue_file.py", "write_queue_atomic"),
@@ -363,6 +365,18 @@ def test_memory_provider_run_file_save_survives_a_contended_rename(
     assert sim["n"] == 3
     assert json.loads(path.read_text("utf-8")) == {"state": "done"}
     assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+def test_eval_run_record_survives_a_contended_rename(tmp_path: Path) -> None:
+    from kiro_crew.eval import tasks
+
+    with replace_sharing_violation(match="result.json", times=2) as sim:
+        tasks._write_record(tmp_path, {"run_id": "r1"})
+
+    assert sim["n"] == 3
+    run_dir = tmp_path / "runs" / "r1"
+    assert json.loads((run_dir / "result.json").read_text("utf-8")) == {"run_id": "r1"}
+    assert [p.name for p in run_dir.iterdir()] == ["result.json"]
 
 
 def test_crewmate_stage_write_survives_a_contended_rename(tmp_path: Path) -> None:

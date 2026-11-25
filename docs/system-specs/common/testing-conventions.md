@@ -179,7 +179,12 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   grep endpoint's), or set the search path with `monkeypatch.setenv("PATH",
   str(tmp_path))` and plant the tool there; a test that needs a real interpreter names
   `sys.executable`. The suite has no autouse `PATH` floor (real `git`, `bash` and `node`
-  tests need the host's), so no shared fixture covers this. Run a host-tool test once
+  tests need the host's), so no shared fixture covers this. The one exception is the
+  service suites: a unit or plist render reads the installer's `$PATH` split on `:`,
+  and a Windows runner's `PATH` split that way gives fragments such as `\\ghcup\bin;C`
+  that resolve as UNC shares (D10), so every suite that renders one imports
+  `_posix_installer_path` from `test/service_helpers.py` (or calls
+  `pin_posix_installer_path`), which pins a POSIX `PATH` on Windows. Run a host-tool test once
   with the tool off `PATH`. #35547 fixed a rewriter spec whose verdict turned on an
   `http` program being on `PATH`.
   [What the host lends the suite](#what-the-host-lends-the-suite-and-must-not).
@@ -272,7 +277,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), a product registry's size or members pinned to literals (K22 and its frontend twin J7, [No change-detector tests](#no-change-detector-tests)), and the frontend shapes in `test/flake_pattern_js_detectors.py`. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a wait on `p.exists` followed in the same function by a read of `p` (K23, [Filesystem tests](#filesystem-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), a product registry's size or members pinned to literals (K22 and its frontend twin J7, [No change-detector tests](#no-change-detector-tests)), and the frontend shapes in `test/flake_pattern_js_detectors.py`. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -349,6 +354,14 @@ run = sdk.get(run_id); time.sleep(0.02)
 # RIGHT: the retry applies off-loop, and the loop keeps running
 run = await asyncio.to_thread(sdk.get, run_id); await asyncio.sleep(0.02)
 ```
+
+A test that waits for a child's signal file has the same race on the read side.
+`path.exists()` turns true the instant a child's `os.replace` lands, while the
+rename's own handle (or a scanner's) can still refuse an open with
+`PermissionError` (errno 13, a sharing violation). Never wait on `exists()` and
+then read: make the read the predicate,
+`await async_wait_until(lambda: path.read_text(...), ignoring=(PermissionError,), off_loop=True)`
+(`test_runtime_cleanup_windows.py` `wait_for_file`).
 
 The write side has the same rule: `replace_with_retry` is one attempt on the loop
 thread, so a synchronous helper that ends in a session-file rename
@@ -659,6 +672,27 @@ such as `check_memory_available` takes as "no reading" and admits on. Write the 
 value to a fresh path and rebind the attribute the reader resolves at call time, so a
 reader that took the old path finishes the old file
 (`test_spawn_floor_defaults.py::_Host.set`).
+
+**A file another process renames into place is ready when a read of it succeeds.**
+Both ends of a tmp-file-plus-rename handoff lose to a handle on Windows. The writer's
+`os.replace` fails with `PermissionError` (WinError 5 / 32) while anything holds the
+destination, and the reader's open fails the same way for a moment after `exists()`
+turns true (PR #42005 lost a product write; PR #42007 and #42072 lost a test read).
+Two checks hold the line:
+
+- **Reader (tests).** Never wait on `p.exists` and then read `p`. Make the read the
+  predicate:
+  `text = wait_until(lambda: p.read_text(encoding="utf-8"), ignoring=(FileNotFoundError, PermissionError))`,
+  or `await async_wait_until(p.read_text, off_loop=True, ignoring=...)` in a coroutine.
+  An empty file reads as falsy and keeps the wait going. The flake-pattern ratchet
+  counts the old shape as K23.
+- **Writer (product code).** Rename through `kiro_crew.atomic_write.replace_with_retry`
+  (`rename_with_retry` for a move that must not overwrite). `test/test_bare_rename_ratchet.py`
+  fails a change that adds a bare `os.replace` / `os.rename` / one-argument
+  `path.replace` / `path.rename` to a product file under `src/`, against that file's
+  count at the merge-base. A rename that is safe bare carries
+  `# rename-ok: <reason>` on its line. `test/test_windows_replace_retry_sweep.py`
+  lists the writers already converted; add a converted writer there.
 
 ### Host tool dialects
 
@@ -5089,6 +5123,20 @@ Two rules close it:
   before it merges: locally (`-n0` on one file is seconds) or by reading the
   `Backend Tests (Windows)` shards of its own round. A recorder or spy that asserts it
   saw a call is the shape to watch for: on a host that refuses early it sees nothing.
+
+### A fixture written as text and compared as bytes
+
+`Path.write_text` (and `open(..., "w")`) turns every `\n` into `\r\n` on Windows. A
+test that writes a fixture that way and then compares what the code reads or serves
+with an LF `bytes` literal fails on every Windows shard, and so does any check that
+leans on the file's size (an ETag, a "same size, same inode" swap).
+`test/test_app_startup_modules.py` lost five cases this way
+([#42396](https://github.com/kirodotdev/KiroCrew/issues/42396)): its helper wrote the
+module with `write_text`, so the served body carried `\r\n` and the LF swap was shorter
+than the CRLF original by one byte per line. When the test compares bytes or sizes,
+write the fixture with `write_bytes(text.encode("utf-8"))`, `write_text(text,
+encoding="utf-8", newline="")` or `open(path, "w", encoding="utf-8", newline="")`.
+Keep `write_text` for fixtures the code under test reads back as text.
 
 ### A frozen list of a surface other branches keep growing
 

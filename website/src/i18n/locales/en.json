@@ -4418,6 +4418,11 @@
     }
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} failed to start.",
+      "dismiss": "Dismiss startup notice for {{name}} until reload",
+      "open_app": "Open {{name}}"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} was probably started as root once, for example with sudo. Stop running it as root, then give the files back to your own account.",
       "check_failed": "Couldn't check who owns the {{productName}} files.",
@@ -5814,21 +5819,6 @@
       "title": "Run in terminal",
       "title_copy": "Copy to terminal"
     },
-    "searchBar": {
-      "case_sensitive": "Case sensitive",
-      "close_esc": "Close (Esc)",
-      "find_in_chat": "Find in chat",
-      "find_in_chat_2": "Find in chat…",
-      "next_match": "Next match",
-      "previous_match": "Previous match",
-      "result_position_one": "{{current}} of {{count}} result",
-      "result_position_other": "{{current}} of {{count}} results"
-    },
-    "searchResultsList": {
-      "search_results": "Search results",
-      "showing_matches_one": "Showing {{shown}} of {{n}} match around the current result — narrow your search to see all.",
-      "showing_matches_other": "Showing {{shown}} of {{n}} matches around the current result — narrow your search to see all."
-    },
     "secretField": {
       "cancel": "Cancel",
       "managed_on_the_server_read_only_from_remote_sess": "Managed on the server. Read-only from remote sessions.",
@@ -6794,6 +6784,49 @@
       "more_matches_one": "{{count}} more match in this chat",
       "more_matches_other": "{{count}} more matches in this chat"
     },
+    "chatHistorySearch": {
+      "title": "Search this chat",
+      "open": "Search",
+      "open_hint": "Search ({{shortcut}})",
+      "placeholder": "Search",
+      "cancel": "Cancel",
+      "clear": "Clear search",
+      "entry_date": "Date",
+      "every_day": "Show every day",
+      "previous_month": "Previous month",
+      "next_month": "Next month",
+      "tabs_label": "Message type",
+      "tab_all": "All",
+      "tab_images": "Images",
+      "tab_files": "Files",
+      "tab_links": "Links",
+      "tab_videos": "Videos",
+      "tab_pdfs": "PDFs",
+      "tab_html": "HTML",
+      "tab_widgets": "Widgets",
+      "tab_pinned": "Pinned",
+      "searching": "Searching…",
+      "no_results": "No messages match",
+      "no_pinned": "No pinned messages. Pin one from a message's More actions menu.",
+      "no_recent_results": "No recent messages match",
+      "error": "Search failed. Try again.",
+      "results_label": "Search results",
+      "role_you": "You",
+      "role_bot": "Bot",
+      "search_older": "Search older messages",
+      "preview_label": "Message preview",
+      "back": "Back to results",
+      "preview_day": "Around {{date}}",
+      "show_earlier": "Show earlier messages",
+      "show_later": "Show later messages",
+      "loading": "Loading…",
+      "preview_error": "Could not load these messages",
+      "load_failed": "The search could not load",
+      "image_count_one": "{{count}} image",
+      "image_count_other": "{{count}} images",
+      "file_count_one": "{{count}} file",
+      "file_count_other": "{{count}} files"
+    },
     "canvas": {
       "arrows_both": "Arrows at both ends",
       "arrows_end": "Arrow at the end",
@@ -7173,6 +7206,7 @@
       "updated_from_its_repository": "Updated {{name}} from its repository.",
       "updated_needs_session_approval_consent": "{{name}} is disabled because it newly asks to control your chats. Review the permission in the app details, then enable it.",
       "update_needs_repository_trust": "{{name}} was not updated, because its newer version comes from a repository you have not trusted yet. Open its details and choose Trust the repository and update.",
+      "update_invalid_version": "{{name}} can't update: its new version has an error. Ask its maker to fix it.",
       "open_app_details": "Open {{name}} details",
       "refresh_store": "Refresh the store",
       "refreshing_store": "Refreshing the store…",
@@ -8057,6 +8091,7 @@
         "copied": "Copied",
         "copy_link": "Copy link to message",
         "put_in_composer": "Put in composer",
+        "put_in_composer_done": "Added",
         "unpin": "Unpin",
         "copy_text_failed": "Couldn’t copy the text. Jump to the message and select the text to copy it.",
         "copy_link_failed": "Couldn’t copy the link. Check that this page may use the clipboard, then try again.",
@@ -8396,6 +8431,8 @@
       "older_sessions_tip": "Lists every saved session not open as a tab, including ones you just closed and Slack or Discord chats. Open one to bring it back as a tab.",
       "only_show_sessions_that_have_no_tags": "Only show sessions that have no tags",
       "bulk_switch_keeps_conversation": "Pick a model for every session. The conversation is kept and continues on the new model.",
+      "bulk_effort_keep": "Keep current effort",
+      "bulk_effort_needs_effort_model": "Pick a model that uses effort levels to set effort too.",
       "bulk_switch_stops_running_reply": "Running sessions switch too, and their current reply is stopped.",
       "pinned": "Pinned",
       "pinned_sessions_are_kept": "Pinned sessions are kept.",
@@ -9703,6 +9740,7 @@
       "linked_to": "Linked to {{label}}",
       "linked_to_paused": "Linked to {{label}} · replies paused",
       "connect_channel": "Connect to a channel",
+      "open_messaging_channels": "Open Messaging Channels",
       "create_advanced_settings": "Advanced settings",
       "dashboard_kept_last_good": "A newer version of this dashboard did not load, so this is the last one that did.",
       "dashboard_none_yet": "No dashboard set up for this bot yet.",
@@ -12999,6 +13037,46 @@
         "pop_out_label_to_its_own_window": "Pop out {{label}} to its own window",
         "label_is_open_in_its_own_window_focus_it": "{{label}} is open in its own window — focus it"
       }
+    }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments are remote machines that Kiro starts and keeps for you. Create one and run a new crew on it.",
+      "name_label": "Crew name",
+      "name_placeholder": "my-crew",
+      "name_rule": "Use 2 to 32 lowercase letters, digits or single hyphens, starting with a letter.",
+      "name_help": "The environment is named after the crew.",
+      "ssh_config_note": "Lets this computer connect to your environments. Adds a few lines to {{path}}; you can remove them any time. Nothing else in the file changes.",
+      "launch": "Launch",
+      "ssh_add": "Allow this computer to connect",
+      "ssh_ready": "{{path}} has the ssh settings Crew uses to reach your managed environments.",
+      "ssh_failed": "Couldn't add the ssh settings",
+      "launch_needs_name": "Enter a crew name to launch.",
+      "launch_needs_ssh": "Allow this computer to connect, then launch.",
+      "ssh_failed_hint": "Check that you can edit {{path}}.",
+      "launch_fix_name": "Fix the crew name to launch.",
+      "ssh_preview": "See the lines it adds",
+      "ssh_preview_why": "These lines let Crew connect to your Kiro Managed Environments (names starting with {{hosts}}) through your Kiro sign-in, and they leave your other ssh hosts as they are."
+    },
+    "row": {
+      "stop": "Stop environment",
+      "resume": "Resume environment",
+      "delete": "Delete environment",
+      "delete_title": "Delete the environment of {{name}}?",
+      "delete_body": "The managed environment and everything on it are deleted. This can't be undone. The crew stays on your list until you remove it.",
+      "delete_confirm": "Delete environment",
+      "list_failed": "Couldn't read your managed environments.",
+      "gone": "This environment is no longer in your managed environments. Remove the crew from your list.",
+      "state_creating": "Environment starting",
+      "state_running": "Environment running",
+      "state_stopped": "Environment stopped",
+      "state_deleting": "Environment being deleted",
+      "state_error": "Environment failed",
+      "state_error_hint": "The service reports this environment as {{status}}. Delete it and launch again, or ask the agent to look into it.",
+      "managed_by": "Kiro Managed Environments · Remove takes the crew off this list but keeps the environment. To delete it, use Delete environment.",
+      "stop_failed": "Couldn't stop the environment of {{name}}",
+      "resume_failed": "Couldn't resume the environment of {{name}}",
+      "delete_failed": "Couldn't delete the environment of {{name}}"
     }
   }
 }

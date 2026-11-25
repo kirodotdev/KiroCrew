@@ -126,6 +126,15 @@ own eval home, and scores them PASSED / FAILED / VOID (`tasks.py`, `arms.py`).
 | `lesson_application` | 2 | 2 | lesson_application | ~30s |
 | `context_accumulation` | 3 | 3 | context_accumulation, memory_recall | ~2 min |
 | `subagent_policy` | 1 | 1 | delegation_value, delegation_lifecycle | provider-dependent |
+| `guide_first` | 1 | 1 | guide_first | ~30s |
+
+## Guide first
+
+`kirocrew eval guide_first` asks one real where-is question about Kiro Crew
+("How do I turn off the recurring 'Goal / Needs you / Doing' message?") and
+passes only when the turn calls `find_ui` and then `guide_start`, the rule the
+agent and bot prompts state. A turn that reads the source and answers in words
+fails it.
 
 ## Delegation decisions
 

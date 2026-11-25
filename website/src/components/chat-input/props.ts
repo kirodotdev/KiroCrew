@@ -9,7 +9,7 @@ import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
 import type { MemorySource } from '../../lib/agentMemorySource'
-import type { SteerEscape } from './stopKey'
+import type { SteerEscape } from './steerEscape'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
@@ -326,7 +326,7 @@ export interface ChatInputProps {
   projectSwitching?: boolean
   onStop?: () => void
   /** The steers the running turn has not read yet: Escape takes them back one
-   *  per press before it stops the turn. Absent where a steer cannot be taken back. */
+   *  per press. Absent where a steer cannot be taken back. */
   steerEscape?: SteerEscape
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the

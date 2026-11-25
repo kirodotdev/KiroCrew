@@ -461,12 +461,16 @@ def test_no_python_environment_names_the_command_that_creates_it(tmp_path) -> No
 
     issue = strands_mod.strands_python_env_issue(str(tmp_path))
     assert "venv" in issue and "strands-harness==" in issue
+    assert '"botocore[crt]"' in issue
     assert "terminal on the gateway host" in issue and HOST_TERMINAL_NOTE in issue
 
 
 def test_an_environment_without_the_harness_names_the_install(tmp_path) -> None:
+    """A ``login`` AWS profile needs ``botocore[crt]``; without it the worker dies
+    before it loads the gate, so the install line carries it beside the harness."""
     _venv(tmp_path, with_harness=False)
-    assert "pip install" in strands_mod.strands_python_env_issue(str(tmp_path))
+    issue = strands_mod.strands_python_env_issue(str(tmp_path))
+    assert f'-m pip install "{strands_mod.STRANDS_PYTHON_REQUIREMENT}" "botocore[crt]"' in issue
 
 
 def test_a_ready_environment_has_no_issue(tmp_path) -> None:

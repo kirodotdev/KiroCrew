@@ -483,6 +483,19 @@ async def _on_permission_prompt(
             # from the same helper); every other linked thread
             # keeps threading under ``_slack_thread_ts``.
             _approval_thread = code_channel_post_thread(slot._slack_channel, slot._slack_thread_ts)
+            # A Conductor thread's own conductor offers "Trust this thread", as
+            # its workers' cards do; the click's owner gates decide the grant.
+            from kiro_crew.slack.code_channels.thread_runtime import (
+                conductor_thread_of as _conductor_thread_of,
+            )
+
+            try:
+                _thread_trust = (
+                    _approval_thread is not None and _conductor_thread_of(slot) is not None
+                )
+            except Exception:
+                # Never let the offer cost the prompt its delivery.
+                _thread_trust = False
             # Imported here: this body runs on the chat runner module's globals.
             from kiro_crew.slack.turn_requester import turn_requester as _slack_turn_requester
 
@@ -501,7 +514,8 @@ async def _on_permission_prompt(
                 mcp_identity_trusted=event.mcp_identity_trusted,
                 slot_key=slot.key,
                 future=fut,
-                channel_trust=_approval_thread is None,
+                channel_trust=_approval_thread is None or _thread_trust,
+                thread_trust=_thread_trust,
                 # The shared user whose message alone opened this turn may answer
                 # its own call too. A code channel's own session stays the owner's,
                 # and so does a child's call: a background child can outlive the

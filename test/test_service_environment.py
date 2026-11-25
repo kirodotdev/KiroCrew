@@ -15,6 +15,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _clear_sudo_user,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
 )
 
@@ -678,3 +679,25 @@ class TestLaunchdServicePath:
         first = dirs.index(selected)
         assert first < dirs.index("/opt/homebrew/bin") < dirs.index("/usr/local/bin")
         assert first < dirs.index(newer)
+
+
+def test_installer_path_is_split_on_the_host_separator(monkeypatch):
+    """A Windows ``PATH`` splits on ``;``, so ``C:\\ghcup\\bin`` stays one entry.
+
+    A ``:`` split cuts it into ``\\ghcup\\bin;C``, which ``realpath`` reads as
+    a UNC share.
+    """
+    seen: list[str] = []
+
+    def record(entry, home):
+        seen.append(entry)
+        return entry
+
+    monkeypatch.setattr(common, "_persistable_path_entry", record)
+    monkeypatch.setattr(common.os, "pathsep", ";")
+    monkeypatch.setattr(common.sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\ghcup\bin;C:\Windows\system32")
+
+    common.service_path("/home/tester")
+
+    assert seen == [r"C:\ghcup\bin", r"C:\Windows\system32"]

@@ -1203,7 +1203,7 @@ Headers sent with each trace export to `telemetry.traces_otlp_endpoint`.
 
 ### Kiro Managed Environments
 
-Kiro Managed Environments are remote machines that Kiro starts and keeps for you, so Crew can run there. These settings are for using them from Remote Crew, which offers a "Kiro Managed Environments" launch row while the preview is on; the new environment's Crew runs its engine in machine mode (the `agent.kas_*` keys). They are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
+Kiro Managed Environments are remote machines that Kiro starts and keeps for you, so Crew can run there. These settings are for using them from Remote Crew, which offers a "Kiro Managed Environments" launch row while the preview is on. Its form takes a crew name. Before the first launch, **Allow this computer to connect** adds the ssh lines Crew needs to `~/.ssh/config`, and **See the lines it adds** shows them first; the environment's own Remote Crew row then offers **Stop environment**, **Resume environment** and **Delete environment**. Delete asks first and leaves the crew on your list until you remove it. The new environment's Crew runs its engine in machine mode (the `agent.kas_*` keys). These settings are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
 
 | Key | Description | Default |
 |-----|-------------|---------|
@@ -1490,8 +1490,11 @@ Updating by hand never restarts a running gateway, so finish with
 - **Git checkout, `cli.sh` managed venv or pipx:** run `kirocrew update`, then
   `kirocrew restart`. On pipx it re-runs the installer, which replaces the pipx
   install.
-- **Plain `pip`:** upgrade with pip in the same environment, from the channel
-  index you installed from (Kiro Crew is not on PyPI; see
+- **`uv tool`:** run `uv tool upgrade kirocrew`, then `kirocrew restart`. The
+  tool keeps the channel index it was installed with.
+- **Plain `pip`:** in the same environment, install the channel's current wheel
+  by URL with its `#sha256=` (Kiro Crew is not on PyPI, and a pip index lookup
+  can pick an unrelated PyPI project of that name; see
   [Installing a published wheel with pip](../../../docs/guides/install.md#installing-a-published-wheel-with-pip)),
   then `kirocrew restart`. Here `kirocrew update` installs a separate copy
   instead of upgrading that environment.

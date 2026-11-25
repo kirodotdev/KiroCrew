@@ -169,7 +169,7 @@ async def test_owner_generic_destroy_on_the_lane_is_refused_and_deletes_nothing(
 
     assert resp.status == 409, _body(resp)
     assert _body(resp)["code"] == "lane_delete_elsewhere"
-    assert "POST /api/managed-environments/<id>/delete" in _body(resp)["error"]
+    assert "Delete environment on its Remote Crew row" in _body(resp)["error"]
     assert "Nothing was deleted" in _body(resp)["error"]
     assert events == []
     assert connected == {"parent", "child"}
