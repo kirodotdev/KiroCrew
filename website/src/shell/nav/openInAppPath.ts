@@ -4,8 +4,9 @@ import { useAppDispatch, useAppStore } from '../../store'
 import { localCovered, prefillCrewAddForm, setActiveId } from '../../store/instancesSlice'
 import { useCrewDeepLink } from '../../lib/crewDeepLink'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../../lib/remoteCrewAddLink'
-import { resumeFromHistory, switchSlot } from '../../store/chatSlice'
-import { api } from '../../api/client'
+import { setAgentSwitchNotice, switchSlot } from '../../store/chatSlice'
+import { openClosedSession } from '../../lib/openClosedSession'
+import { i18nT } from '../../i18n/t'
 import { sessionKeyFrom } from '../../utils/sessionKeys'
 import { applyNavIntentInMain, chatDeepLinkSlot, isAppDetailPath, isMembersPath } from '../../utils/navIntent'
 import { useIsCurrentUrl, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
@@ -46,16 +47,18 @@ export function useOpenInAppPath(): (path: string) => void {
       if (localCovered(appStore.getState())) dispatch(setActiveId(null))
       // A full key the loaded roster lacks names a closed session, which a slot
       // switch can only report as deleted. Resume it instead, as a closed-session
-      // chip does: probe the one key, resume a transcript still on disk, and hand
-      // a missing one (or a failed probe) to the switch, which says why.
+      // chip does: probe the one key and distinguish a failed lookup from a
+      // confirmed deletion, without asking for a live slot that does not exist.
       const { slots, slotsLoaded } = appStore.getState().dashboard
       const closedKey = slotsLoaded ? sessionKeyFrom(slotKey) : null
       if (closedKey && !slots.some(s => s.key === closedKey)) {
         if (!mayLeave()) return
         navigate('/chat')
-        void api.sessionMeta(closedKey).catch(() => null).then((row) => {
-          if (row) void dispatch(resumeFromHistory({ key: row.key, title: row.title || row.key }))
-          else dispatch(switchSlot({ key: closedKey, announceOnMissing: true }))
+        const showActionError = (message: string) => { dispatch(setAgentSwitchNotice({ message, error: true })) }
+        void openClosedSession({ key: closedKey, title: closedKey }, dispatch, showActionError).then(outcome => {
+          if (outcome === 'failed') {
+            showActionError(i18nT('components.markdownRenderer.closed_session_open_failed', { name: closedKey }))
+          }
         })
         return
       }
