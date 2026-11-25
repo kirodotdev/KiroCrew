@@ -18,7 +18,8 @@ import sys
 
 # -- the launcher program continues below this line --
 def scrub_env(launch):
-    """Drop every credential variable, then mark the environment as sandboxed.
+    """Drop every credential variable and every temp path a seal made unwritable, then mark
+    the environment as sandboxed.
 
     The markers are set AFTER the scrub, so a scrubbed prefix cannot delete them.
     """
@@ -28,6 +29,7 @@ def scrub_env(launch):
             if key.startswith(prefix):
                 del environ[key]
                 break
+    _drop_sealed_temp_env(launch)
     # Mark the sandboxed tree so an in-sandbox wrap_argv knows OS isolation is already
     # active (a nested unshare is seccomp-denied), and record WHICH tier it was built
     # at, so a passthrough can detect a requested-vs-active tier downgrade.
@@ -60,6 +62,125 @@ def scrub_env(launch):
         environ["GRADLE_OPTS"] = (
             environ.get("GRADLE_OPTS", "") + " -Dorg.gradle.daemon=false"
         ).strip()
+
+
+def _fold_crew_home_alias(launch, path):
+    """*path* respelled under the data home's canonical root when it sits under an alias.
+
+    The planner folds every mask, seal and window spelled under a ``crew_home_aliases``
+    root onto the canonical root, so a path checked against them is folded the same way
+    first: the first alias in order wins, and the work is lexical, as the planner's is.
+    """
+    for alias, canonical, _dev, _ino in launch.crew_home_aliases:
+        alias = alias.rstrip("/")
+        if path == alias:
+            return canonical
+        if path.startswith(alias + "/"):
+            return canonical.rstrip("/") + path[len(alias) :]
+    return path
+
+
+def _lexical(path):
+    """*path* normalized as the kernel reads it: no ``.``, ``..``, repeated or trailing ``/``.
+
+    ``normpath`` keeps a leading ``//``, which POSIX leaves to the implementation and Linux
+    reads as ``/``, so that is folded too.
+    """
+    path = os.path.normpath(path)
+    return "/" + path.lstrip("/") if path.startswith("//") else path
+
+
+def _held_in(launch, path, groups, priority, base):
+    """The kind of entry that holds the environment value *path*, by the one spelling rule.
+
+    Every containment check in this launcher on a value it did not plan (a temp or log
+    variable) applies the same rule, so a spelling cannot pass one check and fail another:
+
+    1. An empty value names nothing; the caller skips it.
+    2. A relative value is joined to *base*, the directory the process that uses it will
+       resolve it from: the child's working directory for :func:`_drop_sealed_temp_env`
+       (:func:`_exec_cwd_base`), and the launcher's own for the stand-in pin, as
+       ``tempfile`` itself does. With no *base*, a relative value counts as held by the
+       first kind in *priority*, the safe answer.
+    3. Two spellings are judged. The written one is normalized (:func:`_lexical`: ``.``,
+       ``..``, repeated, trailing and a leading doubled ``/``) and folded through
+       ``crew_home_aliases`` as the planner folded the entries; it is compared with each
+       entry normalized the same way. The resolved one is ``os.path.realpath``, which
+       follows every link that exists when the check runs (a symlinked data home, a link
+       in a window, a parent that is a link) and keeps a missing tail as written; it is
+       compared with each entry resolved the same way. Run before the masks it resolves
+       through the host's tree, after them through this namespace's.
+    4. Each spelling is held by the innermost entry at or above it, a later group in
+       *groups* winning a tie.
+    5. The answer is the first kind in *priority* that either spelling is held by, else
+       ``None``, so a value inside a tree under either spelling counts as inside it.
+
+    *groups* is ``[(kind, entries), ...]`` of planned paths.
+    """
+    if not os.path.isabs(path):
+        if not base:
+            return priority[0]
+        path = os.path.join(base, path)
+    spellings = (
+        (_lexical(_fold_crew_home_alias(launch, _lexical(path))), False),
+        (os.path.realpath(path), True),
+    )
+    reached = set()
+    for spelling, resolved in spellings:
+        best, kind = "", None
+        for group, entries in groups:
+            for entry in entries:
+                entry = os.path.realpath(entry) if resolved else _lexical(entry)
+                inside = spelling == entry or spelling.startswith(entry.rstrip("/") + "/")
+                if inside and len(entry) >= len(best):
+                    best, kind = entry, group
+        reached.add(kind)
+    return next((kind for kind in priority if kind in reached), None)
+
+
+def _exec_cwd_base(launch):
+    """The directory :func:`enter_exec_cwd` will start the child in, read through the masks.
+
+    The plan's ``exec_cwd`` when it names one, else the directory this launcher was
+    started in when it is still a directory, else the filesystem root.
+    """
+    if launch.exec_cwd:
+        return os.path.join(launch.inherited_cwd or os.sep, launch.exec_cwd)
+    if launch.inherited_cwd and os.path.isdir(launch.inherited_cwd):
+        return launch.inherited_cwd
+    return os.sep
+
+
+def _drop_sealed_temp_env(launch):
+    """Drop a temp or log variable that names a sealed mask outside every bound window.
+
+    A mask in ``seal_windowed_masks`` (the scratch root) is read-only except for the
+    private windows bound inside it. ``TMPDIR``, ``TMP``, ``TEMP`` and kiro-cli's
+    ``KIRO_CHAT_LOG_FILE`` are written to without the agent asking, so one that names a
+    path there outside every bound window can only fail with EROFS: a value inherited from
+    an agent shell under a spelling the gateway's own drop keeps
+    (``agent_scratch.drop_inherited_scratch_env`` compares paths as written, so a link, a
+    ``$HOME`` alias of the data home or a relative path passes it), or a window this
+    launcher could not bind. With the
+    variable absent the tool uses its own default (``/tmp``), where a spawn that has no
+    temp of its own already writes. ``KIROCREW_SCRATCH`` is kept: an agent writes there on
+    purpose, and that write should fail at the path it named rather than move elsewhere.
+    Each non-empty value is judged by :func:`_held_in`'s rule, a relative one from the
+    directory the child starts in, and dropped when either of its spellings is under a
+    sealed root and outside every bound window. Nothing is dropped unless a listed mask
+    was placed.
+    """
+    placed = {os.path.normpath(name) for name in launch.masked_names}
+    sealed = [os.path.normpath(r) for r in launch.seal_windowed_masks]
+    sealed = [r for r in sealed if r in placed]
+    if not sealed:
+        return
+    groups = (("sealed", sealed), ("window", list(launch.bound_windows)))
+    base = _exec_cwd_base(launch)
+    for key in ("TMPDIR", "TMP", "TEMP", "KIRO_CHAT_LOG_FILE"):
+        value = launch.environ.get(key, "")
+        if value and _held_in(launch, value, groups, ("sealed",), base) == "sealed":
+            del launch.environ[key]
 
 
 def _git_ssh_identity_opts(launch):
