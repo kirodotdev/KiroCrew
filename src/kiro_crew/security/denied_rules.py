@@ -793,7 +793,9 @@ def is_safe_user_regex(pattern: str) -> bool:
     """
     try:
         re.compile(pattern)
-    except re.error:
+    except (re.error, RecursionError):
+        # A pattern nested past the compiler's depth raises RecursionError, not
+        # re.error: it is as unusable as one that does not parse.
         return False
     scrubbed = pattern
     if pattern in BUILTIN_DENY_PATTERNS:
