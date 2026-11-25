@@ -19,6 +19,7 @@ from test_browser_harness_ops import FakeBrowser, _committing_page
 
 from kiro_crew.browser_harness import ops
 from kiro_crew.browser_harness.nav_guard import GuardUnavailable, NavigationGuard
+from kiro_crew.testing.wait import await_until, finished
 
 _PUBLIC = "https://login.example/authorize?redirect_uri=http://localhost:54321/callback"
 _LOCAL = "http://localhost:54321/callback?code=secret"
@@ -106,7 +107,8 @@ def _goto_with_hops(fake: FakeBrowser, relay: FakeRelay, *urls: str, error: str 
 
 
 def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
+    # Bounded, so a regression that leaves the guard waiting fails by name (D8).
+    return asyncio.run(finished(coro, "the nav guard test"))
 
 
 def test_a_redirect_to_a_refused_address_is_never_sent(fake: FakeBrowser) -> None:
@@ -280,21 +282,24 @@ def test_a_move_that_raises_stops_loading_before_the_guard_goes(fake: FakeBrowse
 
 def test_a_takeover_during_arming_releases_the_interception() -> None:
     class _SlowEnable(FakeRelay):
+        enabling: asyncio.Event
+
         async def send(self, method: str, params: dict[str, Any], sid: str) -> dict[str, Any]:
             if method == "Fetch.enable":
                 self.sent.append((method, params, sid))
+                self.enabling.set()
                 await asyncio.Event().wait()
             return await super().send(method, params, sid)
 
     relay = _SlowEnable()
 
     async def go() -> None:
+        relay.enabling = asyncio.Event()
         task = asyncio.create_task(NavigationGuard(relay, "T-agent", _gate).__aenter__())
-        while "Fetch.enable" not in relay.methods():
-            await asyncio.sleep(0)
+        await await_until(relay.enabling, what="the guard sending Fetch.enable")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await await_until(task, what="the cancelled arming")
 
     _run(go())
     assert "Fetch.disable" in relay.methods()
@@ -313,7 +318,7 @@ def test_a_takeover_while_answers_drain_releases_the_interception() -> None:
         await asyncio.sleep(0)
         exiting.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await exiting
+            await await_until(exiting, what="the cancelled teardown")
 
     _run(go())
     assert "Fetch.disable" in relay.methods()
