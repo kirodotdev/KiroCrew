@@ -30,6 +30,12 @@ land. Until the move, a lookup, a save and a revoke use the root file where it i
 core keeps that root name masked as a retired leaf, because a restored backup can bring
 the file back.
 
+The move ends by writing :data:`MOVED_MARKER` over the root store, and the store in the
+new directory counts only while that marker is there. Every build masks the root name, so
+no agent writes the marker; a sandbox of an earlier build does not mask ``data/``, so it
+could plant a store in the new directory before the first upgraded start, and without the
+marker that file is never read and the move replaces it.
+
 Why not ``config.json``? Because Kiro Crew serves an app's ``data/config.json``
 over ``/api/apps/<name>/config`` **without session auth** — a documented behavior
 apps rely on to bootstrap their UI. A token in there would be readable by anything
@@ -77,6 +83,12 @@ SECRETS_FILENAME = "secrets.json"
 
 #: Where an earlier version kept the store: the data-home root. Read once, to move it.
 LEGACY_SECRETS_FILENAME = "ops_mission_control_secrets.json"
+
+#: What the gateway writes at the root store's name once the store is moved: the handover
+#: marker. The store in the app's data directory is trusted only while the root file holds
+#: exactly these bytes. A JSON object an earlier build reads as no provider at all, and
+#: refuses to save into, so a downgrade cannot split the tokens across two files.
+MOVED_MARKER = '{"moved_to": "apps/ops-mission-control/data/secrets/secrets.json"}\n'
 
 #: Value returned to callers in place of a stored secret. Secrets are write-only
 #: over the API: the UI shows whether a field is set, never what it is.
@@ -228,35 +240,38 @@ class KeystoneFileBackend:
 
     @property
     def _store_path(self) -> Path:
-        """The file this store reads and rewrites now: the store, or the root store until moved.
+        """The file this store reads and rewrites now: the store once moved, else the root store.
+
+        The store in the app's data directory counts only when the root name holds
+        :data:`MOVED_MARKER`, which only the gateway writes. Without it the root path is
+        the answer, whether or not a file is there, so a file planted in the new directory
+        is never read or merged into.
 
         Nothing here moves the store. A lookup runs on the gateway's event loop (the
         provider catalog reads it synchronously), and the move takes two file locks and
         two fsyncs, so the gateway moves it at startup (:func:`migrate_legacy_store`) and a
         save or revoke tries first, off the loop. While the move is held back (see
-        :meth:`_migrate_legacy`) a save or revoke rewrites the root file in place, so a
-        token saved then is never hidden behind a new store that lacks the old ones.
+        :meth:`_migrate_legacy`) a save or revoke rewrites the root file in place.
         """
-        path = self._path
-        if self._pinned_path is not None or os.path.lexists(path):
-            return path
-        legacy = legacy_secrets_path()
-        return legacy if os.path.lexists(legacy) else path
+        if self._pinned_path is not None or _root_is_marker():
+            return self._path
+        return legacy_secrets_path()
 
     def _store_text(self) -> str:
         """The text of the store a lookup reads; raises ``FileNotFoundError`` when none exists.
 
-        A lookup takes no lock, so a move can remove the root file between choosing it and
-        opening it. The store it moved into holds the same tokens, so the read goes there
-        instead of reporting every provider as unconfigured.
+        The root file is read ONCE and decides: the marker sends the read to the moved
+        store, anything else is the store. A move that lands between two reads therefore
+        cannot make a lookup see the marker as an empty store.
         """
-        path = self._store_path
-        try:
-            return path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            if path == self._path:
-                raise
+        if self._pinned_path is not None:
             return self._path.read_text(encoding="utf-8")
+        text = legacy_secrets_path().read_text(encoding="utf-8")
+        # A marker reached through a link or a second name hands over nothing: its text
+        # is then read as the store, which holds no provider.
+        if text != MOVED_MARKER or not _root_is_marker():
+            return text
+        return self._path.read_text(encoding="utf-8")
 
     def _migrate_legacy(self) -> None:
         """Move an earlier version's root store to :func:`secrets_path`, once, when safe.
@@ -264,11 +279,13 @@ class KeystoneFileBackend:
         Only for the default location: a pinned path has no earlier layout. Runs under
         this store's lock and then the old store's own lock, so neither a concurrent save
         nor a second migrator interleaves. The bytes are copied verbatim, so a store this
-        version cannot parse is moved as it is rather than dropped. The old file is
-        removed only after the new one is written, fsynced and its directory synced, so
-        a crash at any point leaves at least one complete copy. A store already at the
-        new path wins: an old file beside it (a restored backup) is left where it is,
-        masked by its retired name.
+        version cannot parse is moved as it is rather than dropped. Whatever is at the new
+        path is written over, never trusted: until :data:`MOVED_MARKER` is at the root, a
+        file there may have been planted by a sandbox of an earlier build, which does not
+        mask ``data/``. The marker replaces the old store only after the new one is
+        written, fsynced and every directory down to it synced, so a crash at any point
+        leaves the old store in charge. A root store that comes back later (a restored
+        backup) replaces the marker, so it is the store again and the next move copies it.
 
         Held back, without an error, while a sandbox started by an earlier build may still
         run (:func:`_older_sandboxes`): its masks cover the root name and not the new
@@ -283,13 +300,13 @@ class KeystoneFileBackend:
             return
         path = secrets_path()
         legacy = legacy_secrets_path()
-        if os.path.lexists(path) or not os.path.lexists(legacy):
+        if not os.path.lexists(legacy) or _root_is_marker():
             return
         if _earlier_sandbox_may_run():
             return
         _refuse_linked_store()
         with _SecretLock(path), _SecretLock(legacy):
-            if os.path.lexists(path):
+            if _root_is_marker():
                 return
             try:
                 info = os.lstat(legacy)
@@ -321,7 +338,10 @@ class KeystoneFileBackend:
                 if directory == home or directory.parent == directory:
                     break
                 directory = directory.parent
-            legacy.unlink(missing_ok=True)
+            # The handover: from here the moved store counts. The marker holds no secret,
+            # so it stages beside the root name like any file.
+            atomic_write(legacy, MOVED_MARKER, fsync=True, restrict_to_owner=True)
+            fsync_dir(home)
 
     @staticmethod
     def _coerce(raw: Any, *, strict: bool = False) -> dict[str, dict[str, str]]:
@@ -454,7 +474,12 @@ class KeystoneFileBackend:
         log actually renders.
         """
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            # The marker at the root is no store: a first save the move holds back writes
+            # its own over it.
+            if text == MOVED_MARKER and path == legacy_secrets_path():
+                return {}
+            raw = json.loads(text)
         except FileNotFoundError:
             return {}
         except json.JSONDecodeError as exc:
@@ -486,10 +511,10 @@ class KeystoneFileBackend:
         """Where a write goes while a sandbox of an earlier build may read the new directory.
 
         *path* is where the write would land. Anything but the new directory is returned as
-        it is. In the new directory: with no store yet the first one goes to the root and
-        the next startup or save moves it; with a store already there (planted by that
-        sandbox, or left by a downgrade and upgrade) the write is refused, so no token is
-        published where that sandbox can read it.
+        it is. The new directory is the answer only once the marker is at the root. With no
+        store there then (removed by hand) the first one goes to the root, over the marker,
+        and the next startup or save moves it; with the moved store there the write is
+        refused, so no token is published where that sandbox can read it.
         """
         if self._pinned_path is not None or path != self._path:
             return path
@@ -565,62 +590,18 @@ class KeystoneFileBackend:
         # the operator there was nothing to revoke while the live token was still on
         # disk and still working. A raise is the honest answer.
         #
-        # A root copy that stays beside a moved store (a move whose unlink failed, a restored
-        # backup) is a copy of the same tokens, and a downgrade or a removed new store reads
-        # it again, so a revoke removes the provider from it first, and refuses to report
-        # success when that update fails.
+        #
+        # Only one file is ever the store: the root file, or the moved one while the root
+        # holds the marker. So there is no second copy for a revoke to chase.
         self._migrate_legacy()
         with self._lock():
             path = self._store_path
             data = self._read_for_update(path)
-            removed = provider_id in data
-            target = self._refuse_write_while_earlier_sandbox_reads(path) if removed else path
-            # The root copy first: a fault there then leaves the credential visible in the
-            # active store, so the operator still sees it set and can retry the revoke.
-            if self._pinned_path is None and path != legacy_secrets_path():
-                removed = self._delete_from_root_copy(provider_id) or removed
-            if provider_id in data:
-                del data[provider_id]
-                self._write(target, data)
-        return removed
-
-    def _delete_from_root_copy(self, provider_id: str) -> bool:
-        """Remove *provider_id* from the old root store beside a moved one, if it is there.
-
-        Under the old store's own lock, after this store's (the order the move takes them).
-        What is there is left alone only when it is demonstrably no store: not a regular
-        file, not JSON, or not a JSON object, so no lookup can take a credential from it (the
-        data-home root is writable from a sandbox, and a planted name must not make every
-        revoke fail). A JSON object that holds the provider is rewritten without it, every
-        other entry kept as it was. A failure to take the lock, read the file or rewrite it
-        raises, so a revoke never reports success while a copy a lookup can read may still
-        hold the credential.
-        """
-        legacy = legacy_secrets_path()
-        if not os.path.lexists(legacy):
-            return False
-        with _SecretLock(legacy):
-            if not legacy.is_file():
-                data: Any = None
-            else:
-                try:
-                    # The raw object, not the strict reading: a lookup reads this copy
-                    # leniently, so a provider entry it can use is removed even when
-                    # another entry would not survive a strict cycle.
-                    data = json.loads(legacy.read_text(encoding="utf-8"))
-                except ValueError:
-                    data = None
-            if not isinstance(data, dict):
-                # A fixed literal: no content.
-                logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                    "ops-mission-control: leaving the file at the retired secret store name "
-                    "alone: it is not a store"
-                )
-                return False
             if provider_id not in data:
                 return False
+            target = self._refuse_write_while_earlier_sandbox_reads(path)
             del data[provider_id]
-            self._write(legacy, data)
+            self._write(target, data)
         return True
 
     def configured_fields(self, provider_id: str) -> frozenset[str]:
@@ -629,6 +610,23 @@ class KeystoneFileBackend:
 
 
 _backend: SecretBackend = KeystoneFileBackend()
+
+
+def _root_is_marker() -> bool:
+    """Whether the root store's name holds the gateway's :data:`MOVED_MARKER`.
+
+    Only a regular file with one name counts: :func:`atomic_write` publishes the marker as a
+    fresh inode, so a link or a second name was made by someone else. Cheap enough for a
+    lookup on the event loop: one ``lstat`` and a read of a few dozen bytes.
+    """
+    legacy = legacy_secrets_path()
+    try:
+        info = os.lstat(legacy)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return False
+        return legacy.read_text(encoding="utf-8") == MOVED_MARKER
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _refuse_linked_store() -> None:

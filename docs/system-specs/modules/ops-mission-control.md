@@ -765,28 +765,34 @@ An install that kept the store at the data-home root,
 `<crew_home>/ops_mission_control_secrets.json`, has it moved at gateway startup (an
 `on_startup` hook `register_routes` adds runs `migrate_legacy_store` in a worker thread)
 and by the first save or revoke (`KeystoneFileBackend._migrate_legacy`): under the store's
-lock and the old store's lock, copied byte for byte, written and fsynced with its
-directory synced, and only then is the old file removed. A lookup never moves it, because
-the provider catalog reads the store on the event loop. The move is held back, without an
-error, while a sandbox started by an earlier build still runs
-(`older_sandboxes.sandboxes_masking_only`): that sandbox masks the root name and not the
-new directory, so it would read the tokens there. Until it ends, a lookup, a save and a
-revoke use the root file where it is, and a first save with no store yet creates the
-store at the root; each startup and save retries the move. A root store that is a symlink or has a second name (a hard-linked backup) is not moved,
-so the sandbox's multi-link check keeps reading its name. A store already
-at the new path wins and an old file beside it is left alone. A save refuses when the
-move fails, so it never starts a new store that hides the old one's tokens. A revoke also
-removes the provider from a root copy that stays beside a moved store (an unlink that
-failed, a restored backup) and refuses to report success when a copy that reads as a store
-cannot be rewritten, because a downgrade reads that copy again; a file at that name that
-is not a readable store (the data-home root is writable from a sandbox) is left alone. A
-save, or a revoke that would rewrite the store, is refused while a sandbox of an earlier
-build may read the new directory and a store already exists there, and every access is
-refused when a link sits at the store or in its directory chain (such a sandbox does not
-mask `data/`, so it could plant one). Each directory from the data home down to `secrets/`
-is synced before the root copy is removed, so a newly created one is durable too. A
-lookup that loses a race with the move reads the moved store. The root name stays masked,
-hard-link refused and fenced as a retired leaf.
+lock and the old store's lock, copied byte for byte over whatever is at the new path,
+written and fsynced, every directory from the data home down to `secrets/` synced, and
+only then is the root file replaced by the handover marker (`secrets.MOVED_MARKER`).
+
+**The marker decides which file is the store.** The store in `secrets/` counts only while
+the root name holds exactly the marker, as a regular file with one name. Every build masks
+the root name, so only the gateway writes it. A sandbox of an earlier build does not mask
+`data/`, so it can plant `secrets/secrets.json` before the first upgraded start; with no
+marker that file is never read (a webhook signature check, a provider poll) or merged into,
+and the move writes the root store over it. A root store that comes back later (a restored
+backup) replaces the marker, so it is the store again and the next move copies it. An
+earlier build reads the marker as a store with no provider and refuses to save into it, so
+a downgrade cannot split the tokens across two files.
+
+A lookup never moves the store, because the provider catalog reads it on the event loop;
+it reads the root file once and follows the marker, so a move between two reads cannot
+show it an empty store. The move is held back, without an error, while a sandbox started
+by an earlier build still runs (`older_sandboxes.sandboxes_masking_only`): that sandbox
+masks the root name and not the new directory, so it would read the tokens there. Until it
+ends, a lookup, a save and a revoke use the root file where it is, and a first save with no
+store yet creates the store at the root; each startup and save retries the move. A root
+store that is a symlink or has a second name (a hard-linked backup) is not moved, so the
+sandbox's multi-link check keeps reading its name. A save refuses when the move fails, so it
+never starts a new store that hides the old one's tokens. A save, or a revoke that would
+rewrite the store, is refused while a sandbox of an earlier build may read the new directory
+and the moved store exists there, and every access is refused when a link sits at the store
+or in its directory chain (such a sandbox does not mask `data/`, so it could plant one). The
+root name stays masked, hard-link refused and fenced as a retired leaf.
 
 Do NOT move these tokens into `config.json` or the app's `data/config.json`: the
 latter is served over `/api/apps/<name>/config` **without session auth**, and the
