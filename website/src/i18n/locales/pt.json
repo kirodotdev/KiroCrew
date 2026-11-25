@@ -20660,6 +20660,9 @@
         "agent_model_pin_overrides_default": "O agente <agent/> fixa o próprio modelo <model/>. Só os chats que rodam como este agente e sem a própria escolha de modelo usam esse modelo fixado. O botão “Novo chat” não. Depois você pode fixar um modelo de novo no seletor de modelo do chat.",
         "agent_template_pin_overrides_default": "Novos chats no agente <agent/> usam <model/>, que vem do template do agente ou do padrão do backend, não desta configuração. Este agente não fixa um modelo por si só, então não há nada para remover aqui. Para escolher um, abra o seletor de modelo do chat e fixe um modelo neste agente.",
         "discovery": "Descoberta",
+        "default_approval_mode": "Modo de aprovação de novos chats",
+        "default_approval_mode_reads": "Leituras executa sem perguntar comandos e buscas somente leitura. Normal pergunta antes.",
+        "default_approval_mode_hint": "Vale para os chats que você inicia no painel. Crewmates, canais, agendamentos e agentes mantêm as próprias configurações.",
         "new_chat_crew_mode": "Iniciar novos chats no Conductor mode",
         "new_chat_crew_mode_description": "No Conductor mode, cada tarefa roda em um chat próprio e informa no Quadro do chat novo. Você pode desativá-lo em qualquer chat novo antes da primeira mensagem.",
         "new_chat_crew_mode_hint": "Não vale para chats Anônimo ou Temporário, nem para chats em outro agente.",
@@ -24847,7 +24850,8 @@
       "session_gone_open_failed_named": "“{{name}}” foi excluída e não pode ser aberta.",
       "truncated_chars": "…({{count}} caracteres truncados — reabra a sessão para ver a saída completa)",
       "truncated": "…(truncado)",
-      "session_folder_unavailable": "Este chat não conseguiu obter sua própria pasta, então foi aberto na sua pasta de projeto padrão. Verifique Novas pastas de sessão nas configurações."
+      "session_folder_unavailable": "Este chat não conseguiu obter sua própria pasta, então foi aberto na sua pasta de projeto padrão. Verifique Novas pastas de sessão nas configurações.",
+      "default_mode_refused": "A política da sua organização mantém novos chats em Normal, que pergunta antes de cada ferramenta, então este não começou em Leituras."
     }
   },
   "utils": {

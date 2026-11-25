@@ -51,6 +51,8 @@ export const SENSITIVE_TABS: ReadonlySet<string> = new Set(['security', 'secrets
 export const SENSITIVE_IDS: ReadonlySet<string> = new Set([
   'developer.chat-on-a-crew',
   'skills.require-approval-before-generated-skills-go-live',
+  // Reads by default: every plain New chat auto-approves read-only tools.
+  'chat.approval-mode-for-new-chats',
 ])
 const CREDENTIAL_RE = /token|secret|password|api-key|credential|client-id/i
 

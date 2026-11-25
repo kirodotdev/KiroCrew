@@ -76,8 +76,8 @@ READONLY_REASONS: dict[str, str] = {
     "skills.generate_scripts": WHY_SAFETY,
     "skills.approval_required": WHY_SAFETY,
     "dashboard.terminal.shell": WHY_SAFETY,
-    # Reads, a new chat runs read-only commands without asking; `PUT
-    # /api/dashboard/config` writes it with its own enum check.
+    # Reads, a new chat runs read-only commands without asking. Its own Settings row
+    # links here; kept read-only too so a missing registry cannot make it a generic write.
     "dashboard.default_approval_mode": WHY_SAFETY,
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.

@@ -427,6 +427,8 @@ export interface DashboardConfig {
   restore_window_minutes: number
   merge_queued_messages: boolean
   default_memory_mode: MemoryMode
+  /** The approval mode the owner's plain New chat opens on (`dashboard.default_approval_mode`). */
+  default_approval_mode?: 'normal' | 'trust_reads'
   /** New chats start in conductor mode where it is offered (`dashboard.new_chat_crew_mode`). */
   new_chat_crew_mode?: boolean
   widget_density: 'more' | 'less'

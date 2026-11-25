@@ -6571,7 +6571,7 @@
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
       "yolo_expiration_until_shutdown": "Reste activé jusqu'à ce que tu arrêtes {{productName}} — pas d'expiration programmée. Un redémarrage le conserve.",
       "yolo_label": "YOLO",
-      "mode_disabled_by_policy": "Désactivé par la politique de sécurité de votre organisation",
+      "mode_disabled_by_policy": "Désactivé par la politique de sécurité de ton organisation",
       "yolo_mode_is_an_app_wide_setting": "Le mode YOLO est un paramètre global de l’application"
     },
     "appstore": {
@@ -20660,6 +20660,9 @@
         "agent_model_pin_overrides_default": "L’agent <agent/> épingle son propre modèle <model/>. Seuls les chats qui s’exécutent en tant que cet agent et sans leur propre choix de modèle utilisent ce modèle épinglé. Le bouton « Nouveau chat » non. Tu pourras réépingler un modèle plus tard depuis le sélecteur de modèle du chat.",
         "agent_template_pin_overrides_default": "Les nouveaux chats sur l’agent <agent/> utilisent <model/>, qui vient de son modèle d’agent ou de la valeur par défaut du backend, pas de ce réglage. Cet agent n’épingle pas de modèle lui-même, il n’y a donc rien à retirer ici. Pour en choisir un, ouvre le sélecteur de modèle du chat et épingle un modèle à cet agent.",
         "discovery": "Découverte",
+        "default_approval_mode": "Mode d’approbation des nouvelles discussions",
+        "default_approval_mode_reads": "Lectures exécute sans demander les commandes et recherches en lecture seule. Normal demande d’abord.",
+        "default_approval_mode_hint": "S’applique aux discussions que tu démarres depuis le tableau de bord. Les crewmates, canaux, planifications et agents gardent leurs propres réglages.",
         "new_chat_crew_mode": "Démarrer les nouvelles discussions en Conductor mode",
         "new_chat_crew_mode_description": "Avec Conductor mode, chaque tâche tourne dans sa propre discussion et rend compte sur le Tableau de la nouvelle discussion. Tu peux le désactiver dans n'importe quelle nouvelle discussion avant le premier message.",
         "new_chat_crew_mode_hint": "Ne s'applique pas aux discussions Incognito ou Temporaire, ni aux discussions sur un autre agent.",
@@ -24847,7 +24850,8 @@
       "session_gone_open_failed_named": "« {{name}} » a été supprimée et ne peut pas être ouverte.",
       "truncated_chars": "…({{count}} caractères tronqués — rouvre la session pour voir la sortie complète)",
       "truncated": "…(tronqué)",
-      "session_folder_unavailable": "Ce chat n’a pas pu obtenir son propre dossier ; il s’est donc ouvert dans ton dossier de projet par défaut. Vérifie Nouveaux dossiers de session dans les paramètres."
+      "session_folder_unavailable": "Ce chat n’a pas pu obtenir son propre dossier ; il s’est donc ouvert dans ton dossier de projet par défaut. Vérifie Nouveaux dossiers de session dans les paramètres.",
+      "default_mode_refused": "La politique de ton organisation garde les nouvelles discussions en Normal, qui demande avant chaque outil, donc celle-ci n’a pas démarré en Lectures."
     }
   },
   "utils": {

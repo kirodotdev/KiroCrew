@@ -28,6 +28,7 @@ import { i18nT } from '../../i18n/t'
 import { modelSupportsEffort } from '../../lib/effort'
 import { useAgents } from '../../hooks/useAgents'
 import { SESSION_FOLDER_UNAVAILABLE_EVENT } from '../../lib/sessionFolderNotice'
+import { DEFAULT_MODE_REFUSED_EVENT } from '../../lib/defaultModeNotice'
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 
@@ -135,6 +136,13 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     const onFolderUnavailable = () => dispatch(setAgentSwitchNotice({ message: i18nT('store.chatSlice.session_folder_unavailable'), error: true }))
     window.addEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
     return () => window.removeEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
+  }, [dispatch])
+  // The owner's stored Reads start mode did not apply to a new chat: the policy
+  // keeps it on Normal (lib/defaultModeNotice). Nothing failed, so it is status.
+  useEffect(() => {
+    const onDefaultModeRefused = () => dispatch(setAgentSwitchNotice({ message: i18nT('store.chatSlice.default_mode_refused') }))
+    window.addEventListener(DEFAULT_MODE_REFUSED_EVENT, onDefaultModeRefused)
+    return () => window.removeEventListener(DEFAULT_MODE_REFUSED_EVENT, onDefaultModeRefused)
   }, [dispatch])
   const switchActiveSlotAgent = useCallback(async (slot: string, agent: string) => {
     dispatch(setAgentSwitchNotice(null))
