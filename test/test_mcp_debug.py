@@ -667,6 +667,39 @@ class TestTheRouteAuthorizationMatrix:
         assert _parse_window("nonsense") is None
         assert isinstance(_parse_window("15m"), float)
 
+    @pytest.mark.parametrize(
+        "since",
+        [chr(0x00B2) + "h", chr(0x2460) + "m", "1" * 400 + chr(0x00B2) + "h"],
+        ids=["superscript", "circled", "long-superscript"],
+    )
+    def test_a_window_float_cannot_read_is_no_window_not_a_crash(self, since: str) -> None:
+        """``str.isdigit`` passes a superscript or a circled digit that ``float`` refuses.
+
+        The unreadable value must read as no window, like ``banana``, not raise out of the
+        route body as a 500.
+        """
+        from kiro_crew.dashboard.handlers.debug import _parse_window
+
+        assert _parse_window(since) is None
+
+    def test_the_readable_windows_keep_their_meaning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pins main's reading of the windows that already worked, ASCII or not."""
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import debug as mod
+
+        monkeypatch.setattr(mod, "time", SimpleNamespace(time=lambda: 1_000_000.0))
+        expected = {
+            "30s": 999_970.0,
+            "30m": 998_200.0,
+            "1.5h": 994_600.0,
+            "2d": 827_200.0,
+            chr(0x0663) + "h": 989_200.0,
+        }
+        for since, timestamp in expected.items():
+            assert mod._parse_window(since) == timestamp
+        assert mod._parse_window("2026-11-23T00:00:00Z") == 1795392000.0
+
     def test_the_daemon_block_reports_a_revision_mismatch(self, monkeypatch) -> None:
         """The reason this tool exists: a daemon that outlived a code change keeps
         serving backends built from the old checkout, and the symptom appears far from
