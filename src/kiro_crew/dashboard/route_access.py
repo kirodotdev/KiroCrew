@@ -89,6 +89,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/chat/slots/{slot}/history/around"): RouteAccess(
         "chat.history_around.read", UNSTABLE
     ),
+    ("GET", "/api/chat/slots/{slot}/history/counts"): RouteAccess(
+        "chat.history_counts.read", UNSTABLE
+    ),
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
     ("GET", "/v1/crew/owner/grants"): RouteAccess("crew_api.grants.list", PREVIEW),
