@@ -277,6 +277,21 @@ def test_a_credential_in_a_file_name_or_widget_title_is_redacted():
         assert token not in json.dumps(_search(log, kind=kind)["hits"])
 
 
+def test_the_query_matches_the_redacted_text_the_results_show():
+    token = SAMPLE_SLACK_BOT_TOKEN
+    part = token[8:24]
+    log = _PagedRows(
+        [
+            _row(0, f"the plum bot uses {token}"),
+            _row(1, f'<mcwidget title="plum {token}">x</mcwidget>', role="assistant"),
+            _file_row(2, f"plum {token}.txt", f"/out/plum {token}.txt", "text/plain"),
+        ]
+    )
+
+    assert _search(log, query=shs.message_query(part))["hits"] == []
+    assert [h["index"] for h in _search(log, query=shs.message_query("plum"))["hits"]] == [2, 1, 0]
+
+
 @pytest.fixture(params=["posix", "nt"])
 def destination_platform(request, monkeypatch):
     from pathlib import PurePosixPath, PureWindowsPath

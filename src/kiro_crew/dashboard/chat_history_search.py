@@ -400,9 +400,10 @@ def _read_row(
         name = record["filename"].strip()
         attached = path if isinstance(path, str) and path.strip() else name
         row = _Row("file", [attached], "", record)
-        # A sent file's card names it: the name is its text and its excerpt.
-        row.match = name
+        # A sent file's card names it: the name is its text and its excerpt,
+        # matched as the redacted form the result shows.
         row.shown = redact(name)
+        row.match = row.shown
         row.images = row_images({"role": "file"}, row.files)
         row.videos = row_videos(msg, row.files)
     else:
@@ -415,7 +416,6 @@ def _read_row(
         prose = readable_text(_without_widgets(content, widgets) if widgets else content)
         row = _Row(role, row_files(msg), prose, None)
         row.widgets = [w.title for w in widgets]
-        row.match = "\n".join([prose, *row.widgets]) if widgets else prose
         row.images = row_images(msg, row.files)
         row.links = row_links(prose)
         row.videos = row_videos(msg, row.files)
@@ -426,9 +426,13 @@ def _read_row(
                 for label, slug in artifact_links(prose)
                 if artifact_kind(slug) == "html"
             )
-        # Redacted FIRST: shortening a URL drops the scheme a credential
-        # pattern keys on.
-        row.shown = snippet_text(redact(prose)) if prose.strip() else redact(", ".join(row.widgets))
+        # The query matches the redacted text the result shows. Redacted FIRST:
+        # shortening a URL drops the scheme a credential pattern keys on.
+        shown_prose = redact(prose)
+        row.match = (
+            "\n".join([shown_prose, *(redact(t) for t in row.widgets)]) if widgets else shown_prose
+        )
+        row.shown = snippet_text(shown_prose) if prose.strip() else redact(", ".join(row.widgets))
     row.kinds = {
         k
         for k, has in (
@@ -449,7 +453,7 @@ def _read_row(
 def _row_matches(row: _Row, query: Any) -> bool:
     """Whether *row* survives the text query, or, with none, has anything to show."""
     if query is not None:
-        # The query matches what the message says, URLs whole.
+        # The query matches what the message says, redacted, URLs whole.
         return history_search.needles_match_text(
             query.needles, row.match.casefold(), query.adjacency_floor
         )
