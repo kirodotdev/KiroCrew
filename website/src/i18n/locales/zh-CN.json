@@ -15152,6 +15152,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）",
       "folders_load_failed": "无法加载文件夹",
       "columns_load_failed": "无法加载看板列",
+      "loading_board": "正在加载看板…",
       "folder_update_failed": "文件夹更新失败",
       "sort_update_failed": "排序更新失败",
       "sort_update_failed_detail": "“{{sort}}”未保存，列表已恢复为“{{restored}}”。再次选择即可重试。",

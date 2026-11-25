@@ -428,6 +428,8 @@ export interface SidebarScope {
   // From `useBoardColumns`
   rawColumns: ReturnType<typeof useBoardColumns>['rawColumns']
   columnsFailed: ReturnType<typeof useBoardColumns>['columnsFailed']
+  columnsReady: ReturnType<typeof useBoardColumns>['columnsReady']
+  boardColumnsLoading: ReturnType<typeof useBoardColumns>['boardColumnsLoading']
   columnsError: ReturnType<typeof useBoardColumns>['columnsError']
   refetchColumns: ReturnType<typeof useBoardColumns>['refetchColumns']
   tagColumnsEnabled: ReturnType<typeof useBoardColumns>['tagColumnsEnabled']

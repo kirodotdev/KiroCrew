@@ -195,7 +195,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    closeRefused, columnsError, columnsFailed, columnsReady, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
@@ -1269,6 +1269,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
               <Btn
                 type="button"
                 className="text-[12px] px-2 py-0.5"
+                disabled={!columnsReady}
                 onClick={() => { setSeedError(''); seedStateLanesMutation.mutate() }}
               >
                 {i18nT('pages.chatSidebar.lane_seed_retry')}

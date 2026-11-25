@@ -4,6 +4,7 @@
  *  or on a crew), then, on a team Crew, the identity row (`SidebarIdentityRow`). */
 import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronsDownUp, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { LIST_HEADER_CLS, LIST_TITLE_CLS } from '../../components/listShell'
@@ -38,7 +39,7 @@ function AppSessionCreateRows({ connected, disabled, onPick }: { connected: bool
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
-  const { boardLaneActive, cleanupOpen, collapseAllFolders, collapsible, connected, createAppSessionMutation, createChatInFolder, createChatMutation, createEphemeralChatMutation,
+  const { boardColumnsLoading, boardLaneActive, cleanupOpen, columnsError, columnsReady, collapseAllFolders, collapsible, connected, createAppSessionMutation, createChatInFolder, createChatMutation, createEphemeralChatMutation,
     createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderModeCompare, folderRowsDrawn, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
@@ -52,6 +53,14 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
   // button to icon-only; below ~200px also drop the "Sessions" label.
   const compactHeader = paintedSidebarWidth < 256
   const tinyHeader = paintedSidebarWidth < 200
+  // A board user is still in board view while the columns load, so the toggle
+  // offers the way out. Turning the board ON reads the columns to decide whether
+  // to seed lanes, so it waits until they have loaded.
+  const boardOn = tagColumnsEnabled && (rawColumns.length > 0 || boardColumnsLoading)
+  const boardToggleBlocked = seedStateLanesMutation.isPending || (!boardOn && !columnsReady)
+  // A reader refused the columns can never turn the board on, so the toggle is
+  // hidden rather than left disabled with no reason.
+  const boardToggleShown = boardOn || !isPermissionRefusal(columnsError)
 
   return (
     <>
@@ -69,10 +78,9 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <Monitor size={14} className="text-muted" />
                 {i18nT('commandCenter.all_title')}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={seedStateLanesMutation.isPending} onClick={() => {
-                if (seedStateLanesMutation.isPending) return
-                const isActive = tagColumnsEnabled && rawColumns.length > 0
-                const next = !isActive
+              {boardToggleShown && <DropdownMenuItem disabled={boardToggleBlocked} onClick={() => {
+                if (boardToggleBlocked) return
+                const next = !boardOn
                 const cfg = loadChatConfig()
                 // The toggle persists `tagColumnsEnabled` through saveChatConfig,
                 // which returns false and rolls back when the write (or its dirty
@@ -101,9 +109,9 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                   seedStateLanesMutation.mutate()
                 }
               }} {...uiLocation('sessions.list-menu.view')}>
-                <Columns3 size={14} className={tagColumnsEnabled && rawColumns.length > 0 ? 'text-accent' : 'text-muted'} />
-                {tagColumnsEnabled && rawColumns.length > 0 ? i18nT('pages.chatSidebar.switch_to_list_view') : i18nT('pages.chatSidebar.switch_to_board_view')}
-              </DropdownMenuItem>
+                <Columns3 size={14} className={boardOn ? 'text-accent' : 'text-muted'} />
+                {boardOn ? i18nT('pages.chatSidebar.switch_to_list_view') : i18nT('pages.chatSidebar.switch_to_board_view')}
+              </DropdownMenuItem>}
               {tagColumnsEnabled && rawColumns.length > 0 && missingLanes.length > 0 && (
                 <DropdownMenuItem
                   data-testid="add-state-lanes"

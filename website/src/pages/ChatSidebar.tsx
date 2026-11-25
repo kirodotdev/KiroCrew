@@ -424,7 +424,7 @@ function ChatSidebarBody({
   })
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
+    columnsReady, boardColumnsLoading, hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
@@ -448,7 +448,7 @@ function ChatSidebarBody({
   const {
     updateColumnMutation, deleteColumnMutation, reorderColumnsMutation, addColumnAfterMutation,
     dropSlotMutation, missingLanes, seedStateLanesMutation,
-  } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, paintedWidthRef, widenForBoard, setSeedError })
+  } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, columnsReady, paintedWidthRef, widenForBoard, setSeedError })
   // Read over every row, crew members included: a worker the person's list leaves
   // out still decides whether its conductor's crew is moving.
   // Re-read at each item's stale moment, so the lanes move on a quiet board too.
@@ -819,7 +819,7 @@ function ChatSidebarBody({
 
   const {
     revealFlash,
-  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders: allFolders, drawnFolders: folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
+  } = useSidebarReveal({ sidebarRootRef, rowsWithheld: boardColumnsLoading, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders: allFolders, drawnFolders: folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
   const renameCommit = useCallback((id: string, name: string): boolean => {
     // Re-checked here, not only where the editor opens: the gateway can drop
     // while an editor is open. Keep the editor and its draft, and say why,
@@ -1044,11 +1044,11 @@ function ChatSidebarBody({
   // factories run once per render, so the row stamps belong to this pass.
   const scope: SidebarScope = { searchHeader, searchLaneActive, activeDrag, activeFilters, activeModelKeys, activeModelRows, dragOpenSlot,
     activeTagIds, activeTagNames, addColumnAfterMutation, allHiddenFolders, armHold, attachStripEdges,
-    autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
+    autoTitleError, availableLanes, boardColumnsLoading, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
     closeRefused, collapseAllFolders, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
-    columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount, creatorFilter,
+    columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, columnsReady, commitRecentAmount, creatorFilter,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createAppSessionMutation, createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
@@ -1203,7 +1203,9 @@ function ChatSidebarBody({
         {searchSent && slotSearchFailed && <SearchFailedNotice />}
       </>}>
       <LayoutGroup id="chat-slots">
-        {conductorLaneActive ? (
+        {boardColumnsLoading && !searchActive ? (
+          board.renderColumnsLoading()
+        ) : conductorLaneActive ? (
           <SidebarSearchContext.Provider value={searchView}>{lanes.renderConductorLane()}</SidebarSearchContext.Provider>
         ) : flatLaneActive ? (
           <SidebarSearchContext.Provider value={searchView}>{lanes.renderFlatLane()}</SidebarSearchContext.Provider>

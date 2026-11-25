@@ -3,7 +3,8 @@
  *  own folder rows, reorderable per column) and the unfile strip. */
 import { Fragment } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
-import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server } from 'lucide-react'
+import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server, Loader2 } from 'lucide-react'
+import { LIST_BODY_CLS } from '../../components/listShell'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -805,5 +806,15 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           </div>
           </div>
   )
-  return { renderBoardLane }
+  /** The body while a board user's columns are still loading: their lanes are
+   *  not known yet, and the list in their place would be the wrong view. */
+  const renderColumnsLoading = (): React.ReactNode => (
+    <div className={`${LIST_BODY_CLS} flex items-start justify-center`} data-testid="board-columns-loading">
+      <div role="status" className="flex items-center gap-2 px-3 py-4 text-[12px] text-muted">
+        <Loader2 size={14} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        {i18nT('pages.chatSidebar.loading_board')}
+      </div>
+    </div>
+  )
+  return { renderBoardLane, renderColumnsLoading }
 }

@@ -7523,6 +7523,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)",
       "folders_load_failed": "Could not load folders",
       "columns_load_failed": "Could not load board columns",
+      "loading_board": "Loading board…",
       "folder_update_failed": "Folder update failed",
       "sort_update_failed": "Sort update failed",
       "sort_update_failed_detail": "“{{sort}}” wasn’t saved, so the list is back on “{{restored}}”. Pick it again to retry.",

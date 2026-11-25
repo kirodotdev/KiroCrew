@@ -15950,6 +15950,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)",
       "folders_load_failed": "No se pudieron cargar las carpetas",
       "columns_load_failed": "No se pudieron cargar las columnas del tablero",
+      "loading_board": "Cargando el tablero…",
       "folder_update_failed": "Fallo al actualizar la carpeta",
       "sort_update_failed": "Fallo al actualizar el orden",
       "sort_update_failed_detail": "No se guardó «{{sort}}», así que la lista vuelve a «{{restored}}». Elígelo otra vez para intentarlo de nuevo.",
