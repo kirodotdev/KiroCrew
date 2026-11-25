@@ -11,6 +11,7 @@ patch; this module never imports it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from enum import Enum
 from typing import Any
@@ -264,12 +265,37 @@ SPEC_HOOKS_NOTICE_KIND = "spec_hooks"
 
 #: ``meta.spec_hooks_notice`` of the one :data:`SPEC_HOOKS_NOTICE_KIND` row that
 #: says nothing runs the agent spec's hooks on this backend. The dashboard offers
-#: a Dismiss link on this row alone and hides it by this value, so dismissing it
-#: hides no other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
+#: a Dismiss link on this row and hides it by this value, so its dismiss hides no
+#: other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
 #: A row that names a ``preToolUse`` hook does not carry it, because such a hook
 #: is there to refuse calls. It changes only what the dashboard draws: which
 #: hooks run is decided elsewhere.
 SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
+
+#: ``meta.spec_hooks_notice`` of the row that says a folder's own
+#: ``.kiro/hooks/*.json`` files do not run. It rides with
+#: ``meta.project_hook_files_mark``, a hash of the folder and the files' names,
+#: and the dashboard's Dismiss hides every row with that mark: the notice shows
+#: again in another folder or once a file is added, removed or renamed. Names
+#: only, so a file whose content changes stays hidden. It changes only what the
+#: dashboard draws (``website/src/pages/chat/SpecHooksNotice.tsx``).
+SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE = "project_hook_files"
+
+
+def project_hook_files_notice_meta(project_dir: str, names: list[str]) -> dict[str, str]:
+    """The meta of the hook-files notice row for *project_dir*'s hook file *names*.
+
+    ``project_hook_files_mark`` is also the chat's once-shown mark
+    (``turn_spec_hooks._project_hook_files_notice_is_new``), so one value says both
+    "this chat showed it" and "the user dismissed it here".
+    """
+    mark = hashlib.sha256(json.dumps([project_dir, names]).encode()).hexdigest()[:16]
+    return {
+        "kind": SPEC_HOOKS_NOTICE_KIND,
+        "spec_hooks_notice": SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+        "project_hook_files_mark": mark,
+    }
+
 
 #: ``meta.kind`` of the session-start notice that says Crew's tools are off in
 #: this session because a settings file Crew does not govern holds its path.
@@ -465,11 +491,10 @@ def app_inject_row(label: str) -> tuple[str, str, dict]:
 
     Both delivery paths (direct dispatch in ``handlers/mcp_apps.py`` and the
     queue drain in ``chat_runner.py``) call this, so the row cannot diverge
-    between them. ``cls`` is a plain CSS class — NEVER a JSON payload: a JSON
-    ``cls`` makes ``_prepare_messages`` replace the stored meta with the
-    cls-derived dict on the HTTP rebuild path, silently dropping
-    ``injectKind`` and with it the row's collapse/fold exemptions. The label
-    travels in ``meta`` only, and is never re-derived from the banner text.
+    between them. ``cls`` is a plain CSS class and the identity (``injectKind``,
+    the label) lives in ``meta``, which the HTTP rebuild sends for an
+    ``inject`` row merged over any ``cls`` meta. The label travels in
+    ``meta`` only, and is never re-derived from the banner text.
     """
     return "inject", "msg msg-inject", {"injectKind": "mcp_app", "appLabel": label}
 
@@ -702,13 +727,17 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     changes, so an app's queued send never folds into the user's own words, and
     where the stamped source channels change, so a turn admission refuses for one
     channel never carries another message with it, and where the channel challenge
-    mark changes (``channel_prompt``), so a typed message keeps its echo; an
-    entry that starts no run
+    mark changes (``channel_prompt``), so a typed message keeps its echo, and
+    where the expansions-off mark changes, so a typed message keeps its
+    expansions; an entry that starts no run
     pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         # Local: a module-level import would serve the name through the chat_utils facade.
         from kiro_crew.dashboard.channel_prompt import entry_prompt_on_channel
+
+        # circular import: chat_delivery imports chat_utils, which loads this module.
+        from kiro_crew.dashboard.chat_delivery import EXPANSIONS_OFF_META_KEY
 
         to_merge: list[dict] = []
         for item in list(slot._queue):
@@ -733,6 +762,11 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 break
             # Words already in the linked thread skip its echo; typed words keep it.
             if to_merge and entry_prompt_on_channel(item) != entry_prompt_on_channel(to_merge[0]):
+                break
+            # A tap's label keeps its mentions as text; typed words still expand.
+            if to_merge and ((item.get("meta") or {}).get(EXPANSIONS_OFF_META_KEY) is True) != (
+                (to_merge[0].get("meta") or {}).get(EXPANSIONS_OFF_META_KEY) is True
+            ):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

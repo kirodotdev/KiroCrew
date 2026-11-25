@@ -104,6 +104,6 @@ def test_the_preview_drops_a_marker_line_ended_by_any_break(br):
 def test_the_slack_stream_settles_an_open_head_at_any_break(br):
     text = f"Pick:{br}**[OPTIONS: Retry | Abort\u3011**{br}Thanks"
     hold, buf = h._filter_options_brackets(text, "", "")
-    hold, released = h._resolve_options_hold(hold, buf)
+    hold, released = h._resolve_options_hold(hold)
     assert hold == ""
-    assert buf + released == f"Pick:{br}**{br}Thanks"
+    assert buf + released == f"Pick:{br}{br}Thanks"

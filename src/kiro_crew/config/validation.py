@@ -34,7 +34,7 @@ import copy
 import hashlib
 import logging
 import threading
-from typing import Iterable
+from typing import Any, Iterable
 
 from kiro_crew.apps.builtin_host_grants import config_top_keys as _builtin_config_top_keys
 from kiro_crew.config.fields import _coerce_bool
@@ -437,7 +437,7 @@ def _coerce_legacy_numeric_values(data: dict, schema: dict) -> None:
 # KiroCrewConfig.load() is called on per-message / per-request hot paths (skill
 # triggering, context build, dashboard handlers). The expensive part is NOT the
 # dataclass construction — it is reading config.json (+ config.local.json),
-# json.loads, _deep_merge, and the full jsonschema.validate against the whole
+# json.loads, _deep_merge, and the full JSON Schema validation against the whole
 # config schema. We cache ONLY that validated, merged dict, keyed on a cheap
 # fingerprint (path + st_mtime_ns + st_size + st_mode) of both files, computed by
 # the loader. On a cache hit load() still builds fresh dataclasses from a deep
@@ -629,6 +629,27 @@ def prime_extension_config_keys() -> None:
     refresh_installed_plugin_config_keys()
 
 
+#: ``(schema, validator)`` for the last schema validated. Holding the schema keeps
+#: its ``id`` from being reused; a different schema object builds a new validator.
+_VALIDATOR_CACHE: list[tuple[dict, Any]] = []  # process-cache-ok: keyed by schema object identity
+
+
+def _schema_validator(schema: dict) -> Any:
+    """A validator for *schema*, checked against its meta-schema once and reused.
+
+    ``jsonschema.validate`` checks the schema and builds a validator on every
+    call; the config schema is built once at import, so that work would repeat
+    on every config load.
+    """
+    if _VALIDATOR_CACHE and _VALIDATOR_CACHE[0][0] is schema:
+        return _VALIDATOR_CACHE[0][1]
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema)
+    _VALIDATOR_CACHE[:] = [(schema, validator)]
+    return validator
+
+
 def validate_config_data(data: dict) -> dict:
     """Validate *data* against the config JSON Schema.
 
@@ -816,12 +837,9 @@ def validate_config_data(data: dict) -> dict:
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
 
     # 5. Run jsonschema validation
-    try:
-        jsonschema.validate(data, JSON_SCHEMA)
-    except jsonschema.ValidationError:
+    validator = _schema_validator(JSON_SCHEMA)
+    if not validator.is_valid(data):
         # Collect all errors (including nested ones)
-        validator_cls = jsonschema.validators.validator_for(JSON_SCHEMA)
-        validator = validator_cls(JSON_SCHEMA)
         for err in validator.iter_errors(data):
             dot_path = _dot_path_from_json_path(err.absolute_path)
             if not dot_path:

@@ -376,6 +376,23 @@ class ContinuationCoordinator(ManagerComponent):
                 return str(reason)
         return None
 
+    def _busy_key_for_requested_run(self, conv_id: str) -> str:
+        """Return the conversation key to check for an in-flight run when *conv_id* is named.
+
+        A running continuation executes on its owner's conversation, so naming
+        its own id checks that conversation. Any other id, including a finished
+        continuation, checks ``subagent:<conv_id>``, the key a chained
+        continuation runs under.
+        """
+        conv_key = f"subagent:{conv_id}"
+        requested = self._manager._agents.get(conv_id)
+        if requested is None or requested.done:
+            return conv_key
+        owner_id = self._persistence.subagent_id_from_conversation_key(
+            str(requested.conversation_key or "")
+        )
+        return f"subagent:{owner_id}" if owner_id is not None else conv_key
+
     def continue_conversation_impl(
         self,
         conv_id: str,
@@ -452,7 +469,8 @@ class ContinuationCoordinator(ManagerComponent):
         from kiro_crew.execution_context import stricter_memory_mode
 
         conv_key = f"subagent:{conv_id}"
-        if self._manager._conversation_busy(conv_key) is not None:
+        busy_key = self._busy_key_for_requested_run(conv_id)
+        if self._manager._conversation_busy(busy_key) is not None:
             busy_result = self._manager._continue_prelude(
                 conv_id,
                 task,
@@ -565,7 +583,8 @@ class ContinuationCoordinator(ManagerComponent):
         - ``conversation_gone`` — no resumable session files remain.
         """
         conv_key = f"subagent:{conv_id}"
-        busy = self._manager._conversation_busy(conv_key)
+        busy_key = self._busy_key_for_requested_run(conv_id)
+        busy = self._manager._conversation_busy(busy_key)
         if busy is not None:
             info = SubagentInfo(
                 id=self._manager._mint_agent_id(),
@@ -1343,7 +1362,8 @@ class ContinuationCoordinator(ManagerComponent):
         was no sid to dispose). A backend whose store has no delete route here,
         a Claude session with no trusted recorded cwd, or a Codex session with no
         trusted recorded store answers ``False`` and the caller reports
-        ``not_disposed`` instead of ``released``.
+        ``not_disposed`` instead of ``released``. A KAS session answers
+        ``False`` too: its delete is queued by the prune, not here.
 
         Demoting the persisted source of truth matters: with the disk fallback in
         place, a stale ``keep=True`` would re-warm the continuable cache after
@@ -1354,6 +1374,7 @@ class ContinuationCoordinator(ManagerComponent):
         """
         # Not an ``_impl``, so it keeps this module's globals: import at call
         # time, which also keeps ``patch.object(subagent, ...)`` effective.
+        from ..agent_sdk.backends import ACP_BACKEND_KAS
         from ..agent_sdk.claude_transcripts import is_claude_provider_label
         from ..agent_sdk.codex_transcripts import is_codex_provider_label
         from ..subagent import _cleanup_session_files_sync, logger, update_state
@@ -1377,6 +1398,12 @@ class ContinuationCoordinator(ManagerComponent):
                 return bool(
                     _cleanup_session_files_sync(sid, provider_label, cwd=cwd, codex_home=codex_home)
                 )
+            if provider_label == ACP_BACKEND_KAS:
+                # A KAS record is deleted on a later cleanup tick, not here, and a
+                # continue may still resume it until then. The prune queues that
+                # delete once the run is due, in the same pass that removes the
+                # run folder a continue would resume from.
+                return False
             return bool(_cleanup_session_files_sync(sid, provider_label))
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)

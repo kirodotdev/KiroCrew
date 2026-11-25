@@ -1,0 +1,12 @@
+{
+  "skills": {
+    "meetings": "meetings",
+    "ops-mission-control": "ops-mission-control",
+    "papyrus-diagnose-compilation": "papyrus",
+    "papyrus-latex-comments": "papyrus",
+    "papyrus-latex-suggestions": "papyrus",
+    "papyrus-make-fluent": "papyrus",
+    "papyrus-writing": "papyrus",
+    "pptx-maker": "pptx-maker"
+  }
+}

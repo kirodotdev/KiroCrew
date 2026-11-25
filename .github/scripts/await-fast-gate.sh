@@ -11,10 +11,11 @@
 # .github/scripts/await-fast-gate.sh` -- so this file IS the barrier's logic.
 #
 # The barrier only reads: every `gh api` call below is a GET, and the job's
-# token is `actions: read`. The one write that a superseded push needs,
-# cancelling this CI run, belongs to the `cancel-superseded-run` job, which runs
-# only on a push to main and runs this same file as a probe (see
-# cancel-superseded-run.sh and SUPERSEDED_FILE below).
+# token is `actions: read` plus `checks: read` (and `contents: read` for the
+# checkout). The one write that a superseded push needs, cancelling this CI
+# run, belongs to the `cancel-superseded-run` job, which runs only on a push to
+# main and runs this same file as a probe (see cancel-superseded-run.sh and
+# SUPERSEDED_FILE below).
 #
 # ## Why a script and not an inline `run:` body
 #
@@ -85,8 +86,19 @@ set -euo pipefail
 APPEAR_BUDGET="${APPEAR_BUDGET:-180}"
 STALL_BUDGET="${STALL_BUDGET:-720}"
 TOTAL_BUDGET="${TOTAL_BUDGET:-2100}"
-# Seconds between listing reads once the run is listed and still pending.
-POLL_INTERVAL=30
+# Seconds between listing reads once the run is listed and still pending. Each
+# read is one call against the repository's shared REST quota, paid by every CI
+# run for as long as its gate run takes, so the interval is the barrier's whole
+# steady-state cost. The price of a longer one is that a finished gate is seen
+# up to one interval after it concludes.
+POLL_INTERVAL=60
+# The same wait when this file runs as the probe (see "The probe switch"). The
+# barrier proves a supersession and then waits CANCEL_WAIT for the cancel; the
+# probe finds the same proof up to one of its own intervals later, and the
+# cancel it sends may take LAND_BUDGET (cancel-superseded-run.sh) to land. So
+# CANCEL_WAIT has to cover this interval plus LAND_BUDGET, and the probe keeps
+# the shorter wait. Only a push to main runs the probe.
+PROBE_POLL_INTERVAL=30
 # A failed read is retried after 10s, doubling to this cap, so an API outage is
 # not hammered for the STALL budget it may last.
 READ_RETRY_CAP=60
@@ -104,6 +116,9 @@ nap() { ${AWAIT_FG_SLEEP:-sleep} "$1"; }
 CANCEL_WAIT=150
 SUPERSEDE_SLACK=60
 SUPERSEDED_FILE="${SUPERSEDED_FILE:-}"
+if [ -n "$SUPERSEDED_FILE" ]; then
+  POLL_INTERVAL="$PROBE_POLL_INTERVAL"
+fi
 
 # A cancelled gate on a push to main that was SUPERSEDED, not judged.
 #
@@ -301,6 +316,70 @@ release_if_jobs_green() {
   fi
 }
 
+# Prints the newest run of listing $1 that carries this commit's whole identity,
+# or `null` when it holds none.
+#
+# `branch=` is passed to the API as a narrowing hint, but the match is
+# re-asserted here: a filter the server silently ignores would hand
+# back another PR's run, and selecting max_by(.id) out of an unfiltered
+# list would pick the NEWEST such run -- the most likely one to be a
+# different PR's. Filter first, collapse second.
+select_latest() {
+  printf '%s' "$1" \
+    | jq -c --arg branch "$BRANCH" --arg repo "$HEAD_REPO" \
+        '[(.workflow_runs // [])[]
+          | select(.head_branch == $branch)
+          | select(.head_repository.full_name == $repo)]
+         | if length == 0 then null else max_by(.id) end'
+}
+
+# Wraps the run objects on stdin, one JSON each, as a listing of this commit's
+# own Fast Gate runs for this event, so a fallback answer reaches the selector
+# in the shape the listing would have had.
+as_listing() {
+  jq -cs --arg sha "$SHA" --arg event "$EVENT" \
+    '{workflow_runs: [.[] | select(.path == ".github/workflows/fast-gate.yml"
+                                   and .event == $event and .head_sha == $sha)]}'
+}
+
+# The Fast Gate run id a fallback found: later polls read just that run, so one
+# still pending past the appear budget costs one read per poll, not a walk.
+FALLBACK_FG_ID=""
+FALLBACK_LISTING=""
+
+# The head_sha listing is a filtered search that can answer no runs for a
+# commit whose runs exist, so an empty listing is read through the commit's
+# check-runs (every row, filter=all) before it becomes a verdict: an Actions
+# job's check-run names its run as `details_url` =
+# .../<repo>/actions/runs/<run id>/job/<job id>. Sets FALLBACK_LISTING to the
+# Fast Gate runs those name for this event on $SHA, in the listing's shape; the
+# selector re-asserts the branch and head repository as for the listing. A
+# named run that cannot be read fails the read, so the poll counts it
+# unreadable, never missing. It sets globals instead of printing, so the caller
+# runs it in this shell, not in a $(...) subshell that would drop the memo.
+runs_from_check_runs() {
+  local ids id run found=""
+  if [ -n "$FALLBACK_FG_ID" ]; then
+    run="$(gh api --method GET "repos/$REPO/actions/runs/$FALLBACK_FG_ID")" || return 1
+    FALLBACK_LISTING="$(printf '%s' "$run" | as_listing)" || return 1
+    return 0
+  fi
+  ids="$(gh api --method GET --paginate \
+    "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" \
+    | jq -rs --arg repo "$REPO" '
+      [.[].check_runs[]? | (.details_url // "")
+       | select(contains("/" + $repo + "/actions/runs/"))
+       | split("/actions/runs/")[1] | split("/")[0]
+       | select(test("^[0-9]+$"))]
+      | unique | .[]')" || return 1
+  for id in $ids; do
+    run="$(gh api --method GET "repos/$REPO/actions/runs/$id")" || return 1
+    found="$found$run"$'\n'
+  done
+  FALLBACK_LISTING="$(printf '%s' "$found" | as_listing)" || return 1
+  FALLBACK_FG_ID="$(select_latest "$FALLBACK_LISTING" 2>/dev/null | jq -r '.id? // empty')"
+}
+
 started="$(now)"
 seen=false
 # When the barrier last learned something: a listing read that answered, or the
@@ -328,6 +407,20 @@ while :; do
     -f per_page=100 2>"${TMPDIR:-/tmp}/await-fg-err.$$")"; then
     read_err="$(head -c 300 "${TMPDIR:-/tmp}/await-fg-err.$$" 2>/dev/null | tr '\n' ' ')"
     runs=""
+  # A listing holding no run of THIS commit's identity (none, or only another
+  # PR's or fork's run on this head) is read through the check-runs, but only
+  # from the APPEAR budget on: before it an empty answer is the start-up race,
+  # and a walk spends one paginated check-runs read plus one read per named run
+  # of the shared quota (one read once the id is known). A failed fallback read
+  # is a failed read; an unparseable listing skips it.
+  elif [ "$elapsed" -ge "$APPEAR_BUDGET" ] \
+      && [ "$(select_latest "$runs" 2>/dev/null)" = "null" ]; then
+    if runs_from_check_runs 2>"${TMPDIR:-/tmp}/await-fg-err.$$"; then
+      runs="$FALLBACK_LISTING"
+    else
+      read_err="check-runs read failed: $(head -c 300 "${TMPDIR:-/tmp}/await-fg-err.$$" 2>/dev/null | tr '\n' ' ')"
+      runs=""
+    fi
   fi
   rm -f "${TMPDIR:-/tmp}/await-fg-err.$$"
 
@@ -376,24 +469,13 @@ while :; do
   informed="$loop_at"
   retry_nap=10
 
-  # `branch=` is passed to the API as a narrowing hint, but the match is
-  # re-asserted here: a filter the server silently ignores would hand
-  # back another PR's run, and selecting max_by(.id) out of an unfiltered
-  # list would pick the NEWEST such run -- the most likely one to be a
-  # different PR's. Filter first, collapse second.
   # A selector that FAILS is not a listing with no match, and the difference is
   # the whole diagnosis: the read above already succeeded, so "no run found"
   # would send the author hunting for a missing Fast Gate run when the response
   # was simply unparseable. Kept apart the way the read-failure branch above
   # keeps its own cause.
   select_err=""
-  if ! latest="$(printf '%s' "$runs" \
-    | jq -c --arg branch "$BRANCH" --arg repo "$HEAD_REPO" \
-        '[(.workflow_runs // [])[]
-          | select(.head_branch == $branch)
-          | select(.head_repository.full_name == $repo)]
-         | if length == 0 then null else max_by(.id) end' \
-        2>/dev/null)"; then
+  if ! latest="$(select_latest "$runs" 2>/dev/null)"; then
     select_err="the listing read back but jq could not select a run from it"
     latest=null
   fi
@@ -492,12 +574,21 @@ while :; do
   # repository's shared REST quota. It is clamped to the time left before the
   # deadline, so the budget is checked at the deadline rather than up to one
   # interval past it, which keeps TOTAL_BUDGET plus CANCEL_WAIT inside the job's
-  # timeout-minutes. The start-up race keeps a 10s wait, a failed read backs off
-  # from 10s, and the cancel wait makes no API call.
+  # timeout-minutes. It is clamped the same way to the STALL budget while the
+  # jobs read there is still owed, so a gate whose status lags its green jobs is
+  # released at that budget and not up to one interval after it. The start-up
+  # race keeps a 10s wait, a failed read backs off from 10s, and the cancel wait
+  # makes no API call.
+  wait="$POLL_INTERVAL"
   left=$(( deadline - elapsed ))
-  if [ "$left" -gt 0 ] && [ "$left" -lt "$POLL_INTERVAL" ]; then
-    nap "$left"
-  else
-    nap "$POLL_INTERVAL"
+  if [ "$left" -gt 0 ] && [ "$left" -lt "$wait" ]; then
+    wait="$left"
   fi
+  if [ "$stall_checked" = false ]; then
+    left=$(( STALL_BUDGET - elapsed ))
+    if [ "$left" -gt 0 ] && [ "$left" -lt "$wait" ]; then
+      wait="$left"
+    fi
+  fi
+  nap "$wait"
 done

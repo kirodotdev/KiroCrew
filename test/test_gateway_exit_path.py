@@ -98,9 +98,14 @@ def _install(monkeypatch: pytest.MonkeyPatch, orch: Any = None) -> dict[Any, Any
 
 
 def _join_force_exit(seams: SimpleNamespace) -> threading.Thread:
-    """Wait for the one force-exit thread the second signal started to finish."""
-    assert len(seams.threads) == 1, f"expected one force-exit thread, got {seams.threads}"
-    (thread,) = seams.threads
+    """Wait for the one force-exit thread the second signal started to finish.
+
+    A first Ctrl+C also starts the thread that writes its user-stop mark; it is not
+    the exit, so it is set aside here.
+    """
+    exits = [t for t in seams.threads if t.name != "kc-ctrl-c-mark"]
+    assert len(exits) == 1, f"expected one force-exit thread, got {seams.threads}"
+    (thread,) = exits
     assert thread.name == "kc-force-exit"
     thread.join(10.0)
     assert not thread.is_alive(), "the force-exit thread did not finish"
@@ -157,6 +162,27 @@ async def test_ctrl_c_still_force_exits_a_sigterm_shutdown(monkeypatch, seams) -
 
     assert orch._force_exit_claimed.is_set()
     _join_force_exit(seams)
+    seams.compat.hard_exit.assert_called_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_a_ctrl_c_that_forces_a_sigterm_shutdown_marks_the_user_stop(
+    monkeypatch, seams, tmp_path
+) -> None:
+    """The SIGTERM keeps the grants; the Ctrl+C that forces it is a stop the user chose."""
+    from kiro_crew import kept_grants
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(gw, "logger", MagicMock(name="logger"))
+    mark = tmp_path / kept_grants.KEPT_GRANTS_LEAF / kept_grants.USER_STOP_FILE
+    handlers = _install(monkeypatch)
+
+    handlers[signal.SIGTERM]()
+    assert not mark.exists()
+    handlers[signal.SIGINT]()
+
+    _join_force_exit(seams)
+    assert mark.exists()
     seams.compat.hard_exit.assert_called_once_with(0)
 
 
@@ -267,7 +293,7 @@ async def test_a_repeat_signal_mid_drain_starts_no_second_drain(monkeypatch, sea
         assert entered.wait(10.0), "the force-exit thread never reached the SEL drain"
         handlers[signal.SIGINT]()  # mid-drain
         handlers[signal.SIGTERM]()
-        assert len(seams.threads) == 1
+        assert [t.name for t in seams.threads if t.name != "kc-ctrl-c-mark"] == ["kc-force-exit"]
         seams.compat.hard_exit.assert_not_called()
     finally:
         release.set()

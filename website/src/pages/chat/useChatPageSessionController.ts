@@ -30,6 +30,7 @@ import { isSafeReload } from '../../lib/safeReload'
 import { useFeaturePreviewLockSettled } from '../../utils/editionLocks'
 import { safeSetItem } from '../../utils/safeStorage'
 import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
+import { withoutSpentCrewLink } from '../../lib/crewDeepLink'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
 import { sessionShortNameFrom, shortNameMatches, type ShortNameMatch } from '../../utils/sessionKeys'
 import { toSlug } from '../../utils/shareUrl'
@@ -1089,7 +1090,7 @@ export function useChatPageSessionController({
       setSidMatches(mine)
       // Name the full key before activating it: URL sync stays held until
       // `activeSlot` equals `?sid=`, and a short name never does.
-      const next = new URLSearchParams(searchParamsRef.current)
+      const next = withoutSpentCrewLink(new URLSearchParams(searchParamsRef.current))
       next.set('sid', target.key)
       next.delete('slot')
       navigate({ pathname: locationPathname, search: `?${next}`, hash: locationHash }, { replace: true })
@@ -1117,7 +1118,7 @@ export function useChatPageSessionController({
         // that never showed. URL sync then normalizes the slug.
         const viewing = store.getState().chat.activeSlot
         if (viewing && viewing !== target.key) {
-          const back = new URLSearchParams(searchParamsRef.current)
+          const back = withoutSpentCrewLink(new URLSearchParams(searchParamsRef.current))
           back.set('sid', viewing)
           back.delete('slot')
           navigate({ pathname: locationPathname, search: `?${back}`, hash: locationHash }, { replace: true })
@@ -1195,7 +1196,7 @@ export function useChatPageSessionController({
     const slot = filteredSlots.find(s => s.key === activeSlot)
     const slug = slot?.title && !isUntitledSession(slot) ? toSlug(slot.title) : ''
     const expectedPath = `${basePath}${slug ? '/' + slug : ''}`
-    const next = new URLSearchParams(sp)
+    const next = withoutSpentCrewLink(new URLSearchParams(sp))
     next.set('sid', activeSlot)
     next.delete('slot')
     next.delete('prefill')

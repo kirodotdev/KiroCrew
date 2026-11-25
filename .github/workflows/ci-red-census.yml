@@ -18,13 +18,13 @@ name: CI Red-Cause Census
 # WHY A DAY A NIGHT AND NOT A WEEK AT ONCE. GitHub lists a workflow's runs
 # newest first and has no date filter for them in GraphQL, so reading a window
 # pages through every run created since. Read the next morning, a weekday costs
-# its own 91,000 runs: about 3,000 points and 25 minutes, nothing waits and no
-# runner is held asleep. Read on Sunday, the same week is 21,000 points, more
-# than a bucket should give up in an hour, so one job would sleep between hours
-# for up to five; and seven one-day reads on Sunday would page the week four
-# times over. REST can filter runs by date, but it draws on the 15,000 requests
-# an hour every job of the repository shares and runs dry, returns 1,000 runs
-# a search at most, and has no count of a run's red jobs.
+# its own 91,000 runs: about 3,000 points and 25 minutes, and it waits 30
+# minutes at most for the bucket (below). Read on Sunday, the same week is
+# 21,000 points, more than a bucket should give up in an hour, so one job would
+# sleep between hours for up to five; and seven one-day reads on Sunday would
+# page the week four times over. REST can filter runs by date, but it draws on
+# the 15,000 requests an hour every job of the repository shares and runs dry,
+# returns 1,000 runs a search at most, and has no count of a run's red jobs.
 #
 # WHICH BUCKET, AND HOW MUCH. The census reads by GraphQL with the job's
 # `GITHUB_TOKEN`, whose GraphQL primary limit is apart from the REST one. Its
@@ -35,9 +35,17 @@ name: CI Red-Cause Census
 # reads the bucket from `/rate_limit`, which costs nothing, and sizes the
 # budget to it (`scripts/ci_red_census_budget.py`):
 #
-#   reserve   half the bucket and 120 points: the census stops, and says
-#             Partial, before a call that would start with less
+#   reserve   half the bucket and 120 points: before a call that would start
+#             with less, the census waits for the bucket's reset if it comes
+#             within the 30 minutes `--wait-for-reset-seconds 1800` gives a
+#             run in all, and otherwise stops and says Partial
 #   most      two fifths of the bucket less 120 points: the most one run spends
+#
+# WHY IT WAITS AT THE RESERVE. The census starts late in the bucket's hour, and
+# the rest of CI draws on the same bucket while it reads, so on a weekday it
+# reached the reserve minutes before the reset (2026-11-23 and 2026-11-24 both
+# stopped Partial; #39700). The reserve is the same after the wait: other
+# workflows keep half of every hour's bucket.
 #
 # The 120 points are one call for each of the 4 workers, the dearest about 30:
 # the calls already sent when the census stops land past the line. On 10,000
@@ -134,8 +142,9 @@ jobs:
     # A standard hosted runner: free for a public repository, where a larger
     # runner is billed by the minute.
     runs-on: ubuntu-latest
-    # About 25 minutes of reading, twice over, and the 10 the gh wrapper may wait.
-    timeout-minutes: 60
+    # About 25 minutes of reading, twice over, the 10 the gh wrapper may wait and
+    # the 30 the census may wait for the bucket's reset.
+    timeout-minutes: 90
     steps:
       # The census, the modules it loads and the gh wrapper; no other code is
       # checked out, and always from the default branch.
@@ -192,7 +201,7 @@ jobs:
           status=0
           python3 scripts/ci_red_cause_census.py "$@" --repo "$REPO" --out-dir census \
             --logs never --workers 4 --reserve-points "$RESERVE_POINTS" --max-points "$MOST_POINTS" \
-            --gh-timeout-seconds 900 > census/run.txt || status=$?
+            --wait-for-reset-seconds 1800 --gh-timeout-seconds 900 > census/run.txt || status=$?
           cat census/run.txt
           {
             if [ -f census/summary.md ]; then
@@ -202,7 +211,7 @@ jobs:
             fi
             echo
             echo '```'
-            grep -E '^(GraphQL calls|GraphQL points left|REST calls|Run time): ' census/run.txt || true
+            grep -E '^(GraphQL calls|GraphQL points left|Reset wait|REST calls|Run time): ' census/run.txt || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           case "$status" in

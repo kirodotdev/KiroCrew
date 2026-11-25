@@ -14,6 +14,7 @@ vi.mock('../api/client', async importOriginal => {
       ...mod.api,
       kasLoginStatus: vi.fn(),
       kasLoginSources: vi.fn(),
+      kasBundleStatus: vi.fn(),
       kasLoginLogout: vi.fn().mockResolvedValue({ ok: true }),
       kasLoginBeginDevice: vi.fn(),
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
@@ -28,6 +29,13 @@ vi.mock('../api/client', async importOriginal => {
 const kasLoginStatus = vi.mocked(api.kasLoginStatus)
 const kasLoginSources = vi.mocked(api.kasLoginSources)
 const kasLoginLogout = vi.mocked(api.kasLoginLogout)
+
+/**
+ * The notice's last sentence sits behind two chained queries: the sources read
+ * shows the Kiro CLI notice, which turns on the `kas-bundle` read the sentence
+ * comes from. Each wait for it names its own ceiling instead of the 1 s default.
+ */
+const CHAINED_QUERY_TIMEOUT = { timeout: 5_000 }
 
 const SIGNED_OUT: KasLoginStatus = {
   authenticated: false,
@@ -89,6 +97,8 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
   beforeEach(() => {
     kasLoginStatus.mockReset()
     kasLoginSources.mockReset()
+    // Signing in here would not move chats to the built-in engine unless a test says so.
+    vi.mocked(api.kasBundleStatus).mockReset().mockResolvedValue({ sign_in_moves_to_engine: false } as never)
     kasLoginLogout.mockReset().mockResolvedValue({ ok: true })
     vi.mocked(api.kasLoginBeginDevice).mockReset().mockResolvedValue({
       login_id: 'switch-account',
@@ -127,8 +137,49 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     )
     // Nothing of this app's is stored, so there is nothing to remove.
     expect(screen.queryByTestId('kiro-sign-in-use-kiro-cli')).toBeNull()
-    // The chooser is still there for a person who wants another account.
+    // The chooser is still there (behind a quiet button) for a person who wants another account.
     expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
+    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalled(), CHAINED_QUERY_TIMEOUT)
+    expect(notice).toHaveTextContent(/If you sign in below, Kiro Agent uses that account instead\.$/)
+  })
+
+  it('kiro-cli signed in and signing in here moves new chats to the built-in engine: the notice says so', async () => {
+    showEmails()
+    vi.mocked(api.kasBundleStatus).mockResolvedValue({ sign_in_moves_to_engine: true } as never)
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    kasLoginSources.mockResolvedValue(ONLY_KIRO_CLI)
+    renderWithProviders(<KiroSignInCard />)
+    const notice = await screen.findByTestId('kiro-sign-in-sources')
+    await waitFor(() => expect(notice).toHaveTextContent(
+      'Kiro Agent runs as the account Kiro CLI is signed in to: person@example.com. You don\'t need to sign in here. '
+        + 'If you sign in below, Kiro Agent uses that account instead, and new chats move to the built-in engine.',
+    ), CHAINED_QUERY_TIMEOUT)
+  })
+
+  it('nothing stored here and kiro-cli signed in: the header names the kiro-cli account, the choices show in place', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    kasLoginSources.mockResolvedValue(ONLY_KIRO_CLI)
+    renderWithProviders(<KiroSignInCard />)
+    const hero = await screen.findByTestId('kiro-sign-in-hero')
+    await waitFor(() => expect(hero).toHaveAttribute('data-hero', 'kiro-cli'))
+    // The account, blurred by default, with its eye toggle; never "Sign in to Kiro" as the title.
+    expect(within(hero).getByTestId('kiro-sign-in-account')).toHaveTextContent('person@example.com')
+    expect(within(hero).getByTestId('kiro-account-email-toggle')).toBeInTheDocument()
+    expect(within(hero).queryByRole('heading', { name: 'Sign in to Kiro' })).toBeNull()
+    expect(screen.queryByTestId('looking-ghost')).toBeNull()
+    // The sign-in choices show in place right away, with no button to reveal them.
+    expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-show-choices')).toBeNull()
+  })
+
+  it('kiro-cli signed in with no name known: the header says so once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    kasLoginSources.mockResolvedValue({ ...ONLY_KIRO_CLI, kiro_cli: { stored: true, usable: true } })
+    renderWithProviders(<KiroSignInCard />)
+    const hero = await screen.findByTestId('kiro-sign-in-hero')
+    await waitFor(() => expect(hero).toHaveAttribute('data-hero', 'kiro-cli'))
+    expect(within(hero).getByRole('heading')).toHaveTextContent('Using your Kiro CLI sign-in')
+    expect(screen.getAllByText('Using your Kiro CLI sign-in')).toHaveLength(1)
   })
 
   it('hide e-mail on (the default): the Kiro CLI-only notice names the account by its kind and portal', async () => {
@@ -374,7 +425,6 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     await waitFor(() =>
       expect(screen.getByTestId('kiro-sign-in-sources')).toHaveAttribute('data-notice', 'using_kiro_cli'),
     )
-    expect(screen.getByTestId('kiro-sign-in-takes-effect')).toBeInTheDocument()
   })
 
   it('"Use the Kiro CLI account" closes the relay Crew windows that ran as the removed sign-in', async () => {
@@ -445,7 +495,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch account' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
-    await waitFor(() => expect(api.kasLoginPoll).toHaveBeenCalledWith('switch-account'))
+    await waitFor(() => expect(api.kasLoginPoll).toHaveBeenCalledWith('switch-account', undefined))
     kasLoginStatus.mockResolvedValueOnce(SIGNED_IN).mockResolvedValue({
       ...SIGNED_IN, expires_at: '2099-01-02T00:00:00Z',
     })

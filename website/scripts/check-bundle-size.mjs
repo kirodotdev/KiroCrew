@@ -41,8 +41,12 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * Re-measured on main @ c275f70106: 347 chunks, 9,464,931 B. Bundling the first
  * load into 11 chunks (the `firstLoadGroups(...)` call in vite.config.ts) takes
  * it to 9,416,379 B, so the ceiling is lowered to 9,416,379 B * 1.05.
+ *
+ * Re-measured on main @ 976b681edc, same 5% rule (#42062): 11 chunks,
+ * 9,886,330 B, 1,414 B under the 9656 KB ceiling, its headroom spent by
+ * first-load growth across many features since c275f70106.
  */
-export const FIRST_LOAD_BUDGET_BYTES = 9656 * KB
+export const FIRST_LOAD_BUDGET_BYTES = 10138 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by
@@ -154,7 +158,11 @@ export const CHUNK_BUDGETS = {
   // 666d93c742, same 5% rule (#39199): `main` was 1,016 B over its 1341 KB
   // ceiling and `first-load-0` had 203 B left, after ~66 KB of first-load
   // growth spread across many features since c275f70106.
-  'first-load-0': 1053 * KB, // measured 1,026,869 B
+  //
+  // `first-load-0` re-measured on an analyze build of main @ 25d043f993, same
+  // 5% rule (#41880): it was 232 B over its 1053 KB ceiling, its headroom spent
+  // by first-load growth across many features since 666d93c742.
+  'first-load-0': 1106 * KB, // measured 1,078,504 B
   //
   // `first-load-2` re-measured on an analyze build of main @ c71731b56d, same
   // 5% rule (#39726): it was 1,940 B over its 1179 KB ceiling after first-load

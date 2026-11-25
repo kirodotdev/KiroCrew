@@ -27,6 +27,14 @@
       "expected": true
     },
     {
+      "name": "kiro-cli's own sign-in error ends the turn",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to kiro-cli.", "meta": { "kind": "kiro_cli_sign_in" } }
+      ],
+      "expected": true
+    },
+    {
       "name": "another error kind",
       "rows": [
         { "role": "user", "content": "hello" },

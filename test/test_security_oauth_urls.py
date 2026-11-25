@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -1222,6 +1223,65 @@ class TestOperatorOAuthEndpointExtension:
 
         self._write_extension(ext_home, content)
         assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+    def test_utf8_bom_file_lists_its_entry(self, ext_home: Path, newline: str) -> None:
+        """A Windows editor's UTF-8 BOM save is read like a plain UTF-8 file."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+        from kiro_crew.security.exfil import _operator_listed_oauth_endpoint
+
+        doc = json.dumps(
+            {"additional_authorization_endpoints": [{"host": self.HOST, "path": self.PATH}]},
+            indent=2,
+        ).replace("\n", newline)
+        (ext_home / "oauth_endpoints.json").write_bytes(b"\xef\xbb\xbf" + doc.encode("utf-8"))
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+        assert _operator_listed_oauth_endpoint(self.HOST, self.PATH) is True
+
+    def test_utf16_file_is_skipped_with_one_warning(
+        self, ext_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A UTF-16 save lists nothing and says why, once per file version."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        doc = json.dumps(
+            {"additional_authorization_endpoints": [{"host": self.HOST, "path": self.PATH}]}
+        )
+        (ext_home / "oauth_endpoints.json").write_bytes(doc.encode("utf-16"))
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.security"):
+            assert _load_operator_oauth_endpoints() == frozenset()
+            assert _load_operator_oauth_endpoints() == frozenset()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "oauth_endpoints.json" in warnings[0].getMessage()
+        assert "UTF-16" in warnings[0].getMessage()
+
+    def test_a_file_nested_past_the_parser_limit_yields_nothing(
+        self, ext_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``json.loads`` raises RecursionError, not ValueError, for deep nesting."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, "[" * 100_000 + "]" * 100_000)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.security"):
+            assert _load_operator_oauth_endpoints() == frozenset()
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+    def test_corrupt_file_warns_once_and_absent_file_logs_nothing(
+        self, ext_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.security"):
+            assert _load_operator_oauth_endpoints() == frozenset()
+            assert caplog.records == []
+            self._write_extension(ext_home, "{not json")
+            assert _load_operator_oauth_endpoints() == frozenset()
+            assert _load_operator_oauth_endpoints() == frozenset()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "oauth_endpoints.json" in warnings[0].getMessage()
+        assert "{not json" not in warnings[0].getMessage()
 
     def test_valid_entry_accepted_and_host_lowercased(self, ext_home: Path) -> None:
         from kiro_crew.security import _load_operator_oauth_endpoints

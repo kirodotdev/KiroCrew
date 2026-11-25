@@ -38,10 +38,10 @@ DECISION_HEADROOM_S = DECISION_PRE_OP_S + DECISION_POST_OP_S
 CHANGE_BEFORE_S = 4.0
 CHANGE_AFTER_S = 8.0
 CHANGE_REPORT_S = CHANGE_BEFORE_S + CHANGE_AFTER_S
-#: Finishing a sign-in after a ``navigate`` landed on the edition's sign-in page
-#: (``browser_harness.sign_in``): the provider's ``complete_sign_in()`` call, then
-#: the navigation to the URL it returned. The route adds their sum to every
-#: ``navigate``'s budget, so a slow provider never turns a landed page into a timeout.
+#: Signing a site in after a ``navigate`` was sent to the edition's sign-in host
+#: (``browser_harness.sign_in_guard``): the provider's ``sign_in_for_origin()``
+#: call, then the navigation that opens the page again. The route adds their sum to
+#: every ``navigate``'s budget, so a slow provider never turns a page into a timeout.
 SIGN_IN_PROVIDER_S = 15.0
 SIGN_IN_NAV_S = OP_TIMEOUT_S
 SIGN_IN_WORST_S = SIGN_IN_PROVIDER_S + SIGN_IN_NAV_S

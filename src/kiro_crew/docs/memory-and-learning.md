@@ -152,6 +152,13 @@ sessions neither read nor write it, whatever these keys say. The keys apply to
 every surface (dashboard, channels, cron, sub-agents) at once, where a memory
 mode is chosen per session.
 
+To withhold stored memory and lessons from one agent only, set
+`"includeCrossSessionContext": false` in that agent's spec: its sessions are
+built as if `memory.inject_memory` and `memory.inject_lessons` were both off.
+Nothing is written differently, and `memory_recall` still answers an agent
+whose tools include it
+([Agent Spec Field Reference](agent-spec-fields.md#session-context)).
+
 To see what the `"shadow"` (and `"propose"`) stages above have recorded, run
 `kirocrew memory shadow report`. Per stage it prints the flag, when its window
 started, the days and session starts seen against the bar (14 days and 200
@@ -186,6 +193,12 @@ Each session can operate in one of three memory modes:
 | **Persistent** (factory default) | ✅ | ✅ | ✅ | Normal work |
 | **Incognito** | ✅ | ❌ | ❌ | Sensitive tasks — reads context but blocks learn_add and consolidation |
 | **Temporary** | ❌ | ❌ | ❌ | Isolated experiments — no memory interaction at all |
+
+A fork can be more private than the chat it comes from: a reply's **More** menu
+offers **Fork as incognito** and **Fork as temporary**, listing only the modes
+stricter than the chat's own. The new chat keeps the conversation up to that
+reply, and nothing done in it reaches memory or lessons. A fork is never less
+private than its chat.
 
 For new dashboard chats, choose the default under **Settings → Chat → Sessions →
 Default Memory Mode**. The choice is stored as
@@ -368,6 +381,12 @@ scheduled jobs.
   exits 1. The `markdown` collection is never imported, and a private Bot (V2)
   store refuses the import: use the dashboard copy, which keeps provenance.
   Embeddings are built later by the gateway; `memory stats` shows the progress.
+- `kirocrew memory import-text <file> [--store <name>] [--yes | --dry-run]` — save what
+  another assistant wrote about you: one fact per line or bullet (200 per run, file up to
+  256 KiB). It lists facts the default store, or the named one, does not hold and you have
+  not forgotten, and saves the numbers you confirm (`--yes`: all; no terminal: none). It
+  never replaces a stored fact and makes no network or model call. `--store` is checked
+  like `memory import --store`: a private Bot (V2) store is refused.
 
 ## Comparing Memory Providers
 

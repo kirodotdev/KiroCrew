@@ -87,7 +87,8 @@ def archive_home(staged: Path) -> tuple[str, ...] | None:
     """The archive's distinct home spellings, longest first, or ``None``.
 
     A current export names its lexical ``home`` and resolved ``home_real`` in the
-    manifest. An older one does not, so a single home is read from the archive's
+    manifest; one that names no POSIX home there (an export from Windows) is left as
+    it is. An older one names neither, so a single home is read from the archive's
     own paths: the prefix that ends at the exporting user's name (the manifest's
     ``user``), the most common one winning.
     """
@@ -97,6 +98,8 @@ def archive_home(staged: Path) -> tuple[str, ...] | None:
     named = {home for key in ("home", "home_real") if (home := _posix_home(manifest.get(key)))}
     if named:
         return tuple(sorted(named, key=len, reverse=True))
+    if "home" in manifest or "home_real" in manifest:
+        return None
     user = manifest.get("user")
     if not isinstance(user, str) or not user or user == "unknown":
         return None

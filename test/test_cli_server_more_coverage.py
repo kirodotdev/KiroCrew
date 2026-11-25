@@ -651,6 +651,45 @@ class TestUpdateGitPath:
         assert ["/usr/bin/kiro-cli", "update"] in stub.calls
         assert any("setup" in c for c in stub.calls)
 
+    @pytest.mark.parametrize(
+        ("main", "member", "runs"),
+        [
+            ("claude", "claude", False),
+            ("codex", "claude", False),
+            # "" is ACP_BACKEND_KIRO, the Kiro CLI backend's id.
+            ("claude", "", True),
+            ("", "claude", True),
+        ],
+    )
+    def test_kiro_cli_update_runs_only_when_a_selected_role_runs_kiro_cli(
+        self, monkeypatch, git_checkout, capsys, main, member, runs
+    ) -> None:
+        """With no selected backend on kiro-cli the step is skipped, the reason
+        printed, and kiro-cli is never launched (its 120 s wait is the gateway's
+        downtime).
+
+        RED-BEFORE: on main every row runs ``kiro-cli update``.
+        """
+        from kiro_crew.config import KiroCrewConfig
+
+        real_load = KiroCrewConfig.load
+
+        def _load(*args, **kw):
+            cfg = real_load(*args, **kw)
+            cfg.agent.acp_backend = main
+            cfg.agent.member_acp_backend = member
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_load))
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert (["/usr/bin/kiro-cli", "update"] in stub.calls) is runs
+        assert ("no selected backend runs kiro-cli" in out) is not runs
+        assert "Kiro Crew updated!" in out
+
     def test_agent_config_refresh_failure_only_warns(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -1698,6 +1737,28 @@ def test_status_prints_the_session_map_remedy_only_while_writes_are_refused(
     assert "  Session map: restart it\n" in capsys.readouterr().out
     cli_server._status(SimpleNamespace(port=None))
     assert "Session map:" not in capsys.readouterr().out
+
+
+def test_status_says_the_entry_port_is_closed_only_while_it_is(monkeypatch, capsys) -> None:
+    import io
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    payloads = [{"entry_port_closed": "rebinding failed"}, {"entry_port_closed": ""}, {}]
+
+    @contextmanager
+    def _urlopen(url, timeout):
+        yield io.BytesIO(json.dumps(payloads.pop(0)).encode())
+
+    monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+    monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+    cli_server._status(SimpleNamespace(port=None))
+    out = capsys.readouterr().out
+    assert "  Entry port:  closed; restart the gateway to open it again\n" in out
+    for _ in range(2):
+        cli_server._status(SimpleNamespace(port=None))
+        assert "Entry port:" not in capsys.readouterr().out
 
 
 class TestApproveBusyVsDown:

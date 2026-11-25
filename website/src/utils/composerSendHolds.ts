@@ -7,6 +7,21 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 
 type Slot = string | null | undefined
 
+/** One running upload as the composer shows it: its own chip, status and cancel. */
+export type ComposerUpload = {
+  controller: AbortController
+  /** The file's name, or '' when the starter named none. */
+  name: string
+  /** Share of bytes sent, null until a positive total is reported. */
+  ratio: number | null
+  /** Bytes sent so far; a change restarts the stall window. */
+  loaded: number
+  /** Started on the wire with bytes left to send or an unknown total. */
+  sending: boolean
+}
+
+const NO_UPLOADS: ComposerUpload[] = []
+
 const ARRIVALS_KEY = 'mc-composer-arrivals'
 /** This browsing context's id, kept beside the arrivals in sessionStorage. A
  *  window opened by another starts with a copy of its opener's sessionStorage,
@@ -58,6 +73,14 @@ class ComposerSync {
   private readonly uploadSlots = new Map<AbortController, string>()
   /** Bytes sent and the body's size, per running upload that has reported any. */
   private readonly sent = new Map<AbortController, { loaded: number; total: number }>()
+  /** Each running upload's file name and start order. Keyed by controller, so
+   *  a hand-over to another slot carries both. */
+  private readonly uploadNames = new Map<AbortController, string>()
+  private readonly uploadOrder = new Map<AbortController, number>()
+  private uploadSeq = 0
+  /** Per-slot upload snapshots, recomputed only after a notify. */
+  private version = 0
+  private readonly uploadSnapshots = new Map<string, { version: number; value: ComposerUpload[] }>()
   private readonly arrivals = new Map<string, string[]>()
   private readonly listeners = new Set<() => void>()
   private readonly arrivalListeners = new Map<string, Set<() => void>>()
@@ -102,6 +125,7 @@ class ComposerSync {
   }
 
   private notify() {
+    this.version++
     for (const listener of this.listeners) listener()
   }
 
@@ -184,12 +208,14 @@ class ComposerSync {
     }
   }
 
-  registerComposerUpload(slot: Slot, controller: AbortController) {
+  registerComposerUpload(slot: Slot, controller: AbortController, name = '') {
     if (!slot) return
     const live = this.controllers.get(slot)
     if (live) live.add(controller)
     else this.controllers.set(slot, new Set([controller]))
     this.uploadSlots.set(controller, slot)
+    this.uploadNames.set(controller, name)
+    this.uploadOrder.set(controller, ++this.uploadSeq)
     this.notify()
   }
 
@@ -200,6 +226,8 @@ class ComposerSync {
     if (live.size === 0) this.controllers.delete(slot)
     this.uploadSlots.delete(controller)
     this.sent.delete(controller)
+    this.uploadNames.delete(controller)
+    this.uploadOrder.delete(controller)
     this.notify()
   }
 
@@ -209,21 +237,42 @@ class ComposerSync {
     this.notify()
   }
 
-  /** The slot's running uploads summed: bytes sent, or the bytes they will send. */
-  composerUploadBytes(slot: Slot, field: 'loaded' | 'total'): number {
-    let sum = 0
-    if (slot) this.controllers.get(slot)?.forEach(controller => { sum += this.sent.get(controller)?.[field] ?? 0 })
-    return sum
+  /** The slot's running uploads in start order. The same array comes back
+   *  until a notify, and after one while every entry is unchanged, so it is a
+   *  stable `useSyncExternalStore` snapshot. */
+  composerUploads(slot: Slot): ComposerUpload[] {
+    if (!slot) return NO_UPLOADS
+    const cached = this.uploadSnapshots.get(slot)
+    if (cached?.version === this.version) return cached.value
+    const live = [...(this.controllers.get(slot) ?? [])]
+      .sort((a, b) => (this.uploadOrder.get(a) ?? 0) - (this.uploadOrder.get(b) ?? 0))
+    if (!live.length) {
+      this.uploadSnapshots.delete(slot)
+      return NO_UPLOADS
+    }
+    const next = live.map((controller): ComposerUpload => {
+      const sent = this.sent.get(controller)
+      return {
+        controller,
+        name: this.uploadNames.get(controller) ?? '',
+        ratio: sent && sent.total > 0 ? sent.loaded / sent.total : null,
+        loaded: sent?.loaded ?? 0,
+        sending: !!sent && (sent.total === 0 || sent.loaded < sent.total),
+      }
+    })
+    const prev = cached?.value
+    const same = !!prev && prev.length === next.length && prev.every((p, i) => {
+      const n = next[i]
+      return p.controller === n.controller && p.name === n.name && p.ratio === n.ratio && p.loaded === n.loaded && p.sending === n.sending
+    })
+    const value = same ? prev! : next
+    this.uploadSnapshots.set(slot, { version: this.version, value })
+    return value
   }
 
-  /** Whether a started request still has bytes to send or an unknown total. */
-  composerUploadSending(slot: Slot): boolean {
-    if (!slot) return false
-    for (const controller of this.controllers.get(slot) ?? []) {
-      const sent = this.sent.get(controller)
-      if (sent && (sent.total === 0 || sent.loaded < sent.total)) return true
-    }
-    return false
+  /** Whether the slot has any upload registered, waiting or on the wire. */
+  hasComposerUploads(slot: Slot): boolean {
+    return !!slot && (this.controllers.get(slot)?.size ?? 0) > 0
   }
 
   /** The slot this upload belongs to now: where it started, or where a
@@ -237,9 +286,15 @@ class ComposerSync {
     this.controllers.get(slot)?.forEach(controller => controller.abort())
   }
 
+  /** Abort one running upload, leaving its siblings in the slot running. */
+  cancelComposerUpload(controller: AbortController) {
+    if (this.uploadSlots.has(controller)) controller.abort()
+  }
+
   /** A slot replaced by another (a memory-mode switch) hands the uploads
    *  running right now, each with its own Send hold, to the replacement, so
-   *  Send stays held and Cancel stays offered where the user now is. Uploads
+   *  Send stays held and each upload's chip (name, progress, cancel) stays
+   *  where the user now is. Uploads
    *  started in `from` later stay in `from`, and so do holds no upload owns. */
   handOverComposerUploads(from: Slot, to: Slot) {
     if (!from || !to || from === to) return
@@ -258,11 +313,6 @@ class ComposerSync {
       this.holds.set(to, (this.holds.get(to) ?? 0) + moved)
     }
     this.notify()
-  }
-
-  /** How many uploads `cancelComposerUploads(slot)` would abort right now. */
-  composerUploadCount(slot: Slot): number {
-    return slot ? this.controllers.get(slot)?.size ?? 0 : 0
   }
 
   close() {
@@ -287,10 +337,11 @@ export function landComposerAttachments(slot: Slot, paths: string[]) { composerS
 export function takeComposerArrivals(slot: Slot) { return composerSync.takeComposerArrivals(slot) }
 export function handOverComposerUploads(from: Slot, to: Slot) { composerSync.handOverComposerUploads(from, to) }
 export function finishComposerAttachment(slot: Slot, paths: string[] = []) { composerSync.finishComposerAttachment(slot, paths) }
-export function registerComposerUpload(slot: Slot, controller: AbortController) { composerSync.registerComposerUpload(slot, controller) }
+export function registerComposerUpload(slot: Slot, controller: AbortController, name?: string) { composerSync.registerComposerUpload(slot, controller, name) }
 export function unregisterComposerUpload(slot: Slot, controller: AbortController) { composerSync.unregisterComposerUpload(slot, controller) }
 export function composerUploadSlot(controller: AbortController) { return composerSync.composerUploadSlot(controller) }
 export function cancelComposerUploads(slot: Slot) { composerSync.cancelComposerUploads(slot) }
+export function cancelComposerUpload(controller: AbortController) { composerSync.cancelComposerUpload(controller) }
 export function reportComposerUploadProgress(controller: AbortController, loaded: number, total: number) {
   composerSync.reportComposerUploadProgress(controller, loaded, total)
 }
@@ -320,33 +371,33 @@ export function useComposerArrivals(
   }, [slot, enabled])
 }
 
-/** The live upload count for a slot, as state, so a label that names it
- *  re-renders when a second upload starts or one of two settles. */
-export function useComposerUploadCount(slot: Slot) {
-  return useSyncExternalStore(
-    composerSync.subscribe,
-    () => composerSync.composerUploadCount(slot),
-    () => 0,
-  )
+/** The slot's running uploads, one entry per request in start order, as a
+ *  stable snapshot: a progress step of one upload re-renders its readers, and
+ *  a hold change elsewhere does not. */
+export function useComposerUploads(slot: Slot): ComposerUpload[] {
+  return useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploads(slot), () => NO_UPLOADS)
 }
 
-/** The slot's upload progress: the share of bytes sent (null until a positive
- *  total is reported), and `stalled` once no byte has moved for `UPLOAD_STALL_MS`
- *  while bytes are left to send or a started request's total is unknown. A request
- *  reports its start, at zero bytes, when it is sent, so one that never reaches
- *  the server stalls too; files still being prepared are not sent yet and do not. */
-export function useComposerUploadProgress(slot: Slot): { ratio: number | null; stalled: boolean } {
-  const loaded = useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploadBytes(slot, 'loaded'), () => 0)
-  const total = useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploadBytes(slot, 'total'), () => 0)
-  const sending = useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploadSending(slot), () => false)
+/** Whether the slot has a running upload. A boolean snapshot, so a progress
+ *  step does not re-render its reader: only the first upload starting and the
+ *  last one ending do. */
+export function useComposerUploadsRunning(slot: Slot): boolean {
+  return useSyncExternalStore(composerSync.subscribe, () => composerSync.hasComposerUploads(slot), () => false)
+}
+
+/** Whether one upload is stalled: `sending` and no byte moved for
+ *  `UPLOAD_STALL_MS`. A request reports its start, at zero bytes, when it is
+ *  sent, so one that never reaches the server stalls too; a file still being
+ *  prepared is not sending yet and does not. A new `key` restarts the window. */
+export function useUploadStalled(key: unknown, sending: boolean, loaded: number): boolean {
   const [stalled, setStalled] = useState(false)
   useEffect(() => {
     setStalled(false)
     if (!sending) return
     const timer = setTimeout(() => setStalled(true), UPLOAD_STALL_MS)
     return () => clearTimeout(timer)
-  }, [slot, sending, loaded])
-  return { ratio: total > 0 ? loaded / total : null, stalled: sending && stalled }
+  }, [key, sending, loaded])
+  return sending && stalled
 }
 
 /** Independent logical window for deterministic tests. */

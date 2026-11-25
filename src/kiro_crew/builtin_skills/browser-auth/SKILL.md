@@ -1,7 +1,7 @@
 ---
 name: browser-auth
 description: Browse a site that needs a logged-in session. The agent never types a password; the user takes over the live browser view in the chat, signs in, and hands it back. Use when a page is behind a login wall, a CAPTCHA or a two-factor prompt.
-triggers: login required, behind a login wall, authenticated browsing, session expired, sign in to browse, take over to sign in, captcha, two-factor, 2fa code
+triggers: login required, behind a login wall, authenticated browsing, captcha, two-factor, 2fa code
 ---
 
 # Browser Auth: browsing what needs a login
@@ -12,6 +12,11 @@ in to are already signed in for you. Where it is Kiro's own headless Chromium
 (a server, a remote gateway, or the user's choice in Settings), a login happens
 ONCE, by the user, through takeover, and its cookies stay in Kiro's browser
 profile for later turns.
+
+An edition that signs sites in by itself keeps Kiro's Chromium off its company
+sign-in pages altogether, even during a takeover: read the result's `sign_in`
+block (`outcome`, `reason`, `note`) and pass its note to the user, rather than
+asking them to take over for that sign-in.
 
 Either way the rule is the same: **you never type a password.** `type`
 refuses a password field with `password_field`, the live view masks password

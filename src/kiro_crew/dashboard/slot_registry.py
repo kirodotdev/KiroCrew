@@ -209,6 +209,9 @@ class DeferredDismissal:
     # race clears only a stamp carrying this id, so a legitimate close of the
     # new tab stamped on the same clock tick -- equal ``closed_at`` -- stays.
     closed_id: str = field(default_factory=lambda: secrets.token_hex(8))
+    # The popped original, marked once the marker commits so its late full save
+    # keeps the close (``metadata_line.keeps_own_close``).
+    slot: Any = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -737,6 +740,7 @@ class SlotRegistry:
         transcript: str,
         closed_at: float,
         created_at: str = "",
+        slot: Any = None,
     ) -> DeferredDismissal | None:
         """A close hands its key over with its marker unwritten; keep the dismissal owed.
 
@@ -769,7 +773,7 @@ class SlotRegistry:
         mutex = getattr(owner, "_truncation_claim_mutex", None)
         if not isinstance(watches, dict) or mutex is None:
             return None
-        record = DeferredDismissal(basis.name, transcript, closed_at, basis, created_at)
+        record = DeferredDismissal(basis.name, transcript, closed_at, basis, created_at, slot=slot)
         with mutex:
             watch = watches.get(basis.name)
             if watch is None or basis.closed or basis.deferred:

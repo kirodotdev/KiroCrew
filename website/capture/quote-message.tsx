@@ -9,7 +9,7 @@
  * a row's Quote stages it, the composer shows the card, Send consumes it into
  * `prependQuote(typed)` + `meta.quote`, and the new row draws the card.
  *
- * Query string: ?theme=dark|light&scene=hover|menu|composer|sent|narrow|unavailable[&host=crewmate]
+ * Query string: ?theme=dark|light&scene=hover|menu|composer|sent|narrow|unavailable[&host=crewmate][&quote=long]
  *   `unavailable` is `sent` plus the status row ChatPage shows when a quote
  *   card's jump finds no such message (the literal ChatPage status-row markup
  *   with `pages.chat.quoteCard.message_unavailable`).
@@ -75,9 +75,30 @@ const KIRO_1 = [
   '- Cancel on a queued message restores the typed text **and** re-stages the files.',
   '- The Steer/Queue split button remembers its last mode per slot.',
 ].join('\n')
+// `quote=long`: the quoted reply is a long one with a table and a list, the
+// shape the sent card clamps and renders as markdown.
+const KIRO_LONG = [
+  'I worked out whether we can drop the "Does it need to start in your project folder?" question entirely. We can.',
+  '',
+  '| Server | Now | After the change |',
+  '|---|---|---|',
+  "| Crew's own 4 | Shared, no question | Same |",
+  '| builder, slack, chorus | Asks you | Shared without asking |',
+  '| creds-agent | Not shared | Same |',
+  '| Anything Crew can\'t judge | Asks you | One per chat, no question |',
+  '',
+  'How it decides:',
+  '',
+  '- Only facts that are declared count.',
+  '- It does not guess from a server\'s config.',
+  '- A server seen reading the project folder switches to one per chat.',
+  '',
+  'Run `kirocrew mcp list` to see where each one stands.',
+].join('\n')
+const longQuote = params.get('quote') === 'long'
 const SEED: Row[] = [
   { role: 'user', content: 'What changed in the composer PR? Keep it short.', ts: T0, mid: 'm1' },
-  { role: 'assistant', content: KIRO_1, ts: '2026-09-29T09:12:40Z', mid: 'm2' },
+  { role: 'assistant', content: longQuote ? KIRO_LONG : KIRO_1, ts: '2026-09-29T09:12:40Z', mid: 'm2' },
 ]
 const TYPED = 'Can the chips get a fixed height instead? The re-measure jitters on my phone.'
 
@@ -113,7 +134,7 @@ function Scene() {
     }
     if (scene === 'sent' || scene === 'unavailable') {
       // What ChatPage's send() writes: the block-prefixed text + meta.quote.
-      const q: MessageQuote = { role: 'assistant', text: KIRO_1, ts: SEED[1].ts, mid: SEED[1].mid, ...(crewmateHost ? { author: CREWMATE.label } : {}) }
+      const q: MessageQuote = { role: 'assistant', text: SEED[1].content, ts: SEED[1].ts, mid: SEED[1].mid, ...(crewmateHost ? { author: CREWMATE.label } : {}) }
       setRows(r => [...r, { role: 'user', content: prependQuote(TYPED, q), ts: '2026-09-29T09:14:00Z', mid: 'm3', meta: { quote: q } },
         { role: 'assistant', content: 'Because the chip type scale and padding can change independently; a constant drifted twice before. Measuring makes the reservation follow the CSS.', ts: '2026-09-29T09:14:30Z', mid: 'm4' }])
     }

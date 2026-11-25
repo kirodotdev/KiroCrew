@@ -259,9 +259,9 @@ export default function McpCustomServerModal({ open, onClose, editName, askAgent
             <Trans
               i18nKey="components.mcpCustomServerModal.stored_header_values_are_hidden"
               // The value the read put in place of every stored header value:
-              // a save that sends it back unchanged keeps the stored value.
-              values={{ marker: Object.values(specQuery.data.spec.headers ?? {})[0] }}
-              components={{ marker: <code className="font-mono" /> }}
+              // a save that sends it back unchanged keeps the stored value. It
+              // is the chip's child, never a value, so <Trans> never parses it.
+              components={{ marker: <code className="font-mono">{Object.values(specQuery.data.spec.headers ?? {})[0]}</code> }}
             />
           </p>
         )}

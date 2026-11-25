@@ -29,16 +29,26 @@ from kiro_crew.dashboard.chat_handlers import _retract_failed_newborn, write_sse
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, _sync_dashboard_slots
 from kiro_crew.dashboard.kiro_readiness import (
+    KAS_TURN_REFUSED_CODE,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
     turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import (
+    CRON_RUN_READ_ONLY_CODE,
+    CRON_RUN_READ_ONLY_ERROR,
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
+    is_cron_run_read_only,
     is_relay_archive,
 )
-from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+from kiro_crew.dashboard.slot_buffers import (
+    drain_stale_pending,
+    flush_restored_hold,
+    stream_frames,
+    stream_reader,
+    stream_wait,
+)
 from kiro_crew.dashboard.slot_ownership import (
     app_names_bot,
     app_owns_slot,
@@ -70,9 +80,14 @@ def _make_id() -> str:
 # ``context._STRUCTURAL_MARKER_RES``: ``ContextBuilder.build_message`` neutralizes
 # the whole turn with that global set, so a global entry would strip the fences
 # added below and collapse the separation it is meant to create.
+#
+# A match starts only at the first dash of a run (``(?<!-)``). Any match that
+# starts inside a run is the tail of the one that starts at the run's first
+# dash, which the left-to-right scan takes first, so the scrubbed text is the same;
+# without the guard every start inside a long run rescans the rest of it.
 _CALLER_FENCE_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
-    re.compile(r"[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
 )
 _FENCE_NEUTRALIZED = "[marker-removed]"
 
@@ -82,6 +97,14 @@ def _scrub_caller_fences(text: str) -> str:
     for pattern in _CALLER_FENCE_RES:
         text = pattern.sub(_FENCE_NEUTRALIZED, text)
     return text
+
+
+def _text_of_part(part: dict[str, Any]) -> str:
+    """The text of one ``text`` content part, coerced like a scalar ``content``."""
+    text = part.get("text", "")
+    if isinstance(text, str):
+        return text
+    return "" if text is None else str(text)
 
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> str:
@@ -108,9 +131,7 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> str:
         content = msg.get("content") or ""
         if isinstance(content, list):
             content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
+                _text_of_part(p) for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
         elif not isinstance(content, str):
             # A scalar (or null) content is off-spec but must not 500: coerce
@@ -285,13 +306,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=400,
             )
-        # Reject unsupported roles loudly (tool/function)
+        # Reject unsupported roles loudly (tool/function). A list or object role
+        # is unsupported too; it cannot be looked up in the set below.
         role = msg.get("role", "user")
-        if role in _UNSUPPORTED_ROLES:
+        if isinstance(role, (list, dict)) or role in _UNSUPPORTED_ROLES:
+            shown = role if isinstance(role, str) else f"<{type(role).__name__}>"
             return web.json_response(
                 {
                     "error": {
-                        "message": f"role {role!r} not supported",
+                        "message": f"role {shown!r} not supported",
                         "type": "invalid_request_error",
                     }
                 },
@@ -454,31 +477,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     # top-level duplicate is the dashboard/i18n contract
                     # (test_error_code_contract reads the top-level dict).
                     "code": "member_slot_reserved",
-                },
-                status=409,
-            )
-        # A relay archive is read-only. Reaching the local dispatch chokepoint
-        # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
-        # leaving this HTTP caller waiting on a turn that never runs. Refuse
-        # BEFORE any mutation. A freshly-created slot is always local, so this
-        # only rejects an existing archive.
-        if is_relay_archive(slot):
-            sel().log_api_access(
-                caller=request.remote or "",
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="openai_compat",
-                resources=f"slot={slot_id}",
-                error="relay archive is read-only",
-            )
-            return web.json_response(
-                {
-                    "error": {
-                        "message": RELAY_ARCHIVE_ERROR,
-                        "type": "invalid_request_error",
-                        "code": RELAY_ARCHIVE_CODE,
-                    },
-                    "code": RELAY_ARCHIVE_CODE,
                 },
                 status=409,
             )
@@ -648,6 +646,44 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
             return _foreign_slot_response()
 
+    # A relay archive is read-only. Reaching the local dispatch chokepoint
+    # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
+    # leaving this HTTP caller waiting on a turn that never runs. A cron run's
+    # transcript the History resume marked read-only ends at the same
+    # chokepoint, so it is refused here too, with its own code. Refused BEFORE
+    # any mutation, and AFTER the app-ownership checks above so a foreign app
+    # cannot tell a read-only slot apart from one it cannot reach via the 409.
+    # A slot this request created, the ephemeral one included, is never
+    # read-only, so this only rejects an existing one.
+    cron_run = is_cron_run_read_only(slot)
+    if cron_run or is_relay_archive(slot):
+        code, message = (
+            (CRON_RUN_READ_ONLY_CODE, CRON_RUN_READ_ONLY_ERROR)
+            if cron_run
+            else (RELAY_ARCHIVE_CODE, RELAY_ARCHIVE_ERROR)
+        )
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="openai_compat",
+            resources=f"slot={slot_id}",
+            error=(
+                "cron run transcript is read-only" if cron_run else "relay archive is read-only"
+            ),
+        )
+        return web.json_response(
+            {
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                },
+                "code": code,
+            },
+            status=409,
+        )
+
     # Unlike the dashboard, this endpoint has no transcript the caller reads. A
     # turn that ends on its `error` card answers the generic `turn_failed`
     # (`_TurnOutcome`). When the turn runs on a harness that signs in through
@@ -657,7 +693,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # the slot, so the answer says nothing about a slot it cannot reach.
     if await rerun_signs_in_via_kiro_cli(state.sessions, slot, reuses_live=True):
         # The session this turn runs on names its harness; the KAS engine bundle
-        # is served by Crew's own sign-in and needs no kiro-cli.
+        # and a Crew-owned relay are served by Crew's own sign-in, not kiro-cli's.
         harness_turn, turn_session = turn_gate_target(state, slot.key)
         blocked = await reject_if_kiro_unverified(
             request, harness_turn=harness_turn, session_key=turn_session
@@ -666,15 +702,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             if freshly_created:
                 # The probe awaited: a slot another request took up stays.
                 _retract_failed_newborn(state, slot)
+            message = "Kiro CLI setup or sign-in is required before starting a session."
+            code = "kiro_prerequisite_required"
+            gate_body = json.loads(blocked.text or "{}")
+            if gate_body.get("code") == KAS_TURN_REFUSED_CODE:
+                # Crew's own sign-in refused this KAS turn: kiro-cli cannot clear it,
+                # so the caller gets the gate's own remedy, not kiro-cli's.
+                message, code = gate_body["error"], KAS_TURN_REFUSED_CODE
             return web.json_response(
-                {
-                    "error": {
-                        "message": "Kiro CLI setup or sign-in is required before starting a "
-                        "session.",
-                        "type": "service_unavailable_error",
-                        "code": "kiro_prerequisite_required",
-                    }
-                },
+                {"error": {"message": message, "type": "service_unavailable_error", "code": code}},
                 status=503,
             )
     # The checks above can yield: the slot may have been closed, replaced, or
@@ -690,8 +726,8 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     if slot.running is True:
         return _slot_busy_response(request, slot_id or slot.key)
 
-    # Drain stale pending from prior turns whose reader disconnected
-    slot.drain()
+    # Drain what prior turns left pending; a still-attached reader keeps its end.
+    stream_epoch = drain_stale_pending(slot)
 
     if agent:
         if slot.mode == "member" and agent != slot.agent:
@@ -769,7 +805,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # queue BEFORE the turn is dispatched: the first `await` inside the response
     # helpers lets the turn run, so a scope opened there would leave a window in
     # which a turn-end release could discard tokens this reader owes its client.
-    with slot.pending_consumer():
+    with stream_reader(slot, stream_epoch):
         # The caller is authorized and the turn is about to start: join its trace
         # when asked to (tracing/inbound.py). "" when off, invalid or tracing is off.
         traceparent = trace_inbound.begin(request.headers)
@@ -813,11 +849,19 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
 
         if stream:
             return await _stream_response(
-                request, state, slot, completion_id, model, created, ephemeral, traceparent
+                request,
+                state,
+                slot,
+                completion_id,
+                model,
+                created,
+                ephemeral,
+                traceparent,
+                epoch=stream_epoch,
             )
         else:
             blocking = await _blocking_response(
-                state, slot, completion_id, model, created, ephemeral
+                state, slot, completion_id, model, created, ephemeral, epoch=stream_epoch
             )
             if traceparent:
                 blocking.headers["traceparent"] = traceparent
@@ -891,8 +935,11 @@ async def _stream_response(
     created: int,
     ephemeral: bool,
     traceparent: str = "",
+    *,
+    epoch: int | None = None,
 ) -> web.StreamResponse:
-    """Stream SSE in OpenAI format."""
+    """Stream SSE in OpenAI format; *epoch* is the stream's (``drain_stale_pending``)."""
+    epoch = slot._stream_epoch if epoch is None else epoch
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -906,7 +953,7 @@ async def _stream_response(
         _last_emitted_len = 0
         outcome = _TurnOutcome()
         while True:
-            pending = slot.drain()
+            pending = stream_frames(slot, epoch)
             for msg in pending:
                 outcome.observe(msg)
                 if msg.get("cls") == "done":
@@ -989,7 +1036,7 @@ async def _stream_response(
                     return await _stream_server_error(request, resp)
 
             try:
-                await asyncio.wait_for(slot.event.wait(), timeout=30)
+                await asyncio.wait_for(stream_wait(slot, epoch), timeout=30)
             except asyncio.TimeoutError:
                 await write_sse_or_abort(request, resp, b": keepalive\n\n")
     except (ConnectionResetError, asyncio.CancelledError):
@@ -1011,18 +1058,23 @@ async def _blocking_response(
     model: str,
     created: int,
     ephemeral: bool,
+    *,
+    epoch: int | None = None,
 ) -> web.Response:
     """Wait for full completion and return a single JSON response.
+
+    *epoch* is the reader's, as ``_stream_response`` takes it.
 
     Note: ``usage`` is hardcoded to zero — KiroCrew does not expose token
     counts at the slot layer.
     """
+    epoch = slot._stream_epoch if epoch is None else epoch
     collected: list[str] = []
     outcome = _TurnOutcome()
 
     try:
         while True:
-            pending = slot.drain()
+            pending = stream_frames(slot, epoch)
             for msg in pending:
                 outcome.observe(msg)
                 if msg.get("cls") == "done" and outcome.reason is not None:
@@ -1083,7 +1135,7 @@ async def _blocking_response(
                     )
 
             try:
-                await asyncio.wait_for(slot.event.wait(), timeout=30)
+                await asyncio.wait_for(stream_wait(slot, epoch), timeout=30)
             except asyncio.TimeoutError:
                 pass
     finally:

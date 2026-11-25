@@ -1152,6 +1152,8 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.cron_script_context import (  # noqa: F401
         _ACCOUNT_RESOURCE_RE,
         _CFN_PHYSICAL_NAME_RE,
+        _COULD_CARRY_DATA_OUT,
+        _READS_AS_CREDENTIAL,
         _REFUSAL_CODE,
         _RESOURCE_NAME_RE,
         Done,
@@ -1163,12 +1165,13 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         SkipError,
         _account_resource_apart,
         _changed_by_scan,
-        _changed_path,
         _delivered_text,
-        _reads_as_credential,
         _redact_deep,
         _redact_pair,
         _refusal_code,
+        _refusal_reason,
+        _refused_argument,
+        _scan_reason,
         _scanned_tool_args,
         logger,
     )
@@ -1200,13 +1203,21 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         validate_secret_env_grant,
     )
     from kiro_crew.cron_script_mcp import (  # noqa: F401
+        _HEADER_NAME_CHARS,
+        _REMOTE_ANSWER_SECS,
         _STDERR_TAIL_READ_SPAN,
         KeptMcpServers,
         McpToolClient,
         McpToolError,
+        _AnswerLines,
         _crew_agent_spec,
+        _expanded,
         _joined_text,
+        _placeholder_source,
+        _refuse_uncallable_remote,
         _refuse_unlaunchable,
+        _remote_headers,
+        _RemoteMcpServer,
         _resolve_mcp_server,
         _switched_off_tools,
         _tool_is_switched_off,
@@ -1259,6 +1270,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         refuses,
         scan_exfiltration_urls,
     )
+    from kiro_crew.security.blocked_links import blocked_links  # noqa: F401
     from kiro_crew.security.redaction import (  # noqa: F401
         _ARN_ACCOUNT_ID_12_DIGITS_RE,
         _BOT_ID_LENGTHS,

@@ -27,6 +27,7 @@ On Webex, use the finite legacy path even for a supported pull request.
 |---|---|
 | User is waiting, total work under 30 minutes | Bounded in-turn `wait` + poll |
 | One supported pull request, readiness decided by typed provider facts | `monitor_watch` |
+| One GitHub pull request that waits on others | `monitor_watch`, up to 3 of them in `also_wake_on` |
 | PR comments/advisory findings | Finite `monitor_start`, `judge: false` |
 | A required final turn, or acting on silence | Finite `monitor_start`, `gate=false` |
 | Act on a schedule, multiple subjects, unsupported ticket or deployment | Finite `monitor_start` |
@@ -96,7 +97,9 @@ monitor_watch(kind=<kind>, target=<full PR URL>, objective="review_ready",
 Inspect the schema: positive `max_tokens`/`max_provider_errors`, and
 `max_agent_turns` where 0 = no wake cap. Ordinary unchanged/pending/retry/terminal probes
 spend no agent turn; a new actionable fingerprint wakes the owning session at
-most once with a bounded summary. Fetch logs, comments or diffs only when needed
+most once with a bounded summary, and a pending pull request wakes it once when its
+checks finish green outside draft or, on GitHub, a person other than its author
+writes. Fetch logs, comments or diffs only when needed
 on that wake. The token cap applies only when usage is reported;
 `token_usage_known` exposes that gap; runtime always caps, turns only if
 set positive. Provider errors are bounded too. GitLab uses installed
@@ -194,7 +197,7 @@ security. Fix, commit and push only within the user's authorization.
    blocker/stall conditions and stop tool. Include worktree/branch and whether
    pushes are authorized. Pass positive cycle and runtime bounds. For Kiro Crew
    preparation use kirocrew-prepare-pr's budget; never raise its cap yourself.
-2. Load the MCP tool by exact `tool_search` ID before calling it. Report only
+2. Load the MCP tool by its exact id, as the `[TOOL NAMES]` block says, before calling it. Report only
    that monitoring was REQUESTED and END YOUR TURN immediately. Application
    happens when the turn's result is processed, not synchronously with the call.
 3. On a later turn, verify the applied transcript notice and session-bound state

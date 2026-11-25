@@ -27,6 +27,12 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.providers.acp_turns import _to_llm_event
 
+
+@pytest.fixture(autouse=True)
+def _close_managers(close_subagent_managers) -> None:
+    """Every manager built here opens tasks.db; close it at teardown, not at GC."""
+
+
 #: The servers a stock pi or claude Crew session hands its harness.
 _CREW_SERVERS = ("kirocrew-core", "kirocrew-cron")
 
@@ -299,6 +305,26 @@ async def test_a_subagent_wait_is_held_to_its_declared_seconds(backend, frames):
 async def test_the_subagent_run_loop_reads_the_servers_off_its_provider(backend, servers, trusted):
     """``run_turn`` hands the provider's harness and the servers it was handed to
     the dispatch snapshot, so the reaper judges the live wait."""
+    await _run_and_judge(backend, servers, trusted)
+
+
+@pytest.mark.asyncio
+async def test_the_servers_are_read_by_the_capability_not_the_backend_name(monkeypatch):
+    """A pi record without ``names_crew_tools_by_fused_name`` hands no servers."""
+    import dataclasses
+
+    from kiro_crew.agent_sdk import capabilities
+
+    real = capabilities.capabilities_for
+
+    def _without_fused_names(backend: str):  # type: ignore[no-untyped-def]
+        return dataclasses.replace(real(backend), names_crew_tools_by_fused_name=False)
+
+    monkeypatch.setattr(capabilities, "capabilities_for", _without_fused_names)
+    await _run_and_judge(ACP_BACKEND_PI, ("kirocrew-core",), False)
+
+
+async def _run_and_judge(backend, servers, trusted):  # type: ignore[no-untyped-def]
     from subagent_helpers import _mock_ctx_builder_auto_spawn, _mock_sessions
 
     from kiro_crew.execution_context import execution_for_store

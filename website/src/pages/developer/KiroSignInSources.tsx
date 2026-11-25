@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Info, Loader2 } from 'lucide-react'
-import { api, type KasLoginSourceAccount, type KasLoginSources } from '../../api/client'
+import { api, type KasBundleStatus, type KasLoginSourceAccount, type KasLoginSources } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { accountProviderLabel } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -31,7 +32,9 @@ export function useKiroSignInSources() {
   return useQuery({
     queryKey: SOURCES_QUERY_KEY,
     queryFn: api.kasLoginSources,
-    refetchInterval: query => (query.state.data?.name_pending ? NAME_POLL_MS : SOURCES_REREAD_MS),
+    // Never poll a refusal (not the owner) again: each ask writes another denial row.
+    refetchInterval: query => (isPermissionRefusal(query.state.error) ? false
+      : query.state.data?.name_pending ? NAME_POLL_MS : SOURCES_REREAD_MS),
   })
 }
 
@@ -39,12 +42,11 @@ export function useKiroSignInSources() {
  * Remove the sign-in stored in this app (the card's Sign out, and "Use the Kiro
  * CLI account"). One mutation for both, so each leaves the same state behind.
  */
-export function useKiroSignOut(identity: string, onSignedOut: () => void) {
+export function useKiroSignOut(identity: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: () => api.kasLoginLogout(identity),
     onSuccess: () => {
-      onSignedOut()
       // Open relay Crew windows ran as this sign-in: close them now, not at
       // their next renewal.
       void closeRelayCrews()
@@ -146,7 +148,8 @@ export function SignInStoreUnreadableErrors({ sources }: { sources: KasLoginSour
 
 /**
  * Says which account Kiro Agent runs as when kiro-cli is signed in too:
- * - nothing stored here: sessions use the kiro-cli sign-in, named;
+ * - nothing stored here: sessions use the kiro-cli sign-in, named, and whether
+ *   signing in here also moves new chats to the built-in engine;
  * - both stored for different accounts (or not provably the same): names both and
  *   offers to remove the one stored here, so sessions go back to kiro-cli's.
  * Removing asks once, in place, and is undone by signing in here again.
@@ -154,17 +157,25 @@ export function SignInStoreUnreadableErrors({ sources }: { sources: KasLoginSour
 export function KiroSignInSourcesNotice({
   sources,
   identity,
-  onRemoved,
+  hideTitle = false,
 }: {
   sources: KasLoginSources | undefined
   /** The stored sign-in's slot (`KasLoginStatus.identity`), which the removal names. */
   identity: string
-  onRemoved: () => void
+  /** `using_kiro_cli` only: the page header already reads as this notice's title. */
+  hideTitle?: boolean
 }) {
   const kind = sourcesNotice(sources)
   const [confirming, setConfirming] = useState(false)
-  const remove = useKiroSignOut(identity, onRemoved)
+  const remove = useKiroSignOut(identity)
   const [emailHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
+  // The entry the chat's sign-in card reads (`KiroSignInPrompt`), so the two agree.
+  const moves = useQuery<KasBundleStatus>({
+    queryKey: ['kas-bundle'],
+    queryFn: () => api.kasBundleStatus(),
+    enabled: kind === 'using_kiro_cli',
+    retry: false,
+  }).data?.sign_in_moves_to_engine === true
   if (!sources || !kind) return null
   const cli = accountName(sources.kiro_cli, sources.name_pending, emailHidden)
   if (kind === 'using_kiro_cli') {
@@ -179,13 +190,19 @@ export function KiroSignInSourcesNotice({
           <Info className="lucide-inline" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-text-strong">
-            {i18nT('pages.developer.kiroSignInCard.using_kiro_cli_title')}
-          </p>
-          <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
+          {hideTitle ? null : (
+            <p className="text-sm font-medium text-text-strong">
+              {i18nT('pages.developer.kiroSignInCard.using_kiro_cli_title')}
+            </p>
+          )}
+          <p className={`${hideTitle ? '' : 'mt-0.5 '}text-[13px] leading-relaxed text-muted`}>
             {cli
-              ? i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body', { account: cli })
-              : i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed')}
+              ? i18nT(moves
+                ? 'pages.developer.kiroSignInCard.using_kiro_cli_body_moves'
+                : 'pages.developer.kiroSignInCard.using_kiro_cli_body', { account: cli })
+              : i18nT(moves
+                ? 'pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed_moves'
+                : 'pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed')}
           </p>
           <AccountNameError sources={sources} besideChooser />
         </div>

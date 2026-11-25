@@ -149,17 +149,18 @@ class CrewBackendPin:
         The pre-gate check (H17): it reads ``selectable_backends()`` now, so a
         harness that has since been denied or marked unservable refuses.
 
-        A stored Kiro CLI pin (``kiro``) reads as a stored ``agent.acp_backend``
-        does in ``config.loader_builders._read_backend_choice``: off the KAS bundle
-        route, ``kiro_cli_pick_backend()`` decides, which answers KAS once the
-        host's kiro-cli is confirmed to offer v3 and while KAS is selectable
+        A stored Kiro CLI pin (``kiro``) reads kiro-cli's help verdict: off the KAS
+        bundle route, ``kiro_cli_listed_backend()`` decides, which answers KAS once
+        the host's kiro-cli is confirmed to offer v3 and while KAS is selectable
         (the decision record ``docs/decisions/*-a-kiro-cli-choice-runs-on-kas.md``).
+        A stored ``agent.acp_backend`` pick also waits for a v3 start
+        (``config.loader_builders._read_backend_choice``).
         This is a stored-value read, so the selection gate never moves a Kiro CLI id itself.
         """
         runtime = _backends.backend_from_stored(self.stored)
         if isinstance(runtime, str) and runtime in _backends.selectable_backends():
             if runtime == _backends.ACP_BACKEND_KIRO and not self.kas_bundle:
-                return _backends.kiro_cli_pick_backend()
+                return _backends.kiro_cli_listed_backend()
             return runtime
         raise CrewmateHarnessUnavailable(self.crew, self.stored)
 
@@ -281,6 +282,41 @@ def kas_runs_here(config: Any) -> bool:
         if runtime == kas or bots_cannot_run_on(runtime):
             return True
     return False
+
+
+def kiro_cli_runs_anywhere(config: Any) -> bool:
+    """Whether any configured harness choice spawns kiro-cli. In memory.
+
+    The main and crewmate backends, a Bot's own pin, and the members of an enabled
+    ``agent.acp_failover`` chain. A choice runs kiro-cli when it is Kiro CLI, or KAS
+    served through kiro-cli's relay (``agent.kas_bundle`` off). A stored value is
+    read as written, so a pin that would land elsewhere still counts, and a Bot that
+    :func:`kas_runs_here` moves onto KAS counts too: the answer errs toward keeping
+    kiro-cli maintained. Never raises on a missing field.
+    """
+    from kiro_crew.acp_failover import failover_policy
+
+    agent = getattr(config, "agent", None)
+    relay = not getattr(agent, "kas_bundle", False)
+    chosen: list[object] = [
+        getattr(agent, "acp_backend", ""),
+        getattr(agent, "member_acp_backend", ""),
+    ]
+    for crew in list(getattr(config, "agents", {}) or {}):
+        pin = crewmate_pin_for(config, str(crew))
+        if pin is not None:
+            chosen.append(_backends.backend_from_stored(pin.stored))
+    policy = failover_policy(getattr(agent, "acp_failover", {}))
+    if policy.enabled:
+        chosen.extend(_backends.backend_from_stored(name) for name in policy.chain)
+    if any(
+        backend == _backends.ACP_BACKEND_KIRO or (relay and backend == _backends.ACP_BACKEND_KAS)
+        for backend in chosen
+    ):
+        return True
+    # A Bot that lands on KAS without choosing it (a worker spec KAS must carry, a pin
+    # to a harness Bots cannot run on) still runs through kiro-cli's relay.
+    return relay and kas_runs_here(config)
 
 
 def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:

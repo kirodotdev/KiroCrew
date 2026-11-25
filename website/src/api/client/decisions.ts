@@ -165,6 +165,12 @@ export interface DecisionsProviderData {
    * does not govern it. Absent on an older gateway.
    */
   provider_permitted?: Record<string, boolean>
+  /**
+   * When the dashboard surface refuses the configured model and a consent for it is
+   * recorded: the surfaces with their own profile that still send to it, and whether
+   * a surface with no profile of its own does. `null` otherwise. Absent on an older gateway.
+   */
+  still_sending?: { surfaces: string[]; unbound: boolean } | null
 }
 
 /** A SageMaker endpoint as the picker names it; the gateway builds the address. */

@@ -76,6 +76,11 @@ The electron-builder configuration lives in
   `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  `rpm.fpm` defines `_build_id_links none`, so the rpm ships no
+  `/usr/lib/.build-id` links: Electron's binaries are identical in every app
+  on the same Electron, so any other Electron app's rpm (and the nightly rpm)
+  claims the same link paths and rpm refuses the second install, in-app
+  updates included, as a file conflict.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
   binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
   Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
@@ -152,8 +157,8 @@ names the version and `packaging/kiro-cli-sha256` holds the sha256 of each
 artifact the build stages (the universal macOS DMG, the two Linux gnu zips, and
 the Windows x64 MSI) in
 `sha256sum` format keyed by the artifact's release path, `<version>/<file>`.
-Upstream hosts every release under that prefix but publishes a manifest — the
-only document naming sha256s — for `latest` alone, so a pinned build fetches the
+Upstream hosts every release under that prefix but publishes a manifest for
+`latest` alone, so a pinned build fetches the
 pinned version's own artifact URL and verifies it against the committed sha: it
 never reads the mutable manifest, a hotfix rebuild of an older tag keeps working
 after upstream releases, and a version bump without matching sha lines fails
@@ -168,8 +173,8 @@ build that wants the newest release (still sha256-verified). Bumping both files,
 after testing against the new release, is the whole procedure for
 shipping a newer kiro-cli in such a build ([release](release.md), step 1). On macOS the binary is
 extracted from the universal `Kiro CLI.dmg` (one Mach-O serves both arches; the
-DMG download is ~345 MB for kiro-cli 2.27); Linux uses the matching per-arch zip
-(~150 MB); Windows uses the x64 MSI (~250 MB). Downloads are cached per user
+DMG download is ~375 MB for kiro-cli 2.37.1); Linux uses the matching per-arch zip
+(~165 MB); Windows uses the x64 MSI (~385 MB). Downloads are cached per user
 under `~/.cache/kirocrew-build/kiro-cli`,
 so a rebuild against the same pin fetches nothing. A `BUNDLED-VERSION` file
 beside the payload records provenance; a clean-room smoke — empty `HOME`, minimal
@@ -391,7 +396,7 @@ Two properties are load-bearing and worth knowing before you touch that lane:
   than assuming it equals the runner's glibc. The AppImage links against
   it, which is why both Linux legs stay on 22.04 (glibc 2.35) rather than moving
   to 24.04 (2.39) — the newer floor would exclude AL2023, Debian 12 and RHEL 9.
-  A `BUNDLE_KIRO_CLI=1` build adds kiro-cli to that floor: at 2.27.1
+  A `BUNDLE_KIRO_CLI=1` build adds kiro-cli to that floor: at 2.37.1
   `kiro-cli-chat` requires `GLIBC_2.34` on x86_64 and `GLIBC_2.30` on aarch64, so
   it does not narrow the supported distro set. Re-measure both pinned zips when
   updating the CLI pin.
@@ -671,12 +676,13 @@ About (what the app menu's About item opens) shows no prerelease bug-report note
 and its App chip renders the build in the gateway's four-part spelling
 (`v0.13.0.11`, `editionBuildVersion` in `website/src/utils/displayVersion.ts`). A
 shell beside its own gateway therefore shows one version, and a shell beside
-another build's gateway shows both. Ordering is unchanged: semver, and so
-`isNewerVersion` and electron-updater, rank `0.13.0-11` below `0.13.0`, where the
-backend ranks `0.13.0.11` above it. The marker-driven managed lane never compares
-a candidate with `app.getVersion()`, but on the electron-updater feed lane a `-N`
-build would be offered its own base release as an upgrade, so an edition that
-stamps `-N` ships it on a managed lane. electron-builder also names the
+another build's gateway shows both. `isNewerVersion` ranks the stamp as the
+backend does: `0.13.0-11` is the build `0.13.0.11`, above `0.13.0`. That is the
+comparison the marker-driven managed lane makes between a `checkCommand` version
+and `app.getVersion()`, and the one the feed lane's direction gate
+(`shouldAutoOffer`) makes, so a `-N` build is not offered its own base release.
+electron-updater's own semver still ranks `0.13.0-11` below `0.13.0`. An edition
+that stamps `-N` ships it on a managed lane: electron-builder names the
 update-info file after the prerelease (`11-linux.yml` rather than
 `latest-linux.yml`), which only the feed lane reads. Tests:
 `test/test_build_desktop_shell_version.py`,
@@ -898,7 +904,7 @@ signal.
 
 With no gateway to reuse, the shell locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
-gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
+gateway --no-open`, polls `/api/live`, and loads the dashboard once it is
 healthy.
 
 The gateway's stdout and stderr go to `gateway-launch.log`. Off Windows the shell
@@ -984,6 +990,21 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+Settings > WakaTime's **Connect with WakaTime** rides the same gate.
+`window.wakatimeConnectAPI.openInBrowser()` takes no argument and invokes
+`wakatime:open-in-browser`, which runs the three checks above (a refusal rejects
+and opens nothing) and then hands one fixed URL to `shell.openExternal`: the
+window's own dashboard origin plus `/settings/overview?view=wakatime`, built in
+the main process. It answers `true` when the OS took the URL and `false`, with
+one log line, when it did not. The sign-in then finishes in the system browser,
+because the WakaTime callback needs the state cookie of the browser that
+started it ([wakatime-oauth-read-auth](../architecture/design-notes/wakatime-oauth-read-auth.md)).
+The window's navigation guard is unchanged. The Mochi panel's
+`mochi-panel:open-dashboard` is the precedent: a no-argument channel, so page
+content never names the URL the shell opens. With no bridge the panel shows its
+"open this dashboard in a web browser" note; on `false` or a refusal it shows the
+same text as an error notice.
+
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
 gateway off, or a non-loopback URL) does not ask in the first place. On every
@@ -991,7 +1012,7 @@ load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
 same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
 whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
-`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`wakatimeConnectAPI`, `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
@@ -1011,7 +1032,7 @@ that each is a whole port in 1..65535 other than the launch port, takes at most
 32 per window, and forwards each from this machine's `127.0.0.1` to the same
 port on the crew host's loopback, the forward the pane's own `ssh -L` hint asks
 the user to run by hand.
-The Windows titlebar menu rides the same ownership boundary, per action rather
+The in-app titlebar menu (Windows, and frameless Linux) rides the same ownership boundary, per action rather
 than per channel. `app-menu:items` and `app-menu:execute` in
 [`ipc-registrar.js`](../../website/electron/ipc-registrar.js) resolve whether the
 sender is the local dashboard through the three checks above — the fixed primary
@@ -1349,19 +1370,23 @@ the terminal route is named instead of the button).
 
 The shell keeps its own crash ledger beside `gateway-launch.log` in the app's
 logs directory (`runtime/crash/`, driven by `crash-collector.js`). The scan runs
-lazily, the first time the dashboard's crash notice asks for it. It reads the
-Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
-`.ips` diagnostic reports:
+lazily, the first time the dashboard's crash notice asks for it. A refused ask
+runs no scan, and the notice asks again after 15 s, 45 s, 2, 5 and 10 minutes,
+then stops. It reads the Crashpad dump directory (`app.getPath("crashDumps")`)
+and, on macOS, the user's `.ips` diagnostic reports:
 
-- `crashes.log` records each new crash of this app, capped at 500 lines.
+- `crashes.log` records each new crash of this app, capped at 500 lines. A
+  snapshot Crashpad took of this app while it kept running (exception code `0`,
+  or `0x517a7ed` on Windows) is not a crash: it gets no line and no notice, and
+  is deleted.
 - `crashes-seen.json` acknowledges each artifact once, so a crash is reported
   once rather than on every launch, capped at 2000 keys.
 - At most 25 unseen artifacts are inspected per app session, and a dump that
   reads short or unreadable on three consecutive scans is aged out.
 - A minidump proven to belong to another process (a child that inherited the
   Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
-  Unreadable dumps, Electron-shaped strangers and this app's own dumps are
-  never deleted.
+  Unreadable dumps, Electron-shaped strangers and this app's own crash dumps
+  are never deleted.
 - Minidumps that reached `crashes-seen.json` without that check (every scan
   writes off unread a dump older than the launch that first armed the
   collector) are swept: each is opened once more,
@@ -1394,6 +1419,14 @@ rail control is to leave focus mode first, with the toggle chord (Alt+Shift+M
 by default, rebindable on the shortcuts page) or this View menu item. While
 keyboard shortcuts are switched off the chord is dead, so the hidden chrome
 is not made inert and Tab still reveals it.
+The View submenu also holds a **Content Text Size** ladder of three radio items,
+Small, Medium and Large (12, 16 and 20 px; `text-size.js:TEXT_SIZE_TIERS`). A pick
+sets Chromium's default font size in every open dashboard window at once
+(`runtime/window/chrome.js:setFontSize`) and is saved as
+`displayPreferences.fontSize`, which seeds each new window's `defaultFontSize`.
+Only text whose CSS gives it no size, or a size in rem, moves; text pinned in px,
+spacing, the built-in terminal and the embedded browser panel stay as they are.
+A stored value that is not on the ladder is left in place and read as 16 px.
 When a remote crew is connected, the instance switcher shares the same bounded
 left region as the menu: it is a single trigger naming the crew on screen (see
 InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant
@@ -1404,7 +1437,11 @@ search affordance — and the palette remains reachable through its keyboard
 shortcut even while hidden.
 The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
-Linux retains the window manager's native frame and menu bar.
+A framed Linux window retains the window manager's native frame and menu bar. A
+frameless Linux window (a Wayland compositor that prefers client-side
+decorations) has no menu bar, so it shows the same hamburger menu, but only when
+the shell's preload sets `linuxAppMenu`; an older shell omits the flag and the
+trigger stays off.
 
 In macOS native fullscreen AppKit owns the top strip (pointing at it slides the
 menu bar down), so the dashboard pads the app frame (`data-testid="app-frame"`)
@@ -1663,7 +1700,11 @@ it), and `user-restart.js` (Settings → About's Restart gateway).
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close, or quits through the same path as the Quit
   menu item when the user chose that (`closeAction` in the app's own config,
-  decided by [`close-action.js`](../../website/electron/close-action.js)), and
+  decided by [`close-action.js`](../../website/electron/close-action.js)), shows
+  a one-time notice on the first such hide and words the tray quit item so it
+  names the background sessions that stop with a gateway the app started,
+  rebuilt whenever the supervisor's spawned child starts or goes away (both in
+  [`close-hide-notice.js`](../../website/electron/close-hide-notice.js)), and
   creates or removes the tray icon to match `showTrayIcon` (decided by
   [`tray-icon.js`](../../website/electron/tray-icon.js), which keeps the icon on
   Windows and Linux while the close button hides the window), and hides a
@@ -2074,8 +2115,16 @@ updater off, no metadata and nothing to run. Packagers that want the managed
 commands honored must install the resources directory root-owned.
 
 On the managed path the app treats a `checkCommand` that exits 0 and prints a
-version as an available update. **`updateCommand` runs only on the user's quit,
-never while the app runs** (the rulings are in
+version newer than the running app as an available update. The command prints
+the bare version alone, and exits non-zero once the install is current. A
+printed version equal to or older than the running one also reads as up to date,
+so the build already installed is not offered, but the re-check after an apply
+(below) reads that output as an install that did not change. A version
+`isNewerVersion` cannot rank, or a line that is more than a bare version
+(`kirocrew 0.13.0.12`), is still offered. That comparison reads an edition
+shell's `0.13.0-11` stamp as the four-part build `0.13.0.11`.
+**`updateCommand` runs only on the user's quit, never while the app runs** (the
+rulings are in
 the 2026-11-10 decision "updates never restart a running gateway"):
 
 - **A click arms.** `install()` (the Install button, the "Restart to update"
@@ -2121,7 +2170,8 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   `app.exit` is the only exit. The feed lane holds quits for its gateway stop
   the same way. Pinned by `website/electron/test/update-second-quit-keeps-apply.test.js`.
 - **An apply the quit left behind is finished at the next app start.** If the
-  quit-time apply was interrupted or failed, the arm stays. The next start runs
+  quit-time apply was interrupted or failed, or a Windows session end left the
+  update unapplied, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
   the main window opens, clears the arm, and relaunches once into the new bundle.
   While the update command runs, the boot splash shows in its own window
@@ -2140,9 +2190,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   Then it probes whether a gateway is still running (a gateway that outlived the
   quit): this bundle's gateway, or, when that cannot be identified (Windows, a
   failed process lookup), anything listening on the launch port
-  (`gateway-probe.js`). If one is, nothing is applied, the arm stays,
-  and a notice names the `kirocrew stop --port <port>` command. A probe that
-  cannot answer defers the same way. If
+  (`gateway-probe.js`). If one is, nothing is applied and the arm stays. For
+  this bundle's gateway the notice names the `kirocrew stop --port <port>`
+  command; any other holder is named as unidentified, with no command, because
+  the app cannot tell what it is or whether that command would stop it. A probe
+  that cannot answer defers the same way. If
   that apply fails too, the arm is cleared, the installed version starts and
   the error is shown as an install error. The gateway the app hosts skips its
   own boot-time apply, so exactly one side applies and the app and gateway never
@@ -2161,7 +2213,17 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   requested before the quit, so a quit-time apply that is refused (governance,
   a newer feed, a gateway still running) still brings the app back; the feed
   lane asks for it explicitly on each of those stand-downs, because only
-  `quitAndInstall` honors its relaunch flag.
+  `quitAndInstall` honors its relaunch flag. The update modal and Settings →
+  About show Restart now only where that IPC would accept the window:
+  `updateAPI.canRelaunch()` (the `update:can-relaunch` IPC) runs the same
+  `assertLocalDashboard` check and answers a boolean, like
+  `gateway:can-restart`. `useInstallDispatch` asks it when the update arms and
+  again whenever the window regains focus or becomes visible, and only the
+  newest answer counts, so one transient `false` does not hide the action for
+  the rest of the session. Where it answers `false` (a gateway reached through
+  a port another process forwards, say), only "Install when I quit" is
+  offered. A shell without `canRelaunch` offers Restart now whenever
+  `relaunch` exists.
 - **Every apply is logged to `gateway-launch.log`.** `updateCommand` writes
   `[update] managed update command started (pid N)` when it spawns and
   `... ended: <outcome>, ran N ms, N bytes of output` when it ends, on quit and
@@ -2174,8 +2236,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   `test/managed-apply-log.test.js`.
 
 Windows shutdown, restart and sign-out end the app without a quit, so on Windows
-the app shows a "Kiro Crew update ready" notice at session end instead, telling
-the user to quit from the tray to install. It never runs `updateCommand` then:
+the app shows a "Kiro Crew update ready" notice at session end instead. For an
+armed update (Install, or an arm adopted from the dashboard), it says Kiro Crew
+tries to install it when it next starts (the start-time apply above), or that a
+tray quit installs it now; for a found update that was not armed, it tells the
+user to quit from the tray to install. It never runs `updateCommand` then:
 Windows gives the app a few seconds, and an apply cut short can leave a
 half-installed app. The notice appears only while a quit would apply an update,
 and not once an install has started.

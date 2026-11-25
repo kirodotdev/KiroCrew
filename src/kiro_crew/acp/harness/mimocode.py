@@ -37,7 +37,7 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, NamedTuple
 
-from kiro_crew import acp_tool_gate
+from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.harness_tool_names import (
@@ -221,10 +221,13 @@ def _mimocode_reported_version(session: ProcessSession, argv: list[str]) -> tupl
     env = _mimocode_child_env(session)
     _apply_mimocode_env(env)
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -709,10 +712,13 @@ def _verify_mimocode_routing(
     _apply_mimocode_env(env)
     env[_ENV_MIMOCODE_CONFIG_CONTENT] = config_content
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -960,9 +966,22 @@ class MimoCodeLaunch(ProcessAdapter):
         self._config_content = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the binary, warm the session's MCP array, then establish the routing."""
+        """Refuse or mask first, then resolve the binary, warm MCP, establish the routing."""
         session = ctx.session
         assert session is not None, "mimo is launched for one session"
+        # The refuse-then-mask preflight, keyed on the routing question rather than
+        # on this harness's identity: it is ENFORCED, so the OS credential mask is
+        # the compensating control for the passive reads ACP v1 cannot make it ask
+        # about, and several wrap_argv paths return without applying it.
+        #
+        # FIRST, before the binary lookup and the read-back below: on a host where
+        # the mask cannot be applied the session is refused anyway, so refusing here
+        # means the operator is not told to install a binary this host cannot run,
+        # and no foreign binary starts at all.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         mimocode_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
             self.backend
         )
@@ -971,19 +990,6 @@ class MimoCodeLaunch(ProcessAdapter):
         # would put an executor hop on every backend's path (harness-parity H13). The
         # array is unconditional: the routing is seeded and read back below.
         await session._prepare_session_mcp()
-        # The refuse-then-mask preflight, keyed on the routing question rather than
-        # on this harness's identity: it is ENFORCED, so the OS credential mask is
-        # the compensating control for the passive reads ACP v1 cannot make it ask
-        # about, and several wrap_argv paths return without applying it.
-        #
-        # FIRST, before the read-back below: that read-back runs a child of this
-        # harness, and on a host where the mask cannot be applied the session is
-        # refused anyway -- so refusing here means no foreign binary starts at all,
-        # rather than one starting and then being told the session is off.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
-        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # A refused variable, BEFORE any child of this harness runs, the version
         # probe included: it relocates something the host fences by path, so even a
         # ``--version`` child would start with that credential outside the mask.

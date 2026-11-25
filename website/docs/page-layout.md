@@ -591,3 +591,16 @@ and below the drop overlay and every shell layer, and takes no pointer events,
 so the click that claims focus lands on the pane. A pane outside split view
 (`focused` undefined) never mounts it. The placeholder pane keeps its accent
 dot as well.
+
+### Split view: dropping a session on a pane
+
+A session row dragged from the sessions list (tree and flat lanes) onto a split
+pane shows that session in that pane and focuses it; the layout and every other
+pane stay as they are. Each pane, picker included, is one drop target over its
+whole area, drawn at `z-30` above `PaneDim`'s `z-20`, and a session
+already shown in a pane is refused on the hovered pane with a neutral note
+instead of the accent outline (its own pane says it cannot drop into itself).
+The dividers between panes are not drop targets.
+Panes take a drop only in desktop Split View and never while a crew window
+covers the chat area; single chat keeps its drop that stages a reference in the
+composer, and the Board layout and phones have no pane targets.

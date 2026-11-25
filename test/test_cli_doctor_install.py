@@ -828,6 +828,82 @@ class TestCliInstallerResidue:
         assert "≥" not in out
         assert "4+" not in out
 
+    def _scratch(self, tmp_path: Path, monkeypatch, temp: Path) -> Path:
+        root = tmp_path / "scratch"
+        root.mkdir()
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", lambda: str(temp))
+        monkeypatch.setattr("kiro_crew.agent_scratch.scratch_root", lambda: root)
+        return root
+
+    def test_residue_in_a_runtime_folder_is_reported(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        # Each kiro-cli Crew starts has its own temp dir directly under the scratch
+        # root, so the installers it stages are one level below the root and not in
+        # the doctor's own temp dir. One level only: a deeper file is not counted.
+        temp = tmp_path / "temp"
+        temp.mkdir()
+        root = self._scratch(tmp_path, monkeypatch, temp)
+        (root / "0123abcd").mkdir()
+        self._installer(root / "0123abcd", "kiro-installer-1.msi", size=1048576)
+        self._installer(root / "0123abcd", "kiro-installer-2.msi", size=1048576)
+        (root / "4567cdef" / "nested").mkdir(parents=True)
+        self._installer(root / "4567cdef" / "nested", "kiro-installer-3.msi")
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        out = capsys.readouterr().out
+        assert f"⚠️  2 in the runtime folders under {root}\n" in out
+        assert "reclaimable: 2.0 MiB\n" in out
+        assert f"Fix: delete kiro-installer* from the runtime folders under {root}," in out
+        assert str(temp) not in out
+        assert issues == ["kiro-cli installer residue in temp"]
+
+    def test_residue_in_the_temp_dir_and_a_runtime_folder_is_one_count(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        temp = tmp_path / "temp"
+        temp.mkdir()
+        root = self._scratch(tmp_path, monkeypatch, temp)
+        (root / "0123abcd").mkdir()
+        self._installer(temp, "kiro-installer-1.msi")
+        self._installer(root / "0123abcd", "kiro-installer-2.msi")
+        cli_doctor._doctor_cli_installer_residue([])
+        out = capsys.readouterr().out
+        assert f"⚠️  2 in {temp} and the runtime folders under {root}\n" in out
+        assert (
+            f"Fix: delete kiro-installer* from {temp} and the runtime folders under {root}," in out
+        )
+
+    def test_runtime_folders_share_one_cap_and_print_floors(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        monkeypatch.setattr(cli_doctor, "_CLI_INSTALLER_SCAN_CAP", 3)
+        temp = tmp_path / "temp"
+        temp.mkdir()
+        root = self._scratch(tmp_path, monkeypatch, temp)
+        for name in ("0123abcd", "4567cdef"):
+            (root / name).mkdir()
+            self._installer(root / name, "kiro-installer-1.msi", size=1048576)
+            self._installer(root / name, "kiro-installer-2.msi", size=1048576)
+        cli_doctor._doctor_cli_installer_residue([])
+        out = capsys.readouterr().out
+        assert f"⚠️  3+ in the runtime folders under {root}\n" in out
+        assert "reclaimable: ≥ 3.0 MiB\n" in out
+
+    def test_a_runtime_folder_that_is_the_doctor_temp_dir_is_counted_once(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        # A doctor run from an agent shell has that runtime's folder as its temp dir.
+        own = tmp_path / "scratch" / "0123abcd"
+        self._scratch(tmp_path, monkeypatch, own)
+        own.mkdir()
+        self._installer(own, "kiro-installer-1.msi")
+        self._installer(own, "kiro-installer-2.msi")
+        cli_doctor._doctor_cli_installer_residue([])
+        out = capsys.readouterr().out
+        assert f"⚠️  2 in {own}\n" in out
+        assert "runtime folders" not in out
+
 
 def _report_source() -> str:
     """The source of every function that prints a row of the doctor report.

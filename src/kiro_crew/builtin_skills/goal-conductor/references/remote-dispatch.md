@@ -63,6 +63,8 @@ unreachable, on another version or have the switch off, and answers
 `crew_none_available` when none admits the item. With `requires`, a refusal
 `crew_requirements_unmet` names what each crew lacked (`login gh (expired)`,
 `tag gpu`): tell the user which crew to sign in or tag rather than retrying.
+A crew named `could not be checked` is not a sign-in or tag fix: retry once in
+a later owner turn (`crew_list` shows that crew's state).
 A crew that already holds a session for this item (an earlier create whose reply was lost) is skipped and named under `skipped`; that leftover session stays on the crew, so tell the user to close it there.
 A login named `still checking` is not a missing sign-in: retry once in a later
 owner turn. Either way the item stays open
@@ -72,7 +74,13 @@ tell the user instead of retrying.
 
 **Driving it.** `session_send`, `session_read_message`, `session_stop` and
 `session_close` take the same `crew=` and reach only a crew session you created
-or one an open item of yours is bound to. Closing a remote item ends its
+or one an open item of yours is bound to. A session you opened without
+`work_item=` is yours to drive only until this gateway restarts or you close
+it; after a restart it is refused `crew_target_not_dispatched`, and nothing can
+bind it to an item afterwards. One bound to an open item of yours stays
+drivable across restarts while that item is open, so dispatch work you will
+drive for long with `work_item=`. A session lost that way can still be used and
+closed by the person from that crew's own window. Closing a remote item ends its
 worker's Trust and records its session as pending close (`close_pending` on
 the row). In an owner turn the session is closed for you once its crew is
 connected. On a patrol wake it is closed only once its worker is idle and

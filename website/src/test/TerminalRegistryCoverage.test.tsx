@@ -44,10 +44,13 @@ import {
   sendRawToTerminalSession,
   ensureTerminalConnection,
   disposeTerminalConnection,
+  dropTerminalDataForThisKey,
   useTerminalConnStatus,
   useTerminalManualRetry,
   useTerminalInvalidCwd,
   useTerminalWrongMachine,
+  useTerminalAtLimit,
+  isTerminalAtLimit,
   retryTerminalConnection,
 } from '../utils/terminalRegistry'
 
@@ -637,6 +640,21 @@ describe('terminalRegistry', () => {
       expect(JSON.parse(decode(ws, 1))).toEqual({ type: 'resize', cols: 100, rows: 30 })
     })
 
+    it('drops what xterm sends during the key it is told to drop, and nothing after it', async () => {
+      const id = session('drop-key')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+
+      dropTerminalDataForThisKey(id)
+      term.dataCb?.('~') // sent from inside the same keydown
+      await Promise.resolve() // the key event is handled
+      term.dataCb?.('~') // sent later, from xterm's compositionend timer
+      expect(ws.send).toHaveBeenCalledOnce()
+      expect(decode(ws, 0)).toBe('~')
+    })
+
     it('closes the socket from the error handler without reconnecting itself', () => {
       const id = session('error')
       vi.useFakeTimers()
@@ -722,6 +740,26 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(1)
       act(() => { retryTerminalConnection(id) })
       expect(result.current.wrongMachine).toBe(false)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+    it('parks a shell the gateway refused at its terminal ceiling, until the user retries', () => {
+      vi.useFakeTimers()
+      const id = session('at-limit')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      const failed = vi.fn()
+      onTerminalReady(id, () => {}, failed)
+      const { result } = renderHook(() => ({ status: useTerminalConnStatus(id), atLimit: useTerminalAtLimit(id) }))
+      act(() => { ws.simulateJson({ type: 'error', code: 'terminal_max_sessions', message: 'Max 12 terminal sessions' }); ws.simulateClose() })
+      expect(result.current).toEqual({ status: 'disconnected', atLimit: true })
+      expect(isTerminalAtLimit(id)).toBe(true)
+      expect(failed).toHaveBeenCalledOnce()
+      // No automatic redial into the same refusal, even on a revive event.
+      act(() => { vi.advanceTimersByTime(60_000); window.dispatchEvent(new Event('online')) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current.atLimit).toBe(false)
       expect(WS_INSTANCES).toHaveLength(2)
     })
     it('redials a shell whose placement could not be read, instead of parking it', () => {

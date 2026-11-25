@@ -860,6 +860,46 @@ def test_an_unresolvable_extra_path_is_skipped_on_reload(tmp_path):
     assert SkillsLoader._screen_extra_paths(cfg) == [good.resolve()]
 
 
+def test_a_missing_extra_path_is_skipped_with_a_warning_naming_its_position(tmp_path, caplog):
+    """A root whose share is down is dropped visibly, so its missing skills have a reason."""
+    good = tmp_path / "extra"
+    good.mkdir()
+    cfg = KiroCrewConfig(skills=SkillsConfig(extra_paths=[str(tmp_path / "offline"), str(good)]))
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.skills"):
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False, config=cfg)
+
+    assert loader._configured_extra_paths == [good.resolve()]
+    assert [r.getMessage() for r in caplog.records if "extra_paths" in r.getMessage()] == [
+        "skills.extra_paths[0] is not a reachable directory; skipped"
+    ]
+
+
+@pytest.mark.parametrize("error", [PermissionError(13, "denied"), OSError(116, "stale handle")])
+def test_an_extra_path_whose_stat_fails_is_skipped_not_fatal(tmp_path, monkeypatch, caplog, error):
+    """``is_dir()`` re-raises EACCES/ESTALE/EIO; that root is skipped like a missing one."""
+    good = tmp_path / "extra"
+    good.mkdir()
+    blocked = (tmp_path / "blocked").resolve()
+    real_is_dir = Path.is_dir
+
+    def is_dir(self, *args, **kwargs):
+        if self == blocked:
+            raise error
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    cfg = KiroCrewConfig(skills=SkillsConfig(extra_paths=[str(blocked), str(good)]))
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.skills"):
+        screened = SkillsLoader._screen_extra_paths(cfg)
+
+    assert screened == [good.resolve()]
+    assert [r.getMessage() for r in caplog.records if "extra_paths" in r.getMessage()] == [
+        "skills.extra_paths[0] is not a reachable directory; skipped"
+    ]
+
+
 def test_an_unresolvable_extra_path_keeps_the_other_canonical_roots(tmp_path, monkeypatch):
     """The dashboard's canonical roots skip one bad entry instead of dropping every root."""
     from kiro_crew.dashboard.handlers import _shared_skill_roots as roots_mod

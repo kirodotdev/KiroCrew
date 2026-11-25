@@ -355,19 +355,7 @@ async function main() {
     // 11-13px panel type and Pierre's 12px diff rows render soft at 1x on GitHub.
     deviceScaleFactor: 2,
   })
-  const page = await context.newPage()
-
-  // Pierre's component is a React.lazy chunk while its CSS ships in the main
-  // bundle, so a chunk that fails to load yields a mounted-but-empty surface
-  // rather than an error. Surface that instead of screenshotting the hole.
-  page.on('console', m => {
-    if (m.type() === 'error') console.log('CONSOLE-ERR', m.text().slice(0, 300))
-  })
-  page.on('requestfailed', r =>
-    console.log('REQ-FAIL', r.failure()?.errorText, r.url().slice(-90)))
-  page.on('response', r => {
-    if (r.status() >= 400) console.log('HTTP', r.status(), r.url().slice(-90))
-  })
+  let page = null
 
   /** Fixture routes this harness owns, consulted before the shared boot map. */
   const extra = async (path, route) => {
@@ -433,8 +421,25 @@ async function main() {
     return false
   }
 
-  await stubDashboardApi(page, { slots, extra })
-  logPageProblems(page)
+  /** Close the last page and open a fresh one, stubbed once with `seed`: its
+   *  one init script clears storage and writes `seed` on navigation. */
+  async function freshPage(seed) {
+    await page?.close()
+    page = await context.newPage()
+    // Pierre's component is a React.lazy chunk while its CSS ships in the main
+    // bundle, so a chunk that fails to load yields a mounted-but-empty surface
+    // rather than an error. Surface that instead of screenshotting the hole.
+    page.on('console', m => {
+      if (m.type() === 'error') console.log('CONSOLE-ERR', m.text().slice(0, 300))
+    })
+    page.on('requestfailed', r =>
+      console.log('REQ-FAIL', r.failure()?.errorText, r.url().slice(-90)))
+    page.on('response', r => {
+      if (r.status() >= 400) console.log('HTTP', r.status(), r.url().slice(-90))
+    })
+    await stubDashboardApi(page, { slots, extra, localStorageEntries: seed })
+    logPageProblems(page)
+  }
 
   const wrote = []
 
@@ -483,21 +488,19 @@ async function main() {
    * the top of the transcript.
    */
   async function load(surface, { tabs = [], activeId = null } = {}) {
-    await page.addInitScript(([key, tabList, active, panelWidth]) => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot-chat', key)
-      localStorage.setItem('mc-chat-config', JSON.stringify({
+    const key = surface.key
+    await freshPage({
+      'mc-active-slot-chat': key,
+      'mc-chat-config': JSON.stringify({
         pinLastPrompt: false,
         streamMode: 'immediate',
-      }))
-      localStorage.setItem('mc-side-panel-width', String(panelWidth))
-      if (active) {
-        localStorage.setItem(`mc-activity-open:${key}`, 'true')
-        localStorage.setItem(`mc-panel-tabs:${key}`, JSON.stringify({ activeId: active, tabs: tabList }))
-      }
-    }, [surface.key, tabs, activeId, PANEL_W])
+      }),
+      'mc-side-panel-width': String(PANEL_W),
+      ...(activeId ? {
+        [`mc-activity-open:${key}`]: 'true',
+        [`mc-panel-tabs:${key}`]: JSON.stringify({ activeId, tabs }),
+      } : {}),
+    })
     await page.goto(base + '/?sid=' + encodeURIComponent(surface.key), { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
     // Belt and braces over the localStorage seed, the way the pod-e2e runner
@@ -629,14 +632,9 @@ async function main() {
   }
 
   // ── Frame 25: Papyrus with a .tex document open ───────────────────────────
-  await page.addInitScript(project => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    // The page's own last-open-project key: seeded so it lands in the workspace
-    // rather than the project list, and opens main_file on its own.
-    localStorage.setItem('kc:papyrus:project', project)
-  }, PAPYRUS_PROJECT)
+  // The page's own last-open-project key: seeded so it lands in the workspace
+  // rather than the project list, and opens main_file on its own.
+  await freshPage({ 'kc:papyrus:project': PAPYRUS_PROJECT })
   await page.goto(base + '/papyrus', { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('[data-testid="papyrus-editor"]', { timeout: 20000 })
   await page.waitForTimeout(3000)

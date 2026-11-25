@@ -82,7 +82,7 @@ def mock_sel_fixture(monkeypatch):
 def block_sensitive_reads_fixture(monkeypatch):
     """Refuse every path at the two gates that SERVE a prompt's bytes.
 
-    Discovery (``handlers.is_sensitive_path``) is deliberately left alone, so an
+    Discovery (``handlers.is_sensitive_canonical_path``) is deliberately left alone, so an
     entry still exists and the refusal under test is the reading one: the
     ``@mention`` expander's own check and ``hooks.validate_file_path`` behind the
     unscoped detail read. Blanket-patching all three instead would make the prompt
@@ -96,7 +96,7 @@ def block_sensitive_reads_fixture(monkeypatch):
 @pytest.fixture(name="block_sensitive_discovery")
 def block_sensitive_discovery_fixture(monkeypatch):
     """Refuse every path at the DISCOVERY gate — the one `_prompt_dir_entry` applies."""
-    monkeypatch.setattr("kiro_crew.dashboard.handlers.is_sensitive_path", lambda p: True)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.is_sensitive_canonical_path", lambda p: True)
 
 
 # ── Helpers ──

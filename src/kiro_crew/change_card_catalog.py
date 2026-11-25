@@ -40,7 +40,9 @@ import sys as _sys
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import _facade_mirror, guide_catalog
+from kiro_crew import _facade_mirror
+from kiro_crew import change_card_mcp_server as _mcp_server_kind
+from kiro_crew import guide_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.change_card_catalog_kinds import (
     CHECK_IN_FIELDS,
@@ -152,10 +154,15 @@ def extract_evidence(
     if kind == KIND_CREWMATE_CAPABILITIES and step_index == 0:
         return pick("preview_token")
     if kind == KIND_CREWMATE_CAPABILITIES:
-        return pick("revision")
+        # And whether the Bot's new gateway-routed server waits for a gateway
+        # restart, which the applied record shows (``complete_apply``).
+        return pick("revision", "gateway_restart_required")
     if kind == KIND_TEMPLATE_MCP_SERVER:
         # The card the addition was recorded under: its Undo removes only that one.
         return pick("card_id")
+    if kind == _mcp_server_kind.KIND_MCP_SERVER:
+        # The launch the sharing step approves: read by the step before it.
+        return pick("expected_launch")
     if kind == KIND_MCP_INSTALL:
         return pick("name")
     if kind == KIND_MCP_ADD_CUSTOM:
@@ -587,6 +594,8 @@ def describe_manual_change(
         servers = b.get("servers")
         servers = servers if isinstance(servers, dict) else {}
         return f"added custom MCP server(s) {s(', '.join(str(k) for k in servers))}"
+    if route == ("POST", "/api/mcp/project-file"):
+        return f"added MCP server {s(b.get('name'))} to {s(b.get('file'))} in a chat folder"
     if route == ("POST", "/api/mcp/remove"):
         return f"removed MCP server {s(b.get('name'))}"
     if route == ("POST", "/api/mcp/apply"):
@@ -664,6 +673,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("DELETE", "/api/members/{slug}/dashboard/template"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
+        ("POST", "/api/mcp/project-file"),
         ("POST", "/api/mcp/remove"),
         ("POST", "/api/mcp/apply"),
         ("POST", "/api/mcp/toggle"),
@@ -767,6 +777,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
         GATEWAY_RESOLVED_KINDS,
+        HEARTBEAT_HOURS_KEY,
+        KIND_MCP_SERVER,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
         KIND_WORKFLOW_SAVE,

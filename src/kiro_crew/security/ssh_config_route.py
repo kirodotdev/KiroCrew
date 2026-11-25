@@ -1,8 +1,12 @@
-"""Prove three ssh config routes for a dotted target with no DNS record.
+"""Prove four ssh config routes for a dotted target with no DNS record.
 
 Only a HostName rewrite without a proxy, one ProxyJump without ProxyCommand,
-or exactly ``ssh [-q] -W %h:%p host`` (either option order) qualifies. Every
-hop address must pass the live IP-host guard. Host patterns treat only ``*``
+exactly ``ssh [-q] -W %h:%p host`` (either option order), or a plain
+ProxyCommand with no options except ``-`` that dials ``%h``, ``%h:%p`` or
+``tcp:%h:%p``/``tcp4:%h:%p``/``tcp6:%h:%p`` (case-insensitive prefix) qualifies. Every
+hop address must pass the live IP-host guard; a plain ProxyCommand has no hop
+to check, so its final HostName must be a dotted name or an IP literal and no
+other word may spell an address or name this machine. Host patterns treat only ``*``
 and ``?`` as wildcards, as in OpenSSH. A matching Host or Match block
 that sets a destination key, other proxies, extra flags, hop chains and
 nonliteral hop destinations refuse. Proxy forms require a literal final HostName
@@ -14,8 +18,9 @@ Config bytes and Includes are sandbox-read into a snapshot fed to ssh -G on stdi
 NUL, lone CR and whitespace other than space, tab and newline refuse before
 parsing; CRLF line endings are accepted.
 The proof runs ssh, sh and head from trusted system directories, never through PATH.
-Unreadable files, nested-block Includes, unsafe Match criteria and absent
-sandboxing or trusted executables refuse. Runs off-loop; failures cannot retain
+An Include inside a block is inlined there, and its file may not open a block
+of its own. Unreadable files, unsafe Match criteria and absent sandboxing or
+trusted executables refuse. Runs off-loop; failures cannot retain
 a route-only allow.
 """
 
@@ -25,6 +30,7 @@ import fnmatch
 import ipaddress
 import os
 import pathlib
+import re
 import socket
 import subprocess
 from dataclasses import dataclass
@@ -63,6 +69,14 @@ _READ_MISSING = 97
 # is empty, so the unquoted $1 is expanded as a glob but never split.
 _GLOB_SCRIPT = 'IFS=; for f in $1; do if [ -e "$f" ]; then printf "%s\\0" "$f"; fi; done'
 _GLOB_CHARS = "*?["
+# The word shapes of a plain ProxyCommand (``_plain_proxy_command``), and the
+# clients it must not name because they route through ssh config, not DNS.
+_PROXY_PROGRAM_RE = re.compile(r"(?:/[A-Za-z0-9_.+-]+)+|[A-Za-z][A-Za-z0-9_.+-]*")
+_PROXY_DESTINATION_RE = re.compile(r"%h(?::%p)?|(?i:tcp[46]?):%h:%p")
+_PROXY_WORD_RE = re.compile(r"[A-Za-z][A-Za-z-]*|-|%p")
+_SSH_CONFIG_CLIENTS = frozenset(
+    {"ssh", "scp", "sftp", "rsync", "slogin", "autossh", "dbclient", "mosh", "sshpass"}
+)
 
 
 class _Unknowable(Exception):
@@ -197,11 +211,14 @@ def _read_config(
     out: "list[str]",
     mode: str,
     required: bool,
+    nested: bool = False,
 ) -> None:
     """Read sandbox-visible bytes into sections and a bounded snapshot.
 
-    Top-level Includes are inlined with Match-all resets. Unsafe Match or
-    Include forms raise _Unknowable; a missing required file does too.
+    Top-level Includes are inlined with Match-all resets. An Include inside a
+    Host or Match block is inlined into that block (*nested*), so its file may
+    hold no Host or Match line of its own. Unsafe Match or Include forms raise
+    _Unknowable; a missing required file does too.
     """
     if depth > _INCLUDE_DEPTH_MAX:
         raise _Unknowable(path)
@@ -221,7 +238,7 @@ def _read_config(
         raise _Unknowable(path)
     if sum(len(line) for line in out) + len(text) > _SNAPSHOT_BYTES_MAX:
         raise _Unknowable(path)
-    in_block = False
+    in_block = nested
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -231,6 +248,8 @@ def _read_config(
             raise _Unknowable(path)
         words = _ssh_config_words(stripped)
         keyword = _keyword(stripped)
+        if nested and keyword in ("match", "host"):
+            raise _Unknowable(path)
         if keyword == "match":
             criteria = _ssh_config_words(_bare(stripped))[1:]
             while criteria:
@@ -245,8 +264,6 @@ def _read_config(
             in_block = True
             blocks.append(_Block("host", words[1:]))
         elif keyword == "include":
-            if in_block:
-                raise _Unknowable(path)
             for pattern in words[1:]:
                 if "%" in pattern or "$" in pattern:
                     raise _Unknowable(path)
@@ -254,9 +271,12 @@ def _read_config(
                 if not os.path.isabs(pattern):
                     pattern = os.path.join(base, pattern)
                 for target in _glob_in_sandbox(pattern, mode):
-                    _read_config(target, base, depth + 1, blocks, out, mode, required=True)
-                    out.append(_MATCH_ALL)
-                    blocks.append(_Block("all", []))
+                    _read_config(
+                        target, base, depth + 1, blocks, out, mode, required=True, nested=in_block
+                    )
+                    if not in_block:
+                        out.append(_MATCH_ALL)
+                        blocks.append(_Block("all", []))
             continue
         elif keyword in _DESTINATION_KEYS:
             if not blocks:
@@ -433,6 +453,57 @@ def _ssh_w_host(value: str) -> str:
     return _hop_host(target)
 
 
+def _is_network_name(host: str) -> bool:
+    """True for an IP literal or a dotted name: one a proxy dials, not a proxy-side id.
+
+    A name holding ``:`` that is not an IP literal is refused: a proxy may read it as
+    an address type of its own (``tcp:127.0.0.1:22``, ``unix-connect:a.sock``).
+    """
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return ":" not in host and "." in host.strip(".")
+
+
+def _plain_proxy_command(value: str) -> bool:
+    """True for a ProxyCommand that runs one plain program dialing ``%h``, not an ssh client.
+
+    The first word is the program, a bare name or an absolute path. Every other word is
+    a destination (``%h``, ``%h:%p``, ``tcp:%h:%p``, ``tcp4:%h:%p`` or ``tcp6:%h:%p``
+    with a case-insensitive TCP prefix), ``%p``, ``-``, or a word of letters and
+    hyphens. No options except bare ``-`` are accepted. So no word but
+    a destination can spell a dotted name, an IP literal or a number, and none holds
+    shell syntax. A word of letters may still be a host: it must not be this machine
+    by name or by any address DNS gives it, and must not name a client that reads ssh
+    config (those qualify only as ``ssh -W``).
+    """
+    from .argv_floor_hosts import _host_is_self
+
+    words = value.split()
+    if len(words) < 2 or not _PROXY_PROGRAM_RE.fullmatch(words[0]):
+        return False
+    names = [words[0].rsplit("/", 1)[-1].lower().removesuffix(".exe")]
+    has_destination = False
+    for word in words[1:]:
+        if _PROXY_DESTINATION_RE.fullmatch(word):
+            has_destination = True
+        elif not _PROXY_WORD_RE.fullmatch(word):
+            return False
+        elif word[0] != "-" and word != "%p":
+            names.append(word.lower())
+    if not has_destination:
+        return False
+    for name in names:
+        if name in _SSH_CONFIG_CLIENTS or _host_is_self(name, dns_fallback=False):
+            return False
+    for name in names[1:]:
+        found = _addresses(name)
+        if found is None or any(_host_is_self(str(ip)) for ip in found):
+            return False
+    return True
+
+
 def _ssh_g(host: str, snapshot: str, mode: str) -> "dict[str, str] | None":
     """Parse route keys from sandboxed ``ssh -G``, with checked config bytes on stdin.
 
@@ -499,7 +570,10 @@ def route_is_not_self(host: str) -> bool:
         if has_jump:
             return not has_command and _hop_is_remote(_hop_host(proxyjump), blocks)
         if has_command:
-            return _hop_is_remote(_ssh_w_host(proxycommand), blocks)
+            hop = _ssh_w_host(proxycommand)
+            if hop:
+                return _hop_is_remote(hop, blocks)
+            return _is_network_name(hostname) and _plain_proxy_command(proxycommand)
         return hostname.lower() != host.lower() and _hop_is_remote(hostname, blocks)
     except Exception:
         return False

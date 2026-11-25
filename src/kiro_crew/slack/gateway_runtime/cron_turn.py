@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         _dedup_text,
         _defer_cron_before_dispatch,
         _GateTally,
+        _normalize_slot_key,
         _result_hash,
         _subagent_work_pending,
         acp_error_after_tool_activity,
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
         configured_fallback_chain,
         consume_reinjection,
         context_meter_reading,
+        cron_tab_name,
         dataclass,
         declared_mcp_not_ready_note,
         declared_mcp_note_change,
@@ -63,6 +65,7 @@ if TYPE_CHECKING:
         live,
         logger,
         note_turn_landed,
+        open_turn_crew_log,
         persist_token_record_async,
         provider_fallback_active,
         provider_last_turn_usage,
@@ -115,7 +118,9 @@ async def _cron_run_sequence(
     from kiro_crew.cron_service.fields import cron_session_cwd
 
     for agent in agents:
-        _seq_kagent, _seq_cwd, _seq_crew = self._resolve_cron_agent(
+        # Off the loop: the workspace folder is resolved and judged on the filesystem.
+        _seq_kagent, _seq_cwd, _seq_crew = await asyncio.to_thread(
+            self._resolve_cron_agent,
             cron_execution,
             agent,
             sequence_step=True,
@@ -341,6 +346,16 @@ async def _cron_run_sequence(
                 # empty parent ("notification only (parent=)") unless an
                 # unrelated surface happened to be mid-turn.
                 await publish_turn_identity(self.sessions, agent_session_key)
+                # The step's crew log, which its ledger records into, filed under the
+                # key's tab name: the name the ledger's ``canonical_slot`` folds a
+                # session-less read of the key to.
+                open_turn_crew_log(
+                    client,
+                    session_key=agent_session_key,
+                    agent=step.dispatch_agent or "",
+                    resumed=_resumed,
+                    slot=_normalize_slot_key(cron_tab_name(agent_session_key)),
+                )
                 if is_new:
                     # Unattended: hold the first prompt (bounded) for the
                     # agent spec's MCP servers, which nobody can reconnect.
@@ -729,7 +744,9 @@ async def _cron_run_single(
         # Collapse an alias (channel-bound agent) to its real kiro mode
         # + workspace before dispatch; falls back to the raw value when
         # it is already a real mode or unset.
-        _single_kagent, _single_cwd, _single_crew = self._resolve_cron_agent(
+        # Off the loop: the workspace folder is resolved and judged on the filesystem.
+        _single_kagent, _single_cwd, _single_crew = await asyncio.to_thread(
+            self._resolve_cron_agent,
             cron_execution,
             cron_agent or None,
             template_namespace=_default_substituted
@@ -841,6 +858,23 @@ async def _cron_run_single(
         from kiro_crew.cron_service.identity import rebind_cron_session_template
 
         await asyncio.to_thread(rebind_cron_session_template, session_key, cron_execution, job.name)
+        # The job's own ``auto``, else the grant of the Bot that made it, read
+        # against the live Profile (``owner_grant``) and re-read on every request.
+        # The Bot's grant reaches only this turn's own calls: the session's stored
+        # policy and a spawn's ``KIROCREW_APPROVAL_MODE`` keep the job's own mode,
+        # so no child holds a grant the Bot's Profile could not take back.
+        # shortcut: a spawn_run child of a Bot-granted job asks; carry the grant to
+        # children once the Profile change can revoke a cron session's policy.
+        from kiro_crew.cron_service.owner_grant import fire_approval_mode
+
+        _fire_execution = cron_execution
+
+        def _fire_mode() -> str:
+            return fire_approval_mode(
+                job, _fire_execution, live.snapshot() or getattr(self, "_cfg", None)
+            )
+
+        _single_mode = _fire_mode()
         (
             client,
             is_new,
@@ -914,6 +948,17 @@ async def _cron_run_single(
         # single-agent cron turn must publish its pidfile mapping or
         # spawn_run's parent resolution has no source to walk to.
         await publish_turn_identity(self.sessions, session_key)
+        if job.persistent_session:
+            # The job's crew log, as on the sequence site; its tab name is also the
+            # slot a dashboard turn in the job's tab records. A stateless run's key is
+            # new on every fire and its reset unit is never collected, so it opens none.
+            open_turn_crew_log(
+                client,
+                session_key=session_key,
+                agent=_dispatch_agent or "",
+                resumed=_resumed,
+                slot=_normalize_slot_key(cron_tab_name(session_key)),
+            )
         if is_new:
             # Unattended: hold the first prompt (bounded) for the agent spec's
             # MCP servers, which nobody can reconnect by hand in this run.
@@ -990,7 +1035,7 @@ async def _cron_run_single(
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
-                if effective_job_approval_mode(job.approval_mode) == "auto"
+                if _single_mode == "auto"
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
@@ -1003,9 +1048,10 @@ async def _cron_run_single(
                         requester=f"cron job {job.id}"
                         + (f", agent {cap.gate_agent}" if cap.gate_agent else "")
                         + f": {job.name}",
-                    )
+                    ),
+                    holds=lambda: _fire_mode() == "auto",
                 )
-                if effective_job_approval_mode(job.approval_mode) == "auto"
+                if _single_mode == "auto"
                 else self._interactive_approval(
                     "cron",
                     requester=f"cron job {job.id}"

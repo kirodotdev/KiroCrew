@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 
 import pytest
 from governance_policy_helpers import _policy_body
@@ -1318,6 +1319,73 @@ class TestSchemaStrictness:
         assert len(warned) == 1, warned
         assert f"{listed}[0]" in warned[0]
         assert f"the scope {effect} the host it names" in warned[0]
+
+    @staticmethod
+    def _driveless_warnings(caplog, monkeypatch, body, *, windows=True):
+        """Load a ``filesystem.read`` path ruleset reading paths as a Windows gateway does."""
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\u")
+        monkeypatch.setenv("HOME", r"C:\Users\u")
+        monkeypatch.setattr(governance, "_WINDOWS_PATHS", windows)
+        monkeypatch.setattr(
+            governance, "_expand", lambda p: ntpath.expanduser(ntpath.expandvars(p))
+        )
+        # Drive-anchored, as Windows' ``abspath`` always is: the runner's own one would
+        # join the item onto its working directory, which could sit under ``/data``.
+        monkeypatch.setattr(
+            governance,
+            "_norm_item",
+            lambda p: ntpath.normpath(
+                ntpath.join("C:\\work", ntpath.expanduser(ntpath.expandvars(p)))
+            ),
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.platform.governance"):
+            ruleset = ScopedRuleset.from_dict(body, matcher="path", scope="filesystem.read")
+        warned = [r.getMessage() for r in caplog.records if "matcher=path" in r.getMessage()]
+        return ruleset, warned
+
+    @pytest.mark.parametrize(
+        "mode,listed,effect",
+        [
+            (MODE_DENY, "deny", "permits"),
+            (MODE_ALLOW, "allow", "refuses"),
+        ],
+    )
+    def test_a_driveless_path_entry_is_reported_on_windows(
+        self, mode, listed, effect, caplog, monkeypatch
+    ):
+        """On Windows every local item carries a drive, so ``/data/**`` meets none of them.
+
+        Only the list the mode reads is reported, by position and never by pattern,
+        and matching is unchanged: the deny still permits the drive path it names,
+        the allow still refuses it.
+        """
+        ruleset, warned = self._driveless_warnings(
+            caplog, monkeypatch, {"mode": mode, "allow": ["/data/**"], "deny": ["/data/**"]}
+        )
+        assert len(warned) == 1, warned
+        assert "'filesystem.read'" in warned[0]
+        assert f"{listed}[0]" in warned[0]
+        assert f"the scope {effect} the local path it names" in warned[0]
+        assert "/data" not in warned[0]
+        assert ruleset.permits(r"C:\data\x.txt").permitted is (mode == MODE_DENY)
+
+    @pytest.mark.parametrize(
+        "pattern",
+        ["C:/data/**", "~/.ssh/**", "**/.env", "//server/share/**", r"\\server\share\**"],
+    )
+    def test_a_path_entry_with_a_drive_share_or_no_root_is_not_reported(
+        self, pattern, caplog, monkeypatch
+    ):
+        _, warned = self._driveless_warnings(
+            caplog, monkeypatch, {"mode": MODE_DENY, "deny": [pattern]}
+        )
+        assert warned == []
+
+    def test_a_driveless_path_entry_is_not_reported_on_posix(self, caplog, monkeypatch):
+        _, warned = self._driveless_warnings(
+            caplog, monkeypatch, {"mode": MODE_DENY, "deny": ["/data/**"]}, windows=False
+        )
+        assert warned == []
 
     def test_posture_key_must_be_admitted_member(self):
         # posture for a member not in the members allow-set is rejected.

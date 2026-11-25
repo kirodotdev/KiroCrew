@@ -19,9 +19,9 @@ takes a different road to each:
   operator's mandatory servers), whatever ``enabled`` says, and injects its own
   ``tool_load`` / ``tool_call`` pair to reach them. So on that channel the
   invariant is the CLIENT's to keep, and :func:`kas_client_meta_settings` keeps
-  it: for a spec that grants no ``tool_search`` it lists every MCP tool the spec
-  can call in ``neverDefer`` (:func:`kas_never_defer_ids`), so those tools stay
-  direct. ``enabled`` still goes out -- true only when the spec grants the
+  it: for a spec that grants no ``tool_search``, and for any spec while Tool
+  Search is turned off, it lists every MCP tool the spec can call in
+  ``neverDefer`` (:func:`kas_never_defer_ids`), so those tools stay direct. ``enabled`` still goes out -- true only when the spec grants the
   loader, an explicit false otherwise -- for a host that does read it.
 
   A whole-server grant (``@server``) names no tools, and KAS's ``neverDefer``
@@ -78,6 +78,7 @@ __all__ = [
     "clamp_min_pct",
     "clamp_min_tokens",
     "custom_agent_never_defer_ids",
+    "loaderless_never_defer_ids",
     "job_tool_ids",
     "kas_client_meta_settings",
     "kas_never_defer_ids",
@@ -391,6 +392,21 @@ def custom_agent_never_defer_ids(
     return sorted(ids)
 
 
+def loaderless_never_defer_ids(
+    spec: dict[str, Any] | None,
+    server_tools: Callable[[str], Iterable[str] | None],
+) -> list[str]:
+    """``neverDefer`` for any other spec that grants no loader.
+
+    Everything :func:`kas_never_defer_ids` lists, plus the still-starting wait
+    (:data:`_MCP_LOADING`) the spec mounts: the note tells the turn to call it, and
+    a server Crew holds no tool list for would otherwise leave it deferred.
+    """
+    ids = set(kas_never_defer_ids(spec, server_tools))
+    ids.update(_declared_ids(_MCP_LOADING, spec))
+    return sorted(ids)
+
+
 def _declared_ids(declared: Iterable[str], spec: dict[str, Any] | None) -> list[str]:
     """The ids of *declared* that *spec*'s ``tools`` reaches."""
     declared = tuple(declared)
@@ -417,10 +433,10 @@ def kas_client_meta_settings(
 
     ``neverDefer`` carries *never_defer*, the caller's list of what stays direct,
     because KAS's deferral path reads that list and not ``enabled``. For a spec
-    that grants no loader that is every MCP tool it can call
-    (:func:`kas_never_defer_ids`), and the key is sent even when empty: without
-    it every MCP tool of such a spec would be deferred with no way to load one.
-    For a spec that grants the loader it is the agent's job tools
+    that grants no loader, or with Tool Search turned off, that is every MCP tool
+    it can call (:func:`kas_never_defer_ids`), and the key is sent even when
+    empty: without it every MCP tool would be deferred.
+    With Tool Search on and a spec that grants the loader it is the agent's job tools
     (:func:`job_tool_ids`), and an empty list sends no key, which leaves KAS's
     own default in force.
     """
@@ -432,7 +448,7 @@ def kas_client_meta_settings(
         "minTokens": settings.min_tokens,
     }
     ids = sorted({t for t in never_defer if isinstance(t, str) and t})
-    if ids or not loader_granted:
+    if ids or not tool_search["enabled"]:
         tool_search["neverDefer"] = ids
     return {"toolSearch": tool_search}
 

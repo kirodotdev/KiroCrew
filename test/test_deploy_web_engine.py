@@ -359,6 +359,32 @@ def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
     assert engine._aws(["s3", "ls"], "")[0] == "aws"
 
 
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_windows_aws_lookup_skips_the_drive_less_posix_dirs(monkeypatch, platform):
+    """On Windows ``/usr/local/bin`` resolves against the current drive."""
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("PATH", "")
+    probed: list[str] = []
+    checked: list[str] = []
+    monkeypatch.setattr(engine.shutil, "which", lambda _name, path: probed.append(path))
+    monkeypatch.setattr(
+        github_runner, "validate_provider_directory", lambda d: checked.append(d) or d
+    )
+
+    assert engine.resolve_aws_tool_bin_with_refusals("aws") == ("aws", ())
+    engine.refresh_aws_tool_trust()
+
+    if platform == "win32":
+        assert probed == []
+        assert checked == []
+    else:
+        brew, local = "/opt/homebrew/bin", "/usr/local/bin"
+        # The resolver probes each dir once, then the sweep once per tool.
+        assert probed == [brew, local, brew, brew, local, local]
+
+
 # --- the same minimal-PATH gap for session-manager-plugin -------------
 
 

@@ -109,6 +109,10 @@ interface SessionsSidebarChromeProps {
   topbarSessionsToggle: JSX.Element
   onPromote: () => void
   promoting: boolean
+  /** Opens the chat's history search, from the phone bar's ⋯ menu. */
+  onOpenSearch: () => void
+  /** Split View's "show this session in that pane"; unset outside it. */
+  showSessionInPane?: (leafId: string, slot: string) => void
 }
 
 /** Puts the kept sidebar's host element inside the open drawer, and takes it
@@ -136,7 +140,8 @@ export default function SessionsSidebarChrome({
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
   winW, closeSidebar, containerH, drawerDragging, drawerMounted, drawerPanelRef, drawerScrim, drawerScrimRef, drawerX, expandFrom, expandSidebar, flyout, flyoutEligible, flyoutSurfaceRef,
-  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting,
+  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting, onOpenSearch,
+  showSessionInPane,
 }: SessionsSidebarChromeProps) {
   const sessionsPane = (
     <ChatSidebar
@@ -161,9 +166,11 @@ export default function SessionsSidebarChrome({
       onOpenSource={revealSourceLink}
       // Only offer the pane as a drop target when a composer exists to show
       // the chip — see canStageSessionRef for why this is a named predicate.
-      chatDropTarget={canStageSessionRef ? chatPaneEl : null}
+      // Split View drops on its panes instead.
+      chatDropTarget={canStageSessionRef || showSessionInPane ? chatPaneEl : null}
       onDropSessionRef={stageSessionRef}
       canStageSessionRef={canStageSessionRef}
+      onShowSessionInPane={showSessionInPane}
     />
   )
   // Once opened, the session list stays mounted while the sidebar (desktop)
@@ -391,6 +398,7 @@ export default function SessionsSidebarChrome({
         mobileNewSessionItem={mobileNewSessionItem}
         onPromote={onPromote}
         promoting={promoting}
+        onOpenSearch={onOpenSearch}
         dispatch={dispatch}
       />
 

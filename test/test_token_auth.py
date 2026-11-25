@@ -482,14 +482,15 @@ async def test_invalid_query_token_with_valid_cookie_reports_the_cookie_authenti
 async def test_internal_path_expired_query_token_falls_back_to_cookie() -> None:
     """The internal-path helper (_extract_and_validate_token) applies the same
     rule: a stale ``?token=`` on a polled internal path must not 401 a request
-    whose session cookie is still valid."""
+    whose session cookie is still valid. ``/api/spawn`` is a mixed internal path,
+    as in the gateway: a strict path also asks the owner gate of a cookie caller."""
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         stale = generate_token("intuser", ttl_seconds=300)
     cookie = _session_token("intuser", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
-    mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
+    mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
     req = _make_request(
         path="/api/spawn", query={"token": stale}, cookies={"mc_token_5476": cookie}
     )
@@ -990,14 +991,24 @@ async def test_internal_path_non_loopback_denied_in_local_only_mode() -> None:
 
 @pytest.mark.asyncio
 async def test_internal_path_non_loopback_cookie_auth_when_not_local_only() -> None:
-    """When local_only=False, non-loopback with valid cookie is granted."""
+    """When local_only=False, non-loopback with a valid cookie is granted on a
+    mixed path, and a strict path read as mixed still holds a cookie caller to the
+    owner gate (the owner's own cookie: ``test_owner_or_teammate_route_gates``)."""
     token = _session_token("testuser", ttl_seconds=300)
-    mw = token_auth_middleware(
-        internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
+    mixed = token_auth_middleware(
+        mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
     )
     req = _make_request(path="/api/spawn", remote="10.0.0.1", cookies={"mc_token_5476": token})
-    resp = await mw(req, _ok_handler)
+    resp = await mixed(req, _ok_handler)
     assert resp.status == 200
+    strict = token_auth_middleware(
+        internal_paths=frozenset({"/api/send-message"}), internal_secret="s", local_only=False
+    )
+    req = _make_request(
+        path="/api/send-message", remote="10.0.0.1", cookies={"mc_token_5476": token}
+    )
+    resp = await strict(req, _ok_handler)
+    assert resp.status == 403
 
 
 @pytest.mark.asyncio
@@ -1011,7 +1022,7 @@ async def test_internal_path_non_loopback_cookie_marks_the_cookie_credential() -
     """
     token = _session_token("owner", ttl_seconds=300)
     mw = token_auth_middleware(
-        internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
+        mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
     )
     req = _make_request(path="/api/spawn", remote="10.0.0.1", cookies={"mc_token_5476": token})
     resp = await mw(req, _ok_handler)
@@ -1053,7 +1064,7 @@ async def test_internal_path_non_loopback_valid_secret_and_cookie_granted() -> N
     """Both valid secret and valid cookie on non-loopback → granted."""
     token = _session_token("testuser", ttl_seconds=300)
     mw = token_auth_middleware(
-        internal_paths=frozenset({"/api/spawn"}), internal_secret="real", local_only=False
+        mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="real", local_only=False
     )
     req = _make_request(
         path="/api/spawn",
@@ -1256,7 +1267,7 @@ async def test_mixed_internal_cookie_poll_emits_one_api_access_row(monkeypatch, 
     mark_consumed(token)
 
     mw = token_auth_middleware(
-        internal_paths=frozenset({"/api/workflows"}),
+        mixed_internal_paths=frozenset({"/api/workflows"}),
         internal_secret="s",
         local_only=False,
     )
@@ -1654,8 +1665,9 @@ async def test_unclicked_login_link_is_refused_as_a_session_cookie() -> None:
 async def test_link_on_an_internal_path_query_gets_link_rules_not_session_rules() -> None:
     """An internal-path ``?token=`` link works inside its click window (``pod
     api`` relies on that) and stops when the window closes, instead of lasting
-    until its ``session_exp``."""
-    mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
+    until its ``session_exp``. ``/api/spawn`` is a mixed internal path, as in the
+    gateway: a strict path also asks the owner gate of a cookie caller."""
+    mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1_000_000.0
         link = generate_token("owner")

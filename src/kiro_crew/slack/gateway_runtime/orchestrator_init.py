@@ -13,7 +13,8 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_channel_transports_started``, ``_config_subs``, ``_console_script_repair_task``,
 ``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_cron_runs_holding``,
 ``_dashboard_runner``,
-``_feature_video_task``, ``_handler_tasks``, ``_inbound_replay_task``, ``_json_ready``,
+``_feature_video_task``, ``_handler_tasks``, ``_headless``, ``_inbound_replay_task``,
+``_json_ready``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
 ``_mcp_launch_approval_ready``, ``_mcp_resolve_home``, ``_mcp_resolve_prefetch``,
 ``_mcp_resource_subscription_task``,
@@ -60,6 +61,7 @@ def __init__(
     cfg: KiroCrewConfig,
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_open: bool = False,
     port_override: str | None = None,
@@ -68,10 +70,15 @@ def __init__(
     test_mode: bool = False,
     credentials: Mapping[str, str] | None = None,
 ) -> None:
+    if headless and no_dashboard:
+        raise ValueError(
+            "headless=True requires no_dashboard=False; " "drop --headless or --slack-only."
+        )
     # NOTE: test_heartbeat_prompt_deliver.py creates instances via __new__
     # (bypassing __init__). Update that fixture if new attributes are added.
     self._cfg = cfg
     self._no_dashboard = no_dashboard
+    self._headless = headless
     self._no_crons = no_crons
     self._no_open = no_open
     self._port_override = port_override

@@ -149,6 +149,16 @@ from kiro_crew.metrics.recorder import MetricsRecorder
             },
         ),
         (
+            "kirocrew.app.credits",
+            {"app": "weather-app", "entity_version": "2.1.0"},
+            {
+                "Feature": "app",
+                "Activity": "credits",
+                "Entity": "weather-app",
+                "entity_version": "2.1.0",
+            },
+        ),
+        (
             "kirocrew.app.present",
             {
                 "app": "weather-app",

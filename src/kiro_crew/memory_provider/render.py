@@ -31,7 +31,6 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from kiro_crew.memory_provider.contract import (
-    LESSON_KINDS,
     MemoryItem,
     ProviderError,
     ProviderScope,
@@ -434,7 +433,3 @@ def recall_rows(items: Iterable[MemoryItem], route: MemoryRoute) -> tuple[list, 
         evidence["provider"] = prefix
         (episodes if episodic else facts).append(evidence)
     return facts, episodes
-
-
-def is_lesson_kind(kind: str) -> bool:
-    return kind in LESSON_KINDS

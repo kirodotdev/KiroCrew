@@ -874,15 +874,12 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
                     "description": "Configured default",
                 },
             )
-    # Enrich every row with a context_window via the central authority so the CC
-    # dropdown carries the same field the kiro branch does (the frontend picker
-    # + tooltip read it uniformly). None -> reference (never a silent 200k).
+    # A row carries only the window a source backs: the dashboard learns a row's
+    # window as the model's real one, so the 1M budget reference would read as fact.
     for entry in merged:
-        if "context_window" not in entry:
-            name = entry.get("model_name", "")
-            entry["context_window"] = (
-                model_registry.model_window(name) or model_registry.REFERENCE_WINDOW_TOKENS
-            )
+        window = model_registry.model_window(entry.get("model_name", ""))
+        if window and "context_window" not in entry:
+            entry["context_window"] = window
     return merged
 
 
@@ -926,11 +923,10 @@ def _advertised_backend_models(
         rows.insert(
             1, {"model_name": default, "display_name": default, "description": "Configured default"}
         )
-    for entry in rows:
-        entry["context_window"] = (
-            model_registry.model_window(entry["model_name"])
-            or model_registry.REFERENCE_WINDOW_TOKENS
-        )
+    for entry in rows:  # only a source's window, as in ``_cc_models``
+        window = model_registry.model_window(entry["model_name"])
+        if window:
+            entry["context_window"] = window
     return rows
 
 
@@ -1152,6 +1148,10 @@ async def _fetch_kiro_catalog() -> list[dict]:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_LIST_MODELS_BACKGROUND_TIMEOUT_SECS
             )
+        except asyncio.CancelledError:
+            # A gateway shutdown must not leave the call running with no owner.
+            await kill_and_reap(proc)
+            raise
         except asyncio.TimeoutError:
             # The whole group, while the supervisor still leads it: killing
             # only the leader would leave the command and its helpers running.
@@ -1398,7 +1398,7 @@ async def api_models(request: web.Request) -> web.Response:
     if backend == ACP_BACKEND_KAS and workload_identity.active():
         return await api_models_kas_workload(request)
     # kiro-cli opens a browser login for ANY subcommand run signed out, and the
-    # frontend polls here every 8s while degraded, so no spawn below may run unless
+    # frontend polls here every 8s while degraded or cold, so no spawn below may run unless
     # reject_if_kiro_unverified passes (tight 30 s bound: the only server-side
     # cooldown is the short failure backoff). It runs inline on a cold miss, in the
     # background refresh right before it spawns, and while the latch says signed

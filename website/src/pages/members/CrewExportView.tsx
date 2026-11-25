@@ -1,9 +1,13 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { Copy, Download } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api, type CrewmateExportChoices, type CrewmateExportPreview } from '../../api/client'
 import { apiErrorCode } from '../../api/apiError'
+import { CREWMATE_IMPORT_SLOT, cardsApi, errorCode, type Card } from '../../api/cards'
+import ChangeCard from '../../cards/ChangeCard'
+import { CREWMATE_NAME_MAX } from '../../cards/ImportNameField'
+import { useChangeCards } from '../../cards/useChangeCards'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
 import { fmtList } from '../../i18n/format'
@@ -11,8 +15,19 @@ import { i18nT } from '../../i18n/t'
 import { effortLabel } from '../../lib/effort'
 import { downloadBlob } from '../../utils/download'
 
-/** Why the server left a part out, worded for the owner. Each code is one literal key. */
-function reasonLabel(reason: string): string {
+/** The confirm view lists either a file to export or a copy to make. */
+export type CrewExportMode = 'export' | 'copy'
+
+/** Why the server left a part out, worded for the owner. Each code is one literal
+ *  key; the copy view words the three that name the file in its own way. */
+function reasonLabel(reason: string, mode: CrewExportMode): string {
+  if (mode === 'copy') {
+    switch (reason) {
+      case 'bundle_full': return i18nT('pages.membersPage.copy_reason_bundle_full')
+      case 'first_goal_only': return i18nT('pages.membersPage.copy_reason_first_goal_only')
+      case 'script_refused': return i18nT('pages.membersPage.copy_reason_script_refused')
+    }
+  }
   switch (reason) {
     case 'script_missing': return i18nT('pages.membersPage.export_reason_script_missing')
     case 'script_refused': return i18nT('pages.membersPage.export_reason_script_refused')
@@ -92,19 +107,38 @@ function Line({ label, value, toggle, children, testId }: {
   )
 }
 
+/** What a refused Make the copy press tells the owner, by the gateway's code. */
+function copyRefusal(e: unknown): string {
+  switch (errorCode(e)) {
+    case 'too_many_cards': return i18nT('pages.membersPage.copy_refused_too_many_cards')
+    case 'already_exists': return i18nT('pages.membersPage.copy_refused_already_exists')
+    default: return i18nT('pages.membersPage.copy_failed')
+  }
+}
+
 /**
  * The Export confirm view, pushed over the profile card (rfc-crewmate-share.md §5.3).
  * It lists exactly what the file holds, read from the server's own plan, with the
  * §5.3 defaults: rules, goals and crons on, lessons off. The press downloads the file;
  * nothing is saved on the server and the lessons text is never stored there.
+ *
+ * In `copy` mode the same plan lists what a copy of this bot gets: no model,
+ * effort or lessons lines, no milestones. Its press builds the file with the
+ * current choices and hands it straight to Import from file, so the import card
+ * it raises (shown here in place) is the confirmation; nothing is created until
+ * that card is pressed.
  */
-export default function CrewExportView({ slug, member, onDirtyChange }: {
+export default function CrewExportView({ slug, member, name, mode = 'export', onDirtyChange }: {
   slug: string
   member: string
+  /** The name the file carries (the display name), for the copy view's too-long line. */
+  name?: string
+  mode?: CrewExportMode
   /** Whether the lessons editor holds text, so the card can ask before a pop drops it. */
   onDirtyChange?: (dirty: boolean) => void
 }) {
   const { t } = useTranslation()
+  const copy = mode === 'copy'
   const [rules, setRules] = useState(true)
   const [goals, setGoals] = useState(true)
   const [crons, setCrons] = useState(true)
@@ -180,14 +214,45 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
       downloadBlob(blob, `${view.name}.kirobot`)
     },
   })
+  // Copy: the file for the current choices, unconfirmed (the import card it
+  // raises lists what it writes), posted straight to Import from file.
+  const [raised, setRaised] = useState<Card | null>(null)
+  const { cards, store, refresh, remove } = useChangeCards(copy ? CREWMATE_IMPORT_SLOT : null)
+  const make = useMutation({
+    mutationFn: async (view: CrewmateExportPreview) => {
+      const blob = await api.memberExportFile(slug, member, { ...choicesFor(view), lessons: null })
+      const card = await cardsApi.importCrewmate(blob)
+      if (!card) throw new Error('no card')
+      store(card)
+      setRaised(card)
+    },
+  })
+  const shownCard = raised ? (cards.find(c => c.id === raised.id) ?? raised) : null
+  // The press takes its own button away, so focus goes to the line above the card it raised.
+  const raisedId = raised?.id
+  const hintRef = useRef<HTMLParagraphElement>(null)
+  useEffect(() => { if (raisedId) hintRef.current?.focus() }, [raisedId])
+  // A dismissed card leaves the view, which lists the copy again.
+  const dismiss = (id: string) => {
+    if (raised?.id === id) {
+      setRaised(null)
+      make.reset()
+    }
+    remove(id)
+  }
 
   if (preview.isPending) {
-    return <div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t('pages.membersPage.export_loading')}</div>
+    return <div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t(copy ? 'pages.membersPage.copy_loading' : 'pages.membersPage.export_loading')}</div>
   }
   if (preview.isError || !preview.data) {
+    // The export refuses a name the import card would refuse; a copy says how to fix it.
+    const tooLong = copy && errorCode(preview.error) === 'invalid_name' && Array.from(name ?? '').length > CREWMATE_NAME_MAX
+    const message = tooLong
+      ? t('pages.membersPage.copy_name_too_long')
+      : t(copy ? 'pages.membersPage.copy_load_failed' : 'pages.membersPage.export_load_failed')
     return (
       <div className="px-4 py-4">
-        <ErrorNotice message={t('pages.membersPage.export_load_failed')} askAgent testId="crew-export-load-error" />
+        <ErrorNotice message={message} askAgent testId="crew-export-load-error" />
       </div>
     )
   }
@@ -212,12 +277,26 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
     return next
   })
 
+  const copyIntro = <p className="text-[12.5px] text-muted" data-testid="crew-copy-intro">{t('pages.membersPage.copy_intro')}</p>
+  if (copy && shownCard) {
+    return (
+      <div className="px-4 py-4 flex flex-col gap-3" data-testid="crew-export-view" data-mode="copy">
+        {copyIntro}
+        <p ref={hintRef} tabIndex={-1} className="text-[12.5px] text-text" data-testid="crew-copy-card-hint">{t('pages.membersPage.copy_card_hint')}</p>
+        <ChangeCard card={shownCard} store={store} refresh={refresh} remove={dismiss} />
+        {shownCard.status === 'pending' && (
+          <p className="text-[12.5px] text-muted" data-testid="crew-copy-card-waits">{t('pages.membersPage.copy_card_waits')}</p>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <div className="px-4 py-4 flex flex-col gap-3" data-testid="crew-export-view">
-      <p className="text-[12.5px] text-muted">{t('pages.membersPage.export_intro')}</p>
+    <div className="px-4 py-4 flex flex-col gap-3" data-testid="crew-export-view" data-mode={mode}>
+      {!copy && <p className="text-[12.5px] text-muted">{t('pages.membersPage.export_intro')}</p>}
       <div className="rounded-2xl border border-border bg-bg overflow-hidden">
-        <Line label={t('pages.membersPage.export_identity')} value={t('pages.membersPage.export_always')} testId="crew-export-identity">
-          <p className="mt-1 text-[12.5px] text-text">{v.name}</p>
+        <Line label={t(copy ? 'pages.membersPage.copy_identity' : 'pages.membersPage.export_identity')} value={t('pages.membersPage.export_always')} testId="crew-export-identity">
+          {!copy && <p className="mt-1 text-[12.5px] text-text">{v.name}</p>}
           {v.description && <p className="text-[12px] text-muted whitespace-pre-wrap">{v.description}</p>}
         </Line>
         <Line label={t('pages.membersPage.export_rules')} toggle={{ checked: rules, onChange: setRules }} testId="crew-export-rules">
@@ -227,7 +306,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
           {goals && (v.goals ? (
             <div className="mt-1 text-[12.5px]">
               <p className="whitespace-pre-wrap">{v.goals.longTerm}</p>
-              {v.goals.keyResults.length > 0 && (
+              {!copy && v.goals.keyResults.length > 0 && (
                 <ul className="mt-1 list-disc pl-4 text-muted">
                   {v.goals.keyResults.map((kr, i) => <li key={i}>{kr.text}{kr.target ? ` · ${kr.target}` : ''}</li>)}
                 </ul>
@@ -244,8 +323,8 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
             </div>
           )) : <p className="mt-1 text-[12px] text-muted">{t('pages.membersPage.export_none')}</p>)}
         </Line>
-        <Line label={t('pages.membersPage.export_model')} value={v.model || t('pages.membersPage.export_model_default')} testId="crew-export-model" />
-        <Line label={t('components.reasoningEffortDropdown.reasoning_effort')} value={v.reasoning_effort ? effortLabel(v.reasoning_effort) : t('pages.membersPage.export_model_default')} testId="crew-export-reasoning-effort" />
+        {!copy && <Line label={t('pages.membersPage.export_model')} value={v.model || t('pages.membersPage.export_model_default')} testId="crew-export-model" />}
+        {!copy && <Line label={t('components.reasoningEffortDropdown.reasoning_effort')} value={v.reasoning_effort ? effortLabel(v.reasoning_effort) : t('pages.membersPage.export_model_default')} testId="crew-export-reasoning-effort" />}
         {ownSkills.map(s => (
           <Line
             key={s.name}
@@ -261,7 +340,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
             ))}
           </Line>
         ))}
-        <Line label={t('pages.membersPage.export_lessons')} toggle={{ checked: lessonsOn, onChange: turnLessons }} testId="crew-export-lessons">
+        {!copy && <Line label={t('pages.membersPage.export_lessons')} toggle={{ checked: lessonsOn, onChange: turnLessons }} testId="crew-export-lessons">
           {lessonsOn && (
             <>
               <p className="mt-1 text-[12px] text-muted">{t('pages.membersPage.export_lessons_hint')}</p>
@@ -283,7 +362,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
               />
             </>
           )}
-        </Line>
+        </Line>}
         <Line
           label={t('pages.membersPage.export_dashboard')}
           value={v.dashboard
@@ -298,12 +377,12 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
             <p className="mt-1 text-[12px] text-muted">{t('pages.membersPage.export_none')}</p>
           ) : (
             <>
-              {!v.mcp_in_file && <p className="mt-1 text-[12px] text-warn-text">{t('pages.membersPage.export_mcp_not_yet')}</p>}
+              {!v.mcp_in_file && <p className="mt-1 text-[12px] text-warn-text">{t(copy ? 'pages.membersPage.copy_mcp_not_yet' : 'pages.membersPage.export_mcp_not_yet')}</p>}
               <ul className="mt-1 text-[12.5px]">
                 {v.mcp_servers.map(m => (
                   <li key={m.server}>
                     {m.server}
-                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: fmtList(m.placeholders, { style: 'narrow' }) })}</span>}
+                    {!copy && m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: fmtList(m.placeholders, { style: 'narrow' }) })}</span>}
                   </li>
                 ))}
               </ul>
@@ -313,25 +392,34 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
       </div>
       {leftOut.length > 0 && (
         <section className="rounded-2xl border border-border bg-bg px-3.5 py-3" data-testid="crew-export-left-out">
-          <div className="text-[11px] font-semibold tracking-wide uppercase text-muted mb-1">{t('pages.membersPage.export_left_out')}</div>
+          <div className="text-[11px] font-semibold tracking-wide uppercase text-muted mb-1">{t(copy ? 'pages.membersPage.copy_left_out' : 'pages.membersPage.export_left_out')}</div>
           <ul className="text-[12.5px] flex flex-col gap-0.5">
             {leftOut.map((i, n) => (
-              <li key={n}>{kindLabel(i.kind)}{i.name ? ` “${i.name}”` : ''}: <span className="text-muted">{reasonLabel(i.reason)}</span></li>
+              <li key={n}>{kindLabel(i.kind)}{i.name ? ` “${i.name}”` : ''}: <span className="text-muted">{reasonLabel(i.reason, mode)}</span></li>
             ))}
           </ul>
         </section>
       )}
-      <p className="text-[12.5px] text-muted" data-testid="crew-export-not-included">{t('pages.membersPage.export_not_included')}</p>
-      {checked && !save.isPending && (
+      {copy ? copyIntro : <p className="text-[12.5px] text-muted" data-testid="crew-export-not-included">{t('pages.membersPage.export_not_included')}</p>}
+      {copy && make.isError && <ErrorNotice id="crew-copy-error" message={copyRefusal(make.error)} askAgent testId="crew-copy-error" />}
+      {copy && (
+        <Btn primary type="button" onClick={() => make.mutate(v)} disabled={make.isPending} className="self-start h-9 px-4 rounded-full" data-testid="crew-copy-make">
+          <Copy size={14} aria-hidden="true" />
+          {t('pages.membersPage.copy_make')}
+        </Btn>
+      )}
+      {!copy && checked && !save.isPending && (
         <p className="text-[12.5px] text-warn-text" role="status" data-testid="crew-export-plan-changed">{t('pages.membersPage.export_plan_changed')}</p>
       )}
       {/* No hand-off: the lessons editor above may hold unsaved text, which a hand-off
           to chat would unmount and lose. */}
-      {save.isError && <ErrorNotice id="crew-export-error" message={saveError} testId="crew-export-error" />}
-      <Btn primary type="button" onClick={() => save.mutate(v)} disabled={save.isPending} className="self-start h-9 px-4 rounded-full" data-testid="crew-export-download">
-        <Download size={14} aria-hidden="true" />
-        {t('pages.membersPage.export_download')}
-      </Btn>
+      {!copy && save.isError && <ErrorNotice id="crew-export-error" message={saveError} testId="crew-export-error" />}
+      {!copy && (
+        <Btn primary type="button" onClick={() => save.mutate(v)} disabled={save.isPending} className="self-start h-9 px-4 rounded-full" data-testid="crew-export-download">
+          <Download size={14} aria-hidden="true" />
+          {t('pages.membersPage.export_download')}
+        </Btn>
+      )}
     </div>
   )
 }

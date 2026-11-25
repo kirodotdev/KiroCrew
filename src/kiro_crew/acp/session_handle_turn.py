@@ -13,8 +13,8 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 ``_goose_steers``, ``_held_steers_unanswered``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
-``_native_child_overflow``, ``_native_child_sids``,
-``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
+``_native_child_finished``, ``_native_child_overflow``, ``_native_child_sids``,
+``_native_child_subjects``, ``_native_child_titles``, ``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
 ``_status_rejected``, ``_steers_accepted``, ``_steers_proven``,
@@ -29,7 +29,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_cloud_replayed_permissions``, ``_drained_child_events``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
+``_mcp_sign_in_needed``, ``_mcp_sign_in_wanted``, ``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
 ``_steering_cancel_tasks``.
 """
 
@@ -42,7 +42,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard, kas_profile, kas_wire
+from kiro_crew.acp import batch_guard, kas_approve_for_me, kas_profile, kas_wire
 from kiro_crew.acp._dispatch import (
     classify_notification,
     is_unattributed_error_candidate,
@@ -55,7 +55,6 @@ from kiro_crew.acp.client import (
     AcpError,
     _effective_prompt_timeout_async,
     _loggable_request_id,
-    _raise_acp_error,
     parse_slash_command,
 )
 from kiro_crew.acp.elicitation import (
@@ -75,6 +74,7 @@ from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
 from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
     _is_claude_subagent_update,
     _keep_working_claude_redactors,
 )
@@ -84,6 +84,7 @@ from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
@@ -108,6 +109,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.context_assembly.mcp_servers import sign_in_started_block
 from kiro_crew.metrics.chat_runtime_share import (
     chat_leases_on,
     on_shared_process,
@@ -343,6 +345,10 @@ async def prompt(
     # The servers this session's start left to its first turn: a prompt that
     # does not carry them waits briefly here, before any turn state is touched.
     await hold_untold_first_turn(self, message)
+    if getattr(self._runtime, "acp_backend", "") in ACP_BACKENDS_APPROVE_FOR_ME:
+        # A trust or YOLO grant, or a policy deny, made since the last turn takes
+        # approve-for-me off before this prompt runs under it.
+        await kas_approve_for_me.settle(self)
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
@@ -430,6 +436,22 @@ async def stream_command(
         await turn.aclose()
 
 
+def _tell_sign_in_started(method: str, params: dict[str, Any], started: tuple[str, ...]) -> None:
+    """Put the sign-in block first in a prompt whose turn started *started*'s sign-in.
+
+    The turn's ``[MCP SERVERS]`` block was built before the start, so the model
+    would otherwise read the server as waiting and say it cannot sign in, while
+    the sign-in card shows in the same chat. A command or compaction request
+    carries no prompt and is left as it is.
+    """
+    blocks = params.get("prompt")
+    if not started or method != METHOD_PROMPT or not isinstance(blocks, list):
+        return
+    text = sign_in_started_block(started)
+    if text:
+        blocks.insert(0, {"type": "text", "text": text})
+
+
 async def _run_turn(
     self: AcpSessionHandle,
     build_request: Callable[[], Awaitable[tuple[str, dict[str, Any]]]],
@@ -505,7 +527,12 @@ async def _run_turn(
     # the terminal flag records that the engine already reported its outcome.
     self._kas_compact_turn = False
     self._compaction_terminal_seen = False
-    self._stale_eligible = False
+    # The model-wait watchdog judges a prompt from its send: no tool is in
+    # flight yet, so a prompt that never gets a frame is bounded by the
+    # stale window, not the turn ceiling. A turn the agent started arms from
+    # its first activity frame instead (``_dispatch_events``), and a native
+    # command turn not at all (bounded by ``_COMMAND_TURN_TIMEOUT_SECS``).
+    self._stale_eligible = not agent_started and not extract_command_result
     # Set when a genuine stale turn is probed via session/cancel; read by the
     # unresponsive-cancel branch to distinguish a confirmed wedge (signal
     # auto-recovery) from an ordinary unacked cancel (unblock caller).
@@ -559,6 +586,9 @@ async def _run_turn(
     self._tool_call_harness_tool_name.clear()
     self._tool_call_identity_unreadable.clear()
     self._native_child_tool_call_ids.clear()
+    self._native_child_finished.clear()
+    self._native_child_titles.clear()
+    self._native_child_subjects.clear()
     self._permission_options.clear()
     self._permission_gate_events.clear()
     # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
@@ -963,7 +993,11 @@ async def _run_turn(
         if sign_in_ask:
             self.want_mcp_sign_in_named(sign_in_ask)
         self._match_mcp_sign_in_ask()
+        # An accepted start leaves the wanted set; the prompt built below is
+        # told of it (see ``_tell_sign_in_started``).
+        _wanted_before = self._mcp_sign_in_wanted & self._mcp_sign_in_needed
         self._offer_mcp_sign_in()
+        _sign_in_started = tuple(sorted(_wanted_before - self._mcp_sign_in_wanted))
         # A server that failed for want of a credential, or lost its
         # connection, is connected again here, after the sign-in offer: the
         # offer takes the runtime's one consent-URL slot first, and a
@@ -988,6 +1022,7 @@ async def _run_turn(
             req_id = AGENT_STARTED_REQUEST_ID
         else:
             _method, _params = await build_request()
+            _tell_sign_in_started(_method, _params, _sign_in_started)
             _mark = getattr(self._runtime, "mark_turn_active", None)
             if _mark is not None:
                 _mark(self._session_id, True)
@@ -1059,13 +1094,13 @@ async def _run_turn(
         _notices = list(self._pending_reject_notices)
         self._pending_reject_notices.clear()
         for _n_sid, _n_title in _notices:
+            _n_shown = redact_text(str(_n_title)[:4096])[:120]
             yield AcpEvent(
                 kind=EVENT_SUBAGENT_ACTIVITY,
                 sub_session_id=_n_sid,
-                text=(
-                    "Blocked: permission auto-rejected (stranded between turns): "
-                    f"{redact_text(str(_n_title)[:4096])[:120]}"
-                ),
+                text=f"Blocked: permission auto-rejected (stranded between turns): {_n_shown}",
+                title=_n_shown,
+                auto_reject_reason=AUTO_REJECT_STRANDED_BETWEEN_TURNS,
             )
         async for _incoming in _dispatch:
             if (
@@ -1190,7 +1225,11 @@ async def _run_turn(
                 # The same state the backend's own error response leaves:
                 # no stop reason, because the turn did not complete.
                 self._last_stop_reason = ""
-                _raise_acp_error(
+                # Under KAS machine mode a refused credential is the host token's.
+                from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+                raise_turn_error(
+                    self._runtime,
                     _failure,
                     self._advertised_model_ids(),
                     backend=getattr(self._runtime, "acp_backend", ""),

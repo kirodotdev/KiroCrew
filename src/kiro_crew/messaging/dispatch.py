@@ -241,6 +241,16 @@ def build_directive_consumer(
         # turn owes the thread no empty-turn notice.
         return outcome.ends_turn
 
+    def _claim_parked(input_digest: str, not_before: float) -> dict[str, Any] | None:
+        # The out-of-band half ``messaging.directive_tracker`` uses on a backend
+        # whose tool calls carry no trusted tool name (KAS). It claims only from
+        # THIS consumer's own session, so the tracker never names a session.
+        # Deferred import, for the same cycle as the applier above.
+        from kiro_crew.directive_queue import claim
+
+        return claim(session_key, input_digest, not_before=not_before)
+
+    setattr(_consume, "claim_parked", _claim_parked)
     return _consume
 
 
@@ -442,6 +452,8 @@ class ChannelTurns:
     * ``notice(reply_to, session_key, provider)`` -- post-turn threshold handling.
     * ``surface()`` -- runs after the record of a turn that opened its conversation.
     * ``restricted(session_key)`` -- whether a shutdown refusal may NOT be spooled.
+    * ``blocks_reads(session_key)`` -- whether the turn's prompt takes NO memory or
+      lessons (a ``temporary`` conversation). Unset, every turn reads, as before.
     * ``slot_state()`` -- the dashboard state the crew-log opener reads the slot's
       workspace from; defaults to ``dispatcher.dashboard_state``.
     * ``approvals`` -- the grant and the window sweep (:class:`Approvals`).
@@ -460,6 +472,7 @@ class ChannelTurns:
         notice: Callable[[Any, str, Any], Awaitable[None]] | None = None,
         surface: Callable[[], Awaitable[None]] | None = None,
         restricted: Callable[[str], Awaitable[bool]] | None = None,
+        blocks_reads: Callable[[str], Awaitable[bool]] | None = None,
         conv_log: Any = None,
         slot_state: Callable[[], Any] | None = None,
         approvals: Approvals = Approvals(),
@@ -474,6 +487,7 @@ class ChannelTurns:
         self._notice = notice
         self._surface = surface
         self._restricted = restricted
+        self._blocks_reads = blocks_reads
         self._conv_log = conv_log
         self._slot_state = slot_state
         self._approvals = approvals
@@ -1166,6 +1180,11 @@ class ChannelTurns:
                 # This conversation's own silo comes from the session's RECORDED
                 # binding (``memory_store`` above), never from ``agent``: that is a
                 # kiro-cli template id, a namespace disjoint from ``cfg.agents``.
+                # Temporary reads NO memory: refusing the transcript write alone
+                # would still put stored memories and lessons into this prompt.
+                blocks_reads = self._blocks_reads is not None and await self._blocks_reads(
+                    session_key
+                )
                 # Off-loop: build_message embeds the episodic query (blocking urllib).
                 full_message, _ = await run_in_embed_pool(
                     ctx_builder.build_message,
@@ -1178,6 +1197,7 @@ class ChannelTurns:
                     resumed=resumed,
                     needs_reinjection=needs_reinjection,
                     minimal_context=minimal_context,
+                    blocks_reads=blocks_reads,
                     runtime_source=channel,
                     context_provider=provider,
                     user_display_name=asker.display_name,

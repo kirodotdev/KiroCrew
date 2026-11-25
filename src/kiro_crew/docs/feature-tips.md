@@ -8,8 +8,20 @@ Kiro Crew surfaces a compact feature tip above the chat composer while a turn is
 - A tip is an in-flow card in the composer's width wrapper: it takes real layout space and pushes the conversation upward instead of covering chat content.
 - Tips do not fetch or display in temporary sessions, split view, or the embedded sessions view, and they yield to functional above-composer surfaces such as question cards, queued messages, folder suggestions, and active subagent or workflow progress.
 - Candidates include hand-authored actionable tips, generated tips, and a catalog fallback built from allowlisted feature docs. A background model call uses the local context to generate candidates; selection blends random exploration with weighted, newer-biased selection.
+- Hand-authored tips show in the dashboard's language: the tip card and the Settings tip list look up each tip's title, body and button label in the language catalog by tip id. A tip whose served text differs from the catalog's English shows as served.
 - At most one tip is offered at a time. The same offered tip is returned until feedback clears it.
 - Displaying, acknowledging, dismissing, or snoozing a tip starts the cadence gate; the default minimum gap is six hours. The client also applies a 20-minute local display gate unless a shorter configured cadence applies.
+
+## Tips beside Thinking
+
+While a turn runs, the "Thinking…" line can also show one short tip about a dashboard control, such as Split View, Side Chat, or the Command Bar. These tips come from their own hand-written list and never appear in the card above the composer.
+
+- One tip is picked at random when the turn starts and stays until the turn ends. It does not change mid-turn.
+- A tip shows only when its control works where you are: for example, the microphone tip needs a browser that can record, and the terminal tips need Terminal turned on.
+- They show in the dashboard chat, not in an embedded or popped-out chat or a temporary session.
+- On a phone (a window under 768 px wide) the tip sits on its own line under "Thinking…". It shows only when it fits on that one line; a longer tip is not shown. Tips for desktop-only controls (Split View, the Terminal rail, Focus mode) never show on a phone.
+- Hover the tip and click its X to dismiss it for good. The Feature Tips switch turns these off too.
+- Showing or dismissing one does not start the card's cadence gate.
 
 ## Controls
 

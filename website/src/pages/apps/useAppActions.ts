@@ -4,7 +4,8 @@
  * DiscoverPage and LibraryPage act on the same apps through the same
  * endpoints, so the pieces that define *how* an action behaves — detail
  * navigation, the trust-consent target, the single enable path, and the
- * query-error banner state — live here. Two inline copies of this plumbing
+ * page notice (the query-error banner, or one the page we came from handed
+ * over as `appNotice` router state) — live here. Two inline copies of this plumbing
  * is the drift shape that produced the AppsPage/AppDetailPage
  * author-precedence bug; one shared hook cannot contradict itself.
  *
@@ -13,7 +14,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { recordEvent } from '../../rum'
@@ -36,7 +37,21 @@ export function useAppActions({
   registriesUnknown,
 }: AppActionsInput) {
   const navigate = useNavigate()
+  const location = useLocation()
   const [error, setError] = useState('')
+  // Notices handed over by the page we left: an uninstall's warnings
+  // (`appNotice`, shown here) and a Bot-chat stop that did not finish (`botStop`,
+  // which LibraryPage reads on its first render). Read on every navigation so a
+  // page that is already open shows them too. Router state, so no URL can forge
+  // them. Both are taken out of the history entry in one replace, other fields
+  // kept, so a reload or Back does not show either again.
+  useEffect(() => {
+    const state = location.state
+    if (!state || typeof state !== 'object' || !('appNotice' in state || 'botStop' in state)) return
+    const { appNotice, botStop: _botStop, ...kept } = state as Record<string, unknown>
+    if (typeof appNotice === 'string' && appNotice !== '') setError(appNotice)
+    navigate(location.pathname + location.search, { replace: true, state: Object.keys(kept).length ? kept : null })
+  }, [location.state, navigate, location.pathname, location.search])
   const [dismissedQueryError, setDismissedQueryError] = useState(false)
 
   // A NEW query failure re-arms the banner after an earlier dismissal.

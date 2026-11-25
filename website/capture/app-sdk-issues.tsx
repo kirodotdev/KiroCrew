@@ -6,12 +6,12 @@
  * components, the app's scoped client and the stylesheet are the real ones.
  *
  * Scenes (?scene=):
- *   condensed  the list in rows, filter bar on, all four providers, Load more.
+ *   condensed  the list in rows, filter bar on, all five providers, Load more.
  *   expanded   the same issues as cards.
  *   refused    an app that declares only /api/source/issue (singular).
  *   empty / loading / error   the list's other states, filter bar on.
  *   (The shoot script clicks "Assigned to me" on the condensed scene.)
- * Theme: &theme=dark|light
+ * Theme: &theme=dark|light. &provider=servicenow lists one ServiceNow table instead.
  */
 import { createRoot } from 'react-dom/client'
 
@@ -67,7 +67,31 @@ const ISSUES: IssueSummary[] = [
     commentCount: 1, createdAt: hoursAgo(900), updatedAt: hoursAgo(72),
     excerpt: 'نص عربي يصف المشكلة.', project: 'ENG', linkedChanges: [],
   },
+  {
+    provider: 'servicenow', url: 'https://acme.service-now.com/incident.do?sys_id=a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    key: 'INC0010001', number: 10001,
+    title: 'Email delivery delayed for the London office', state: 'open', statusLabel: 'In Progress',
+    labels: [], assignees: [person('Alice Admin', 'Alice Admin')], author: person('Bob Caller', 'Bob Caller'),
+    priority: '2 - High', commentCount: 0, createdAt: hoursAgo(30), updatedAt: hoursAgo(1),
+    excerpt: 'Outbound mail queues on the London relay since 09:00; users see delays of up to an hour.',
+    project: 'incident', linkedChanges: [],
+  },
 ]
+const SERVICENOW_ISSUES: IssueSummary[] = [
+  ISSUES[4],
+  {
+    ...ISSUES[4], url: 'https://acme.service-now.com/incident.do?sys_id=0f1e2d3c4b5a69788796a5b4c3d2e1f0',
+    key: 'INC0010007', number: 10007, title: 'VPN drops every 20 minutes on the new laptops', statusLabel: 'On Hold',
+    priority: '3 - Moderate', updatedAt: hoursAgo(6), excerpt: 'Seen on the 14-inch model only, with the current client.',
+  },
+  {
+    ...ISSUES[4], url: 'https://acme.service-now.com/incident.do?sys_id=1234567890abcdef1234567890abcdef',
+    key: 'INC0009984', number: 9984, title: 'Printer on the 3rd floor jams on duplex jobs', state: 'closed', statusLabel: 'Resolved',
+    priority: '4 - Low', assignees: [], updatedAt: hoursAgo(50), excerpt: 'Replaced the duplex unit.',
+  },
+]
+// ?provider=servicenow lists one ServiceNow table instead: its filter bar has no labels box.
+const serviceNow = params.get('provider') === 'servicenow'
 
 const realFetch = window.fetch.bind(window)
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -84,12 +108,14 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const first = !body.cursor
   const page: IssueSearchResponse = {
     provider: body.provider, scope: body.scope,
-    issues: first ? ISSUES : [], nextCursor: first ? 'page-2' : null, total: null,
+    issues: first ? (serviceNow ? SERVICENOW_ISSUES : ISSUES) : [], nextCursor: first ? 'page-2' : null, total: null,
   }
   return new Response(JSON.stringify(page), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
 
-const QUERY: IssueSearchRequest = { provider: 'github', scope: 'acme/widgets' }
+const QUERY: IssueSearchRequest = serviceNow
+  ? { provider: 'servicenow', scope: 'incident', host: 'acme.service-now.com', assignee: 'me' }
+  : { provider: 'github', scope: 'acme/widgets' }
 const declared = scene === 'refused' ? ['/api/source/issue'] : ['/api/source/issues']
 
 createRoot(document.getElementById('root')!).render(

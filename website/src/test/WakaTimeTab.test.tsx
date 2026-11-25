@@ -73,7 +73,10 @@ beforeEach(() => {
   // render without the Connect button needing per-test setup.
   wakatimeOauthStatus.mockResolvedValue({ connected: false, client_configured: false })
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  delete window.wakatimeConnectAPI
+})
 
 describe('WakaTimeTab', () => {
   it('renders coding time, languages and projects when configured with data', async () => {
@@ -317,8 +320,15 @@ describe('WakaTimeTab', () => {
     }
   })
 
-  it.each([false, true])('keeps desktop Connect in the dashboard and explains browser setup (rejected=%s)', async (rejected) => {
+  const DESKTOP_FALLBACKS = [
+    ['no bridge', undefined, false],
+    ['a failed hand-off', () => Promise.resolve(false), true],
+    ['a refused hand-off', () => Promise.reject(new Error('wakatime:open-in-browser is restricted to the local dashboard')), true],
+  ] as const
+  it.each(DESKTOP_FALLBACKS.flatMap(([label, open, failed]) => [false, true].map(rejected => [label, rejected, open, failed] as const)))(
+    'keeps desktop Connect in the dashboard and explains browser setup (%s, rejected=%s)', async (_label, rejected, open, failed) => {
     desktop.isElectron = true
+    if (open) window.wakatimeConnectAPI = { openInBrowser: vi.fn(open) }
     if (rejected) {
       wakatimeStats.mockRejectedValue(new ApiError(502, 'Reconnect WakaTime', JSON.stringify({ code: 'reconnect_required' })))
     } else {
@@ -334,9 +344,14 @@ describe('WakaTimeTab', () => {
       const btn = await screen.findByRole('button', { name: /connect with wakatime/i })
       fireEvent.click(btn)
       const notice = await screen.findByText('Open this dashboard in a web browser to connect WakaTime. Once connected there, the desktop app uses the same account.')
-      // Guidance, not a failure: muted status text, never an ErrorNotice alert.
-      expect(notice).toHaveAttribute('role', 'status')
-      expect(notice.closest('[role="alert"]')).toBeNull()
+      if (failed) {
+        // The shell could not open the browser or refused: the same text, as an ErrorNotice alert.
+        expect(notice.closest('[role="alert"]')).not.toBeNull()
+      } else {
+        // No bridge is guidance, not a failure: muted status text, never an ErrorNotice alert.
+        expect(notice).toHaveAttribute('role', 'status')
+        expect(notice.closest('[role="alert"]')).toBeNull()
+      }
       expect(wakatimeOauthAuthorize).not.toHaveBeenCalled()
       expect(assign).not.toHaveBeenCalled()
       expect(btn).toBeEnabled()
@@ -344,6 +359,180 @@ describe('WakaTimeTab', () => {
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: original })
     }
+  })
+
+  it('hands desktop Connect to the system browser and shows the account once the window is back', async () => {
+    desktop.isElectron = true
+    wakatimeStats.mockResolvedValue({ configured: false })
+    wakatimeOauthStatus.mockResolvedValue({ connected: false, client_configured: true })
+    const openInBrowser = vi.fn(() => Promise.resolve(true))
+    window.wakatimeConnectAPI = { openInBrowser }
+    const assign = vi.fn()
+    const original = window.location
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign } })
+    try {
+      mount()
+      fireEvent.click(await screen.findByRole('button', { name: /connect with wakatime/i }))
+      const line = await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')
+      expect(line).toHaveAttribute('role', 'status')
+      expect(line.closest('[role="alert"]')).toBeNull()
+      expect(openInBrowser).toHaveBeenCalledOnce()
+      expect(openInBrowser).toHaveBeenCalledWith()
+      expect(wakatimeOauthAuthorize).not.toHaveBeenCalled()
+      expect(assign).not.toHaveBeenCalled()
+
+      // The sign-in finished in the browser; coming back re-reads the status.
+      const statusReads = wakatimeOauthStatus.mock.calls.length
+      wakatimeOauthStatus.mockResolvedValue({ connected: true, client_configured: true })
+      fireEvent.focus(window)
+      expect(await screen.findByRole('button', { name: /disconnect/i })).toBeInTheDocument()
+      expect(wakatimeOauthStatus.mock.calls.length).toBeGreaterThan(statusReads)
+      expect(screen.queryByText(/Finish connecting WakaTime/)).not.toBeInTheDocument()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: original })
+    }
+  })
+
+  it('keeps a desktop Reconnect hand-off open until the stats read succeeds', async () => {
+    // A refused grant still reads as connected, so connected alone does not end the hand-off.
+    desktop.isElectron = true
+    wakatimeStats.mockRejectedValue(new ApiError(
+      502,
+      'WakaTime refused the read. Reconnect WakaTime in Settings.',
+      JSON.stringify({ error: 'WakaTime refused the read. Reconnect WakaTime in Settings.', code: 'reconnect_required' }),
+    ))
+    wakatimeOauthStatus.mockResolvedValue({ connected: true, client_configured: true })
+    window.wakatimeConnectAPI = { openInBrowser: vi.fn(() => Promise.resolve(true)) }
+    mount()
+    expect(await screen.findByRole('button', { name: /^disconnect$/i })).toBeInTheDocument()
+    expect(screen.getByText('Reconnect WakaTime')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /connect with wakatime/i }))
+    const line = await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')
+    expect(line).toHaveAttribute('role', 'status')
+
+    // The reconnect finished in the browser; coming back re-reads the stats.
+    const statsReads = wakatimeStats.mock.calls.length
+    wakatimeStats.mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: { total_seconds: 3600, daily_average: 1800, languages: [{ name: 'Python', total_seconds: 3600 }], projects: [] },
+    })
+    fireEvent.focus(window)
+    expect(await screen.findByText('Python')).toBeInTheDocument()
+    expect(wakatimeStats.mock.calls.length).toBeGreaterThan(statsReads)
+    expect(screen.queryByText('Reconnect WakaTime')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Finish connecting WakaTime/)).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /^disconnect$/i })).toBeInTheDocument()
+  })
+
+  it('keeps a desktop Reconnect hand-off across a re-read that fails again', async () => {
+    // A failed stats read re-reads through the skeleton, which unmounts Connect.
+    desktop.isElectron = true
+    const refused = new ApiError(
+      502,
+      'WakaTime refused the read. Reconnect WakaTime in Settings.',
+      JSON.stringify({ error: 'WakaTime refused the read. Reconnect WakaTime in Settings.', code: 'reconnect_required' }),
+    )
+    wakatimeStats.mockRejectedValue(refused)
+    wakatimeOauthStatus.mockResolvedValue({ connected: true, client_configured: true })
+    window.wakatimeConnectAPI = { openInBrowser: vi.fn(() => Promise.resolve(true)) }
+    mount()
+    expect(await screen.findByRole('button', { name: /^disconnect$/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /connect with wakatime/i }))
+    await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')
+
+    // Back before finishing in the browser: the re-read fails again.
+    let failAgain: (e: unknown) => void = () => {}
+    wakatimeStats.mockImplementationOnce(() => new Promise((_resolve, reject) => { failAgain = reject }))
+    fireEvent.focus(window)
+    await waitFor(() => expect(screen.queryByText('Reconnect WakaTime')).not.toBeInTheDocument())
+    failAgain(refused)
+    expect(await screen.findByText('Reconnect WakaTime')).toBeInTheDocument()
+    expect(await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')).toBeInTheDocument()
+
+    // Finished in the browser: the next focus re-reads, and the stats load.
+    wakatimeStats.mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: { total_seconds: 3600, daily_average: 1800, languages: [{ name: 'Python', total_seconds: 3600 }], projects: [] },
+    })
+    fireEvent.focus(window)
+    expect(await screen.findByText('Python')).toBeInTheDocument()
+    expect(screen.queryByText('Reconnect WakaTime')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Finish connecting WakaTime/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a desktop Reconnect hand-off across a re-read that cannot reach WakaTime', async () => {
+    // A connected status with a failed stats read has not shown the grant works.
+    desktop.isElectron = true
+    wakatimeStats.mockRejectedValue(new ApiError(
+      502,
+      'WakaTime refused the read. Reconnect WakaTime in Settings.',
+      JSON.stringify({ error: 'WakaTime refused the read. Reconnect WakaTime in Settings.', code: 'reconnect_required' }),
+    ))
+    wakatimeOauthStatus.mockResolvedValue({ connected: true, client_configured: true })
+    window.wakatimeConnectAPI = { openInBrowser: vi.fn(() => Promise.resolve(true)) }
+    mount()
+    expect(await screen.findByRole('button', { name: /^disconnect$/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /connect with wakatime/i }))
+    await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')
+
+    // Back before finishing in the browser: the re-read cannot reach WakaTime.
+    wakatimeStats.mockRejectedValueOnce(new ApiError(
+      502,
+      'WakaTime is unreachable or the API key was rejected',
+      JSON.stringify({ error: 'WakaTime is unreachable or the API key was rejected', code: 'upstream_unavailable' }),
+    ))
+    fireEvent.focus(window)
+    expect(await screen.findByText('WakaTime is unreachable')).toBeInTheDocument()
+    expect(await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')).toBeInTheDocument()
+
+    // Finished in the browser: the next focus still re-reads, and the stats load.
+    wakatimeStats.mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: { total_seconds: 3600, daily_average: 1800, languages: [{ name: 'Python', total_seconds: 3600 }], projects: [] },
+    })
+    fireEvent.focus(window)
+    expect(await screen.findByText('Python')).toBeInTheDocument()
+    expect(screen.queryByText('WakaTime is unreachable')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Finish connecting WakaTime/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a desktop hand-off open while the stats re-read is still running', async () => {
+    // The cached setup card stays mounted during the re-read, so a connected status alone must not end it.
+    desktop.isElectron = true
+    wakatimeStats.mockResolvedValue({ configured: false })
+    wakatimeOauthStatus.mockResolvedValue({ connected: false, client_configured: true })
+    window.wakatimeConnectAPI = { openInBrowser: vi.fn(() => Promise.resolve(true)) }
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: /connect with wakatime/i }))
+    await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')
+
+    let failLater: (e: unknown) => void = () => {}
+    wakatimeOauthStatus.mockResolvedValue({ connected: true, client_configured: true })
+    wakatimeStats.mockImplementationOnce(() => new Promise((_resolve, reject) => { failLater = reject }))
+    fireEvent.focus(window)
+    expect(await screen.findByRole('button', { name: /^disconnect$/i })).toBeInTheDocument()
+    expect(screen.getByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')).toBeInTheDocument()
+
+    failLater(new ApiError(
+      502,
+      'WakaTime is unreachable or the API key was rejected',
+      JSON.stringify({ error: 'WakaTime is unreachable or the API key was rejected', code: 'upstream_unavailable' }),
+    ))
+    expect(await screen.findByText('WakaTime is unreachable')).toBeInTheDocument()
+    expect(await screen.findByText('Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.')).toBeInTheDocument()
+
+    wakatimeStats.mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: { total_seconds: 3600, daily_average: 1800, languages: [{ name: 'Python', total_seconds: 3600 }], projects: [] },
+    })
+    fireEvent.focus(window)
+    expect(await screen.findByText('Python')).toBeInTheDocument()
+    expect(screen.queryByText('WakaTime is unreachable')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Finish connecting WakaTime/)).not.toBeInTheDocument()
   })
 
   it('shows the setup hint instead of Connect when the OAuth app is not configured', async () => {

@@ -46,6 +46,7 @@ import { useConfirm } from '../../components/ConfirmDialog'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
 import MateSessionsList from './MateSessionsList'
+import BotSessionListSwitches from './BotSessionListSwitches'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import CrewWakeSection from '../../components/CrewWakeSection'
 import { crewWakeQueryKey, wakesCrew } from '../../components/crew/wakesCrew'
@@ -552,13 +553,15 @@ interface MembersPageProfileCardProps {
   onGoalsDraftChange: (dirty: boolean, busy: boolean) => void
   /** The Export view's lessons text is typed (see MembersPage's exit guards). */
   onExportDraftChange?: (dirty: boolean) => void
+  /** Make a copy is offered: true exactly where both Import from file doors are. */
+  copyOpen?: boolean
 }
 
 /** The Profile card, as a docked column or a floating card over the thread column. */
 export function MembersPageProfileCard({
   crewEditing, profileCard, rosterView, thread, sidePanel, schedules, profileFlight, navigate, leave,
   setEditingCrew, profile, threadColumnRef, slotsLoaded, active, activeSlug, activeMemberName,
-  onGoalsDraftChange, onExportDraftChange,
+  onGoalsDraftChange, onExportDraftChange, copyOpen,
 }: MembersPageProfileCardProps) {
   const { t } = useTranslation()
   const { profileRegistryQuery } = crewEditing
@@ -700,6 +703,7 @@ export function MembersPageProfileCard({
         slotsLoaded={slotsLoaded}
         empty={sessionsEmpty}
         onOpen={(w) => openSessionInPanel(w.key)}
+        header={active && <BotSessionListSwitches member={activeView ?? active} displayName={crewDisplayName(active)} />}
       />
     </div>
   )
@@ -761,7 +765,7 @@ export function MembersPageProfileCard({
       schedulesError={schedulesCountQuery.isError}
       nowTs={nowTs}
       onOpenSchedule={() => { const destination = '/schedule'; leave(() => navigate(destination), destination) }}
-      onOpenScheduleJob={(id) => { const destination = `/schedule?job=${encodeURIComponent(id)}`; leave(() => navigate(destination), destination) }}
+      onOpenScheduleJob={(id, tab) => { const destination = `/schedule?job=${encodeURIComponent(id)}${tab ? `&tab=${tab}` : ''}`; leave(() => navigate(destination), destination) }}
       newScheduleBody={schedulesBody}
       heartbeatBody={activeSlug && activeMemberName ? <CrewHeartbeatRow slug={activeSlug} member={activeMemberName} onBusyChange={onHeartbeatBusyChange} /> : null}
       heartbeatOn={heartbeatOn}
@@ -786,6 +790,7 @@ export function MembersPageProfileCard({
       onClose={requestCloseProfile}
       onRequestBack={requestProfileBack}
       onExportDraftChange={onExportDraftChange}
+      canCopy={copyOpen}
       onEdit={() => setEditingCrew(active.name)}
       onOpenFiles={() => openCrewView('files')}
       onFreshStart={activeSlot && !freshStart.isPending ? askFreshStart : undefined}

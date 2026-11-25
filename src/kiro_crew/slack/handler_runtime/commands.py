@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         SlackClientOps,
         SubagentManager,
         TaskRunner,
+        UnknownMemoryStore,
         _dashboard_state,
         _discover_project_agents,
         _get_default_agent,
@@ -48,13 +49,17 @@ if TYPE_CHECKING:
         _thread_projects,
         _vc,
         agent_switch_target,
+        bind_bot_memory,
+        bots_text,
         build_timing_footer,
+        canonical_key,
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
         config_local_path,
         config_path,
         consume_stop_declined,
+        crew_bots,
         cron_command_reply,
         decline_stop,
         deprecation_warning_block,
@@ -66,13 +71,17 @@ if TYPE_CHECKING:
         is_sensitive_path,
         is_shared_listed,
         is_shared_user,
+        is_slack_born,
         is_yolo_mode,
         logger,
+        memory_binding_refusal,
         note_user_stop,
         overlay_pins,
         read_merged_config_files,
         redact_credentials,
         redact_exfiltration_urls,
+        resolve_bot_name,
+        resolve_channel_crew,
         run_config_write,
         safety_override,
         sel,
@@ -115,10 +124,13 @@ async def _handle_slash_command(
         "!dashboard": _bang_dashboard,
         "!link-to-dashboard": _bang_link_to_dashboard,
         "!ta": _bang_thread_agent,
+        "!bot": _bang_bot,
+        "!conductor": _bang_conductor,
         "!project": _bang_project,
         "!allowlist": _bang_allowlist,
         "!channel": _bang_channel,
         "!title": _bang_title,
+        "!trust": _bang_trust,
     }.get(cmd)
     if handler is not None:
         return await handler(
@@ -139,6 +151,40 @@ async def _handle_slash_command(
         f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
         reply_ts,
     )
+    return ""
+
+
+# ── !trust / !trust off / !trust status ──
+async def _bang_trust(
+    cmd_text: str,
+    slack: SlackClientOps,
+    sessions: SessionManager,
+    channel: str,
+    reply_ts: str,
+    msg_ts: str,
+    session_key: str,
+    user_id: str,
+    conversation_log: ConversationLog | None,
+) -> str:
+    """Put this thread's session on Trust, or take it off (owner-only)."""
+    from kiro_crew.slack import thread_trust
+
+    # The session the thread's turns run on: a thread a dashboard chat was sent
+    # to belongs to that chat's session, which the native path's key does not
+    # name (the transport path has already resolved it to the same owner).
+    owner = sessions.get_session_for_thread(reply_ts)
+    if isinstance(owner, str) and owner and owner != canonical_key(reply_ts):
+        session_key = owner
+    parts = cmd_text.split(maxsplit=1)
+    reply = await thread_trust.handle(
+        parts[1] if len(parts) > 1 else "",
+        state=_dashboard_state,
+        session_key=session_key,
+        channel=channel,
+        reply_ts=reply_ts,
+        user=user_id,
+    )
+    await slack.post_message(channel, reply, reply_ts)
     return ""
 
 
@@ -167,6 +213,8 @@ async def _bang_yolo(
         # revocation. ``disable_yolo`` was already corrected to read
         # ``has_grant``; this is its CALLER, which was still gating it out.
         if safety_override().has_grant():
+            from kiro_crew import kept_grants
+
             disable_yolo()
             sel().log_api_access(
                 caller=user_id,
@@ -175,7 +223,10 @@ async def _bang_yolo(
                 source="slack",
                 resources="yolo_off",
             )
-            await slack.post_message(channel, "🔒 YOLO mode disabled.", reply_ts)
+            reply = "🔒 YOLO mode disabled."
+            if not await kept_grants.settle():  # the answer waits for the disk
+                reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
+            await slack.post_message(channel, reply, reply_ts)
         else:
             await slack.post_message(channel, "YOLO mode is already off.", reply_ts)
     elif len(parts) >= 2 and parts[1].lower() == "on":
@@ -434,16 +485,23 @@ async def _bang_voice(
             metadata={"user": user_id, "channel": channel},
         )
         await slack.post_message(channel, "\U0001f507 Voice OFF.", reply_ts)
+    elif arg == "global" and val.lower() not in ("", "on", "off"):
+        await slack.post_message(
+            channel, "Use `!voice global on`, `!voice global off` or `!voice global`.", reply_ts
+        )
     elif arg == "global":
         written: list[bool] = []
 
         def _apply(data: dict) -> dict:
-            # Toggled from the file's value under the write lock, so two
-            # overlapping commands flip twice rather than write the same value.
+            # `on`/`off` set the value; a bare `global` flips the file's value
+            # under the write lock, so two overlapping toggles flip twice.
             vr = data.get("voice_reply")
             if not isinstance(vr, dict):
                 vr = data["voice_reply"] = {}
-            vr["enabled"] = not bool(vr.get("enabled", False))
+            if val:
+                vr["enabled"] = val.lower() == "on"
+            else:
+                vr["enabled"] = not bool(vr.get("enabled", False))
             written.append(vr["enabled"])
             return data
 
@@ -453,7 +511,7 @@ async def _bang_voice(
         try:
             await run_config_write(update_config_locked, config_path(), mutate=_apply)
         except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
-            logger.warning("Refusing to toggle global voice: %s", exc)
+            logger.warning("Refusing to change global voice: %s", exc)
             await slack.post_message(
                 channel,
                 f"\u274c Voice global unchanged: the config was not saved ({exc}).",
@@ -518,6 +576,8 @@ async def _bang_voice(
             f"\U0001f50a Voice: *{'ON' if on else 'OFF'}*\n"
             f"\u2022 Voice: *{v}* | Engine: *{e}*\n"
             f"\u2022 Speed: *{r}* | Pitch: *{p}*\n"
+            "`!voice global on|off` voice in every thread (saved); "
+            "while it is off, `!voice on|off` this thread\n"
             "`!voice <name>` `!voice engine <neural|generative|long-form>` "
             "`!voice speed <80%>` `!voice pitch <+10%>`",
             reply_ts,
@@ -748,6 +808,11 @@ async def _bang_thread_agent(
     from kiro_crew.slack import thread_override_slots
 
     parts = cmd_text.split()
+    # ``!bot <key>`` arrives here (from ``_bang_bot``) with a Crew Bot key it already
+    # resolved: the key is kept as the thread's agent without the kiro agent lookup,
+    # and the logs and the reply name ``!bot``.
+    bot = bool(parts) and parts[0] == "!bot"
+    _cmd = "!bot" if bot else "!ta"
     if len(parts) < 2:
         current = _thread_agents.get(session_key, "")
         if current:
@@ -763,8 +828,23 @@ async def _bang_thread_agent(
                 reply_ts,
             )
         return ""
-    agent_name = parts[1]
-    if agent_name.lower() in ("default", "off"):
+    # A Bot key may hold spaces (a legacy key); ``!ta`` names are one word.
+    agent_name = cmd_text.split(maxsplit=1)[1].strip() if bot else parts[1]
+    # A Bot's key may be "default" (a stock Crew record): only ``!ta`` reads it as a reset.
+    if not bot and agent_name.lower() in ("default", "off"):
+        # A thread bound to a Bot's own memory keeps it: no reset (channel_crew).
+        refusal = await memory_binding_refusal(session_key, None)
+        if refusal:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name=_cmd,
+                tool_kind="command",
+                outcome="agent_denied_memory_binding",
+                metadata={"agent": "", "user": user_id, "channel": channel, "reason": refusal},
+            )
+            await slack.post_message(channel, f"❌ {refusal}", reply_ts)
+            return ""
         _thread_agents.pop(session_key, None)
         if conversation_log:
             try:
@@ -811,26 +891,41 @@ async def _bang_thread_agent(
             reply_ts,
         )
         return ""
-    resolved = await asyncio.to_thread(
-        _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-    )
+    resolved: str | None = agent_name
+    if not bot:
+        resolved = await asyncio.to_thread(
+            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
+        )
     if not resolved:
         names = await asyncio.to_thread(_list_all_agent_names)
         await slack.post_message(
             channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
         )
         return ""
+    # ``!bot`` asks this in ``bind_bot_memory``, after the slot pin below.
+    refusal = None if bot else await memory_binding_refusal(session_key, resolved)
+    if refusal:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name=_cmd,
+            tool_kind="command",
+            outcome="agent_denied_memory_binding",
+            metadata={"agent": resolved, "user": user_id, "channel": channel, "reason": refusal},
+        )
+        await slack.post_message(channel, f"❌ {refusal}", reply_ts)
+        return ""
     # A project agent's name is whatever its spec declares; keep it only within the
     # maps' per-value limit, checked before anything is pinned or written.
     too_long = thread_override_slots.setter_refusal("agent", resolved)
     if too_long:
         logger.warning(
-            "!ta refused for %s: agent name of %d characters", session_key, len(resolved)
+            "%s refused for %s: agent name of %d characters", _cmd, session_key, len(resolved)
         )
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
-            tool_name="!ta",
+            tool_name=_cmd,
             tool_kind="command",
             outcome="agent_denied_too_long",
             metadata={"user": user_id, "channel": channel, "length": len(resolved)},
@@ -843,20 +938,44 @@ async def _bang_thread_agent(
     await _hydrate_thread_overrides(session_key, conversation_log)
     # Pinned: hydration might not read this choice back (see thread_override_slots).
     # Pinned before the write: a refused thread gets no row from this command.
+    was_pinned = thread_override_slots.kind_is_pinned(session_key, "agent")
     if not thread_override_slots.pin(
         session_key, "agent", _hydrated_sessions, _thread_agents, _thread_projects
     ):
-        logger.warning("!ta refused for %s: every thread slot is pinned", session_key)
+        logger.warning("%s refused for %s: every thread slot is pinned", _cmd, session_key)
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
-            tool_name="!ta",
+            tool_name=_cmd,
             tool_kind="command",
             outcome="agent_denied_capacity",
             metadata={"agent": resolved, "user": user_id, "channel": channel, "scope": "thread"},
         )
         await slack.post_message(channel, thread_override_slots.refusal_text(), reply_ts)
         return ""
+    if bot:
+        # After the override slot is held, so a refused slot publishes no memory binding;
+        # a refused binding gives the slot back.
+        try:
+            await bind_bot_memory(session_key, resolved, sessions, conversation_log)
+        except UnknownMemoryStore as exc:
+            if not was_pinned:
+                thread_override_slots.unpin(session_key, "agent")
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name=_cmd,
+                tool_kind="command",
+                outcome="agent_denied_memory_binding",
+                metadata={
+                    "agent": resolved,
+                    "user": user_id,
+                    "channel": channel,
+                    "reason": str(exc),
+                },
+            )
+            await slack.post_message(channel, f"❌ {exc}", reply_ts)
+            return ""
     _thread_agents[session_key] = resolved
     if conversation_log:
         try:
@@ -871,14 +990,156 @@ async def _bang_thread_agent(
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",
-        tool_name="!ta",
+        tool_name=_cmd,
         tool_kind="command",
         outcome="agent_switch",
         metadata={"agent": resolved, "user": user_id, "channel": channel, "scope": "thread"},
     )
     await sessions.remove(session_key)
-    await slack.post_message(channel, f"🔄 Thread agent: *{resolved}*", reply_ts)
+    if bot:
+        await slack.post_message(
+            channel,
+            f"🤖 This thread now runs as Bot *{resolved}*. `!bot off` to go back.",
+            reply_ts,
+        )
+    else:
+        await slack.post_message(channel, f"🔄 Thread agent: *{resolved}*", reply_ts)
     return ""
+
+
+# ── !conductor [goal] — make this thread a Conductor thread, for good ──
+async def _bang_conductor(
+    cmd_text: str,
+    slack: SlackClientOps,
+    sessions: SessionManager,
+    channel: str,
+    reply_ts: str,
+    msg_ts: str,
+    session_key: str,
+    user_id: str,
+    conversation_log: ConversationLog | None,
+) -> str:
+    """Turn this thread into a Conductor thread (``kiro_crew.slack.conductor_thread``).
+
+    Open to any allowed user (the sender gate's allowed-user list); the start asks
+    again, and a shared user who starts one is recorded as its opener. The rest of
+    the message is the goal, the conductor's first turn.
+    """
+    from kiro_crew.slack import conductor_thread
+
+    parts = cmd_text.split(maxsplit=1)
+    goal = parts[1].strip() if len(parts) > 1 else ""
+    started, text = await conductor_thread.start(
+        slack,
+        channel,
+        reply_ts,
+        user_id,
+        goal,
+        session_key=session_key,
+        msg_ts=msg_ts,
+        in_thread=reply_ts != msg_ts,
+    )
+    if not started:
+        await slack.post_message(channel, f"❌ {text}", reply_ts)
+    return ""
+
+
+# ── !bot [name|off] — run this thread as a Crew Bot ──
+async def _bang_bot(
+    cmd_text: str,
+    slack: SlackClientOps,
+    sessions: SessionManager,
+    channel: str,
+    reply_ts: str,
+    msg_ts: str,
+    session_key: str,
+    user_id: str,
+    conversation_log: ConversationLog | None,
+) -> str:
+    """Put this thread on a Crew Bot (a ``config.agents`` record), or list them.
+
+    The thread then runs as the Bot the way a channel pinned with
+    ``slack.channels.<id>.agent`` does (``slack/channel_crew.py``): its mode, its
+    identity, its workspace. It is stored as the thread's agent, as ``!ta`` does, so it
+    outlives a restart and beats the channel's pin. Open to any allowed user
+    (the sender gate's allowed-user list).
+    """
+    from kiro_crew.slack import conductor_thread
+
+    # A Conductor thread keeps its conductor for good (the one Bot-versus-Conductor rule).
+    locked = conductor_thread.switch_refusal("!bot", channel, reply_ts, session_key)
+    if locked:
+        await slack.post_message(channel, locked, reply_ts)
+        return ""
+    parts = cmd_text.split(maxsplit=1)
+    typed = parts[1].strip() if len(parts) > 1 else ""
+    if not typed:
+        current = _thread_agents.get(session_key, "")
+        on_bot = bool(current) and current in await asyncio.to_thread(crew_bots)
+        head = f"This thread runs as Bot *{current}*.\n" if on_bot else ""
+        await slack.post_message(
+            channel,
+            f"{head}Crew Bots: {await asyncio.to_thread(bots_text)}\n"
+            "`!bot <name>` runs this thread as a Bot. `!bot off` goes back.",
+            reply_ts,
+        )
+        return ""
+    # The thread's owner, not the incoming key: the native path always builds a Slack key,
+    # and a linked thread's turns run under the dashboard session the index names.
+    owner = sessions.get_session_for_thread(reply_ts)
+    if not is_slack_born(session_key) or (isinstance(owner, str) and not is_slack_born(owner)):
+        # A thread linked to a dashboard chat runs in that chat's project, not Slack's.
+        await slack.post_message(
+            channel,
+            "❌ This thread is linked to a dashboard chat, so it cannot switch Bots.",
+            reply_ts,
+        )
+        return ""
+    # Only "off": ``default`` is a Crew record's key in a stock config, so it names a Bot.
+    if typed.lower() == "off":
+        try:
+            await bind_bot_memory(session_key, None, sessions, conversation_log)
+        except UnknownMemoryStore as exc:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="!bot",
+                tool_kind="command",
+                outcome="agent_denied_memory_binding",
+                metadata={"agent": "", "user": user_id, "channel": channel, "reason": str(exc)},
+            )
+            await slack.post_message(channel, f"❌ {exc}", reply_ts)
+            return ""
+        return await _bang_thread_agent(
+            "!ta off",
+            slack,
+            sessions,
+            channel,
+            reply_ts,
+            msg_ts,
+            session_key,
+            user_id,
+            conversation_log,
+        )
+    key = await asyncio.to_thread(resolve_bot_name, typed)
+    if key is None or await asyncio.to_thread(resolve_channel_crew, key) is None:
+        await slack.post_message(
+            channel,
+            f"❌ Unknown Bot `{typed}`. Crew Bots: {await asyncio.to_thread(bots_text)}",
+            reply_ts,
+        )
+        return ""
+    return await _bang_thread_agent(
+        f"!bot {key}",
+        slack,
+        sessions,
+        channel,
+        reply_ts,
+        msg_ts,
+        session_key,
+        user_id,
+        conversation_log,
+    )
 
 
 # ── !project <path> / !project off — thread-scoped agent-discovery dir ──
@@ -1124,18 +1385,27 @@ async def _bang_channel(
                 channel, "Usage: `!channel agent <name>` or `!channel agent off`", reply_ts
             )
             return ""
-        agent_name = parts[2]
+        # The name is the whole remainder, so a multi-word Bot display name stays whole.
+        agent_name = cmd_text.split(maxsplit=2)[2].strip()
         if agent_name.lower() == "off":
             agent_name = ""
         else:
-            resolved = await asyncio.to_thread(
-                _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-            )
+            project = _thread_projects.get(session_key)
+
+            def _channel_agent(typed: str) -> str | None:
+                # A Bot key runs the channel as that Bot (channel_crew), so an exact key
+                # wins; a Bot named only by case or display name is matched last.
+                if typed in crew_bots():
+                    return typed
+                return _resolve_agent_name(typed, project) or resolve_bot_name(typed)
+
+            resolved = await asyncio.to_thread(_channel_agent, agent_name)
             if not resolved:
                 names = await asyncio.to_thread(_list_all_agent_names)
+                bots = await asyncio.to_thread(bots_text)
                 await slack.post_message(
                     channel,
-                    f"Unknown agent `{agent_name}`. Available: {names}",
+                    f"Unknown agent `{agent_name}`. Available: {names}. Crew Bots: {bots}",
                     reply_ts,
                 )
                 return ""
@@ -1371,7 +1641,8 @@ async def _handle_compact_command(
 
             elapsed = time.monotonic() - _t0
             footer_blocks, footer_text = build_timing_footer(elapsed)
-            await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+            if footer_blocks:  # none when slack.show_timing_footer is off
+                await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
         except Exception:
             logger.debug("Post-compact reporting failed for %s", session_key, exc_info=True)
 
@@ -1563,10 +1834,12 @@ async def _route_bang_command(
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if _is_bang_command(cmd_text):
-        # !stop and !title are available to any allowed user; !dashboard mints a
-        # full-dashboard link, so it stays the owner's.
+        # !stop, !title, !bot and !conductor are available to any allowed user; a
+        # shared user who starts a Conductor thread is its opener, the one person
+        # besides the owner it admits. !dashboard mints a full-dashboard link, so it
+        # stays the owner's.
         _cmd_word = cmd_text.split()[0].lower()
-        if _cmd_word in ("!dashboard", "!stop", "!title"):
+        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor"):
             if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
                 _cmd_word == "!dashboard" and is_shared_listed(user_id)
             ):

@@ -122,9 +122,11 @@ export interface ReadingPositionEntry<T = unknown> {
   /** Drop a pending debounced save (the unmount teardown). */
   dropPendingAnchorSave: () => void
   /** The entry that ran while the scroller had no height, if it is still owed. */
-  collapsedEntryRef: Ref<{ session: string; anchor: ScrollAnchor | null } | null>
+  collapsedEntryRef: Ref<{ session: string; anchor: ScrollAnchor | null; returning: boolean } | null>
   /** The scroller's box got a height: re-run an entry that ran collapsed. */
   replaceCollapsedEntry: () => void
+  /** The scroller's box lost its height under a released reader: owe their row on show. */
+  noteCollapsedBox: () => void
 }
 
 export function useReadingPositionEntry<T>(ctx: {
@@ -258,6 +260,10 @@ export function useReadingPositionEntry<T>(ctx: {
    *  leaving BOTH identities unresolvable, which is exactly what carrying two of them
    *  is supposed to prevent. */
   const anchorSavedStateRef = useRef<{ session: string; anchor: ScrollAnchor | null } | null>(null)
+  // The row on screen at the last scroll settle of this session entry, whether
+  // or not the intent gate persisted it (a jump to a search hit is not). The
+  // collapse return's target, as the hide snapshot is the visibility return's.
+  const liveAnchorRef = useRef<ScrollAnchor | null>(null)
   // Identity context of the last scroll burst: which session it belonged to
   // and how to resolve row keys for it. Reference-only (no rect reads), set on
   // every scroll event. The slot-switch flush below needs it because during
@@ -353,6 +359,7 @@ export function useReadingPositionEntry<T>(ctx: {
       }
     }
     lastScrollCtxRef.current = null
+    liveAnchorRef.current = null
     // Latch the entered session's saved reading position (if any). With an
     // anchor pending, follow starts RELEASED so the bulk-hydration path below
     // doesn't tail-pin before the restore runs; without one, the default
@@ -453,12 +460,15 @@ export function useReadingPositionEntry<T>(ctx: {
       const saved = anchorSavedStateRef.current
       if (computeAtBottom(geom, bottomThreshold)) {
         devLog('DEB.atBottom', `${shortId(scheduledSession)} -> clear`)
+        liveAnchorRef.current = null
         if (saved?.session !== scheduledSession || saved.anchor !== null) {
           clearScrollAnchor(scheduledSession)
           anchorSavedStateRef.current = { session: scheduledSession, anchor: null }
         }
         return
       }
+      const a = captureTopAnchor()
+      liveAnchorRef.current = a
       // Save only positions the user put themselves at (see the constant's
       // doc). Self-scroll displacements must never become the restore target.
       const sinceHard = performance.now() - lastHardInputAtRef.current
@@ -466,7 +476,6 @@ export function useReadingPositionEntry<T>(ctx: {
         devLog('DEB.noIntent', `${shortId(scheduledSession)} sinceHard=${Number.isFinite(sinceHard) ? Math.round(sinceHard) : 'never'}ms`)
         return
       }
-      const a = captureTopAnchor()
       if (!a) return
       if (
         saved?.session === scheduledSession &&
@@ -514,7 +523,7 @@ export function useReadingPositionEntry<T>(ctx: {
   // an entry here, and the ResizeObserver calls `replaceCollapsedEntry` when the
   // box first gets a height. It re-arms the same entry (the anchor it latched,
   // else the bottom pin), unless the reader has moved since.
-  const collapsedEntryRef = useRef<{ session: string; anchor: ScrollAnchor | null } | null>(null)
+  const collapsedEntryRef = useRef<{ session: string; anchor: ScrollAnchor | null; returning: boolean } | null>(null)
   // Read through a ref so the callback stays stable: the ResizeObserver lists
   // it as a dependency and must not re-register when `followOutput` flips.
   const followOutputRef = useRef(followOutput)
@@ -525,7 +534,7 @@ export function useReadingPositionEntry<T>(ctx: {
     if (!entry || entry.session !== sessionIdRef.current || readerMovedSinceEntry()) return
     slotPinDoneRef.current = null
     pendingRestoreRef.current = entry.anchor
-    returnRestoreRef.current = false
+    returnRestoreRef.current = entry.returning
     stickRef.current = entry.anchor ? false : followOutputRef.current
     restoreLastCountRef.current = -1
     restoreDeadlineRef.current = entry.anchor ? performance.now() + RESTORE_HYDRATE_WAIT_MS : 0
@@ -533,10 +542,26 @@ export function useReadingPositionEntry<T>(ctx: {
     lastWriteClientHRef.current = -1
     setRestoreEval((n) => n + 1)
   }, [readerMovedSinceEntry, stickRef, lastWriteTopRef, lastWriteClientHRef])
+  // A pane hidden under a released reader collapses too. On show the chat lays
+  // out again from estimates, so the old scrollTop no longer holds their row, and
+  // a deep one is clamped to the end, which reads as a return to the bottom.
+  // Record the row they were reading (the last settle's, else the saved one) as
+  // the entry the regrow re-runs. A restore that already owns the position keeps
+  // its own gate: an entry still waiting for its row stays behind the skeleton.
+  // A hidden document is the visibility return's to place.
+  const noteCollapsedBox = useCallback(() => {
+    if (stickRef.current || document.hidden) return
+    const anchor = liveAnchorRef.current ?? loadScrollAnchor(sessionIdRef.current)
+    if (!anchor) return
+    const returning = returnRestoreRef.current || !restoreOwnsPosition()
+    collapsedEntryRef.current = { session: sessionIdRef.current, anchor, returning }
+    entryAtRef.current = performance.now()
+  }, [stickRef, restoreOwnsPosition])
 
   return {
     collapsedEntryRef,
     replaceCollapsedEntry,
+    noteCollapsedBox,
     pendingRestoreRef,
     returnRestoreRef,
     restoreDeadlineRef,
@@ -1012,7 +1037,7 @@ export function useReadingPositionRestore<T>(ctx: {
     // replaceCollapsedEntry), so the box's first real height re-runs it.
     const noteEntryBox = (anchor: ScrollAnchor | null) => {
       const el = scrollerRef.current
-      collapsedEntryRef.current = el && scrollerCollapsed(el) ? { session: sessionId, anchor } : null
+      collapsedEntryRef.current = el && scrollerCollapsed(el) ? { session: sessionId, anchor, returning: false } : null
     }
     if (slotPinDoneRef.current && slotPinDoneRef.current !== sessionId) {
       slotPinDoneRef.current = null
@@ -1127,8 +1152,19 @@ export function useReadingPositionRestore<T>(ctx: {
       if (el && el.scrollTop !== 0) writeScrollTop(el, 0, 'auto', 'pin', 'top')
       return
     }
+    if (itemCount === 0) {
+      // Wait for content; the effect re-runs when items arrive. The pin of the
+      // empty list runs on the next frame, still before paint: pinning reads
+      // `scrollHeight`, and in the commit that opens a session that forces a
+      // layout of the whole page. Following is armed now, as `forcePin` would.
+      stickRef.current = followOutput
+      const id = requestAnimationFrame(() => {
+        const el = scrollerRef.current
+        if (el && el.isConnected) forcePin()
+      })
+      return () => cancelAnimationFrame(id)
+    }
     forcePin()
-    if (itemCount === 0) return  // wait for content; effect re-runs when items arrive
     slotPinDoneRef.current = sessionId
     noteEntryBox(null)
     const id = requestAnimationFrame(() => {

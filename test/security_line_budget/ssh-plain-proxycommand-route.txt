@@ -1,0 +1,4 @@
++67
+ssh_config_route.py proves a fourth ssh config route: a plain ProxyCommand program
+that dials %h (the wildcard block a proxy tool writes into ~/.ssh/config). The
+proof needs its own word-shape, ssh-client and own-address checks.

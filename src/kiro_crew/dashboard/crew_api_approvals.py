@@ -14,28 +14,38 @@ chose, which can recur:
   the ``mid`` of the permission row the slot registered it with.
 
 :class:`ApprovalIndex` gives each such request one ``apr_`` id, the first time an Owner
-route sees it, and keeps it in memory for the life of the gateway process. An answer
-goes to the request the id was given to, through the resolvers the dashboard uses,
-and never to a later request under the same caller id. Nothing in this index is
-written to disk. After a restart an old ``apr_`` id is unknown and returns 404.
+route sees it. An answer goes to the request the id was given to, through the
+resolvers the dashboard uses, and never to a later request under the same caller id.
+
+The id, its state, its times, why it expired and its session are also kept on disk
+(:mod:`crew_api_approval_records`). List and read answer only after the record is
+written, returning 503 if the write fails. A decision answers 200 after it reaches
+the waiting tool, and a failed record write is logged without changing that response.
+The tool name, reason and arguments are not kept on disk. After a restart, a row still
+``pending`` on disk reads ``expired`` with reason ``gateway_restart``, whether its
+request was still waiting or had ended without its ending being written. An ending
+written to the file keeps its state. These old approvals cannot be answered.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from aiohttp import web
 
+from kiro_crew.dashboard import crew_api_approval_records as record_file
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 NAMESPACE = "default"
 
@@ -51,6 +61,9 @@ LIMIT_DEFAULT = 20
 LIMIT_MAX = 100
 _STATES = ("pending", "allowed", "denied", "expired")
 _BODY_MAX = 1024
+#: Why a row still pending on disk reads ``expired`` after a gateway restart.
+RESTARTED = "gateway_restart"
+_UNAVAILABLE = (503, "instance_unavailable", "the approval record is unavailable")
 
 #: Where a request lives: ``(origin, slot key, instance)``.
 Target = tuple[str, str, str]
@@ -158,14 +171,168 @@ def _ending(future: Any) -> tuple[str, str | None]:
     return "denied", None
 
 
-class ApprovalIndex:
-    """The approvals seen by Owner routes during this gateway process. Event-loop only."""
+async def _to_thread_to_end(step: Callable[[], _T], what: str) -> _T:
+    """Run one read or write of the record file in a worker thread, and wait for it.
 
-    def __init__(self, clock: Callable[[], float] = time.time):
+    However often the waiter is cancelled, it waits until the worker ends, so the
+    caller keeps the file lock that long.
+    A cancelled waiter then raises ``CancelledError``, also when the step failed.
+    """
+    work = asyncio.create_task(asyncio.to_thread(step))
+    cancelled = False
+    while not work.done():
+        try:
+            # ``wait`` neither cancels the worker's task nor raises its error.
+            await asyncio.wait((work,))
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        if work.exception() is not None:
+            # The file's text is not logged: only that the step failed.
+            logger.warning("Owner approval record %s failed after its wait was cancelled", what)
+        raise asyncio.CancelledError
+    return work.result()
+
+
+class ApprovalIndex:
+    """The approvals Owner routes have seen: this gateway process's, and the rows an
+    earlier process stored. Event-loop only."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.time,
+        closing: Callable[[], bool] = lambda: False,
+    ):
         self._clock = clock
+        #: Whether the gateway is closing its sessions. A request cut by that is left
+        #: pending, so the next process reads it as ended by the restart.
+        self._closing = closing
+        #: The writes started when a request ended, held until they finish.
+        self._writes: set[asyncio.Task[None]] = set()
+        #: A bounded wait before an exit must not cancel the drain it leaves running.
+        self._exit_write: asyncio.Task[None] | None = None
         self._records: dict[str, dict[str, Any]] = {}
         #: The futures of the requests waiting in this process, read when one ends.
         self._watched: dict[Target, Any] = {}
+        #: Whether the rows of earlier processes were read, and the rows last written.
+        self._loaded = False
+        self._saved: list[dict[str, Any]] | None = None
+        self._file_lock = asyncio.Lock()
+
+    def adopt(self, rows: list[dict[str, Any]]) -> None:
+        """Adopt stored rows: pending becomes expired/gateway_restart even after an
+        unwritten ending, while a written ending keeps its state.
+        """
+        now = int(self._clock())
+        for row in rows:
+            record = {
+                **row,
+                "namespace": NAMESPACE,
+                # No request of this process: nothing waiting can match it.
+                "origin": "",
+                "instance": "",
+                "request_id": "",
+                "tool": "",
+                "reason": "",
+                "arguments": "",
+                "client_id": None,
+                "decided_by": None,
+            }
+            if record["state"] == "pending":
+                record.update(state="expired", expired_reason=RESTARTED, decided_at=now)
+            self._records.setdefault(record["id"], record)
+        self._loaded = True
+
+    async def load(self) -> None:
+        """Read the earlier rows once.
+
+        A file whose content is not valid is moved aside, never deleted, and the
+        index starts empty: the requests waiting now stay answerable, and an id from
+        before reads as unknown. An id is 128 random bits and owes nothing to the file,
+        so an empty start cannot give an earlier id out again. A file that cannot be
+        read is left in place and this raises, so the next call reads it again. It
+        also raises when a file whose content is not valid cannot be moved.
+        """
+        if self._loaded:
+            return
+        async with self._file_lock:
+            if not self._loaded:
+                self.adopt(await _to_thread_to_end(self._read_or_set_aside, "read"))
+
+    def _read_or_set_aside(self) -> list[dict[str, Any]]:
+        path = record_file.record_path()
+        try:
+            return record_file.load(path)
+        except OSError:
+            # Not read, so not known to be damaged: it may be a good record.
+            logger.warning("Owner approval record %s could not be read; it was left in place", path)
+            raise
+        except (ValueError, RecursionError):  # RecursionError: JSON nested too deep
+            aside = record_file.set_aside(path, self._clock())
+        logger.warning("Owner approval record was not valid; it was moved to %s", aside)
+        return []
+
+    async def store(self) -> None:
+        """Write the rows if they changed since the last write. Raises when it cannot."""
+        async with self._file_lock:
+            rows = [{k: r[k] for k in record_file.FIELDS} for r in self._records.values()]
+            if rows != self._saved:
+                await _to_thread_to_end(
+                    lambda: record_file.save(record_file.record_path(), rows), "write"
+                )
+                self._saved = rows
+
+    def _cut_by_closing(self, state: str) -> bool:
+        """Whether an unanswered ending is the gateway closing, not a timeout."""
+        return state == "expired" and self._closing()
+
+    def _ended(self, approval_id: str, future: Any) -> None:
+        """Record how the request under *approval_id* ended, whoever answered it.
+
+        A done callback of the request's own future: it reads the ending and changes
+        nothing about it. Any failure here is logged and the ending stands. If the
+        process ends before the ending is written, the row still pending on disk reads
+        ``expired`` with reason ``gateway_restart`` on the next start.
+        """
+        try:
+            record = self._records.get(approval_id)
+            if record is None or record["state"] != "pending":
+                return
+            state, reason = _ending(future)
+            if self._cut_by_closing(state):
+                return
+            record.update(state=state, expired_reason=reason, decided_at=int(self._clock()))
+            task = asyncio.get_running_loop().create_task(self._store_ending(approval_id))
+            self._writes.add(task)
+            task.add_done_callback(self._writes.discard)
+        except Exception:
+            logger.warning("Owner approval record %s missed its ending", approval_id)
+
+    async def finish_writes(self) -> None:
+        """Wait for the writes that endings started, then for the rows as they are now.
+
+        Endings log their own failures. The second step is for an answer a route
+        already delivered whose own write has not finished: ``store`` waits for that
+        write under the file lock, or makes it. It raises when it cannot.
+        """
+        if self._writes:
+            await asyncio.gather(*self._writes, return_exceptions=True)
+        if self._loaded:
+            await self.store()
+
+    def unwritten(self) -> int:
+        """How many rows the file does not have as they are now."""
+        saved = {row["id"]: row for row in self._saved or []}
+        return sum(
+            {k: r[k] for k in record_file.FIELDS} != saved.get(r["id"])
+            for r in self._records.values()
+        )
+
+    async def _store_ending(self, approval_id: str) -> None:
+        try:
+            await self.store()
+        except Exception:
+            logger.warning("Owner approval record %s was not written at its ending", approval_id)
 
     def observe(self, live: list[LiveApproval]) -> dict[Target, tuple[str, str | None]]:
         """Watch *live* and return how each watched request that left it ended.
@@ -191,6 +358,8 @@ class ApprovalIndex:
             if record["state"] != "pending" or target in waiting:
                 continue
             state, reason = ended.get(target, ("expired", "timeout"))
+            if self._cut_by_closing(state):
+                continue
             record.update(state=state, expired_reason=reason, decided_at=now)
         for target, item in waiting.items():
             if target in known:
@@ -213,6 +382,8 @@ class ApprovalIndex:
                 "expired_reason": None,
                 "decided_by": None,
             }
+            # The one place a request's ending is watched, whichever surface answers it.
+            item.future.add_done_callback(functools.partial(self._ended, approval_id))
         done = [key for key, record in records.items() if record["state"] != "pending"]
         for key in done[: max(0, len(records) - MAX_RECORDS)]:
             del records[key]
@@ -233,8 +404,66 @@ def gateway_approval_index(state: Any) -> ApprovalIndex:
     """The gateway's own index, created on the event loop, one per *state*."""
     index = state.__dict__.get("_crew_api_approval_index")
     if index is None:
-        index = state.__dict__["_crew_api_approval_index"] = ApprovalIndex()
+
+        def closing() -> bool:
+            # The final drain of ``close_all``, not an update's pause, which can resume.
+            return getattr(getattr(state, "sessions", None), "final_drain_started", False) is True
+
+        index = state.__dict__["_crew_api_approval_index"] = ApprovalIndex(closing=closing)
     return index
+
+
+#: The longest a planned restart waits for approval records still being written: the
+#: bound ``restart_resume.record_running_slots`` gives its own record write.
+RESTART_WRITE_WAIT_SECS = 5.0
+
+
+async def finish_writes_before_restart(state: Any) -> None:
+    """The wait a planned restart makes before it cuts the turns."""
+    await finish_writes_before_exit(state, RESTART_WRITE_WAIT_SECS, "restart")
+
+
+async def finish_writes_before_exit(state: Any, wait_secs: float | None, occasion: str) -> None:
+    """Let the records of endings and answers already made reach the file before the
+    process ends.
+
+    Called by a planned restart (*occasion* ``restart``), and by the gateway's
+    graceful stop once its sessions and its web server are closed (``stop``, with
+    the bound that stop gives a durable write,
+    ``gateway_shutdown_budget.PERSISTENCE_DRAIN_GRACE_SECS``; not measured for this
+    file). The stop's wait is spent inside the stop's own limit
+    (``GRACEFUL_SHUTDOWN_SECS``), not added to it, and it runs only when the stop
+    reaches that step: a stop whose earlier steps use the whole limit is cut there
+    and makes no wait. A process that is killed runs neither. In both cases a row
+    whose write had not landed at exit
+    reads ``expired`` with reason ``gateway_restart`` on the next start. Waits at
+    most *wait_secs* and never raises: the exit goes on without the write, and the
+    warning says how many rows the file does not have. With nothing to write it
+    returns without touching the file.
+    """
+    index = getattr(state, "__dict__", {}).get("_crew_api_approval_index")
+    if index is None:
+        return
+
+    def missed() -> None:
+        logger.warning(
+            "Owner approval records were not all written before the %s: %d not written",
+            occasion,
+            index.unwritten(),
+        )
+
+    async def drain() -> None:
+        try:
+            await index.finish_writes()
+        except Exception:
+            missed()
+
+    if index._exit_write is None or index._exit_write.done():
+        index._exit_write = asyncio.create_task(drain())
+    try:
+        await asyncio.wait_for(asyncio.shield(index._exit_write), wait_secs)
+    except Exception:
+        missed()
 
 
 def _approval(record: dict[str, Any]) -> dict[str, Any]:
@@ -268,6 +497,17 @@ def _records(state: Any) -> tuple[ApprovalIndex, dict[str, dict[str, Any]]]:
     return index, index.sync(live, index.observe(live))
 
 
+async def _file_step(step: Callable[[], Any], what: str) -> bool:
+    """Run one read or write of the record file; ``False`` when it failed."""
+    try:
+        await step()
+    except Exception:
+        # The file's text is not logged: only that the step failed.
+        logger.warning("Owner approval record %s failed", what)
+        return False
+    return True
+
+
 async def list_approvals(request: web.Request) -> web.Response:
     """Approvals in one state (``pending`` when none is named), oldest first."""
     if (denied := await _host_owner_refusal(request, "crew_api.approvals.list")) is not None:
@@ -281,7 +521,11 @@ async def list_approvals(request: web.Request) -> web.Response:
         raw_limit.isascii() and raw_limit.isdigit() and 1 <= int(raw_limit) <= LIMIT_MAX
     ):
         return _error(400, "invalid_request", f"limit must be 1 to {LIMIT_MAX}")
+    index = gateway_approval_index(request.app["state"])
+    if not await _file_step(index.load, "read"):
+        return _error(*_UNAVAILABLE)
     _, records = _records(request.app["state"])
+    # The answer is built before the write yields the loop, and sent only after it.
     # The record is in the order the ids were given, which is oldest first.
     rows = [
         r
@@ -297,6 +541,8 @@ async def list_approvals(request: web.Request) -> web.Response:
         rows = rows[ids.index(query["after"]) + 1 :]
     limit = int(raw_limit)
     data = [_approval(r) for r in rows[:limit]]
+    if not await _file_step(index.store, "write"):
+        return _error(*_UNAVAILABLE)
     return web.json_response(
         {
             "object": "list",
@@ -312,11 +558,17 @@ async def read_approval(request: web.Request) -> web.Response:
     """One approval by its ``apr_`` id, in whatever state it is."""
     if (denied := await _host_owner_refusal(request, "crew_api.approvals.read")) is not None:
         return denied
+    index = gateway_approval_index(request.app["state"])
+    if not await _file_step(index.load, "read"):
+        return _error(*_UNAVAILABLE)
     _, records = _records(request.app["state"])
     record = records.get(request.match_info["approval_id"])
-    if record is None:
+    body = _approval(record) if record is not None else None
+    if not await _file_step(index.store, "write"):
+        return _error(*_UNAVAILABLE)
+    if body is None:
         return _error(404, "not_found", "no such approval")
-    return web.json_response(_approval(record))
+    return web.json_response(body)
 
 
 def _answer(state: Any, request: web.Request, record: dict[str, Any], allow: bool) -> bool:
@@ -379,6 +631,8 @@ async def decide_approval(request: web.Request) -> web.Response:
     allow = body["decision"] == "allow"
     state = request.app["state"]
     approval_id = request.match_info["approval_id"]
+    if not await _file_step(gateway_approval_index(state).load, "read"):
+        return _error(*_UNAVAILABLE)
     index, records = _records(state)
     record = records.get(approval_id)
     if record is None:
@@ -414,6 +668,8 @@ async def decide_approval(request: web.Request) -> web.Response:
     if refusal is None:
         record = index.settle(approval_id, outcome, principal)
     response = _error(*refusal) if refusal else web.json_response(_approval(record))
+    # The answer already reached the request, so a failed write changes no response.
+    await _file_step(index.store, f"write for {record['id']}")
 
     def audit() -> None:
         from kiro_crew.sel import sel

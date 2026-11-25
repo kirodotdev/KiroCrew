@@ -44,7 +44,8 @@ The bulk stub action consults whichever of the two the global sharing switch mak
 A routed server's backend runs in one fixed folder outside the session sandbox
 (`daemon/launch.py::_backend_work_dir` ignores the session's work dir on purpose:
 an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server that
-works on the project's files would therefore act on the wrong project once routed.
+reads the folder it starts in, like git or file search, would therefore read the
+wrong project once routed.
 No detector decides which servers do: the operator answers per server in MCP
 Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 `not_used`, or absent for unanswered).
@@ -130,7 +131,7 @@ Path: `<records dir>/observed-hazards.json`, a sibling of `hot-keys.json`. Write
 Codes are a closed vocabulary; an unknown code is refused on write and dropped on read, because a typo that silently became a permanent hazard would disqualify a server for ever with no way to read why:
 
 - `unroutable_server_request` — a server-initiated request arrived with no `relatedRequestId` while more than one stub shared the backend. Unroutable without a cross-tenant leak, so the backend is recycled.
-- `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast. A request-scoped frame on a 2026-07-28 `subscriptions/listen` stream (its acknowledgement, a list change) is attributed by the listen id its `_meta` carries (`io.modelcontextprotocol/subscriptionId`): the server saw the gateway's forward id, so the frame goes only to the stub whose pending listen that is, tagged back with the stub's own id (`backend_routing._listen_stream_frame`). A `notifications/resources/updated` on such a stream is still routed by URI only, so it is dropped unless a `resources/subscribe` named that URI.
+- `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast. A request-scoped frame on a 2026-07-28 `subscriptions/listen` stream (its acknowledgement, a list change) is attributed by the listen id its `_meta` carries (`io.modelcontextprotocol/subscriptionId`): the server saw the gateway's forward id, so the frame goes only to the stub whose pending listen that is, tagged back with the stub's own id (`backend_routing._listen_stream_frame`). A `notifications/resources/updated` on such a stream goes the same way, but only when its URI is one that listen named (`_PendingRequest.listen_uris`): the tag is the server's word, the URI list the stub's. Any other update is routed by URI through the `resources/subscribe` table, and dropped when no stub subscribed to it.
 
 Both are recorded ONLY for a shared backend (`exclusive_token` empty). A 1:1 backend legitimately owns its single client, so the same frame there proves nothing, and recording it would disqualify servers for behaviour that is correct when unshared.
 
@@ -175,7 +176,7 @@ Absent or corrupt cache reads as empty, which costs a re-evaluation and never a 
 
 ## When evaluation happens, and what it costs
 
-`mcp_gateway/evaluate.py` owns the one policy question the layers below refuse to answer: which servers are worth paying for. Only servers whose stored measurement is missing or taken under a different identity are provoked, so the steady state is a file read and a newly installed MCP costs two spawns once. A single pass provokes at most **two** servers — four short-lived processes, fanned out under the prober's own concurrency ceiling — so a machine that just had twenty MCPs added covers them over ten probes instead of paying forty spawns inside one request. Until a server is measured it reads as `unknown`, which is the honest answer rather than a delay.
+`mcp_gateway/evaluate.py` owns the one policy question the layers below refuse to answer: which servers are worth paying for. Only servers whose stored measurement is missing or taken under a different identity are provoked, so the steady state is a file read and a newly installed MCP costs two spawns once. A single pass provokes at most **two** servers — four short-lived processes, fanned out under the prober's own concurrency ceiling — so a machine that just had twenty MCPs added covers them over ten probes instead of paying forty spawns inside one request. Until a server is measured it reads as `unknown`, which is the honest answer rather than a delay. Names that start the same process (command plus args) are measured one after another, and never while a probe of one of them runs: each pre-flight holds `mcp_discovery.same_process_lock` across both of its spawns, taken before its fan-out slot, so a server that allows only one copy is not refused its second spawn and left unmeasured.
 
 It runs from `POST /api/mcp/probe` — the explicit action that already spawns every configured server — and never while rendering a page. A failure there is swallowed: the probe's own contract is status and tools, and a shareability problem must not cost the operator the answer they asked for.
 
@@ -253,7 +254,8 @@ Measured against that, three codes would disqualify on an inference alone, so th
   `notifications/resources/updated` carries no entry here because it needs none:
   the broker keeps the `uri -> {stub_uuid}` subscription table
   (`backend._resource_subscriptions`) and delivers each update to exactly the
-  stubs subscribed to its URI. The table's contract is delete-not-relax — an
+  stubs subscribed to its URI, or to the listener whose `subscriptions/listen`
+  named it. The table's contract is delete-not-relax — an
   entry leaves the moment the broker learns to attribute the frames it covers.
 - `rotating_secret_env` — a secret-prefixed key is never forwarded into a shared
   backend at all (`daemon/launch.py::_declared_non_secret_env`), so a pooled backend
@@ -299,7 +301,8 @@ one to `_SHARED_BACKEND_DEGRADATIONS` means adding a per-entry detection mode
 alongside it. `resources.subscribe` is deliberately NOT in the table: the broker
 keeps a `uri -> {stub_uuid}` subscription table (`backend._resource_subscriptions`)
 and delivers each `notifications/resources/updated` to exactly the stubs
-subscribed to its URI, so subscriptions survive pooling and there is nothing to
+subscribed to its URI (a listen-stream update to the listener whose listen
+named it), so subscriptions survive pooling and there is nothing to
 warn the operator about.
 
 Tool annotations (`readOnlyHint` and friends) exist only from MCP 2025-03-26 onward. The HTTP probes (`mcp_discovery._probe_remote`, `connections/l1_smoke.py`), the stdio probe and the gateway backend handshake offer `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) and step down once to an older listed revision such as `2024-11-05` on a `-32602` answer (`downgrade_protocol_version`). Annotations are therefore treated as opportunistic positive evidence: present means something, absent means nothing.

@@ -84,6 +84,7 @@ const DONE_JOB = { ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc
 const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
 const STALE = 'The profile or Region changed since this check. Re-check to update.'
 const PRICE_NOTE = 'Prices are us-east-1 on-demand rates; other Regions may differ.'
+const STOPPED_BILLING_NOTE = 'A stopped crew still bills for its disk, and for any setup file kept in S3, until you delete the crew.'
 const RETRY = 'Fix the problem shown below, or change the Subnet ID above, then choose Launch to try again.'
 const CHECK_CREWS = 'The launch did not finish. Check My Crews before launching again.'
 const CREW_LISTED = 'The launch did not finish. Its crew is listed in My Crews, where you can fix or delete it.'
@@ -225,9 +226,13 @@ describe('RemoteCrewPanel launch form', () => {
     expect(vi.mocked(api.cloudLaunch).mock.calls[1]).toEqual(vi.mocked(api.cloudLaunch).mock.calls[0])
   })
 
-  it('after a launch that failed before provisioning, says it failed and offers Launch as the retry', async () => {
-    // Stopped at the AWS check: nothing was created, so repeating the settings is safe.
-    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'failed' as const, steps: FAILED_AT_PREFLIGHT })
+  // No stack was left, so repeating the settings is safe: the launch stopped at
+  // the AWS check, or its provision rollback found no stack and confirmed its delete.
+  it.each([
+    ['before provisioning', { steps: FAILED_AT_PREFLIGHT }],
+    ['in a provision whose rollback found nothing', { steps: FAILED_AT_PROVISION, never_created: true }],
+  ])('after a launch that failed %s, says it failed and offers Launch as the retry', async (_case, failed) => {
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'failed' as const, ...failed })
     const u = userEvent.setup()
     await openSetup(u)
 
@@ -249,8 +254,8 @@ describe('RemoteCrewPanel launch form', () => {
   })
 
   // From provisioning on a stack may still exist: a refused sign-in leaves a
-  // registered crew, and a failed provision is rolled back best-effort with no
-  // field saying whether the rollback confirmed.
+  // registered crew, and a failed provision's rollback may have found a stack or
+  // not confirmed its delete (no `never_created` on the job).
   // "Listed in My Crews" is said only while the live list holds the instance:
   // the job is a snapshot, so a registered crew deleted since gets the neutral line.
   it.each([
@@ -313,6 +318,13 @@ describe('RemoteCrewPanel launch form', () => {
     await u.clear(region)
     await u.type(region, 'sa-east-1')
     expect(screen.getByText(PRICE_NOTE)).toBeInTheDocument()
+  })
+
+  it('says beside the size cards what a stopped crew still bills for', async () => {
+    const u = userEvent.setup()
+    await openSetup(u)
+    const card = await screen.findByRole('button', { name: 'Development · arm64' })
+    expect(screen.getByText(STOPPED_BILLING_NOTE).parentElement).toContainElement(card)
   })
 
   it('shows a refused subnet under the Subnet ID field until the field is edited', async () => {
@@ -398,7 +410,8 @@ describe('RemoteCrewPanel launch form', () => {
   it('marks the checklist out of date while the typed profile differs from the checked one', async () => {
     const u = userEvent.setup()
     await openSetup(u)
-    const list = (await screen.findByText('Session Manager plugin')).closest('ul') as HTMLElement
+    // The answered list: the rows drawn while the check runs carry the same titles.
+    const list = (await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).closest('ul') as HTMLElement
     const greyMarks = () => list.querySelectorAll('li > span.bg-border-strong').length
     expect(greyMarks()).toBe(0)
     expect(screen.queryByText(STALE)).toBeNull()

@@ -340,6 +340,20 @@ async def test_trace_export_is_read_only_and_patch_refuses_it(tmp_config) -> Non
     assert "telemetry" not in _stored(tmp_config)
 
 
+async def test_the_entry_port_is_read_only_and_patch_refuses_it(tmp_config) -> None:
+    """It opens a listener for a proxy that forwards other machines, as the tunnel
+    switches open a way in, so the config file or `kirocrew config set` sets it."""
+    assert all_settings.generic_spec("dashboard.entry_port") is None
+    assert _editable_config_spec("dashboard.entry_port") is None
+    assert all_settings.descriptor(_BY_PATH["dashboard.entry_port"]) == {
+        "mode": "readonly",
+        "reason": all_settings.WHY_REACH,
+    }
+    status, body = await _send({"path": "dashboard.entry_port", "value": 8443})
+    assert status == 400, body
+    assert "entry_port" not in _stored(tmp_config).get("dashboard", {})
+
+
 def _dashboard_route_keys() -> set[str]:
     """The keys `PUT /api/dashboard/config` writes, read from its `_allowed` set."""
     import ast
@@ -460,6 +474,20 @@ def test_a_key_an_edition_locks_is_read_only_and_says_so(monkeypatch) -> None:
 
 
 # ── The PATCH route ──
+
+
+async def test_patch_writes_warm_set_cap_and_refuses_negative(tmp_config) -> None:
+    path = "instances.warm_set_cap"
+    assert all_settings.generic_spec(path) is None
+    for value in (0, 30):
+        status, body = await _send({"path": path, "value": value})
+        assert status == 200, body
+        assert _stored(tmp_config)["instances"]["warm_set_cap"] == value
+
+    assert _editable_config_spec(path) == {"type": "int", "min": 0}
+    status, body = await _send({"path": path, "value": -1})
+    assert (status, body.get("error")) == (400, "must be between 0 and 999999")
+    assert _stored(tmp_config)["instances"]["warm_set_cap"] == 30
 
 
 async def test_patch_writes_and_unsets_a_generic_list(tmp_config) -> None:
@@ -755,7 +783,7 @@ async def test_patch_refuses_a_key_another_route_writes(tmp_config, path, value)
 #: ``/api/security/safety-switches`` route, from Settings -> Security -> Safety switches.
 _SAFETY_SWITCH_LINKS = {
     "mcp.protect_kiro_permission_rules": "security.stop-the-agent-from-editing-its-own-permission-rules",
-    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
 }
 
 

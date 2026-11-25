@@ -54,7 +54,11 @@ from kiro_crew.dashboard.state import (
     note_new_worker,
     own_worker_member,
     read_worker_execution,
-    worker_cap_refusal,
+)
+from kiro_crew.mate_worker_conducts import (
+    effective_worker_cap_refusal,
+    holds_conducting_kit,
+    thread_fork_conducts,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
@@ -129,7 +133,9 @@ async def fork_session(
     fork inherits it), creator attribution (``created_by`` = the caller, so the
     other verbs reach it afterwards and the per-creator ceiling counts it) and the
     caller's session posture (``_trust`` / ``_trust_reads`` -- the same two
-    fields ``create_session`` carries, with the same exclusions). It starts IDLE:
+    fields ``create_session`` carries, with the same exclusions; a fork that
+    conducts carries neither and is seeded from its Bot's Profile instead,
+    ``mate_worker_conducts.thread_fork_conducts``). It starts IDLE:
     the copied transcript is history, and nothing runs until the caller
     ``session_send``\\ s into it or the person types.
 
@@ -369,7 +375,10 @@ async def fork_session(
             )
         if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
             raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
-        if (worker_reason := worker_cap_refusal(state, source_execution)) is not None:
+        # A conducting worker that forks keeps the bound its own start gave it.
+        caller_conducts = holds_conducting_kit(state, caller_slot)
+        worker_reason = effective_worker_cap_refusal(state, source_execution, caller_conducts)
+        if worker_reason is not None:
             raise SessionControlError(worker_reason, code="bot_worker_cap_reached", status=409)
 
     in_crew_tree = False
@@ -390,19 +399,37 @@ async def fork_session(
 
         child._created_by = caller_key
         note_new_worker(child.key, source_execution)
+        # Marked by the rule a create follows: a fork the Bot's own thread makes is
+        # thread-born, any other caller's is plain. The mark follows the verified
+        # creator, the one ``_record_spawn`` writes below and a restart or a revive
+        # reads back, so a fork is the same before and after either.
+        from kiro_crew.members import note_worker_lineage
+
+        note_worker_lineage(child.key, caller_key)
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
         from kiro_crew.dashboard.approval_posture import trust_carries
 
+        # A fork that conducts takes the Bot's Profile posture once its record is
+        # bound, as a created worker does (``profile_worker`` in ``session_create``),
+        # never a copy of the thread's trust (``thread_fork_conducts``). One made
+        # while the switch is off copies it, and is held to its Profile's posture at
+        # its first turn on the conducting kit (``crewmate_approval``).
+        seeded_from_profile = thread_fork_conducts(caller_key, source_execution)
+        posture["profile_seeded"] = seeded_from_profile
         # A card-scoped trust ("Trust this crew member") covers the caller and the
         # subagents it spawns, not a fork, so a fork does not inherit it
         # (``trust_carries``).
-        posture["trust"] = trust_carries(live_caller)
-        posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
+        posture["trust"] = not seeded_from_profile and trust_carries(live_caller)
+        posture["trust_reads"] = not seeded_from_profile and bool(
+            getattr(live_caller, "_trust_reads", False)
+        )
         child._trust = posture["trust"]
         child._trust_reads = posture["trust_reads"]
-        # Follows the caller's later mode changes too (``approval_inheritance``).
-        child._posture_inherited = True
+        # Marked inherited, so a later mode change on the caller reaches the fork
+        # (``approval_inheritance``; that walk passes over a Bot's workers). A fork
+        # its Profile seeds holds the Profile's mode, not the caller's.
+        child._posture_inherited = not seeded_from_profile
         if clean_title:
             child.title = clean_title
             child._titled = True
@@ -445,6 +472,15 @@ async def fork_session(
     if not isinstance(result, ForkResult):
         raise _fork_refusal(result)
     child = result.slot
+    if posture.get("profile_seeded"):
+        # Seeded now that its record is bound, as a created worker is, so the audit
+        # names what it was born with; its first turn on the kit still holds it to
+        # its Profile (``crewmate_approval.tighten_for_conducting``).
+        from kiro_crew.dashboard.crewmate_approval import seed_new_worker
+
+        await seed_new_worker(state, child, source_execution)
+        posture["trust"] = bool(child._trust)
+        posture["trust_reads"] = bool(child._trust_reads)
 
     # ``fork_slot`` has already un-hidden a ``folder_id`` named here, before
     # its own push.

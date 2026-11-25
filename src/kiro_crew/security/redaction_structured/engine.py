@@ -67,14 +67,22 @@ class ScanResult:
     # without the units only an Identifier-value row reads (a data URI payload, a
     # request id), whose hits replace nothing and override no Secret hit.
     replace_open_from: int | None = None
+    # ``(BEGIN, END line end)`` of each private-key block that ended in the text.
+    armour_blocks: tuple[tuple[int, int], ...] = ()
 
 
 def scan(
-    text: str, final: bool = True, origin: int = 0, table: Table = TABLE, depth: int = 0
+    text: str,
+    final: bool = True,
+    origin: int = 0,
+    table: Table = TABLE,
+    depth: int = 0,
+    armour_from: int = 0,
 ) -> ScanResult:
     """Every detector's raw hits, and the earliest undecided unit at or after ``origin``.
 
     ``depth`` counts the decodes the encoded detector went through to reach ``text``.
+    ``armour_from`` is where the private-key scan starts (:func:`.armour.detect_armour`).
     """
     hits: list[Hit] = []
     opens: list[int] = []
@@ -87,11 +95,12 @@ def scan(
     hits += found
     opens += op
     key_ids = [(h.start, h.end) for h in found if h.rule_id == "aws.access_key_id"]
+    armour_hits, armour_opens, blocks = detect_armour(text, table.armour, final, armour_from)
 
     for detected in (
         detect_pairs(text, table.pairs, key_ids, final) if key_ids or not final else _NONE,
         detect_jose(text, table.jose, final),
-        detect_armour(text, table.armour, final),
+        (armour_hits, armour_opens),
         detect_known_keys(text, table.known_keys, final, low),
         detect_urls(
             text, table.structures, final, table.url_params, table.userinfo, table.path_secrets
@@ -117,7 +126,9 @@ def scan(
     live = [max(o, origin) for o in opens]
     replace_from = min(live) if live else None
     live += [max(o, origin) for o in value_opens]
-    return ScanResult(_outside_tags(text, hits), min(live) if live else None, replace_from)
+    return ScanResult(
+        _outside_tags(text, hits), min(live) if live else None, replace_from, tuple(blocks)
+    )
 
 
 def _outside_tags(text: str, hits: list[Hit]) -> list[Hit]:

@@ -14,6 +14,7 @@ fence, the platform guard and the user bus) and ``test_pod_boot_settings.py``.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -288,7 +289,12 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
 
         anchored = ntpath.abspath("/tmp/sub/../pods")
 
-        assert ntpath.isabs(anchored)
+        # ``ntpath.isabs`` reads a rooted path with no drive as absolute up to CPython
+        # 3.12 and as relative to the current drive from 3.13. Windows adds the drive
+        # here and a POSIX host has none to add; rooted is what holds on every one.
+        drive, root, _ = ntpath.splitroot(anchored)
+        assert ntpath.isabs(anchored) is (bool(drive) or sys.version_info < (3, 13))
+        assert root == "\\"
         assert anchored.endswith(r"\tmp\pods"), f"not normalised under Windows rules: {anchored!r}"
 
     @pytest.mark.skipif(
@@ -1041,9 +1047,19 @@ class TestNameValidation:
         with pytest.raises(rt.PodError):
             rt.validate_name(bad)
 
-    @pytest.mark.parametrize("good", ["command-palette", "a.b_c-d", "x", "A1"])
+    @pytest.mark.parametrize("stem", ["nul", "NUL", "Con", "aux", "prn", "com1", "lpt9", "nul.dev"])
+    def test_a_new_pod_cannot_take_a_windows_device_stem(self, stem: str) -> None:
+        with pytest.raises(rt.PodError, match="invalid pod name"):
+            rt.validate_new_name(stem)
+        # A pod made under that name before the rule stays addressable, so it can be stopped.
+        assert rt.validate_name(stem) == stem
+
+    @pytest.mark.parametrize(
+        "good", ["command-palette", "a.b_c-d", "x", "A1", "com10", "nulx", "null", "con-1"]
+    )
     def test_accepts(self, good: str) -> None:
         assert rt.validate_name(good) == good
+        assert rt.validate_new_name(good) == good
 
 
 class TestEnvFileAndPin:

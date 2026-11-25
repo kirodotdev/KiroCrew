@@ -36,6 +36,7 @@ import { useSecondClock } from '../../hooks/useSecondClock'
 import {
   isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, signinSkipped, type SizeTier,
   tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
+  launchCardDismissable,
 } from './remoteCrewPanelModel'
 
 /** One selectable size card. Shared by the arm64 ladder and the x86 lane so the
@@ -643,10 +644,11 @@ function RowSteps({ steps }: { steps?: { text: string; link?: { href: string; la
   )
 }
 
-/** One AWS prerequisite row (ok / failed / not checked) with optional command + actions.
+/** One AWS prerequisite row (ok / failed / not checked / still checking) with optional command + actions.
  *  Every row gates Launch, so a failed one is drawn as an error, not a warning. */
 export function PrereqRow({
   ok,
+  pending,
   stale,
   title,
   detail,
@@ -666,6 +668,8 @@ export function PrereqRow({
   /** `null`: not checked, because a check it depends on failed. Drawn as a
    *  hollow ring, also while `stale`: there is no verdict to grey out. */
   ok: boolean | null
+  /** The check is still running: a spinner in a hollow ring in place of the `ok` mark. */
+  pending?: boolean
   /** The profile or Region changed since this verdict: its mark is greyed,
    *  while its text and actions stay readable and live. */
   stale?: boolean
@@ -702,8 +706,8 @@ export function PrereqRow({
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
-      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${ok === null ? 'border border-border-strong' : stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
-        {ok === null ? null : ok ? <Check size={11} /> : <X size={11} />}
+      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${pending ? 'border border-border-strong text-muted' : ok === null ? 'border border-border-strong' : stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
+        {pending ? <RefreshCw size={11} className="animate-spin" /> : ok === null ? null : ok ? <Check size={11} /> : <X size={11} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
@@ -779,9 +783,11 @@ export function PrereqRow({
 /** The launch-in-progress card (setup tab): 4 steps + device-code sign-in. */
 export function LaunchProgressCard({
   job, onCancel, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice, cancelling,
-  onSkipSignin, skippingSignin,
+  onSkipSignin, skippingSignin, onDismiss,
 }: {
   job: LaunchJob
+  /** Close the card of a launch that needs nothing more; absent, no close button. */
+  onDismiss?: (id: string) => void
   onCancel: (id: string) => void
   onRestartSignin: (id: string) => void
   restartingSignin: boolean
@@ -855,6 +861,17 @@ export function LaunchProgressCard({
             card uses. */}
         {!terminal && (
           <CancelLaunchBtn className="ml-auto" job={job} onCancel={onCancel} cancelling={cancelling} />
+        )}
+        {onDismiss && launchCardDismissable(job) && (
+          <Btn
+            className="ml-auto"
+            onClick={() => onDismiss(job.id)}
+            data-testid="launch-card-dismiss"
+          >
+            {/* Visible words, not a bare X: on a card about a paid machine an X
+                reads as "delete the crew". The card's done line says it stays. */}
+            <X size={14} aria-hidden="true" /> {i18nT('pages.settings.remoteCrewPanel.hide_launch_card')}
+          </Btn>
         )}
       </div>
       <ol className="m-0 p-0 list-none space-y-2">

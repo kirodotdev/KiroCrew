@@ -23,10 +23,10 @@ Context windows: :func:`model_window` is the SINGLE authority every consumer
 backfill, the live meter) resolves through. Its fallback order is live
 ``usage_update.size`` > kiro ``--list-models`` cache (:func:`refresh_kiro_windows`,
 persisted) > static registry ``window`` literal > ``[1m]`` heuristic > ``None``.
-There is no silent 200k default: a genuinely-unknown window returns ``None`` and
-callers substitute :data:`REFERENCE_WINDOW_TOKENS` (1M), so an unknown model is
-never wrongly shrunk. Auto-compaction is percentage-driven and does NOT read
-this — it must stay that way.
+There is no silent 200k default: a genuinely-unknown window returns ``None``; the
+budget scaler substitutes :data:`REFERENCE_WINDOW_TOKENS` (1M), so an unknown model is
+never wrongly shrunk, and ``/api/models`` leaves that row's window out.
+Auto-compaction is percentage-driven and does NOT read this — it must stay that way.
 """
 
 from __future__ import annotations
@@ -1187,7 +1187,7 @@ def model_window(canonical_or_id: str, *, live_tokens: int | None = None) -> int
     5. Supplementary map — Bedrock/legacy ids (:data:`_SUPPLEMENTARY_WINDOWS`),
        exact then longest-substring.
     6. ``[1m]``/``-1m`` heuristic -> 1M (forward-compat for an unlisted 1M id).
-    7. ``None`` — genuinely unknown. Callers treat None as
+    7. ``None`` — genuinely unknown. The budget scaler treats None as
        :data:`REFERENCE_WINDOW_TOKENS` (never a silent 200k), so an unknown
        model keeps the full budget rather than being wrongly shrunk.
 

@@ -181,6 +181,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
                 # The ultracode and Fast mode routes' shared writer.
                 ("chat_api/slot_effort.py", "_write_session_switch"),
+                # The approve-for-me route restarts only an idle session; a running
+                # turn refuses the switch with 409 and changes nothing.
+                ("chat_api/slot_effort.py", "api_chat_slot_approve_for_me"),
+                # A mode change ends approve-for-me but never resets a session a
+                # turn holds or that waits on a person; the restart waits for idle.
+                ("chat_api/slot_effort.py", "_restart_for_approve_for_me"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
@@ -208,6 +214,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_api/slot_model.py", "api_chat_slots_model"),
+                # The bulk switch's effort-only pass: a reserved slot is skipped,
+                # or deferred when the caller asked not to skip running slots.
+                ("chat_api/slot_model.py", "_bulk_effort_only_switch"),
                 ("chat_api/continue_turn.py", "continue_slot_turn"),
                 # A paused member's own Continue drains what queued for it only
                 # on an unreserved slot, as continue_slot_turn below refuses one.
@@ -273,12 +282,18 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control_parts/model_switch.py", "land_model_pick_after_channel_turn"),
                 ("state_parts/session_events.py", "wire_session_release_listener"),
                 ("openai_compat.py", "api_completions"),
+                # A session the engine refused is retracted through
+                # _retract_failed_newborn, which leaves a reserved one alone.
+                ("crew_api_responses.py", "_run"),
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
                 ("session_control_parts/turn_control.py", "reload_target"),
                 # The idle sweep never picks or pops a slot holding a reservation.
                 ("slot_retention.py", "_still_idle_check"),
                 ("slot_retention.py", "select_idle_slot_keys"),
+                # The idle window release leaves a slot a send has reserved alone:
+                # the turn it admits reads the window it would shorten.
+                ("slot_window_release.py", "release_idle_windows"),
                 ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
                 # A return brief must not start or publish after a send has
                 # reserved the slot, even before its model turn begins.
@@ -380,5 +395,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
+        # One request's turn, started as the dashboard send starts one.
+        ("crew_api_responses.py", "_run"),
         ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

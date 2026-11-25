@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.config import live
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -46,6 +47,7 @@ from kiro_crew.dashboard.steer_supersedes_approval import reject_approvals_super
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+from kiro_crew.slack.turn_requester import forget_turn_requester
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -743,6 +745,9 @@ async def steer_into_running_turn(
     # Same lockstep again: the requeue reads this for the entry's
     # ``directive_owner_origin`` and a definite False is what fails it closed.
     slot._steer_owner_origin[message] = bool(owner_origin)
+    # Any text steered in, from anyone, ends "one shared user asked for this
+    # turn": its tool prompts go back to the owner alone. Before the RPC, as below.
+    forget_turn_requester(slot)
     if channel_origin:
         # NARROW the running turn's directive provenance, at admission. The turn's
         # ``_directive_channel_origin`` is its opener's -- False for a
@@ -1318,6 +1323,12 @@ TURN_ACTOR_META_KEY = "turnActor"
 #: provenance flags, which grant authority and are therefore never persisted.
 COMMANDS_OFF_META_KEY = "commands_off"
 
+#: Entry meta key keeping a queued payload's ``@prompt`` and ``$skill`` mentions as
+#: text: stamped beside ``COMMANDS_OFF_META_KEY`` on a chat option tap, whose
+#: label the model wrote. A separate key because a channel's typed text carries
+#: commands-off too and still expands. Like that key, it only REMOVES something.
+EXPANSIONS_OFF_META_KEY = "expansions_off"
+
 #: Entry meta key asking for a BACKGROUND cold start for the turn the entry runs as,
 #: whoever's provenance it carries. The bulk Resume stamps it on every entry it
 #: queues: its request answers at once, so no person waits on any one of those
@@ -1361,6 +1372,7 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    pastes: list[dict[str, Any]] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1439,6 +1451,10 @@ def queue_for_next_turn(
 
     *knowledge* is the send's :func:`knowledge_meta`, stamped on the entry and its
     ``queue_push`` frame so the queue card finds the knowledge envelope exactly.
+
+    *pastes* is the send's :func:`~kiro_crew.dashboard.chat_paste_meta.paste_meta`:
+    the drained row keeps them, so it draws the paste chips a dispatched send's
+    row draws.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
@@ -1483,6 +1499,8 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if pastes:
+        meta[PASTES_META_KEY] = pastes
     qid = slot.queue_append(
         message,
         meta=meta,

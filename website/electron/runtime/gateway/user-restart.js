@@ -94,7 +94,7 @@ function createUserRestart({
       setLivenessMonitor(null);
     }
     setRestartingGateway(true);
-    paintLoadingScreen(window);
+    await paintLoadingScreen(window);
     sendStatus(RESTARTING_STATUS);
     try {
       await stopGatewayGracefully();

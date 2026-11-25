@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _sel,
         binary_content_is_flagged,
         config_loader,
+        effective_session_key,
         logger,
         platform_compat,
         read_bounded_json,
@@ -40,6 +41,32 @@ def is_tracked_channel(channel_id: str) -> bool:
     from kiro_crew.slack.handler import is_tracked_channel as probe
 
     return probe(channel_id)
+
+
+def code_channel_workdir(state: object, channel_id: str, anchor_ts: str, session_key: str) -> str:
+    """The uploading session's work dir when *channel_id* is its own live code channel.
+
+    ``""`` unless all hold: code channels are on and the channel's binding is
+    loaded with *anchor_ts* as its anchor (``active_binding``); the package's own
+    write fences admit a write now (not archived, not rebound to another session,
+    not stopped, the channel not Off or in Review); and the bound slot is still
+    the binding's session (``channel_session``) and runs on exactly
+    *session_key*. So another session of the same channel -- a worker, a
+    session that merely links the anchor -- gets ``""``. In memory only, no disk
+    read, like the turn hooks that call ``active_binding`` on the loop.
+    """
+    from kiro_crew.slack.code_channels import surface
+    from kiro_crew.slack.code_channels.binding import active_binding, channel_session
+
+    binding = active_binding(channel_id, anchor_ts)
+    if binding is None or not session_key:
+        return ""
+    if surface.write_refusal_now(channel_id, binding, activation=True):
+        return ""
+    slot = channel_session(state, binding)
+    if slot is None or effective_session_key(slot) != session_key:
+        return ""
+    return str(getattr(slot, "project", "") or "")
 
 
 def _description_too_long(leg: str, description: str, channel_type: str) -> web.Response | None:
@@ -337,8 +364,9 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     (:func:`kiro_crew.dashboard.upload_destination.resolve_slack`), which holds
     this leg's ladder — the ``channels``-scope governance vet, the
     restricted-session ceiling, then a request-named channel, a
-    session-map-linked thread, or the owner-DM fallback with its tracked-channel
-    authorization — next to the non-Slack leg's, so the two cannot drift apart
+    session-map-linked thread or the caller's own code channel, or the owner-DM
+    fallback with its tracked-channel authorization — next to the non-Slack leg's,
+    so the two cannot drift apart
     rung by rung. What stays here is what only this leg can
     answer: the Slack client, its upload verb, and the response shapes.
 
@@ -404,15 +432,72 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     # oracle rather than imported there: one binding site, and the module stays
     # free of both the Slack handler's config dependency and the ``dashboard``
     # package ``messaging.upload_gate`` may not import.
+    session_key = request.headers.get("X-Session-Key", "").strip()
     destination = await upload_destination.resolve_slack(
         state,
         slack,
-        session_key=request.headers.get("X-Session-Key", "").strip(),
+        session_key=session_key,
         requested_channel=body.get("channel", ""),
         thread_ts=body.get("thread_ts"),
         tracked_probe=is_tracked_channel,
+        code_channel_probe=code_channel_workdir,
         persisted_probe=_probe_persisted_session,
     )
+    if (
+        isinstance(destination, upload_destination.SlackTarget)
+        and destination.workdir
+        and not await asyncio.to_thread(
+            upload_destination.code_channel_caller_attested, request, session_key
+        )
+    ):
+        # The rung authorizes by the caller's session: a declared key the
+        # transport does not attest names somebody else's code channel.
+        destination = upload_destination.Refusal(
+            error="channel not authorized",
+            code="channel_not_authorized",
+            status=403,
+            audit_error=f"code_channel_caller_not_attested: {destination.channel}",
+            downstream="slack",
+        )
+    if isinstance(destination, upload_destination.SlackTarget) and destination.workdir:
+        # The caller's own code channel takes only its session's own files, from
+        # the roots its mirrored replies' pictures may come from: the live
+        # provider's cwd and scratch, read the way that leg reads them. The
+        # session's project stands in for the cwd when no provider is bound.
+        # Through the runner facade, as the oracle reaches _resolve_mirror_target:
+        # chat_runner imports the dashboard world, so never at module scope.
+        from kiro_crew.dashboard import chat_runner
+
+        cwd, scratch = await chat_runner._mirror_upload_roots(state, session_key)
+        # Off-loop: realpath plus a bounded read of the source.
+        refusal = await asyncio.to_thread(
+            upload_destination.code_channel_source_refusal,
+            cwd or destination.workdir,
+            body.get("source_path"),
+            resolved,
+            raw,
+            scratch,
+        )
+        if refusal is not None:
+            destination = refusal
+        else:
+            # Asked again after that await: an archive, Off/Review, a Stop or a
+            # rebind during the read is honoured. From here to the upload nothing
+            # awaits, so no such change can land between this answer and the post.
+            try:
+                still = code_channel_workdir(
+                    state, destination.channel, destination.anchor_ts, session_key
+                )
+            except Exception:
+                still = ""
+            if still != destination.workdir:
+                destination = upload_destination.Refusal(
+                    error="channel not authorized",
+                    code="channel_not_authorized",
+                    status=403,
+                    audit_error=f"code_channel_changed_before_upload: {destination.channel}",
+                    downstream="slack",
+                )
     if isinstance(destination, upload_destination.Refusal):
         _audit_file_send(
             leg="slack",
@@ -441,10 +526,13 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         # same predicate, same value, strictly earlier in this function — so the
         # leg does not re-check it. That gate is the one site for the rule; a
         # second copy here could only drift from it.
+        # The code-channel rung uploads the bytes it scanned and matched to the
+        # session's source, never the outbox path, which any session can
+        # rewrite after the check.
         await slack.upload_file(
             destination.channel,
             destination.thread_ts,
-            str(resolved),
+            raw if destination.workdir else str(resolved),
             filename,
             filename,
             initial_comment=initial_comment,

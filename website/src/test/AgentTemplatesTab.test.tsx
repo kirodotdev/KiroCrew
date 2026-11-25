@@ -276,6 +276,18 @@ describe('AgentTemplatesTab roster', () => {
     }
   })
 
+  it('finds an agent by the name of an MCP server its spec lists', async () => {
+    mockApi.agentTemplates.mockResolvedValue({
+      templates: [MINE, row({ name: 'weather-helper', filename: 'weather-helper.json', description: 'helps with forecasts', mcp_servers: ['weather-tools'] })],
+    })
+    renderTab()
+    await screen.findByRole('option', { name: /^weather-helper/ })
+    fireEvent.change(screen.getByPlaceholderText(/filter/i), { target: { value: 'Weather-Tools' } })
+    await waitFor(() => expect(screen.queryByRole('option', { name: /^reviewer/ })).toBeNull())
+    expect(screen.getByRole('option', { name: /^weather-helper/ })).toBeInTheDocument()
+    expect(screen.queryByText(/No custom agents match/)).toBeNull()
+  })
+
   it('says plainly when no mate runs a template', async () => {
     renderTab()
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
@@ -465,6 +477,19 @@ describe('AgentTemplatesTab detail robustness', () => {
     expect(rows.map(r => r.textContent)).toEqual(['docsstdio', 'broken', 'remotehttps://mcp.example.test'])
   })
 
+  it("says MCP Servers page servers reach a custom agent only through Kiro's global mcp.json", async () => {
+    const KIROCREW = row({ name: 'kirocrew', filename: 'kirocrew.json', source: 'kirocrew', kirocrew_owned: true, read_only: 'runtime' })
+    mockApi.agentTemplates.mockResolvedValue({ templates: [MINE, KIROCREW] })
+    renderTab()
+    // Chained: roster -> auto-select -> detail -> draft seed, then the hint renders.
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    await screen.findByText(/reach this agent only through Kiro's global mcp\.json, if the agent loads it/, undefined, EDITOR_CHAIN)
+    expect(screen.queryByText(/manage servers under MCP Servers/)).toBeNull()
+    fireEvent.click(option('kirocrew'))
+    await screen.findByText(/manage servers under MCP Servers/, undefined, EDITOR_CHAIN)
+    expect(screen.queryByText(/only through Kiro's global mcp\.json/)).toBeNull()
+  })
+
   it('says why a read-only template has no prompt instead of showing an empty editor', async () => {
     mockApi.agentDetail.mockImplementation(async (name: string) => ({
       name, prompt: '', tools: [], allowedTools: [], resources: [], skills: [],
@@ -493,7 +518,7 @@ describe('AgentTemplatesTab actions', () => {
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
     fireEvent.click(screen.getByRole('button', { name: /Chat with this custom agent/ }))
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/chat'))
-    expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template' })
+    expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template', startModeDefault: true })
   })
 
   it('keeps Chat enabled while dirty and asks first, instead of a disabled button', async () => {
@@ -510,7 +535,7 @@ describe('AgentTemplatesTab actions', () => {
     expect(mockCreateSlot).not.toHaveBeenCalled()
     confirmSpy.mockReturnValue(true)
     fireEvent.click(chat)
-    await waitFor(() => expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template' }))
+    await waitFor(() => expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template', startModeDefault: true }))
   })
 
   it('shows the reference list when the server refuses a delete as referenced', async () => {

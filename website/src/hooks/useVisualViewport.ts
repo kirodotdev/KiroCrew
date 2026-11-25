@@ -25,6 +25,16 @@ export interface VisualViewport {
   offsetTop: number
 }
 
+/**
+ * Whether the user has pinch-zoomed the page in. A sideways swipe then pans the
+ * zoomed view, so the side panel swipes leave it to the browser. The small
+ * margin keeps a scale that rounds a hair over 1 from counting as zoomed.
+ */
+export function pinchZoomed(): boolean {
+  const scale = typeof window !== 'undefined' ? window.visualViewport?.scale : undefined
+  return typeof scale === 'number' && scale > 1.01
+}
+
 const read = (): VisualViewport => {
   const vv = typeof window !== 'undefined' ? window.visualViewport : null
   if (!vv) {
@@ -40,14 +50,22 @@ export function useVisualViewport(): VisualViewport {
     const vv = window.visualViewport
     // `scroll` matters as much as `resize`: iOS keeps the height and moves the
     // origin when it scrolls the focused input into view.
-    const onChange = () => setBox(read())
+    // An unchanged box keeps its object, so a read re-renders nothing.
+    const onChange = () => {
+      const next = read()
+      setBox(prev => (prev.height === next.height && prev.offsetTop === next.offsetTop ? prev : next))
+    }
     if (vv) {
       vv.addEventListener('resize', onChange)
       vv.addEventListener('scroll', onChange)
     }
     window.addEventListener('resize', onChange)
-    onChange()
+    // The catch-up read for a change between render and this effect waits for
+    // the next frame: reading the viewport here forces a layout of the page
+    // inside the commit's task.
+    const first = requestAnimationFrame(onChange)
     return () => {
+      cancelAnimationFrame(first)
       if (vv) {
         vv.removeEventListener('resize', onChange)
         vv.removeEventListener('scroll', onChange)

@@ -1166,11 +1166,19 @@ def _find_system_ffmpeg() -> str | None:
 
 
 def _unlink_if_exists(path: str) -> None:
-    """Remove *path*, tolerating another cleanup path winning the race."""
+    """Remove the temp file *path*, best effort.
+
+    A missing file means another cleanup path won the race. Any other
+    ``OSError`` (on Windows, a scanner or indexer holding the file) is logged
+    and the file left, so a temp file never replaces the caller's result or
+    the error already in flight.
+    """
     try:
         os.unlink(path)
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        logger.warning("could not remove temporary file %s: %s", path, exc)
 
 
 async def _kill_and_reap(proc: Any) -> None:

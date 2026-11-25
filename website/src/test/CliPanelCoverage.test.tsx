@@ -156,11 +156,13 @@ const registry = vi.hoisted(() => ({
   displaced: { value: false },
   invalidCwd: { value: false },
   wrongMachine: { value: false },
+  atLimit: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
   useTerminalInvalidCwd: vi.fn<() => boolean>(),
   useTerminalWrongMachine: vi.fn<() => boolean>(),
+  useTerminalAtLimit: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
@@ -168,6 +170,7 @@ registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.va
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
+registry.useTerminalAtLimit.mockImplementation(() => registry.atLimit.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -180,6 +183,7 @@ vi.mock('../components/TerminalKeyBar', () => ({ default: () => <div data-testid
 const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
+import { skipFocusOnNextShow } from '../utils/terminalQuietShow'
 import CliPanel, {
   prewarmTerminal,
   __resetTerminalThemeSyncForTests,
@@ -334,6 +338,7 @@ beforeEach(() => {
   registry.displaced.value = false
   registry.invalidCwd.value = false
   registry.wrongMachine.value = false
+  registry.atLimit.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
   xt.FakeSearchAddon.instances = []
@@ -472,6 +477,30 @@ describe('CliPanel mount', () => {
     expect(document.activeElement).toBe(term.textarea)
     expect(term.pastes).toEqual(['ls\nrm'])
     expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+  })
+
+  it('shows a terminal a Run-in-terminal action asked to open quietly without focusing it, then focuses it on the next show', () => {
+    const sessionId = nextId()
+    skipFocusOnNextShow(sessionId)
+    const view = mount({ sessionId })
+    const { term } = view
+    expect(term.openCalls).toBe(1)
+    expect(term.focusCalls).toBe(0)
+    // Hidden and shown again (a tab switch): an ordinary show takes focus.
+    view.rerender(<CliPanel sessionId={sessionId} visible={false} />)
+    view.rerender(<CliPanel sessionId={sessionId} visible />)
+    expect(term.focusCalls).toBe(1)
+  })
+
+  it('keeps a quietly shown first-open terminal unfocused through the stand-in and the hand-off', () => {
+    const sessionId = nextId()
+    skipFocusOnNextShow(sessionId)
+    const view = mount({ sessionId, deferOpen: true })
+    const proxy = screen.getByTestId('terminal-focus-proxy') as HTMLTextAreaElement
+    expect(document.activeElement).not.toBe(proxy)
+    view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+    expect(view.term.openCalls).toBe(1)
+    expect(view.term.focusCalls).toBe(0)
   })
 
   it('does not take the focus back when the user moved to another field during the hold', () => {
@@ -695,6 +724,18 @@ describe('CliPanel disconnected banner', () => {
     // Every redial meets the same refusal, so no Reconnect; the hand-off stays.
     expect(screen.queryByRole('button', { name: RECONNECT_LABEL })).toBeNull()
     expect(within(banner).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
+  it('names the gateway terminal limit and offers Reconnect for after one closes', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.atLimit.value = true
+    const { sessionId } = mount({ cwd: '/w' })
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.at_limit_message'))
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    // Close another terminal, then Reconnect.
+    fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
+    expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
   })
 
   it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {

@@ -344,6 +344,26 @@ def member_panel_session_server(
     return _member_session_element(MEMBER_PANEL_SERVER, "mcp-panel", session_key, session_token)
 
 
+#: The crewmate's own-record server (goals, milestones, check-ins), mounted per
+#: session into a Bot's DM thread whose chat runs on an agent of the user's own:
+#: that agent seldom declares it, and goals are set only in that chat. KAS
+#: declares it in the projected spec instead (``acp.kas_member_goal_tools``).
+MEMBER_MATE_SERVER = "kirocrew-mate"
+
+
+def member_mate_session_server(
+    session_key: str, session_token: str = ""
+) -> dict[str, object] | None:
+    """ACP ``session/new`` ``mcpServers`` element mounting the crewmate's record tools.
+
+    Identity carriage, env and failure mode are
+    :func:`member_dispatch_session_server`'s, through :func:`_member_session_element`:
+    every ``kirocrew-mate`` tool acts on the calling crewmate only, so an entry
+    without this session's identity would refuse every call.
+    """
+    return _member_session_element(MEMBER_MATE_SERVER, "mcp-mate", session_key, session_token)
+
+
 def crew_panel_enabled() -> bool:
     """Whether a crew member's DM session is granted its own webview.
 

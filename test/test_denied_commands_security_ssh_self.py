@@ -544,7 +544,7 @@ class TestSandboxEscapeSshSelf:
             # rsync ``--rsh`` naming plain ``ssh`` (no self host) is the
             # normal remote-shell selector; ``--exclude`` names data.  (The
             # detached ``-e ssh`` spelling is floor-allowed too -- asserted in
-            # test_rsync_detached_rsh_floor_allows_plain_ssh -- and, because the
+            # test_multi_name_exports_feed_rsync_remote_shell -- and, because the
             # ``reverse-shell-nc`` row is anchored to the ``nc`` command token,
             # allowed end-to-end as well; pinned by
             # TestReverseShellNcIsCommandTokenAnchored.)
@@ -598,11 +598,13 @@ class TestSandboxEscapeSshSelf:
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
         assert _denied_by(cmd) is None, cmd
 
-    def test_rsync_detached_rsh_floor_allows_plain_ssh(self):
-        # THIS floor must not deny the normal detached remote-shell selector, and
-        # neither does the ``reverse-shell-nc`` catalog row: it is anchored to the
-        # ``nc`` command token, so the letters ``nc -e`` inside ``rsync -e`` are not
-        # a match.  Pinned end-to-end here as well as at the floor.
+    def test_multi_name_exports_feed_rsync_remote_shell(self):
+        for builtin in ("export", "declare -x", "typeset -x"):
+            cmd = f"{builtin} A=1 RSYNC_RSH='ssh localhost'; rsync far:/x ."
+            assert _denied_by(cmd) == self._RULE, cmd
+
+        # The normal detached selector remains allowed when it names no self host,
+        # including through the separate reverse-shell catalog rule.
         cmd = "rsync " + "-e ssh /tmp/f far.example.com:/p"
         assert not security._is_ssh_to_self(cmd)
         assert _denied_by(cmd) is None
@@ -695,6 +697,12 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh `echo localhost` id") == self._RULE
         assert _denied_by("ssh local$(printf host) id") == self._RULE
         assert _denied_by("ssh $(printf remote.example.com) id") is None
+        assert _denied_by("ssh $(echo localhost) id") == self._RULE
+        # Only the first printed word is spliced, so a substitution printing
+        # several words in command position is not read exactly (main allowed
+        # both).  It stays allowed, as on main.
+        assert _denied_by("$(echo ssh localhost) id") is None
+        assert _denied_by("$(echo ssh remote.example.com) id") is None
 
     @pytest.mark.parametrize(
         "cmd",
@@ -819,7 +827,10 @@ class TestSandboxEscapeSshSelf:
                 "echo `echo\\;echo ssh -p 22 localhost id`",
                 "echo\\;echo ssh -p 22 localhost id",
             ),
-            ("echo $(sudo -H ls s* l*)", "sudo -h ls s* l*"),
+            (
+                "echo bash -c 'echo $(echo hi; ssh -p 22 localhost id)'",
+                "echo bash -c 'ssh -p 22 localhost id'",
+            ),
         ],
     )
     def test_known_fail_closed_residuals_are_refused(self, cmd, body):
@@ -829,7 +840,9 @@ class TestSandboxEscapeSshSelf:
         on main: the floor reads a glued ``;echo``, a ``#`` comment, the text a
         ``cat`` prints from an unquoted-tag heredoc, and an escaped ``\\;`` as
         commands.  A substitution body is judged as such a line, so it inherits
-        the same refusal.  A fix to that reading flips this test on purpose.
+        the same refusal.  The ssh floor's payload readers take a ``bash -c`` script
+        that ``echo`` only prints as a payload, on the plain line too.  A fix to that
+        reading flips this test on purpose.
         """
         assert _denied_by(cmd) == self._RULE
         assert _denied_by(body) == self._RULE
@@ -1119,6 +1132,9 @@ class TestSandboxEscapeSshSelf:
             "sudo s?h local*",
             "time s?h local*",
             "xargs s?h local*",
+            # Bash drops a leading redirection before it finds the program.
+            ">/dev/null s?h local*",
+            "2>/dev/null s?h local*",
             # A glob verb glued to a substitution opener, a subshell or a
             # separator is still the program bash runs.
             "echo $(s?h local* id)",
@@ -1151,6 +1167,9 @@ class TestSandboxEscapeSshSelf:
             "env -C . s?h local*",
             "sudo -D /tmp s?h local*",
             "xargs -P 4 s?h local*",
+            "sudo -T 5 s?h local*",
+            "xargs -S 5 s?h local*",
+            "env -U root s?h local*",
             # ``sudo -H`` and ``sudo -E`` take no value and run the next word.
             "sudo -H s?h local* id",
             "sudo -E s?h local* id",

@@ -914,10 +914,12 @@ class TestSourceKeyedGuards:
     holds what they count."""
 
     def test_no_runtime_module_screens_a_path_for_links(self) -> None:
-        """The link-screen baseline keys its sites to the ``skills_*`` owners; a screen in a
-        runtime module would be a site that baseline cannot name."""
+        """A screen is code the link-screen baseline pins by path, so it goes to a
+        ``skills_*`` owner. The one exception is ``read_auto_skill_body``'s two
+        ``os.path.islink`` checks, which the baseline keys as ``skill_runtime/versions.py``."""
         for stem, source in _runtime_sources().items():
-            assert [name for _line, name in _called_names(source) if name in SCREENS] == [], stem
+            found = [name for _line, name in _called_names(source) if name in SCREENS]
+            assert found == (["islink", "islink"] if stem == "versions" else []), stem
 
     def test_the_link_screen_scan_catches_a_planted_screen(self) -> None:
         planted = "def f(p):\n    if sk.is_link_or_junction(p):\n        return shutil.rmtree(p)\n"

@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { Trans } from 'react-i18next'
 
 import { DiscordIcon } from '../../components/DiscordIcon'
+import ErrorNotice from '../../components/ErrorNotice'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { BotChannelPanel, type BotChannelSpec } from './BotChannelPanel'
@@ -104,7 +106,33 @@ function discordSpec(): BotChannelSpec {
   }
 }
 
-/** Discord channel-integration settings. */
+/**
+ * Discord channel-integration settings.
+ *
+ * A save also reconnects the running bot with what it stored. When the bot
+ * could not take part of it (a token Discord rejected, server-thread intents it
+ * refused), the save still succeeded, so the reason stays here as a `partial`
+ * notice until the next save or a dismiss, rather than in the short-lived
+ * "Saved" line.
+ */
 export function DiscordPanel() {
-  return <BotChannelPanel spec={discordSpec()} />
+  const [reconnectError, setReconnectError] = useState('')
+  const spec = discordSpec()
+  const saveConfig: BotChannelSpec['saveConfig'] = async body => {
+    const res = await api.saveDiscordConfig(body)
+    setReconnectError(res.reconnect_error || '')
+    return res
+  }
+  return (
+    <>
+      <BotChannelPanel spec={{ ...spec, saveConfig }} />
+      {/* No hand-off: the panel's fields above can hold edits made after this save. */}
+      <ErrorNotice
+        message={reconnectError}
+        impact="partial"
+        onDismiss={() => setReconnectError('')}
+        className="max-w-[720px] mb-4"
+      />
+    </>
+  )
 }

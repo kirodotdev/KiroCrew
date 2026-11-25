@@ -20,6 +20,7 @@ import os
 import string
 from typing import Any, cast
 
+from kiro_crew.acp.kas_deny_alternatives import top_level_branches
 from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
 from kiro_crew.acp.kas_permissions import (
     _MAX_PATTERN_LENGTH,
@@ -106,10 +107,12 @@ def _authored_web_fetch_restricted(authored_permissions: Any) -> bool:
     merge drops still counts; or a block the merge refuses whole, or one this
     cannot read. Crew's gate then grants no ``web_fetch``, so the author's rule
     keeps the prompt it had on main."""
-    raw = authored_permissions
-    if raw is None:
+    if authored_permissions is None:
         return False
     from kiro_crew.acp.kas_permissions import projection_accepts
+    from kiro_crew.acp.kas_policy_bundle import without_policy_bundle
+
+    raw = without_policy_bundle(authored_permissions)
 
     if not isinstance(raw, dict) or set(raw) - {"rules", "policies"}:
         return True
@@ -333,17 +336,20 @@ def _refusable_deny(raw: object) -> bool:
     and, with an optional ``^`` / ``\\A`` and ``$`` / ``\\z`` anchor taken off, it
     holds no character a command the row judges never holds
     (``allowed_commands.UNGRANTABLE_COMMAND_CHARS``: a redirect, a separator, a
-    substitution). The row judges a plain command and each command of a chain, so
-    an entry naming one of those characters could never match. One reader for the
-    record and the notice, so they cannot disagree."""
-    if not isinstance(raw, str) or allowed_commands.parse_deny(raw) is None:
+    substitution), written as itself or as a ``\\x`` escape (``\\x3b``:
+    ``Pattern.spelled``). The row judges a plain command and each command of a
+    chain, so an entry naming one of those characters could never match. One reader
+    for the record and the notice, so they cannot disagree."""
+    pattern = allowed_commands.parse_deny(raw)
+    if not isinstance(raw, str) or pattern is None:
         return False
     body = raw.removeprefix("\\A") if raw.startswith("\\A") else raw.removeprefix("^")
     if body.endswith("\\z") and not body.endswith("\\\\z"):
         body = body[:-2]
     elif body.endswith("$") and not body.endswith("\\$"):
         body = body[:-1]
-    return not allowed_commands.UNGRANTABLE_COMMAND_CHARS.intersection(body)
+    ungrantable = allowed_commands.UNGRANTABLE_COMMAND_CHARS
+    return ungrantable.isdisjoint(body) and ungrantable.isdisjoint(pattern.spelled)
 
 
 def uncarried_denied_commands(tools_settings: Any, policy: Any) -> list[str]:
@@ -369,11 +375,16 @@ def uncarried_denied_commands(tools_settings: Any, policy: Any) -> list[str]:
     return list(dict.fromkeys(out))[:_MAX_DENIES]
 
 
-def denied_command_items(tools_settings: Any, policy: Any = None) -> list[dict[str, Any]]:
+def denied_command_items(
+    tools_settings: Any, policy: Any = None, *, top_level_split_carries: bool = True
+) -> list[dict[str, Any]]:
     """Uncarried denies with raw values and classification separate from display text.
 
     ``whole`` names a malformed list; ``past_bound`` distinguishes a readable
-    entry beyond the record limit from one the gate can actually check.
+    entry beyond the record limit from one the gate can actually check. With
+    *top_level_split_carries* false, an entry KAS receives only as the branches of
+    a top-level ``|`` (``kas_deny_alternatives.top_level_branches``) counts as not
+    carried, so a Bot worker keeps holding its shell for it.
     """
     out: list[dict[str, Any]] = []
     if not isinstance(tools_settings, dict):
@@ -401,7 +412,11 @@ def denied_command_items(tools_settings: Any, policy: Any = None) -> list[dict[s
             past = readable and raw not in kept and len(kept) >= _MAX_DENIES
             if readable and not past:
                 kept.add(raw)
-            if not (isinstance(raw, str) and shell_deny_carried(raw, globs)):
+            if not (
+                isinstance(raw, str)
+                and shell_deny_carried(raw, globs)
+                and (top_level_split_carries or len(top_level_branches(raw.strip())) == 1)
+            ):
                 out.append(
                     dict(
                         key=f"{key}.deniedCommands",
@@ -614,7 +629,7 @@ def unjudged_denied_commands(
     return list(
         dict.fromkeys(
             deny_entry_text(item)
-            for item in denied_command_items(settings, policy)
+            for item in denied_command_items(settings, policy, top_level_split_carries=False)
             if item["conditional"] is conditional
         )
     )
@@ -626,13 +641,17 @@ def with_unjudged_denies(
     """Record structured denies for the Bot worker, never on the KAS wire.
 
     Conditional entries use the refusal row's shared judge; other entries hold
-    every non-read-only command. Authored text never carries classification.
+    every non-read-only command. Authored text never carries classification. A
+    top-level ``a|b`` holds even though its branches travel: their globs are
+    narrower than the entry's own regex, which anchors only its outer ends.
     """
     out: list[dict[str, Any]] = []
     for entry in custom_agents:
         if isinstance(entry, dict) and entry.get("id") == agent_id:
             settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
-            unjudged = denied_command_items(settings, entry.get("permissions"))
+            unjudged = denied_command_items(
+                settings, entry.get("permissions"), top_level_split_carries=False
+            )
             if unjudged:
                 entry = {**entry, CREW_UNJUDGED_DENIES_KEY: unjudged}
         out.append(entry)

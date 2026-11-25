@@ -31,7 +31,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
     setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setPrStatusRefreshError, setRemoteCrewError, setSeedError, setToggleSaveFailed,
     tagColumnsEnabled, warmCrews } = shell
   const { setCleanupError, setCleanupExpanded } = shell.sessionCleanup
-  const { setBulkModel, setBulkModelError, setBulkModelOpen, setBulkSkipRunning } = shell.bulkModel
+  const { resetBulkPanel, setBulkModelOpen, setBulkSkipRunning } = shell.bulkModel
   // Narrow-sidebar header responsiveness: below ~256px the full "New chat"
   // label no longer fits next to the label + kebab, so collapse the create
   // button to icon-only; below ~200px also drop the "Sessions" label.
@@ -115,7 +115,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                   {i18nT('pages.chatSidebar.collapse_all_folders')}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }} {...uiLocation('sessions.list-menu.switch-model')}>
+              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); resetBulkPanel(); setBulkSkipRunning(true) }} {...uiLocation('sessions.list-menu.switch-model')}>
                 <Cpu size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.switch_all_to_model')}
               </DropdownMenuItem>

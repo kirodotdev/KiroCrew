@@ -68,6 +68,16 @@ export interface ChatPaneProps {
    *  sets it (a Bot's chat on the Bots page): the key listens on the whole
    *  document, and the Sessions chat answers it itself. False closes the bar. */
   findInChat?: boolean
+  /** The element the history search draws into: the host's side panel tab,
+   *  so the search never covers this transcript. */
+  historySearchHost?: HTMLElement | null
+  /** Told when the history search opens (again on each ⌘F while open) and
+   *  closes, so the host can show the tab `historySearchHost` lives in. */
+  onHistorySearchOpenChange?: (open: boolean) => void
+  /** Handed the pane's own opener and closer for its history search on mount,
+   *  and null on unmount, so the host's Search button and side panel + menu
+   *  open the same search ⌘F does, and its Search tab's close button ends it. */
+  onHistorySearchOpener?: (open: (() => void) | null, close?: () => void) => void
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
@@ -136,6 +146,13 @@ export interface ChatPaneProps {
    *  is a link that opens it, so the words that read as a destination are one;
    *  without it the line is plain text. Only meaningful with `crewmate`. */
   onOpenCrewWorkLog?: () => void
+  /** The host already knows, from data it holds at this render, that the
+   *  slot's transcript has messages (a roster row, a slot record). Only then
+   *  does the pane draw the transcript skeleton while its first page loads.
+   *  Default `false`: a chat that never talked, or one the host cannot vouch
+   *  for, opens exactly as before, with no placeholder that appears and then
+   *  vanishes. */
+  historyKnown?: boolean
   /** Reply threads on this pane's messages. Only a host presenting a
    *  crewmate's chat (the Members page) passes it; absent, the rows draw no
    *  thread footer and no "Reply in thread" action. */

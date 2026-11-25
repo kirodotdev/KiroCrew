@@ -194,6 +194,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     violation, prints a message to stderr and calls `sys.exit(2)`.
     Returned dict is safe to splat directly into `_gateway()`.
     """
+    if getattr(args, "headless", False) and getattr(args, "slack_only", False):
+        print(
+            "👻 --headless cannot be combined with --slack-only. Drop one of these flags.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     port = getattr(args, "port", None)
     json_ready = getattr(args, "json_ready", False)
     approval = getattr(args, "approval", None)
@@ -272,6 +279,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
 
     return {
         "no_dashboard": getattr(args, "slack_only", False),
+        "headless": bool(getattr(args, "headless", False)),
         "no_crons": getattr(args, "no_crons", False),
         # --test-mode and --seed start a test or dev gateway: it must never publish a
         # tunnel or register with the Kiro relay, whatever its config or sign-in.

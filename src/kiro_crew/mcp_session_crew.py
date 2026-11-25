@@ -42,10 +42,12 @@ _CREW_PROPERTY: dict[str, Any] = {
         "Preview. Run this on a connected remote crew instead of this machine: the "
         "crew's instance id or exact name. The session lives on that crew and shows "
         "in its sidebar group. With crew, session_create takes only title, agent, "
-        'agent_kind ("template" only) and model (omit agent to get the crew\'s own '
-        "default), and send, read, stop and "
+        'agent_kind ("template" only), model, work_item and requires (omit agent to '
+        "get the crew's own default), and send, read, stop and "
         "close reach only a crew session YOU opened with session_create(crew=) on "
-        "that same crew; pass the key it returned as target. " + _READ_FIRST
+        "that same crew, or one an open work item of yours is bound to there; only "
+        "the work-item binding survives a gateway restart. Pass the key it returned "
+        "as target. " + _READ_FIRST
     ),
 }
 

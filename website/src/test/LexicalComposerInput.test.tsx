@@ -279,6 +279,18 @@ describe('LexicalComposerInput', () => {
     expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
   })
 
+  it('keeps the read-only editor focusable so keys can still stop or send a capture', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const { rerender } = render(<ControlledHost initial="hello" editorRef={editorRef} />)
+    const root = screen.getByLabelText('Message input')
+    expect(root).not.toHaveAttribute('tabindex')
+    rerender(<ControlledHost initial="hello" editorRef={editorRef} readOnly />)
+    await waitFor(() => expect(editorRef.current?.isEditable()).toBe(false))
+    expect(root).toHaveAttribute('tabindex', '0')
+    act(() => root.focus())
+    expect(document.activeElement).toBe(root)
+  })
+
   it('a single click on a paste chip still only selects it, never expands', async () => {
     const user = userEvent.setup()
     render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)

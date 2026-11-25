@@ -25,11 +25,13 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import aiohttp
 
+from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.cloud.connect import FARGATE_TURN_PATH
 from kiro_crew.gateway_identity import gateway_id
 from kiro_crew.instances.constants import (
@@ -63,9 +65,11 @@ from kiro_crew.instances.ssm_token_mint import mint_remote_token_ssm
 from kiro_crew.instances.token_mint import HopRetiredError, TokenMintError
 from kiro_crew.instances.validation import (
     SshValidationError,
+    SsmTargetUnresolvedError,
     SsmValidationError,
     UnsupportedConnectionMethodError,
     split_ecs_target,
+    split_ssm_resolver,
     validate_aws_profile,
     validate_aws_region,
     validate_remote_bin,
@@ -384,6 +388,54 @@ def _resolve_chained_transport(
     )
 
 
+def _ssm_resolver(inst: Instance) -> tuple[str, str] | None:
+    """The ``(kind, name)`` of an ssm row's ``asg:``/``param:`` target, or None."""
+    if inst.via_instance_id or _transport_method(inst) != "ssm":
+        return None
+    return split_ssm_resolver(inst.ssm_target or "")
+
+
+async def _with_resolved_target(self: SshTunnelManager, inst: Instance) -> Instance:
+    """*inst* with a resolver ``ssm_target`` replaced by the instance it names now.
+
+    For the paths that BUILD a forward (connect, self-heal), so a replaced
+    instance is picked up on the next rebuild, and for the remote verbs when no
+    forward is connected. One read-only AWS call with the row's own profile and region, off the
+    event loop; the copy is never written back. Any other row comes back as it is,
+    without suspending. Raises :class:`SsmTargetUnresolvedError` when the resolver
+    names no single instance.
+    """
+    resolver = _ssm_resolver(inst)
+    if resolver is None:
+        return inst
+    kind, name = resolver
+    profile = validate_aws_profile(inst.aws_profile)
+    region = validate_aws_region(inst.aws_region)
+    try:
+        target = await asyncio.to_thread(cloud_ssm.resolve_ssm_target, kind, name, profile, region)
+    except SsmValidationError:
+        raise
+    except Exception as e:  # `aws` could not start (the sandbox refused it, say)
+        raise SsmTargetUnresolvedError(f"the aws CLI could not run: {e}") from e
+    return dataclass_replace(inst, ssm_target=target)
+
+
+def _with_dialled_target(self: SshTunnelManager, inst: Instance) -> Instance:
+    """*inst* with a resolver ``ssm_target`` replaced by the id its live forward dialled.
+
+    For what acts on an OPEN forward (the token refresh, the lent hop, the
+    parent-hop re-mint, and the remote verbs while connected) and for self-heal's
+    locked validation: a fresh lookup could name a replacement that
+    forward does not reach, and the credential has to come from the machine the
+    port leads to. With no live forward the target is empty, which validation
+    refuses.
+    """
+    if _ssm_resolver(inst) is None:
+        return inst
+    tunnel = self._tunnels.get(inst.id)
+    return dataclass_replace(inst, ssm_target=tunnel.status.ssm_target if tunnel else "")
+
+
 async def _with_parent(self: SshTunnelManager, inst: Instance) -> Instance | None:
     """The registry record this instance is reached THROUGH, or ``None``.
 
@@ -520,7 +572,9 @@ async def _remint_parent_under_lock(self: SshTunnelManager, parent_id: str) -> b
     # before the first await, compared before the store.
     epoch = self._tunnel_epoch.get(parent_id, 0)
     try:
-        params = self._resolve_transport(inst, await self._with_parent(inst))
+        params = self._resolve_transport(
+            self._with_dialled_target(inst), await self._with_parent(inst)
+        )
     except (SshValidationError, SsmValidationError) as e:
         logger.warning("Parent-hop re-mint aborted for %s: %s", parent_id, e)
         return False

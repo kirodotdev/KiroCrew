@@ -291,8 +291,6 @@ def node_path(value: Any) -> tuple[str, ...]:
     return _str_list(value)
 
 
-_node_path = node_path
-
 #: The runtime path segment of a repeat's iteration ``n`` is ``iter-<n>``
 #: (0-based), not the wrapper's own ``<repeatId>#<n>`` id.
 ITERATION_SEGMENT_PREFIX = "iter-"
@@ -339,7 +337,7 @@ def parse_attention(value: Any) -> tuple[Attention, ...]:
                 kind=kind,
                 node_id=node_id,
                 session_id=as_str(item.get("sessionId")),
-                node_path=_node_path(item.get("nodePath")),
+                node_path=node_path(item.get("nodePath")),
                 since=as_str(item.get("since")),
                 tool_call_id=as_str(item.get("toolCallId")),
             )

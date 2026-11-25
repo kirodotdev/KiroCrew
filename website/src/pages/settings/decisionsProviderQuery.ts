@@ -1,9 +1,41 @@
+import { fmtList } from '../../i18n/format'
+import { i18nT } from '../../i18n/t'
+import { channelBrandLabel } from '../../utils/channelOrigin'
+
 /**
  * Query key for `GET /api/decisions/provider`, shared by the Decisions card and its
  * lazily loaded model picker. It lives outside the picker module so the card can
  * read the provider without pulling the picker into its own chunk.
  */
 export const DECISIONS_PROVIDER_QUERY_KEY = ['decisionsProvider'] as const
+
+/** The catalog phrase for each `still_sending` surface that is not a messaging channel. */
+const SURFACE_NAME_KEY: Record<string, string> = {
+  cli: 'pages.developer.featurePreviewsTab.decisions_still_sent_cli',
+  cron: 'pages.developer.featurePreviewsTab.decisions_still_sent_cron',
+  subagent: 'pages.developer.featurePreviewsTab.decisions_still_sent_subagent',
+  taskrunner: 'pages.developer.featurePreviewsTab.decisions_still_sent_taskrunner',
+  background: 'pages.developer.featurePreviewsTab.decisions_still_sent_background',
+  heartbeat: 'pages.developer.featurePreviewsTab.decisions_still_sent_heartbeat',
+}
+
+const surfaceName = (id: string): string =>
+  Object.prototype.hasOwnProperty.call(SURFACE_NAME_KEY, id) ? i18nT(SURFACE_NAME_KEY[id]) : channelBrandLabel(id) || id
+
+/**
+ * The sentence naming where messages are still sent from to a model the dashboard
+ * refuses, under the recorded consent (`still_sending`), or `null` when nowhere is.
+ */
+export function stillSendingSentence(data: {
+  still_sending?: { surfaces: string[]; unbound: boolean } | null
+}): string | null {
+  const reading = data.still_sending
+  if (!reading) return null
+  const items = reading.surfaces.map(surfaceName)
+  if (reading.unbound) items.push(i18nT('pages.developer.featurePreviewsTab.decisions_still_sent_unbound'))
+  if (items.length === 0) return null
+  return i18nT('pages.developer.featurePreviewsTab.decisions_still_sent', { surfaces: fmtList(items) })
+}
 
 /** Preset id for "no decision model"; the gateway's `local_models.PRESET_NONE`. */
 export const PRESET_NONE = 'none'

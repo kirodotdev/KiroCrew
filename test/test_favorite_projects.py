@@ -487,7 +487,7 @@ class TestFavoriteProjectsEndpoints:
     async def test_post_refuses_a_sensitive_path_and_records_the_denial(self, _home, _sel):
         proj = _home / "a"
         proj.mkdir()
-        with patch(f"{MOD}.is_sensitive_path", return_value=True):
+        with patch(f"{MOD}.is_sensitive_canonical_path", return_value=True):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.post("/api/favorite-projects", json={"path": str(proj)})
                 assert resp.status == 403
@@ -495,6 +495,40 @@ class TestFavoriteProjectsEndpoints:
         assert ch._load_favorite_projects() == []
         outcomes = [c.kwargs.get("outcome") for c in _sel.log_api_access.call_args_list]
         assert "denied" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_post_favourites_a_healthy_directory_during_a_resolver_stall(self, _home, _sel):
+        """A stall cooldown over a healthy directory is not a sensitive match.
+
+        The probe resolves the path itself on a worker thread, so it asks the
+        canonical gate, which answers inline there instead of reading the cooldown.
+        """
+        from kiro_crew.security import paths
+
+        proj = _home / "a"
+        proj.mkdir()
+        paths._mark_stalled(paths._stall_prefix(str(proj)), 2.0)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/favorite-projects", json={"path": str(proj)})
+            assert resp.status == 200
+        # The stored list, not the display one: the display filter asks the bounded
+        # gate about each stored spelling, so it hides the entry until the cooldown ends.
+        assert ch._load_favorite_projects() == [os.path.realpath(proj)]
+
+    @pytest.mark.asyncio
+    async def test_post_still_refuses_a_directory_on_the_sensitive_fence(self, _home, _sel):
+        # The crew home is a per-test tmp dir here; ``diag`` is on its fence.
+        from kiro_crew.security import paths
+
+        fenced = Path(os.environ["KIROCREW_HOME"]) / "diag"
+        fenced.mkdir(parents=True, exist_ok=True)
+        # Refused with or without a cooldown: the inline gate checks the same list.
+        paths._mark_stalled(paths._stall_prefix(str(fenced)), 2.0)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/favorite-projects", json={"path": str(fenced)})
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "denied"
+        assert ch._load_favorite_projects() == []
 
     @pytest.mark.asyncio
     async def test_post_resolves_the_path_off_the_event_loop(self, _home, _sel):

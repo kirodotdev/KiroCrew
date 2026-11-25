@@ -173,6 +173,17 @@ const LOCAL_ONLY_ITEM_IDS = new Set([
   // Electron hands the click — the LOCAL user's, not the sender's. Same
   // focus-scoped window-lifecycle shape as `keep-on-top`, fenced by id.
   "window-zoom",
+  // The content text size tiers. Every one calls `setFontSize`, which applies
+  // to EVERY open dashboard window and persists the choice. Every one of those
+  // windows is the LOCAL user's, never the sender's, so a remote sender in an
+  // unfocused connection window could otherwise resize the local user's text
+  // across all of their windows and make the change stick. Same focus-scoped shape as the zoom items above. Listed
+  // as literals like every other entry here, which keeps this module free of
+  // requires; a fourth tier added without a line here fails the drift pin in
+  // test/windows-menu-model.test.js rather than shipping unclassified.
+  "font-size-small",
+  "font-size-medium",
+  "font-size-large",
 ]);
 
 function isLocalOnlyItem(topLevelItem, item) {

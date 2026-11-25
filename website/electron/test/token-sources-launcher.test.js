@@ -62,7 +62,7 @@ function sources({
     isWindows,
     log: () => {},
     sendStatus: () => {},
-    snapshotGatewayPortPids: async () => holders,
+    mintPortPids: async () => holders,
     getGatewayProcess: () => gateway,
     async psPpid(pid) {
       psCalls.push(pid);

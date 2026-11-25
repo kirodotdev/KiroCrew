@@ -227,6 +227,40 @@ class DeviceRegistry:
 
         return self._doc.update(mutate)
 
+    def forget_enrollment(self, device_id: str, fingerprint: str, cgen: int) -> Optional[bool]:
+        """Revoke exactly this enrollment in one vault transaction.
+
+        True means revoked; False means already replaced or legacy/unscoped.
+        None means the device or fingerprint does not match. The generation
+        check is repeated on every compare-and-swap attempt, so concurrent
+        enrollment cannot be revoked by an older delayed forget.
+        """
+        from kiro_crew.connected_computers.enrollment_generation import enrollment_generation
+
+        generation = enrollment_generation(cgen)
+        if not generation:
+            return False
+        try:
+            validate_device_id(device_id)
+            validate_fingerprint(fingerprint)
+        except IdentityError:
+            return None
+        now = self._clock()
+
+        def mutate(doc: dict[str, Any]) -> Optional[bool]:
+            rows = self._rows(doc)
+            prior = _record(rows.get(device_id))
+            if prior is None or prior.device_id != device_id or prior.fingerprint != fingerprint:
+                return None
+            if prior.cgen != generation or not prior.active:
+                return False
+            rows[device_id] = asdict(
+                replace(prior, status=STATUS_REVOKED, cgen=prior.cgen + 1, updated=now)
+            )
+            return True
+
+        return self._doc.update(mutate)
+
     def revoke(self, device_id: str) -> Optional[DeviceRecord]:
         """Refuse every credential this computer holds; its chats stay bound to it."""
         return self._set_status(device_id, STATUS_REVOKED)

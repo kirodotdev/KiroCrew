@@ -55,3 +55,8 @@ export const GOOGLE_ENTRY_SLUG = 'google'
 export function isGoogleSlug(slug: string): boolean {
   return slug === 'gmail' || slug.startsWith('google-')
 }
+
+/** The query key of GET /api/connections/oauth-clients, shared by the OAuth app
+ *  part and the page, which offers a card's create-app buttons only while its
+ *  client is not saved. */
+export const OAUTH_CLIENTS_QUERY_KEY = ['connections', 'oauth-clients'] as const

@@ -62,6 +62,8 @@ interface ReleasesPayload {
   current_version: string
   releases: Release[]
   stale: boolean
+  /** Which edition this build is (`kiro_crew.edition`). */
+  edition?: 'oss' | 'lts'
 }
 
 const REPO = 'https://github.com/kirodotdev/KiroCrew'
@@ -391,7 +393,17 @@ export default function ReleasesPanel() {
                 {i18nT('pages.settings.releases.stale_note', { version: data.current_version })}
               </p>
             )}
-            <ReleaseNotes release={current} older={olderReleased(current)} alwaysLinkCommits summarize />
+            {data?.edition === 'lts'
+              // The bundled changelog is the open-source line's, so the backend
+              // sends LTS no notes: say which line this is instead, and link the
+              // LTS tag, never an open-source `v<version>` of the same number.
+              ? (
+                <div className="space-y-3 text-sm text-muted">
+                  <p data-testid="releases-lts-note">{i18nT('pages.settings.releases.lts_note')}</p>
+                  <CommitsLink href={`${REPO}/commits/lts-v${current.version}`} />
+                </div>
+              )
+              : <ReleaseNotes release={current} older={olderReleased(current)} alwaysLinkCommits summarize />}
           </Card>
         </div>
       )}

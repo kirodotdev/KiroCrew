@@ -1229,10 +1229,13 @@ class HistoryConsolidator:
         _consolidate(), and _run_skill_detection() re-checks the sensitive
         guard over its own window.
         """
-        remaining = self._log.unconsolidated_count(key)
+        # Every transcript read here runs in a worker thread: on the loop a read's
+        # retry over a transient OSError cannot pause, so a Windows sharing
+        # violation during another process's metadata rewrite fails every attempt.
+        remaining = await asyncio.to_thread(self._log.unconsolidated_count, key)
         if remaining < 1:
             return True
-        messages = self._log._read_messages(key)
+        messages = await asyncio.to_thread(self._log._read_messages, key)
         if _session_touched_sensitive(messages):
             self._logger.info("consolidate_now skipped for %s: sensitive session", key)
             return True
@@ -1255,7 +1258,7 @@ class HistoryConsolidator:
             outcome = await self._consolidate(key, include_history=True)
             if _no_pass_ran(outcome):
                 return not first_pass
-            after = self._log.unconsolidated_count(key)
+            after = await asyncio.to_thread(self._log.unconsolidated_count, key)
             if after >= remaining:
                 if after > 0:
                     self._logger.warning(

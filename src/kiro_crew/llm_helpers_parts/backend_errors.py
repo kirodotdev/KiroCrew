@@ -235,9 +235,15 @@ def acp_error_is_pipe_death(exc: BaseException) -> bool:
     answers a failed Claude Code start with ``-32603`` and "Claude Code process
     exited with code 1", which a fresh process reproduces, so treating it as a
     death retried the turn behind "Connection lost — retrying…" until "Session
-    stuck" and never showed the adapter's own words.
+    stuck" and never showed the adapter's own words. Nor does an error its raise
+    site ruled not transient: its text can quote the child's stderr (a start that
+    exited during ``initialize``), and that site already said a retry cannot help.
     """
-    if not isinstance(exc, AcpError) or getattr(exc, "code", None) is not None:
+    if (
+        not isinstance(exc, AcpError)
+        or getattr(exc, "code", None) is not None
+        or getattr(exc, "transient", None) is False
+    ):
         return False
     msg = str(exc)
     return "process exited" in msg or "not running" in msg

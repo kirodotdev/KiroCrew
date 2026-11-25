@@ -166,6 +166,7 @@ def _save_slot_to_history(
     pending_mode_slot: _ChatSlot | None = None,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
+    source_links_off_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     refuse_stale_empty_merge: bool = False,
     turn_timeout_override: tuple[int | None] | None = None,
@@ -384,6 +385,7 @@ def _save_slot_to_history(
                 ),
                 mutes_opened_override=mutes_opened_override,
                 muted_override=muted_override,
+                source_links_off_override=source_links_off_override,
                 after_commit_under_lock=after_commit_under_lock,
                 turn_timeout_override=turn_timeout_override,
                 autocompact_override=autocompact_override,
@@ -562,6 +564,7 @@ def _save_slot_to_history(
                     rows_only=rows_only,
                     mutes_opened_override=mutes_opened_override,
                     muted_override=muted_override,
+                    source_links_off_override=source_links_off_override,
                     turn_timeout_override=_metadata_line.turn_timeout_fold(
                         slot, turn_timeout_override, existing_meta, routed_binding, history_key
                     ),
@@ -628,8 +631,9 @@ def _save_slot_to_history(
                 rewrite=rewrite,
                 retired_rows=retired_rows,
             )
-            # Text from a rewrite; on an append, the cache's entry, possibly a range.
-            frozen_prefix: str | tuple[int, int] | None
+            # Text from a rewrite, a byte range of the transcript on a streamed
+            # rewrite; on an append, the cache's entry, possibly a range.
+            frozen_prefix: str | tuple | _transcript_merge.PrefixSource | None
             if tail is None:
                 payload, frozen_prefix, foreign_lines, drop_archives = (
                     _transcript_merge.compose_payload(
@@ -689,10 +693,12 @@ def _save_slot_to_history(
                 if tail is not None:
                     _transcript_merge.append_tail(path, tail)
                 else:
-                    atomic_write(
+                    # A streamed payload copies its frozen prefix from the
+                    # transcript instead of holding it in memory.
+                    _transcript_merge.write_payload(
                         path,
                         payload,
-                        fsync=True,
+                        atomic_write,
                         replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
                     )
             except BaseException:
@@ -751,7 +757,9 @@ def _save_slot_to_history(
             # The prefix is cached as where it sits in this file, not as its
             # text: a slot that stays open would otherwise hold a second copy of
             # its whole older history for as long as it lives.
-            _post_write_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+            _post_write_cache: (
+                tuple[float, int, int, str | tuple[int | None, ...], list[str]] | None
+            )
             try:
                 _st = path.stat()
             except OSError:
@@ -764,13 +772,17 @@ def _save_slot_to_history(
                         _st.st_mtime,
                         _st.st_size,
                         disk_older,
-                        (
-                            frozen_prefix
-                            if not isinstance(frozen_prefix, str)
-                            else _transcript_merge.prefix_range(meta_str, frozen_prefix)
-                        ),
+                        _transcript_merge.post_write_span(meta_str, frozen_prefix),
                         foreign_lines,
                     )
+                )
+            if isinstance(payload, _transcript_merge.StreamedPayload):
+                # The prefix's row count is known, so the count is stored and
+                # the next consolidation check does not re-read the file.
+                _transcript_merge.store_count_after_write(
+                    path,
+                    payload.prefix.span_after(meta_str),
+                    payload.tail.splitlines(keepends=True),
                 )
             # What the next save needs to append instead of rewriting: only when
             # the file holds exactly meta + prefix + this window, so no foreign line.
@@ -799,7 +811,7 @@ def _save_slot_to_history(
                     slot._pending_rewrite = False
                 # How many window messages are now on disk, so memory trimming can
                 # safely fold leading window messages into the frozen prefix.
-                slot._disk_window_len = len(window)
+                slot._disk_window_len = _write_guards.saved_rows_still_held(slot, window)
                 slot._disk_meta_created_at = _post_write_created_at
                 # A committed save is a direct observation of the file this slot
                 # writes — even when the carried-forward metadata is legacy and
@@ -850,6 +862,7 @@ async def save_slot_off_loop(
     issued_by_the_retraction: bool = False,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
+    source_links_off_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
     autocompact_override: tuple[float | None] | None = None,
@@ -1026,6 +1039,7 @@ async def save_slot_off_loop(
             pending_mode_slot=pending_mode_slot,
             mutes_opened_override=mutes_opened_override,
             muted_override=muted_override,
+            source_links_off_override=source_links_off_override,
             after_commit_under_lock=after_commit_under_lock,
             turn_timeout_override=turn_timeout_override,
             autocompact_override=autocompact_override,

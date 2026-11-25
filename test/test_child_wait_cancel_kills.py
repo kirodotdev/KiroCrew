@@ -106,3 +106,43 @@ async def test_describe_voices_cancel_kills_child(child, monkeypatch):
     monkeypatch.setattr(chat_voice.aws_consent, "refuse_and_log", AsyncMock(return_value=True))
     monkeypatch.setattr(chat_voice, "resolve_polly_cli", lambda: "/usr/local/bin/aws")
     await _cancel_while_awaited(chat_voice.api_voice_voices(MagicMock()), child)
+
+
+@pytest.mark.asyncio
+async def test_blob_clone_cancel_kills_child(child, monkeypatch, tmp_path):
+    from kiro_crew.apps import registry, routes
+
+    async def fake_spawn(*args, **kwargs):
+        return child
+
+    repo = "https://github.com/example/CoolApp.git"
+    monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
+    # A host proxy with a password would route the clone through the split fetch instead.
+    monkeypatch.setattr(routes, "_proxy_env_has_credentials", lambda url: False)
+    monkeypatch.setattr(routes, "wrap_argv", lambda cmd, **kwargs: (cmd, None))
+    monkeypatch.setattr(routes, "cgroup_scope_argv", lambda cmd: cmd)
+    monkeypatch.setattr(routes, "create_subprocess_limited", fake_spawn)
+    await _cancel_while_awaited(
+        routes._fetch_git_blob(repo, "main", "icon.png", tmp_path / "icon.png", git_url=repo),
+        child,
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_list_cancel_kills_child(child, monkeypatch):
+    from kiro_crew.dashboard.handlers import agents
+
+    async def fake_kiro_bin():
+        return "/usr/bin/kiro-cli"
+
+    async def fake_spawn(argv, **kwargs):
+        return child
+
+    monkeypatch.setattr(agents, "kill_and_reap", platform_compat.kill_and_reap)
+    monkeypatch.setattr(agents, "resolve_kiro_bin_for_spawn", fake_kiro_bin)
+    monkeypatch.setattr(agents, "_wrap_list_models_argv", lambda argv: (argv, None))
+    monkeypatch.setattr(agents, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(agents, "resolve_ssh_auth_sock", lambda env: None)
+    monkeypatch.setattr(agents, "inject_kiro_cli_api_key", lambda env: None)
+    monkeypatch.setattr(agents, "spawn_supervised_oneshot", fake_spawn)
+    await _cancel_while_awaited(agents._fetch_kiro_catalog(), child)

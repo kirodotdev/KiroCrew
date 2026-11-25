@@ -79,7 +79,8 @@ workflows) cost 1,828 calls and 2,786 points. So:
 
 - every query reads ``rateLimit { cost remaining resetAt }``, and the census
   stops before a call that would start with fewer than ``--reserve-points``
-  left (2,000 by default);
+  left (2,000 by default), unless ``--wait-for-reset-seconds`` lets it wait
+  for the bucket's reset instead (0 by default: it does not wait);
 - it stops after spending ``--max-points`` (1,500 by default, about half a
   day of runs here and under a third of one hour's bucket).
 
@@ -137,6 +138,8 @@ CANCELLED_SUITE_BATCH = 50
 DEFAULT_WORKERS = 4
 DEFAULT_RESERVE_POINTS = 2000
 DEFAULT_MAX_POINTS = 1500
+# Past the reset by GitHub's clock, not only by this one's.
+RESET_MARGIN_SECONDS = 5
 PARTIAL_EXIT = 3
 MAX_WORKERS = 8
 EVIDENCE_CHARS = 80
@@ -235,6 +238,17 @@ SKIP = _load("ci_main_red_skip_for_census", ROOT / "scripts" / "ci_main_red_skip
 
 def evidence_text(text: str) -> str:
     return str(WATCH.clean(text, EVIDENCE_CHARS))
+
+
+def reset_time(value: object) -> dt.datetime | None:
+    """A ``resetAt`` as an aware time, or ``None`` when it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        at = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.utcoffset() is not None else None
 
 
 # -- the window ---------------------------------------------------------------
@@ -485,10 +499,12 @@ class Api:
     """`gh api` with a count of every call made, by kind. Safe to share between threads.
 
     It also keeps the GraphQL budget: ``reserve`` points are left in the
-    bucket and at most ``max_points`` are spent. Once either would be crossed,
-    every further GraphQL read raises ``BudgetStop`` and ``stopped`` says why.
-    Reads already in flight on other threads finish, so the overshoot is at
-    most one call a worker.
+    bucket and at most ``max_points`` are spent. Under the reserve it sleeps
+    out the bucket's reset when that fits in what is left of ``max_wait``
+    seconds, and every worker waits with it. Once either line would otherwise
+    be crossed, every further GraphQL read raises ``BudgetStop`` and
+    ``stopped`` says why. Reads already in flight on other threads finish, so
+    the overshoot is at most one call a worker.
     """
 
     def __init__(
@@ -498,6 +514,7 @@ class Api:
         reserve: int = DEFAULT_RESERVE_POINTS,
         max_points: int = DEFAULT_MAX_POINTS,
         now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
+        max_wait: float = 0,
     ) -> None:
         self._run = run
         self._sleep = sleep
@@ -505,7 +522,11 @@ class Api:
         self._lock = threading.Lock()
         self.reserve = reserve
         self.max_points = max_points
+        self.max_wait = max_wait
+        self.waited = 0.0
         self.remaining: int | None = None
+        self.reset: dt.datetime | None = None
+        self.waited_out: dt.datetime | None = None
         self.reset_at = ""
         self.stopped: str | None = None
         self.graphql_calls = 0
@@ -523,6 +544,7 @@ class Api:
                 self.stopped is None
                 and self.remaining is not None
                 and self.remaining < self.reserve
+                and not self._waited_for_reset()
             ):
                 self.stopped = (
                     f"{self.remaining} GraphQL points left, under the --reserve-points "
@@ -531,16 +553,37 @@ class Api:
             if self.stopped is not None:
                 raise BudgetStop(self.stopped)
 
+    def _waited_for_reset(self) -> bool:
+        """Sleep out the bucket's reset, under the lock, if ``max_wait`` still holds it.
+
+        The bucket is not assumed full afterwards: the next reply says what is left.
+        """
+        if self.reset is None:
+            return False
+        wait = max((self.reset - self.now()).total_seconds(), 0.0) + RESET_MARGIN_SECONDS
+        if self.waited + wait > self.max_wait:
+            return False
+        self.waited += wait
+        self.waited_out = self.reset
+        self._sleep(wait)
+        self.remaining = None
+        return True
+
     def _read_budget(self, rate: Any) -> None:
         if not isinstance(rate, dict):
             return
         cost, remaining, reset_at = rate.get("cost"), rate.get("remaining"), rate.get("resetAt")
+        reset = reset_time(reset_at)
         with self._lock:
             self.graphql_points += cost if isinstance(cost, int) else 0
+            if reset is not None and self.waited_out is not None and reset <= self.waited_out:
+                # Sent before the reset the census waited out: what it left is stale.
+                return
             if isinstance(remaining, int) and not isinstance(remaining, bool):
                 self.remaining = remaining
             if isinstance(reset_at, str):
                 self.reset_at = evidence_text(reset_at)
+                self.reset = reset or self.reset
 
     def check_budget(self) -> None:
         """Read the bucket (one point) and stop here if it is already under the reserve."""
@@ -1262,6 +1305,13 @@ def build_parser() -> argparse.ArgumentParser:
         "about half a day of runs; a full day is about 2,800)",
     )
     parser.add_argument(
+        "--wait-for-reset-seconds",
+        type=int,
+        default=0,
+        help="under the reserve, wait for the bucket's reset when it comes within what is "
+        "left of this many seconds, in all, in place of stopping (default 0: never wait)",
+    )
+    parser.add_argument(
         "--gh-timeout-seconds",
         type=_positive,
         default=GH_TIMEOUT_SECONDS,
@@ -1286,6 +1336,7 @@ def main(
     elif args.last_days is not None or args.since is None or args.until is None:
         parser.error("give --since and --until, or --last-days alone")
     api.reserve, api.max_points = args.reserve_points, args.max_points
+    api.max_wait = args.wait_for_reset_seconds
     began = clock()
     try:
         if _REPO.fullmatch(args.repo) is None:
@@ -1304,6 +1355,8 @@ def main(
     print(f"GraphQL calls: {api.graphql_calls} ({api.graphql_points} points)")
     if api.remaining is not None:
         print(f"GraphQL points left: {api.remaining} (the bucket resets at {api.reset_at})")
+    if api.waited:
+        print(f"Reset wait: {api.waited:.0f}s")
     print(f"REST calls: {api.rest_calls}")
     print(f"Run time: {clock() - began:.1f}s")
     return status

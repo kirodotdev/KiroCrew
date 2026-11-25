@@ -255,6 +255,23 @@ Use `kirocrew config get`, `kirocrew config set <key> <value>`, and
 [troubleshooting guide](src/kiro_crew/docs/troubleshooting.md) for log sources,
 levels, diagnostics bundles, and recovery steps.
 
+### Stopping or removing Kiro Crew
+
+```bash
+kirocrew stop                # stop a running Gateway
+kirocrew service uninstall   # remove the service
+```
+
+A service installed with `kirocrew service install` starts again at the next
+boot or login after `kirocrew stop`, until `kirocrew service uninstall` removes
+it. On Linux the service is a system unit, so both commands ask for sudo there.
+The desktop app runs its own Gateway: quit the app (Quit in its tray icon menu,
+or Cmd+Q / Ctrl+Q) to stop it, because closing its window keeps it running. A
+Docker install stops with `docker stop kirocrew`. To remove the program, follow
+[Uninstalling](docs/guides/install.md#uninstalling) for your install method;
+your data stays in place until you follow
+[Removing user data](docs/guides/install.md#removing-user-data).
+
 ## Anonymous usage telemetry
 
 Kiro Crew sends **one anonymous heartbeat per day** so maintainers can see how
@@ -466,8 +483,6 @@ make this tool possible:
 <a href="https://github.com/aswindjs" title="Aswin Damodar"><img src="https://github.com/aswindjs.png?size=64" width="64" height="64" alt="Aswin Damodar" /></a>
 <a href="https://github.com/ataernam-coder" title="ataernam-coder"><img src="https://github.com/ataernam-coder.png?size=64" width="64" height="64" alt="ataernam-coder" /></a>
 <a href="https://github.com/atomsbaza" title="PISIT KOOLPLUKPOL"><img src="https://github.com/atomsbaza.png?size=64" width="64" height="64" alt="PISIT KOOLPLUKPOL" /></a>
-<a href="https://github.com/Autofix" title="Autofix"><img src="https://github.com/Autofix.png?size=64" width="64" height="64" alt="Autofix" /></a>
-<a href="https://github.com/autopipeline" title="autopipeline"><img src="https://github.com/autopipeline.png?size=64" width="64" height="64" alt="autopipeline" /></a>
 <a href="https://github.com/av-writes-code" title="av-writes-code"><img src="https://github.com/av-writes-code.png?size=64" width="64" height="64" alt="av-writes-code" /></a>
 <a href="https://github.com/avgvi" title="August Vi"><img src="https://github.com/avgvi.png?size=64" width="64" height="64" alt="August Vi" /></a>
 <a href="https://github.com/avmikhli1" title="avmikhli1"><img src="https://github.com/avmikhli1.png?size=64" width="64" height="64" alt="avmikhli1" /></a>
@@ -556,7 +571,6 @@ make this tool possible:
 <a href="https://github.com/Ckarthik18" title="Ckarthik18"><img src="https://github.com/Ckarthik18.png?size=64" width="64" height="64" alt="Ckarthik18" /></a>
 <a href="https://github.com/clareliguori" title="Clare Liguori"><img src="https://github.com/clareliguori.png?size=64" width="64" height="64" alt="Clare Liguori" /></a>
 <a href="https://github.com/clarezoe" title="clarezoe"><img src="https://github.com/clarezoe.png?size=64" width="64" height="64" alt="clarezoe" /></a>
-<a href="https://github.com/claude" title="Claude"><img src="https://github.com/claude.png?size=64" width="64" height="64" alt="Claude" /></a>
 <a href="https://github.com/Clearedkinkajou" title="Jake Bédard"><img src="https://github.com/Clearedkinkajou.png?size=64" width="64" height="64" alt="Jake Bédard" /></a>
 <a href="https://github.com/coffeencoke" title="Matt Simpson"><img src="https://github.com/coffeencoke.png?size=64" width="64" height="64" alt="Matt Simpson" /></a>
 <a href="https://github.com/cohilla" title="Cody Hill"><img src="https://github.com/cohilla.png?size=64" width="64" height="64" alt="Cody Hill" /></a>
@@ -567,7 +581,6 @@ make this tool possible:
 <a href="https://github.com/ConstantineWang" title="Jiacheng Wang"><img src="https://github.com/ConstantineWang.png?size=64" width="64" height="64" alt="Jiacheng Wang" /></a>
 <a href="https://github.com/constevalsimon" title="constevalsimon"><img src="https://github.com/constevalsimon.png?size=64" width="64" height="64" alt="constevalsimon" /></a>
 <a href="https://github.com/coozgan" title="Joshyfruit"><img src="https://github.com/coozgan.png?size=64" width="64" height="64" alt="Joshyfruit" /></a>
-<a href="https://github.com/Copilot" title="{&quot;message&quot;:&quot;Not Found&quot;,&quot;documentation_url&quot;:&quot;https://docs.github.com/rest&quot;,&quot;status&quot;:&quot;404&quot;}Copilot"><img src="https://github.com/Copilot.png?size=64" width="64" height="64" alt="{&quot;message&quot;:&quot;Not Found&quot;,&quot;documentation_url&quot;:&quot;https://docs.github.com/rest&quot;,&quot;status&quot;:&quot;404&quot;}Copilot" /></a>
 <a href="https://github.com/cplieger" title="Christopher Plieger"><img src="https://github.com/cplieger.png?size=64" width="64" height="64" alt="Christopher Plieger" /></a>
 <a href="https://github.com/craigdneo" title="Craig Dahlinger"><img src="https://github.com/craigdneo.png?size=64" width="64" height="64" alt="Craig Dahlinger" /></a>
 <a href="https://github.com/cremich" title="Christian Bonzelet"><img src="https://github.com/cremich.png?size=64" width="64" height="64" alt="Christian Bonzelet" /></a>
@@ -578,7 +591,6 @@ make this tool possible:
 <a href="https://github.com/cschnidr" title="cschnidr"><img src="https://github.com/cschnidr.png?size=64" width="64" height="64" alt="cschnidr" /></a>
 <a href="https://github.com/ctodd" title="Chris Miller"><img src="https://github.com/ctodd.png?size=64" width="64" height="64" alt="Chris Miller" /></a>
 <a href="https://github.com/ctyndall" title="ctyndall"><img src="https://github.com/ctyndall.png?size=64" width="64" height="64" alt="ctyndall" /></a>
-<a href="https://github.com/cursoragent" title="Cursor Agent"><img src="https://github.com/cursoragent.png?size=64" width="64" height="64" alt="Cursor Agent" /></a>
 <a href="https://github.com/cykhoo0108" title="CY Khoo"><img src="https://github.com/cykhoo0108.png?size=64" width="64" height="64" alt="CY Khoo" /></a>
 <a href="https://github.com/d-fay" title="Dustin Fay"><img src="https://github.com/d-fay.png?size=64" width="64" height="64" alt="Dustin Fay" /></a>
 <a href="https://github.com/dagayev1" title="Dagadansbot"><img src="https://github.com/dagayev1.png?size=64" width="64" height="64" alt="Dagadansbot" /></a>
@@ -871,9 +883,6 @@ make this tool possible:
 <a href="https://github.com/kidbrax" title="Braxton Beyer"><img src="https://github.com/kidbrax.png?size=64" width="64" height="64" alt="Braxton Beyer" /></a>
 <a href="https://github.com/kimlucky7" title="Kim @AdsAgent"><img src="https://github.com/kimlucky7.png?size=64" width="64" height="64" alt="Kim @AdsAgent" /></a>
 <a href="https://github.com/kirankumar15" title="kirankumar"><img src="https://github.com/kirankumar15.png?size=64" width="64" height="64" alt="kirankumar" /></a>
-<a href="https://github.com/kiro" title="Kiril Minkov"><img src="https://github.com/kiro.png?size=64" width="64" height="64" alt="Kiril Minkov" /></a>
-<a href="https://github.com/KiroCrew" title="KiroCrew"><img src="https://github.com/KiroCrew.png?size=64" width="64" height="64" alt="KiroCrew" /></a>
-<a href="https://github.com/KiroCrewCaptain" title="KiroCrewCaptain"><img src="https://github.com/KiroCrewCaptain.png?size=64" width="64" height="64" alt="KiroCrewCaptain" /></a>
 <a href="https://github.com/kishoreb95" title="Kishore Baskar"><img src="https://github.com/kishoreb95.png?size=64" width="64" height="64" alt="Kishore Baskar" /></a>
 <a href="https://github.com/Kive1ru" title="Jiahao Guo"><img src="https://github.com/Kive1ru.png?size=64" width="64" height="64" alt="Jiahao Guo" /></a>
 <a href="https://github.com/kkautenburger" title="Kasey Kautenburger"><img src="https://github.com/kkautenburger.png?size=64" width="64" height="64" alt="Kasey Kautenburger" /></a>
@@ -1361,7 +1370,6 @@ make this tool possible:
 <a href="https://github.com/wang-shihao" title="Arthur, Shihao Wang"><img src="https://github.com/wang-shihao.png?size=64" width="64" height="64" alt="Arthur, Shihao Wang" /></a>
 <a href="https://github.com/wannaFlyKa" title="Yao"><img src="https://github.com/wannaFlyKa.png?size=64" width="64" height="64" alt="Yao" /></a>
 <a href="https://github.com/wbowditch" title="Will Bowditch"><img src="https://github.com/wbowditch.png?size=64" width="64" height="64" alt="Will Bowditch" /></a>
-<a href="https://github.com/web-flow" title="GitHub Web Flow"><img src="https://github.com/web-flow.png?size=64" width="64" height="64" alt="GitHub Web Flow" /></a>
 <a href="https://github.com/weihe08" title="weihe08"><img src="https://github.com/weihe08.png?size=64" width="64" height="64" alt="weihe08" /></a>
 <a href="https://github.com/weijian722" title="WEIJIAN WANG"><img src="https://github.com/weijian722.png?size=64" width="64" height="64" alt="WEIJIAN WANG" /></a>
 <a href="https://github.com/weinansi" title="weinansi"><img src="https://github.com/weinansi.png?size=64" width="64" height="64" alt="weinansi" /></a>

@@ -305,18 +305,22 @@ export function ContextUsageControl({ contextPct, contextUnknown = false, contex
     : contextPct
   const remaining = win ? Math.max(win - used, 0) : 0
   const approx = contextUsedTokens == null
-  const pctColor = contextUnknown ? 'var(--muted)' : contextColor(effectivePct)
+  // A window of 0 is one no source knows (the model has not reported yet): a
+  // figure that would be derived from it is no reading, never a guess.
+  const pctUnknown = contextUnknown || (!!derivePctFromUsed && contextUsedTokens != null && !win)
+  const usedUnknown = contextUnknown || (approx && !win)
+  const pctColor = pctUnknown ? 'var(--muted)' : contextColor(effectivePct)
   // Shown in place of every measured figure while there is no reading.
   const unknownMark = '—'
   const showAnyReadout = !!(showContextPct || showContextTokens)
   // Graceful degrade: on a narrow shelf, collapse to the percentage
   // alone (or tokens, if that's the only segment enabled) so the
   // readout never crowds out the agent/model controls.
-  const readout = contextUnknown
+  const readout = pctUnknown
     ? unknownMark
-    : shelfCompact
-    ? composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
-    : composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
+    : (shelfCompact
+      ? composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
+      : composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })) || unknownMark
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
   // The button is the Radix trigger, so Radix returns focus to it when the card
   // closes (except after a press outside), and a press on it is never an
@@ -337,11 +341,11 @@ export function ContextUsageControl({ contextPct, contextUnknown = false, contex
       // The press already toggled the card; cancelling the click keeps Radix's
       // own click toggle from flipping it back.
       onClick={e => { press.onClick(e); e.preventDefault() }}
-      title={contextTip(effectivePct, contextUnknown)}
+      title={contextTip(effectivePct, pctUnknown)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}
     >
-      <ContextBar pct={effectivePct} width={40} height={3} unknown={contextUnknown} />
+      <ContextBar pct={effectivePct} width={40} height={3} unknown={pctUnknown} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
     </button>
     </PopoverTrigger>
@@ -355,12 +359,12 @@ export function ContextUsageControl({ contextPct, contextUnknown = false, contex
       >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
-                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{contextUnknown ? unknownMark : fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
+                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{pctUnknown ? unknownMark : fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
                 </div>
                 <div className="flex flex-col gap-1 text-[11px] font-mono">
-                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{contextUnknown ? unknownMark : `${approx ? '~' : ''}${fmtTokens(used)}`}</span></div>
-                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{contextUnknown ? unknownMark : `${approx ? '~' : ''}${fmtTokens(remaining)}`}</span></div>
-                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{usedUnknown ? unknownMark : `${approx ? '~' : ''}${fmtTokens(used)}`}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{contextUnknown || !win ? unknownMark : `${approx ? '~' : ''}${fmtTokens(remaining)}`}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{win ? fmtTokens(win) : unknownMark}</span></div>
                 </div>
                 {cacheSlot && <CacheHitRate slot={cacheSlot} />}
                 {modelName && (

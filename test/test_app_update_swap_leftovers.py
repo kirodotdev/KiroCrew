@@ -37,16 +37,16 @@ PID, OTHER_PID = unallocatable_pids(2)
 _KILLED_UPDATE = """
 import os, sys
 from pathlib import Path
-from kiro_crew.apps import manager, manager_install, manager_records
+from kiro_crew.apps import manager, manager_records
 
 source, gap = Path(sys.argv[1]), sys.argv[2]
 if gap == "retired":
-    real = manager_install._remove_any_shape
-    def remove(path):
-        if "-update-old-" in Path(path).name:
+    real = manager._remove_tree
+    def remove(pin):
+        if "-update-old-" in pin.path.name:
             os._exit(0)
-        return real(path)
-    manager_install._remove_any_shape = remove
+        return real(pin)
+    manager._remove_tree = remove
 else:
     manager_records._UpdateMarker.__exit__ = lambda *_a: os._exit(0)
 manager.update_app(source, expected_name="test-app")

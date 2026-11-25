@@ -1,8 +1,9 @@
 """Host memory readings and the sub-agent count ceiling they size.
 
 ``/proc/meminfo`` and the native macOS and Windows readers, the cgroup v1/v2 headroom of
-the container and of the agents slice, process-subtree sampling for the reaper, and the
-auto or explicit ceiling ``resolve_max_subagents`` derives from them.
+the container and of the agents slice, whether the container's memory cgroup is out of
+view, process-subtree sampling for the reaper, and the auto or explicit ceiling
+``resolve_max_subagents`` derives from them.
 
 This module also works on its own, before ``kiro_crew.subagent`` is loaded: it imports for
 real every name its functions read, from the module that defines each. A stdio MCP server
@@ -96,8 +97,10 @@ def check_memory_available(
 ) -> tuple[bool, float]:
     """Check if enough memory is available to spawn a subagent.
 
-    Reads /proc/meminfo MemAvailable with a plain ``open`` and compares
-    against *min_gb*. The read deliberately does NOT go through
+    Reads /proc/meminfo MemAvailable with a plain ``open`` and compares the
+    figure it returns (rounded to two decimals) against *min_gb*, so a caller
+    that compares that figure against the same bar gets the verdict's answer.
+    The read deliberately does NOT go through
     ``hooks.safe_read_file``: that gate polices agent-supplied paths, and
     this path is a fixed module constant that no caller overrides in
     production, so the gate adds no protection here — while a gate refusal
@@ -130,7 +133,7 @@ def check_memory_available(
             avail = _host_available_gb()
         else:
             avail = -1.0
-        return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
+        return (True, -1.0) if avail < 0 else (round(avail, 2) >= min_gb, round(avail, 2))
     avail = -1.0
     try:
         with open(path, encoding="utf-8") as handle:
@@ -150,7 +153,7 @@ def check_memory_available(
         )
         if cgroup_gb >= 0:
             avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
-    return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
+    return (True, -1.0) if avail < 0 else (round(avail, 2) >= min_gb, round(avail, 2))
 
 
 # RSS, CPU and both counts come from one shared walker,
@@ -603,6 +606,108 @@ def _container_cgroup_reading(*, measured_only: bool = False) -> tuple[int | Non
                 break
             directory = directory.parent
     return tightest, available
+
+
+#: Upper bound on one small cgroup, PSI or kernel file read (``cgroup.controllers``,
+#: ``cgroup.events``, ``/proc/cgroups``, ``/proc/cmdline``, ``memory.pressure``); each
+#: is a few lines.
+_CGROUP_FLAGS_READ_CAP = 4096
+
+
+def _read_cgroup_text(path: str) -> str | None:
+    """The text of a small cgroup or PSI file, or None when unreadable.
+
+    Read through ``kiro_crew.subagent``'s ``open`` for the same reason as
+    :func:`_read_int_file`.
+    """
+    try:
+        with open(path, encoding="ascii") as fh:
+            return fh.read(_CGROUP_FLAGS_READ_CAP)
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _read_cgroup_flags(path: str) -> list[str] | None:
+    """The whitespace-separated words of a small cgroup file, or None when unreadable."""
+    text = _read_cgroup_text(path)
+    return None if text is None else text.split()
+
+
+def _memory_controller_off() -> bool:
+    """Whether the kernel was booted with the memory controller off, on positive evidence only.
+
+    ``cgroup_disable=`` naming ``memory`` on the kernel command line, or a ``memory`` row
+    in ``/proc/cgroups`` whose ``enabled`` is 0. No cgroup anywhere then carries a memory
+    limit, so none can be out of view. A missing row is no evidence: from Linux 6.12,
+    ``/proc/cgroups`` lists ``memory`` only when the kernel also builds the cgroup v1
+    memory controller (``CONFIG_MEMCG_V1``, off by default).
+    """
+    for word in (_read_cgroup_text("/proc/cmdline") or "").split():
+        name, _, value = word.partition("=")
+        if name == "cgroup_disable" and "memory" in value.split(","):
+            return True
+    for line in (_read_cgroup_text("/proc/cgroups") or "").splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[0] == "memory":
+            return fields[3] == "0"
+    return False
+
+
+def out_of_view_memory_pressure_file() -> str | None:
+    """The topmost visible cgroup's ``memory.pressure`` while the memory cgroup is out of view.
+
+    Out of view, on Linux cgroup v2 and on positive evidence only: the topmost cgroup
+    this process can see (its cgroup2 mount) is a child cgroup, which ``cgroup.events``
+    marks (the real root has none), its ``cgroup.controllers`` does not list
+    ``memory``, and the kernel was not booted with the memory controller off
+    (:func:`_memory_controller_off`). The kernel then charges the process's memory to
+    the nearest ancestor that has the controller, above the mount, so
+    :func:`_container_cgroup_reading` finds no limit and the free figure is the host's
+    ``MemAvailable`` while that ancestor's limit can already be forcing reclaim. That
+    cgroup's own pressure file still counts the stalls of every task in view, and of no
+    task outside it. Of several cgroup2 mounts in view, the topmost is the one farthest
+    above this process's cgroup.
+
+    None when any memory accounting is in view (a cgroup v1 memory hierarchy, which
+    holds the controller so the cgroup2 files say nothing about memory, or a cgroup2
+    mount at the real root or with the controller), when the kernel was booted with
+    the memory controller off, when a cgroup file in view is unreadable, and off Linux.
+    """
+    if not platform_compat.IS_LINUX:
+        return None
+    views = []
+    for leaf, mount, v2 in _cgroup_memory_roots():
+        if not v2:
+            return None
+        controllers = _read_cgroup_flags(str(mount / "cgroup.controllers"))
+        events = _read_cgroup_flags(str(mount / "cgroup.events"))
+        if controllers is None or events is None or "memory" in controllers:
+            return None
+        views.append((len(leaf.relative_to(mount).parts), str(mount / "memory.pressure")))
+    if not views or _memory_controller_off():
+        return None
+    return max(views)[1]
+
+
+def out_of_view_memory_stall_us() -> int | None:
+    """The topmost visible cgroup's total ``full`` memory stall while out of view.
+
+    The ``total=`` field, in microseconds, of the ``full`` line in
+    :func:`out_of_view_memory_pressure_file`: the time every task in that cgroup
+    stalled on memory at once, counted since the cgroup was made. A caller turns two
+    readings into the share of time stalled between them. None while the memory
+    cgroup is in view, and when the line is missing or malformed.
+    """
+    path = out_of_view_memory_pressure_file()
+    text = None if path is None else _read_cgroup_text(path)
+    for line in (text or "").splitlines():
+        if not line.startswith("full "):
+            continue
+        for field in line.split()[1:]:
+            name, _, value = field.partition("=")
+            if name == "total":
+                return int(value) if value.isdigit() else None
+    return None
 
 
 def _agents_slice_available_gb() -> float:

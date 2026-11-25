@@ -1,6 +1,6 @@
 # goose frame corpus
 
-Seven files, all live. Read `../README.md` first for what a fixture is and what the
+Eight files, all live. Read `../README.md` first for what a fixture is and what the
 corpus does and does not prove.
 
 | File | Frame classes it carries |
@@ -12,14 +12,17 @@ corpus does and does not prove.
 | `session-load-live.jsonl` | `current_mode_update`, the `session/load` result for a live id, and the `session/resume` rejection |
 | `compact-live.jsonl` | three ordinary turns with their `usage_update`, a `/compact` turn (`user_message_chunk`, the `Compaction complete` chunk, its `usage_update`, `end_turn`), and one ordinary turn after it |
 | `effort-live.jsonl` | the `thinking_effort` select on a thinking model (off through max) in `session/new`, the `config_option_update` and `session/set_config_option` result reading a write of `high` back, then a model switch narrowing the select to `off` alone, with a second write that still reads `off` |
-| `crew-oauth-bridge-args-live.jsonl` | goose acp 1.57.0 in `approve` mode: a stdio MCP `tool_call` and its `session/request_permission`, both carrying `rawInput` equal to the arguments the stub server's `tools/call` received; the evidence goose joins `ACP_BACKENDS_CREW_OAUTH_BRIDGE` on |
+| `crew-oauth-bridge-args-live.jsonl` | `approve` mode: a stdio MCP `tool_call` and its `session/request_permission`, both carrying `rawInput` equal to the arguments the stub server's `tools/call` received; the evidence goose joins `ACP_BACKENDS_CREW_OAUTH_BRIDGE` on |
 
 **Nothing here is synthesized.** This harness produced all seven required classes on
 its own wire, including the permission request, so there is no class written from a
 declared shape.
 
-Captured off `goose acp` 1.50.1 driven over stdio against a model served locally, so
-no provider credential was involved. `effort-live.jsonl` is captured off `goose acp` 1.54.0 the same way, against a local Ollama-compatible stub.
+Captured off `goose acp` 1.50.1, the release `test/real_adapters/goose.json` pins,
+driven over stdio against a model served locally, so no provider credential was
+involved. `test/test_real_adapter_fixture_pins.py` holds every file to that pin.
+goose 1.57.0 sends the same `rawInput` on both frames of
+`crew-oauth-bridge-args-live.jsonl`.
 
 ## What the permission capture establishes
 
@@ -141,7 +144,7 @@ markers — and refuses to finish if any survives. Re-record through that sweep 
 than editing a committed frame by hand: an edited frame is no longer evidence of what
 the wire carried, and the `_meta` header claims it is.
 
-These seven files carry none of those markers, which is a property worth stating because
+These eight files carry none of those markers, which is a property worth stating because
 it is not true of the corpus as a whole. A repository gate holding every fixture to it
 is a change to the SHARED corpus with its own revert path, so it lands separately from
 this harness.

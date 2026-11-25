@@ -1,7 +1,7 @@
 ---
 name: widgets
 description: Render rich HTML inline via `<mcwidget>` tags with theme-aware styling. Load when emitting an mcwidget so the iframe inherits the dashboard theme instead of clashing with light / dark / custom palettes.
-triggers: mcwidget, widget iframe, chart, table, visual, dashboard, render widget
+triggers: mcwidget, widget iframe, chart, visual, dashboard, render widget
 ---
 
 # Inline widgets (`<mcwidget>`)

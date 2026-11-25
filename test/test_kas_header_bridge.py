@@ -16,6 +16,7 @@ import http.client
 import io
 import json
 import os
+import queue
 import socket
 import socketserver
 import subprocess
@@ -31,7 +32,9 @@ from kiro_crew import kas_env_shim
 from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp._dispatch import build_session_new_params
 from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
-from kiro_crew.kas_http_bridge import Bridge
+from kiro_crew.kas_connection_bridge import ConnectionBridge
+from kiro_crew.kas_http_bridge import Bridge, _same_origin
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 CANARY = "Bearer zq7Xk-26232-canary"
 SESSION = "dashboard_chat-26232-1"
@@ -235,6 +238,85 @@ def remote():
         thread.join(10)
 
 
+class _LegacyRemote(BaseHTTPRequestHandler):
+    """An MCP server on the older two-endpoint ``sse`` transport that answers only
+    with the right header: a POST to ``/sse`` is refused 405, a GET there opens an
+    event stream naming its endpoint, and each POST there is answered on that stream.
+    """
+
+    seen: list[dict]
+    streams: dict[str, queue.Queue]
+    endpoint = "/messages?session={sid}"
+    unanswered: frozenset[str] = frozenset()
+
+    def log_message(self, *_a):  # quiet
+        pass
+
+    def _status(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _record(self, body) -> bool:
+        self.seen.append({"path": self.path, "headers": _lower(self.headers), "body": body})
+        if self.headers.get("Authorization") == CANARY:
+            return True
+        self._status(401)
+        return False
+
+    def do_GET(self):  # noqa: N802
+        if not self._record(None):
+            return
+        sid = str(len(self.streams) + 1)
+        answers: queue.Queue = queue.Queue()
+        self.streams[sid] = answers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(f"event: endpoint\ndata: {self.endpoint.format(sid=sid)}\n\n".encode())
+        self.wfile.flush()
+        try:
+            while (msg := answers.get(timeout=default_timeout())) is not None:
+                self.wfile.write(b"event: message\ndata: " + json.dumps(msg).encode() + b"\n\n")
+                self.wfile.flush()
+        except (queue.Empty, OSError):
+            pass
+
+    def do_POST(self):  # noqa: N802
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if not self._record(body):
+            return
+        path, _, query = self.path.partition("?")
+        answers = self.streams.get(query.removeprefix("session="))
+        if path != "/messages" or answers is None:
+            self._status(405 if path == "/sse" else 404)
+            return
+        self._status(202)
+        if "id" in body and body["method"] not in self.unanswered:
+            result = (
+                {"protocolVersion": "2024-11-05"}
+                if body["method"] == "initialize"
+                else {"text": "authorized"}
+            )
+            answers.put({"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+
+@pytest.fixture
+def legacy():
+    handler = type("Handler", (_LegacyRemote,), {"seen": [], "streams": {}})
+    server = _LoopbackServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield handler, f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        for answers in handler.streams.values():
+            answers.put(None)
+        server.shutdown()
+        server.server_close()
+        thread.join(10)
+
+
 def _project(spec: dict, session_key: str = SESSION) -> dict:
     return to_client_custom_agent("kirocrew", spec, "p", session_key=session_key)
 
@@ -279,12 +361,17 @@ class TestProjection:
         spec = _spec(mcpServers={"jira": _remote_spec("https://x.invalid/mcp", timeout=9000)})
         assert _project(spec)["mcpServers"]["jira"]["timeout"] == 9000
 
-    def test_an_sse_entry_keeps_the_withholding_projection(self, home):
-        spec = _spec(mcpServers={"old": _remote_spec("https://x.invalid/sse", type="sse")})
-        entry = _project(spec)
-        assert entry["mcpServers"]["old"]["url"] == "https://x.invalid/sse"
-        assert "headers" not in entry["mcpServers"]["old"]
-        assert not (home / "kas-mcp-launch").exists()
+    def test_an_sse_entry_reaches_its_server_with_the_header(self, home, legacy):
+        handler, base = legacy
+        entry = _project(_spec(mcpServers={"old": _remote_spec(base + "/sse", type="sse")}))
+        launched = entry["mcpServers"]["old"]
+        assert CANARY not in _wire_text(entry), "no header value crosses the wire"
+        assert "url" not in launched and kas_env_shim.SHIM_MODULE in launched["args"]
+        result = _run_entry(launched)
+        assert result.returncode == 0, result.stderr
+        assert '"authorized"' in result.stdout, "the tool call was answered on the stream"
+        assert CANARY not in result.stdout + result.stderr
+        assert all(r["headers"].get("authorization") == CANARY for r in handler.seen)
 
     def test_no_session_key_keeps_the_withholding_projection(self, home):
         entry = _project(_spec(mcpServers={"jira": _remote_spec("https://x.invalid/mcp")}), "")
@@ -317,6 +404,12 @@ def _lines(out: io.BytesIO) -> list[dict]:
 
 def _msg(**fields) -> bytes:
     return json.dumps({"jsonrpc": "2.0", **fields}).encode() + b"\n"
+
+
+def _arrived(out: io.BytesIO, count: int) -> list[dict]:
+    """The first *count* messages, once the stream's reader thread wrote that many."""
+    wait_until(lambda: len(out.getvalue().splitlines()) >= count, describe=out.getvalue)
+    return _lines(out)[:count]
 
 
 class TestBridge:
@@ -497,6 +590,98 @@ class TestBridge:
         assert sorted(sent) == sorted(
             ["initialize", "notifications/initialized", "tools/call", "response", "tools/list"]
         )
+
+
+class TestLegacySse:
+    """A server that refuses ``initialize`` with a 4xx speaks the older transport."""
+
+    def test_a_refused_initialize_moves_to_the_event_stream(self, legacy):
+        handler, base = legacy
+        bridge, out, err = _bridge(base + "/sse")
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        assert _arrived(out, 1)[0]["result"] == {"protocolVersion": "2024-11-05"}
+        bridge.send(_msg(method="notifications/initialized"))
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+        assert _arrived(out, 2)[1] == {"jsonrpc": "2.0", "id": 2, "result": {"text": "authorized"}}
+        assert [r["path"] for r in handler.seen] == ["/sse", "/sse"] + ["/messages?session=1"] * 3
+        assert all(r["headers"].get("authorization") == CANARY for r in handler.seen)
+        assert err.getvalue() == "", "the refused POST is not an error"
+
+    def test_a_refused_header_is_reported_not_retried(self, legacy):
+        handler, base = legacy
+        bridge, out, _err = _bridge(base + "/sse", {"Authorization": "Bearer wrong-value"})
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        assert "HTTP 401 (check its headers)" in _lines(out)[0]["error"]["message"]
+        assert len(handler.seen) == 1, "no GET"
+
+    def test_an_endpoint_on_another_site_gets_no_message(self, legacy):
+        handler, base = legacy
+        handler.endpoint = "https://elsewhere.invalid/messages?session={sid}"
+        bridge, out, _err = _bridge(base + "/sse")
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        assert "another site" in _lines(out)[0]["error"]["message"]
+        assert [r["path"] for r in handler.seen] == ["/sse", "/sse"]
+
+    def test_a_closed_stream_is_reopened_with_the_engines_initialize(self, legacy):
+        handler, base = legacy
+        handler.unanswered = frozenset({"tools/list"})
+        bridge, out, _err = _bridge(base + "/sse")
+        bridge.send(_msg(id=1, method="initialize", params={"clientInfo": {"name": "engine"}}))
+        _arrived(out, 1)
+        bridge.send(_msg(method="notifications/initialized"))
+        bridge.send(_msg(id=2, method="tools/list"))
+        handler.streams["1"].put(None)  # the server restarted
+        assert "its event stream closed" in _arrived(out, 2)[1]["error"]["message"]
+        bridge.send(_msg(id=3, method="tools/call", params={}))
+        assert _arrived(out, 3)[2] == {"jsonrpc": "2.0", "id": 3, "result": {"text": "authorized"}}
+        again = [r["body"] for r in handler.seen if r["path"] == "/messages?session=2"]
+        assert [b["method"] for b in again] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ]
+        assert again[0]["params"] == {"clientInfo": {"name": "engine"}}
+        assert len(out.getvalue().splitlines()) == 3, "the repeated answer is the bridge's own"
+
+    def test_the_connection_bridge_relays_the_refusal(self, legacy):
+        # Its far end is Crew's own proxy, which speaks streamable HTTP only.
+        handler, base = legacy
+        out = io.BytesIO()
+        bridge = ConnectionBridge(
+            base + "/sse", {"Authorization": CANARY}, server="c", out=out, err=io.StringIO()
+        )
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        assert "HTTP 405" in _lines(out)[0]["error"]["message"]
+        assert len(handler.seen) == 1, "no GET"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "stream"),
+    [
+        ("https://example.invalid:443/messages", "https://example.invalid/sse"),
+        ("https://example.invalid/messages", "https://example.invalid:443/sse"),
+        ("http://example.invalid:80/messages", "http://example.invalid/sse"),
+        ("http://example.invalid/messages", "http://example.invalid:80/sse"),
+        ("HTTPS://Example.Invalid/messages", "https://example.invalid:443/sse"),
+    ],
+)
+def test_a_default_port_spelled_out_is_the_same_origin(endpoint, stream):
+    assert _same_origin(endpoint, stream)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "stream"),
+    [
+        ("https://example.invalid:8443/messages", "https://example.invalid/sse"),
+        ("https://example.invalid:80/messages", "https://example.invalid/sse"),
+        ("http://example.invalid/messages", "https://example.invalid/sse"),
+        ("http://example.invalid:443/messages", "https://example.invalid:443/sse"),
+        ("https://elsewhere.invalid/messages", "https://example.invalid/sse"),
+        ("https://example.invalid:99999/messages", "https://example.invalid/sse"),
+    ],
+)
+def test_another_port_scheme_or_host_is_another_origin(endpoint, stream):
+    assert not _same_origin(endpoint, stream)
 
 
 def test_the_launcher_runs_the_bridge_for_a_remote_snapshot(home, monkeypatch):

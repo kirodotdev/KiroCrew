@@ -61,13 +61,15 @@ def test_a_visible_config_ssh_accepts_is_named(tmp_path: Path) -> None:
     assert _config_arg(command) == str(ssh_dir / "config")
 
 
-def test_every_other_option_is_kept(tmp_path: Path) -> None:
-    ssh_dir = _ssh_dir_with_config(tmp_path)
-    (ssh_dir / "id_ed25519").write_text("key", encoding="utf-8")
+def test_a_named_config_picks_the_keys(tmp_path: Path) -> None:
+    """ssh offers a command-line ``IdentityFile`` before the config's, so naming one
+    would put a default key ahead of the key the config chose for the host."""
+    ssh_dir = _ssh_dir_with_config(tmp_path, "Host git.example.com\n    IdentityFile ~/.ssh/work\n")
+    for name in ("id_rsa", "id_ed25519", "work"):
+        (ssh_dir / name).write_text("key", encoding="utf-8")
     command = _git_ssh_command(ssh_dir, strict_host_key_opt=" -o StrictHostKeyChecking=accept-new")
     assert command == (
-        "ssh -F %s -o IdentityFile=~/.ssh/id_ed25519 "
-        "-o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=accept-new"
+        "ssh -F %s -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=accept-new"
         % (ssh_dir / "config")
     )
 

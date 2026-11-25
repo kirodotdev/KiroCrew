@@ -11,8 +11,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``,
 ``_routed_requests``, ``_stdin_lock``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
-``_native_skill_projection``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_harness_pin``,
+``_launch_agent``, ``_native_skill_projection``,
 ``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``,
 ``recording_allowed``.
 """
@@ -685,7 +685,10 @@ async def _send_and_await(
         ):
             raise
         hint = await asyncio.to_thread(
-            kiro_sandbox_conflict.session_start_hint, str(exc), self._acp_backend
+            kiro_sandbox_conflict.session_start_hint,
+            str(exc),
+            self._acp_backend,
+            self._harness_pin,
         )
         if not hint:
             raise

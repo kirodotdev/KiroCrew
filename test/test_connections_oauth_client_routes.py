@@ -661,6 +661,41 @@ async def test_mint_refuses_an_unconfigured_preregistered_provider(home):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("saved", "missing"),
+    [
+        ("client_id", "(missing: Client secret)"),
+        ("secret", "(missing: Client ID)"),
+        ("nothing", "(missing: Client ID and Client secret)"),
+    ],
+)
+async def test_mint_refusal_names_the_missing_half_of_the_oauth_app(home, saved, missing):
+    """A Client ID saved without its secret, or a secret without its id, is refused
+    like no app at all, so the refusal names the field still empty."""
+    if saved == "client_id":
+        (home / "config.json").write_text(
+            json.dumps({"connections": {"oauth_clients": {"github": {"client_id": "Iv1.cfg"}}}}),
+            encoding="utf-8",
+        )
+    if saved == "secret":
+        SecretVault(home).set_sync(GITHUB_VAULT_NAME, SECRET)
+    app = web.Application()
+    app.router.add_post("/api/connections/mint", connections.api_connections_mint)
+    as_owner(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        resp = await client.post("/api/connections/mint", json={"slug": "github"})
+        assert resp.status == 409
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert body["code"] == "client_not_configured"
+    assert body["error"].endswith(missing)
+
+
+@pytest.mark.asyncio
 async def test_mint_refuses_slack_while_crew_is_not_doing_the_sign_in(home, monkeypatch):
     """Slack's client never leaves the vault, so no kiro-cli Connect can present it.
 

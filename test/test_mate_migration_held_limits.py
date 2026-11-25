@@ -67,6 +67,26 @@ def test_a_restriction_the_worker_cannot_carry_moves_held_and_its_worker_starts(
     assert [r["capability"] for r in ledger[HELD_KEY]["qwe"]["rules"]] == ["shell"]
 
 
+def test_a_write_fallback_deny_moves_into_the_file_and_nothing_is_held(layout, persisted):
+    """The worker applies the write tool's ``fallbackAction: "deny"`` exactly, so it
+    is written like any other limit it keeps, not held for a person."""
+    from kiro_crew.mate_held_rules import HELD_KEY
+
+    user, mates = layout
+    write = {"write": {"allowedPaths": ["team/**"], "fallbackAction": "deny"}}
+    _write(user, "scribe", _template("scribe", toolsSettings=write))
+    cfg = _cfg(scr=KiroCrewAgentConfig(member_id="scr", kiro_agent="scribe"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["scr"]
+    assert _file(mates, "scr").get("toolsSettings") == write
+    ledger_path = mates.parent / "migrated.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {}
+    assert "scr" not in ledger.get(HELD_KEY, {})
+
+
 def test_a_restriction_on_a_backend_that_cannot_apply_it_is_held_not_written(
     layout, persisted, monkeypatch
 ):

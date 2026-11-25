@@ -47,7 +47,7 @@ reads the name. New work goes to the owner of its responsibility:
 | `src/kiro_crew/session_pid_provider_kill.py` | the synchronous teardown of a leaked provider (`_sync_kill_provider`: the gate, the commit, the identity-pinned group and descendant signals), the orphaned spawn-group signalling (`signal_orphaned_spawn_group`, `_signal_orphaned_runtime_group`), and `_tracked_child_has_runtime_identity`, the argv check that the vouched members of the ACP runtime's group signalling must pass, and so must a tracked `kiro_pids.txt` child reparented to a `systemd` subreaper in the facade's `_cleanup_orphaned_mcp_servers` |
 | `src/kiro_crew/session_pid_orphan_kill.py` | the unreachable-gatewayd, browser-daemon and MCP-subtree orphan kills, and their security event log records |
 | `src/kiro_crew/session_pid_mappings.py` | pruning stale `session_pid_<pid>` and `session_token_*` identity mappings |
-| `src/kiro_crew/session_pid_rss.py` | a session tree's resident memory, and the leftovers of a runtime's session: processes in it that its live tree does not reach (`find_session_leftovers`), ended only through `platform_compat.terminate_pids_pinned` (`end_session_leftovers`). They are not runtimes, so no lease or tenancy covers them and the runtime gate is not asked; `session_cleanup_leftovers` decides when (after a recycle once the root is gone, or mid-turn behind `session.watchdog_end_leftovers_mid_turn`) |
+| `src/kiro_crew/session_pid_rss.py` | a session tree's resident memory, and the leftovers of a runtime's session: processes in it that its live tree does not reach (`find_session_leftovers`), ended only through `platform_compat.terminate_pids_pinned` (`end_session_leftovers`). They are not runtimes, so no lease or tenancy covers them and the runtime gate is not asked; `session_cleanup_leftovers` decides when (after a recycle once the root is gone, or mid-turn behind `session.watchdog_end_leftovers_mid_turn`), and so do `AcpRuntime.kill` and `AcpClient.shutdown` (`runtime_tree_kill.kill_ending_session_leftovers`: read before the kill, ended once the root is gone) |
 | `src/kiro_crew/session_memory_guard.py` | the host memory guard's pass at critical memory (`rfc-host-memory-guard.md` §4): which tool tree under a session runtime it may stop (`scan`, `pick`: the largest topmost test-runner tree, else the largest shell-rooted tree, never a runtime, pool spare, companion, in-flight launch, managed harness, MCP root or the gateway), and the stop itself (`stop`), only through `platform_compat.terminate_pids_pinned`, so Linux only. It never ends a runtime, so no lease or tenancy is asked |
 
 ### What the model is made of
@@ -466,7 +466,10 @@ Tenants PULL the record rather than being pushed it. A tenant learns of the deat
 the way it already does — its poisoned session queue raises into whatever turn it
 had — and reads the record while handling it. A tenant with no turn in flight has
 nothing to recover and re-acquires on its next turn, which drops a dead runtime on
-the way past. There is deliberately no observer registry: a notification channel
+the way past. A sub-agent run parked on a wait cannot: nothing restarts an `AcpRuntime`
+under it, so the sub-agent reaper asks that run's own handle each sweep and ends the run
+([subagent.md](subagent.md), *Transient Retry (mid-stream 5xx) and dependency waits*).
+There is deliberately no observer registry: a notification channel
 with no subscriber is a mechanism whose first real consumer would have to redesign
 it.
 
@@ -569,7 +572,7 @@ backend another process on this data home spawned are not in it.
 
 ### Leaked untracked runtimes: read every pass, reclaimed only on a user confirm
 
-`session_pid`'s report-only arm finds a managed runtime reparented to init with our marker and in neither pid file. Every pass copies its current hits into the reading as `leaked_untracked`, `leaked_rss_bytes` (each root counted with its descendants) and `leaked`, Linux only. No scheduled arm acts on them.
+`session_pid`'s report-only arm finds a managed runtime reparented to init with our marker and in neither pid file. For a `claude` argv0 it also needs a runtime flag in argv (`-p`, `--print`, `--output-format` or `--input-format`, `_CLAUDE_RUNTIME_FLAGS`), so a helper the Claude CLI starts for itself, such as `claude __otel-server`, is not reported, counted or offered for reclaim. Every pass copies its current hits into the reading as `leaked_untracked`, `leaked_rss_bytes` (each root counted with its descendants) and `leaked`, Linux only. No scheduled arm acts on them.
 
 `RuntimeReconciler.reclaim_untracked` is the one path that may, and its only caller is the owner-only `POST /api/system/leaked-runtimes/reclaim` with `{"confirm": true}`. A candidate must have been reported by a sweep and be detected again on a complete tracked snapshot. Each condition can only withhold: tracked, protected, leased or claimed; not a managed harness; no spawn marker; younger than the age floor; a `KIROCREW_SPAWN_HOME` that is absent or names another data home (the marker is shared by every install on this uid, and a sibling's runtime is tracked only in its own pid files); a live session leader or group leader other than itself (the session id comes from `platform_compat.read_proc_stat`, so a leader whose name is not UTF-8 still reads as live); no readable `KIROCREW_SPAWN_INSTANCE`; or any live process outside its own tree carrying the same instance. The last one is what keeps a live runtime's descendant safe: the stamps are inherited, so that runtime itself holds the instance. The start identity is re-read before `authorize_runtime_kill` and pinned into `_kill_pid_tree`, under the tenancy barrier, at most `min(session.reconcile_max_kills, DEFAULT_MAX_KILLS)` trees per call. At a budget of `0` every candidate is refused "kill budget spent" and audited `refused`.
 
@@ -855,9 +858,7 @@ recover.
   chain pid (`session_keys_bound_to_pid`, read by
   `token_auth._bound_session_keys_on_chain`). The residual gap is the empty case:
   when neither table speaks about the pid the check changes nothing and the token
-  keeps fail-open bearer semantics. Tracked in issue #14646 together with the
-  recycled-ancestor case, where the lenient MCP identity refuses every call for an
-  identity-less caller.
+  keeps fail-open bearer semantics.
 - **The `tenancy` seam in `acp.liveness.LivenessOracle` has no production
   declarer.** All four construction sites take the single-tenant reading, so the
   model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means

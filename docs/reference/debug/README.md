@@ -121,6 +121,25 @@ to one sample every 60 s. Event rows use a closed set of kinds: `gateway_start`,
 `gateway_stop`, `loop_stall`, `adaptive_cap_lowered`, `memory_posture_change`,
 `config_rewritten`, `threshold_crossed`, `proc_burst` and `orphan_appeared`.
 
+On Windows, where `mem_available_mb`, `mem_total_mb` and the `swap_*` fields are null,
+each sample row also carries `commit_used_mb` and `commit_limit_mb`: the host's commit
+charge and commit limit from `GlobalMemoryStatusEx` (both null when that call fails). A
+Windows host can reach its commit limit with physical memory still free, and new threads
+and processes then fail to start. `kirocrew doctor` prints the same figures on a `commit:`
+line in its Memory Pressure section. Read from inside a Job object with a lower commit
+limit, such as an agent's shell, they are that job's. Rows on other platforms carry
+neither field.
+
+When the memory posture turns `critical`, the recorder also writes a plain-text
+memory snapshot to `diag/memory-critical/memory-critical-<UTC stamp>.txt`
+(`kiro_crew.diag.memory_snapshot`): host total and available memory, the 15
+biggest processes on the host by RSS, and Kiro Crew's own processes grouped by
+kind (gateway, chat, mcp-server, ...). It writes at most one per 10 minutes and
+keeps the newest 5. A process is recorded by pid, its short kernel name
+(`/proc/<pid>/comm`) and RSS only, never its arguments or environment. The host
+list is Linux only. The diagnostics bundle carries a fresh snapshot as
+`memory.txt` and the newest 3 critical ones under `memory-critical/`.
+
 The `diag/` directory is masked inside the agent sandbox in every mode. Read it
 through the debug tools, which redact on the way out.
 

@@ -93,6 +93,8 @@ class TestReaperRecordsAFailedSigkill:
         # released, the reap marked -- the failure is added, not substituted.
         runs, total = await svc._history.get_job_history("refused1")
         assert total == 1 and runs[0]["status"] == "timeout"
+        # The run's marker token, which the next boot's breaker looks the run up by.
+        assert runs[0]["run_id"] == claim.marker_run
         assert "; kill failed: " in runs[0]["error"]
         assert "refused1" not in svc._claims
         assert claim.reaped

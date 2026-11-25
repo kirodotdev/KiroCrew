@@ -282,6 +282,12 @@ export interface KasLoginStatus {
    * older gateway.
    */
   company_sign_in?: { start_url: string; region: string }
+  /**
+   * Company portal URLs whose sign-in turns the local agent off (an edition's own
+   * sign-in, `crew_client` preview). Empty while the preview is off; absent on an
+   * older gateway.
+   */
+  local_agent_off_start_urls?: string[]
 }
 
 /** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */
@@ -325,8 +331,15 @@ export interface KasLoginDeviceSession {
   expires_at: string
 }
 
+/** One Kiro profile a company sign-in offers on `choose_profile`. */
+export interface KasLoginProfile {
+  arn: string
+  name: string
+  region: string
+}
+
 export interface KasLoginPollResult {
-  status: 'pending' | 'authorized' | 'expired' | 'error'
+  status: 'pending' | 'authorized' | 'expired' | 'error' | 'choose_profile'
   /**
    * Machine-readable failure code — error responses carry one too. On an
    * `authorized` answer it can be `previous_identity_not_removed`: the new
@@ -338,6 +351,10 @@ export interface KasLoginPollResult {
   /** On `authorized` after a begin with `replaces`: every other stored slot the
    *  switch removed so the new account is the one the store resolves to. */
   replaced?: string[]
+  /** On `choose_profile`: the profiles of every Kiro region this company sign-in
+   *  can use, and the one to preselect. The sign-in waits until a poll names one. */
+  profiles?: KasLoginProfile[]
+  selected?: string
 }
 
 /**
@@ -412,7 +429,7 @@ export interface AgentImportApplyResponse {
   agent_spec_rewritten?: boolean
 }
 
-export function createOnboardingEndpoints({ get, post, put, j, jNullable }: ClientTransport) {
+export function createOnboardingEndpoints({ get, post, put, j, jNullable, jKasLoginRead }: ClientTransport) {
   const readiness = {
     // Background polls read the gateway's latched state (no kiro-cli subprocess).
     // `refresh` is the explicit user action (Refresh / Check again) that forces a
@@ -449,9 +466,9 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
     // read; every step that changes sign-in state is a POST for the same
     // CSRF/audit reasons as the spec repair above. Error responses carry a
     // machine-readable `code` field alongside the human message.
-    kasLoginStatus: () => get('/api/kas-login').then(j) as Promise<KasLoginStatus>,
+    kasLoginStatus: () => get('/api/kas-login').then(jKasLoginRead) as Promise<KasLoginStatus>,
     // Read-only: which stored sign-in sessions run as, and what each account is called.
-    kasLoginSources: () => get('/api/kas-login/sources').then(j) as Promise<KasLoginSources>,
+    kasLoginSources: () => get('/api/kas-login/sources').then(jKasLoginRead) as Promise<KasLoginSources>,
     // `replaces` names the vault slot (`KasLoginStatus.identity`) a signed-in
     // user is switching away from; the gateway removes it only once THIS login's
     // credential has landed, so a failed switch leaves the old account intact
@@ -464,8 +481,12 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
       post('/api/kas-login/device', { provider, ...(extra ?? {}) }).then(
         j,
       ) as Promise<KasLoginDeviceSession>,
-    kasLoginPoll: (login_id: string) =>
-      post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+    // `profile_arn` picks one of a `choose_profile` answer's profiles; a profile the
+    // sign-in did not offer answers 400 `unknown_profile`.
+    kasLoginPoll: (login_id: string, profile_arn?: string) =>
+      post('/api/kas-login/poll', profile_arn ? { login_id, profile_arn } : { login_id }).then(
+        j,
+      ) as Promise<KasLoginPollResult>,
     // Loopback begin answers 409 `loopback_unavailable` when this install shape
     // cannot receive the callback (or every allowlisted port is busy); the gate
     // treats that as "start the device flow instead", not as a failure.

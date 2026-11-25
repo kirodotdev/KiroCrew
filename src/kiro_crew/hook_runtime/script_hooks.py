@@ -1048,7 +1048,9 @@ class ScriptHookStore:
         # Only a hook that passes its matcher changes the status bookkeeping
         # (last_run / run_count / last_status). A fire that matched nothing has
         # nothing to record, so it must not rewrite hooks.json: that rewrite ran
-        # on EVERY tool call and turn, hook or not.
+        # on EVERY tool call and turn, hook or not. An agent spec hook
+        # (``extra_hooks``) is never written to the file, so only a stored hook
+        # that matched marks the fire for a write.
         touched = False
         from kiro_crew.hook_fire_timing import (
             CURRENT_FIRE_TIMING,
@@ -1085,7 +1087,8 @@ class ScriptHookStore:
                         if not matched:
                             timing.warn_if_slow(logger)
                             continue
-                touched = True
+                if id(hook) not in extra_ids:
+                    touched = True
                 # A skills-only hook injects a skill-loading directive without a subprocess,
                 # only on UserPromptSubmit/AgentSpawn, where that text has a consumer.
                 if (

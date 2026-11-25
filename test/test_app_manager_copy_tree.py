@@ -32,9 +32,8 @@ from kiro_crew.testing.wait import await_until, finished, wait_until
 #: The update's refusal for an installed `.app_secret` that is a symlink; the
 #: test pins the full sentence so a wording change is visible.
 _APP_SECRET_IS_A_LINK = (
-    "`.app_secret` in the app directory is a link; moving it aside for "
-    "the update places it outside its tree where a relative target does not "
-    "resolve and the secret is lost. Replace the link with a regular "
+    "`.app_secret` in the app directory is a link; the update replaces "
+    "the app files it can point into and the secret is lost. Replace the link with a regular "
     "`.app_secret` file holding the same secret, then retry the update."
 )
 

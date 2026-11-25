@@ -7,8 +7,9 @@ block as the provider's delivery envelope (``EssentialDelivery``), and the
 provider takes it out of the prompt at the wire while this conversation has
 acknowledged it. The delivery is the one place that knows when a conversation
 may have lost what it was sent, so the block goes out again after every such
-event. On every other harness, when the harness is not known, and on a member
-turn, whose essentials take the delivery's one envelope, the block goes out on
+event. The block has its own slot in the delivery, beside a member's
+essentials, so a chat with a crew member is sent it once per conversation too.
+On every other harness, and when the harness is not known, the block goes out on
 every message.
 
 Each test reads the prompt the transport was handed. It fails if a conversation
@@ -635,7 +636,7 @@ class _AnswersTruthy(_DoesNotSay):
 
 
 class TestEveryMessageWhereTheBlockCannotBeTakenOut:
-    """A harness that compacts without telling Kiro Crew, an unknown one, and a member turn."""
+    """A harness that compacts without telling Kiro Crew, and an unknown one."""
 
     def test_the_table_names_every_selectable_harness(self) -> None:
         assert set(COMPACTION_SEEN) == set(BASELINE_SELECTABLE_BACKENDS)
@@ -672,41 +673,130 @@ class TestEveryMessageWhereTheBlockCannotBeTakenOut:
             chat.target.context_incarnation
 
         assert _carries_rules(chat.build())
-        assert chat.target.essential_delivery._pending is None
+        assert chat.target.essential_delivery._pending == {}
 
     def test_no_provider_binds_nothing(self, chat: _Chat) -> None:
         for _ in range(3):
             assert _carries_rules(chat.build(context_provider=None))
             assert _carries_rules(chat.build(context_provider=object()))
 
+
+class _MemberChat:
+    """A chat with a crew member: turns built for its session and sent through *target*."""
+
+    def __init__(self, env, wire: _Wire) -> None:  # noqa: F811
+        self.env = env
+        self.wire = wire
+        self.target = _direct(wire)
+
+    async def turn(self, fresh: bool = False, **kw: object) -> tuple[bool, int]:
+        """One turn: whether the engine was sent the rules, and how many essentials."""
+        message, _ = self.env.builder.build_message(
+            "hello",
+            fresh,
+            "dashboard:private",
+            memory_store=self.env.store,
+            member=self.env.member,
+            agent="writer-template",
+            context_provider=self.target,
+            **kw,
+        )
+        assert _carries_rules(message), "every built message carries the block"
+        async for _event in self.target.stream(message):
+            pass
+        sent = self.wire.sent[-1]
+        return _carries_rules(sent), sent.count(ESSENTIALS)
+
+
+@pytest.fixture
+def member(env) -> _MemberChat:  # noqa: F811
+    return _MemberChat(env, _Wire(work_dir=env.project))
+
+
+class TestAMemberChatIsSentTheRulesOncePerConversation:
+    """The rules have their own slot beside the member's essentials, so both go out once."""
+
     @pytest.mark.parametrize("essentials", [1, 0], ids=["with-essentials", "that-built-none"])
     @pytest.mark.asyncio
-    async def test_a_member_turn(self, essentials: int, env, monkeypatch) -> None:  # noqa: F811
-        """Its essentials take the delivery's one envelope, so the rules ride every message."""
-        wire = _Wire(work_dir=env.project)
-        target = _direct(wire)
+    async def test_a_follow_up_is_not_sent_the_rules_again(
+        self, member: _MemberChat, essentials: int, monkeypatch
+    ) -> None:
         if not essentials:
-            monkeypatch.setattr(env.builder, "_build_v2_essentials", lambda *_a, **_k: "")
+            monkeypatch.setattr(member.env.builder, "_build_v2_essentials", lambda *_a, **_k: "")
 
-        async def turn(fresh: bool = False) -> None:
-            message, _ = env.builder.build_message(
-                "hello",
-                fresh,
-                "dashboard:private",
-                memory_store=env.store,
-                member=env.member,
-                agent="writer-template",
-                context_provider=target,
-            )
-            async for _event in target.stream(message):
-                pass
+        sent = [await member.turn(fresh=True)]
+        sent += [await member.turn() for _ in range(3)]
 
-        await turn(fresh=True)
+        assert sent == [(True, essentials), (False, 0), (False, 0), (False, 0)]
+        first, second = member.wire.sent[:2]
+        assert REQUEST in second and MARKER not in second and RULE not in second
+        assert len(first) > len(second)
+
+    @pytest.mark.asyncio
+    async def test_a_new_conversation_is_sent_the_rules_again(self, member: _MemberChat) -> None:
+        await member.turn(fresh=True)
+        assert (await member.turn())[0] is False
+
+        await member.target.new_conversation()
+
+        assert await member.turn(fresh=True) == (True, 1)
+        assert (await member.turn())[0] is False
+
+    @pytest.mark.asyncio
+    async def test_a_compaction_sends_both_again(self, member: _MemberChat) -> None:
+        await member.turn(fresh=True)
+        assert await member.turn() == (False, 0)
+
+        assert await member.turn(needs_reinjection=True) == (True, 1)
+        assert await member.turn() == (False, 0)
+
+        member.wire.events = [AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed"), *GOOD]
+        assert await member.turn() == (False, 0)
+        member.wire.events = list(GOOD)
+        assert await member.turn() == (True, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_turn_sends_both_again(self, member: _MemberChat) -> None:
+        await member.turn(fresh=True)
+        assert await member.turn() == (False, 0)
+
+        member.wire.events = [AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)]
+        assert await member.turn() == (False, 0)
+        member.wire.events = list(GOOD)
+
+        assert await member.turn() == (True, 1)
+        assert await member.turn() == (False, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_reset_session_is_sent_the_rules_every_turn(self, member: _MemberChat) -> None:
+        """A session reset between turns (a cron run, a stateless key) gets a new provider."""
         for _ in range(3):
-            await turn()
+            member.wire = _Wire(work_dir=member.env.project)
+            member.target = _direct(member.wire)
+            assert (await member.turn(fresh=True))[0] is True
 
-        assert [prompt.count(ESSENTIALS) for prompt in wire.sent] == [essentials, 0, 0, 0]
-        assert [_carries_rules(prompt) for prompt in wire.sent] == [True] * 4
+    @pytest.mark.asyncio
+    async def test_resending_the_essentials_alone_does_not_resend_the_rules(
+        self, member: _MemberChat
+    ) -> None:
+        """A resume on the same conversation re-sends the essentials only, as a chat with no
+        member is not sent the rules again for it."""
+        await member.turn(fresh=True)
+
+        rules, essentials = await member.turn(fresh=True, resumed=True)
+
+        assert (rules, essentials > 0) == (False, True)
+
+    @pytest.mark.asyncio
+    async def test_a_harness_that_does_not_report_compaction_gets_the_rules_every_turn(
+        self, env  # noqa: F811
+    ) -> None:
+        member = _MemberChat(env, _Wire("goose", work_dir=env.project))
+        assert member.target.reports_compaction is False
+
+        sent = [await member.turn(fresh=True)] + [await member.turn() for _ in range(2)]
+
+        assert [rules for rules, _ in sent] == [True, True, True]
 
 
 class TestTheScrubRunsOnEveryMessage:

@@ -194,12 +194,10 @@ describe('ShortcutsModal & subcomponents', () => {
     expect(ids).not.toContain('list-outdent')
   })
 
-  it('lists Esc under the Stop button\'s name, and leaves it out while a second Escape is required (#23462)', () => {
-    const stopRow = () => groupShortcuts('actions', true).find(s => s.id === 'stop-turn')
-    expect(stopRow()).toMatchObject({ key: 'Escape', group: 'actions' })
-    expect(shortcutLabel(stopRow()!)).toBe('Stop generation')
-    saveChatConfig({ ...loadChatConfig(), doubleEscapeToStop: true })
-    expect(stopRow()).toBeUndefined()
+  it('lists no key that stops the running turn: Stop is the button alone', () => {
+    const ids = groupShortcuts('actions', true).map(s => s.id)
+    expect(ids).not.toContain('stop-turn')
+    expect(groupShortcuts('actions', true).map(s => shortcutLabel(s))).not.toContain('Stop generation')
   })
 
   it('handles Escape key: clears search input first, then closes modal', () => {

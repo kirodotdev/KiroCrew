@@ -77,7 +77,7 @@ def _is_sidecar_entry(entry_name: str) -> bool:
     """Whether an ``apps_dir()`` entry is a gateway sidecar rather than an app.
 
     No admissible app name starts with a dot, and every working path the gateway
-    puts beside an app directory does (``.<name>-update-old-<pid>-<hex>``,
+    puts beside an app directory does (``.<name>-update-{new,out,old}-<pid>-<hex>``,
     ``.<name>-update-inflight``, ``.<name>-data-tmp``). A retired tree still holds
     the app's previous ``installed.json``, so a walk that reads every entry's
     record lists the app twice. Every walk of ``apps_dir()`` skips these.
@@ -447,7 +447,7 @@ class InstalledApp:
 # update undoes its consent-pending mark). The lock is a SIDECAR outside the app
 # directories, never installed.json: the record is replaced via os.replace, so a
 # lock on it would sit on an inode the next writer never opens; and update_app
-# moves the whole app directory aside, so a lock inside it would too.
+# moves the app's own entries out of its directory, so a lock there would move too.
 _record_lock_state = threading.local()
 
 
@@ -785,7 +785,7 @@ def _write_installed(
             )
         # The credential masks the manifest declares must outlive it beside the data
         # (apps.credential_masks). Best-effort here: the update and the uninstall
-        # refresh the record again, strictly, before they move the data.
+        # refresh the record again, strictly, before they move the manifest or the data.
         try:
             credential_masks.remember_declaration(name)
         except OSError:
@@ -800,7 +800,7 @@ def _write_installed(
         # chokepoint runs on the boot re-registration of builtins, which reads back
         # ``installed.json`` -- a file a sandboxed shell can forge -- so minting from
         # ``enabled`` here would let a forged record plus a restart produce a real
-        # grant. The grant is written only from the owner-authenticated ``enable_app``.
+        # grant. Only an enable or an owner registration writes the grant.
         # No-op when no grant exists. See ``apps.host_exec_grants``.
         if not credential_free_meta.enabled:
             revoke_host_exec(name)
@@ -1189,8 +1189,9 @@ def _approved_grants_after_manifest_change(
     else:
         baseline = old_declared
     declared = _declared_grant_entries(new_permissions)
+    baseline_sets = {family: set(baseline.get(family, ())) for family in STAGED_GRANT_FAMILIES}
     return {
-        family: [e for e in declared[family] if e in set(baseline.get(family, ()))]
+        family: [e for e in declared[family] if e in baseline_sets[family]]
         for family in STAGED_GRANT_FAMILIES
     }
 
@@ -1202,23 +1203,31 @@ def _held_back_entries(
     declared = _declared_grant_entries(permissions)
     if approved is None:
         return {family: [] for family in STAGED_GRANT_FAMILIES}
-    return {
-        family: (
-            [e for e in declared[family] if e not in set(approved[family])]
-            if family in approved
-            else []
-        )
-        for family in STAGED_GRANT_FAMILIES
-    }
+    held: dict[str, list[str]] = {}
+    for family in STAGED_GRANT_FAMILIES:
+        # One set per family: a link-preview provider may list any number of hosts.
+        granted = set(approved[family]) if family in approved else None
+        held[family] = [] if granted is None else [e for e in declared[family] if e not in granted]
+    return held
+
+
+#: The phases of ``update_app``'s sibling trees: the new tree it builds, the old
+#: root entries while it moves them out, and those entries once all are out.
+UPDATE_TREE_PHASES = ("new", "out", "old")
+
+
+def _update_tree_prefix(name: str, phase: str) -> str:
+    """Name prefix of *name*'s ``update_app`` sibling tree in *phase*."""
+    return f".{name}-update-{phase}-"
 
 
 def _update_retired_tree_prefix(name: str) -> str:
-    """Name prefix of the tree ``update_app`` moves *name*'s live tree to."""
-    return f".{name}-update-old-"
+    """Name prefix of the tree holding *name*'s old root entries once all are out."""
+    return _update_tree_prefix(name, "old")
 
 
 # Tree-swap fencing for this process. ``update_app`` holds a swap open from
-# before it moves an app's tree aside until the moved-aside tree is gone. Each
+# before it moves an app's old entries out until their retired tree is gone. Each
 # swap start and end takes the next value of a process-wide sequence; an app's
 # last value is kept in a bounded LRU, and its in-flight count only while one
 # is open. A grant read that sees a swap in flight, or a change across its
@@ -1384,6 +1393,33 @@ def staged_app_grants(
     if _tree_swap_spanned(swap_before, _tree_swap_state(name)):
         return []
     return granted
+
+
+def held_back_app_grants(name: str, family: str, declared: Sequence[str]) -> list[str] | None:
+    """The *declared* ``permissions.<family>`` entries still waiting for the owner.
+
+    These are the entries the app detail page offers under "Approve new
+    permissions": declared, but outside the approved set. Read only to word a
+    refusal, never to grant. It lists nothing when nothing is known to be
+    waiting: no readable record, no stored set, or a set that predates the
+    family, because :func:`staged_app_grants` then withholds for another reason
+    or approves what is declared.
+
+    *declared* is what an earlier read of the manifest saw. ``None`` means the
+    app moved after that read: an update is swapping its tree, or the live
+    manifest declares other entries than *declared*, so the approved set read
+    here may not belong to it.
+    """
+    if _tree_swap_state(name)[0] or _update_in_progress(name):
+        return None
+    live = get_app_manifest(name)
+    if live is None or [e for e in getattr(live.permissions, family) if e] != list(declared):
+        return None
+    meta = _read_installed(name)
+    if meta is None:
+        return []
+    held = _held_back_entries(_effective_approved_grants(name, meta), {family: list(declared)})
+    return held.get(family, [])
 
 
 def _approved_grants_row(name: str) -> dict[str, Any]:

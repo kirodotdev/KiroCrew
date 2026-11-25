@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Dict
 
@@ -130,6 +131,28 @@ def config_path_locked(path: str) -> bool:
     return (path in CONFIG_PATH_LOCKS or in_previews) and is_lts()
 
 
+def locked_by_edition(scope: str) -> bool:
+    """True in an LTS build when no enterprise policy term can change *scope*.
+
+    An LTS build takes its policy only from enterprise management, translated through
+    ``enterprise_policy_translate.MANAGED``; a local tier can only narrow it. So a
+    scope no ``MANAGED`` row lands on, inside or around keeps its baseline whatever an
+    admin sets, and a setting API says so instead of naming a policy. A new term in
+    ``MANAGED`` flips the answer with no change here. Always ``False`` on ``oss``.
+    """
+    if not edition.is_lts():
+        return False
+    from kiro_crew.platform.enterprise_policy_translate import MANAGED
+
+    for row in MANAGED.values():
+        for target in row.targets():
+            path = ".".join(target.path)
+            # On the scope, inside it (``channels.members``), or around it.
+            if path == scope or path.startswith(scope + ".") or scope.startswith(path + "."):
+                return False
+    return True
+
+
 def feature_previews(previews: Any) -> Any:
     """``dashboard.feature_previews`` as a reader must take it: ``{}`` in an LTS build.
 
@@ -138,6 +161,30 @@ def feature_previews(previews: Any) -> Any:
     stored value is left alone. On ``oss`` it returns *previews* unchanged.
     """
     return {} if local_enable_locked("feature_previews") else previews
+
+
+def preview_on(name: str, cfg: Any = None) -> bool:
+    """Whether Feature Preview *name* is on: its stored switch is an exact ``True``.
+
+    *cfg* is a loaded configuration; ``None`` reads the live snapshot, else the
+    config file (a CLI process has no watcher). Read through :func:`feature_previews`,
+    so an LTS build reads every preview as off. An unreadable config is off. Never
+    raises.
+    """
+    try:
+        if cfg is None:
+            from kiro_crew.config import live
+
+            cfg = live.snapshot()
+            if cfg is None:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                cfg = KiroCrewConfig.load()
+        previews = feature_previews(getattr(cfg.dashboard, "feature_previews", None))
+    except Exception:  # noqa: BLE001 -- unread means off
+        logger.debug("feature preview %s: config unreadable; treating as off", name, exc_info=True)
+        return False
+    return isinstance(previews, Mapping) and previews.get(name) is True
 
 
 def reset_logged() -> None:

@@ -61,6 +61,7 @@ import { fmtDateFields, fmtElapsed } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
+import { formatCost } from '../../utils/formatCost'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -353,6 +354,11 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const terminalCredits = isDone && typeof a.credits === 'number' && Number.isFinite(a.credits) && a.credits > 0
     ? a.credits
     : null
+  // A dollar-billed harness reports zero credits and a cost; the card shows
+  // that cost the way the chat's own turn line does.
+  const terminalCost = isDone && typeof a.costUsd === 'number' && Number.isFinite(a.costUsd) && a.costUsd > 0
+    ? a.costUsd
+    : null
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -472,20 +478,36 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           data-testid="subagent-run-stats"
           className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums"
         ><CardElapsed running={isRunning} startedAt={a.startedAt} assumed={a.startedAtAssumed} finalSecs={a.elapsed} /></span>}
-        {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
+        {/* No Cancel on an engine sub-agent: nothing stops it alone, so the card
+            says below what does. */}
+        {isRunning && !a.engine && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? <ChevronRight className="lucide-inline" /> : <ChevronDown className="lucide-inline" />}</span>}
       </div>
       {/* A recovered terminal entry can have usage but no task yet. Keep the
           usage visible while withholding an empty input block. */}
-      {!collapsed && (a.task || (isDone && !isNative && !retired)) && (
+      {isRunning && a.engine && (
+        <div data-testid="subagent-engine-note" role="note" className="px-3 pb-1 text-[11px] leading-4 text-muted">
+          {i18nT('pages.chat.subagentProgressBar.engine_stops_with_answer')}
+        </div>
+      )}
+      {!collapsed && (a.task || (isDone && !retired && (!isNative || a.engine))) && (
         <div className="px-3 pt-1 pb-2">
+          {/* The engine reports no credits or model for one sub-agent, so the
+              card says that in words where a managed card shows its figure. */}
+          {isDone && a.engine && (
+            <div data-testid="subagent-engine-usage" className="text-[12px] text-muted break-words mb-2">
+              {i18nT('pages.chat.activityViewer.engine_usage_not_reported')}
+            </div>
+          )}
           {isDone && !isNative && !retired && (
             <div data-testid="subagent-credit-usage" className="text-[12px] text-muted font-mono tabular-nums break-words mb-2">
-              {terminalCredits === null
-                ? i18nT('pages.chat.activityViewer.credits_not_reported')
-                : i18nT('pages.chat.activityViewer.credits_used', {
+              {terminalCredits !== null
+                ? i18nT('pages.chat.activityViewer.credits_used', {
                     credits: fmtCredits(terminalCredits),
-                  })}
+                  })
+                : terminalCost !== null
+                  ? i18nT('pages.chat.activityViewer.cost_used', { cost: formatCost(terminalCost) })
+                  : i18nT('pages.chat.activityViewer.credits_not_reported')}
             </div>
           )}
           {a.task && <>
@@ -525,7 +547,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             the way the transcript's completion card does. `streaming` holds a
             half-typed fence until it closes. */}
         <div ref={bodyRef} onScroll={onScroll} data-testid="subagent-output-body" className="px-2.5 py-2 bg-bg rounded-md text-[12px] break-words max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
-          {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : isNeverStarted(a.error) ? <span className="text-muted/70 italic">{i18nT('pages.chat.activityViewer.no_output_never_started')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
+          {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (a.engine ? <span className="text-muted/70 italic">{i18nT('pages.chat.activityViewer.engine_no_output')}</span> : isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : isNeverStarted(a.error) ? <span className="text-muted/70 italic">{i18nT('pages.chat.activityViewer.no_output_never_started')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
           {a.lastTool && !a.toolCalls?.length && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {sanitizeLlmOutput(a.lastTool)}</div>}
         </div>
       </div>
@@ -1127,7 +1149,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
-  onPutPinInComposer?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => boolean | void
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string

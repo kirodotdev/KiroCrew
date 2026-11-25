@@ -1,11 +1,14 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useContext, useEffect, useId, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import { ShieldCheck, BookOpen, Handshake, Rocket, Check, Clock } from 'lucide-react'
+import { QueryClientContext } from '@tanstack/react-query'
+import { ShieldCheck, BookOpen, Handshake, Rocket, Check, Clock, BadgeCheck, Info, ChevronDown } from 'lucide-react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 import { useAppDispatch, useAppSelector } from '../store'
 import { changeApprovalMode } from '../store/dashboardSlice'
+import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { safeSetItem } from '../utils/safeStorage'
 import { settingsPath } from './settingsPath'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -24,11 +27,26 @@ import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 export const APPROVAL_SEGMENTS = [
   { key: 'normal' as const, icon: <ShieldCheck size={13} />, color: '' },
   { key: 'trust_reads' as const, icon: <BookOpen size={13} />, color: 'text-accent' },
+  // Offered only while the slot's KAS session offers it (the `approveForMe` prop).
+  // Placed by how much it lets through: past Reads, before Trust.
+  { key: 'approve_for_me' as const, icon: <BadgeCheck size={13} />, color: 'text-warn' },
   { key: 'trust' as const, icon: <Handshake size={13} />, color: 'text-ok' },
   { key: 'yolo' as const, icon: <Rocket size={13} />, color: 'text-danger' },
 ]
 
 export type ApprovalModeKey = (typeof APPROVAL_SEGMENTS)[number]['key']
+
+/** The caveats the Approve for me details list names, in order. */
+function approveForMeDetails(): string[] {
+  return [
+    i18nT('components.approvalModePicker.approve_for_me_detail_skip'),
+    i18nT('components.approvalModePicker.approve_for_me_detail_direct'),
+    i18nT('components.approvalModePicker.approve_for_me_detail_kept'),
+    i18nT('components.approvalModePicker.approve_for_me_detail_blocked'),
+    i18nT('components.approvalModePicker.approve_for_me_detail_off'),
+    i18nT('components.approvalModePicker.approve_for_me_detail_logged'),
+  ]
+}
 
 /** Localized name for a configured ad-hoc duration, so no raw config token
  *  reaches user-facing copy. Static literal keys keep the dead-key and
@@ -62,6 +80,11 @@ function segmentText(key: ApprovalModeKey): { label: string; desc: string } {
       return {
         label: i18nT('components.approvalModePicker.yolo_label'),
         desc: i18nT('components.approvalModePicker.yolo_desc'),
+      }
+    case 'approve_for_me':
+      return {
+        label: i18nT('components.approvalModePicker.approve_for_me_label'),
+        desc: i18nT('components.approvalModePicker.approve_for_me_desc'),
       }
     case 'normal':
     default:
@@ -136,6 +159,9 @@ type ApprovalModePickerProps = {
    *  the composer should hide the one-time callout for this sitting, not
    *  spend it forever unseen. Falls back to onNudgeDismiss when unset. */
   onNudgeHide?: () => void
+  /** The slot's KAS approve-for-me read-back. `undefined` while its session
+   *  offers no such option, which keeps the row out of the menu. */
+  approveForMe?: boolean
 }
 
 /** The approval mode is the agent's own ceiling: the picker and what it portals are a trust-root region. */
@@ -143,7 +169,7 @@ export default function ApprovalModePicker(props: ApprovalModePickerProps) {
   return <GuideTrustRootProvider><ApprovalModePickerBody {...props} /></GuideTrustRootProvider>
 }
 
-function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked, remote }: ApprovalModePickerProps) {
+function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked, remote, approveForMe }: ApprovalModePickerProps) {
   const policyRefusedId = useId()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -164,12 +190,23 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
   // stays, disabled and labelled, until the user picks something else.
   // Remotely, YOLO is never a row, and while the other machine is IN YOLO no
   // row is offered: a Normal pick there would end YOLO for all its sessions.
-  const isModeVisible = (k: string) => (!remote || (k !== 'yolo' && mode !== 'yolo')) && (!isModeBlocked(k) || k === mode)
+  // Approve for me is a local KAS session's own option: never a remote row, and
+  // drawn only while the session offers it (or still reads it on).
+  const isModeVisible = (k: string) => (k !== 'approve_for_me' || (!remote && (approveForMe !== undefined || mode === k)))
+    && (!remote || (k !== 'yolo' && mode !== 'yolo')) && (!isModeBlocked(k) || k === mode)
+  // Absent outside a QueryClientProvider (a bare picker in a test): nothing to refresh.
+  const queryClient = useContext(QueryClientContext)
   // Set when the gateway refuses a pick with 403 `mode_disabled_by_policy`.
   // Reachable in the load race before the first status frame arrives, when
   // `disabled_approval_modes` is still undefined and every mode renders: without
   // this the click does nothing at all, silently.
   const [policyRefused, setPolicyRefused] = useState('')
+  // Why turning Approve for me on failed (a running turn, a refused write, the
+  // network): shown in the menu, which re-opens, so the click never does nothing.
+  const [approveForMeFailed, setApproveForMeFailed] = useState('')
+  const approveForMeFailedId = useId()
+  const [afmDetailsOpen, setAfmDetailsOpen] = useState(false)
+  const afmDetailsId = useId()
   const [open, setOpen] = useState(false)
   const [yoloConfirm, setYoloConfirm] = useState(0)
   const [yoloDontAsk, setYoloDontAsk] = useState(false)
@@ -232,17 +269,38 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
 
   const pick = (m: ApprovalModeKey) => {
     setPolicyRefused('')
+    setApproveForMeFailed('')
     if (remote) {
       // YOLO is never offered remotely. Every other pick is written, even one
       // matching the shown mode: an earlier pick may still be on its way.
-      if (m !== 'yolo') {
+      if (m !== 'yolo' && m !== 'approve_for_me') {
         remote.write(m).catch(() => { setPolicyRefused(m); onOpenChange(true) })
       }
       closingFromPickRef.current = true
       onOpenChange(false)
       return
     }
+    // The slot's selection-capabilities read carries approve-for-me: refresh it so
+    // the trigger shows what the session reads back after this pick.
+    const refreshSession = () => { void queryClient?.invalidateQueries({ queryKey: ['slot-selection-capabilities', slotKey] }) }
+    if (m === 'approve_for_me') {
+      api.chatSlotApproveForMe(slotKey, true).then(refreshSession, (e: unknown) => {
+        const body = e instanceof ApiError ? e.body : ''
+        let code = ''
+        try { code = JSON.parse(body || '{}')?.code ?? '' } catch { /* not JSON */ }
+        if (code === 'mode_disabled_by_policy') setPolicyRefused(m)
+        else if (code === 'turn_in_flight') setApproveForMeFailed(i18nT('components.approvalModePicker.approve_for_me_busy'))
+        else if (code === 'approve_for_me_not_owners') setApproveForMeFailed(i18nT('components.approvalModePicker.approve_for_me_not_owners'))
+        else setApproveForMeFailed(i18nT('components.approvalModePicker.approve_for_me_failed'))
+        onOpenChange(true)
+        refreshSession()
+      })
+      closingFromPickRef.current = true
+      onOpenChange(false)
+      return
+    }
     void dispatch(changeApprovalMode({ mode: m, slot: slotKey })).then(r => {
+      if (approveForMe !== undefined) refreshSession()
       // Only a POLICY refusal is held open and reported here. Any other failure
       // keeps the existing close-and-move-on behaviour: it is transient and
       // retrying the same click is the natural response, whereas a policy denial
@@ -326,7 +384,7 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
             }}
             className={s.key === mode ? 'text-accent' : ''}
           >
-            <span className="shrink-0">{s.icon}</span>
+            <span className={s.key === 'approve_for_me' ? `shrink-0 ${s.color}` : 'shrink-0'}>{s.icon}</span>
             <span className="flex flex-col min-w-0 flex-1">
               <span className="font-medium">{t.label}</span>
               <span className="text-[11px] font-normal text-muted leading-snug">
@@ -337,6 +395,32 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
           </DropdownMenuItem>
           )
         })}
+        {/* What Approve for me skips, one press away: a menu item (keyboard and
+            screen reader reach it like the rows) that opens the list in place
+            without closing the menu. The list is the item's description, so a
+            screen reader reads it on focus once it is open. */}
+        {isModeVisible('approve_for_me') && (
+          <>
+            <DropdownMenuItem
+              onSelect={e => { e.preventDefault(); setAfmDetailsOpen(o => !o) }}
+              aria-expanded={afmDetailsOpen}
+              aria-controls={afmDetailsId}
+              aria-describedby={afmDetailsOpen ? afmDetailsId : undefined}
+              data-testid="approve-for-me-details-toggle"
+            >
+              <span className="flex items-center gap-2 flex-1 min-w-0 text-[11px] text-muted">
+                <Info size={12} className="shrink-0" />
+                <span className="flex-1">{i18nT('components.approvalModePicker.approve_for_me_details')}</span>
+                <ChevronDown size={12} className={`shrink-0 transition-transform ${afmDetailsOpen ? 'rotate-180' : ''}`} />
+              </span>
+            </DropdownMenuItem>
+            {afmDetailsOpen && (
+              <ul id={afmDetailsId} data-testid="approve-for-me-details" className="list-disc pl-7 pr-2 pb-1.5 text-[11px] text-muted leading-snug space-y-0.5">
+                {approveForMeDetails().map(text => <li key={text}>{text}</li>)}
+              </ul>
+            )}
+          </>
+        )}
         {/* The shared error surface, not a hand-written line. A 403 from the
             policy gate is a rejected request like any other, and rolling our own
             <div> here dropped the agent hand-off the rest of the dashboard
@@ -355,6 +439,21 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
               Item={DropdownMenuItem}
               message={i18nT('components.approvalModePicker.mode_disabled_by_policy')}
               describedBy={policyRefusedId}
+            />
+          </>
+        )}
+        {approveForMeFailed && (
+          <>
+            <ErrorNotice
+              id={approveForMeFailedId}
+              variant="inline"
+              className="px-2 py-1.5"
+              message={approveForMeFailed}
+            />
+            <ErrorNoticeMenuItem
+              Item={DropdownMenuItem}
+              message={approveForMeFailed}
+              describedBy={approveForMeFailedId}
             />
           </>
         )}

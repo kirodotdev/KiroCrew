@@ -15,7 +15,8 @@ it is exercised through ``chat_runner._notify_turn_died`` -- where ``quote``,
 ``logger``, ``payload_from_legacy`` and the bus resolve -- as the terminal arms
 call it. It builds the payload and pushes it on ``state.notification_bus``
 directly, the way every other legacy producer stacks a note, so these drive a
-real :class:`NotificationBus` and read the delivered note dict.
+real :class:`NotificationBus` and read the delivered note dict. The error card's
+choice of note is driven through a real turn (``turn_harness.run_turn``).
 """
 
 from __future__ import annotations
@@ -25,8 +26,14 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
+from turn_harness import Raise, TurnContext, TurnScript, run_turn
 
 import kiro_crew.dashboard.chat_runner as cr
+from kiro_crew.acp.kas_route import REASON_NO_KIRO_CLI, KasRoute
+from kiro_crew.acp.transport_errors import AcpError
+from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.dashboard.chat_utils_injected_rows import AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND
 from kiro_crew.notifications.bus import SYSTEM_CHANNELS, NotificationBus
 
 _EN_CATALOG = Path(__file__).parent.parent / "website/src/i18n/locales/en.manual.json"
@@ -151,3 +158,52 @@ class TestItNeverDisturbsTheDyingTurn:
         # publisher_session keys on the slot, which is always present.
         note = _fire(key="chat-1-123", session_key="")[0]
         assert "group_key" not in note
+
+
+#: What the bundled engine says for a signed-out turn on a host with no kiro-cli.
+_BUNDLE_SIGNED_OUT = host_auth.signed_out_message(
+    ACP_BACKEND_KAS, route=KasRoute(bundle=True, reason=REASON_NO_KIRO_CLI)
+)
+
+
+class TestTheErrorCardNamesASignIn:
+    """A sign-in failure can reach the turn as a plain ``AcpError`` whose frame is tagged
+    ``auth_required`` or ``kiro_cli_sign_in``, not as ``AcpAuthRequired``. The error card
+    then offers the sign-in fix on its row, so the bell says the agent is signed out
+    rather than a bare "stopped with an error". Driven through a real turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "tag", "row_kind", "note_id"),
+        [
+            pytest.param(
+                _BUNDLE_SIGNED_OUT,
+                "auth_required",
+                AUTH_REQUIRED_KIND,
+                "chat_stopped_signed_out",
+                id="crew-sign-in",
+            ),
+            pytest.param(
+                "Not signed in",
+                "kiro_cli_sign_in",
+                KIRO_CLI_SIGN_IN_KIND,
+                "chat_stopped_signed_out",
+                id="kiro-cli-sign-in",
+            ),
+            pytest.param("bad request", "", None, "chat_stopped_error", id="other-error"),
+        ],
+    )
+    async def test_the_note_follows_the_row_the_card_wrote(
+        self, text: str, tag: str, row_kind: str | None, note_id: str
+    ) -> None:
+        err = AcpError(text, transient=False)
+        if tag:
+            setattr(err, tag, True)
+        bus = BusState()
+
+        def _setup(ctx: TurnContext) -> None:
+            ctx.state.notification_bus = bus.notification_bus
+
+        record = await run_turn(TurnScript(events=[Raise(err)], setup=_setup))
+        assert (record.rows("error")[-1].get("meta") or {}).get("kind") == row_kind
+        assert [note["i18n"] for note in bus.delivered] == [{"id": note_id}]

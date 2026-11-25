@@ -18,6 +18,7 @@ import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
 import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
+import { useFirstRunSignInHeld } from './components/FirstRunSignInHold'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
@@ -26,6 +27,8 @@ import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
 import FilePopoutFrame from './pages/FilePopoutFrame'
+import CrewPopoutFrame from './pages/CrewPopoutFrame'
+import { CREW_POPOUT_ROUTE } from './lib/crewPopout'
 import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
@@ -42,6 +45,8 @@ const GuideLayer = lazy(() => import('./guide/GuideLayer'))
 // App-contributed link previews (`contributes.linkPreviews`): hover detection only;
 // an app's module loads on the first hover of one of its links.
 const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
+// App startup modules (`ui.startup`): each admitted app's component, on every route.
+const StartupModules = lazy(() => import('./components/StartupModules'))
 // App-contributed message actions (`contributes.messageActions`): a More-menu row per
 // approved action; an app's module loads only when its row is clicked.
 const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLayer'))
@@ -421,7 +426,7 @@ export default function App() {
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
     gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
-    sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
@@ -430,6 +435,8 @@ export default function App() {
   } = shell
   // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
   const contentCovered = offlineCoverKind !== null
+  // The first-run sign-in hides this app behind it, so the local layers hide too.
+  const signInHeld = useFirstRunSignInHeld()
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
   usePinnedScrollOrigin(shellRef)
@@ -542,18 +549,22 @@ export default function App() {
               <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? 'w-7 h-7'} iconSize={18} />
             </button>
             {advertisedNavItems.filter(n => n.group === 'Main').map(railRow)}
-            <NavItem
-              navId="apps"
-              path="/apps"
-              label={i18nT('nav.discover')}
-              icon={<Compass size={16} />}
-              active={discoverNavActive}
-              collapsed
-              touch
-              replace
-              onClickOverride={discoverNavActive ? onActivate : undefined}
-              badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
-            />
+            {/* Off in Settings > Display > View, Discover leaves this rail too
+                and its updates badge rides Library (see shell/nav/navRail.tsx). */}
+            {discoverInRail && (
+              <NavItem
+                navId="apps"
+                path="/apps"
+                label={i18nT('nav.discover')}
+                icon={<Compass size={16} />}
+                active={discoverNavActive}
+                collapsed
+                touch
+                replace
+                onClickOverride={discoverNavActive ? onActivate : undefined}
+                badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
+              />
+            )}
             <NavItem
               navId="apps-library"
               path="/apps/library"
@@ -564,6 +575,7 @@ export default function App() {
               touch
               replace
               onClickOverride={libraryNavActive ? onActivate : undefined}
+              badge={discoverInRail ? undefined : <NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
             />
           </>}
           apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
@@ -636,6 +648,9 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
+    {/* A crew's pop-out framed by a desktop hub's window learns its host here;
+        no-op when not framed. */}
+    {isPopout && <EmbeddedHostBridge />}
     {/* The import row's outcome lands after its menu has closed, so every layout
         that can host the row hosts the notice: the popout and embed frames here,
         the dashboard inside the local pane (below), where it hides with the
@@ -678,6 +693,7 @@ export default function App() {
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/terminal" element={<ErrorBoundary><TerminalPopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/file" element={<ErrorBoundary><FilePopoutFrame /></ErrorBoundary>} />
+        <Route path={CREW_POPOUT_ROUTE} element={<ErrorBoundary><CrewPopoutFrame /></ErrorBoundary>} />
         {/* Belt-and-braces: any stray in-window navigation re-pins to the
             frame this window loaded as (isPopout is sticky, so the dashboard
             branch is unreachable — without this the wildcard would bounce a
@@ -721,8 +737,9 @@ export default function App() {
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
       {/* Floating layers this pane opens portal into a container hidden with it
-          (see components/overlayRoot). */}
-      <LocalOverlayRoot hidden={activeInstanceId !== null}>
+          (see components/overlayRoot), and while the first-run sign-in holds the
+          app (FirstRunSignInHold hides the pane itself). */}
+      <LocalOverlayRoot hidden={activeInstanceId !== null || signInHeld}>
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
@@ -990,6 +1007,7 @@ export default function App() {
           <GuideProvider>
           <Suspense fallback={null}><GuideLayer /></Suspense>
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
+          <Suspense fallback={null}><StartupModules /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           {/* The shell's own nav read owns the shared app list here. */}

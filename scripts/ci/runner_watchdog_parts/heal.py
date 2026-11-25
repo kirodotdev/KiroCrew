@@ -28,6 +28,7 @@ from runner_watchdog import (
     OUTCOME_DRY_RUN,
     OUTCOME_HEAL_SAFETY_UNKNOWN,
     OUTCOME_HEALED,
+    OUTCOME_HUMAN_HELD_SATURATED,
     OUTCOME_HUMAN_REQUIRED,
     OUTCOME_LOOKUP_FAILED,
     OUTCOME_NOT_ATTEMPTED,
@@ -60,6 +61,7 @@ from runner_watchdog import (
 )
 from runner_watchdog_parts.classify import (
     DispatchEvidence,
+    OrphanedJob,
     Policy,
     RunVerdict,
     _base_verdict,
@@ -514,6 +516,79 @@ def resolve_hold(
             f"shared installation quota, not the API's reachable window",
         )
     return None
+
+
+def saturation_holding_exempt_orphan(
+    policy: Policy, evidence: DispatchEvidence, verdict: RunVerdict
+) -> OrphanedJob | None:
+    """The slow served start that keeps a heal-exempt orphan a warning, or None.
+
+    Nothing is cancelled for an exempt workflow, so the hold has nothing to protect
+    here; what saturation changes is what the tick SAYS. A job that queued while the
+    fleet serves starts ``saturation_wait`` late may only be slow, and a red tick
+    naming every such run buries the ones that are lost. So the saturation half of
+    ``resolve_hold`` is asked, on the evidence the tick already holds and with no read:
+    the orphan's own queue first, since a prompt start there means the job never stood
+    in a slow line whatever another label did, then the slowest start of the fleet. A
+    queue that is dispatching promptly, no evidence at all, and a job queued
+    ``Policy.exempt_saturation_cap`` or longer all answer None, and the run needs a human.
+    """
+    if not verdict.orphans:
+        return None
+    if max(orphan.queued_for for orphan in verdict.orphans) >= policy.exempt_saturation_cap:
+        return None
+    since = _latest_queue(verdict)
+    queue = _orphan_queue(verdict)
+    if queue is not None and evidence.own_queue(since, policy, queue)[0] == OWN_QUEUE_DISPATCHING:
+        return None
+    return evidence.slowest(since, policy)
+
+
+def exempt_held_line(held: int, policy: Policy) -> str:
+    """The one log line a tick prints with its count of held heal-exempt orphans."""
+    return (
+        f"heal-exempt orphans held as a warning under saturation this tick: {held} "
+        f"(each needs a human once a job of it has queued {_fmt_delta(policy.exempt_saturation_cap)}, "
+        "or as soon as the fleet stops dispatching slowly)"
+    )
+
+
+def report_exempt_orphans(
+    verdicts: list[RunVerdict],
+    evidence: DispatchEvidence,
+    policy: Policy,
+    log: Callable[[str], None],
+) -> dict[int, str]:
+    """The outcome of every live heal-exempt orphan, each logged, and the tick's held count."""
+    outcomes: dict[int, str] = {}
+    held = 0
+    for verdict in verdicts:
+        if verdict.verdict != HEAL_EXEMPT:
+            continue
+        slow = saturation_holding_exempt_orphan(policy, evidence, verdict)
+        if slow is not None:
+            held += 1
+            outcomes[verdict.run_id] = OUTCOME_HUMAN_HELD_SATURATED
+            log(
+                f"::warning::{_label(verdict)} is stuck in a heal-exempt workflow while CodeBuild "
+                f"is dispatching slowly ({slow.name} started after waiting "
+                f"{_fmt_delta(slow.queued_for)}), so its queued job may only be slow; nothing "
+                f"is cancelled or re-run for this workflow, and it needs a human once a job of "
+                f"it has queued {_fmt_delta(policy.exempt_saturation_cap)}."
+            )
+            continue
+        outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
+        # A failed outcome, so the tick goes red: FAILED_OUTCOMES promises the log
+        # then names the run and the command to type. Without this line a red tick
+        # carries only the plain verdict line, and every tick stays red with no
+        # `::error::` saying which run a human has to recover.
+        log(
+            f"::error::{_label(verdict)} needs a human: {verdict.detail} Recover it by hand "
+            f"(`gh run cancel {verdict.run_id}`, then `gh run rerun {verdict.run_id}` if its "
+            f"verdict is still needed)."
+        )
+    log(exempt_held_line(held, policy))
+    return outcomes
 
 
 def _latest_queue(verdict: RunVerdict) -> datetime:

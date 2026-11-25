@@ -6,7 +6,9 @@ through ``browser_ops.run_browser_op`` on a slot whose app holds approved
 ``browserSites``) and the app declares ``backend.hooks.on_browser_media_ended``, the
 gateway watches that tab itself: every :data:`WATCH_S` seconds one ``state`` read,
 the same read the page's poll makes (``browser_harness/media.py``), and on each new
-ending one call of the hook with::
+ending the tab counted (its ``endId`` changed; the walker's ``mediaEnds`` counts an
+ending as it happens, so a site that takes the source away right after it is still
+seen) one call of the hook with::
 
     {"event": "browser_media_ended", "session_key": "<the app's slot key>",
      "origin": "https://www.youtube.com", "duration": 213.4}
@@ -41,17 +43,17 @@ logger = logging.getLogger(__name__)
 #: The manifest hook (``backend.hooks.<HOOK>``) and the event name it is handed.
 HOOK = "on_browser_media_ended"
 EVENT = "browser_media_ended"
-#: Seconds between two reads of a watched tab. An ending stays readable until the
-#: element plays again, so a slow tick only delays the event, it does not lose it.
+#: Seconds between two reads of a watched tab. A counted ending's ``endId`` stays
+#: until the next ending, so a slow tick only delays the event, it does not lose it.
 WATCH_S = 3.0
 #: How long a tick waits for the browser lock it found free before it skips.
 _ACQUIRE_S = 0.05
 
 #: The running watch of each slot key.
 _WATCHES: dict[str, asyncio.Task[None]] = {}
-#: Slot key -> the origin whose ending was already handed over, until the element is
-#: seen not ended again, so a watch restarted on an ended page does not repeat it.
-_ENDED: dict[str, str] = {}
+#: Slot key -> the ``endId`` last read (``None``: no ending in that document yet), so
+#: each ending is handed over once, also across a watch restarted on the same page.
+_ENDED: dict[str, str | None] = {}
 
 
 def _hook_declared(app: str) -> bool:
@@ -159,10 +161,17 @@ async def _watch(state: Any, key: str) -> None:
                 return
             if result is not None and result.get("ok"):
                 origin = str(result.get("origin") or "")
-                if not result.get("ended"):
-                    _ENDED.pop(key, None)
-                elif _ENDED.get(key) != origin:
-                    _ENDED[key] = origin
+                end_id = result.get("endId")
+                end_id = end_id if isinstance(end_id, str) else None
+                # The first read of a slot has nothing to compare with: an element
+                # already ended counts once, as the page's first read does.
+                new = (
+                    bool(result.get("ended"))
+                    if key not in _ENDED
+                    else end_id is not None and end_id != _ENDED[key]
+                )
+                _ENDED[key] = end_id
+                if new:
                     duration = result.get("duration")
                     await dispatch_app_event(
                         app,

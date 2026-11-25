@@ -2,10 +2,12 @@ import { memo, useContext, useState, useRef, useEffect, useMemo, useCallback, ty
 import { ChevronRight } from 'lucide-react'
 import { RowActivityContext, type RowActivityReporter } from './rowActivity'
 import type { DisplayItem, TurnItem } from './types'
+import type { ChatMessage } from '../../types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { MESSAGE_BODY_ATTR } from '../../messageActions/messageText'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
@@ -24,7 +26,7 @@ import { extractSteeringAcks } from '../../app-sdk/protocol/steering'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
-import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
+import { useDismissedSpecHooksNotice } from './SpecHooksNotice'
 import { isToolCallRow } from '../../lib/toolRowContract'
 
 /**
@@ -86,8 +88,13 @@ const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
 // ever hid. Density relief is per-card (ToolCallLine's fold chip) plus the
 // size caps in presentToolDiff, so an edit-heavy turn is N foldable cards,
 // not an immovable wall (see rfc-tool-derived-diff-cards.md).
+// The exception is a row the gateway stamped `file_change_recorded`: the
+// turn's changed-files card lists that change, so the row is a working step
+// and folds with the others (rfc-fold-recorded-edit-cards.md). A row without
+// the stamp (another harness's write shape, a refused path, an older turn)
+// keeps the rule above, since its card may be the only record of the edit.
 const isDiffCardItem = (it: TurnItem) =>
-  it.kind === 'single' && isDiffToolMessage(it.msg)
+  it.kind === 'single' && isDiffToolMessage(it.msg) && it.msg.meta?.file_change_recorded !== true
 // An answered ask_question row carries the only record of the user's answers (its chip), so like a diff card it stays out of both folds.
 const isAskAnsweredItem = (it: TurnItem) =>
   it.kind === 'single' && isAskAnsweredToolMessage(it.msg)
@@ -219,8 +226,8 @@ const LIVE_ACTIVITY_WINDOW = 5
 /** A hidden Approved:/Refused: completion row renders nothing in every host, so it is
  *  never folded and never counted: one call is one step. A notice the user
  *  dismissed draws nothing either, so it is not a step to expand onto. */
-const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>
-  !isHiddenTool(it) && !(noticeDismissed && it.kind === 'single' && isSpecHooksRunNowhereNotice(it.msg))
+const isCountedRow = (it: TurnItem, isDismissedNotice: (m: ChatMessage) => boolean) =>
+  !isHiddenTool(it) && !(it.kind === 'single' && isDismissedNotice(it.msg))
 
 type FoldMode = 'interim' | 'collapseAll' | 'default'
 
@@ -239,8 +246,8 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  * The settled set contains the running set, so completion only ever folds
  * more rows. It never opens a row the window had folded.
  */
-function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, noticeDismissed: boolean): number[] {
-  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, noticeDismissed) ? [i] : [])
+function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, isDismissedNotice: (m: ChatMessage) => boolean): number[] {
+  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, isDismissedNotice) ? [i] : [])
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
   if (complete && mode !== 'default') {
@@ -251,7 +258,7 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
     for (let i = 0; i < end; i++) {
       const it = items[i]
       if (wholeTurn && !isWorkingStepRow(it)) continue
-      if (isCountedRow(it, noticeDismissed) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
+      if (isCountedRow(it, isDismissedNotice) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
     }
   }
   return Array.from(out).sort((a, b) => a - b)
@@ -301,7 +308,10 @@ function substantiveLength(text: string): number {
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
  * any length, else -1. System notice rows (a watchdog recycle, a compaction)
- * never qualify: they trail the answer and must not displace it. Shared by the
+ * never qualify: they trail the answer and must not displace it. Nor does any
+ * row after the turn's last stamped reply (`isTurnEnd`, the reply the runner
+ * recorded): a workflow result or another writer's row landing after it would
+ * otherwise fold the turn's final answer. Shared by the
  * auto-expand decision and the render split so the "what's the always-visible
  * conclusion vs collapsed reasoning" answer can't drift between them (a
  * mismatch wrongly expands reasoning above a visible match and pushes it down).
@@ -309,7 +319,8 @@ function substantiveLength(text: string): number {
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
+  const lastReply = items.findLastIndex(it => it.kind === 'single' && isTurnEnd(it.msg))
+  for (let i = lastReply >= 0 ? lastReply : items.length - 1; i >= 0; i--) {
     const it = items[i]
     if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i
@@ -613,10 +624,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const expandSteps = useContext(ExpandStepsContext)
   const mode: FoldMode = turn.interim ? 'interim' : collapseAll && !expandSteps ? 'collapseAll' : 'default'
   // A dismiss drops its notice from the count at once, not on the next flush.
-  const specHooksNoticeDismissed = useSpecHooksRunNowhereDismissed()
+  const isDismissedNotice = useDismissedSpecHooksNotice()
   const candidates = useMemo(
-    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed),
-    [items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed],
+    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, isDismissedNotice),
+    [items, appToolCallIds, mode, turn.complete, pinnedRows, isDismissedNotice],
   )
   const fold = useMemo(() => {
     const rows = new Set<number>()
@@ -672,9 +683,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   useEffect(() => {
     if (!jumpInTurn || !revealTs) return
     const t = setTimeout(() => {
-      // The transcript's own row, not the measuring farm's off-screen copy.
-      const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
-      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]'))
+      // The transcript's own row: not the measuring farm's copy, nor one authored in a message.
+      // Searched in this pane's own transcript: split panes can show the same
+      // transcript, so the same timestamp can mark a row in another pane.
+      const rows = (scrollerEl() ?? document).querySelectorAll<HTMLElement>('[data-jump-target]')
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]') && !el.closest(`[${MESSAGE_BODY_ATTR}]`))
       if (!row) return
       // The jump's settle poll centres the whole turn each frame; end it first.
       claimScroll()

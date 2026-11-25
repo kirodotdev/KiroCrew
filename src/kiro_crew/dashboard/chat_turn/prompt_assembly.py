@@ -23,6 +23,7 @@ from kiro_crew.context import (
     prepare_store_vectors,
     reserve_memory_prefetch,
 )
+from kiro_crew.context_assembly.turn import recall_query
 from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs, slot_steering_principal
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
@@ -733,6 +734,20 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             _current_replay_message=_current_replay_message,
             reset_out=_conversation_reset,
         )
+        # Whether text this message's sender did not write reaches the prompt (see
+        # its use below). A cold start's replay is built from the log and the slot's
+        # live tail, so it can hold rows from anyone, a queued or cancelled reply
+        # included; which rows it took is not traced, so any replay counts. So does a
+        # responsive recovery transcript: an interrupted request, possibly the owner's,
+        # that ``_turn_dispatch_gates`` prepends to this turn.
+        _carries_other_text = bool(compressed) or bool(_responsive_recovery)
+        # Save the person's message for the linked-channel mirror before anything
+        # below prepends to it: the cancelled-turn preamble, queued gateway notices
+        # (sub-agent failures, a session restart), the sender line and pending
+        # context are the model's, and a long one would push the person's words
+        # past the mirror's length cut.
+        _user_msg_for_mirror = message
+        turn._user_msg_for_mirror = _user_msg_for_mirror
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but everything BEFORE the cancel is preserved.
         # Re-inject just the cancelled turn (user prompt + partial assistant)
@@ -740,6 +755,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # duplicating older history. Flag lives on the session (set by
         # SessionManager.stop_turn), consumed one-shot here. Use getattr
         # for prev_turn_cancelled so test doubles don't raise on access.
+        # A cold start's replay (the first-turn debt stays armed after a
+        # cancel) is built from the transcript and already holds the stopped
+        # turn, so the preamble is built against the replay and left out when
+        # the replay carries the stopped request.
         _session = getattr(state.sessions, "_sessions", {}).get(session_key)
         if _session is not None and getattr(_session, "prev_turn_cancelled", False):
             _session.prev_turn_cancelled = False
@@ -756,10 +775,12 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     build_cancelled_turn_preamble,
                     state.context_builder.conversation_log,
                     session_key,
+                    replay=compressed or "",
                 )
                 if preamble:
                     message = preamble + "\n\n" + message
                     turn.message = message
+                    _carries_other_text = True
         # A turn that CONTINUES an interrupted one, on a session this turn
         # natively resumed (session/load). kiro-cli logs a prompt only once it
         # is answered, so the turn cut off by the process dying is missing
@@ -803,10 +824,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             if fresh:
                 message = "\n\n".join(fresh) + "\n\n" + message
                 turn.message = message
-        # Save raw user message before context/persona prepend for Slack
-        # mirror — avoids leaking injected context to the linked thread.
-        _user_msg_for_mirror = message
-        turn._user_msg_for_mirror = _user_msg_for_mirror
+                _carries_other_text = True
         # Shared Crew: tell the agent who sent this message (prompt only).
         from kiro_crew.shared_crew.attribution import sender_line
 
@@ -832,6 +850,15 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         if _ctx_prefix:
             message = _ctx_prefix + message
             turn.message = message
+            _carries_other_text = True
+        if _carries_other_text:
+            # Text this message's sender did not write now rides the turn (queued
+            # context, a cancelled turn's preamble, sub-agent notices), so its tool
+            # prompts go back to the owner alone (``slack.turn_requester``).
+            # Imported here: this body runs on the chat runner module's globals.
+            from kiro_crew.slack.turn_requester import forget_turn_requester
+
+            forget_turn_requester(slot)
         # The message that started the Slack thread this session joined
         # (``chat_slack._seed_thread_parent``), handed to build_message as the
         # fenced ``[SLACK THREAD CONTEXT — UNTRUSTED DATA]`` block, the same block
@@ -1047,15 +1074,21 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     raise
                 # The builder keeps essentials and reports unavailable learned memory.
                 logger.info("Member learned memory unavailable for context preparation")
-        # Every session-start build starts its message's embedding here, just
+        # Every session-start build starts its recall query's embedding here, just
         # ahead of itself, so the build joins it and waits within its deadline. A
         # pre-warmed session gets its only early embed here; after the cold-start embed in
         # `_turn_admit` (turn_admission), the same text is a cache hit or joins that inference.
+        _user_range = user_text_span(
+            _user_prepend_offset,
+            user_typed_len,
+            quick_prompt=_is_quick_prompt,
+            prompt_expanded=prompt_expanded,
+        )
         if _context_is_new and not _provider_has_history and not is_slash:
             await _prewarm_startup_query(
                 state,
                 slot,
-                message,
+                recall_query(message, _user_range),
                 memory_store=memory_store,
                 execution_context=execution_context,
             )
@@ -1111,12 +1144,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # why the member identity travels separately.
                 member=slot.agent if slot.mode == "member" and slot.agent else "",
                 execution_context=execution_context,
-                user_text_range=user_text_span(
-                    _user_prepend_offset,
-                    user_typed_len,
-                    quick_prompt=_is_quick_prompt,
-                    prompt_expanded=prompt_expanded,
-                ),
+                user_text_range=_user_range,
                 user_span_out=_user_span,
                 needs_reinjection=_needs_reinjection,
                 steering_dirs=_folder_steering_dirs,
@@ -1126,6 +1154,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # prompt offers no tool that applier would refuse.
                 directive_user_origin=bool(turn._directive_user_origin),
                 **_thread_parent_kwargs,
+                # A chat option tap's leading ``/token`` stays the label it is.
+                quick_prompts=not turn._expansions_off,
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)

@@ -468,9 +468,10 @@ def update_state(agent_id: str, **fields: object) -> bool:
     through ``_write_state_off_loop`` and is drained on cancellation; an abandoned
     writer holds the conversation until it settles, so on-loop retention writes
     run after it. Release demotes off-loop (``release_conversation_async``). The
-    one on-loop caller left is retention promotion: its busy check, promotion and
-    spawn admission must commit with no await between them, and its non-blocking
-    lock probe keeps a stale writer from rolling back ``keep=True``.
+    one on-loop caller left is retention promotion: its busy check and its
+    ``keep=True`` write must commit with no await between them, and its
+    non-blocking lock probe returns ``RETRYABLE`` rather than let an older writer
+    roll back ``keep=True``.
     """
     if _live_run_key(agent_id) in _LIVE_RUN_STATES:
         _LIVE_RUN_STATES[_live_run_key(agent_id)].update(fields)

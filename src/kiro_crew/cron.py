@@ -386,12 +386,12 @@ _RESTART_STOP_SECS = 5.0
 async def stop_cron_before_restart(crons: CronService | None) -> None:
     """Stop the gateway's cron service for a planned in-app restart. Never raises.
 
-    The dashboard Restart (and update apply), the gateway's update restart and
-    the Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
+    The dashboard's ``_restart_gateway`` behind ``POST /api/restart`` and the
+    Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
     gateway's ``_shutdown``, where ``stop()`` runs on a SIGTERM, never runs. A
     run in flight would end with the process image: no history row, no notice
     (``set_interrupt_alert``), and, as an exec keeps the pid, an in-flight marker
-    whose writer still reads as alive. Each of those restarts calls this past
+    whose writer still reads as alive. Each of those two restarts calls this past
     its last refusal and before its ``close_all()``, the order ``_shutdown``
     takes. Bounded by ``_RESTART_STOP_SECS``: a stop still running then is
     cancelled, not awaited, and the restart goes on. ``None`` is a no-op.
@@ -818,6 +818,7 @@ class CronService:
     _apply_loop_stall_breaker = _stall_breaker._apply_loop_stall_breaker
     _loop_stall_breaker_verdict = _stall_breaker._loop_stall_breaker_verdict
     _pause_for_loop_stall = _stall_breaker._pause_for_loop_stall
+    _file_cut_run = _stall_breaker._file_cut_run
     # The service's copy of the cron store: ``kiro_crew.cron_service.service.store_sync``.
     list_jobs = _store_sync.list_jobs
     count_enabled_from_disk = _store_sync.count_enabled_from_disk

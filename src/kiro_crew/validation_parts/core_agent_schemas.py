@@ -25,6 +25,7 @@ from kiro_crew.effort import EFFORT_VALUES
 from kiro_crew.monitoring.limits import MAX_RUNTIME_CEILING_SECS, validate_runtime_secs
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_AGENT_TURNS,
+    MAX_MONITOR_ALSO_WAKE_ON,
     MAX_MONITOR_CADENCE_SECS,
     MAX_MONITOR_PROVIDER_ERRORS,
     MAX_MONITOR_STOP_REASON_CHARS,
@@ -114,6 +115,10 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # absolute, exist, and be under subagent_cwd_allowed_roots. Validated
         # in SubagentManager.spawn.
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # Optional ``"worktree"``: each task gets a git worktree of its own of the
+        # repository ``cwd`` is in. Shape only here; the value and the cwd it
+        # needs are checked at admission, so a refusal is counted like a bad cwd.
+        FieldSpec("isolate", str, max_len=MAX_SHORT_STRING),
         # Optional model override for the subagent (e.g. "deepseek-3.2").
         # When set, the subagent runs on this model instead of the gateway default.
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
@@ -424,6 +429,17 @@ _WATCH_WORK_LEDGER = "work-ledger"
 #: every caller written before this field existed.
 _MONITOR_WATCH_FIELD = FieldSpec("watch", str, allowed=frozenset({_WATCH_WORK_LEDGER}))
 
+#: Shared by ``monitor_watch`` and ``monitor_update``: the other pull requests a
+#: structured watch also wakes on. Each entry is parsed against the watch's kind
+#: after this shape check.
+_MONITOR_ALSO_WAKE_ON_FIELD = FieldSpec(
+    "also_wake_on",
+    list,
+    item_type=str,
+    item_max_len=MAX_SHORT_STRING,
+    max_items=MAX_MONITOR_ALSO_WAKE_ON,
+)
+
 
 MONITOR_WATCH_SCHEMA = ToolSchema(
     tool_name="monitor_watch",
@@ -445,6 +461,7 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
         FieldSpec("wake_on_terminal", bool),
+        _MONITOR_ALSO_WAKE_ON_FIELD,
     ],
 )
 
@@ -620,5 +637,6 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         # is the only way a conductor that armed a plain timer reaches the gate without
         # tearing its loop down and losing its cycle count.
         _MONITOR_WATCH_FIELD,
+        _MONITOR_ALSO_WAKE_ON_FIELD,
     ],
 )

@@ -214,11 +214,18 @@ class LiveSession:
     parked: bool = False
     #: When the parked op's hold ends (``HOLD_TIMEOUT_S`` after :meth:`LiveHub.park`;
     #: ``0.0`` at a turn's start). The hub
-    #: owns this end: past it a hand-back goes to chat and the op's poll is told the
-    #: hold is over (:meth:`LiveHub.hold_over`), so the two never disagree.
+    #: owns this end: past it a hand-back goes to chat and, unless one inside it
+    #: still stands (``hold_handed_back``), the op's poll is told the hold is over
+    #: (:meth:`LiveHub.hold_over`), so the two never disagree.
     parked_until: float = 0.0
-    #: The hand-back came while the op was still parked: its poll resumes the op.
+    #: The hand-back came while the op was still parked and no poll has seen it
+    #: yet: a claim before one does parks the op again (:meth:`LiveHub.claim`).
     park_resumed: bool = False
+    #: A hand-back found the op parked inside this hold and sent no words to chat:
+    #: every call parked on it resumes, one polling after the end too
+    #: (:meth:`LiveHub.hold_over`). A poll leaves it; the next claim or turn, or a
+    #: hand-back whose words go to chat, clears it.
+    hold_handed_back: bool = False
     #: A supervisor state (:meth:`LiveHub.set_state`) reported while the person held
     #: the browser, or ``""``. The card stays ``in_control`` until the hand-back,
     #: which publishes this instead of ``live``: only a lock release leaves
@@ -532,8 +539,24 @@ class LiveHub:
         #: The turn-replay recorder (``browser_harness.recording``); ``None`` records
         #: nothing. The dashboard attaches the gateway's one at startup.
         self.recorder: LiveRecorder | None = None
+        #: Called with the session key whenever a quick ask is set, moved or ended,
+        #: so the slot list can re-read whether the session waits on one.
+        self._on_ask_changed: Callable[[str], None] | None = None
 
     # ── wiring ─────────────────────────────────────────────────────────────
+
+    def watch_asks(self, callback: Callable[[str], None] | None) -> None:
+        """Install the quick-ask change listener (``None`` removes it)."""
+        self._on_ask_changed = callback
+
+    def _ask_moved(self, session_key: str) -> None:
+        callback = self._on_ask_changed
+        if callback is None:
+            return
+        try:
+            callback(session_key)
+        except Exception:  # noqa: BLE001 - a listener never fails the ask it hears about
+            logger.debug("browser live: ask listener failed", exc_info=True)
 
     def bind(self, publish: Publish | None, send_frame: SendFrame | None) -> None:
         """Install the owner-only senders (JSON events, binary frames)."""
@@ -579,6 +602,7 @@ class LiveHub:
         sess.parked = False
         sess.parked_until = 0.0
         sess.park_resumed = False
+        sess.hold_handed_back = False
         sess.handback_options = []
         # A state queued for the hand-back belongs to the turn that reported it.
         sess.queued_state = ""
@@ -594,7 +618,27 @@ class LiveHub:
             sess.state = ""
         if self.recorder is not None:
             self.recorder.turn_started(session_key, sess.turn_id, sess.url)
-        self._emit(sess)
+        if sess.stream is None:
+            self._emit(sess)
+        else:
+            self._spawn(self._new_turn_picture(sess, sess.stream))
+
+    async def _new_turn_picture(self, sess: LiveSession, stream: LiveStream) -> None:
+        """Announce a turn that joins a running stream, then ask Chrome for its picture.
+
+        The card opens the new turn with no picture, and Chrome sends no frame of a
+        still page (a paused video, a song's end screen), so the card would wait for
+        the page to change. A screencast start answers with the current picture at
+        once; it goes out after the event, so the frame lands on the new turn.
+        ``restart`` does nothing while no card sees the view.
+        """
+        await self._emit_now(sess)
+        if sess.stream is not stream:
+            return
+        try:
+            await stream.restart()
+        except Exception:  # noqa: BLE001 - the tab moved or closed; the next op restarts it
+            logger.debug("browser live: new-turn picture not requested", exc_info=True)
 
     def step(self, session_key: str, label: str) -> None:
         """The agent is on a new step: the previous active one is done."""
@@ -662,6 +706,7 @@ class LiveHub:
             # The turn is over: nobody is left to read the answer.
             sess.ask.settle("cancelled")
             sess.ask = None
+            self._ask_moved(sess.session_key)
         sess.input_rect = None
         sess.fold_on_release = False
         sess.parked = False
@@ -1182,6 +1227,8 @@ class LiveHub:
             # again, on its first hold's end, and is not resumed by the earlier one.
             sess.parked = True
             sess.park_resumed = False
+        # A call still polling waits for this takeover's hand-back, not the last one.
+        sess.hold_handed_back = False
         sess.claim_turn = sess.turn_id
         sess.seen_at = self._clock()
         sess.run = RunCount()
@@ -1248,6 +1295,8 @@ class LiveHub:
             delivered = DELIVERED_CHAT
         else:
             delivered = ""
+        # Words sent to chat clear the flag: no call polling past the end runs behind them.
+        sess.hold_handed_back = (sess.hold_handed_back or waiting) and delivered != DELIVERED_CHAT
         sess.handback_options = []
         sess.input_rect = None
 
@@ -1279,26 +1328,27 @@ class LiveHub:
             sess.parked_until = self._clock() + HOLD_TIMEOUT_S
 
     def hold_over(self, session_key: str) -> bool:
-        """The parked op's hold ended before the person handed back to it.
+        """The parked op's hold ended, and no hand-back inside it still stands.
 
-        Its poll then stops the op instead of resuming it: a hand-back after the end
-        went to chat (:meth:`release`), so resuming would run the op behind words
-        the agent never sees.
+        Its poll then stops the op instead of resuming it: a hand-back after the end,
+        or a later one whose words went to chat (:meth:`release`), would otherwise
+        run the op behind words the agent never sees.
         """
         sess = self._sessions.get(session_key)
         return (
             sess is not None
             and sess.parked_until > 0.0
-            and not sess.park_resumed
+            and not sess.hold_handed_back
             and self._clock() >= sess.parked_until
         )
 
     def handback_seen(self, session_key: str) -> None:
         """A parked op's poll saw the hand-back: a later claim has nothing to re-park.
 
-        The hold's end stays as it is: another call parked in the same session may
-        still be polling, and past the end it must be told ``hold_over`` too. The
-        next :meth:`park` or turn sets a fresh one.
+        The hold's end and ``hold_handed_back`` stay as they are: another call parked
+        on the same hold may still be polling; past the end it resumes while
+        ``hold_handed_back`` stands, else it is told ``hold_over``. The next
+        :meth:`park` or turn sets a fresh end.
         """
         sess = self._sessions.get(session_key)
         if sess is not None:
@@ -1326,6 +1376,7 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         if sess is not None:
             await self._emit_now(sess)
+        self._ask_moved(session_key)
 
     def _record_handback(self, sess: LiveSession, note: str, choice: str) -> None:
         rec = self.recorder

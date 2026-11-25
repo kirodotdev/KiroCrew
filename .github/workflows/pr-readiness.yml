@@ -510,7 +510,7 @@ jobs:
           # fails returns 1, the transient code, so the caller publishes its
           # "could not be evaluated" verdict and a recompute reads it again.
           gh_head_runs() {
-            local repo="$1" sha="$2" event="$3" known="${4:-}" known_ids="" page ids id run found=""
+            local repo="$1" sha="$2" event="$3" known known_ids="" page ids id run found=""
             page="$(gh_retry gh api --method GET --paginate \
               "repos/$repo/actions/runs?event=$event&head_sha=$sha&per_page=100" \
               | jq -cs '{workflow_runs: [.[].workflow_runs[]]}')" || return $?
@@ -518,13 +518,16 @@ jobs:
               printf '%s\n' "$page"
               return 0
             fi
-            # The optional fourth argument is a runs page the caller already
+            # Every argument after the third is a runs page the caller already
             # holds for another event. Those runs are known not to be <event>
             # runs, so they are not fetched again: a head with no `dynamic`
-            # run costs one check-runs read, not one read per pull_request run.
-            if [ -n "$known" ]; then
-              known_ids="$(jq -r '.workflow_runs[]?.id' <<<"$known")" || return 1
-            fi
+            # run costs one check-runs read, not one read per pull_request or
+            # pull_request_target run. A run on none of the pages is fetched.
+            # An empty argument is a page the caller does not hold; a page that
+            # cannot be parsed fails the read.
+            for known in "${@:4}"; do
+              known_ids="$known_ids$(jq -r '.workflow_runs[]?.id' <<<"$known")"$'\n' || return 1
+            done
             # filter=all: the default (latest) keeps one check-run per name, so
             # a sibling pull request's newer job on a shared head would hide
             # this one's.
@@ -1425,6 +1428,10 @@ jobs:
               ;;
           esac
           lane_never_started=false
+          # Sensitive Change Review's `pull_request_target` runs page, kept
+          # once its spec has read it: the CodeQL lookup further down the loop
+          # hands it to `gh_head_runs` as a page already in hand.
+          pt_runs=""
 
           # The three whole-design lanes' comment slots, read ONCE here beside
           # the runs read: both readers below score those lanes, and the
@@ -1684,7 +1691,7 @@ jobs:
               continue
             fi
             if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
-              runs="$(gh_head_runs "$REPO" "$SHA" dynamic "$pr_runs")" || {
+              runs="$(gh_head_runs "$REPO" "$SHA" dynamic "$pr_runs" "$pt_runs")" || {
                 rc=$?
                 if [ "$rc" -eq 22 ]; then exit 1; fi
                 transport_failed=true
@@ -1734,6 +1741,7 @@ jobs:
                   transport_failed=true
                   break
                 }
+                pt_runs="$src"
               fi
               # Bind the run to this PR by (head repository, head branch), NOT
               # by `.pull_requests`: that array is empty on every fork run, so
@@ -2526,7 +2534,7 @@ jobs:
             # A docs-only head owes no CodeQL result: the verdict step listed
             # it not eligible, so this re-check reads it the same way.
             if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ] && [ "${DOCS_ONLY:-}" != "true" ]; then
-              if codeql_state="$(gh_head_runs "$REPO" "$SHA" dynamic "$runs_page" \
+              if codeql_state="$(gh_head_runs "$REPO" "$SHA" dynamic "$runs_page" "$pt_page" \
                 | jq -r '
                   [.workflow_runs[]
                    | select(.path == "dynamic/github-code-scanning/codeql")]

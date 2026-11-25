@@ -113,12 +113,13 @@ _DECLARED_FOR_OTHER_OWNERS = frozenset(
         "_persistence_watchdog_task",
         "_cron_quarantine",
         "_force_exit_claimed",
+        "_ctrl_c_marking",
     }
 )
 
 #: ``inspect.signature(GatewayOrchestrator)`` before the move.
 _SIGNATURE = (
-    "(cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, no_crons: 'bool' = False, "
+    "(cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, headless: 'bool' = False, no_crons: 'bool' = False, "
     "no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = "
     "False, approval_mode: 'str | None' = None, test_mode: 'bool' = False, credentials: "
     "'Mapping[str, str] | None' = None) -> 'None'"

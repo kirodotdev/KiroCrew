@@ -155,3 +155,23 @@ def test_a_real_restriction_on_the_entry_still_blocks_the_hoist():
 
     assert array == []
     assert out_agents is agents
+
+
+def test_the_tokened_launch_carries_the_gateway_policy_markers(monkeypatch):
+    """Under a cc/strict tier the engine's env has no markers, so the launch carries them."""
+    from kiro_crew.platform import policy_distribution as pd
+
+    spec_entry = {**PINNED, "env": {pd.POLICY_CACHE_ONLY_ENV: "0"}}
+    _, array = _hoist(_agents(spec_entry), {APP: PINNED})
+    assert pd.POLICY_CACHE_ONLY_ENV not in _env(array[0])
+
+    monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+    monkeypatch.setattr(pd, "effective_max_cache_age", lambda: 600)
+    _, array = _hoist(_agents(spec_entry), {APP: PINNED})
+
+    env = _env(array[0])
+    assert env[pd.POLICY_CACHE_ONLY_ENV] == "1"
+    assert env[pd.POLICY_MAX_AGE_ENV] == "600"
+    assert env[STUB_SESSION_TOKEN_ENV] == "tok-1"
+    # The registered launch is untouched: the markers are this session's only.
+    assert PINNED["env"] == {"PYTHONPATH": "/crew/site-packages", "KIROCREW_HOME": "/crew/home"}

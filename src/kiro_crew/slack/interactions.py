@@ -217,12 +217,13 @@ async def dispatch(payload: dict) -> None:
                 logger.debug("Failed to send ephemeral rejection", exc_info=True)
         return
     # A shared user presses nothing in a code channel, bound, revoked or one of ours
-    # Slack's UI opened (slack.shared_access): one check for every card there,
-    # including the buttons whose handlers act directly (approve, Kill Now).
-    from kiro_crew.slack.code_channels.routing import shared_user_refused_here
+    # Slack's UI opened (slack.shared_access), except in the one they opened: one
+    # check for every card there, including the buttons whose handlers act directly
+    # (approve, Kill Now). Each refused press is answered with why, privately.
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_here, tell_owner_only
 
     if is_shared_listed(user_id) and await shared_user_refused_here(
-        getattr(_orch, "slack", None), channel
+        getattr(_orch, "slack", None), channel, user_id
     ):
         sel().log_api_access(
             caller=user_id,
@@ -232,6 +233,7 @@ async def dispatch(payload: dict) -> None:
             resources=action_id,
             error="code channel is owner-only",
         )
+        await tell_owner_only(getattr(_orch, "slack", None), channel, user_id, throttle=False)
         return
 
     # ── "Open session" deep-link button — no-op ──
@@ -344,6 +346,13 @@ async def dispatch(payload: dict) -> None:
             return
         if await handle_stop_click(_orch, payload):
             return
+
+    # ── A Home-tab action button: a new thread in the clicker's DM ──
+    # A Home-tab payload carries no channel, so the OPTIONS gate below would
+    # judge an empty channel id; the handler gates the DM it posts into.
+    if _is_home_tab_action_button(payload, action):
+        await _handle_home_tab_action(payload, action, user_id)
+        return
 
     # ── OPTIONS choice buttons / "Choose several..." menu ──
     # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show
@@ -713,18 +722,24 @@ async def dispatch(payload: dict) -> None:
         approval_key, press_nonce = split_approval_token(
             action.get("value", "") or action_id.rsplit("_", 1)[-1]
         )
-        # A shared user answers only their own turn's prompt and never grants
-        # Trust; the prompt stays pending for the person it belongs to.
+        # A shared user answers only their own turn's prompt, Trust included; the
+        # prompt stays pending for the person it belongs to.
         _asker = getattr(SlackApprovalDecider._REGISTRY.get(str(approval_key)), "requester", "")
-        if is_shared_listed(user_id) and (pressed_trust or _asker != user_id):
+        if is_shared_listed(user_id) and _asker != user_id:
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.transport_tool_approval",
                 outcome="denied",
                 source="slack",
                 resources=f"approval_key={approval_key}",
-                error="trust is owner-only" if pressed_trust else "not the requester",
+                error="not the requester",
             )
+            # Who can answer, while this card's window is still open; a closed or
+            # stale one is answered by nobody, so say that instead.
+            _live = bool(SlackApprovalDecider.session_for(approval_key, nonce=press_nonce))
+            _why = _owner_only_text(_asker) if _live else APPROVAL_NOT_WAITING_TEXT
+            _thread = payload.get("message", {}).get("thread_ts") or ""
+            await _tell_user(channel, user_id, _thread, _why)
             return
         # Inbound channels-governance gate: a button press resolves a tool approval
         # (executes the governed tool) or a Trust escalation, so a channels policy
@@ -756,7 +771,13 @@ async def dispatch(payload: dict) -> None:
         # say "trusted" only when the grant really took: under a ``permission_mode``
         # deny of ``trust`` the press approves this one tool.
         is_trust = False
-        if pressed_trust and trust_permitted():
+        # Asked again after the channels await: a shared user removed during it
+        # widens nothing.
+        if (
+            pressed_trust
+            and trust_permitted()
+            and (is_allowed_user(user_id) or is_shared_user(user_id))
+        ):
             sess_key = SlackApprovalDecider.session_for(approval_key, nonce=press_nonce)
             # No live prompt answers to this press, so there is no session to widen.
             # Granting on the empty key would escalate whatever later reads it.
@@ -1118,7 +1139,9 @@ from kiro_crew.slack.interactions_settings import _handle_channel_remove  # noqa
 from kiro_crew.slack.interactions_settings import _handle_channels_select  # noqa: E402
 from kiro_crew.slack.interactions_settings import _handle_track_channel  # noqa: E402
 from kiro_crew.slack.interactions_settings import _handle_users_select  # noqa: E402
+from kiro_crew.slack.interactions_options import _handle_home_tab_action  # noqa: E402
 from kiro_crew.slack.interactions_options import _handle_options  # noqa: E402
+from kiro_crew.slack.interactions_options import _is_home_tab_action_button  # noqa: E402
 from kiro_crew.slack.interactions_options import _open_options_several  # noqa: E402
 from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402
@@ -1141,6 +1164,8 @@ from kiro_crew.slack.interactions_approvals import _handle_review_revise  # noqa
 from kiro_crew.slack.interactions_approvals import BRIDGE_ACTION_STALE_NOTICE  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_bridge_action  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_tool_approval  # noqa: E402
+from kiro_crew.slack.interactions_approvals import _owner_only_text  # noqa: E402
+from kiro_crew.slack.interactions_approvals import APPROVAL_NOT_WAITING_TEXT  # noqa: E402
 from kiro_crew.notifications.bridge_actions import (  # noqa: E402
     SLACK_ACTION_PREFIX as BRIDGE_SLACK_ACTION_PREFIX,
 )
@@ -1198,7 +1223,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_sessions import _outside_code_channel  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _record_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _shared_stop_refused  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import (  # noqa: F401
+        APPROVAL_OWNER_OR_ASKER_TEXT,
+    )
+    from kiro_crew.slack.interactions_approvals import APPROVAL_OWNER_ONLY_TEXT  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_AUTH_DENIED_MSG  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import _refused_press_text  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_ROOT_SUFFIX  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _delete_review_placeholder  # noqa: F401

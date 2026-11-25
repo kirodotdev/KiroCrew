@@ -8,7 +8,9 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from kiro_crew.apps.hidden_sessions import listed_surface
+from kiro_crew.clear_command import CLEAR_COMMAND, is_clear_command_row  # noqa: F401 - re-exported
 from kiro_crew.dashboard.agent_welcome import welcome_preview
+from kiro_crew.dashboard.relay_archive import is_cron_run_read_only
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.dashboard.slot_row_memo import memo_redacted, memo_row_summary, summarize_rows
@@ -37,27 +39,6 @@ def summary_rows(slot: Any) -> list[Any]:
     if getattr(slot, "window_pending", False) is True:
         return slot.sidebar_messages()
     return slot.messages
-
-
-CLEAR_COMMAND = "/clear"
-
-
-def is_clear_command_row(msg: Any) -> bool:
-    """Whether *msg* is a user row that typed ``/clear``.
-
-    Matches the runner's own test (``chat_turn/slash_commands.py``): the first
-    word of the message, case-insensitive. The user row is the boundary because
-    it is durable and every harness writes it, while the confirmation row's text
-    differs per harness and a native clear empties only the in-memory window, so
-    a restore brings the earlier rows back.
-    """
-    if not isinstance(msg, dict) or msg.get("role") != "user":
-        return False
-    content = msg.get("content")
-    if not isinstance(content, str):
-        return False
-    words = content.split(maxsplit=1)
-    return bool(words) and words[0].lower() == CLEAR_COMMAND
 
 
 def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
@@ -338,6 +319,7 @@ class SlotProjection:
         # audience's memo); ``None`` projects ``source_links`` here.
         source_links_projected: list[dict] | None = None,
         coordinator_pending: Sequence[dict] = (),
+        needs_full_chat: bool = False,
     ) -> dict:
         """Serialize the ordered public slot summary without owning slot state.
 
@@ -347,6 +329,10 @@ class SlotProjection:
         state-level registry, not on ``slot._approval_futures``, so without this
         input the slot reads as idle while its owner is parked on an approval.
         Oldest first; the projection reads only the first one for the card.
+
+        ``needs_full_chat`` is the slot's answer from ``full_chat_waits``: a change
+        card, guide offer or browser ask waits on the person, read from the stores
+        that own them.
         """
         # Local import avoids the state -> slot_projection -> chat_utils -> state
         # cycle at module import time. Module import (not from-import) avoids
@@ -545,6 +531,13 @@ class SlotProjection:
             # shown as "auto". "" = not known. DISPLAY only, like the verdict
             # above: never a write source.
             "served_model": slot.served_model,
+            # The model an engine promotion moved this slot's session onto for
+            # the rest of it ("" = none, or a reset is armed, so the next turn
+            # starts fresh): while `served_model` still equals it, an inheriting
+            # slot's chip names it. DISPLAY only.
+            "engine_promoted_model": (
+                "" if slot._pending_reset_history_key else slot._engine_promoted_model
+            ),
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             # An app's mode lists as plain while the app may not hide it.
@@ -558,6 +551,9 @@ class SlotProjection:
             # shipping it to a browser buys nothing.
             "executor": slot.executor,
             "instance_id": slot.instance_id,
+            # A cron run's transcript reopened read-only (``relay_archive``):
+            # the client hides the reply actions as it does for a relay archive.
+            "cron_run_read_only": is_cron_run_read_only(slot),
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             # Durable rows only, like ``last_ts``: the save path keeps no other row.
@@ -622,6 +618,8 @@ class SlotProjection:
             "unread_failed": slot.mode != "member" and summary.unread_failed,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
+            # A change card, guide offer or browser ask: ChatEmbed cannot draw them.
+            "needs_full_chat": bool(needs_full_chat),
             "interrupted": interrupted,
             "interrupted_stale": interrupted_stale,
             "interrupted_by_sign_in": interrupted_by_sign_in,
@@ -662,6 +660,7 @@ class SlotProjection:
             "pinned": slot.pinned,
             "mutes_opened": slot.mutes_opened,
             "muted": slot.muted,
+            "source_links_off": slot.source_links_off,
             "tags": list(slot.tags),
             "tags_revision": getattr(slot, "tags_revision", ""),
             "color_index": slot.color_index,

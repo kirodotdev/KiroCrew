@@ -261,6 +261,10 @@ class TestSelfProtectionFlagInterposition:
         # resolves the host behind interposed options, so flags between the
         # verb and the self-target cannot separate anchor from token.
         "sandbox-escape-ssh-self": "ssh {flags} localhost",
+        # Keys on a git transport operand; the argv floor steps over git global
+        # options, so flags between ``git`` and the subcommand cannot separate
+        # the anchor from the self-target operand.
+        "sandbox-escape-git-tar-self": "git {flags} clone localhost:x",
     }
     # FLOOR-ONLY id -> command template. These have NO catalog row: their
     # product-name-anywhere regex rows were deleted and the argv floor

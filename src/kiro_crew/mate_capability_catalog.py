@@ -133,7 +133,7 @@ def gateway_lacks(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, An
 #: Bounds of the dispatch summary: names listed per line, characters per name.
 _SUMMARY_NAMES = 12
 _SUMMARY_NAME_CHARS = 48
-_SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/ -]+")
+_SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/: -]+")
 
 
 def _summary_names(names: list[str], how: dict[str, str] | None = None) -> str:
@@ -194,6 +194,46 @@ def unusable_line(spec: dict[str, Any], unusable: dict[str, str]) -> str:
 
     return crewmate_prompts.fill(
         "dispatch.worker_unusable", servers=_summary_names(names, unusable)
+    )
+
+
+#: How :func:`session_unusable` names a server whose session waits for a person to
+#: sign in. Only the ``awaiting_auth`` bucket: a ``failed`` server with a credential
+#: reason (``_SIGNED_OUT``) may need a key or a profile, which a chat sign-in does
+#: not start, so it keeps the plain unusable line.
+_SIGN_IN_HOW = "waiting for authorization"
+
+
+def sign_in_servers(spec: dict[str, Any], unusable: dict[str, str]) -> list[str]:
+    """The servers *spec* mounts that *unusable* names as waiting for a sign-in, in its order.
+
+    Only a name already in the summary's plain character set: the line asks the owner
+    to send it verbatim, and a name the summary would cut or rewrite names no server
+    (``session_handle_mcp.text_names_mcp_server`` matches the whole name). The session
+    report bounds each name's length (``mcp_session_report.NAME_CAP``).
+    """
+    mounted = _mounted(spec)
+    names = [
+        name
+        for name, how in unusable.items()
+        if how == _SIGN_IN_HOW
+        and name in mounted
+        and _SUMMARY_NAME_STRIP.sub("", name).strip() == name
+    ]
+    return names[:_SUMMARY_NAMES]
+
+
+def sign_in_line(names: list[str], where: str) -> str:
+    """The line telling a conductor that a person must sign in to *names* at *where*.
+
+    *names* come from :func:`sign_in_servers`, so each is already plain and is given
+    whole. *where* is built by the gateway (a dashboard link with no click token, or
+    the worker session's key), never from session output.
+    """
+    from kiro_crew import crewmate_prompts
+
+    return crewmate_prompts.fill(
+        "worker_report.sign_in", servers=", ".join(names), first=names[0], where=where
     )
 
 

@@ -581,9 +581,27 @@ async def api_chat_slot_muted(request: web.Request) -> web.Response:
     return await _toggle_slot_user_flag(request, "muted")
 
 
+async def api_chat_slot_source_links_off(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/source-links-off — turn THIS session's PR and
+    Issue chips off or back on.
+
+    While on, the session's card carries no chips, a link the session mentions
+    later gets none, and its chips feed no status refresh, as the global
+    ``dashboard.session_card_source_links`` switch does for every session.
+    Nothing is dismissed: turning the chips back on shows every chip the
+    transcript holds, minus the ones hidden one by one.
+
+    Same contract as :func:`api_chat_slot_muted`: user-only, the same ownership
+    fences, and persist-before-publish.
+    """
+
+    return await _toggle_slot_user_flag(request, "source_links_off")
+
+
 async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Response:
-    """The shared body of the two user-owned mute toggles (``mutes_opened`` and
-    ``muted``). Each comment below that names ``mutes_opened`` applies to both."""
+    """The shared body of the user-owned per-session toggles (``mutes_opened``,
+    ``muted`` and ``source_links_off``). Each comment below that names
+    ``mutes_opened`` applies to all three."""
 
     operation = f"chat.slot_{field}"
     state: DashboardState = request.app["state"]
@@ -617,7 +635,9 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
     # a dashboard human here -- the same (is_dashboard_user AND not internal_auth)
     # pair the autonudge user-input notifier uses -- so an app caller
     # (is_dashboard_user is False) and a loopback MCP/cron caller
-    # (internal_auth is True) are both refused before any mutation.
+    # (internal_auth is True) are both refused before any mutation. The chip
+    # switch is the person's choice for their own sidebar, so it is held to the
+    # same rule.
     if not (request.get("is_dashboard_user") is True and request.get("internal_auth") is not True):
         source, caller = _audit_origin(request)
         sel().log_api_access(
@@ -626,7 +646,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
             outcome="denied",
             source=source,
             resources=name,
-            error="mute toggle is a dashboard-user action; app and agent callers are refused",
+            error="this toggle is a dashboard-user action; app and agent callers are refused",
         )
         return web.json_response(
             {
@@ -714,6 +734,10 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
                 nonlocal committed
                 committed = True
                 setattr(slot, field, new_value)
+                if field == "source_links_off":
+                    # The live value is now the one on disk, so a binder's
+                    # restore still reading an older line must not apply it.
+                    slot._source_links_off_hydrated = True
 
             try:
                 saved = await save_slot_off_loop(
@@ -724,6 +748,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
                     expected_history_key=authorized_history_key,
                     mutes_opened_override=new_value if field == "mutes_opened" else None,
                     muted_override=new_value if field == "muted" else None,
+                    source_links_off_override=(new_value if field == "source_links_off" else None),
                     after_commit_under_lock=_commit_live_flag,
                 )
             except Exception:
@@ -740,7 +765,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
                     outcome="denied",
                     source=source,
                     resources=name,
-                    error="could not persist mute setting",
+                    error="could not persist the setting",
                 )
                 logger.warning(
                     "%s: durable save of slot=%s failed; " "live flag untouched, nothing published",
@@ -750,7 +775,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
                 )
                 return web.json_response(
                     {
-                        "error": "could not persist the mute setting; please retry",
+                        "error": "could not persist the setting; please retry",
                         "code": f"{field}_save_failed",
                     },
                     status=503,
@@ -793,7 +818,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
                 )
                 logger.info(
                     "%s: slot=%s has no metadata line yet; "
-                    "mute not persisted, live flag untouched, nothing published",
+                    "flag not persisted, live flag untouched, nothing published",
                     operation,
                     slot.key,
                 )
@@ -804,7 +829,12 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
                     },
                     status=409,
                 )
-    state.push_slot_patch(slot.key, (field,))
+    if field == "source_links_off":
+        # The chips themselves change with this flag, and ``source_links`` is a
+        # per-audience field a one-row patch cannot carry (``_SLOT_PATCH_FIELDS``).
+        state.push_slots_update()
+    else:
+        state.push_slot_patch(slot.key, (field,))
     source, caller = _audit_origin(request)
     sel().log_api_access(
         caller=caller,
@@ -1370,6 +1400,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         agent_creator_key,
         archived_session_names_in_folders,
         caller_home_slot,
+        channel_reachable_refusal,
         chat_folder_subtree_ids,
         clean_folder_default_prompt,
         create_folder_record,

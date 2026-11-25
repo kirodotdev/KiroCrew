@@ -893,6 +893,7 @@ def _build_click_request(clean: Mapping[str, Any]) -> "ClickRequest | str":
         point=None if resolved == CLICK_METHOD_ACCESSIBILITY else point,
         button=button,
         count=DEFAULT_CLICK_COUNT if count is None else count,
+        requested_method=method,
     )
 
 

@@ -1121,10 +1121,12 @@ async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_u
     from kiro_crew.member_memory_auth import private_memory_store_for_session
     from kiro_crew.session import BACKGROUND_KEY
 
-    client = SimpleNamespace(last_prompt_stats=None)
+    order: list[str] = []
+    retired = AsyncMock(side_effect=lambda _sid: order.append("cleanup"))
+    client = SimpleNamespace(last_prompt_stats=None, session_id="sid-1", cleanup_session=retired)
     sessions = MagicMock(
         get_or_create=AsyncMock(return_value=(client, True, False)),
-        remove=AsyncMock(),
+        remove=AsyncMock(side_effect=lambda _key: order.append("remove")),
         destroy=AsyncMock(),
         recycle_background=AsyncMock(),
     )
@@ -1140,10 +1142,13 @@ async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_u
         sessions.release.assert_called_with(key)
         sessions.remove.assert_awaited_with(key)
         sessions.destroy.assert_awaited_with(key)
+        client.cleanup_session.assert_awaited_with("sid-1")
         log = ConversationLog()
         assert not log._path(key).exists()
         assert not log._lock_path(key).exists()
     assert len(set(keys)) == 2
+    # The backend record is deleted only once the runtime has been retired.
+    assert order == ["remove", "cleanup"] * 2
     sessions.recycle_background.assert_not_awaited()
 
 
@@ -1175,7 +1180,7 @@ async def test_private_consolidation_preserves_authority_when_retirement_fails(m
     from kiro_crew.llm_helpers import background_turn
 
     writer, _ = member_stores
-    client = SimpleNamespace(last_prompt_stats=None)
+    client = SimpleNamespace(last_prompt_stats=None, session_id="s1", cleanup_session=AsyncMock())
     sessions = MagicMock(
         get_or_create=AsyncMock(return_value=(client, True, False)),
         remove=AsyncMock(side_effect=OSError("provider still live")),
@@ -1190,6 +1195,7 @@ async def test_private_consolidation_preserves_authority_when_retirement_fails(m
 
     assert read_session_execution(key).store.store_id == writer
     sessions.destroy.assert_not_awaited()
+    client.cleanup_session.assert_not_awaited()
 
 
 @pytest.mark.parametrize("contents", ["{truncated", "[]", "null"])

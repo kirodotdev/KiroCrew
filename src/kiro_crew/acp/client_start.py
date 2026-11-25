@@ -3,7 +3,7 @@
 ``_spawn``, ``_admit_scope``, ``_initialize_params``, ``_initialize_session``,
 ``_new_session_following_substitution`` and ``ensure_ready``, the entry point that drives
 them, with ``_harness_read_back`` and ``_adapter_session_mcp_servers``, which ask the kept
-process adapter.
+process adapter. ``_start_exit_error`` reads a start's exit for the steps that send.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -16,7 +16,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_spawn_start_token``, ``_spawned``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
@@ -28,13 +28,14 @@ Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import __version__, acp_tool_gate, agent_scratch
 from kiro_crew import kiro_cli as kiro_cli_mod
@@ -47,14 +48,17 @@ from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
     KIRO_CLI_BIN,
     KIRO_CLI_SUBCMD,
+    _exit_origin,
     _KiroExecutableTrustError,
     _launch_tools,
     _resolve_kiro_bin_for_spawn,
+    _resolve_spawn_env,
     finish_suspended_spawn,
     kiro_cli_not_found_message,
 )
 from kiro_crew.acp.client_timeouts import (
     _ACP_RESPAWN_BACKOFF_S,
+    _INIT_EXIT_REAP_SECS,
     _INIT_TIMEOUT,
     _SCOPE_ADMISSION_RESERVE,
     _SCOPE_ADMISSION_TIMEOUT,
@@ -67,6 +71,7 @@ from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.scope_not_admitted import AcpScopeNotAdmitted
 from kiro_crew.acp.session_mcp import refuse_contested_agent_spec
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
+from kiro_crew.acp.stderr_tail import safe_stderr_tail
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
     AcpError,
@@ -118,6 +123,7 @@ from kiro_crew.agent_sdk.backends import (
     can_restore_session,
     launch_for,
 )
+from kiro_crew.bot_chat_ending_fence import client_session_start
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE_ENV
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -139,10 +145,6 @@ if TYPE_CHECKING:
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
-
-#: Bound by ``kiro_crew.acp.client``, which defines it: the spawn audit, the
-#: subprocess-encoding baseline and the cross-platform gate key it on that path.
-_resolve_spawn_env: Callable[..., dict[str, str]]
 
 
 #: The name sent as ``clientInfo.name``. It IS the kiro-cli client-application
@@ -523,6 +525,7 @@ async def _spawn(self: AcpClient) -> None:
         _launch_tools(),
     )
     self._process = launched.process
+    self._spawned = True
     self._pid = self._process.pid
     self._kill_sent = None
     self._process_tree_confirmed_dead = False
@@ -827,14 +830,62 @@ async def _admit_scope(self: AcpClient) -> float:
     )
 
 
+async def _start_exit_error(client: AcpClient, exc: AcpError, stage: str) -> AcpError | None:
+    """The error a start ends with when its child exited during ``stage``, else ``None``.
+
+    A child that exits on its own during the scope admission wait, ``initialize``,
+    ``session/load`` or ``session/new`` (a bad shebang, a missing runtime, a crash at
+    start) has said why on stderr. The start ends as a non-transient error carrying
+    that tail, which a chat shows once, instead of the death it retries behind
+    "Connection lost". An error frame with a JSON-RPC code, a kill this client sent,
+    an admission timeout and a pipe that broke with the child still running get
+    ``None``, so they keep their error.
+    """
+    process = client._process
+    if (
+        process is None
+        or client._kill_sent is not None
+        or exc.code is not None
+        or isinstance(exc, AcpScopeNotAdmitted)
+    ):
+        return None
+    if process.returncode is None and isinstance(exc, AcpProcessDied):
+        # The write can meet the closed pipe before the child is reaped.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(process.wait(), _INIT_EXIT_REAP_SECS)
+    if process.returncode is None:
+        return None
+    await client._settle_stderr()
+    # A teardown closes the pipes before it signals the child, so its kill
+    # can land during the two waits above.
+    if client._kill_sent is not None or client._process is not process:
+        return None
+    tail = (
+        safe_stderr_tail(client._stderr_lines, "; ") if client.memory_mode == "persistent" else ""
+    )
+    detail = f" — {tail}" if tail else ""
+    code = process.returncode
+    origin = _exit_origin(code, client._kill_sent)
+    return AcpError(
+        f"the agent exited during {stage} (code={code}{origin}){detail}", transient=False
+    )
+
+
+@client_session_start
 async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
     # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so
     # a start that ends at admission discards the launch MCP config as well.
     try:
-        budget = await self._admit_scope()
-        init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
-        init_resp = await self._wait_for_response(init_id, timeout=budget)
+        try:
+            budget = await self._admit_scope()
+            init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
+            init_resp = await self._wait_for_response(init_id, timeout=budget)
+        except AcpError as exc:
+            exited = await _start_exit_error(self, exc, METHOD_INITIALIZE)
+            if exited is None:
+                raise
+            raise exited from exc
     finally:
         # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
         # the file deleted right after the initialize answer, the stdio server it
@@ -1012,7 +1063,11 @@ async def _initialize_session(self: AcpClient) -> None:
                         await self._reseed_after_capture()
                     self._store_session_config(load_resp)
                     logger.info("ACP session resumed: %s", resume_sid)
-            except (AcpError, AcpTimeoutError):
+            except AcpError as exc:
+                # A child that exited cannot answer the session/new fallback either.
+                exited = await _start_exit_error(self, exc, restore_method)
+                if exited is not None:
+                    raise exited from exc
                 logger.info(
                     "%s failed for %s, falling back to session/new",
                     restore_method,
@@ -1048,7 +1103,13 @@ async def _initialize_session(self: AcpClient) -> None:
         # use it to detect whether substitution happened. Comparing self._model
         # before vs after is the reliable signal.
         model_before = self._model
-        session_resp = await self._new_session_following_substitution()
+        try:
+            session_resp = await self._new_session_following_substitution()
+        except AcpError as exc:
+            exited = await _start_exit_error(self, exc, METHOD_SESSION_NEW)
+            if exited is None:
+                raise
+            raise exited from exc
         sent_snapshot = self._session_mcp_snapshot
         self._session_id = session_resp.get("sessionId")
         self.last_prompt_stats.begin_cost_session(self._session_id or "")

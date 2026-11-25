@@ -35,6 +35,7 @@
  */
 import { crewModeEnabled } from '../../lib/crewMode'
 import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
+import { isTouchFirst } from '../../lib/touchLayoutForm'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
 import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
@@ -160,8 +161,13 @@ export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
 export const REOPEN_LAST_PAGE_SETTING_ID = 'display.reopen-where-i-left-off'
+/** Registry id of "Touch screen layout", which DisplayPanel draws only on a touch-first device. */
+export const TOUCH_LAYOUT_SETTING_ID = 'display.touch-screen-layout'
 /** Registry id of the terminal's Ctrl+C / Ctrl+V switch, which DisplayPanel draws only off macOS. */
 export const TERMINAL_CTRL_COPY_PASTE_SETTING_ID = 'display.ctrl-c-and-ctrl-v-copy-and-paste'
+/** Registry id of "Show cursor motion", which ComputerUsePanel draws only while Computer Use
+ *  is on and the gateway supports the overlay (macOS). */
+export const SHOW_CURSOR_MOTION_SETTING_ID = 'computer-use.show-cursor-motion'
 
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
@@ -215,6 +221,14 @@ export interface SettingsSearchGovernance {
    * is drawn only then, so its entry is offered only then, as `channelsOn` is.
    */
   remoteControlShown?: boolean
+  /**
+   * Whether Settings > Computer Use can draw Show cursor motion. `false` once the
+   * `['computer-use-config']` read SUCCEEDED and said the host has no driver
+   * (`supported`) or no overlay (`cursor_motion_supported`), or, before that read,
+   * once the cached gateway platform is Windows. `undefined` (no answer) keeps the
+   * entry. Whether Computer Use is on does not withhold it, as on main.
+   */
+  cursorMotionShown?: boolean
 }
 
 /**
@@ -254,6 +268,7 @@ export function settingEntryOffered(
     return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   }
   if (entry.id === REOPEN_LAST_PAGE_SETTING_ID) return isStandaloneDisplay()
+  if (entry.id === TOUCH_LAYOUT_SETTING_ID) return isTouchFirst()
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app
@@ -263,6 +278,7 @@ export function settingEntryOffered(
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
   if (entry.id === REMOTE_CONTROL_SETTING_ID) return governance.remoteControlShown === true
   if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
+  if (entry.id === SHOW_CURSOR_MOTION_SETTING_ID) return governance.cursorMotionShown !== false
   if (entry.configKey === SLACK_TOOLS_SWITCH_KEY) return governance.slackToolsShown !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled

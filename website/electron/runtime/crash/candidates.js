@@ -28,10 +28,10 @@ const MAX_PARSE_BYTES = 64 * 1024 * 1024;
  *   `crash`    — ours, and a real crash. Gets a ledger line; acknowledged only
  *                once that line is on disk.
  *   `foreign`  — PROVEN not ours (a parsed dump whose first module is another
- *                process, or whose exception code is zero). No ledger line, and
- *                acknowledged unconditionally: it was fully accounted for, and
- *                without that the 689 inherited-handler dumps are re-parsed on
- *                every launch forever.
+ *                process, or whose exception code marks a snapshot). No ledger
+ *                line, and acknowledged unconditionally: it was fully accounted
+ *                for, and without that the 689 inherited-handler dumps are
+ *                re-parsed on every launch forever.
  *   `unparsed` — we cannot read it and never will (it is past the parse cap; a
  *                file's size does not shrink). Terminal, so it gets a ledger
  *                line naming it as unparsed and is then acknowledged — but it is

@@ -5,8 +5,9 @@ Source: https://kiro.dev/docs/hooks/, plus its `types` and `actions` subpages
 documented as one page across every surface).
 
 > **Carries local additions.** Kiro Crew's fail-closed `PreToolUse` exit contract,
-> its command-length limit and its notes on output size and caching have no
-> upstream counterpart. A re-fetch must preserve them.
+> its command-length limit, its `PostToolUse` `tool_response` keys and its notes
+> on output size and caching have no upstream counterpart. A re-fetch must
+> preserve them.
 
 Execute custom commands, or inject an agent prompt, at specific points during
 agent lifecycle and tool execution.
@@ -71,8 +72,11 @@ An MCP tool arrives under its namespaced name, such as `@postgres/query`.
     below): kiro-cli's contract holds, so a crash, kill or timeout is a warning
     and the tool goes ahead. A spec hook that a policy (governance or the shell
     deny list) refused to run blocks the call, with the refusal as the reason.
-  - **All other events**: warn-only — STDERR is shown as a warning and
-    execution continues.
+  - **All other events**: warn-only — execution continues. On a dashboard
+    turn, a channel turn's prompt hooks and a subagent's `PostToolUse`, the
+    failure is logged as one warning naming the hook, the event and the hook's
+    error, its STDERR tail, or `exited with code N`; the other surfaces log it
+    at INFO only ([#37234](https://github.com/kirodotdev/KiroCrew/issues/37234)).
 
 There is no per-hook advisory/fail-open opt-out for PreToolUse.
 
@@ -108,6 +112,15 @@ contract (see Hook output). Receives `tool_name`, `tool_input`.
 
 ### PostToolUse
 Runs after tool execution. Receives `tool_name`, `tool_input`, `tool_response`.
+
+Where Kiro Crew fires `PostToolUse` itself (a Hooks-page hook, or a spec hook Kiro
+Crew runs in the harness's place), `tool_response.output` is the redacted tool
+output cut to its first 2,000 characters. Two keys beside it say whether it was
+cut: `truncated` (`true` when the redacted output was longer) and `output_length`
+(the length of the redacted text `output` was cut from). Kiro Crew holds a tool
+result it reads over ACP to no more than about 8,000 characters, so a longer
+result reports that shortened length. A spec hook kiro-cli runs itself gets
+kiro-cli's own payload.
 
 ### Stop
 Runs when assistant finishes responding (end of each turn). No matcher. Useful

@@ -12,7 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
-from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES, STORED_BACKEND_KIRO
 from kiro_crew.agent_spec_pins import coerce_spec_pins
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
@@ -101,6 +101,9 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 }
 
 
+_POD_ENV = "KIROCREW_POD"
+
+
 def resolve_loop_stall_exit_after(
     dashboard_data: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -120,11 +123,12 @@ def resolve_loop_stall_exit_after(
             LOOP_STALL_EXIT_AFTER_MAX,
         )
     source = os.environ if environ is None else environ
-    # The generated service definition is the sole launch-class authority.
-    # Inferring from systemd metadata is ambiguous because descendants inherit
-    # INVOCATION_ID; old definitions are reported by ``kirocrew doctor`` with
-    # the one-time regeneration command instead.
-    managed = source.get(_MANAGED_SERVICE_ENV) == "1"
+    # The generated service definition is the live service's launch-class
+    # authority; systemd metadata is ambiguous because descendants inherit
+    # INVOCATION_ID. A pod gateway is booted by its own service manager with no
+    # desktop app watching it, so the pod marker its boot sets counts too; that
+    # boot never sets the live marker, which the restart checks also read.
+    managed = source.get(_MANAGED_SERVICE_ENV) == "1" or source.get(_POD_ENV) == "1"
     return LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT if managed else LOOP_STALL_EXIT_AFTER_DEFAULT
 
 
@@ -136,16 +140,19 @@ def consume_managed_service_launch_environment(
     The generated service definition sets this marker for the gateway itself.
     Consuming it before the dashboard starts app backends or child terminals
     prevents those descendants from being misclassified as managed services.
+    A pod marker is copied into the result but left in place, since every
+    descendant of a pod gateway is still in that pod.
     """
     source = os.environ if environ is None else environ
+    launch = {_POD_ENV: "1"} if source.get(_POD_ENV) == "1" else {}
     value = source.pop(_MANAGED_SERVICE_ENV, None)
     if value is None:
-        return {}
+        return launch
     if environ is None:
         # Consumed for descendants only: the gateway's own exec successor (an
         # in-app restart) is the same service launch and gets it back.
         platform_compat.keep_for_reexec(_MANAGED_SERVICE_ENV, value)
-    return {_MANAGED_SERVICE_ENV: value}
+    return {**launch, _MANAGED_SERVICE_ENV: value}
 
 
 def launched_as_managed_service() -> bool:
@@ -213,6 +220,11 @@ _DEFAULT_MEMORY_MODES = frozenset({"persistent", "incognito", "temporary"})
 def _default_memory_mode_from(raw: object) -> str:
     """Normalize a stored dashboard default without failing open on corruption."""
     return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
+
+
+def _default_approval_mode_from(raw: object) -> str:
+    """The stored start mode for the owner's new chats; anything else reads as ``normal``."""
+    return raw if isinstance(raw, str) and raw in _sections.DEFAULT_APPROVAL_MODES else "normal"
 
 
 def _folder_sort_from(raw: object, default: str) -> str:
@@ -751,6 +763,7 @@ def _builtin_adoption_nav(raw: object) -> dict[str, dict[str, str]]:
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     agent = _agent_section_fields(agent_data)
     mark_member_backend_inherited(agent, member_backend_inherited(agent_data))
+    setattr(agent, KIRO_CLI_PICK_STORED_ATTR, agent_data.get("acp_backend") == STORED_BACKEND_KIRO)
     return agent
 
 
@@ -778,6 +791,11 @@ MEMBER_BACKEND_INHERITED_ATTR = "_member_backend_inherited"
 def mark_member_backend_inherited(agent: AgentConfig, inherited: bool) -> None:
     """Record on *agent* whether its ``member_acp_backend`` was inherited."""
     setattr(agent, MEMBER_BACKEND_INHERITED_ATTR, inherited)
+
+
+#: Whether a loaded agent section's ``agent.acp_backend`` is stored as the Kiro CLI
+#: pick: plain for the same reason as :data:`MEMBER_BACKEND_INHERITED_ATTR`.
+KIRO_CLI_PICK_STORED_ATTR = "_kiro_cli_pick_stored"
 
 
 def _agent_section_fields(agent_data: dict) -> AgentConfig:
@@ -815,6 +833,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         kas_sso_start_url=str(section.get("kas_sso_start_url") or "").strip(),
         kas_sso_region=str(section.get("kas_sso_region") or "").strip(),
+        kas_auth=section.get("kas_auth"),
+        kas_token_path=section.get("kas_token_path"),
+        kas_endpoint=section.get("kas_endpoint"),
+        kas_control_plane_endpoint=section.get("kas_control_plane_endpoint"),
+        kas_region=section.get("kas_region"),
+        kas_machine_env_drop=section.get("kas_machine_env_drop"),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
@@ -960,6 +984,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
         windows_background_qos=section.read("windows_background_qos", _safe_bool),
         subagent_light_tier=section.read("subagent_light_tier", _safe_bool),
+        subagent_light_lean_context=section.read("subagent_light_lean_context", _safe_bool),
         spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
         resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
         resource_critical_gb=section.read("resource_critical_gb", _safe_float),
@@ -1145,6 +1170,9 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # for the other ten, is the RANGE: an int of 999999999 loaded verbatim.
         timeout_secs=section.read(
             "timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
+        ),
+        automated_idle_timeout_secs=section.read(
+            "automated_idle_timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
         ),
         idle_exempt_keys=_load_idle_exempt_keys(section.get("idle_exempt_keys")),
         empty_response_auto_continue=bool(section.get("empty_response_auto_continue")),
@@ -1392,6 +1420,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
     )
     return DashboardConfig(
         url=section.get("url"),
+        # Unclamped integers reach the startup check. Shared validation warns and
+        # removes wrong types (default 0, off), but coerces "8443" and 8443.0 to 8443.
+        entry_port=section.read("entry_port", _safe_int),
         tailscale=_tailscale_config_from(
             dashboard_data.get("tailscale"),
             _degraded,
@@ -1425,6 +1456,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _sections.UPLOAD_MAX_MB_MIN,
             _sections.UPLOAD_MAX_MB_MAX,
         ),
+        attachment_sheet_digest=section.read("attachment_sheet_digest", _safe_bool),
         mcp_probe_timeout_secs=section.read(
             "mcp_probe_timeout_secs", _safe_int, MCP_PROBE_TIMEOUT_MIN, MCP_PROBE_TIMEOUT_MAX
         ),
@@ -1453,6 +1485,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         cautious_boot=section.read("cautious_boot", _safe_bool),
         auto_open_browser=section.get("auto_open_browser"),
         prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        warm_task_brief=section.read("warm_task_brief", _safe_bool),
         quick_send=section.get("quick_send"),
         model_picker_configured=(
             section.read("model_picker_configured", _safe_bool)
@@ -1474,9 +1507,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
         side_panel_always_open=section.read("side_panel_always_open", _safe_bool),
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
+        show_bot_sessions_in_list=section.read("show_bot_sessions_in_list", _safe_bool),
         auto_open_conductor_board=section.read("auto_open_conductor_board", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
+        default_approval_mode=_default_approval_mode_from(section.get("default_approval_mode")),
         new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
         widget_density=section.get("widget_density"),
         browser_local_origins=_sections.coerce_browser_local_origins(
@@ -1486,6 +1521,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         preferred_language=section.get("preferred_language"),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
+        fork_inherits_pin=section.get("fork_inherits_pin"),
         terminal=section.get("terminal"),
         default_project=section.get("default_project"),
         session_folder_root=_session_folder_root_or_empty(section.get("session_folder_root")),
@@ -1503,6 +1539,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
+        expand_linked_items=section.read("expand_linked_items", _safe_bool),
         command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
         channels_enabled=section.read("channels_enabled", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),

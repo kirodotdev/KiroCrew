@@ -594,6 +594,14 @@
       "configKey": "teams.tenant_id"
     },
     {
+      "id": "channels.tracked-channels-slack",
+      "label": "Tracked channels (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.tracked-channels-slack",
+      "description": "Channels the agent can post, react and read in. Applies when you save.",
+      "hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent."
+    },
+    {
       "id": "channels.webex-bot-token-webex",
       "label": "Webex bot token (Webex)",
       "tab": "channels",
@@ -933,6 +941,27 @@
       "route": "/settings/chat/composer?highlight=chat.optimize-before-sending"
     },
     {
+      "id": "chat.optimize-prompt-effort",
+      "label": "Optimize Prompt Effort",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-prompt-effort",
+      "hint": "The reasoning effort “Optimize prompt” runs at. 'Same as Background' uses your Background Effort under Model. Applies only on reasoning-capable models."
+    },
+    {
+      "id": "chat.optimize-prompt-model",
+      "label": "Optimize Prompt Model",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-prompt-model",
+      "hint": "The model “Optimize prompt” runs on. 'Same as Background' runs it on the model your background work uses; pick a model to run only Optimize prompt on it."
+    },
+    {
+      "id": "chat.pin-forks-of-pinned-sessions",
+      "label": "Pin forks of pinned sessions",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.pin-forks-of-pinned-sessions",
+      "description": "A fork of a pinned session is pinned too, so it stays beside the original."
+    },
+    {
       "id": "chat.pin-summary-in-side-panel",
       "label": "Pin Summary in Side Panel",
       "tab": "chat",
@@ -1019,13 +1048,6 @@
       "hint": "In an empty message input, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
     },
     {
-      "id": "chat.require-a-second-escape-to-stop-the-turn",
-      "label": "Require a second Escape to stop the turn",
-      "tab": "chat",
-      "route": "/settings/chat/composer?highlight=chat.require-a-second-escape-to-stop-the-turn",
-      "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn."
-    },
-    {
       "id": "chat.response-verbosity",
       "label": "Response Verbosity",
       "tab": "chat",
@@ -1059,7 +1081,7 @@
       "label": "Send follow-ups with one click",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.send-follow-ups-with-one-click",
-      "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send."
+      "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box."
     },
     {
       "id": "chat.send-shortcut",
@@ -1083,6 +1105,13 @@
       "description": "The most sessions one Bot or agent can keep open at once. 10 to 450. Default 50.",
       "hint": "A creator is a Bot, or any chat whose agent opens other sessions. A creator at this limit cannot open another session until it closes one. Chats you open yourself do not count. All sessions together still stop at 500. Applies from the next new session.",
       "configKey": "session.max_per_creator"
+    },
+    {
+      "id": "chat.show-all-bots-in-my-sessions",
+      "label": "Show all bots in my Sessions",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.show_bot_sessions_in_list",
+      "configKey": "dashboard.show_bot_sessions_in_list"
     },
     {
       "id": "chat.show-context-percentage",
@@ -1138,6 +1167,15 @@
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.simplified-tool-call-names",
       "hint": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
+    },
+    {
+      "id": "chat.since-you-left-briefs",
+      "label": "Since you left briefs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.warm_task_brief",
+      "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+      "hint": "Off: a return posts no brief. Takes effect on your next return.",
+      "configKey": "dashboard.warm_task_brief"
     },
     {
       "id": "chat.soft-stop-budget-seconds",
@@ -1196,6 +1234,13 @@
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.subagent-model",
       "hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
+    },
+    {
+      "id": "chat.swipe-to-open-and-close-side-panel",
+      "label": "Swipe to Open and Close Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=chat.swipe-to-open-and-close-side-panel",
+      "hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone."
     },
     {
       "id": "chat.tail-only-fork",
@@ -1403,6 +1448,14 @@
       "hint": "An app that asks for browser access can show the live browser of its own chats on its page, read those pages, and click and type there. Each part waits for your approval on the app's page. While this is off, no app gets any of it, even one you approved."
     },
     {
+      "id": "developer.app-tools-in-bot-chats",
+      "label": "App tools in bot chats",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.app-tools-in-bot-chats",
+      "description": "Lets apps you allow add their tools to a bot's chat. Each call follows the bot's own approval setting.",
+      "hint": "To stop one bot, untick it on the app's page."
+    },
+    {
       "id": "developer.artifact-deploy",
       "label": "Artifact Deploy",
       "tab": "developer",
@@ -1431,7 +1484,7 @@
       "label": "Connected computers",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.connected-computers",
-      "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+      "description": "Chats on this server can work in a folder on your own computer.",
       "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device."
     },
     {
@@ -1471,6 +1524,14 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.jev-api-key",
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
+    },
+    {
+      "id": "developer.kas-sub-agents",
+      "label": "KAS sub-agents",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.kas-sub-agents",
+      "description": "On KAS, the default agent runs quick sub-agents inside the engine, and some agent permissions are read the way kiro-cli reads them, in chats and sub-agents started after you switch this.",
+      "hint": "On, in KAS chats: the default agent hands quick tasks to its built-in helper or to up to 8 of your own agents inside its turn, held to the chat agent's rules and stopped with the turn; a sub-agent that spawn_run starts on another agent runs without asking only what the chat that started it runs without asking; a denyByDefault command list holds even when the agent pre-approves the shell; and an agent that excludes the sub-agent tool, or uses one of three deniedCommands forms, is read as kiro-cli reads it, which the chat says when it starts. Off: Kiro Crew starts the default agent's sub-agents as sessions of their own that you can open and stop in the Subagents panel."
     },
     {
       "id": "developer.let-agents-control-your-other-sessions",
@@ -1526,7 +1587,7 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=key%3Awork_ledger.remote_dispatch",
       "description": "Runs conductor mode tasks on connected machines.",
-      "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+      "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew.",
       "configKey": "work_ledger.remote_dispatch"
     },
     {
@@ -1566,6 +1627,14 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
       "description": "People tab, invites and shared sessions"
+    },
+    {
+      "id": "developer.use-your-company-s-sign-in",
+      "label": "Use your company's sign-in",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.use-your-company-s-sign-in",
+      "description": "Uses your company's own sign-in for its portal.",
+      "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes."
     },
     {
       "id": "developer.visual-refresh",
@@ -1822,6 +1891,21 @@
       "configKey": "dashboard.channels_enabled"
     },
     {
+      "id": "display.show-discover-in-the-sidebar",
+      "label": "Show Discover in the sidebar",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-discover-in-the-sidebar",
+      "hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library."
+    },
+    {
+      "id": "display.show-linked-items-expanded-on-session-cards",
+      "label": "Show linked items expanded on session cards",
+      "tab": "display",
+      "route": "/settings/display/sidebar?highlight=key%3Adashboard.expand_linked_items",
+      "hint": "Each session card starts with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
+      "configKey": "dashboard.expand_linked_items"
+    },
+    {
       "id": "display.show-search-in-the-top-bar",
       "label": "Show search in the top bar",
       "tab": "display",
@@ -1872,6 +1956,13 @@
       "hint": "Select a theme for the dashboard"
     },
     {
+      "id": "display.touch-screen-layout",
+      "label": "Touch screen layout",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.touch-screen-layout",
+      "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only."
+    },
+    {
       "id": "display.translucent-panels",
       "label": "Translucent panels",
       "tab": "display",
@@ -1898,6 +1989,12 @@
       "tab": "instances",
       "route": "/settings/instances?highlight=instances.auto-connect-crews",
       "hint": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
+    },
+    {
+      "id": "instances.crews-kept-loaded",
+      "label": "Crews kept loaded",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.crews-kept-loaded"
     },
     {
       "id": "instances.enable-remote-crew-management",
@@ -2003,6 +2100,13 @@
       "route": "/settings/notifications/sound?highlight=notifications.play-sound-on-new-notifications"
     },
     {
+      "id": "notifications.play-sounds-only-during-set-hours",
+      "label": "Play sounds only during set hours",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.play-sounds-only-during-set-hours",
+      "hint": "Choose, for each day of the week, the hours notifications may make a sound. Outside them, notifications still arrive, without sound."
+    },
+    {
       "id": "notifications.sound-category-agent",
       "label": "Proactive agent messages",
       "tab": "notifications",
@@ -2087,11 +2191,11 @@
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {
-      "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
-      "label": "Ask me before running tools an MCP server pre-approves",
+      "id": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
+      "label": "Ask me before running tools set to auto-approve in a tool server's settings",
       "tab": "security",
       "route": "/settings/security/safety?highlight=key%3Amcp.honour_auto_approve",
-      "description": "Tools you set to Always allow still run without asking.",
+      "description": "Tools you set to Always allow, on an approval card or in MCP Servers, still run without asking.",
       "configKey": "mcp.honour_auto_approve"
     },
     {
@@ -2138,7 +2242,7 @@
       "label": "Stop the agent from editing its own permission rules",
       "tab": "security",
       "route": "/settings/security/safety?highlight=key%3Amcp.protect_kiro_permission_rules",
-      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way.",
+      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can.",
       "configKey": "mcp.protect_kiro_permission_rules"
     },
     {
@@ -2321,7 +2425,7 @@
       "label": "Dictation panel",
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.dictation-panel",
-      "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
+      "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when your system requests reduced motion."
     },
     {
       "id": "voice.enabled",

@@ -101,6 +101,54 @@ class TestCounter:
         assert len(mcp_quarantine.state_for("noisy")["lastError"]) == 400
 
 
+# a streak belongs to one launch
+
+
+class TestLaunch:
+    def test_the_failing_launch_is_kept_with_the_record(self, store):
+        for _ in range(3):
+            mcp_quarantine.record_verdicts(_fail("flaky"), {"flaky": "local:old"})
+        state = mcp_quarantine.state_for("flaky")
+        assert state["failing"] is True
+        assert state["launch"] == "local:old"
+
+    def test_a_failure_under_a_new_launch_starts_a_new_streak(self, store):
+        """Failures of a replaced command say nothing about the new one, so the
+        count and the crossing marker both start over."""
+        for _ in range(3):
+            mcp_quarantine.record_verdicts(_fail("flaky"), {"flaky": "local:old"})
+        assert _failing() == {"flaky"}
+
+        mcp_quarantine.record_verdicts(_fail("flaky"), {"flaky": "local:new"})
+
+        state = mcp_quarantine.state_for("flaky")
+        assert state["fails"] == 1
+        assert state["failing"] is False
+        assert state["since"] == 0
+        assert state["launch"] == "local:new"
+
+    def test_a_record_with_no_launch_restarts_under_a_known_one(self, store):
+        """A record that names no launch cannot say it failed under this one."""
+        for _ in range(3):
+            mcp_quarantine.record_verdicts(_fail("flaky"))
+        assert mcp_quarantine.state_for("flaky")["launch"] == ""
+
+        mcp_quarantine.record_verdicts(_fail("flaky"), {"flaky": "local:now"})
+        assert mcp_quarantine.state_for("flaky")["fails"] == 1
+
+    def test_a_stored_launch_is_bounded(self, store):
+        mcp_quarantine.record_verdicts(_fail("a"), {"a": "x" * 5000})
+        assert len(mcp_quarantine.state_for("a")["launch"]) == mcp_quarantine._LAUNCH_MAX_CHARS
+
+    def test_launches_stay_off_the_wire(self, store):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        mcp_quarantine.record_verdicts(_fail("a"), {"a": "local:old"})
+        rows: list[dict] = [{"name": "a", "status": "error"}]
+        mcp_mod._annotate_quarantine(rows)
+        assert rows == [{"name": "a", "status": "error", "probeFailures": 1, "probeFailing": False}]
+
+
 # statuses that carry no verdict
 
 
@@ -377,6 +425,7 @@ class TestStore:
             "fails",
             "last_status",
             "last_error",
+            "launch",
             "last_failed_at",
             "crossed_at",
         }
@@ -733,7 +782,7 @@ class TestAnnotation:
 
         for fn in (mcp_mod._probed_rows, mcp_mod._run_mcp_probe):
             src = inspect.getsource(fn)
-            assert "to_thread(_record_probe_verdicts, result)" in src
+            assert "to_thread(_record_probe_verdicts, result, " in src
 
     def test_the_reprobe_is_armed_after_the_last_await(self):
         """``_arm_reprobe`` comes after each handler's final ``await``, next to the flag.
@@ -847,6 +896,18 @@ class TestAnnotation:
         mcp_quarantine.record_verdicts(mcp_mod._quarantine_verdicts(proven))
         assert mcp_quarantine.state_for("srv") is None
 
+    def test_an_answered_refusal_never_quarantines(self, store):
+        """A server that starts and answers the handshake with an error (signed
+        out, say) is not wedging, so it keeps being probed and recovers by
+        itself once the cause is fixed."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        refused = [{"name": "srv", "status": "error", "error": "HTTP 307", "probeMode": "refused"}]
+        for _ in range(5):
+            mcp_quarantine.record_verdicts(mcp_mod._quarantine_verdicts(refused))
+        assert _failing() == set()
+        assert mcp_quarantine.state_for("srv") is None
+
 
 class TestShutdownRounds:
     @pytest.fixture
@@ -861,32 +922,40 @@ class TestShutdownRounds:
         monkeypatch.setattr(
             "kiro_crew.session.shutdown_event", SimpleNamespace(is_set=lambda: False)
         )
+        from kiro_crew.mcp_discovery import _probe_identity
+
+        # Counted under the launch the round below probes, so its verdict extends
+        # this streak instead of starting a new one.
+        launch = {"srv": _probe_identity(self._server("error"))}
         for _ in range(2):
-            mcp_quarantine.record_verdicts(_fail("srv", "error", "timeout"))
+            mcp_quarantine.record_verdicts(_fail("srv", "error", "timeout"), launch)
         return mcp_mod
 
     @staticmethod
-    def _install_round(monkeypatch, status: str, on_round=None):
-        class _Row:
-            name = "srv"
+    def _server(status: str):
+        from kiro_crew.mcp_discovery import McpServerInfo
 
-            def to_dict(self):
-                return {
-                    "name": "srv",
-                    "status": status,
-                    "error": "" if status == "ok" else "timeout",
-                }
+        server = McpServerInfo(name="srv", command="srv-bin")
+        server.status = status
+        server.error = "" if status == "ok" else "timeout"
+        return server
 
+    @classmethod
+    def _install_round(cls, monkeypatch, status: str, on_round=None):
         async def _probe_all():
             if on_round is not None:
                 on_round()
-            return [_Row()]
+            return [cls._server(status)]
 
         monkeypatch.setattr("kiro_crew.mcp_discovery.probe_all", _probe_all)
 
     @staticmethod
     def _sessions():
         return SimpleNamespace(final_drain_started=False)
+
+    @staticmethod
+    def _state(sessions):
+        return SimpleNamespace(sessions=sessions, push_refresh=lambda *kinds: None)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["error", "ok"])
@@ -899,7 +968,7 @@ class TestShutdownRounds:
             sessions.final_drain_started = True
 
         self._install_round(monkeypatch, status, on_round=_drain_starts)
-        await probe_env._bg_mcp_probe(sessions)
+        await probe_env._bg_mcp_probe(self._state(sessions))
 
         assert mcp_quarantine.state_for("srv")["fails"] == 2
         assert _failing() == set()
@@ -921,7 +990,7 @@ class TestShutdownRounds:
     @pytest.mark.asyncio
     async def test_a_round_with_no_shutdown_still_counts(self, probe_env, monkeypatch):
         self._install_round(monkeypatch, "error")
-        await probe_env._bg_mcp_probe(self._sessions())
+        await probe_env._bg_mcp_probe(self._state(self._sessions()))
 
         assert _failing() == {"srv"}
 

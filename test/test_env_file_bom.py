@@ -132,11 +132,14 @@ class TestReaders:
         assert _load(monkeypatch, ep) == {"JIRA_API_TOKEN": "abc123", "SLACK_BOT_TOKEN": "xyz"}
         assert read_env_file_credential("SLACK_BOT_TOKEN", ep) == "xyz"
 
-    def test_a_bomless_file_invalid_in_the_locale_still_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_a_bomless_file_invalid_in_the_locale_is_unset_with_one_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # Only a UTF-16 BOM is treated as unset; any other decode error
-        # propagates exactly as it did before BOM handling existed.
+        # The credential readers treat it as they treat a wide file; the decoder
+        # still raises the plain error, which is not the wide one.
         ep = tmp_path / ".env"
         ep.write_bytes("JIRA_API_TOKEN=caf\u00e9\n".encode("utf-8"))
         monkeypatch.setattr(
@@ -146,11 +149,22 @@ class TestReaders:
                 getpreferredencoding=lambda _=False: "ascii", getencoding=lambda: "ascii"
             ),
         )
+        definitive: list[bool] = []
+        with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+            try:
+                creds = _load(monkeypatch, ep)
+                token = read_env_file_credential("JIRA_API_TOKEN", ep, definitive=definitive)
+            except UnicodeDecodeError as exc:
+                pytest.fail(f"a credential reader raised {exc!r}")
+            assert token == ""
+        assert "JIRA_API_TOKEN" not in creds
+        assert definitive == [False]
+        warnings = [r for r in caplog.records if "Cannot decode" in r.getMessage()]
+        assert len(warnings) == 1
+        assert str(ep) in warnings[0].getMessage()
         with pytest.raises(UnicodeDecodeError) as excinfo:
-            _load(monkeypatch, ep)
+            loader.decode_env_bytes(ep.read_bytes())
         assert not isinstance(excinfo.value, loader.EnvFileWideEncodingError)
-        with pytest.raises(UnicodeDecodeError):
-            read_env_file_credential("JIRA_API_TOKEN", ep)
 
     def test_both_utf16_byte_orders_raise_the_typed_error(self, utf16_codec: str) -> None:
         raw = _UTF16_BOM_FOR[utf16_codec] + _BODY.encode(utf16_codec)

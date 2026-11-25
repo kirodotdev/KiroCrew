@@ -18,9 +18,9 @@ from typing import Any, ClassVar, cast
 # resolvable by name even though it works fine in the user's terminal. Two things
 # follow: the binary has to be found absolutely, AND the child's PATH has to
 # include its directory, because `npm run dev` shells out to `node` itself.
-# POSIX-only by nature: these are macOS/Linux install prefixes, and a directory
-# that does not exist is simply dropped by `node_bin_dirs`, so on Windows the
-# tuple contributes nothing and resolution falls back to PATH. nvm is not listed
+# Mostly macOS/Linux install prefixes: `node_bin_dirs` drops a directory that
+# does not exist, and on Windows it skips the drive-less `/...` entries outright,
+# so there resolution falls back to PATH and the `~` entries. nvm is not listed
 # here: its per-version dirs come from `kiro_crew.env.nvm_version_bin_dirs`
 # (both `~/.nvm` and the XDG root), read through `server._nvm_version_bin_dirs`.
 NODE_BIN_DIRS = (
@@ -110,7 +110,12 @@ LOG_URL_RE = re.compile(
 def node_bin_dirs(runtime: Any) -> list[Any]:
     """Return existing Node toolchain directories in lookup order."""
 
-    dirs = [runtime.Path(directory).expanduser() for directory in runtime._NODE_BIN_DIRS]
+    listed = runtime._NODE_BIN_DIRS
+    if not runtime.IS_POSIX:
+        # Windows resolves a drive-less `/usr/bin` against the current drive, to
+        # a folder any local account can create; the `~` entries stay.
+        listed = [directory for directory in listed if not directory.startswith("/")]
+    dirs = [runtime.Path(directory).expanduser() for directory in listed]
     # nvm first, newest version first: the shared core scan, which also covers
     # the XDG root (`$XDG_CONFIG_HOME/nvm`, default `~/.config/nvm`).
     nvm = [runtime.Path(path) for path in runtime._nvm_version_bin_dirs()]

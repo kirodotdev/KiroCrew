@@ -847,8 +847,9 @@ class TestTheBarrierFailsClosed:
         # restated here or the API read 404s and the barrier fails closed on every run.
         # Read and nothing more: the barrier runs on pull requests and merge groups, and
         # the one write a superseded push needs lives in the cancel job.
+        # checks:read reads the commit's check-runs when the listing answers none.
         perms = ci["jobs"]["await-fast-gate"]["permissions"]
-        assert perms == {"actions": "read", "contents": "read"}
+        assert perms == {"actions": "read", "checks": "read", "contents": "read"}
 
     def test_the_barrier_script_makes_no_write(self, barrier_script: str) -> None:
         # `gh api` with -f fields defaults to POST, so every call names its method,
@@ -893,8 +894,15 @@ class TestOnlyThePushOnlyCancelJobCanWrite:
         }
         assert writers == {_CANCEL_JOB}, writers
 
-    def test_the_cancel_job_holds_exactly_actions_write_and_contents_read(self, ci: dict) -> None:
-        assert ci["jobs"][_CANCEL_JOB]["permissions"] == {"actions": "write", "contents": "read"}
+    def test_the_cancel_job_holds_exactly_actions_write_checks_and_contents_read(
+        self, ci: dict
+    ) -> None:
+        # checks:read lets the probe make the barrier's own check-runs read.
+        assert ci["jobs"][_CANCEL_JOB]["permissions"] == {
+            "actions": "write",
+            "checks": "read",
+            "contents": "read",
+        }
 
     def test_the_cancel_job_runs_only_on_a_push_to_main(self, ci: dict) -> None:
         guard = ci["jobs"][_CANCEL_JOB]["if"]

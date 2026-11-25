@@ -553,9 +553,9 @@ describe('SourcesList — add-source dialog, file branch', () => {
 })
 
 describe('SourcesList — add-source dialog, folder branch', () => {
-  async function openFolderForm(opts: { folderPicker?: boolean; extra?: Handler } = {}) {
+  async function openFolderForm(opts: { folderPicker?: boolean; extra?: Handler; sources?: Source[] } = {}) {
     handler = (path: string, init?: RequestInit) => {
-      if (path === '/sources' && init?.method !== 'POST') return []
+      if (path === '/sources' && init?.method !== 'POST') return opts.sources ?? []
       if (path === '/config') return { enabled: true, supported_formats: [], folder_picker: opts.folderPicker ?? false }
       return opts.extra?.(path, init) ?? { ok: true }
     }
@@ -673,6 +673,22 @@ describe('SourcesList — add-source dialog, folder branch', () => {
 
     await waitFor(() => expect(callsTo('/sources/new-1/sync', 'POST')).toHaveLength(1))
     expect(screen.queryByLabelText('Folder path')).toBeNull()
+  })
+
+  it('names the existing source and stays open when the folder is already one under another spelling', async () => {
+    await openFolderForm({
+      sources: [folder()],
+      extra: (path, init) => {
+        if (path === '/sources' && init?.method === 'POST') return { id: 'f1', status: 'exists', warning: 'This folder is already a source (/tmp/notes).' }
+        return { ok: true }
+      },
+    })
+    fireEvent.change(screen.getByLabelText('Folder path'), { target: { value: '/tmp/notes/' } })
+    fireEvent.click(screen.getByText('Add Folder'))
+
+    expect(await screen.findByTestId('sources-folder-exists')).toHaveTextContent('This folder is already in your sources as “Notes folder”.')
+    expect(screen.getByLabelText('Folder path')).toHaveProperty('value', '/tmp/notes/')
+    expect(callsTo('/sources/f1/sync', 'POST')).toHaveLength(0)
   })
 })
 

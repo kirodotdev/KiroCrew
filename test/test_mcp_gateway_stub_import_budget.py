@@ -14,6 +14,7 @@ tests in this suite import these modules.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -23,6 +24,14 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+#: Every probe here cold-starts a fresh interpreter, so the module runs on one xdist
+#: worker rather than spreading concurrent cold starts across the pool.
+pytestmark = pytest.mark.xdist_group(name="stub_import_budget_probes")
+
+#: Below the suite's 120 s per-test timeout, so a stalled child fails as a
+#: subprocess timeout that names the probe rather than as a pytest timeout.
+PROBE_TIMEOUT_SECS = 90
 
 #: Modules a stub must not hold once it is bridging. Each has a large
 #: transitive graph and is reached, if at all, on a path a stub takes rarely:
@@ -107,7 +116,7 @@ def _run_probe(
         cwd=tmp_path,
         env=env,
         capture_output=True,
-        timeout=120,
+        timeout=PROBE_TIMEOUT_SECS,
         **UTF8_TEXT,
     )
 
@@ -144,6 +153,34 @@ def test_bridging_stub_holds_none_of_the_heavy_modules(tmp_path, session_key):
         "mcp_gateway.read_limits, hashing.format_pool_label), or have the "
         "rewriter hand it over on argv the way the read ceiling arrives."
     )
+
+
+def test_stub_for_a_crew_server_holds_none_of_the_heavy_modules(tmp_path):
+    """The same bound holds for a stub whose target is one of Kiro Crew's own servers.
+
+    That Register payload folds in ``code_fingerprint``, which reads
+    ``kiro_crew.platform.update_governance``. Importing that leaf runs the
+    ``kiro_crew.platform`` package first, so an eager package init would put the
+    security and agent_sdk graphs in every such stub.
+    """
+    target_args = base64.urlsafe_b64encode(json.dumps(["mcp-core"]).encode()).decode()
+    argv = [*STUB_ARGV, f"--target-args-b64={target_args}"]
+    code = (
+        "import json, sys\n"
+        "import kiro_crew.mcp_gateway.stub as stub\n"
+        f"argv = {argv!r}\n"
+        "argv[argv.index('--target-command') + 1] = sys.executable\n"
+        "args = stub._parse_args(argv)\n"
+        "stub._adopt_read_ceiling(args)\n"
+        "payload = stub.build_register_payload(args)\n"
+        "assert '+' in payload['binary_version'], payload['binary_version']\n"
+        f"forbidden = {list(FORBIDDEN_WHEN_BRIDGING)!r}\n"
+        "print(json.dumps(sorted(m for m in forbidden if m in sys.modules)))\n"
+    )
+    result = _run_probe(tmp_path, code)
+    assert result.returncode == 0, result.stderr
+    resident = json.loads(result.stdout.strip().splitlines()[-1])
+    assert resident == [], f"a stub for a Kiro Crew server loaded: {resident}"
 
 
 def test_stub_import_loads_even_less(tmp_path):
@@ -360,7 +397,7 @@ def test_execution_context_does_not_load_validation():
         ],
         env=env,
         capture_output=True,
-        timeout=120,
+        timeout=PROBE_TIMEOUT_SECS,
         **UTF8_TEXT,
     )
     assert result.returncode == 0, result.stderr

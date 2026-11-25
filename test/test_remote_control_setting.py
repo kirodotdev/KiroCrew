@@ -617,7 +617,7 @@ class TestTheRoute:
         self, client, config_file, monkeypatch
     ) -> None:
         # A lease failure that needs the owner reads "starting" to ensure_available
-        # but the client itself is reconnecting: the card keeps its restart advice.
+        # but the client itself is reconnecting: the card shows its not-connected line.
         config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
         provider = _FakeProvider(state="starting")
         provider.client_state = "reconnecting"

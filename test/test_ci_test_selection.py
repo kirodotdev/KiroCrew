@@ -8,6 +8,7 @@ bundle, a corrupt one, the time-out) giving verdict `full` with exit 0.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 import subprocess
@@ -23,11 +24,19 @@ from scripts import ci_test_selection as cts
 BUNDLE = {
     "schema": 1,
     "commit": "abc",
-    "tests": {"test/test_narrow.py": 2, "test/test_w1.py": 1, "test/test_w2.py": 1},
+    # `test_other` and `test_acp_thing` are in the map with no link to the diff: the
+    # first has no signal, the second only its package's name.
+    "tests": {
+        "test/test_acp_thing.py": 1,
+        "test/test_narrow.py": 2,
+        "test/test_other.py": 1,
+        "test/test_w1.py": 1,
+        "test/test_w2.py": 1,
+    },
     "files": {
-        "src/kiro_crew/acp/mod.py": [0],
-        "src/kiro_crew/acp/wide.py": [1, 2],
-        "test/sub/helpers.py": [0],
+        "src/kiro_crew/acp/mod.py": [1],
+        "src/kiro_crew/acp/wide.py": [3, 4],
+        "test/sub/helpers.py": [1],
     },
     "cochange": {"src/kiro_crew/acp/mod.py": ["test/test_cochanged.py"]},
 }
@@ -77,8 +86,9 @@ def test_each_tier_takes_the_first_signal_that_matches() -> None:
     }
     assert verdict["verdict"] == "select" and verdict["reason"] is None
     assert verdict["would_skip"] == ["test/test_other.py"]
-    # Weights: test_narrow counts 2 node ids, every file the map lacks counts 1.
-    assert verdict["would_run_share"] == pytest.approx(10 / 11)
+    # Weights: test_narrow counts 2 node ids, the four others in the map 1 each, and
+    # each of the five files the map lacks the map's mean, 1.2.
+    assert verdict["would_run_share"] == pytest.approx(11 / 12)
 
 
 def test_no_skippable_tier_skips_nothing() -> None:
@@ -142,6 +152,59 @@ def test_a_held_file_is_never_skipped_even_when_f_is_skippable() -> None:
 def test_a_missing_map_table_falls_back() -> None:
     bundle = {k: v for k, v in BUNDLE.items() if k != "files"}
     assert _score(bundle=bundle)["verdict"] == "full"
+
+
+@pytest.mark.parametrize("left_out", [(), ("cochange",), ("guard",), ("cochange", "guard")])
+def test_the_scorer_reads_what_bundle_writes_and_holds_files_for_a_table_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, left_out: tuple[str, ...]
+) -> None:
+    _isolate_git(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    tree = {"src/kiro_crew/testing/wait.py": "", "test/metrics/test_schema.py": ""}
+    _repo(repo, {**tree, "test/test_gate.py": "", "test/test_other.py": ""})
+    scans: list[Path] = []
+
+    def scan(root: Path) -> list[str]:
+        scans.append(root)
+        return ["test/test_gate.py"]
+
+    def no_history(*args: object) -> dict[str, list[str]]:
+        raise ValueError("shallow clone")
+
+    # `bundle` leaves out a table it cannot build: no history, no guard test found.
+    ctm_ = cts.ctm
+    links = {"src/kiro_crew/elsewhere.py": ["test/test_other.py"]}
+    monkeypatch.setattr(
+        ctm_, "co_change_window", no_history if "cochange" in left_out else lambda *a: links
+    )
+    monkeypatch.setattr(ctm_, "guard_tier", (lambda root: []) if "guard" in left_out else scan)
+    test_map = ctm_.merge_parts(
+        [
+            {
+                "test/metrics/test_schema.py": {
+                    "nodes": 3,
+                    "files": ["src/kiro_crew/testing/wait.py"],
+                },
+                "test/test_other.py": {"nodes": 1, "files": []},
+            }
+        ],
+        commit="c0ffee",
+    )
+    doc, absent = ctm_.bundle(test_map, repo)
+    assert {table for table in absent if table in ("cochange", "guard")} == set(left_out)
+    scans.clear()
+    monkeypatch.setattr(ctm_, "guard_tier", scan)
+    (tmp_path / "bundle.json").write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
+    code, verdict = _main(tmp_path, None, root=repo)
+    assert code == 0 and verdict["verdict"] == "select" and verdict["bundle_commit"] == "c0ffee"
+    assert verdict["tiers"]["A"] == ["test/test_gate.py"]
+    assert verdict["tiers"]["B"] == ["test/metrics/test_schema.py"]
+    # The stored guard tier spares the live scan; without it the scan runs.
+    assert scans == ([repo] if "guard" in left_out else [])
+    # With no co-change table the file no signal ties to the diff is held, not skipped.
+    held = "cochange" in left_out
+    assert verdict["tiers"]["F" if held else "G"] == ["test/test_other.py"]
+    assert verdict["would_skip"] == ([] if held else ["test/test_other.py"])
 
 
 def test_bounded_returns_the_value_or_reraises_the_error() -> None:
@@ -323,7 +386,7 @@ def test_cli_writes_a_select_verdict_for_a_tree(
     bundle = {
         "schema": 1,
         "commit": "c0ffee",
-        "tests": {"test/metrics/test_schema.py": 3},
+        "tests": {"test/metrics/test_schema.py": 3, "test/test_other.py": 1},
         "files": {"src/kiro_crew/testing/wait.py": [0]},
         "cochange": {},
         # Precomputed: the live guard scan does not run.
@@ -341,8 +404,12 @@ def test_cli_writes_a_select_verdict_for_a_tree(
         "tiers",
         "would_skip",
         "would_run_share",
+        "covered",
+        "unknown",
+        "windows",
     }
     assert verdict["schema"] == 1 and verdict["bundle_commit"] == "c0ffee"
+    assert verdict["covered"] == {}
     assert verdict["base"] is None and verdict["head"] is None
     assert verdict["verdict"] == "select" and verdict["reason"] is None
     assert verdict["tiers"]["A"] == ["test/test_gate.py"]
@@ -350,7 +417,42 @@ def test_cli_writes_a_select_verdict_for_a_tree(
     # A commented, wrapped import of the changed module is a signal, not G.
     assert verdict["tiers"]["D"] == ["test/test_commented.py"]
     assert verdict["tiers"]["G"] == verdict["would_skip"] == ["test/test_other.py"]
-    assert verdict["would_run_share"] == pytest.approx(5 / 6)
+    # The two files the map lacks weigh its mean, 2 node ids each.
+    assert verdict["would_run_share"] == pytest.approx(7 / 8)
+    assert verdict["unknown"] == {"new": 2, "never_runs": 0, "held": 0}
+
+
+def test_a_function_table_links_only_the_tests_that_ran_the_changed_function(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_git(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    path = "src/kiro_crew/testing/wait.py"
+    two = "def f():\n    return 1\n\n\ndef g():\n    return {}\n"
+    tree = {
+        path: two.format(2),
+        "test/test_f.py": "",
+        "test/test_g.py": "",
+        "test/test_gate.py": "",
+    }
+    base, head = _repo(repo, tree, {path: two.format(3)})
+    bundle = {
+        "schema": 1,
+        "commit": "c0ffee",
+        "tests": {"test/test_f.py": 1, "test/test_g.py": 1},
+        "files": {path: [0, 1]},
+        "functions": {path: {"f": [1, 2, [0]], "g": [5, 6, [1]]}},
+        "cochange": {},
+        "guard": ["test/test_gate.py"],
+    }
+    (tmp_path / "bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
+    out = tmp_path / "verdict.json"
+    argv = ["--root", str(repo), "--bundle", str(tmp_path / "bundle.json"), "--out", str(out)]
+    assert cts.main([*argv, "--base", base, "--head", head]) == 0
+    verdict = json.loads(out.read_text(encoding="utf-8"))
+    # Only g changed: test_f, which never ran g, has no signal left.
+    assert verdict["tiers"]["B"] == ["test/test_g.py"]
+    assert verdict["tiers"]["G"] == verdict["would_skip"] == ["test/test_f.py"]
 
 
 def test_without_a_guard_table_the_live_guard_scan_runs(
@@ -380,6 +482,8 @@ def test_without_a_guard_table_the_live_guard_scan_runs(
         json.dumps({**BUNDLE, "files": {"src/kiro_crew/acp/mod.py": [3]}}),
         json.dumps({**BUNDLE, "files": {"src/kiro_crew/acp/mod.py": 0}}),
         json.dumps({**BUNDLE, "files": {"src/kiro_crew/acp/mod.py": [True]}}),
+        json.dumps({**BUNDLE, "functions": {"src/kiro_crew/acp/mod.py": {"f": [1, 2, [3]]}}}),
+        json.dumps({**BUNDLE, "functions": {"src/kiro_crew/acp/mod.py": [[1, 2, [0]]]}}),
         json.dumps({**BUNDLE, "tests": {"test/test_narrow.py": "2"}}),
         json.dumps({**BUNDLE, "tests": {"test/test_narrow.py": -1}}),
         json.dumps({**BUNDLE, "tests": ["test/test_narrow.py"]}),

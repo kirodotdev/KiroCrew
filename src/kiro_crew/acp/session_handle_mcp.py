@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.kas_mcp_lazy_sign_in import REPLACES_LINK
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
@@ -359,7 +360,8 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     if not server_name:
         logger.warning("ACP: dropping MCP OAuth request with empty serverName")
         return None
-    if server_name in self._oauth_emitted_servers:
+    # A KAS mid-session link that replaces the one shown (kas_mcp_lazy_sign_in) passes.
+    if server_name in self._oauth_emitted_servers and params.get(REPLACES_LINK) is not True:
         logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
         return None
     self._oauth_emitted_servers.add(server_name)
@@ -827,6 +829,19 @@ async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeo
         )
 
 
+async def wait_own_app_servers(
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+) -> None:
+    """Best effort: hold a start for an app agent's own app servers, at most *timeout*.
+
+    As :func:`wait_mounted_mcp`, except a server the host already settled
+    (disabled, dropped by a registry) ends the wait for it at once. Never fails
+    the start; runtime death still raises.
+    """
+    if await _drain_until_reported(handle, names, timeout, settled=True):
+        raise AcpRuntimeDead("Runtime exited while waiting for the app's own MCP servers")
+
+
 #: Late servers the first-turn hold names in its log line; the rest are counted.
 _LATE_NAMES_LOGGED = 8
 
@@ -924,7 +939,7 @@ async def hold_untold_first_turn(handle: AcpSessionHandle, prompt_text: str = ""
 
 
 async def _drain_until_reported(
-    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float, *, settled: bool = False
 ) -> bool:
     """Drain init frames until every one of *names* has reported; True if the runtime died.
 
@@ -932,12 +947,15 @@ async def _drain_until_reported(
     name a server whose frame is still queued. The frames that are queued are
     consumed all the same: each may carry a sign-in request or a config update
     this start owes its session. Only the WAIT for more ends once every name
-    has reported.
+    has reported. With *settled*, a name also counts once the report says it
+    never will (``McpSessionReport.still_starting``: host-disabled or dropped
+    by a registry).
     """
     report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        if not report.unreported(names):
+        pending = report.still_starting(names) if settled else report.unreported(names)
+        if not pending:
             if handle._queue.empty():
                 break
             msg = handle._queue.get_nowait()
@@ -1043,9 +1061,10 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             and name not in self._mcp_sign_in_needed
             and name not in self._mcp_reattempt_waiting
         ):
-            if is_recoverable_auth_failure(server.get("errorMessage")):
+            error = server.get("errorMessage")
+            if is_recoverable_auth_failure(error) or is_start_timeout_failure(error):
                 self._mcp_reattempt_waiting.add(name)
-            elif is_sse_fallback_failure(server.get("errorMessage")):
+            elif is_sse_fallback_failure(error):
                 self._probe_mcp_sign_in(name)
     self._mcp_sign_in_needed &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
@@ -1389,11 +1408,12 @@ def _note_mcp_call_disconnected(self: AcpSessionHandle, update: dict[str, Any]) 
 
 
 def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
-    """Re-attempt servers that failed for want of a credential or dropped.
+    """Re-attempt servers that lacked a credential, ran out of time starting, or dropped.
 
     Called at turn start, beside the sign-in offer: by then the user or
-    the agent may have obtained the credential the server lacked, or
-    brought back what a dropped server's connection needed. Each
+    the agent may have obtained the credential the server lacked, a slow
+    start may finish in time, or what a dropped server's connection
+    needed may be back. Each
     waiting server is re-attempted at most ``REATTEMPT_MAX`` times per
     session, and at most ``BUCKET_CAP`` distinct servers are ever counted,
     so the budget holds however many names the engine reports. A healthy
@@ -1474,7 +1494,12 @@ async def drain_init(
     report has been seen, the drain allows up to ``duration`` more and exits
     after ``idle_exit`` seconds of silence, so warm sessions — whose
     registration frames were staged during session/new — arm immediately and
-    pay no extra latency. ``config_option_update`` frames refresh cached
+    pay no extra latency. The session's MCP report arms the shortcut too, once
+    no server it declares is still starting
+    (:meth:`McpSessionReport.still_starting`), whether a ``_kiro.dev/mcp/*``
+    frame or a ``_kiro/mcp/status`` snapshot carried the report: KAS reports
+    readiness in ``_kiro/mcp/status``, which no drain action names, so without
+    this its sessions wait out the whole ceiling. ``config_option_update`` frames refresh cached
     configOptions; OAuth requests remain drainable via
     ``pop_pending_oauth_requests``; everything else is logged/discarded.
     Best-effort — never raises.
@@ -1483,8 +1508,9 @@ async def drain_init(
     that initialized during ``session/new``. For a session whose mode was
     then SWITCHED via ``set_mode``, that is the PRE-switch agent's roster,
     and the switched-to agent's own servers may still be booting. Those
-    frames are still drained and processed normally; they just neither arm
-    the idle shortcut nor enter the report.
+    frames are still drained and processed normally; they just do not arm
+    the idle shortcut. The reader has already folded them into the report,
+    and the caller's ``McpSessionReport.forget_reported`` drops them there.
 
     The COUNT is the caller's to measure, and it must be read before the
     ``set_mode`` request goes out — the only moment "already queued" and
@@ -1511,8 +1537,16 @@ async def drain_init(
     # the CALLER rather than a qsize() read here, because by the time this
     # runs the active agent's own registrations may already have landed.
     stale_frames = max(0, stale_report_frames)
+    # A mode switch has already dropped what reported before the switch was
+    # requested (``McpSessionReport.forget_reported``). A declared list cut at
+    # its cap names only some servers, so it cannot say they all reported.
+    report = self._mcp_report
+    declared = report.declared if not report.declared_omitted else ()
     drained = 0
     while True:
+        if not reported and declared and not report.still_starting(declared):
+            reported = True
+            deadline = time.monotonic() + duration
         now = time.monotonic()
         limit = deadline if reported else hard_deadline
         if now >= limit:

@@ -50,6 +50,9 @@ function fakeElectron() {
         events: {},
         zoom: 1,
         mainFrame: { main: true },
+        session: { fetch: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }) },
+        isDestroyed: () => win.destroyed,
+        loadURL: (url) => win.loadURL(url),
         on(ev, cb) { this.events[ev] = cb; },
         send(channel, ...args) { this.sent.push([channel, ...args]); },
         getURL() { return this.url; },
@@ -175,6 +178,9 @@ async function started(rows, overrides = {}, cursor = null, displays = null) {
 function fromWindow(win) {
   return { sender: win.webContents, senderFrame: win.webContents.mainFrame };
 }
+
+/** Let a window opened outside a tick sign in and load; the fake session answers at once. */
+const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 /** The live windows whose page is the app window *id*. */
 function windowsOf(fake, app, id) {
@@ -370,11 +376,13 @@ test("a background page is never shown, and is reopened at once when it dies", a
   assert.strictEqual(brain.isVisible(), false);
 
   brain.webContents.events["render-process-gone"]();
+  await settle();
   const [second] = windowsOf(fake, "pets", "brain");
   assert.ok(second && second !== brain, "reopened at once");
 
   // Dying again at once is left to the tick, so a crash loop runs at tick cadence.
   second.webContents.events["render-process-gone"]();
+  await settle();
   assert.deepStrictEqual(windowsOf(fake, "pets", "brain"), []);
   state.now += 6_000;
   await host.reconcileOnce();
@@ -395,6 +403,7 @@ test("a panel opened beside an anchor places its card there and says which side"
   left.webContents.zoom = 2;
   press(left);
   fake.ipc[CHANNELS.open](fromWindow(left), "panel", { anchor: { x: 400, y: 100, width: 64, height: 64 } });
+  await settle();
   const [panel] = windowsOf(fake, "pets", "panel");
   // The anchor is (800, 200, 128x128) on screen: right of the midline, so the
   // 320x340 card goes to its left, and the window adds the 32px gutter round it.
@@ -429,6 +438,7 @@ test("a page that loads later hears which of its app's windows are already open"
   const [brain] = windowsOf(fake, "pets", "brain");
   ready(fake, brain);
   fake.ipc[CHANNELS.open](fromWindow(windowsOf(fake, "pets", "pet")[0]), "gallery");
+  await settle();
   const [gallery] = windowsOf(fake, "pets", "gallery");
   ready(fake, gallery);
   const [left] = windowsOf(fake, "pets", "pet");
@@ -461,6 +471,7 @@ test("removing the avatar's display hands it to a surviving copy", async (t) => 
   assert.deepStrictEqual(sentOn(right, CHANNELS.active).at(-1), [{ active: true }]);
   fake.setDisplays([LEFT, RIGHT]);
   fake.screenEvents["display-added"]();
+  await settle();
   assert.strictEqual(windowsOf(fake, "pets", "pet").length, 2, "a plugged display gets a copy");
   assert.deepStrictEqual(sentOn(right, CHANNELS.active).at(-1), [{ active: true }], "the avatar stays put");
 });
@@ -476,6 +487,7 @@ test("removing the only display a spanning overlay was on moves it to the displa
   // Undocked: the internal display is already listed when the external one goes.
   fake.setDisplays([INTERNAL]);
   fake.screenEvents["display-removed"]();
+  await settle();
   const after = windowsOf(fake, "pets", "pet");
   assert.strictEqual(after.length, 1);
   assert.deepStrictEqual(after[0].getBounds(), INTERNAL.bounds);
@@ -494,6 +506,7 @@ test("a copy plugged in mid-drag takes the pointer and hears the drag start", as
   const plugged = { id: 3, bounds: { x: 0, y: 800, width: 1000, height: 800 }, workArea: { x: 0, y: 800, width: 1000, height: 800 } };
   fake.setDisplays([LEFT, RIGHT, plugged]);
   fake.screenEvents["display-added"]();
+  await settle();
   const fresh = windowsOf(fake, "pets", "pet").find((w) => w.getBounds().y === 800);
   assert.ok(fresh, "the plugged display gets a copy");
   assert.strictEqual(fresh.ignore.at(-1), false, "it takes the release");
@@ -597,26 +610,29 @@ test("a background page opened on demand that dies twice at once is reopened by 
     if (!sentOn(win, CHANNELS.windowChange).length && !win.isVisible()) ready(fake, win);
     return win;
   };
-  const crashTwice = () => {
+  const crashTwice = async () => {
     state.now += 10_000;
     fake.ipc[CHANNELS.open](fromWindow(pet()), "brain");
+    await settle();
     windowsOf(fake, "pets", "brain")[0].webContents.events["render-process-gone"]();
+    await settle();
     windowsOf(fake, "pets", "brain")[0].webContents.events["render-process-gone"]();
+    await settle();
     assert.deepStrictEqual(windowsOf(fake, "pets", "brain"), []);
   };
-  crashTwice();
+  await crashTwice();
   await host.reconcileOnce();
   assert.strictEqual(windowsOf(fake, "pets", "brain").length, 1);
   fake.ipc[CHANNELS.close](fromWindow(pet()), "brain");
 
   // Closed on purpose while a reopen is due: the tick leaves it closed.
-  crashTwice();
+  await crashTwice();
   fake.ipc[CHANNELS.close](fromWindow(pet()), "brain");
   await host.reconcileOnce();
   assert.deepStrictEqual(windowsOf(fake, "pets", "brain"), []);
 
   // Every window of the app closed while a reopen is due: the same.
-  crashTwice();
+  await crashTwice();
   fake.ipc[CHANNELS.closeAll](fromWindow(pet()));
   await host.reconcileOnce();
   assert.deepStrictEqual(windowsOf(fake, "pets", "brain"), []);
@@ -635,6 +651,7 @@ test("an anchored panel is no bigger than the work area it opens on", async (t) 
   const [pet] = windowsOf(fake, "pets", "pet");
   ready(fake, pet);
   fake.ipc[CHANNELS.open](fromWindow(pet), "panel", { anchor: { x: 100, y: 100, width: 64, height: 64 } });
+  await settle();
   const [panel] = windowsOf(fake, "pets", "panel");
   const b = panel.getBounds();
   assert.deepStrictEqual([b.width, b.height], [LEFT.workArea.width, LEFT.workArea.height]);
@@ -652,6 +669,7 @@ test("an anchored panel with no gutter as big as the work area keeps its card in
   const [pet] = windowsOf(fake, "pets", "pet");
   ready(fake, pet);
   fake.ipc[CHANNELS.open](fromWindow(pet), "panel", { anchor: { x: 100, y: 100, width: 64, height: 64 } });
+  await settle();
   const [panel] = windowsOf(fake, "pets", "panel");
   // LEFT's work area is 1000x775 at (0,25); the card keeps 8 px from each edge.
   assert.deepStrictEqual(panel.getBounds(), { x: 8, y: 33, width: 984, height: 759 });
@@ -688,6 +706,7 @@ test("only a window the user is acting in may raise the dashboard or open an htt
   // A panel, once the user presses a key in it.
   press(left);
   fake.ipc[CHANNELS.open](fromWindow(left), "gallery");
+  await settle();
   const [gallery] = windowsOf(fake, "pets", "gallery");
   ready(fake, gallery);
   link(fromWindow(gallery), "https://example.com/no-press");
@@ -702,12 +721,14 @@ test("a background page opens a window without taking the user's focus, and with
   const [brain] = windowsOf(fake, "pets", "brain");
   ready(fake, brain);
   fake.ipc[CHANNELS.open](fromWindow(brain), "gallery");
+  await settle();
   const [gallery] = windowsOf(fake, "pets", "gallery");
   ready(fake, gallery);
   assert.ok(gallery.calls.some((c) => c[0] === "showInactive"));
   assert.ok(!gallery.calls.some((c) => c[0] === "focus"));
   // Its page is never on screen, so a box in it places nothing.
   fake.ipc[CHANNELS.open](fromWindow(brain), "panel", { anchor: { x: 0, y: 0, width: 16, height: 16 } });
+  await settle();
   const [panel] = windowsOf(fake, "pets", "panel");
   ready(fake, panel);
   assert.deepStrictEqual(sentOn(panel, CHANNELS.placed), []);

@@ -420,6 +420,12 @@ def _pod_mint_secret(cfg: PodConfig, name: str, port: int) -> str:
     )
 
 
+# How long a pod token mint waits for the gateway's answer. A pod gateway that
+# is up but busy can take more than a few seconds to answer, so the mint waits
+# as long as `kirocrew token` waits for the main gateway.
+_MINT_RESPONSE_TIMEOUT_SECS = 20.0
+
+
 def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     port = runtime_ports.derive_port(cfg, name)
     secret = _pod_mint_secret(cfg, name, port)
@@ -454,7 +460,9 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
         req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
         try:
             with tcp_verified_urlopen(  # nosemgrep
-                req, 5, verify_peer=_attested_gateway_tcp_verifier(cfg, name, port)
+                req,
+                _MINT_RESPONSE_TIMEOUT_SECS,
+                verify_peer=_attested_gateway_tcp_verifier(cfg, name, port),
             ) as resp:
                 token = json.loads(resp.read()).get("token", "")
         except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -479,7 +487,10 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
         # window on the socket itself: a same-UID process that rebinds the path
         # fails the kernel peer-pid check and never sees the header.
         with unix_socket_urlopen(  # nosemgrep
-            req, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+            req,
+            timeout=_MINT_RESPONSE_TIMEOUT_SECS,
+            socket_path=socket_path,
+            verify_peer=verify_peer,
         ) as resp:
             token = json.loads(resp.read()).get("token", "")
     except urllib.error.HTTPError as exc:

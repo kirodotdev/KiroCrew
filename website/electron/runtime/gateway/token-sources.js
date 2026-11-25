@@ -25,6 +25,9 @@ const { resolveHome } = require("../../home-dir");
  * path and then to the token prompt.
  *
  * @param {object} deps
+ * @param {(port: number) => Promise<number[]|null>} deps.mintPortPids  the
+ *        kernel's listener pids for a port; null or a rejection is "could not
+ *        establish".
  * @param {() => object|null} deps.getGatewayProcess  the supervisor's current
  *        child, re-read at every site because it changes across awaits.
  * @param {(pid: number) => Promise<string>} deps.psPpid  the raw
@@ -45,7 +48,7 @@ function createTokenSources({
   isWindows,
   log: glog,
   sendStatus,
-  snapshotGatewayPortPids,
+  mintPortPids,
   getGatewayProcess,
   psPpid,
   holdsHomeGatewayLock,
@@ -182,12 +185,12 @@ function createTokenSources({
     // ANSWERED. The pre-spawn probe established the port was free then, and our
     // child binds only after its interpreter has imported -- seconds on a cold
     // bundled tree -- so anything may bind inside that window. An `ssh -L`
-    // reconnect answers `/api/status` exactly as the gateway would, `waitForBackend`
+    // reconnect answers `/api/live` exactly as the gateway would, `waitForBackend`
     // accepts it, and the secret would go to the far end of the tunnel.
     //
     // The kernel's own pid-to-port mapping settles it, and that is the whole
     // reason to use it here: a pid cannot be presented the way a command line can,
-    // so this is not the argv0 judgement #13826 is about -- `snapshotGatewayPortPids`
+    // so this is not the argv0 judgement #13826 is about -- `mintPortPids`
     // returns raw pids and `isKirocrewCommand` is not involved. The gateway binds
     // in its own process (`web.TCPSite` in the dashboard server, no fork), so the
     // kernel reports our child, or -- when our child is a launcher that runs the
@@ -199,9 +202,15 @@ function createTokenSources({
     //
     // A null snapshot is "could not establish", whether the probe cannot run or
     // nothing is listening, and both refuse: the port is confirmed ours or the
-    // secret stays put.
+    // secret stays put. A Windows probe that failed every attempt rejects, and
+    // the refusal says how, so the log can tell it from a foreign listener.
     const child = getGatewayProcess();
-    const holders = await snapshotGatewayPortPids(mintPort);
+    let holders;
+    try {
+      holders = await mintPortPids(mintPort);
+    } catch (error) {
+      return refuse(`not minting a local token for :${mintPort}: its listener could not be read (${error.message})`);
+    }
     const owned = holders && await ownedListener(holders, child.pid);
     // The awaits above give the supervisor time to lose or replace its child, and
     // a parent pid is only meaningful while that parent is alive: once it exits,
@@ -250,7 +259,7 @@ function createTokenSources({
     const child = getGatewayProcess();
     if (!child || child.exitCode !== null) return false;
     if (getRemoteHostConfig(store, PORT)?.host) return false;
-    const holders = await snapshotGatewayPortPids(PORT);
+    const holders = await mintPortPids(PORT).catch(() => null);
     const owned = holders && await ownedListener(holders, child.pid);
     return Boolean(owned) && getGatewayProcess() === child && child.exitCode === null;
   }

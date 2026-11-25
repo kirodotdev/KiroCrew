@@ -3,9 +3,10 @@
 **Connections** is the one page for everything outside Kiro Crew that an agent can
 reach: the MCP servers this install runs, and the third-party services you have
 signed into. A curated vendor connects in a click and its tools appear in your next
-session; a server nobody curated is added by hand on the same page and behaves the
-same way afterwards. The page also reports whether each one is actually answering,
-which is usually the question you came with.
+session; a server nobody curated is added by hand on the **MCP Servers** page
+(**Customize → MCP Servers**, `/mcp`) and behaves the same way afterwards. The page
+also reports whether each one is actually answering, which is usually the question
+you came with.
 
 Open it from the sidebar: **Settings → Connections**. The older
 `/connections` address still works and redirects there.
@@ -47,8 +48,9 @@ of your own.
 
 ## Adding your own MCP server
 
-Anything not in the catalogue is added on the same page. A server takes one of two
-shapes, and exactly one:
+Anything not in the catalogue is added by hand on the **MCP Servers** page
+(**Customize → MCP Servers**, `/mcp`), not on Settings → Connections. A server takes
+one of two shapes, and exactly one:
 
 **stdio** — Kiro Crew launches a local process and talks to it over its pipes:
 
@@ -68,11 +70,11 @@ servers, every entry is validated before any of them is written, so a single bad
 entry fails the whole paste rather than half-applying it. A name already configured
 anywhere is refused rather than overwritten.
 
-This page is the place to add or turn on a server. The default agent's spec,
+**MCP Servers** is the place to add or turn on a server. The default agent's spec,
 `~/.kiro/agents/kirocrew.json`, is rebuilt on every gateway start from this list,
 `~/.kiro/settings/mcp.json` and installed apps, so it is not edited to add one. A
 stdio server whose program is not found on this computer is dropped from that spec;
-if a server's tools are missing in chat, check its row here first.
+if a server's tools are missing in chat, check its row on MCP Servers first.
 
 ### Remote servers that need a sign-in
 
@@ -170,7 +172,7 @@ applies while it is at its default, `"auto"`, messaging-channel sessions include
    setting applies only at a restart.
 2. Create a full-access API key in the Bland dashboard, and add
    `BLAND_API_KEY=<your key>` to `~/.kiro/crew/.env`.
-3. Add the server on this page, and enable it:
+3. Add the server on **MCP Servers**, and enable it:
 
    ```json
    { "mcpServers": { "bland": {
@@ -183,7 +185,7 @@ applies while it is at its default, `"auto"`, messaging-channel sessions include
 An unrecognised `.env` line reaches every process the gateway starts, the agent's
 own shell included, so the agent can read this key. When you stop using it, delete
 it in Bland, along with any key you did not create yourself: removing the server
-entry here revokes nothing.
+from MCP Servers revokes nothing.
 
 ### Redmine: a local server and an API key
 
@@ -210,7 +212,7 @@ To connect it:
 2. Add `REDMINE_API_KEY=<your key>` to `~/.kiro/crew/.env`, and install
    [uv](https://docs.astral.sh/uv/), which provides `uvx`.
 3. Run `kirocrew config set hooks.confirm_tools '["@redmine/manage_time_entry"]'`,
-   keeping any patterns you already list there. A server added on this page is
+   keeping any patterns you already list there. A server added on MCP Servers is
    otherwise approved for every tool, so not even a time entry would ask first.
 4. Choose **Add Custom**, paste this block, and enable it. Do not install it from
    **Add Server**: the registry's entry leaves out `REDMINE_MCP_TRANSPORT`, and
@@ -467,17 +469,23 @@ the feature off entirely.
 
 Only `error` and `timeout` count. A status carrying no verdict is ignored rather than
 counted either way — including `needs_auth`, because counting that would quarantine
-every OAuth server you have not signed into yet.
+every OAuth server you have not signed into yet. An `error` from a server that
+started and answered its handshake with an error (an expired upstream sign-in, say)
+is not counted either: the server is refusing, not hanging, so its row shows the
+error and the next probe tries it again.
 
 **Quarantine reports; it does not unmount.** The server stays configured and stays
 mounted, and nothing writes `disabled` on your behalf — that key is your choice, and
 a counter that flipped it would be indistinguishable from you having switched the
 server off by hand.
 
-To clear one: fix the underlying problem, then use the row's reset control. It clears
-the counter as well as the flag, so a reset server does not sit one failure away from
-crossing again. Resetting a server with nothing on file reports that rather than
-claiming success.
+To clear one: fix the underlying problem. If the fix changes how the server starts
+(its command, arguments, environment or URL, as an update to a new version path
+does), nothing else is needed: the next check tries the new setup, and one success
+clears the quarantine. If you fixed it some other way, use the row's reset control.
+It clears the counter as well as the flag, so a reset server does not sit one failure
+away from crossing again. Resetting a server with nothing on file reports that rather
+than claiming success.
 
 **If you are an agent:** a quarantined server means the tool you want has been
 unreachable for several consecutive checks, so retrying the same call is unlikely to
@@ -516,8 +524,10 @@ The **Sharing** view, beside **Servers** under the card, holds the rest. In
 the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
 which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
 server runs and approves exactly that launch; the row's **Details** shows it, with
-env names only, never a secret value. When a server's PATH changes, Details names
-the folders added and removed. A row's state is one of:
+env names only, never a secret value. A row's switch takes effect at the next
+Kiro Crew restart, and the page says so. Until then the server keeps running the
+way it did, even when you turn sharing on at the top. When a server's PATH
+changes, Details names the folders added and removed. A row's state is one of:
 
 | State | Meaning |
 |---|---|

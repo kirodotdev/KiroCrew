@@ -22,6 +22,7 @@ from typing import Any
 from kiro_crew import agent as agent_mod
 from kiro_crew import kiro_cli as kiro_cli_mod
 from kiro_crew import sandbox as sandbox_mod
+from kiro_crew.acp import kas_approve_for_me
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.harness._common import (
@@ -178,6 +179,9 @@ class KiroHarness(MembershipHarness):
         inject_kiro_cli_api_key(env)
         pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_client_application_env(env)
+        # Crew sets no approve-for-me value on a kiro-cli session, so the engine
+        # switch stays off whatever the gateway inherited.
+        kas_approve_for_me.force_off(env)
         apply_child_env_defaults(env)
         apply_node_compile_cache(env)
 

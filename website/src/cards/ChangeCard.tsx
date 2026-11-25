@@ -26,6 +26,7 @@ import { runCardPlan, userFields } from './runPlan'
 import { problemFrom, problemText, wantsRefresh, type CardProblem } from './refusals'
 import { useCardCorners } from './cardCorners'
 import { useCardAuthor } from './cardAuthor'
+import { ImportNameField, isImportNameEditable } from './ImportNameField'
 import { MEMBER_GOALS_QUERY_PREFIX, MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
@@ -34,8 +35,6 @@ const layoutHeight = (node: HTMLElement) => node.offsetHeight
 
 const GOALS_CARD_KINDS = new Set(['crewmate.goal', 'crewmate.key_results', 'crewmate.check_ins'])
 
-/** How long an edited field waits before it is re-previewed. */
-export const PREVIEW_DEBOUNCE_MS = 400
 /** How often a waiting card re-reads the clock for its countdown and expiry. */
 export const CLOCK_TICK_MS = 15_000
 
@@ -102,6 +101,9 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const [previewing, setPreviewing] = useState(false)
   const [inputs, setInputs] = useState<Record<string, string>>({})
   const [signinUrl, setSigninUrl] = useState<string | null>(null)
+  // The import card's name field holds the press until its name is previewed.
+  const [nameHeld, setNameHeld] = useState(false)
+  const nameEditable = isImportNameEditable(card)
   const acted = useRef(false)
 
   // The card re-reads the clock while it is waiting on the person, so a
@@ -161,6 +163,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const canApply = !!spec && !expired && !timePassed && !busy && acknowledged
     && (card.status === 'pending' || card.status === 'failed' || stranded)
     && fields.every(f => (inputs[f] ?? '').trim().length > 0)
+    && !(nameEditable && nameHeld)
 
   const preview = useCallback((params: Record<string, unknown>) => {
     setPreviewing(true)
@@ -168,6 +171,14 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
     return cardsApi.preview(card, params)
       .then(store)
       .catch(e => setProblem(problemFrom(e)))
+      .finally(() => setPreviewing(false))
+  }, [card, store])
+  // The name field's re-preview: its refusal goes back to the field, which words it.
+  const previewName = useCallback((params: Record<string, unknown>) => {
+    setPreviewing(true)
+    setProblem(null)
+    return cardsApi.preview(card, params)
+      .then(store)
       .finally(() => setPreviewing(false))
   }, [card, store])
 
@@ -377,7 +388,17 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
             )}
 
             <div className="mt-2 [&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border" data-testid="change-card-rows">
-              <CardChanges changes={cardChanges(card)} />
+              {nameEditable && (
+                <ImportNameField
+                  key={card.id}
+                  card={card}
+                  disabled={running !== null || card.status === 'applying' || expired}
+                  preview={previewName}
+                  onProblem={setProblem}
+                  onHeldChange={setNameHeld}
+                />
+              )}
+              <CardChanges changes={nameEditable ? cardChanges(card).filter(c => c.field !== 'name') : cardChanges(card)} />
               {/* Affects only when it says more than the title already does. */}
               {card.scope && !scopeRepeatsTitle(title, card.scope) && (
                 <CardRow label={i18nT('components.changeCards.scope_label')}>
@@ -396,7 +417,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               {/* The reason is one more row of the same grid: same label
                   column, same divider, so it reads like Goal or Affects. */}
               {card.reason && (
-                <CardRow label={i18nT('components.changeCards.reason_label', { name: author })} testId="change-card-reason">
+                <CardRow label={spec?.reasonLabel?.() ?? i18nT('components.changeCards.reason_label', { name: author })} testId="change-card-reason">
                   <p className="m-0 whitespace-pre-wrap">{card.reason}</p>
                 </CardRow>
               )}

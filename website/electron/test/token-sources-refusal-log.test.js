@@ -44,7 +44,7 @@ function sources({ remoteHost, getGatewayProcess = () => null }) {
     isWindows: false,
     log: (line) => lines.push(line),
     sendStatus: () => {},
-    snapshotGatewayPortPids: async () => null,
+    mintPortPids: async () => null,
     getGatewayProcess,
     psPpid: async () => "",
     holdsHomeGatewayLock: async () => false,

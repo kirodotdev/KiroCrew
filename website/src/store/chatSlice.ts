@@ -17,6 +17,7 @@ import { jsonEqual } from '../utils/structuralEqual'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
+import { abortPendingSends, settleCancelledSends } from '../chat-core/transport/sendTurn'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
 import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
@@ -933,6 +934,8 @@ export type StopFailure = { error: string; status?: number; code?: string; authR
 export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean; rejectPending?: boolean }>(
   'chat/requestStop',
   async ({ slotId, force, rejectPending }, { getState, dispatch }) => {
+    // A send still waiting on the network must not start the stopped turn.
+    const sendCancelled = abortPendingSends(slotId)
     const state = (getState() as { chat: ChatState }).chat
     if (!force) {
       const lastPress = state.stopPressedAt[slotId] ?? 0
@@ -965,8 +968,11 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     // it as "Stop does not work" (#9547). `already_stopping` is the other
     // no-op (a cancel already in flight) and changes nothing here.
     if (reply?.info === 'not running' && !reply.already_stopping) {
-      dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch }))
+      dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch, sendCancelled }))
     }
+    // The gateway answered this press, so the cancel it carried is settled; a
+    // press still waiting on another cancel (`already_stopping`) keeps it.
+    if (!reply?.already_stopping) settleCancelledSends(slotId)
     // Only the cards on screen for the turn this press was about: a switch
     // to another chat, or a newer turn on this one, keeps its cards.
     const now = (getState() as { chat: ChatState }).chat
@@ -1354,12 +1360,13 @@ const latestSideResyncRead = new Map<string, object>()
  * the slot is gone, so nothing of it still runs. A conversation closed and
  * replaced while the read was out keeps to its own frames. Only the newest read
  * sent for a slot is applied: an older one can answer after it, and would undo
- * what the newer one learned.
+ * what the newer one learned. Given a slot, only that slot's panel reads again
+ * (a Blocked link card's Allow or Undo there changed how its answers are served).
  */
-export const resyncWaitingSideConversations = createAsyncThunk<void, void, { state: RootState }>(
+export const resyncWaitingSideConversations = createAsyncThunk<void, string | undefined, { state: RootState }>(
   'chat/resyncWaitingSideConversations',
-  async (_, { dispatch, getState }) => {
-    const slots = new Set([...Object.keys(getState().chat.slotSide), ...sideRestoreReads.keys()])
+  async (only, { dispatch, getState }) => {
+    const slots = only !== undefined ? [only] : new Set([...Object.keys(getState().chat.slotSide), ...sideRestoreReads.keys()])
     await Promise.all([...slots].map(async slot => {
       await sideRestoreReads.get(slot)?.catch(() => undefined)
       const { slotSide, slotSideRestored } = getState().chat
@@ -1394,15 +1401,15 @@ export { hasSavedActivityOpen } from './chat/state'
 export { FOLDER_SUGGESTION_MAX_TURNS, capturePendingAskId, isAnsweredQuestionEnding, pendingQuestionFor, shouldResolveAskOnSend } from './chat/composerCards'
 export { mcpAppKey } from './chat/mcpApps'
 export {
-  isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, isSpawnApprovalRetired, selectSidebarApprovalCounts, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSlotPendingSpawnApprovals,
+  isActiveSubagent, isChipSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, isSpawnApprovalRetired, selectSidebarApprovalCounts, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSlotPendingSpawnApprovals,
   selectSlotSubagents, selectSlotSubagentsActive, selectSubagentActivityCount,
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
 export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
-  selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
+  selectActiveSlotProject, selectComposerBusy, selectSlotTurnRunning, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
+  selectPageLoaded, selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectResumeInterrupted, selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,
 } from './chat/selectors'

@@ -52,7 +52,8 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover
 from kiro_crew.browser_harness import governance as browse_governance
-from kiro_crew.browser_harness import install
+from kiro_crew.browser_harness import install, sign_in_guard
+from kiro_crew.browser_harness.earlier_chromium import held_profile_detail, prepare_profile
 from kiro_crew.browser_harness.env import daemon_env
 from kiro_crew.browser_harness.helper_table import HELPERS
 from kiro_crew.browser_harness.relay import (
@@ -205,6 +206,8 @@ _FIRST_SAFE_FD = 5
 
 #: The status detail while a Redownload replaces Kiro's Chromium.
 CHROMIUM_REPLACING_DETAIL = "Kiro's Chromium is being redownloaded; try again when it finishes"
+#: The status detail while an install job rebuilds the harness venv in place.
+HARNESS_REINSTALLING_DETAIL = "Browser Harness is being reinstalled; try again when it finishes"
 
 
 class HarnessNotInstalled(RuntimeError):
@@ -257,6 +260,8 @@ class HarnessSupervisor:
         self._credentials_relay: CdpRelay | None = None
         #: The provider cookies the gateway set in the browser behind that relay.
         self._placed = credentials.PlacedCookies()
+        #: The sign-in guard on the browser behind that relay (``sign_in_guard``).
+        self._guard: sign_in_guard.SignInGuard | None = None
         #: The provider's ``fingerprint()`` and the settings at the last apply; a
         #: navigation re-pulls when either differs.
         self._applied_key: tuple[str | None, credentials.CredentialSettings] | None = None
@@ -278,6 +283,10 @@ class HarnessSupervisor:
         #: a start that would launch it is refused instead of running from files the
         #: swap is about to move.
         self.replacing_chromium = False
+        #: Set while an install job installs the harness: ``python -m venv --clear``
+        #: empties the venv in place, so a start then would spawn a missing
+        #: interpreter. The job's owner sets it back to ``False`` when the job ends.
+        self.installing_harness = False
         #: The last start ran under ``auto`` and found the person's Chrome or Edge
         #: not accepting debugging connections, so it used Kiro's Chromium instead.
         #: Status reports that browser until a start finds the person's one usable.
@@ -629,6 +638,9 @@ class HarnessSupervisor:
         if await browse_governance.browse_denied_async(browse_governance.HOST_KEY):
             self._set(DISCONNECTED, browse_governance.DENIED_TEXT)
             raise browse_governance.BrowsingDenied()
+        if self.installing_harness:
+            self._set(DISCONNECTED, HARNESS_REINSTALLING_DETAIL)
+            raise HarnessNotInstalled(self._detail)
         # Disk reads and the discovery probes (stat, plist, which) run off the loop:
         # ``ensure()`` is awaited from HTTP handlers on the gateway's one loop.
         state = await asyncio.to_thread(install.install_state, self.home)
@@ -729,9 +741,24 @@ class HarnessSupervisor:
             contexts=contexts,
             placed=self._placed,
         )
-        self._applied_key = key
         self._credentials_relay = relay
+        # Held before any await, so a cut run leaves the guard reachable to the next.
+        self._guard = sign_in_guard.prepare(
+            self._guard, relay, provider, key[1], choice, self._credential_settings
+        )
         _audit_injection(self._credentials, reason)
+        if self._guard is not None and not await sign_in_guard.converge(self._guard):
+            if reason == "start":
+                # No op may run on a browser whose sign-in interception is not on:
+                # the start fails and its own cleanup stops the browser.
+                raise BrowserUnavailable("could not turn on the browser's sign-in interception")
+            return  # not all of it landed: not applied; the guard is unsettled, so the
+            # next navigation retries
+        self._applied_key = key
+
+    def active_sign_in_guard(self) -> sign_in_guard.SignInGuard | None:
+        """The live browser's guard while it intercepts, else ``None``."""
+        return sign_in_guard.live(self._guard, self._handle and self._handle.relay)
 
     async def seed_context(self, relay: CdpRelay, browser_context_id: str) -> None:
         """Fill one chat's new browser context from the edition provider.
@@ -792,7 +819,11 @@ class HarnessSupervisor:
         raises for a provider failure.
         """
         handle = self._handle
-        if handle is None or handle.choice.kind != "kiro_chromium" or self._applied_key is None:
+        if handle is None or handle.choice.kind != "kiro_chromium":
+            return False
+        # A guard whose interception did not all land is owed a run, applied key or not.
+        unsettled = self._guard is not None and not self._guard.settled
+        if self._applied_key is None and not unsettled:
             return False
         provider = self._provider()
         if credentials.provider_name(provider) is None:
@@ -801,7 +832,13 @@ class HarnessSupervisor:
         # A ``None`` fingerprint means "cannot tell" (a slow stat): not a change.
         expiry = self._placed.next_expiry()
         due = expiry is not None and expiry <= time.time()
-        if not due and (fingerprint or self._applied_key[0], settings) == self._applied_key:
+        applied = self._applied_key
+        if (
+            not due
+            and not unsettled
+            and applied
+            and (fingerprint or applied[0], settings) == applied
+        ):
             return False
         if not await self._acquire_briefly():
             return False
@@ -859,14 +896,15 @@ class HarnessSupervisor:
         # The provider cookies this browser holds, read before the deletes forget them.
         placed = self._placed.keys() if handle.relay is self._credentials_relay else []
         try:
+            guard = await sign_in_guard.halt(self._guard, handle.relay)  # no sign lands after
+            placed += guard.placed.keys() if guard is not None else []
             if close_tabs and not handle.relay.closed:
                 if handle.relay is self._credentials_relay:
                     # Chromium can keep session cookies in the profile on disk; the
                     # ones the gateway set go before it stops.
                     try:
-                        await asyncio.wait_for(
-                            self._placed.delete_all(handle.relay), _TAB_CLOSE_SECS
-                        )
+                        for held in (self._placed, *([guard.placed] if guard else [])):
+                            await asyncio.wait_for(held.delete_all(handle.relay), _TAB_CLOSE_SECS)
                     except (RelayClosed, Exception):  # noqa: BLE001 - best effort at teardown
                         pass
                 try:
@@ -942,8 +980,7 @@ class HarnessSupervisor:
                 )
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
-        await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
-        await asyncio.to_thread(_clear_restored_session, profile)
+        await prepare_profile(profile)
         argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
         if choice.headless:
             argv.append(_HEADLESS_ARG)
@@ -1009,8 +1046,7 @@ class HarnessSupervisor:
         self, argv: list[str], profile: Path
     ) -> tuple[asyncio.subprocess.Process, str]:
         """Windows: a free debugging port, read back from ``DevToolsActivePort``."""
-        port_file = profile / DEVTOOLS_PORT_FILE
-        await asyncio.to_thread(port_file.unlink, missing_ok=True)
+        await asyncio.to_thread((profile / DEVTOOLS_PORT_FILE).unlink, missing_ok=True)
         proc = await self._spawn([*argv, _CHROMIUM_PORT_ARG], env=dict(self._env()), pipes=False)
         try:
             deadline = time.monotonic() + CHROMIUM_START_TIMEOUT_SECS
@@ -1019,7 +1055,8 @@ class HarnessSupervisor:
                 if url is not None:
                     return proc, url
                 if proc.returncode is not None:
-                    break
+                    detail = self._chromium_exit_detail(proc.returncode)
+                    raise BrowserUnavailable(await held_profile_detail(profile, detail))
                 await asyncio.sleep(_POLL_SECS)
             raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
         except BaseException:
@@ -1066,7 +1103,7 @@ class HarnessSupervisor:
         # ``PYTHONPATH`` off ``sys.path``, so ``-m browser_harness.daemon`` resolves to
         # the package in the venv (installed from the lock or copied from the runtime),
         # never to a ``browser_harness/`` directory in the gateway's working directory.
-        proc = await self._spawn(
+        proc = await self._spawn_venv_python(
             [str(python), "-I", "-m", "browser_harness.daemon"], env=env, pipes=False
         )
         try:
@@ -1113,7 +1150,9 @@ class HarnessSupervisor:
             raise HarnessNotInstalled("Browser Harness is not installed")
         env = await asyncio.to_thread(self._daemon_env, handle.relay.url)
         worker_py = Path(__file__).with_name("helper_worker.py")
-        proc = await self._spawn([str(state.python), "-I", str(worker_py)], env=env, pipes=True)
+        proc = await self._spawn_venv_python(
+            [str(state.python), "-I", str(worker_py)], env=env, pipes=True
+        )
         try:
             reply = await _worker_request(proc, {"id": 0, "ping": True}, WORKER_START_TIMEOUT_SECS)
             if not reply.get("ok"):
@@ -1159,6 +1198,16 @@ class HarnessSupervisor:
         else:
             kwargs["start_new_session"] = True
         return await asyncio.create_subprocess_exec(*argv, **kwargs)
+
+    async def _spawn_venv_python(
+        self, argv: list[str], *, env: dict[str, str], pipes: bool
+    ) -> asyncio.subprocess.Process:
+        """:meth:`_spawn` of the venv's interpreter, which a reinstall can empty in place
+        between the install read and the spawn: that reads as the reinstall it is."""
+        try:
+            return await self._spawn(argv, env=env, pipes=pipes)
+        except FileNotFoundError as exc:
+            raise HarnessNotInstalled(HARNESS_REINSTALLING_DETAIL) from exc
 
     # ── Harness IPC (the daemon's own protocol, client side) ──
 

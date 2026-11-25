@@ -12,10 +12,8 @@ import {
   TOGGLE_SIDE_TERMINAL_EVENT,
   matchPanelToggleEvent,
 } from '../lib/panelToggleShortcuts'
-import { useMessageSearch } from '../hooks/useMessageSearch'
 import { useMessageActions } from '../pages/chat/page/messageActions'
 import { useAppSelector } from '../store'
-import { openActivityPanel } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
 import { createTestStore } from './helpers'
 
@@ -77,9 +75,8 @@ function mount() {
   return onClose
 }
 
-function mountMessageActions(activityOpen = false) {
+function mountMessageActions() {
   const store = createTestStore()
-  if (activityOpen) store.dispatch(openActivityPanel())
   const messages: ChatMessage[] = []
   const base = {
     dispatch: store.dispatch, navigate: vi.fn(), filteredSlotsRef: { current: [] }, connected: true,
@@ -91,10 +88,9 @@ function mountMessageActions(activityOpen = false) {
   }
   const hook = renderHook(() => {
     ctl = usePanelTabs(SLOT)
-    const search = useMessageSearch(messages, SLOT)
     const activityOpen = useAppSelector(s => s.chat.activityOpen)
-    useMessageActions({ ...base, tabsCtl: ctl, search, activityOpen })
-    return { search, activityOpen }
+    useMessageActions({ ...base, tabsCtl: ctl, activityOpen })
+    return { activityOpen }
   }, { wrapper: ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider> })
   act(() => { ctl!.openView('files') })
   return hook
@@ -147,23 +143,20 @@ describe('side-terminal shortcut', () => {
   })
 
   it.each([
-    { name: 'closed panel with terminals', count: 2, pending: false, searchOpen: false },
-    { name: 'closed panel without terminals', count: 0, pending: false, searchOpen: false },
-    { name: 'closed panel while terminals restore', count: 1, pending: true, searchOpen: false },
-    { name: 'closed panel with no terminals while restoring', count: 0, pending: true, searchOpen: false },
-    { name: 'search-covered panel with terminals', count: 2, pending: false, searchOpen: true },
-  ])('$name: reveals without creating a shell', ({ count, pending, searchOpen }) => {
-    const { result } = mountMessageActions(searchOpen)
+    { name: 'closed panel with terminals', count: 2, pending: false },
+    { name: 'closed panel without terminals', count: 0, pending: false },
+    { name: 'closed panel while terminals restore', count: 1, pending: true },
+    { name: 'closed panel with no terminals while restoring', count: 0, pending: true },
+  ])('$name: reveals without creating a shell', ({ count, pending }) => {
+    const { result } = mountMessageActions()
     act(() => {
       for (let i = 0; i < count; i++) ctl!.openTerminal({ cwd: '/gateway/project' })
       ctl!.setActive('files')
-      if (searchOpen) result.current.search.open()
       ruling.set(pending)
     })
     const ids = terminals().map(t => t.id)
-    expect(result.current.activityOpen).toBe(searchOpen)
+    expect(result.current.activityOpen).toBe(false)
     press()
-    expect(result.current.search.isOpen).toBe(false)
     expect(result.current.activityOpen).toBe(true)
     expect(ctl!.activeId).toBe(!pending && count ? ids.at(-1) : 'files')
     expect(terminals().map(t => t.id)).toEqual(ids)

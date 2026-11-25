@@ -48,12 +48,13 @@ describe('transcript table breakout contract', () => {
     // the overflow fade is a `mask-image` on the scroller itself, so no wrapper
     // node sits between the root and the scroller.
     const scroll = container.querySelector(`${TABLE_SELECTOR} > .overflow-x-auto`)
-    // Absolute sr-only status spans must have a containing block inside the
-    // local scroller, or unclipping the bubble lets them widen the transcript.
-    // The browser capture checks scrollWidth; this pins its layout prerequisite
-    // without removing the live region that announces successful copies.
+    // An absolute sr-only status span inside the bubble could widen the
+    // transcript once the bubble is unclipped. The cell chip's live region is
+    // portaled to <body>, so none sits in the table, and the scroller still
+    // gives any absolute descendant a local containing block.
     expect(scroll).toHaveClass('relative')
-    expect(scroll?.querySelector('[role="status"][aria-live="polite"]')).toHaveClass('sr-only')
+    expect(container.querySelector('[role="status"][aria-live="polite"]')).toBeNull()
+    expect(document.querySelector('[role="status"][aria-live="polite"]')).toHaveClass('sr-only')
   })
 
   it('keeps every breakout table out of the turn rail\'s band instead of hiding the rail', () => {
@@ -260,6 +261,9 @@ describe('transcript scroll shell pane width', () => {
     onTestFinished(() => { vi.useRealTimers() })
     const { container, unmount } = render(<Shell />)
     const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    // The observer's first delivery, which a browser makes after its first
+    // layout, publishes the starting width.
+    act(() => { FakeResizeObserver.instance?.fire() })
     expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
     // Inheritance down to the rows and the measure farm is a browser fact jsdom
     // does not model; scripts/capture-chat-table-breakout.mjs measures it.
@@ -297,6 +301,7 @@ describe('transcript scroll shell pane width', () => {
     onTestFinished(() => { vi.useRealTimers() })
     const { container } = render(<Shell />)
     const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    act(() => { FakeResizeObserver.instance?.fire() })
     // A resize still waiting to rest when the slide starts must not publish
     // in the middle of it.
     act(() => { paneWidth = 1200; FakeResizeObserver.instance?.fire() })

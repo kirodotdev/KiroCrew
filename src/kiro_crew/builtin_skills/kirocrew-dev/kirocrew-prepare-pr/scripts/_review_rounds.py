@@ -1,5 +1,8 @@
 """Disposition outcomes and the per-head rounds that ``--rounds`` and the push check read.
 
+It also owns the disposition marker grammar and which malformed markers still
+block a pull request.
+
 ``_review_contract.py`` re-exports every name here, and callers import them from
 there. ``_review_pushes.py`` loads this module, and the contract takes it from that
 load. The fence readers come from ``_review_fences.py``.
@@ -241,3 +244,103 @@ def fix_rounds(order, rounds):
         if after:
             out[span] = after
     return out
+
+
+# --- Disposition marker grammar ------------------------------------------------------
+
+DISPOSITION_PREFIX = "<!-- ai-review-disposition "
+# The adjudication ledger selects by this leading byte prefix before parsing.
+# A prefixed but malformed comment therefore retains downgrade power and must
+# stay visible, never ignored: as a violation, or as a notice when
+# malformed_marker_verdict finds it judged an older head or was replaced.
+DISPOSITION_MARKER_RE = re.compile(
+    r"\A<!--\s*ai-review-disposition\s+target=([A-Za-z0-9_-]+)" r"\s+head=([0-9a-f]{7,40})\s*-->"
+)
+SPAN_CLAIM_RE = re.compile(r"\bspan=([0-9a-f]{12})\b")
+# Span identity is deliberately coarse (path + reviewer/kind). Counting title
+# bullets prevents two findings that share one span from sharing one rationale.
+DISPOSITION_BULLET_RE = re.compile(r"^\s*[-*]\s*\*\*")
+
+
+# --- Malformed markers: which ones still hold a pull request up ----------------------
+#
+# A comment that starts with the disposition prefix but whose marker does not parse
+# still reaches the adjudication ledger, which selects records by that prefix alone,
+# so the gate cannot ignore it. But one that judged an OLDER head, or that the same
+# writer has since replaced with a well-formed record for the same lane and finding,
+# asks nothing new of the current head: the ledger shows the reviewer its head=, and
+# the claim checks still run over the target= and span= it carries. Blocking on it
+# would leave deleting the comment as the only way out. So it blocks only when it
+# names the current head, or a head the gate cannot read, with no replacement.
+#
+# Looser than the contract's DISPOSITION_MARKER_RE: it reads target= and head= at
+# the start of the marker without requiring the marker to close right after them,
+# so a marker carrying an extra token (span= written inside it) still names both.
+LENIENT_MARKER_RE = re.compile(
+    r"\A<!--\s*ai-review-disposition\s+target=([A-Za-z0-9_-]+)\s+head=([0-9a-f]{7,40})\b"
+)
+EXPECTED_MARKER = "<!-- ai-review-disposition target=<lane> head=<sha> -->"
+
+
+def lenient_marker(body):
+    """``(target, head)`` read from a marker that does not parse strictly, else None."""
+    match = LENIENT_MARKER_RE.match(body or "")
+    return (match.group(1).lower(), match.group(2)) if match else None
+
+
+def superseding_record(record, records, lanes_of):
+    """The id of a later well-formed record by the same writer that replaces ``record``.
+
+    Later means a higher comment id, which GitHub assigns in posting order. It must
+    name the same lane and claim every span ``record`` claimed, so a record for
+    another finding does not clear this one. Resolved lane sets must match exactly;
+    if either target is unbound, compare the target spellings instead.
+    """
+    spans = set(record.get("spans") or [])
+    own_id = record.get("comment_id") or 0
+    target = record.get("target") or ""
+    lanes = lanes_of(target)
+    for other in records:
+        other_target = other.get("target") or ""
+        other_lanes = lanes_of(other_target)
+        same_lane = lanes == other_lanes if lanes and other_lanes else target == other_target
+        if (
+            not other.get("malformed")
+            and (other.get("comment_id") or 0) > own_id
+            and other.get("author") == record.get("author")
+            and same_lane
+            and spans <= set(other.get("spans") or [])
+        ):
+            return other.get("comment_id")
+    return None
+
+
+def malformed_marker_verdict(record, records, head_sha, lanes_of):
+    """``(blocking, text)`` for one malformed record of ``records``."""
+    where = "comment {} by {}".format(record.get("comment_id") or "?", record.get("author") or "?")
+    target, head = record.get("target") or "", record.get("head") or ""
+    if not target or not head:
+        return True, (
+            "malformed disposition marker ({}) - the adjudication ledger selects it "
+            "by prefix alone and this gate cannot read its target= or head=, so "
+            "delete that comment and post a corrected one: expected '{}'".format(
+                where, EXPECTED_MARKER
+            )
+        )
+    replacement = superseding_record(record, records, lanes_of)
+    if replacement is not None:
+        return False, (
+            "malformed disposition marker ({}; target={}) is superseded by comment "
+            "{}, so it does not block".format(where, target, replacement)
+        )
+    if not same_head(head, head_sha or ""):
+        return False, (
+            "malformed disposition marker ({}; target={}) judged older head {}, so "
+            "it does not block this head".format(where, target, head[:12])
+        )
+    return True, (
+        "malformed disposition marker ({}; target={}) for the current head - the "
+        "adjudication ledger selects it by prefix alone. Either post a corrected "
+        "disposition for the same lane and span after it, which supersedes it, or "
+        "delete that comment: expected '{}'".format(where, target, EXPECTED_MARKER)
+    )

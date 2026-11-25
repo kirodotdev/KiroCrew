@@ -99,6 +99,7 @@ import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
   DEFAULT_REGION, launchGuardKey, isTerminal, isRemoving, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
   type SigninNotice,
+  LAUNCH_CARD_SHOWN_MS, launchCardDismissable, readDismissedLaunches, writeDismissedLaunches,
 } from './remoteCrewPanelModel'
 import {
   ProvisionerCard, SettingUpRow, LaunchProgressCard,
@@ -1043,6 +1044,29 @@ export function RemoteCrewPanel() {
   // status query has resolved.
   const activeJob = launchStatusQuery.data ?? inProgress[0] ?? null
 
+  // A finished launch's card (it needs nothing more) closes by its button, or by
+  // itself LAUNCH_CARD_SHOWN_MS after its last write, and stays closed after a
+  // reload: the closed ids are kept in this browser. Any other card stays.
+  const [dismissedLaunches, setDismissedLaunches] = useState<string[]>(readDismissedLaunches)
+  const dismissLaunch = useCallback((id: string) => {
+    setDismissedLaunches(prev => {
+      if (prev.includes(id)) return prev
+      const next = [...prev, id]
+      writeDismissedLaunches(next)
+      return next
+    })
+  }, [])
+  const cardJob =
+    activeJob && launchCardDismissable(activeJob) && dismissedLaunches.includes(activeJob.id) ? null : activeJob
+  const cardTimerId = cardJob && launchCardDismissable(cardJob) ? cardJob.id : null
+  const cardDoneAt = cardJob?.updated_at ?? 0
+  useEffect(() => {
+    if (!cardTimerId) return
+    const left = cardDoneAt * 1000 + LAUNCH_CARD_SHOWN_MS - Date.now()
+    const t = setTimeout(() => dismissLaunch(cardTimerId), Math.max(0, left))
+    return () => clearTimeout(t)
+  }, [cardTimerId, cardDoneAt, dismissLaunch])
+
   // What the built-in Launch sends. It names the lane that is on screen: the
   // built-in form draws EVERY `aws_ec2`-kind row, and an edition may register a
   // second one behind a different engine; omitting the id would let the server
@@ -1062,14 +1086,16 @@ export function RemoteCrewPanel() {
   // success, whatever step it stopped at.
   const launchFailed = launchedKey === builtinLaunchKey
     && !!activeJob && activeJob.id === activeLaunchId && activeJob.status === 'failed'
-  // Only a failure before provisioning started is known to have created nothing,
-  // so only then is the same-settings guard lifted and Launch itself the retry.
-  // From provisioning on, a stack may still exist: a refused sign-in or a later
-  // step leaves a registered crew, and a failed provision is rolled back on a
-  // best-effort basis the job does not report as a field. There the guard stays,
-  // so repeating the settings takes the explicit "Launch another crew".
-  const launchFailedBeforeProvision = launchFailed && !activeJob.instance_id && !isRegistered(activeJob)
-    && activeJob.steps.some(st => st.key === 'provision' && (st.state === 'pending' || st.state === 'skipped'))
+  // Only a launch known to have left no stack lifts the same-settings guard and
+  // makes Launch itself the retry: one that failed before provisioning started,
+  // or a failed provision whose rollback found no stack and confirmed its delete
+  // (`never_created`). Otherwise a stack may still exist: a refused sign-in or a
+  // later step leaves a registered crew, and a rollback may have found a stack or
+  // not confirmed its delete. There the guard stays, so repeating the settings
+  // takes the explicit "Launch another crew".
+  const launchFailedNothingCreated = launchFailed && !activeJob.instance_id && !isRegistered(activeJob)
+    && (!!activeJob.never_created
+      || activeJob.steps.some(st => st.key === 'provision' && (st.state === 'pending' || st.state === 'skipped')))
   // The job is a snapshot: a crew it registered can be deleted afterwards, and
   // an instance that never registered has no row. So "listed in My Crews" is
   // said only while the live list holds that instance; otherwise the line stays
@@ -1077,7 +1103,7 @@ export function RemoteCrewPanel() {
   // crew row holds as its SSM target; the row's own id is derived from its name.
   const launchFailedCrewListed = launchFailed && isRegistered(activeJob)
     && !!activeJob.instance_id && instances.some(i => i.ssm_target === activeJob.instance_id)
-  const alreadyLaunched = launchedKey === builtinLaunchKey && !launchFailedBeforeProvision
+  const alreadyLaunched = launchedKey === builtinLaunchKey && !launchFailedNothingCreated
   // The gateway refuses a launch while any crew setup is still running
   // (`launch_already_running`), so neither launch button is offered until it ends.
   const setupRunning = !!activeJob && !isTerminal(activeJob)
@@ -1308,7 +1334,7 @@ export function RemoteCrewPanel() {
           identityStartUrl={identityStartUrl} identityStartUrlOk={identityStartUrlOk} identityRegion={identityRegion}
           identityRegionOk={identityRegionOk} onIdentity={chooseIdentity} launchBuiltin={launchBuiltin}
           launchReady={launchReady} alreadyLaunched={alreadyLaunched} launching={launchMutation.isPending}
-          setupRunning={setupRunning} launchFailed={launchFailed} launchFailedBeforeProvision={launchFailedBeforeProvision}
+          setupRunning={setupRunning} launchFailed={launchFailed} launchFailedNothingCreated={launchFailedNothingCreated}
           launchFailedCrewListed={launchFailedCrewListed} identityResolving={identityResolving} identityUnknown={identityUnknown}
           identityOk={identityOk} regionOk={regionOk} blockingOk={blockingOk} blockingCheck={blockingCheck}
           signinOnLaunch={signinOnLaunch} setSigninOnLaunch={setSigninOnLaunch}
@@ -1361,16 +1387,17 @@ export function RemoteCrewPanel() {
             askAgent
           />
         )}
-        {activeJob && (
+        {cardJob && (
           <LaunchProgressCard
-            job={activeJob}
-            cancelling={cancelMutation.isPending && cancelMutation.variables === activeJob.id}
+            job={cardJob}
+            onDismiss={dismissLaunch}
+            cancelling={cancelMutation.isPending && cancelMutation.variables === cardJob.id}
             onCancel={id => cancelMutation.mutate(id)}
             onRestartSignin={id => signinRestartMutation.mutate(id)}
             restartingSignin={signinRestartMutation.isPending}
             onFetchSignin={id => signinMutation.mutate(id)}
             fetchingSignin={signinMutation.isPending}
-            signinNotice={signinNotice && signinNotice.jobId === activeJob.id ? signinNotice : null}
+            signinNotice={signinNotice && signinNotice.jobId === cardJob.id ? signinNotice : null}
             onSkipSignin={id => signinSkipMutation.mutate(id)}
             skippingSignin={signinSkipMutation.isPending}
           />

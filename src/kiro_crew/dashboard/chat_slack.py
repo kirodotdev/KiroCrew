@@ -18,6 +18,8 @@ from kiro_crew.dashboard.chat_backfill import (
     select_backfill_messages,
     session_deep_link,
 )
+from kiro_crew.dashboard.chat_runner import _name_local_attachments
+from kiro_crew.dashboard.chat_title import _message_attachment_paths, _title_text
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     expire_slack_options,
@@ -33,7 +35,9 @@ from kiro_crew.dashboard.state import (
     _expected_binding,
     _log_task_exception,
 )
+from kiro_crew.messaging.display_safety import SLACK_MARKDOWN_LINK
 from kiro_crew.messaging.link import SLACK_NAMESPACE
+from kiro_crew.messaging.outbound_files import is_remote_destination
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.security import redact_and_truncate
@@ -70,6 +74,36 @@ def _first_user_prompt(slot) -> str:  # noqa: ANN001 — _ChatSlot (avoids impor
             text = " ".join(str(m.get("content") or "").split())
             if text:
                 return text
+    return ""
+
+
+def _prompt_title_text(content: str, files: tuple[str, ...]) -> str:
+    """*content*, a dashboard prompt, as one title line with no path on this host.
+
+    The words are read the way the session's own fallback title reads them
+    (``chat_title._title_text``): pasted pictures and ``[attached_file N]``
+    markers come out. Any other local picture, and every attachment of a prompt
+    that has no words, is named the way the mirror echo names a later one
+    (``recipient._name_local_attachments``: ``Image: <name>``). A link to a
+    local file reads as its label. Blocking (a
+    scan of the whole prompt); call it off the event loop.
+    """
+    # ``_title_text`` drops only the blocks the composer writes, each on its own
+    # line; a picture written inside a sentence is named where it stands.
+    text = _name_local_attachments(_title_text(content, files) or content, files)
+    text = SLACK_MARKDOWN_LINK.sub(
+        lambda m: m.group(0) if is_remote_destination(m.group(2)) else m.group(1), text
+    )
+    return " ".join(text.split())
+
+
+async def _anchor_prompt_title(slot) -> str:  # noqa: ANN001 — _ChatSlot (avoids import cycle)
+    """The slot's first user prompt as a new thread's parent names it, or ""."""
+    for m in slot.messages:
+        if m.get("role") == "user" and str(m.get("content") or "").strip():
+            # Read on the loop, where the transcript is written; scanned off it.
+            content, files = str(m.get("content") or ""), _message_attachment_paths(m)
+            return await asyncio.to_thread(_prompt_title_text, content, files)
     return ""
 
 
@@ -210,7 +244,7 @@ async def drain_slack_backfill(
 
     for row in selection.first_turn:
         icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
-        content, choices = _split_backfill_options(row)
+        content, choices = await _backfill_row_parts(row)
         for part in _format_backfill_parts(content, icon):
             if not await _post(part):
                 return
@@ -243,7 +277,7 @@ async def drain_slack_backfill(
     live_ts: str | None = None
     for idx, row in enumerate(selection.recent_rows):
         icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
-        content, choices = _split_backfill_options(row)
+        content, choices = await _backfill_row_parts(row)
         for part in _format_backfill_parts(content, icon):
             if not await _post(part):
                 return
@@ -312,6 +346,20 @@ def _split_backfill_options(row: dict[str, Any]) -> tuple[str, list[str]]:
     if row.get("role") == "user":
         return content, []
     return extract_options(content)
+
+
+async def _backfill_row_parts(row: dict[str, Any]) -> tuple[str, list[str]]:
+    """:func:`_split_backfill_options`, with a person's attachments named.
+
+    A dashboard prompt's pasted pictures and dropped files are replayed the way
+    the live mirror echo shows them (``Image: <name>``), never as markup naming
+    a path on this host. Agent rows are left to the renderer.
+    """
+    content, choices = _split_backfill_options(row)
+    if row.get("role") == "user":
+        files = _message_attachment_paths(row)
+        content = await asyncio.to_thread(_name_local_attachments, content, files)
+    return content, choices
 
 
 def _spawn_slack_backfill(
@@ -722,7 +770,8 @@ async def link_slot_to_slack(
             title = redact_and_truncate(base, max_chars=200)
             if not title:
                 title = redact_and_truncate(
-                    _first_user_prompt(slot), max_chars=_ANCHOR_TITLE_SNIPPET_CHARS
+                    await _anchor_prompt_title(slot),
+                    max_chars=_ANCHOR_TITLE_SNIPPET_CHARS,
                 )
             if not title:
                 title = _ANCHOR_TITLE_DEFAULT

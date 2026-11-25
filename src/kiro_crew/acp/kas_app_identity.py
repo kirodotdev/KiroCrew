@@ -42,8 +42,8 @@ _NOOP_RESTRICTIONS: Mapping[str, Any] = {"disabled": False, "disabledTools": []}
 def gateway_bound_port() -> str:
     """The gateway's live listener port, or ``""`` when it is not a valid port.
 
-    Native MCP children on KAS do not inherit the gateway's environment, so the
-    port is taken from the gateway itself, never from an editable spec.
+    What a native MCP child on KAS is handed on its entry: taken from the gateway
+    itself, never from an editable spec or the engine's environment.
     """
     # Deferred: launch imports the transport stack this module must not load.
     from kiro_crew.acp.launch import _well_formed_port
@@ -133,8 +133,13 @@ def tokened_app_element(
     The command and args come from *launch* alone, so a spec that renames
     another program ``mochi:mochi`` cannot receive the token. The env is the
     gateway's port and session key, then the pinned launch env (``PYTHONPATH``,
-    ``KIROCREW_HOME``); nothing else from the projection survives.
+    ``KIROCREW_HOME``), then the gateway's cache-only policy markers on a centrally
+    governed host; nothing else from the projection survives. The markers go on
+    this launch, never on the registered entry, because under a ``cc`` or
+    ``strict`` agent tier the engine's own environment does not carry them.
     """
+    from kiro_crew.agent import policy_cache_only_env
+
     raw_env = element.get("env")
     pairs: list[Any] = raw_env if isinstance(raw_env, list) else []
     env = {
@@ -146,6 +151,7 @@ def tokened_app_element(
     if port:
         env.setdefault("KIROCREW_PORT", port)
     env.update({str(k): str(v) for k, v in (launch.get("env") or {}).items()})
+    env.update(policy_cache_only_env())
     relaunched = {
         "name": element["name"],
         "command": str(launch["command"]),

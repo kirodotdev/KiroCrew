@@ -87,6 +87,27 @@ class TestAlreadyHolds:
         os.link(target, tmp_path / "second.json")
         assert not already_holds(target, b"{}\n")
 
+    def test_another_owners_file_is_not_held(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "f.json"
+        path.write_bytes(b"{}\n")
+        os.chmod(path, 0o600)
+        # The write would leave a file this user owns; seen as another user, the
+        # file on disk is not what the write produces.
+        monkeypatch.setattr(os, "geteuid", lambda: path.stat().st_uid + 1)
+        assert not already_holds(path, b"{}\n", mode=0o600)
+
+    def test_no_uid_is_never_held(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew import platform_compat
+
+        path = tmp_path / "f.json"
+        path.write_bytes(b"{}\n")
+        os.chmod(path, 0o600)
+        # effective_uid answers None where there is no uid (Windows).
+        monkeypatch.setattr(platform_compat, "effective_uid", lambda: None)
+        assert not already_holds(path, b"{}\n", mode=0o600)
+
     def test_an_absent_file_is_not_held(self, tmp_path: Path) -> None:
         assert not already_holds(tmp_path / "absent.json", b"{}\n")
 
@@ -115,6 +136,29 @@ class TestTheSidecarIsNotReplacedForNothing:
         assert _real(agent_state._state_path()) not in replaced
         assert agent_state.managed_digest_matches("owned", "d1")
 
+    def test_another_owners_sidecar_is_replaced(
+        self, replaced: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_state.set_cc_model("kirocrew-heartbeat", "auto")
+        owner = agent_state._state_path().stat().st_uid
+        monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+        replaced.clear()
+        agent_state.set_cc_model("kirocrew-heartbeat", "auto")
+        assert _real(agent_state._state_path()) in replaced
+
+    def test_another_owners_managed_refresh_rewrites_the_sidecar(
+        self, replaced: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_state.begin_managed_write("owned", "d1")
+        agent_state.finalize_managed_write("owned")
+        owner = agent_state._state_path().stat().st_uid
+        monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+        replaced.clear()
+        agent_state.begin_managed_write("owned", "d1", current="d1")
+        agent_state.finalize_managed_write("owned")
+        assert _real(agent_state._state_path()) in replaced
+        assert agent_state.managed_digest_matches("owned", "d1")
+
     def test_a_stale_pending_is_overwritten_not_promoted(self) -> None:
         agent_state.begin_managed_write("owned", "d1")
         agent_state.finalize_managed_write("owned")
@@ -124,6 +168,22 @@ class TestTheSidecarIsNotReplacedForNothing:
         agent_state.finalize_managed_write("owned")
         assert agent_state.managed_digest_matches("owned", "d1")
         assert not agent_state.managed_digest_matches("owned", "stale")
+
+
+@posix_only
+def test_another_owners_identical_spec_is_replaced(
+    tmp_path: Path, replaced: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew import agent
+
+    path = tmp_path / "spec.json"
+    data = {"name": "x", "tools": ["a"]}
+    agent._atomic_json_write_unguarded(path, data)
+    owner = path.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    replaced.clear()
+    agent._atomic_json_write_unguarded(path, data)
+    assert _real(path) in replaced
 
 
 @posix_only
@@ -174,3 +234,67 @@ def test_an_unchanged_rebuild_replaces_no_pinned_file(
     replaced.clear()
     agent.rebuild_agent_config()
     assert sorted(pinned.intersection(replaced)) == []
+
+
+@posix_only
+def test_the_first_profile_watch_tick_after_boot_replaces_no_pinned_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replaced: list[str]
+) -> None:
+    """A fresh home's first watch tick, with no governance change, keeps both files.
+
+    The chain this pins, all real code: the boot rebuild runs before the startup KAS
+    engine download lands, so the engine's gate withholds the ``permissions`` block;
+    the download lands; the first sandboxed spawn creates the empty ``profiles``
+    directory its read-only seal needs a target for; then the profile watch ticks.
+    Any rebuild at that tick writes the block, replacing ``kirocrew.json`` and the
+    sidecar that records its stat, under hook and session sandboxes that pin both.
+    Nothing governing moved, so the tick must not rebuild.
+    """
+    from kiro_crew import agent, kiro_cli
+    from kiro_crew.agent_materialization import auto_approve
+    from kiro_crew.agent_sdk import backend_install
+    from kiro_crew.config.paths import config_dir
+    from kiro_crew.platform import governance_profiles as gp
+
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
+    monkeypatch.setattr(agent_state, "config_dir", config_dir)
+    profiles = config_dir() / "profiles"
+    assert not profiles.exists(), "precondition: a fresh data home has no profiles dir"
+    monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+    gp.reset_store()
+    for name, value in (
+        ("_projected_ceiling_generation", None),
+        ("_rebuild_answer_generation", None),
+        ("_rebuild_incomplete", False),
+        ("_profile_watch_generation", None),
+        ("_profile_watch_retry_at", 0.0),
+        ("_pending_projection_warned_generation", None),
+    ):
+        monkeypatch.setattr(agent, name, value, raising=False)
+    # The bundle route on a host with no kiro-cli, as on a fresh Linux install.
+    monkeypatch.setattr(backend_install, "_kas_bundle_route", lambda: True)
+    monkeypatch.setattr(kiro_cli, "kiro_cli_installed", lambda: False)
+    engine_installed = {"value": False}
+    monkeypatch.setattr(
+        auto_approve, "_bundled_engine_accepts_permissions", lambda: engine_installed["value"]
+    )
+
+    try:
+        agent.rebuild_agent_config(refresh_forks="defer")
+        agent.prime_ceiling_projection()
+        files = [
+            config_dir() / "agent_model_state.json",
+            agent.kiro_agents_dir_path() / agent.AGENT_FILENAME,
+        ]
+        before = {p: (p.stat().st_ino, p.read_bytes()) for p in files}
+        assert b'"permissions"' not in before[files[1]][1], "precondition: no engine, no block"
+
+        engine_installed["value"] = True  # the startup download landed
+        profiles.mkdir()  # the first sandboxed spawn's pre-create
+        replaced.clear()
+        agent.reproject_for_profile_change()
+
+        assert sorted(_real(p) for p in files if _real(p) in replaced) == []
+        assert {p: (p.stat().st_ino, p.read_bytes()) for p in files} == before
+    finally:
+        gp.reset_store()

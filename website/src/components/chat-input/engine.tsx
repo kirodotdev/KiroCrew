@@ -45,7 +45,7 @@ export function useComposerEngine({ lexicalComposer }: { lexicalComposer: boolea
     setLexicalControlRevision(value => value + 1)
   }, [])
   const textareaControl = useMemo<ComposerControl>(() => ({
-    focus: () => inputRef.current?.focus(),
+    focus: (options) => inputRef.current?.focus(options),
     getRootElement: () => inputRef.current,
     getSelection: () => {
       const textarea = inputRef.current

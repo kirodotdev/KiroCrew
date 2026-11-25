@@ -366,7 +366,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
                 status=400,
             )
-    for _bool_field in ("dashboard_card_send",):
+    for _bool_field in ("dashboard_card_send", "show_sessions_in_list", "worker_conducts"):
         if _bool_field in body and not isinstance(body[_bool_field], bool):
             return web.json_response(
                 {"error": f"{_bool_field} must be a boolean", "code": f"invalid_{_bool_field}"},
@@ -452,6 +452,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             )
     harness_changed = False
     harness_refreshed = False
+    from kiro_crew.dashboard.bot_chat_follow import follow_bot_save, follow_mark
+
+    # Before the write: the config watcher sees it too, and a follow it makes after
+    # this mark means the chat is already on the saved value.
+    follow_since = follow_mark()
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
@@ -549,6 +554,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             )
         # Captured BEFORE any mutation: what the effort chain reads today.
         effort_inputs_before = _effort_inputs(agent)
+        conducts_before = agent.worker_conducts
         # Best-effort per-member event log: snapshot the config-derived roster
         # fields before mutation so member/config can report which changed.
         _ev_before = {
@@ -646,6 +652,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # validated above as a strict bool.
             agent.dynamic_capabilities = body["dynamic_capabilities"]
             changed.append("dynamic_capabilities")
+        if "worker_conducts" in body:
+            # Validated above as a strict bool. Only this owner route writes it:
+            # no Bot tool does, as for ``max_workers``. Read at each worker's
+            # session start (``members.conducting_worker_session``); a change
+            # reloads the Bot's workers after the save, below.
+            agent.worker_conducts = body["worker_conducts"]
+            changed.append("worker_conducts")
         if "approval_mode" in body:
             # Compare-and-set: the profile sends the value it last read, and a
             # write made from a stale read is refused with the current value,
@@ -832,6 +845,9 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.dashboard_card_send = body["dashboard_card_send"]
             changed.append("dashboard_card_send")
+        if "show_sessions_in_list" in body:
+            agent.show_sessions_in_list = body["show_sessions_in_list"]
+            changed.append("show_sessions_in_list")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store
@@ -1049,6 +1065,23 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             await follow_display_name(
                 request.app.get("state"), agent.memory_store, member_label(name, agent)
             )
+        if agent.worker_conducts is not conducts_before:
+            # A running worker keeps what its session start gave it, the kit and the
+            # parts read per call alike, until its next start. Reloading the Bot's
+            # workers brings that start now (an idle one at once, a busy one at its
+            # turn end, its conversation kept), as a worker-kit policy change does.
+            # Each says the setting changed: the reload's default notice says
+            # capabilities were added, which turning the switch off is not.
+            from kiro_crew.dashboard.crewmate_worker_reload import schedule_reload_workers
+
+            schedule_reload_workers(
+                request.app.get("state"),
+                name,
+                notice=(
+                    "Session reloaded so it picks up this Bot's changed worker setting. "
+                    "The conversation is kept."
+                ),
+            )
         # Best-effort per-member event log: the save succeeded, so emit a
         # config snapshot with the list of fields that actually changed.
         try:
@@ -1119,9 +1152,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         # On every save that carries the field, an unchanged value included. After
         # the refresh, so a turn that consumes the chat's reset restarts through a
         # factory that already holds the saved effort.
-        from kiro_crew.dashboard.bot_chat_follow import follow_bot_save
-
-        await follow_bot_save(request.app.get("state"), name, cfg, changed)
+        await follow_bot_save(request.app.get("state"), name, cfg, changed, since=follow_since)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.update",

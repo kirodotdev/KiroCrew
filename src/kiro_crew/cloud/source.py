@@ -1394,9 +1394,9 @@ def _verify_boundary_content(
         except (aws.AWSError, aws.CloudActionDenied) as exc:
             logger.info("automatic upgrade of boundary %s refused: %s", name, exc)
             raise aws.AWSError(
-                f"the permissions boundary '{name}' holds the earlier content-fixed "
-                "document, and this build's instance role needs the newer one. An AWS "
-                "admin upgrades it once for this account with "
+                f"the permissions boundary '{name}' holds what an earlier version of "
+                "Kiro Crew created, and this build's instance role needs the newer "
+                "contents. An AWS admin upgrades it once for this account with "
                 f"`{upgrade_step or UPGRADE_STEP}`, then retry.",
                 action="iam:GetPolicyVersion",
             ) from exc
@@ -1406,11 +1406,10 @@ def _verify_boundary_content(
         )
         return
     raise aws.AWSError(
-        f"the existing permissions boundary '{name}' does NOT match "
-        "the expected content-fixed document — refusing to reuse it (a boundary "
-        "that caps nothing would defeat the ceiling it exists to impose). If you "
-        "intentionally changed it, delete it and let the launcher recreate it, "
-        "or re-run `kirocrew cloud iam-boundary`.",
+        f"An IAM policy named '{name}' already exists in this AWS account, but its "
+        "contents differ from what this version of Kiro Crew needs, so it is not "
+        "used. Delete that policy (or ask your AWS admin to) and retry: Kiro Crew "
+        "then creates it again, or names the admin step that does.",
         action="iam:GetPolicyVersion",
     )
 

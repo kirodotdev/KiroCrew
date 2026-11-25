@@ -628,6 +628,49 @@ class TestRuntimeHelpers:
         req = uds_calls[0]["req"]
         assert req.get_header("X-local-secret") == "s3cret"  # urllib-normalized key
 
+    @pytest.mark.parametrize("windows", [True, False], ids=["loopback-tcp", "pod-socket"])
+    def test_mint_token_waits_as_long_as_kirocrew_token(
+        self, windows: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both mint sends give a busy pod gateway the main gateway's token budget.
+
+        A shorter wait turns a pod gateway that is up but slow to answer its first
+        mint into a failed mint with a bare ``timed out``.
+        """
+        from kiro_crew.cli_server_requests import _TOKEN_REQUEST_TIMEOUT
+
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / ".local_secret").write_text("s3cret")
+
+        class _Resp:
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *a: object) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"token":"tok"}'
+
+        timeouts: list[float] = []
+
+        def _open(req: object, timeout: float, **_k: object) -> "_Resp":
+            timeouts.append(timeout)
+            return _Resp()
+
+        monkeypatch.setattr(rt, "IS_WINDOWS", windows)
+        monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(rt, "tcp_verified_urlopen", _open)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", _open)
+
+        assert rt.mint_token(c, "demo", "1h") == "tok"
+        assert len(timeouts) == 1
+        assert timeouts[0] >= _TOKEN_REQUEST_TIMEOUT
+
     def test_mint_token_refuses_a_foreign_port_holder(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

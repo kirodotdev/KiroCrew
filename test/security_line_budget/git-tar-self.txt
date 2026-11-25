@@ -1,0 +1,22 @@
++2901
+The `sandbox-escape-git-tar-self` floor: new `argv_floor_git_tar` and `argv_floor_tar` (its tar grammar) modules that
+refuses a git or tar command whose transport dials this host (a literal self host,
+an `ext::` / `ssh://` URL, `core.sshCommand` / `GIT_SSH` / `GIT_SSH_COMMAND`, tar's
+`--rsh-command`, `TAR_OPTIONS` or `TAPE`, an `--upload-pack` / `--receive-pack`
+program). It reuses the ssh floor's source pre-walk (`_ssh_floor_source_text`, split
+out of `_is_ssh_to_self` with no change in what the ssh floor reads) and its
+environment tracker (`_FrameEnvironment`). The open-quote backstop reads its
+expansion signals (`$(`, `${`, `$NAME`, a run of one or two backticks) from the
+command as submitted, because the normalizer drops those markers. Deny-only: it
+adds refusals and removes no rule. A carried git or tar command is read by the
+floor even when it names no literal self host. The floor reads every here-document
+body, as the ssh-self row does. The row is enforced by its floor alone (its regex
+would match a quoted argument that only names a dial). There is no
+unreadable-command row:
+shell functions and many-word substitutions behave as on main. A wrapper's option
+words are read in the case they were submitted in, as the ssh floor reads them
+(`env -C` and `sudo -u` take a value, `sudo -H` takes none). A tar bundle and the
+option words after it are read in their submitted case too (`-C` takes a value and
+names no operation; a bundle's `c` stays the operation when `--create` repeats it).
+A command's program word is found past its redirection words (`>/dev/null export A=x`
+runs `export`), as bash finds it.

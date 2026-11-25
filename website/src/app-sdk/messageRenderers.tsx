@@ -16,6 +16,7 @@
 import React, { lazy, memo, Suspense } from 'react'
 import { Clock, AppWindow, LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react'
 import { i18nT } from '../i18n/t'
+import type { MessageQuote } from '../chat-core/composer/messageQuote'
 import { isNoteRow } from '../lib/noteContract'
 import { parseOptions } from './protocol'
 import ErrorNotice from '../components/ErrorNotice'
@@ -37,7 +38,13 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { isProjectHooksNotice } from '../pages/chat/projectHooksNoticeMatch'
-import SpecHooksRunNowhereNotice, { isSpecHooksRunNowhereNotice, specHooksRunNowhereDismissed } from '../pages/chat/SpecHooksNotice'
+import SpecHooksRunNowhereNotice, {
+  ProjectHookFilesNotice,
+  isProjectHookFilesNotice,
+  isSpecHooksRunNowhereNotice,
+  projectHookFilesNoticeDismissed,
+  specHooksRunNowhereDismissed,
+} from '../pages/chat/SpecHooksNotice'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { replyShowsFooter, replyTurnStats } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
@@ -119,6 +126,13 @@ export interface MessageRenderContext {
    *  bubble arms its context menu. Receives the row's own fields, so the
    *  renderer never has to know what the host stores. */
   onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
+  /** Fork the chat from an assistant reply, by its `meta.mid`. Absent: the row
+   *  offers no fork (a reply with no `mid` offers none either). */
+  onForkMessage?: (mid: string) => void | Promise<unknown>
+  /** Jump to the message a sent quote card quotes, in the host's own
+   *  transcript. A host capability: absent, a sent quote card is a plain
+   *  card, not a control. */
+  onJumpToQuote?: (quote: MessageQuote) => void
   /** Drop mcp_oauth banners a Connections card already owns. */
   hideCardOwnedOAuth: boolean
   /** Whether a row's error notice may offer the "Ask the agent" hand-off.
@@ -578,6 +592,9 @@ export interface AssistantBubbleOptions {
   /** Draw link previews under the reply's links (Settings -> Chat -> Link
    *  Previews). Absent: off. */
   linkPreviews?: boolean
+  /** Who the reply's offscreen speaker heading names (a crewmate's chat: the
+   *  crewmate). Absent: the product name, as on the main chat. */
+  speakerName?: string
 }
 
 /**
@@ -605,6 +622,14 @@ export function quoteMessageFor(m: ChatMessage, ctx: MessageRenderContext, role:
   // Typed check, not `??`: a user row wires this straight to `onClick`, which
   // hands over the click event, and an event must never become the quote.
   return (shown?: string) => fn(role, typeof shown === 'string' ? shown : m.content, m.ts, mid)
+}
+
+/** The fork props of a finished reply whose host offers `onForkMessage`. */
+function forkPropsFor(m: ChatMessage, ctx: MessageRenderContext): { onFork?: () => void | Promise<unknown>; forkIndex?: number; forkMessageId?: string } {
+  const fn = ctx.onForkMessage
+  const mid = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
+  if (!fn || !mid || m.role === 'streaming') return {}
+  return { onFork: () => fn(mid), forkIndex: ctx.index, forkMessageId: mid }
 }
 
 export function renderAssistantBubble(
@@ -652,6 +677,7 @@ export function renderAssistantBubble(
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      engineSubagents={(m.meta as Record<string, unknown> | undefined)?.engine_subagents}
       onRegenerate={opts.onRegenerate}
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
@@ -663,10 +689,12 @@ export function renderAssistantBubble(
       // it. Only the card's Allow needs a local slot (`redactionSlot`).
       blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
+      speakerName={opts.speakerName}
       suppressSteerAck={suppressSteerAck}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
       onQuoteMessage={quoteMessageFor(m, ctx, 'assistant')}
+      {...forkPropsFor(m, ctx)}
       // A structured warm brief draws as a fixed card in place of the markdown,
       // inside this same bubble, so it keeps the timestamp and row actions.
       body={warmBriefBodyOf(m)}
@@ -748,6 +776,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           onReplyInThread={replyInThreadFor(m, ctx)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+          onJumpToQuote={ctx.onJumpToQuote}
         />
       )
       // The bubble alone on every surface without a thread footer to draw, so
@@ -871,6 +900,17 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     render: (m, ctx) => specHooksRunNowhereDismissed()
       ? null
       : ctx.row(<SpecHooksRunNowhereNotice content={m.content} askAgent={ctx.handOff !== false} />),
+  },
+  {
+    // The notice that a folder's own .kiro/hooks files do not run, with its
+    // per-folder Dismiss link. Shape-matched like the row above; a row whose
+    // folder mark was dismissed draws nothing anywhere.
+    id: 'spec_hooks_project_hook_files',
+    roles: ['*'],
+    match: isProjectHookFilesNotice,
+    render: (m, ctx) => projectHookFilesNoticeDismissed(m)
+      ? null
+      : ctx.row(<ProjectHookFilesNotice message={m} askAgent={ctx.handOff !== false} />),
   },
   {
     // A KAS session's notice about a folder agent's own hooks, with its Turn on

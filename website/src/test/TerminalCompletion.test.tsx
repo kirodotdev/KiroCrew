@@ -110,8 +110,10 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
 const PROMPT = '~/work » '
 
 let sent: string[] = []
+let dropped: string[] = []
 vi.mock('../utils/terminalRegistry', () => ({
   sendRawToTerminalSession: (_id: string, data: string) => { sent.push(data); return true },
+  dropTerminalDataForThisKey: (id: string) => { dropped.push(id) },
 }))
 
 // The find/fullscreen chord is platform-gated (Cmd on macOS, Ctrl elsewhere).
@@ -178,6 +180,7 @@ function pick(h: { key: (init: KeyboardEventInit) => { passedThrough: boolean; p
 
 beforeEach(() => {
   sent = []
+  dropped = []
   vi.useFakeTimers()
 })
 
@@ -982,6 +985,22 @@ describe('TerminalCompletion', () => {
       // Browsers that report the commit key as keyCode 229 instead.
       expect(h.key({ key: 'Process', keyCode: 229 }).passedThrough).toBe(true)
       expect(sent).toEqual([])
+    })
+
+    // A dead key (AltGr/Option+N for a tilde) composes, and Firefox reports the key that ends
+    // it with its own keyCode: xterm sends the text so far from that keydown, then the commit.
+    it('drops what xterm sends for the key that ends a dead-key composition', () => {
+      const h = makeTerm(PROMPT, PROMPT.length)
+      renderCompletion(h.term)
+      h.key({ key: 'Dead', code: 'KeyN' })
+      const end = h.key({ key: ' ', code: 'Space', keyCode: 32, isComposing: true })
+      // xterm still handles the key, so its own state moves on as before.
+      expect(end).toEqual({ passedThrough: true, prevented: false })
+      expect(dropped).toEqual(['s1'])
+      // The next ordinary key, and the keys of an IME composition, are left alone.
+      h.key({ key: 'n', keyCode: 78 })
+      h.key({ key: 'i', keyCode: 73, isComposing: true })
+      expect(dropped).toEqual(['s1'])
     })
 
     it('passes through the Enter that ends composition', async () => {

@@ -15,13 +15,11 @@ from datetime import datetime
 from aiohttp import web
 
 from kiro_crew.config.fields import _coerce_bool
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.handlers.knowledge_access import (
-    _require_knowledge_owner,
-    _sel_log,
-    _store,
-    _task_registry,
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
 )
+from kiro_crew.dashboard.handlers.knowledge_access import _sel_log, _store, _task_registry
 from kiro_crew.knowledge.embedder import embedder_signature, floats_to_bytes
 from kiro_crew.knowledge.ingestion import rebuild_embeddings, start_rebuild_job
 
@@ -51,7 +49,9 @@ def _embedding_counts(store) -> tuple[int, int]:
 
 async def get_embedding_status(request: web.Request) -> web.Response:
     """GET /api/knowledge/embedding/status -- embedding config and progress."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.embedding.status.read")
+    owner_denied = await require_owner_for_dashboard_caller(
+        request, "knowledge.embedding.status.read"
+    )
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -242,7 +242,7 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     ``GET /api/knowledge/jobs/{id}``. The default (fill-NULL) path stays synchronous
     since it only touches items missing an embedding at cold start.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.embedding.generate")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.embedding.generate")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)

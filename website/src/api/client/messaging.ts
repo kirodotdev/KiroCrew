@@ -37,6 +37,9 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** `slack.tracking_channels`, IDs only: the channels the agent may post to.
+   *  Absent on an older gateway. */
+  tracking_channels?: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
@@ -172,21 +175,24 @@ export interface SlackManifestStatus {
   app_dm_url?: string | null
 }
 
-/** One person on `slack.shared_access.user_ids`, as Slack answered for them. */
+/** One person on `slack.shared_access.user_ids`, and whether they are admitted. */
 export interface SlackSharedUser {
   user_id: string
-  /** Slack display or real name; "" when Slack gave none. */
+  /** Slack display or real name; "" when Slack gave none or was not asked. */
   name: string
-  /** Slack confirmed the id: same workspace, a person, not deactivated, not the owner. */
+  /** Admitted: on the list ("listed"), or confirmed by Slack ("ok") when
+   *  `verify_with_slack` is on. */
   confirmed: boolean
-  /** "ok" | "user_not_found" | "bot_user" | "deactivated" | "other_workspace" |
-   *  "owner" | "unverifiable" | "malformed_id" */
+  /** "listed" | "ok" | "user_not_found" | "bot_user" | "deactivated" |
+   *  "other_workspace" | "owner" | "unverifiable" | "malformed_id" */
   reason: string
 }
 
 /** GET /api/slack/shared-access. */
 export interface SlackSharedAccessData {
   enabled: boolean
+  /** Slack checks each listed id (`slack.shared_access.verify_with_slack`); absent on an older gateway. */
+  verify_with_slack?: boolean
   users: SlackSharedUser[]
   /** True on a remote session: writes are accepted from this machine only. */
   read_only: boolean
@@ -202,6 +208,10 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** Tracked channels to add and to remove, as an edit: a channel added in
+   *  Slack since the page loaded, and each entry's activation and agent, stay. */
+  tracking_channels_add?: string[]
+  tracking_channels_remove?: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
@@ -612,11 +622,12 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
     reconnectSlack: () => post('/api/slack/reconnect', {}).then(j) as Promise<{ connected: boolean; connect_error: string }>,
     getSlackSharedAccess: () => get('/api/slack/shared-access').then(j) as Promise<SlackSharedAccessData>,
     setSlackSharedAccess: (enabled: boolean) => put('/api/slack/shared-access', { enabled, confirm: enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
-    addSlackSharedUser: (userId: string) => post('/api/slack/shared-access/users', { user_id: userId }).then(j) as Promise<{ ok: boolean; user: SlackSharedUser }>,
+    /** Add one person by Slack member ID or by email (the server looks the email up and keeps the ID). */
+    addSlackSharedUser: (target: { user_id: string } | { email: string }) => post('/api/slack/shared-access/users', target).then(j) as Promise<{ ok: boolean; user: SlackSharedUser }>,
     removeSlackSharedUser: (userId: string) => del('/api/slack/shared-access/users/' + encodeURIComponent(userId)).then(j) as Promise<{ ok: boolean }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
-    saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string; reconnect_error?: string }>,
     // Telegram integration config
     getTelegramConfig: () => get('/api/telegram/config').then(j) as Promise<TelegramConfigData>,
     saveTelegramConfig: (body: Partial<TelegramConfigSave>) => put('/api/telegram/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

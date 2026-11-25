@@ -113,6 +113,22 @@ def _live_log_moved_on(previous: tuple[int, int, int], current: tuple[int, int, 
     return prev_size != cur_size
 
 
+def _live_log_replaced(previous: tuple[int, int, int], current: tuple[int, int, int]) -> bool:
+    """Whether a move :func:`_live_log_moved_on` reports was a replacement, not an append.
+
+    It only picks a log line. Every process sharing the data home appends to this
+    log, so a foreign append is the routine case and is not logged. A replaced file
+    (a new inode, or a smaller size: the log is append-only) is what a rotation
+    leaves, and is logged. shortcut: where the filesystem reports inode 0, a
+    replacement that already grew past ``previous`` reads as an append.
+    """
+    prev_dev, prev_ino, prev_size = previous
+    cur_dev, cur_ino, cur_size = current
+    if prev_ino and cur_ino and (prev_ino, prev_dev) != (cur_ino, cur_dev):
+        return True
+    return cur_size < prev_size
+
+
 def _identity_changed(expect: tuple[int, int, int], actual: os.stat_result) -> bool:
     """Whether an opened fd has diverged from the file+position *expect* describes.
 
@@ -172,12 +188,17 @@ def _append_chained_locked(self: SecurityEventLog, events: list[SecurityEvent]) 
             # re-anchor UNCONDITIONALLY -- the question the predicate would ask
             # has already been answered by the collision itself.
             self._last_hash = prev_last_hash
-            logger.info(
-                "SEL live log moved on mid-append; re-chaining this batch (attempt %d of %d)",
-                attempt + 1,
-                _APPEND_RETRIES + 1,
-            )
+            seen = self._live_seen
             self._reanchor_now()
+            current = self._live_seen
+            # A sibling's append between our chaining and our open is routine;
+            # only a replaced file earns the line (see _live_log_replaced).
+            if seen is None or current is None or _live_log_replaced(seen, current):
+                logger.info(
+                    "SEL live log moved on mid-append; re-chaining this batch (attempt %d of %d)",
+                    attempt + 1,
+                    _APPEND_RETRIES + 1,
+                )
         except OSError:
             self._last_hash = prev_last_hash  # nothing persisted — roll back
             raise
@@ -341,10 +362,11 @@ def _reanchor_if_replaced(self: SecurityEventLog) -> int:
     identity = self._live_identity()
     previous = self._live_seen
     if previous is not None and _live_log_moved_on(previous, identity):
-        logger.info(
-            "SEL live log moved on since our last write (another process "
-            "rotated or appended); re-reading the chain tip before appending"
-        )
+        if _live_log_replaced(previous, identity):
+            logger.info(
+                "SEL live log moved on since our last write (the file was "
+                "replaced, as a rotation does); re-reading the chain tip before appending"
+            )
         # Bounded on the event-loop thread for the same reason as
         # _reanchor_now: only an already-corrupt multi-kilobyte tail needs
         # more than one tail chunk, and scanning it under a loop-side

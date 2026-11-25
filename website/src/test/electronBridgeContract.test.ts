@@ -18,6 +18,7 @@ const dashboardBridges = [
   'crashReportsAPI',
   'wslAPI',
   'folderPickAPI',
+  'wakatimeConnectAPI',
   'zoomAPI',
   'browserAPI',
   'updateAPI',
@@ -25,7 +26,7 @@ const dashboardBridges = [
 
 const bridgeContracts = {
   kirocrew: { name: 'KiroCrewBridge', methods: ['getPathForFile', 'windowControl'] },
-  electronAPI: { name: 'ElectronAPI', methods: ['onStatus', 'getAppMenuItems', 'setBadgeCount', 'getGlobalHotkey'] },
+  electronAPI: { name: 'ElectronAPI', methods: ['onStatus', 'getAppMenuItems', 'setBadgeCount', 'getGlobalHotkey', 'setGlobalHotkey'] },
   localGatewayAPI: { name: 'LocalGatewayAPI', methods: ['get', 'set'] },
   closeActionAPI: { name: 'CloseActionAPI', methods: ['get', 'set'] },
   trayIconAPI: { name: 'TrayIconAPI', methods: ['get', 'set'] },
@@ -34,6 +35,7 @@ const bridgeContracts = {
   crashReportsAPI: { name: 'CrashReportsAPI', methods: ['get', 'reveal'] },
   wslAPI: { name: 'WslAPI', methods: ['detect'] },
   folderPickAPI: { name: 'FolderPickAPI', methods: ['available', 'pick'] },
+  wakatimeConnectAPI: { name: 'WakaTimeConnectAPI', methods: ['openInBrowser'] },
   zoomAPI: { name: 'ZoomAPI', methods: ['get', 'set', 'step'] },
   browserAPI: { name: 'BrowserAPI', methods: ['open', 'navigate', 'setBounds', 'getState', 'annotate', 'onDidNavigate'] },
   updateAPI: { name: 'UpdateAPI', methods: ['onState', 'check', 'download', 'armsOnQuit', 'install', 'relaunch', 'canRelaunch', 'getInfo'] },

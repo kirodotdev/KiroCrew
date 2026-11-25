@@ -1455,7 +1455,7 @@
 12.325 test/test_browser_reflex_realtime.py
 12.896 test/test_browser_run_budget.py
 0.887 test/test_browser_session_contexts.py
-0.439 test/test_browser_sign_in.py
+0.439 test/test_browser_sign_in_guard.py
 0.535 test/test_browser_tabs_close_with_chat.py
 3.785 test/test_browser_turn_replay.py
 0.455 test/test_browser_upload_many.py
@@ -8074,7 +8074,7 @@
 3.528 test/test_work_ledger_undelivered.py
 1.130 test/test_work_ledger_wake_delivery.py
 0.742 test/test_work_ledger_watch_board_reads.py
-1.653 test/test_work_ledger_watch_outlives_closed_items.py
+1.653 test/test_work_ledger_watch_ends_when_finished.py
 0.993 test/test_work_rebuild_own_cell.py
 0.739 test/test_work_root.py
 9.121 test/test_work_unit_order_reset.py

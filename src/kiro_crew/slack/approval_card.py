@@ -21,41 +21,19 @@ nothing at all.
 
 from __future__ import annotations
 
-import re
-from collections.abc import Callable
 from typing import Any
 
+from kiro_crew.messaging.approval_scan import (  # noqa: F401 (re-exported)
+    _BACKTICK_PAIR_RE,
+    _SCAN_CHARS,
+    bounded_scan,
+)
 from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
     _SLACK_SECTION_TEXT_LIMIT,
     _TRUNCATION_MARKER,
     mcp_identity_text,
 )
-
-#: A backtick followed by another. Each gets a zero-width space after it, so no
-#: two backticks stay adjacent inside the fence and none can close it. The space
-#: is invisible, so the approver reads the arguments as they were sent.
-_BACKTICK_PAIR_RE = re.compile(r"`(?=`)")
-
-#: How much of one model-authored string the card's display scan reads. The card
-#: shows at most ``_SLACK_SECTION_TEXT_LIMIT`` characters of each, so a 500 KB
-#: write costs the scan what a 16 KB one does, on the event loop every turn shares.
-_SCAN_CHARS = 16 * 1024
-
-
-def bounded_scan(text: str, scan: Callable[[str], str]) -> str:
-    """*scan* (the renderer's display-form redaction) of the part of *text* the card shows.
-
-    A longer *text* is scanned as its first :data:`_SCAN_CHARS` characters, and the
-    card shows only the start of those. The cut can split a key at the head's end,
-    leaving its first part unredacted there; that end stays off the card while the
-    scanned head is over half the bound. A head the scan shrank further (stripped
-    escapes, a long secret's short tag) is answered by a scan of the whole text.
-    """
-    if len(text) <= _SCAN_CHARS:
-        return scan(text)
-    head = scan(text[:_SCAN_CHARS])
-    return head if len(head) > _SCAN_CHARS // 2 else scan(text)
 
 
 def _cut(text: str, marker: str) -> str:

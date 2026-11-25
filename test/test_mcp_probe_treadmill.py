@@ -417,6 +417,22 @@ class TestMcpHeaderRedaction:
         assert redacted.count(MCP_REDACTED_HEADER_VALUE) == 1
         assert credential not in redacted
 
+    def test_a_configured_bearer_with_punctuation_is_redacted_whole(self) -> None:
+        """The configured value is masked before the generic scanners run, so a generic
+        match never masks only the part of it before a ``!``."""
+        import kiro_crew.mcp_discovery as disc
+
+        credential = "FakeS3cretPass!2024"
+        value = f"Bearer {credential}"
+        error = f"Remote reflected {value}; keep this context"
+
+        redacted = disc.redact_mcp_error(error, {"Authorization": value})
+
+        assert redacted == (
+            f"Remote reflected {MCP_REDACTED_HEADER_VALUE}; keep this context"
+        )
+        assert "2024" not in redacted
+
     def test_long_credential_glued_to_word_characters_is_redacted(self) -> None:
         """A long credential cannot occur inside prose by chance, so it is
         masked as a bare substring even when a server reflects it with no

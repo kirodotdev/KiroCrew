@@ -1504,3 +1504,89 @@ def flush_restored_hold(slot: Any, *, logger: logging.Logger) -> None:
             slot.key,
             exc_info=True,
         )
+
+
+#: What a replaced stream reads when its own turn's frames went missing: an end.
+_STREAM_END = {"role": "done", "content": "", "cls": "done", "ts": ""}
+
+
+def drain_stale_pending(slot: Any) -> int:
+    """Clear what earlier turns left pending before a new turn starts; the new epoch.
+
+    The previous turn can have ended (which is why this send starts directly)
+    while its stream, still attached (:func:`stream_reader`), has not read its
+    ``done``. Its frames up to that ``done`` are kept for it under the epoch it
+    reads with. Every call then moves the epoch on: a stream reads ``_pending``
+    only while its own epoch is current, so the new stream never takes the old
+    turn's end and the old one never takes the new turn's frames.
+
+    Frames are kept only for an epoch that has an entry in ``_stream_handoffs``,
+    and only an attached reader has one, so a turn nobody streams leaves
+    nothing behind.
+    """
+    stale = slot.drain()
+    ends = [i for i, msg in enumerate(stale) if msg.get("cls") == "done"]
+    if not slot._pending_consumers:
+        slot._stream_handoffs.clear()
+    elif ends and slot._stream_epoch in slot._stream_handoffs:
+        slot._stream_handoffs[slot._stream_epoch] = stale[: ends[-1] + 1]
+        slot.event.set()
+    # Every direct send opens a new epoch, so no two streams ever share one and
+    # one stream's cleanup can never drop another's kept frames.
+    slot._stream_epoch += 1
+    return slot._stream_epoch
+
+
+def stream_frames(slot: Any, epoch: int) -> list[dict[str, str]]:
+    """The frames a stream opened at *epoch* reads next.
+
+    A stream whose epoch has passed gets what its own turn left when the next
+    turn started, ending on its ``done``, and nothing of a newer turn.
+    """
+    if slot._stream_epoch != epoch:
+        return slot._stream_handoffs.pop(epoch, None) or [dict(_STREAM_END)]
+    return slot.drain()
+
+
+async def stream_wait(slot: Any, epoch: int) -> None:
+    """Wait for a stream's next frames; at once when a newer send has replaced it.
+
+    The newer stream's drain clears ``slot.event``, so a replaced stream that
+    was not already waiting when the epoch moved would otherwise sleep until
+    the slot's next frame or its keepalive.
+    """
+    if slot._stream_epoch != epoch:
+        return
+    await slot.event.wait()
+
+
+def release_stream(slot: Any, epoch: int) -> None:
+    """A detaching stream's final clear: its own entry, then ``_pending``.
+
+    ``_pending`` is left alone when a newer stream owns it, by epoch or by
+    being attached too: this runs inside the stream's own ``pending_consumer``
+    block, so a count of one is this stream alone, and nothing kept can still
+    have a reader once it leaves.
+    """
+    slot._stream_handoffs.pop(epoch, None)
+    if slot._pending_consumers <= 1:
+        slot._stream_handoffs.clear()
+        if slot._stream_epoch == epoch:
+            slot.drain()
+
+
+@contextlib.contextmanager
+def stream_reader(slot: Any, epoch: int) -> Iterator[None]:
+    """Attach a reader of *epoch* to the slot's queue for the block.
+
+    The one way a stream reads ``_pending``: it counts as a consumer
+    (``pending_consumer``), its epoch has an entry for kept frames only while
+    it is attached, and :func:`release_stream` runs however the block ends,
+    while the reader is still counted.
+    """
+    with slot.pending_consumer():
+        slot._stream_handoffs.setdefault(epoch, [])
+        try:
+            yield
+        finally:
+            release_stream(slot, epoch)

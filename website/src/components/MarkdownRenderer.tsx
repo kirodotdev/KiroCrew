@@ -11,7 +11,7 @@
 import React, { createContext, useSyncExternalStore, useContext, memo, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { capWhitespaceRuns, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { REMARK_BASE_PLUGINS } from './markdown/remarkBase'
-import { canonicalChatHref, chatHrefSid, namesASession } from '../utils/sessionKeys'
+import { canonicalChatHref, chatHrefSid, namesASession, rosterKeyFrom } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkAutolinkRules from '../utils/remarkAutolinkRules'
@@ -56,7 +56,7 @@ import {
 } from './RedactionCards'
 import FoldableDiffBlock from './FoldableDiffBlock'
 import EditableCodeBlock from './EditableCodeBlock'
-import { useRevealFailure } from './FilePathMenu'
+import FilePathMenu, { useRevealFailure } from './FilePathMenu'
 import { SmoothResize } from './SmoothResize'
 import type { ContentBlock } from '../types'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -80,6 +80,7 @@ import {
   ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
+  QuotedContentCtx,
   ReadOnlyCodeCtx,
   SessionActionCtx,
   type InsideLink,
@@ -89,6 +90,7 @@ import {
 } from './markdown/contexts'
 import { artifactSlugFromHref, classifySessionLink, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/dashboardPreview'
+import { openInternalLink } from '../utils/internalNav'
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
@@ -262,15 +264,15 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // helper owns which spellings name a session — so a short `?sid=chat-1380`
   // resolves here exactly as the same short name does in a backtick chip.
   const sessionHrefSid = sessionCandidate ? chatHrefSid(sessionCandidate) : null
-  // Whether this href NAMES a same-origin chat session at all, by SHAPE, and
-  // independent of whether that session is currently reachable (open). A
-  // closed/unknown one is still a chat-session href — it just does not resolve in
-  // the open-tabs roster. Both spellings count, and the union is `namesASession`'s
-  // rather than re-spelled here: declining only the full key left an authored
+  // Whether this href NAMES a same-origin chat session: by SHAPE (closed/unknown
+  // too, `namesASession`), or as an exact open roster key of another shape (a
+  // cron-born title key, `rosterKeyFrom`, #41426), so its active session is inert
+  // like a chat-shaped one. Shared helpers rather than re-spelled here: declining
+  // only the full key left an authored
   // `?sid=chat-9999` to navigate to exactly the dead session view this interception
   // exists to prevent (#9914), and a spelling added to the resolver alone would
   // re-open that hole if this gate kept its own copy of the grammar.
-  const sessionHrefNamesSession = !!sessionHrefSid && namesASession(sessionHrefSid)
+  const sessionHrefNamesSession = !!sessionHrefSid && (namesASession(sessionHrefSid) || (!!sessionActions.sessions && rosterKeyFrom(sessionHrefSid, sessionActions.sessions) !== null))
   // Whether this renderer is wired to route sessions at all — the SAME predicate
   // `resolveSessionChip` guards on (`onSessionOpen` AND `sessions`), so the link
   // affordance and the click handler can never disagree. Both must be present:
@@ -331,14 +333,13 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       e.preventDefault()
     }
   }
-  const pathResolution = usePathResolution(
-    localHref ?? '',
-    probeEnabled
-      && !claimed
-      && !!localHref
-      && !artifactSlugFromHref(localHref)
-      && !!(actions.onFileOpen || actions.onFolderOpen),
-  )
+  // Every gate on the probe but the streaming one (`probeEnabled`), which
+  // opens when the block closes.
+  const probeable = !claimed
+    && !!localHref
+    && !artifactSlugFromHref(localHref)
+    && !!(actions.onFileOpen || actions.onFolderOpen)
+  const pathResolution = usePathResolution(localHref ?? '', probeEnabled && probeable)
   // A path-shaped link to a FILE (not a route, see `isFileLinkDest`) whose probe
   // says `missing` carries a local-path href, which the browser resolves against
   // the dashboard origin into a new tab that names nothing. It drops its
@@ -520,14 +521,45 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // joins `ext` here (after `editorLink` is read, which a local-path href already
   // excludes) so the anchor's target/rel branch stays untouched.
   if (missingFileLink) ext = true
+  // A link the probe confirmed as a file or folder gets the path chip's
+  // right-click menu. Its text is the author's, not the path, so the menu
+  // names the path before any row opens or runs it. A link that can get the
+  // menu is wrapped from its first render, probed yet or not, with the menu
+  // off until the probe confirms it: wrapping only then would replace the
+  // <a>, dropping its focus or hover. So the wrap reads no input that the
+  // probe or a closing stream changes.
+  const pathMenuLink = probeable && pathResolution.shaped && !sessionHrefSid
+  const pathMenuKind = pathMenuLink && pathResolution.candidate && (pathResolution.kind === 'file' || pathResolution.kind === 'dir') ? pathResolution.kind : null
+  const withPathMenu = (el: React.ReactElement) => (pathMenuLink
+    ? (
+        <FilePathMenu
+          filePath={pathResolution.path}
+          kind={pathMenuKind ?? undefined}
+          disabled={!pathMenuKind}
+          onFileOpen={actions.onFileOpen && pathMenuKind ? () => activatePath(pathResolution.path, pathMenuKind, false, actions, reveal.onError, pathResolution.line, pathResolution.endLine) : undefined}
+          onFolderOpen={actions.onFolderOpen}
+          showPath
+        >
+          {el}
+        </FilePathMenu>
+      )
+    : el)
+  // A touch hold on a path chip inside the label, or a gesture from inside that
+  // chip's open menu (a portal, outside this anchor), belongs to the chip: a
+  // cancelled event makes the link's own trigger stand aside.
+  const leaveToNestedMenu = (e: React.PointerEvent<HTMLAnchorElement> | React.MouseEvent<HTMLAnchorElement>) => {
+    if ('pointerType' in e && e.pointerType === 'mouse') return
+    const target = e.target as Element
+    if (!e.currentTarget.contains(target) || target.closest('[data-path-kind]')) e.preventDefault()
+  }
   return (
     <>
-    <a
+    {withPathMenu(<a
       {...sp(node)}
       href={sessionHref ?? href}
       // A `/chat?sid=` href is never a path, so the session branch wins outright.
       // One predicate gates the handler, because a link that RESOLVES necessarily
-      // names a session by shape too — so the two branches inside the handler
+      // names a session too (shape or roster key) — so the two branches inside the handler
       // split the same population rather than needing different gates: resolvable
       // switches in place, and one that names a session but does not resolve (a
       // closed or unknown key, a short name no open session answers to, or the
@@ -552,6 +584,10 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       className={missingFileLink || (sessionHrefNamesSession && !sessionLink && sessionRouting)
         ? 'text-muted'
         : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
+      // Before the tip's handlers: a link with an address tip is never a path
+      // link, so neither pair overrides the other.
+      onPointerDown={pathMenuKind ? leaveToNestedMenu : undefined}
+      onContextMenu={pathMenuKind ? leaveToNestedMenu : undefined}
       {...addressTip.handlers}
     >
       <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
@@ -568,7 +604,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       {sessionHrefNotOpen && (
         <span className="sr-only">{` (${i18nT('components.markdownRenderer.session_closed_link_disabled')})`}</span>
       )}
-    </a>
+    </a>)}
     {addressTip.bubble}
     {/* The sentence's own punctuation, before the notice: "See the old run."
         keeps its full stop beside the link, and the notice follows the
@@ -1196,6 +1232,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
 
 function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, typing, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
   const readOnlyCodeCtx = useContext(ReadOnlyCodeCtx)
+  const quoted = useContext(QuotedContentCtx)
   // A fence holding lock tags renders them in place whatever its language:
   // the diagram, diff and formatted-markdown renderers would show the
   // placeholder without its tag and card (see RedactedCodeBlock).
@@ -1291,6 +1328,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       return smooth ? <SmoothResize enabled={!block.complete}>{shown}</SmoothResize> : shown
     }
     case 'widget':
+      if (quoted) return null
       if (!block.complete) return <WidgetPlaceholder title={block.language} />
       // A widget whose body holds no HTML element is markdown an agent wrapped in
       // the widget tag (a "Task board" table, say). Drawn in the frame it reads as
@@ -1331,8 +1369,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   const textPatternGen = useSyncExternalStore(scanText ? subscribeTextPatterns : noSubscribe, textPatternGeneration, textPatternGeneration)
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
-   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links and
-   *  staged-dashboard links. */
+   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links,
+   *  staged-dashboard links and in-app dashboard links. */
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
     // `#heading` links scroll within THIS message, never the whole document:
@@ -1370,7 +1408,17 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       if (previewTarget) {
         e.preventDefault()
         onArtifactOpen(dashboardPreviewRef(previewTarget))
+        return
       }
+    }
+    // A link to a page of this dashboard opens in place, through the router and
+    // the page's leave check, rather than in a new tab. Last, and only when no
+    // handler above or on the anchor (a session link, a file path) took the
+    // click. A plain click only: a modified or middle click keeps the anchor's
+    // own new-tab target, and a link `openInternalLink` refuses keeps it too.
+    if (!e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const anchor = el.closest('a[href]')
+      if (anchor && openInternalLink(anchor.getAttribute('href'))) e.preventDefault()
     }
   }, [onArtifactOpen])
 

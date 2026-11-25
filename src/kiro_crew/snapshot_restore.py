@@ -46,26 +46,28 @@ from kiro_crew.snapshot_archive import (
     _safe_name,
 )
 from kiro_crew.snapshot_components import (
+    _BOM_TOLERANT_JSON_OBJECTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
-    COMPONENT_TREES,
     COMPONENTS,
     CORE_FILES,
     CORE_FILES_FLAT,
     UnsafeComponentRoot,
     _facade,
     _want,
+    component_trees,
     is_product_tree_database,
     safe_tree_root,
 )
-from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
 
 host_local_installable: ContextVar[frozenset[str]] = ContextVar(
     "host_local_installable", default=frozenset()
@@ -191,7 +193,7 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
 
         try:
             _, dropped = notification_settings.parse_imported_settings(
-                src.read_text(encoding="utf-8")
+                strip_utf8_bom(src.read_text(encoding="utf-8"))
             )
         except (
             notification_settings.ChannelSettingsError,
@@ -205,6 +207,21 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
                 "saved mutes or priorities."
             ) from e
         _refuse_dropped_entries(label, dropped)
+        return
+    if validator == "config_document":
+        from kiro_crew.archive_config_vetting import config_document_refusal
+
+        try:
+            parsed = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return  # the JSON-object check has already refused an unreadable document
+        why = config_document_refusal(parsed)
+        if why:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not safe to install: {why}.\n"
+                "   Refusing to restore it: the roster and workspace entries become file "
+                "paths, so one that names a path rather than a file or folder is not applied."
+            )
         return
     raise AssertionError(f"no validator named {validator!r}")
 
@@ -496,9 +513,12 @@ def _read_at(dir_fd: int, name: str) -> bytes:
 
 
 #: Settings documents whose own writers create them owner-only. The config overlay can
-#: hold channel tokens, so a restored copy must not inherit a looser directory ACL
-#: on Windows, or the umask default on POSIX, from the copy that installed it.
-_OWNER_ONLY_SETTINGS_FILES = frozenset({"config.json", "config.local.json", "ui-prefs.json"})
+#: hold channel tokens and an MCP server's ``env`` and ``headers`` in ``mcp.json`` hold
+#: credentials, so a restored copy must not inherit a looser directory ACL on Windows,
+#: or the umask default on POSIX, from the copy that installed it.
+_OWNER_ONLY_SETTINGS_FILES = frozenset(
+    {"config.json", "config.local.json", "ui-prefs.json", "mcp.json"}
+)
 
 
 def _lock_down_restored(path: Path, component: str) -> None:
@@ -568,7 +588,7 @@ def _refuse_unsafe_destination_roots(mc: Path, components: list[str] | None) -> 
     for comp in COMPONENTS:
         if not _want(components, comp):
             continue
-        for tree in COMPONENTS[comp].trees:
+        for tree in component_trees(comp):
             d = mc / tree
             if safe_tree_root(d, what="destination root", home=mc) is None:
                 offenders.append(f"{comp}:{tree}")
@@ -615,6 +635,8 @@ def _refuse_corrupt_source_databases(
         files are installed only where their own destination is missing.
         """
         assert mc_for_merge is not None
+        if rel in _MERGE_NEVER_INSTALLS_FILES:
+            return False  # merge never installs it, so its bundle copy cannot refuse
         if rel == "crons.json":
             return True
         if rel == "memory_index.db":
@@ -686,10 +708,12 @@ def _refuse_corrupt_source_databases(
     # Component TREES carry databases too (`workspace/knowledge/knowledge.db`). Strictness
     # is per PATH: a database this product owns is strict wherever it lives, while an
     # incidental `.db` in a tree (a Windows `Thumbs.db`) may legitimately not be SQLite.
-    for component, trees in COMPONENT_TREES.items():
+    for component in COMPONENTS:
         if not _want(components, component):
             continue
-        for tree in trees:
+        # Read from the bundle only, never a live root.
+        bundle_trees = component_trees(component)
+        for tree in bundle_trees:
             root = snap / tree
             if not root.exists() and not platform_compat.is_link_or_junction(root):
                 continue  # absent from a selective bundle; nothing to validate
@@ -722,10 +746,14 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     nothing, so refusing would only fail every other component of the restore.
 
     Only structure is checked, not schema: field-level checks would duplicate each
-    consumer's validation and refuse bundles those consumers accept.
+    consumer's validation and refuse bundles those consumers accept. For the same reason
+    a leading byte-order mark is accepted where the file's readers accept one.
     """
     try:
-        parsed = json.loads(src.read_text(encoding="utf-8"))
+        text = src.read_text(encoding="utf-8")
+        if src.name in _BOM_TOLERANT_JSON_OBJECTS:
+            text = strip_utf8_bom(text)
+        parsed = json.loads(text)
     except (OSError, ValueError, RecursionError) as e:
         if not installed:
             return
@@ -1021,7 +1049,7 @@ def _do_replace(
         for comp in _WHOLE_TREE_COMPONENTS:
             if not _want(components, comp):
                 continue
-            for dirname in COMPONENTS[comp].trees:
+            for dirname in component_trees(comp):
                 d = mc / dirname
                 if dirname in _LOCKED_DOCUMENT_TREES:
                     # Saved in phase two instead, inside the lock hold that replaces it
@@ -1045,7 +1073,7 @@ def _do_replace(
         for comp in _WHOLE_TREE_COMPONENTS:
             if _want(components, comp):
                 targets.extend(
-                    _LOCKED_DOCUMENT_TREES.get(tree, tree) for tree in COMPONENTS[comp].trees
+                    _LOCKED_DOCUMENT_TREES.get(tree, tree) for tree in component_trees(comp)
                 )
         targets.extend(tree for tree, _ in mem_roots)
 
@@ -1121,7 +1149,9 @@ def _component_payload_absent(snap: Path, component: str) -> bool:
             continue
         if (snap / rel).exists():
             return False
-    for rel in getattr(spec, "trees", ()) or ():
+    # The BUNDLE's trees: nothing here reaches a live root, so no chokepoint is needed.
+    bundle_trees = component_trees(component)
+    for rel in bundle_trees:
         root = snap / rel
         if root.is_dir() and any(p.is_file() for p in root.rglob("*")):
             return False
@@ -1232,10 +1262,12 @@ def _do_replace_mutations(
         _drop_derived_indexes_absent_from_bundle(snap, mc, backup, installed)
 
     for comp in _WHOLE_TREE_COMPONENTS:
-        if not _want(components, comp):
+        # A component with no trees this run (`named-workspaces` in a bundle without it)
+        # has nothing to replace and reports nothing.
+        if not _want(components, comp) or not component_trees(comp):
             continue
         kept_live = False
-        for dirname in COMPONENTS[comp].trees:
+        for dirname in component_trees(comp):
             d = mc / dirname
             # Required by `test_each_trees_loop_is_guarded`: the pre-flight runs in the
             # CALLER, a whole backup phase earlier, so this loop calls the chokepoint itself.

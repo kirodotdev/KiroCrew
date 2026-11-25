@@ -15,6 +15,7 @@ const { createUpdateArm } = require("../runtime/update/update-arm");
 const { createGatewayArm } = require("../runtime/update/gateway-arm");
 const { runStartupApply } = require("../runtime/update/startup-apply");
 const { createStartupGatewayProbe } = require("../runtime/update/gateway-probe");
+const { gatewayStillRunningNotificationBody } = require("../runtime/update/feed-lane");
 const { readPolicyGovernance } = require("../runtime/update/policy-source");
 
 // The policy file is read from the data home, so a test names the verdict
@@ -1031,7 +1032,7 @@ test("D-c: an unidentified gateway on a busy port defers the apply; a free port 
     });
     assert.strictEqual(r.outcome, outcome, binding);
     if (outcome === "gateway-running") {
-      assert.strictEqual(r.stopCommand, "kirocrew stop --port 18800");
+      assert.strictEqual(r.stopCommand, "", "an unidentified holder gets no stop command");
       assert.deepStrictEqual(f.sp.commands, [], "no update command ran");
       assert.strictEqual(f.arm.read().version, "2.0.0", "the arm stays");
     }
@@ -1068,10 +1069,54 @@ test("a free port with the home lock held or unreadable keeps the arm; a free lo
     });
     assert.strictEqual(r.outcome, outcome, what);
     if (outcome === "gateway-running") {
+      assert.strictEqual(r.stopCommand, "", `${what}: an unidentified holder gets no stop command`);
       assert.deepStrictEqual(f.sp.commands, [], `${what}: no update command ran`);
       assert.strictEqual(f.arm.read().version, "2.0.0", `${what}: the arm stays`);
     }
   }
+});
+
+test("D-c: an unidentified port holder is named as unidentified, with no stop command; this bundle's gateway keeps it", async (t) => {
+  const f = startFixture();
+  t.after(f.sp.restore);
+  const lines = [];
+  const notices = [];
+  const r = await startupApply({
+    app: f.app, store: f.store, managed: MANAGED, managedPath: () => "/usr/bin",
+    log: { info: (m) => lines.push(m), error: () => {} },
+    probeGateway: createStartupGatewayProbe({
+      isCurrentBundleGateway: async () => false,
+      probePortBinding: async () => "bound",
+      stopCommand: "kirocrew stop --port 18800",
+    }),
+    notifyGatewayRunning: (cmd) => notices.push(gatewayStillRunningNotificationBody(cmd)),
+  });
+  assert.strictEqual(r.outcome, "gateway-running");
+  const deferral = lines.find((m) => m.includes("not applied at start"));
+  assert.match(deferral, /could not identify/);
+  assert.doesNotMatch(deferral, /this app's bundle/);
+  assert.strictEqual(notices.length, 1);
+  assert.match(notices[0], /could not identify/);
+  assert.doesNotMatch(notices[0], /kirocrew stop/);
+
+  // This bundle's own gateway still gets the command that stops it.
+  const own = startFixture();
+  t.after(own.sp.restore);
+  const ownLines = [];
+  const ownNotices = [];
+  const ownResult = await startupApply({
+    app: own.app, store: own.store, managed: MANAGED, managedPath: () => "/usr/bin",
+    log: { info: (m) => ownLines.push(m), error: () => {} },
+    probeGateway: createStartupGatewayProbe({
+      isCurrentBundleGateway: async () => true,
+      probePortBinding: async () => "bound",
+      stopCommand: "kirocrew stop --port 18800",
+    }),
+    notifyGatewayRunning: (cmd) => ownNotices.push(gatewayStillRunningNotificationBody(cmd)),
+  });
+  assert.strictEqual(ownResult.stopCommand, "kirocrew stop --port 18800");
+  assert.match(ownLines.find((m) => m.includes("not applied at start")), /this app's bundle/);
+  assert.deepStrictEqual(ownNotices.map((n) => n.includes("“kirocrew stop --port 18800”")), [true]);
 });
 
 test("public lane: on Windows, Restart now says the app reopens itself and a plain quit names the Start menu", async () => {

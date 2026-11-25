@@ -524,10 +524,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # does for a dashboard turn. A hook process is not an audience: nothing is
         # emitted to a reader here.
         "messaging/tool_hooks.py",
-        # A cron turn's Stop fire scrubs the reply before a local hook script reads
-        # it on stdin, as messaging/tool_hooks.py does for a channel turn. A hook
-        # process is not an audience: nothing is emitted to a reader here.
+        # A cron or ``kirocrew chat`` turn's Stop fire scrubs the reply before a local
+        # hook script reads it on stdin, as messaging/tool_hooks.py does for a channel
+        # turn. A hook process is not an audience: nothing is emitted to a reader here.
         "cron_service/turn_hooks.py",
+        "cli_chat_spec_hooks.py",
         # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
         # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
@@ -674,6 +675,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/session_handle_native_children.py",
         "acp/session_handle_permissions.py",
         "acp/session_handle_turn.py",
+        # Redacts the tool title of the security-event row for a call KAS approved
+        # on its own; the row goes to the security event log, not to an output.
+        "acp/kas_approve_for_me.py",
         "platform/defaults.py",
         "platform/interfaces.py",
         # Inbound sanitization: the browser MCP tool redacts UNTRUSTED native-panel
@@ -818,6 +822,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/native_cards.py",
         "dashboard/chat_turn/permission_prompt.py",
         "dashboard/chat_turn/prompt_assembly.py",
+        "dashboard/chat_turn/prompt_file_notice.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/session_events.py",
@@ -853,6 +858,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The display-redaction owner served by the ``dashboard/chat_utils.py`` facade:
         # the same redactor calls, moved verbatim, under the facade's classification.
         "dashboard/chat_utils_display.py",
+        # Returns a KAS engine sub-agent's text cut for display; sends, logs and writes
+        # nothing. chat_turn/native_cards.py and chat_turn/permission_prompt.py show it,
+        # and chat_turn/turn_stats.py puts the record built from it on the reply row.
+        "dashboard/engine_subagent_cards.py",
         # Slot-detail row JSON is an internal render projection, returned by
         # the existing dashboard handler sink. Its empty-string redaction key
         # shares that sink's policy context; it opens no separate output path.
@@ -1184,6 +1193,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # own uploaded file before it enters the prompt. Inbound sanitisation,
         # not agent output on its way to a user.
         "messaging/attachments.py",
+        # Inbound sheet digest: redacts the text of a user's own uploaded CSV or
+        # TSV before its digest enters the prompt, as the ingestion above does.
+        "acp/sheet_digest.py",
         "slack/interactions.py",
         "slack/interactions_approvals.py",
         "slack/interactions_modals.py",
@@ -1258,6 +1270,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings_download.py",
+        # Stores the own-entry diagnostic that GET /api/mcp and doctor show, with a
+        # user's URL already cut to its scheme and host; it sends nothing itself.
+        "mcp_dropped_servers.py",
         # The shared mark-collected sender: redacts only the gateway error text its
         # warning log line carries; it returns nothing to the model or a user.
         "subagent_read_collected.py",

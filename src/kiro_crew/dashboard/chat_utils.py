@@ -57,8 +57,8 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
-#: The same pending link when the provider answered with a throttle: the
-#: network is fine, so the row names the throttle instead of the connection.
+#: The same pending link for a throttle (a provider's or Kiro's per-user limit,
+#: so its text names no one): the row names the throttle, not the connection.
 TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
 TRANSIENT_NOTICE_THROTTLE_RESUMING = "transient_throttle_resuming"
@@ -78,11 +78,11 @@ HOST_DECLINE_CAUSE_META_KEY = "host_decline_cause"
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
-TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ Requests are being throttled — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
-TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ The model provider is throttling requests — resuming…"
+TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ Requests are being throttled — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
-TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ The model provider is throttling requests — please try again."
+TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ Requests are being throttled — please try again."
 
 
 # Per-turn compaction-failure backoff. See
@@ -499,8 +499,9 @@ def _broadcast_compaction_result(
     per-slot consecutive-failure streak and a short cooldown avoid that:
     the first couple of failures are shown as-is (so the user sees it's
     happening), then subsequent failures within the cooldown window are
-    suppressed from the chat (still logged server-side via
-    AcpClient._handle_compaction_status) until the cooldown elapses, at which
+    suppressed from the chat until the cooldown elapses (a kiro-cli failure
+    is still logged server-side, by AcpClient._handle_compaction_status or,
+    for a failure the session owns, by the pooled AcpSessionHandle), at which
     point a single collapsed notice reports the streak length instead of
     repeating the same line indefinitely.
     """
@@ -767,6 +768,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
+        SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
         SPEC_HOOKS_RUN_NOWHERE_NOTICE,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_POSSIBLY_DELIVERED_NOTE,
@@ -791,6 +793,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection,
         is_system_injection_item,
         payload_for_replay,
+        project_hook_files_notice_meta,
         releases_past_subagent_hold,
         resource_inject_row,
         teardown_hold_active,
@@ -960,6 +963,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.memory_stores import (  # noqa: F401
         UnknownMemoryStore,
+    )
+    from kiro_crew.messaging.alternation_echo import (  # noqa: F401
+        is_stored_echo_row,
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         canonical_key,

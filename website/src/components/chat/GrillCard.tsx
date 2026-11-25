@@ -20,10 +20,11 @@
  * staged; a picture shows as added only once the server has its path, and
  * Start waits while one is uploading.
  *
- * Both texts end with a `key: <mid>:<version>` line naming this card. A reload
- * locks the card again once a later stored user message carries that exact
- * line; the conductor reads the same line to ignore a repeated start. A row the
- * server has not named yet sends no key line, and that card reopens on reload.
+ * Both texts end with a `key: <mid>:0` line naming this card's reply version
+ * (`grillKey`). A reload locks the card again once a later stored user message
+ * carries that exact line; the conductor reads the same line to ignore a
+ * repeated start. A row the server has not named yet, or a version stored
+ * without an id, sends no key line, and that card reopens on reload.
  */
 import { useEffect, useId, useRef, useState, type ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -88,10 +89,11 @@ function composeSend(text: string, files: string[], slot: string | undefined, on
 const OUTCOME: Record<ComposeSendOutcome, CardResult> = { sent: 'sent', refused: 'failed', indeterminate: 'unconfirmed' }
 
 // Grows with what is written (`field-sizing`), up to a cap, then scrolls.
-const FIELD = 'w-full min-w-0 [field-sizing:content] max-h-60 resize-y rounded-md border border-border bg-bg px-2 py-1 text-[13px] leading-5 text-text focus-ring-accent disabled:opacity-70'
+const FIELD = 'w-full min-w-0 [field-sizing:content] max-h-60 resize-y disabled:resize-none rounded-md border border-border bg-bg px-2 py-1 text-[13px] leading-5 text-text focus-ring-accent disabled:opacity-70'
 /** Pictures that go out as image references (`IMG_EXT`); HEIC/HEIF upload as JPEG. */
 const PICTURE_TYPES = '.png,.jpg,.jpeg,.gif,.webp,.bmp,.heic,.heif'
-/** The composer's own per-send cap on files. */
+/** The composer's cap on files in one upload batch (`useChatPaneUploads.ts`),
+ *  applied here to all of the card's pictures together. */
 const MAX_FILES = 20
 const baseName = (p: string) => p.split(/[\\/]/).pop() || p
 const LABEL = 'text-[11px] leading-4 font-semibold text-muted'

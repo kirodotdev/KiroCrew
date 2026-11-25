@@ -130,13 +130,17 @@ export interface ChatSidebarProps {
    *  incognito/temporary sessions or for the already-active session. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
   /** Whether staging a session reference has a composer to land in right now —
-   *  the same predicate `chatDropTarget` is gated on, passed through on its own
+   *  `chatDropTarget`'s gate outside Split View, passed through on its own
    *  because the row menu's "Reference in chat" item needs the boolean (the drop
    *  zone needs the element). False/omitted hides the menu item: an embed
    *  sessions list, split view, or no active slot has no composer, so the row
    *  would stage a reference nothing renders. The per-row incognito/temporary/
    *  self refusals are decided in the row from `sessionRefBlockReason`. */
   canStageSessionRef?: boolean
+  /** Split View only: show a session dropped on a pane (`leafId`) in that pane.
+   *  Set, the drag's targets in `chatDropTarget` are the panes, not the
+   *  composer; unset, Split View panes take no drop. */
+  onShowSessionInPane?: (leafId: string, key: string) => void
   /** Where a crew row's window opens, for a host with no chat pane of its
    *  own (embed/sessions). Omit to open it over this page's pane. */
   onOpenPeerSession?: (instanceId: string, key: string) => void
@@ -157,7 +161,9 @@ export type FolderModalTarget = { mode: 'create'; parentId: string } | { mode: '
 export interface SidebarScope {
   // Its props
   localSlots: ChatSidebarProps['slots']
-  activeSlot: ChatSidebarProps['activeSlot']
+  /** The open session while a session drag is in flight, else null: the chat-pane
+   *  drop zone refuses a reference to the open chat itself. */
+  dragOpenSlot: string | null
   history: ChatSidebarProps['history']
   historyHasMore: ChatSidebarProps['historyHasMore']
   defaultAgent: ChatSidebarProps['defaultAgent']
@@ -165,9 +171,8 @@ export interface SidebarScope {
   onSelectSlot: ChatSidebarProps['onSelectSlot']
   onOpenSlotInNewTab: ChatSidebarProps['onOpenSlotInNewTab']
   collapsible: ChatSidebarProps['collapsible']
-  chatDropTarget: ChatSidebarProps['chatDropTarget']
   onDropSessionRef: ChatSidebarProps['onDropSessionRef']
-  canStageSessionRef: ChatSidebarProps['canStageSessionRef']
+  onShowSessionInPane: ChatSidebarProps['onShowSessionInPane']
   staticRows: ChatSidebarProps['staticRows']
 
   // Its own state and what it derives
@@ -263,7 +268,8 @@ export interface SidebarScope {
   rowActions: React.ComponentProps<typeof SessionRow>['actions']
   tintAgents: AgentInfo[]
   rowViews: ReturnType<SidebarRows['views']>
-  isActiveRow: ReturnType<SidebarRows['views']>['isActive']
+  /** A code-channel worker that never folds under its conductor: the open one, or a pinned one. */
+  keepCrewWorkerShown: (worker: Slot) => boolean
 
   // The confirming callbacks (the native dialogs stay in ChatSidebar.tsx)
   clearClosedSessionsWithConfirm: () => Promise<void>

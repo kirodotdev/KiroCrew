@@ -15,6 +15,7 @@ from mcp_computer_helpers import fake_backend_fixture  # noqa: F401
 from mcp_computer_helpers import home_fixture  # noqa: F401
 from mcp_computer_helpers import keystone_fixture  # noqa: F401
 from mcp_computer_helpers import _SESSION, _dispatch, _enable, _get_state
+from skill_script_helpers import skill_text
 
 from kiro_crew import mcp_computer
 from kiro_crew.computer_use import index as cu_index
@@ -614,7 +615,7 @@ class TestTheSkillContractMatchesTheRuntime:
         assert "invocation-owned partial frame" in text
 
     def test_the_skill_does_not_advertise_an_optional_element_index(self):
-        text = self._SKILL.read_text(encoding="utf-8")
+        text = skill_text(self._SKILL)
         assert "element_index?" not in text
         # And it says WHY, so a reader does not "helpfully" make it optional again.
         assert "required" in text.lower()
@@ -657,7 +658,7 @@ class TestTheSkillContractMatchesTheRuntime:
 
         An example call without ``element_index`` is refused, so a model copying it fails.
         """
-        text = self._SKILL.read_text(encoding="utf-8")
+        text = skill_text(self._SKILL)
         offenders: list[str] = []
         for line in text.splitlines():
             stripped = line.strip()
@@ -679,7 +680,7 @@ class TestTheSkillContractMatchesTheRuntime:
         """
         from kiro_crew.computer_use.types import TRUNCATED_WINDOW_NOTE
 
-        text = self._SKILL.read_text(encoding="utf-8")
+        text = skill_text(self._SKILL)
         # The distinctive opening clause, not the whole sentence: the table wraps it.
         head = TRUNCATED_WINDOW_NOTE.split(",")[0]
         assert head in text, f"SKILL.md does not document the {head!r} response"

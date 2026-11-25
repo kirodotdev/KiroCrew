@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +26,7 @@ from kiro_crew import memory_kind_routing as mkr
 from kiro_crew import memory_origin_gate as mog
 from kiro_crew import memory_shadow_report as msr
 from kiro_crew import memory_shadow_trace as trace
+from kiro_crew.config.loader import update_config_locked
 from kiro_crew.memory_stores import owned_store_path
 from kiro_crew.vector_memory import VectorMemoryStore
 
@@ -31,6 +34,10 @@ SECRET = "the person's private rule text"
 QUERY = "where does the signer deploy"
 SESSION = "dashboard:chat-trace"
 _T0 = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+_NO_RECEIPT = (
+    "memory shadow trace: no receipt recorded; this config load could not read a "
+    "config file or the memory section"
+)
 
 
 @pytest.fixture
@@ -40,7 +47,17 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _config(home: Path, **flags: str) -> None:
-    (home / "config.json").write_text(json.dumps({"memory": flags}), encoding="utf-8")
+    # Under the config lock, like every product writer: a config load on another
+    # thread (the telemetry consent recheck) may be migrating this file, and a plain
+    # write landing inside its read-modify-write is overwritten. Taken on a worker
+    # thread, because on an event loop's thread the lock refuses instead of waiting.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(
+            update_config_locked,
+            home / "config.json",
+            mutate=lambda _doc: {"memory": flags},
+            stamp_meta=False,
+        ).result()
 
 
 def _shards(home: Path) -> list[dict]:
@@ -128,6 +145,73 @@ def test_outcome_lines_have_their_own_daily_budget(home: Path, monkeypatch) -> N
     assert phases == ["recall", "recall", "learn_add"], "a capped outcome line is not written"
     log = json.loads((home / "usage" / "injections" / "stage-log.json").read_text())
     assert log["counts"]["2026-11-01"]["recall"]["trace"] == {"lines": 3, "ids": 3}
+
+
+@pytest.mark.parametrize(
+    ("held", "warning"),
+    [
+        ("stage-log", "injection receipt: could not read or rewrite the stage log; dropped recall"),
+        ("shard", "injection receipt: could not append the recall line"),
+    ],
+    ids=["stage-log", "shard"],
+)
+def test_a_lost_outcome_line_is_one_warning_naming_what_failed_and_its_kind(
+    home: Path, monkeypatch, caplog, held: str, warning: str
+) -> None:
+    folder = home / "usage" / "injections"
+    if held == "stage-log":
+
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("held by a reader")
+
+        monkeypatch.setattr("kiro_crew.atomic_write.atomic_write", refuse)
+    else:
+        (folder / f"{_T0.astimezone().strftime('%Y-%m-%d')}.jsonl").mkdir(parents=True)
+    line = ir.build_outcome_line(
+        ir.RECALL, session_key=SESSION, store="", ids=["project.a"], now=_T0
+    )
+    with caplog.at_level(logging.WARNING, logger=ir.__name__):
+        ir.write_line(line)
+    assert [r.getMessage() for r in caplog.records if r.name == ir.__name__] == [warning]
+    assert not [p for p in folder.glob("*.jsonl") if p.is_file()], "the line is not written"
+
+
+@pytest.mark.parametrize(
+    ("flags", "unreadable", "observed"),
+    [
+        ({"lesson_origin_gate": "shadow"}, "memory section", False),
+        ({"lesson_origin_gate": "shadow"}, "config.json", False),
+        ({}, "config.local.json", False),
+        ({"lesson_origin_gate": "shadow"}, "config.local.json", True),
+    ],
+    ids=["memory-section", "config-json", "overlay", "overlay-over-a-stage-on"],
+)
+def test_a_load_that_could_not_read_the_flags_says_it_recorded_no_receipt(
+    home: Path, caplog, flags: dict, unreadable: str, observed: bool
+) -> None:
+    _config(home, **flags)
+    assert trace.observing() is bool(flags)
+    if unreadable == "memory section":
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(
+                update_config_locked,
+                home / "config.json",
+                mutate=lambda _doc: {"memory": "mid-replace"},
+                stamp_meta=False,
+            ).result()
+    else:
+        (home / unreadable).write_text('{"memory": ', encoding="utf-8")
+    with caplog.at_level(logging.INFO, logger=trace.__name__):
+        assert trace.observing() is observed, "the answer is the flags the load could read"
+    said = [r.getMessage() for r in caplog.records if r.name == trace.__name__]
+    assert said == ([] if observed else [_NO_RECEIPT])
+    for name in ("config.json", "config.local.json"):
+        (home / name).unlink(missing_ok=True)
+    _config(home)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=trace.__name__):
+        assert trace.observing() is False
+    assert not [r for r in caplog.records if r.name == trace.__name__], "a good load is quiet"
 
 
 def test_a_stage_field_names_a_control_sample_of_the_rows_it_keeps() -> None:

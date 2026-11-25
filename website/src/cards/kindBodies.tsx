@@ -5,6 +5,7 @@
  * real next run (or, for a one-shot, the one time it runs), a note that only one crewmate changes.
  */
 import { useId } from 'react'
+import { Link } from 'react-router-dom'
 import { Checkbox } from '../components/ui'
 import { i18nT } from '../i18n/t'
 import { fmtDateTime, fmtUnit } from '../i18n/format'
@@ -127,6 +128,70 @@ export function GoalHeartbeatOption({ card, disabled, preview }: KindBodyProps) 
           </span>
         </span>
       </label>
+    </div>
+  )
+}
+
+/** The `field` of an `mcp.server` card's sharing offer row (`SHARE_OFFER_FIELD`). */
+export const MCP_SHARE_OFFER_FIELD = 'share_offer'
+
+/** An `mcp.server` card's sharing offer, when the gateway made one. */
+export function mcpShareOffer(card: Pick<Card, 'kind' | 'changes'>): CardChange | null {
+  if (card.kind !== 'mcp.server') return null
+  return card.changes.find(c => c.field === MCP_SHARE_OFFER_FIELD) ?? null
+}
+
+/** One checkbox row of an option block: the shared Checkbox inside a 44px tap target. */
+function OptionBox({ id, label, checked, disabled, testId, onChange, after }: {
+  id: string; label: string; checked: boolean; disabled: boolean; testId: string
+  onChange: (checked: boolean) => void; after?: React.ReactNode
+}) {
+  return (
+    <div className="flex min-h-11 items-center gap-2 text-[13px] leading-5 text-text">
+      <Checkbox id={id} aria-label={label} data-testid={testId} checked={checked} disabled={disabled}
+        onChange={e => onChange(e.target.checked)} />
+      <label htmlFor={id} className="cursor-pointer">{label}</label>
+      {after}
+    </div>
+  )
+}
+
+/**
+ * An `mcp.server` card's options, each a re-preview with its param flipped, so the
+ * plan the gateway runs is the one the boxes show:
+ *
+ * - **Share this server with other chats and Bots**, with a Learn more link to the
+ *   MCP page's Sharing view. The gateway offers it (the offer row) only for a server
+ *   that is safe to share: one that does not use the chat's folder. It starts
+ *   ticked on an add card: sharing is an optimization people would not find
+ *   otherwise. Checked, Apply also turns
+ *   sharing on for this Kiro Crew when it is off.
+ * - **Restart open chats to use it** (`use_now`), checked by default. A remove
+ *   card says **Restart open chats to stop using it**.
+ */
+export function McpServerOptions({ card, disabled, preview }: KindBodyProps) {
+  const id = useId()
+  const editable = card.status === 'pending' || card.status === 'failed'
+  const off = disabled || !editable || !preview
+  const offer = mcpShareOffer(card)
+  const set = (patch: Record<string, unknown>) => { void preview?.({ ...card.params, ...patch }) }
+  return (
+    <div className="mt-2" data-testid="change-card-mcp-options">
+      {offer && (
+        <OptionBox id={`${id}-share`} testId="change-card-mcp-share-box"
+          label={i18nT('components.changeCards.mcp_server_share')}
+          checked={offer.after === true} disabled={off} onChange={checked => set({ share: checked })}
+          after={
+            <Link to="/mcp?view=sharing" className="text-[13px] text-accent hover:underline" data-testid="change-card-mcp-share-learn-more">
+              {i18nT('components.changeCards.mcp_server_learn_more')}
+            </Link>
+          } />
+      )}
+      <OptionBox id={`${id}-use-now`} testId="change-card-mcp-use-now-box"
+        label={card.params.action === 'remove'
+          ? i18nT('components.changeCards.mcp_server_use_now_remove')
+          : i18nT('components.changeCards.mcp_server_use_now')}
+        checked={card.params.use_now !== false} disabled={off} onChange={checked => set({ use_now: checked })} />
     </div>
   )
 }

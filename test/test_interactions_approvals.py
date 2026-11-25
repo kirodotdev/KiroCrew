@@ -265,7 +265,11 @@ class TestNativeToolApproval:
         await ix._handle_tool_approval(payload, "trust_tool", "D1", "m1", "U1")
         assert prompt.future.result() == sh._OUTCOME_APPROVED
         assert "slack:th1" in sh._trusted_sessions
-        assert _rows(sel_log) == [("slack.interactive.approval", "allowed")]
+        # The grant has its own row naming who turned Trust on (newest first).
+        assert _rows(sel_log) == [
+            ("slack.interactive.approval", "allowed"),
+            ("slack.interactive.trust", "allowed"),
+        ]
         interaction.assert_awaited_once_with(
             "D1",
             "m1",

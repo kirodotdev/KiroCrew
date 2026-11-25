@@ -30,6 +30,11 @@ from kiro_crew.acp.kas_agents import (
     to_client_custom_agent,
 )
 
+#: Many cases here start a real interpreter as the stdio server (`_run_entry`); one
+#: group keeps those cold starts on one xdist worker, in sequence, for this module
+#: and test_kas_inherited_auth_env.py, which shares the launcher.
+pytestmark = pytest.mark.xdist_group("kas_env_launch_real_child")
+
 CANARY = "https://canary-26256.invalid/v1/zq7Xk"
 SESSION = "dashboard_chat-26256-1"
 
@@ -42,6 +47,19 @@ for line in sys.stdin:
     if msg.get("method") == "tools/call":
         text = os.environ.get("CANARY_26256_ENDPOINT", "<missing>")
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"text": text}}), flush=True)
+        break
+    print(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}), flush=True)
+"""
+
+#: The same, answering ``tools/call`` with the value of each variable its argv names
+#: (``null`` when unset), so a test can read what the server's process received.
+_ENV_SERVER = r"""
+import json, os, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "tools/call":
+        seen = {name: os.environ.get(name) for name in sys.argv[1:]}
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": seen}), flush=True)
         break
     print(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}), flush=True)
 """
@@ -87,20 +105,24 @@ def script(tmp_path):
     return path
 
 
-def _run_entry(entry: dict, timeout: float = 30.0) -> subprocess.CompletedProcess:
-    """Start *entry* the way the engine does: its command, args and env alone."""
+def _run_entry(
+    entry: dict, timeout: float = 30.0, engine_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Start *entry* the way the engine does: its command and args, its env laid over
+    the engine's own environment, which *engine_env* stands in for."""
     # PYTHONDONTWRITEBYTECODE: the child imports the launcher from the checkout,
     # and must not leave a __pycache__ behind in it.
-    # The engine spawns stdio servers with the MCP SDK's default environment, which
-    # on Windows carries SYSTEMROOT and friends; without them Winsock cannot load and
-    # the child's ``import asyncio`` fails (WinError 10106) before the launcher runs.
+    # The engine hands a stdio server its whole environment; of that, this run keeps
+    # only what the child needs to start. On Windows that includes SYSTEMROOT and
+    # friends: without them Winsock cannot load and the child's ``import asyncio``
+    # fails (WinError 10106) before the launcher runs.
     inherited = ("PATH",) + (
         ("SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
         if os.name == "nt"
         else ()
     )
     env = {k: os.environ[k] for k in inherited if k in os.environ}
-    env.update({"PYTHONDONTWRITEBYTECODE": "1", **(entry.get("env") or {})})
+    env.update({"PYTHONDONTWRITEBYTECODE": "1", **(engine_env or {}), **(entry.get("env") or {})})
     # A source checkout run (``PYTHONPATH=src``) must find the launcher module
     # the projection names; an installed package needs nothing.
     if os.environ.get("PYTHONPATH"):
@@ -197,6 +219,85 @@ class TestProjection:
         result = _run_entry(entry["mcpServers"]["canary"])
         assert result.returncode == 0, result.stderr
         assert CANARY in result.stdout
+
+    def test_a_per_process_value_the_engine_holds_reaches_the_server(
+        self, home, tmp_path, monkeypatch, caplog
+    ):
+        """An edition's launcher hands each engine process its own value (a credential
+        broker's session files, say) that the gateway never has. A server entry that
+        names it as ``K: ${K}``, in either spelling, gets the engine's value: the key
+        is left out of the snapshot, never written as the literal that would cover it."""
+        import logging
+
+        names = ("KC_SBOX_CONFIG_FILE", "KC_SBOX_SESSION_ID")
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
+        script = tmp_path / "env_server.py"
+        script.write_text(_ENV_SERVER, encoding="utf-8")
+        server = {
+            "command": sys.executable,
+            "args": [str(script), *names],
+            "env": {
+                "KC_SBOX_CONFIG_FILE": "${KC_SBOX_CONFIG_FILE}",
+                "KC_SBOX_SESSION_ID": "${env:KC_SBOX_SESSION_ID}",
+            },
+        }
+        spec = _spec(mcpServers={"aws-tools": server})
+        with caplog.at_level(logging.INFO):
+            launched = _project(spec)["mcpServers"]["aws-tools"]
+            _project(spec, session_key="another-session")
+        doc = json.loads(_snapshot(home, launched).read_text(encoding="utf-8"))
+        assert doc["env"] == {}
+        assert "left as a literal" not in caplog.text
+        named = [r for r in caplog.records if "the same name" in r.getMessage()]
+        assert len(named) == 1, "named once, not once per session"
+        assert named[0].levelno == logging.INFO, "the expected path, not a fault"
+        message = named[0].getMessage()
+        assert "'aws-tools'" in message and "KC_SBOX_CONFIG_FILE, KC_SBOX_SESSION_ID" in message
+        engine = {"KC_SBOX_CONFIG_FILE": "/sbox/s-1/config", "KC_SBOX_SESSION_ID": "s-1"}
+        result = _run_entry(launched, engine_env=engine)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.splitlines()[-1])["result"] == engine
+
+    def test_only_a_self_reference_is_left_out_and_every_other_miss_stays_literal(
+        self, home, tmp_path, monkeypatch
+    ):
+        """Leaving a key out hands the server the engine's own value only when its
+        value is exactly ``${K}`` for that key. A renamed reference and one with fixed
+        text around it keep the literal, so the text is never lost; one the gateway
+        resolves is expanded. A credential-named self-reference is a miss in the
+        gateway's filtered view, so the gateway's value is never copied."""
+        from kiro_crew.testing.synthetic_credentials import aws_secret
+
+        secret = aws_secret()
+        for name in ("KC_SELF", "KC_ENGINE_ONLY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("KC_GATEWAY_HAS", "here")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", secret)
+        env = {
+            "KC_SELF": "${KC_SELF}",
+            "KC_RENAMED": "${KC_ENGINE_ONLY}",
+            "KC_EMBEDDED": "/opt/lib:${KC_ENGINE_ONLY}",
+            "KC_RESOLVED": "${KC_GATEWAY_HAS}",
+            "AWS_SECRET_ACCESS_KEY": "${AWS_SECRET_ACCESS_KEY}",
+        }
+        script = tmp_path / "env_server.py"
+        script.write_text(_ENV_SERVER, encoding="utf-8")
+        server = {"command": sys.executable, "args": [str(script), *env], "env": env}
+        entry = _project(_spec(mcpServers={"tools": server}))
+        launched = entry["mcpServers"]["tools"]
+        doc = json.loads(_snapshot(home, launched).read_text(encoding="utf-8"))
+        assert doc["env"] == {
+            "KC_RENAMED": "${KC_ENGINE_ONLY}",
+            "KC_EMBEDDED": "/opt/lib:${KC_ENGINE_ONLY}",
+            "KC_RESOLVED": "here",
+        }
+        assert secret not in json.dumps(doc) + _wire_text(entry)
+        result = _run_entry(launched, engine_env={"KC_SELF": "engine", "KC_ENGINE_ONLY": "x"})
+        assert result.returncode == 0, result.stderr
+        seen = json.loads(result.stdout.splitlines()[-1])["result"]
+        assert seen["KC_SELF"] == "engine"
+        assert seen["KC_EMBEDDED"] == "/opt/lib:${KC_ENGINE_ONLY}"
 
     def test_a_relayed_flag_stays_on_the_entry_and_the_snapshot_takes_the_rest(self, home, script):
         entry = _project(_spec(mcpServers={"c": _server_spec(script, FEATURE_ENABLED="true")}))

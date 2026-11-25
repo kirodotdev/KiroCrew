@@ -541,6 +541,8 @@ class TestResolveLocalSource:
         monkeypatch.setattr(th, "IS_WINDOWS", True)
         monkeypatch.setattr(th, "unc_probe_allowed", lambda _p: True)
         monkeypatch.setattr(th, "is_link_or_junction", lambda _p: False)
+        # The ancestor screen lstats `\\roaming\profile\`, which on Windows opens SMB.
+        monkeypatch.setattr(th, "screen_windows_linked_ancestors", lambda p: p)
         reached: list[str] = []
 
         def _reached(self: object) -> bool:

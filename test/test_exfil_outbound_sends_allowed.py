@@ -77,6 +77,19 @@ class TestAtFileReadsStillRefused:
     def test_refused(self, command: str) -> None:
         assert (audit(command) or "").startswith(_EXFIL_DENIAL), command
 
+    def test_a_file_field_is_refused_whatever_program_sends_it(self) -> None:
+        reason = audit("gh api repos/o/r/issues/1/comments -F body=@f") or ""
+        assert reason.startswith(_EXFIL_DENIAL)
+        assert "rule=data-exfil-curl-multipart-upload component=exfil-gate " in reason
+
+    def test_an_inline_body_that_only_names_a_file_field_is_refused(self) -> None:
+        command = "gh api repos/o/r/issues/1/comments -f body=$'Attach it with -F body=@<file>.'"
+        reason = audit(command) or ""
+        assert "rule=data-exfil-curl-multipart-upload " in reason, (
+            "GH #40876: once this inline body is allowed, "
+            "move the case to TestOutboundSendsAreNotRefused"
+        )
+
 
 class TestOrdinaryCommandsNeverRefused:
     """GETs, downloads, pipes into tools with `-d`-style flags, and non-curl

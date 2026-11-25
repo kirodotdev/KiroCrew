@@ -201,7 +201,7 @@ class TestForkStage2ExactHeadIdentity:
             "#!/usr/bin/env bash\n"
             'printf \'%s\\n\' "$*" >> "$CALLS"\n'
             'case "${2:-}" in\n'
-            '  *"pulls?state=open&per_page=100"*)\n'
+            '  *"pulls?state=open"*"&per_page=100"*)\n'
             '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
             '    cat "$PAGES"; exit 0 ;;\n'
             "  */pulls/*) printf '%s\\n' \"$BASE_SHA\"; exit 0 ;;\n"
@@ -243,6 +243,7 @@ class TestForkStage2ExactHeadIdentity:
                     "WR_HEAD_SHA": self._SHA,
                     "WR_HEAD_REPO": self._REPO if repo is None else repo,
                     "WR_HEAD_REF": self._REF if ref is None else ref,
+                    "WR_HEAD_BRANCH": self._REF if ref is None else ref,
                     "PAGES": str(pages_file),
                     "CALLS": str(calls),
                     "SLEEPS": str(tmp_path / "sleeps"),
@@ -417,7 +418,7 @@ class TestForkStage2ExactHeadIdentity:
         gh.write_text(
             "#!/usr/bin/env bash\n"
             'case "${2:-}" in\n'
-            '  *"pulls?state=open&per_page=100"*)\n'
+            '  *"pulls?state=open"*"&per_page=100"*)\n'
             '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
             '    cat "$PAGES"; exit 0 ;;\n'
             "  */pulls/*/files) printf 'src/example.py\\n'; exit 0 ;;\n"

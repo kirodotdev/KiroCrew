@@ -109,6 +109,7 @@ const NOTICE_FAMILIES = {
   agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
   channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
   member_rebind_kept_agent: { role: 'notice', card: 'notice', tone: 'info' },
+  member_harness_elsewhere: { role: 'notice', card: 'notice', tone: 'info' },
   agent_no_tools: { role: 'notice', card: 'notice', tone: 'info' },
   harness_mode_changed: { role: 'notice', card: 'notice', tone: 'info' },
   harness_task_completed: { role: 'notice', card: 'notice', tone: 'info' },
@@ -118,6 +119,7 @@ const NOTICE_FAMILIES = {
   crew_name_undispatchable: { role: 'error', card: 'error' },
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
+  cron_run_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
   queued_message_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
   send_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
@@ -125,6 +127,8 @@ const NOTICE_FAMILIES = {
   eager_spawn_stopped: { role: 'error', card: 'error' },
   turn_failed_before_start: { role: 'error', card: 'error' },
   local_command_failed_before_start: { role: 'error', card: 'error' },
+  permission_auto_rejected_stranded: { role: 'notice', card: 'notice', tone: 'blocked' },
+  permission_auto_rejected_no_security_context: { role: 'notice', card: 'notice', tone: 'blocked' },
   turn_timeout: { role: 'error', card: 'error' },
   turn_timeout_native_pending: { role: 'error', card: 'error' },
   background_turn_abandoned: { role: 'error', card: 'error' },
@@ -208,6 +212,7 @@ const COPY_KEY = {
   agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
   channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
   member_rebind_kept_agent: 'pages.chat.gatewayNotice.member_rebind_kept_agent',
+  member_harness_elsewhere: 'pages.chat.gatewayNotice.member_harness_elsewhere',
   agent_no_tools: 'pages.chat.gatewayNotice.agent_no_tools',
   harness_mode_changed: 'pages.chat.gatewayNotice.harness_mode_changed',
   harness_task_completed: 'pages.chat.gatewayNotice.harness_task_completed',
@@ -217,6 +222,7 @@ const COPY_KEY = {
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
+  cron_run_read_only: 'pages.chat.gatewayNotice.cron_run_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
   queued_message_dropped: 'pages.chat.gatewayNotice.queued_message_dropped',
   send_dropped: 'pages.chat.gatewayNotice.send_dropped',
@@ -224,6 +230,8 @@ const COPY_KEY = {
   eager_spawn_stopped: 'pages.chat.gatewayNotice.eager_spawn_stopped',
   turn_failed_before_start: 'pages.chat.gatewayNotice.turn_failed_before_start',
   local_command_failed_before_start: 'pages.chat.gatewayNotice.local_command_failed_before_start',
+  permission_auto_rejected_stranded: 'pages.chat.gatewayNotice.permission_auto_rejected_stranded',
+  permission_auto_rejected_no_security_context: 'pages.chat.gatewayNotice.permission_auto_rejected_no_security_context',
   turn_timeout: 'pages.chat.gatewayNotice.turn_timeout',
   turn_timeout_native_pending: 'pages.chat.gatewayNotice.turn_timeout_native_pending',
   background_turn_abandoned: 'pages.chat.gatewayNotice.background_turn_abandoned',
@@ -260,8 +268,8 @@ const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 
 /**
  * Settled copy for a pending token whose cause is not the connection: a
- * throttle is the provider's answer, so its card never reads "Connection
- * restored" or "Connection interrupted".
+ * throttle is an answer, not a dropped connection, so its card never reads
+ * "Connection restored" or "Connection interrupted".
  */
 const SETTLED_KEY = {
   transient_throttle_retrying: {
@@ -568,6 +576,10 @@ const LEGACY: readonly Legacy[] = [
     token: 'remote_crew_read_only',
   },
   {
+    re: /^This cron run's transcript can be read here but not replied to\. Start a new chat to follow up on it\.$/u,
+    token: 'cron_run_read_only',
+  },
+  {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
   },
@@ -598,6 +610,14 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^⚠\uFE0F? `(?<command>.+?)` failed\. The gateway log has the details\.$/u,
     token: 'local_command_failed_before_start',
+  },
+  {
+    re: /^permission auto-rejected \(stranded between turns\): (?<tool>[\s\S]*)$/u,
+    token: 'permission_auto_rejected_stranded',
+  },
+  {
+    re: /^permission auto-rejected \(missing security context\): (?<tool>[\s\S]*)$/u,
+    token: 'permission_auto_rejected_no_security_context',
   },
   {
     re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit and was stopped\. Work already written to disk is still there — nothing was rolled back\. Send a message to continue from where it stopped\.(?<hint>.*)$/u,
@@ -842,6 +862,20 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
  */
 export function isKasSignedOut(m: ChatMessage): boolean {
   return shapeOf(m)?.token === 'kas_signed_out'
+}
+
+/**
+ * What makes two red notice rows the SAME failure, so a run of them draws as
+ * one card (`errorRuns.ts`): the token and the values its copy reads. `null`
+ * for any other row, and for one whose `kind` or `code` gives it a card of its
+ * own (a sign-in, a usage limit, a turn limit), whose actions belong to it.
+ */
+export function errorNoticeRunKey(m: ChatMessage): string | null {
+  const meta = m.meta as { kind?: unknown; code?: unknown } | undefined
+  if (m.role !== 'error' || m.kind || meta?.kind || meta?.code) return null
+  const shape = shapeOf(m)
+  if (!shape || NOTICE_FAMILIES[shape.token].card !== 'error') return null
+  return `${shape.token} ${JSON.stringify(shape.args)}`
 }
 
 /**

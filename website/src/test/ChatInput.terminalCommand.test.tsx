@@ -23,7 +23,9 @@ registerCatalogs({ ru: { translation: ru }, bn: { translation: bn } })
 
 const terminal = vi.hoisted(() => ({
   enabled: true,
-  addTab: vi.fn<(cwd?: string) => string | null>(),
+  addTab: vi.fn<(cwd?: string) => string>(),
+  /** The gateway refused the shell at its terminal ceiling. */
+  atLimit: false,
   /** The chat the last minted dock tab names, for the gateway's placement check. */
   chatSlot: undefined as string | undefined,
   send: vi.fn(),
@@ -49,12 +51,14 @@ vi.mock('../utils/terminalRegistry', () => ({
     return terminal.unsubscribe
   },
   sendToTerminalSession: (...args: unknown[]) => terminal.send(...args),
+  isTerminalAtLimit: () => terminal.atLimit,
 }))
 
 beforeEach(() => {
   localStorage.clear()
   vi.clearAllMocks()
   terminal.enabled = true
+  terminal.atLimit = false
   terminal.addTab.mockReset().mockReturnValue('terminal-1')
   terminal.send.mockReturnValue(true)
   terminal.ready = null
@@ -823,16 +827,16 @@ describe('direct terminal commands', () => {
     expect(props.onChange).not.toHaveBeenCalled()
   })
 
-  it('keeps the draft and reports failure at the terminal cap', () => {
-    terminal.addTab.mockReturnValue(null)
+  it('keeps the draft and reports failure when the gateway is at its terminal limit', () => {
     const { props } = setup()
     fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
     expect(terminal.addTab).not.toHaveBeenCalled()
     confirmRun()
+    terminal.atLimit = true
+    act(() => terminal.failure?.())
     expect(screen.getByRole('alert')).toHaveTextContent('Terminal limit reached. Close an unused terminal tab, then try again.')
     expect(screen.getByLabelText('Message input')).toHaveValue('! pwd')
     expect(terminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/selected project')
-    expect(terminal.ready).toBeNull()
     expect(terminal.send).not.toHaveBeenCalled()
     expect(props.onChange).not.toHaveBeenCalled()
     expect(props.onSend).not.toHaveBeenCalled()
@@ -845,6 +849,7 @@ describe('direct terminal commands', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('pwd')
     expect(terminal.addTab).toHaveBeenCalledTimes(1)
     // Closing a tab makes the next deliberate Run succeed.
+    terminal.atLimit = false
     terminal.addTab.mockReturnValue('terminal-retry')
     confirmRun()
     act(() => terminal.ready?.())
@@ -854,7 +859,6 @@ describe('direct terminal commands', () => {
   })
 
   it.each(['invalid_cwd', 'limit', 'failed'] as const)('dismisses %s without changing the draft or retrying the command', failure => {
-    if (failure === 'limit') terminal.addTab.mockReturnValueOnce(null)
     if (failure === 'failed') vi.useFakeTimers()
     const onStop = vi.fn()
     const { props } = setup({ onStop })
@@ -862,6 +866,7 @@ describe('direct terminal commands', () => {
     confirmRun()
     const oldReady = terminal.ready
     if (failure === 'invalid_cwd') act(() => terminal.failure?.())
+    if (failure === 'limit') { terminal.atLimit = true; act(() => terminal.failure?.()); terminal.atLimit = false }
     if (failure === 'failed') act(() => { vi.advanceTimersByTime(6000) })
 
     const alert = screen.getByRole('alert')
@@ -879,9 +884,11 @@ describe('direct terminal commands', () => {
     expect(onStop).not.toHaveBeenCalled()
 
     // Dismissal does not hide a later failed attempt, or consume a later Run.
-    terminal.addTab.mockReturnValueOnce(null)
     fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
     confirmRun()
+    terminal.atLimit = true
+    act(() => terminal.failure?.())
+    terminal.atLimit = false
     expect(screen.getByRole('alert')).toHaveTextContent(/Terminal limit reached/)
     fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Dismiss' }))
     fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
@@ -892,6 +899,23 @@ describe('direct terminal commands', () => {
     expect(props.onSend).not.toHaveBeenCalled()
     expect(props.onSteer).not.toHaveBeenCalled()
     expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it.each(['limit', 'failed'] as const)('draws the %s notice on the dock glass', failure => {
+    if (failure === 'failed') vi.useFakeTimers()
+    setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
+    confirmRun()
+    if (failure === 'limit') { terminal.atLimit = true; act(() => terminal.failure?.()); terminal.atLimit = false }
+    if (failure === 'failed') act(() => { vi.advanceTimersByTime(6000) })
+
+    // The composer dock floats over the transcript: the notice alone lets the
+    // text scrolled under it show through its words.
+    const alert = screen.getByRole('alert')
+    expect(alert.parentElement).toHaveClass('liquid-glass', 'glass-thick')
+    // The block notice is nested on a danger pane; the inline one keeps a plain pane.
+    expect(alert.parentElement?.classList.contains('glass-danger')).toBe(failure === 'limit')
+    expect(alert.className).not.toMatch(/\bbg-danger-subtle\b/)
   })
 
   it('reports a rejected workspace immediately and retries only on a new submission', () => {

@@ -51,17 +51,22 @@ from kiro_crew.browser_harness.live_hub import (
     handback_text,
 )
 from kiro_crew.browser_harness.takeover import InputEventError
+from kiro_crew.dashboard import full_chat_waits
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
+from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state import _normalize_slot_key
 
 logger = logging.getLogger(__name__)
 
-#: A session key is an opaque slot key; bounded so it cannot carry free text.
-_SESSION_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+#: A session key is an opaque slot key; bounded so it cannot carry free text. The
+#: bound is the slot key's own (``MAX_SLOT_KEY_CHARS``) plus the ``dashboard:``
+#: prefix ``_normalize_slot_key`` strips, so every slot this dashboard owns passes.
+_SESSION_KEY_MAX_CHARS = len("dashboard:") + MAX_SLOT_KEY_CHARS
+_SESSION_KEY_RE = re.compile(rf"[A-Za-z0-9_.:-]{{1,{_SESSION_KEY_MAX_CHARS}}}")
 
 #: Largest input-event body; a real one is under 200 bytes.
 _MAX_BODY_BYTES = 4 * 1024
@@ -397,6 +402,8 @@ def bind_live_hub(state: Any) -> LiveHub:
     publish = getattr(state, "deliver_ws_owners", None)
     send_frame = getattr(state, "deliver_ws_owners_bytes", None)
     hub.bind(publish, send_frame)
+    # A parked ask is one of the waits the slot list's ``needs_full_chat`` reports.
+    hub.watch_asks(lambda _key: full_chat_waits.push_slot_list(state))
     hub.attach_recorder(get_recorder())
     refresh_live_config(hub)
     return hub

@@ -35,6 +35,7 @@ from kiro_crew.autonudge_service.gate import (
     _record_delivered_reading,
     _record_delivered_revision,
 )
+from kiro_crew.autonudge_service.memory_hold import holds_for_critical_memory
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
@@ -98,12 +99,10 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # not retain that chain or count its writes toward that transaction.
     self._admitted_transaction_owner.set(None)
     self._admitted_transaction_submissions.set(None)
-    # A boot hold is a plain nap ahead of the countdown: the countdown itself can
-    # end early on a subject read, which would undo the boot spacing.
-    hold = self._boot_holds.pop(loop.id, 0.0)
+    # A loop due at boot waits its turn ahead of the countdown: the countdown itself
+    # can end early on a subject read, which would undo the boot pacing.
     try:
-        if hold > 0:
-            await asyncio.sleep(hold)
+        await self._boot_pacer.wait_turn(loop.id)
         await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
@@ -138,6 +137,10 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
 
 async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
     """Run one admitted post-sleep callback through durable bookkeeping."""
+    # Ahead of everything else: a held tick re-arms itself and must leave the push
+    # marks and the owed boot replay below for the tick that does run.
+    if await holds_for_critical_memory(self, loop):
+        return
     # Whether THIS tick is one a worker's push armed. Moved off the armed-timer mark
     # the moment the tick starts, so a push landing from here on is news this tick may
     # not see and is free to arm the next one; and reset on every tick, so a tick that
@@ -147,6 +150,8 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
         self._pushed_running.add(loop.id)
     else:
         self._pushed_running.discard(loop.id)
+    # A tick has started: it settles any boot replay this loop owed.
+    self._boot_replays.discard(loop.id)
     # Reached before either dispatch: a fire settles through the same refused writer,
     # so an unattended turn would go out with no restart able to tell that it had.
     if self._store.load_refused:
@@ -823,7 +828,7 @@ async def _finish_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # after the previous turn finished; the busy-skip + backoff above
     # handles any overlap.
     if is_channel_key(loop.slot_key) and loop.active and loop.id in self._loops:
-        self._arm_from_deadline(loop)
+        self._arm_from_deadline(loop, after_turn=True)
 
 
 # How much one automatic extension of a work-ledger watch adds: a quarter of the
@@ -1225,8 +1230,10 @@ async def fire_now(
         )
         return loop, "", 200
     # A person asked for this turn, so it must not meet the person-wait hold:
-    # forgetting what the last turn saw makes the next tick fire.
+    # forgetting what the last turn saw makes the next tick fire. Nor the memory
+    # hold: the press is the person's own call (``memory_hold``).
     loop.ledger_seen_fp = ""
+    self._manual_ticks.add(loop_id)
     logger.info(
         "AutoNudge: loop %s brought forward by hand — cycle %d armed to run now",
         loop.id,

@@ -26,15 +26,22 @@ from kiro_crew.skills import SkillsLoader
 
 POINTER = "You were compacted: re-read the goal-conductor skill before your next action."
 RULE = "skill text you read is gone: read it again before you act."
+#: A read cut at an engine's character limit (KAS stops one at 30,000 and names
+#: the offset to continue from) is a part of the skill, not all of it.
+CONTINUE = (
+    "If a read ends with a character-limit notice, keep reading from the offset it gives "
+    "until the end."
+)
 
 
-def test_skill_first_tells_both_conductors_to_reread_after_a_compaction() -> None:
+@pytest.mark.parametrize("line", [RULE, CONTINUE])
+def test_skill_first_reaches_both_conductors(line: str) -> None:
     rule = " ".join(agent._LEDGER_CONDUCTOR_RULES["skill_first"].split())
-    assert RULE in rule
+    assert line in rule
     root = " ".join(agent._CONDUCTOR_SYSTEM_PROMPT.split())
     bot = " ".join(member.ledger_rules_block("conductor.patrol").split())
-    assert RULE in root
-    assert RULE in bot
+    assert line in root
+    assert line in bot
 
 
 @pytest.fixture

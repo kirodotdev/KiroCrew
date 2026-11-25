@@ -17,7 +17,7 @@ import type { Slot } from '../types'
 import { sessionRefBlockReason } from '../../../utils/sessionRefs'
 import { boardColumnFromDroppableId } from '../../../utils/boardFolderCollapse'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
-import { CHAT_PANE_DROP_TYPE } from './collision'
+import { CHAT_PANE_DROP_TYPE, SPLIT_PANE_DROP_TYPE } from './collision'
 import type { FolderSortModeRead } from '../../../hooks/useFolderSortMode'
 import type { FolderMutations } from '../folders'
 
@@ -275,7 +275,7 @@ export function useNativeSessionDrag() {
 }
 
 /** The DndContext lifecycle handlers shared by every lane. */
-export function useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFolderReorderHint, setActiveDrag, activeDrag, dragFrozen, folderReorderable, folderSortRead, showFolderReorderHint, moveFolderByDrag, reorderFolders, searchRanked, pinned, reorderPinned, reorderManual, localSlots, activeSlot, onDropSessionRef, moveByDrag, folders, boardFolderCollapsed, updateFolderMutation, clearBoardCollapse }: {
+export function useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFolderReorderHint, setActiveDrag, activeDrag, dragFrozen, folderReorderable, folderSortRead, showFolderReorderHint, moveFolderByDrag, reorderFolders, searchRanked, pinned, reorderPinned, reorderManual, localSlots, readOpenSlot, onDropSessionRef, moveByDrag, folders, boardFolderCollapsed, updateFolderMutation, clearBoardCollapse }: {
   releaseHoverPin: () => void
   setDragFrozen: Dispatch<SetStateAction<boolean>>
   hideFolderReorderHint: () => void
@@ -292,7 +292,8 @@ export function useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFol
   reorderPinned: (activeKey: string, overKey: string) => void
   reorderManual: (activeKey: string, overKey: string) => void
   localSlots: Slot[]
-  activeSlot: string | null
+  /** The open session, read at drop time. */
+  readOpenSlot: () => string | null
   onDropSessionRef: ((ref: { key: string; title: string; messages?: number | undefined; }) => void) | undefined
   moveByDrag: (slotKey: string, folderId: string | null) => void
   folders: ChatFolder[]
@@ -429,7 +430,7 @@ export function useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFol
         // Re-decide at drop time rather than trusting the drag-start snapshot:
         // the refusal must not depend on the affordance having been rendered,
         // and memory_mode can change mid-drag. Same function the zone uses.
-        if (sessionRefBlockReason({ key: a.key, activeSlot, memoryMode: src?.memory_mode })) return
+        if (sessionRefBlockReason({ key: a.key, activeSlot: readOpenSlot(), memoryMode: src?.memory_mode })) return
         haptic('light')
         onDropSessionRef?.({
           key: a.key,
@@ -438,10 +439,17 @@ export function useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFol
         })
         return
       }
+      // A Split View pane: its zone carries `show`, null when refused, and a
+      // refused drop is swallowed so it never falls through to a folder.
+      if (o?.type === SPLIT_PANE_DROP_TYPE) {
+        const show = (over.data.current as { show?: ((key: string) => void) | null }).show
+        if (show) { haptic('light'); show(a.key) }
+        return
+      }
       if (o?.type === 'folder-drop') moveByDrag(a.key, o.folderId ?? null)
       else if (o?.type === 'folder') moveByDrag(a.key, over.id as string)
     }
-  }, [resetSidebarDrag, reorderFolders, reorderPinned, reorderManual, searchRanked, pinned, moveByDrag, moveFolderByDrag, localSlots, activeSlot, onDropSessionRef, folderReorderable, folderSortRead.known, showFolderReorderHint])
+  }, [resetSidebarDrag, reorderFolders, reorderPinned, reorderManual, searchRanked, pinned, moveByDrag, moveFolderByDrag, localSlots, readOpenSlot, onDropSessionRef, folderReorderable, folderSortRead.known, showFolderReorderHint])
   const handleSidebarDragCancel = resetSidebarDrag
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)

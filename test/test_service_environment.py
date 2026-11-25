@@ -15,6 +15,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _clear_sudo_user,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
 )
 
@@ -104,6 +105,102 @@ class TestKirocrewBinOverride:
 
         assert kirocrew_bin() == stable
         rewrite.assert_called_once_with(str(binary.resolve()))
+
+    @pytest.mark.parametrize("has_launcher", [True, False])
+    def test_toolbox_version_dir_is_started_through_the_toolbox_launcher(
+        self, has_launcher, monkeypatch, tmp_path
+    ):
+        """A Toolbox update removes old version dirs, so ExecStart names the launcher.
+
+        Without a launcher to point at, the running install's own path is kept.
+        ``kirocrew_bin`` keeps naming the script the launcher runs: a path-attached
+        AppArmor profile must never be attached to a dispatcher every tool shares.
+        """
+        from kiro_crew.service import linux as svc_linux
+
+        home = tmp_path / "home"
+        version = home / ".toolbox" / "tools" / "kirocrew" / "1.2.3"
+        mine = self._console_script(version / "python3.12" / "bin")
+        self._console_script(version / "bin")
+        launcher = home / ".toolbox" / "bin" / mine.name
+        if has_launcher:
+            self._console_script(launcher.parent)
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+
+        assert kirocrew_bin() == str(mine)
+        started = launcher if has_launcher else mine
+        assert (
+            f"ExecStart={svc_linux._sd_quote(str(started))} gateway --no-open\n"
+            in svc_linux.render_unit()
+        )
+
+    @pytest.mark.parametrize("has_launcher", [True, False])
+    def test_the_profile_attaches_to_the_script_the_toolbox_launcher_execs(
+        self, has_launcher, monkeypatch, tmp_path
+    ):
+        """The launcher execs ``<version>/bin/kirocrew``, never the console script."""
+        version = tmp_path / "home" / ".toolbox" / "tools" / "kirocrew" / "1.2.3"
+        mine = self._console_script(version / "python3.12" / "bin")
+        script = self._console_script(version / "bin")
+        if has_launcher:
+            self._console_script(tmp_path / "home" / ".toolbox" / "bin")
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+
+        expected = script if has_launcher else mine
+        assert common.service_attach_path(kirocrew_bin()) == str(expected)
+
+    def test_no_version_script_keeps_the_start_and_the_attach_point_together(
+        self, monkeypatch, tmp_path
+    ):
+        """Without the script the launcher execs, the service runs the console script
+        directly, so it starts the same file the profile attaches to."""
+        home = tmp_path / "home"
+        mine = self._console_script(
+            home / ".toolbox" / "tools" / "kirocrew" / "1.2.3" / "python3.12" / "bin"
+        )
+        self._console_script(home / ".toolbox" / "bin")
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+
+        assert common.service_exec_path(kirocrew_bin()) == str(mine)
+        assert common.service_attach_path(kirocrew_bin()) == str(mine)
+
+    def test_the_installed_profile_attaches_to_the_toolbox_version_script(
+        self, monkeypatch, tmp_path
+    ):
+        """The install hands the AppArmor install the attach point, not the console script."""
+        from kiro_crew.service import linux_install
+
+        version = tmp_path / "home" / ".toolbox" / "tools" / "kirocrew" / "1.2.3"
+        mine = self._console_script(version / "python3.12" / "bin")
+        script = self._console_script(version / "bin")
+        self._console_script(tmp_path / "home" / ".toolbox" / "bin")
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+        seen = {}
+
+        def fake_install(*_args, exec_path, expected_uid):
+            seen["exec_path"] = exec_path
+            return linux_install.apparmor.ProfileOutcome(False, "stub")
+
+        monkeypatch.setattr(linux_install.apparmor, "install", fake_install)
+        monkeypatch.setattr(linux_install.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(linux_install.os, "getgid", lambda: 1000, raising=False)
+
+        linux_install.install_apparmor_profile(1000)
+
+        assert seen["exec_path"] == str(script)
+
+    def test_service_bin_override_is_started_as_given_inside_toolbox(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        pinned = self._console_script(home / ".toolbox" / "tools" / "kirocrew" / "1.2.3" / "bin")
+        self._console_script(home / ".toolbox" / "bin")
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", str(pinned))
+
+        assert common.service_exec_path(kirocrew_bin()) == os.path.abspath(pinned)
 
     def test_service_bin_override_wins_over_which(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/wrapper/kirocrew")
@@ -507,10 +604,100 @@ class TestServicePathMiseShims:
 
         assert path == "/home/tester/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-    def test_launchd_path_is_unchanged(self, monkeypatch):
-        monkeypatch.setattr(common.sys, "platform", "darwin")
+
+@pytest.mark.skipif(os.name != "posix", reason="the service PATH is colon-joined POSIX paths")
+class TestLaunchdServicePath:
+    """The plist PATH leads with mise's shims and nvm's dirs, as the unit does.
+
+    A LaunchAgent starts with only this PATH, and every MCP child runs on
+    ``env.augmented_path`` over it. With the installer's nvm dir behind
+    ``/bin``, a Node in ``/opt/homebrew/bin`` or ``/usr/local/bin``, or nvm's
+    newest version, ran the user's servers instead of the Node their shell had
+    selected.
+    """
+
+    _NVM = "/Users/tester/.nvm/versions/node/v22.22.2/bin"
+
+    @pytest.fixture(autouse=True)
+    def _darwin_without_overrides(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(common.sys, "platform", "darwin")
+        for name in ("MISE_DATA_DIR", "XDG_DATA_HOME", "NVM_DIR", "KIROCREW_NODE_BIN_DIR"):
+            _floor_monkeypatch.delenv(name, raising=False)
+
+    def test_without_nvm_only_the_mise_shims_are_added(self, monkeypatch):
         monkeypatch.setenv("PATH", "/usr/bin")
 
         path = common.service_path("/Users/tester")
 
-        assert path == "/Users/tester/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        assert path == (
+            "/Users/tester/.local/bin:/Users/tester/.local/share/mise/shims"
+            ":/usr/local/bin:/usr/bin:/bin"
+        )
+
+    def test_installer_nvm_bin_leads_homebrew_and_the_system_dirs(self, monkeypatch):
+        monkeypatch.setenv("PATH", f"{self._NVM}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+        dirs = common.service_path("/Users/tester").split(":")
+
+        assert dirs == [
+            "/Users/tester/.local/bin",
+            "/Users/tester/.local/share/mise/shims",
+            self._NVM,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+
+    def test_sudo_reads_no_nvm_install_from_the_home(self, monkeypatch):
+        monkeypatch.setenv("SUDO_USER", "tester")
+        monkeypatch.setattr(
+            common, "_sudo_user_nvm_bin_dirs", lambda home: pytest.fail("Linux-only lookup")
+        )
+        monkeypatch.setenv("PATH", "/var/root/.local/bin:/usr/bin")
+
+        dirs = common.service_path("/Users/tester").split(":")
+
+        assert "/opt/homebrew/bin" not in dirs
+
+    def test_mcp_children_resolve_the_installers_nvm_node_first(self, monkeypatch, tmp_path):
+        from kiro_crew import env
+
+        home = str(tmp_path)
+        nvm = tmp_path / ".nvm" / "versions" / "node"
+        for version in ("v22.22.2", "v24.1.0"):
+            (nvm / version / "bin").mkdir(parents=True)
+        selected, newer = str(nvm / "v22.22.2" / "bin"), str(nvm / "v24.1.0" / "bin")
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("PATH", f"{selected}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        env._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = env.augmented_path(common.service_path(home)).split(":")
+        finally:
+            env._node_all_bin_dirs.cache_clear()
+
+        first = dirs.index(selected)
+        assert first < dirs.index("/opt/homebrew/bin") < dirs.index("/usr/local/bin")
+        assert first < dirs.index(newer)
+
+
+def test_installer_path_is_split_on_the_host_separator(monkeypatch):
+    """A Windows ``PATH`` splits on ``;``, so ``C:\\ghcup\\bin`` stays one entry.
+
+    A ``:`` split cuts it into ``\\ghcup\\bin;C``, which ``realpath`` reads as
+    a UNC share.
+    """
+    seen: list[str] = []
+
+    def record(entry, home):
+        seen.append(entry)
+        return entry
+
+    monkeypatch.setattr(common, "_persistable_path_entry", record)
+    monkeypatch.setattr(common.os, "pathsep", ";")
+    monkeypatch.setattr(common.sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\ghcup\bin;C:\Windows\system32")
+
+    common.service_path("/home/tester")
+
+    assert seen == [r"C:\ghcup\bin", r"C:\Windows\system32"]

@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from skill_script_helpers import skill_text
 
 from kiro_crew import context as ctx
 from kiro_crew import worker_grill_preview as grill
@@ -131,7 +132,7 @@ def test_off_the_skill_keeps_mains_debate_offer() -> None:
     # With the preview off the conductor reads only the skill, so the skill keeps
     # main's rule for offering a debate; the grill offer lives in the guidance, and
     # the skill names it only as what replaces that rule when the guidance is there.
-    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    skill = skill_text((SKILL_DIR / "SKILL.md"))
     section = skill.split("### Worker debate", 1)[1].split("\n## ", 1)[0]
     assert "Offer a debate only for a costly, contested choice" in section
     assert '"When to offer a debate"' in section

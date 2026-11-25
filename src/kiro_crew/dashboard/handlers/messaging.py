@@ -211,6 +211,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
     _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
+    _open_engine_subagents,
     _queue_unreadable,
     _queued_lookup,
     _queued_not_started,
@@ -236,6 +237,7 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _redact,
     _session_turn_holding,
     _spawn_result_view,
+    _worktree_field,
     api_spawn_list,
     api_spawn_status,
 )
@@ -275,6 +277,7 @@ from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _continue_on_loop,
     _failover_backend,
     _inherited_backend_name,
+    _kiro_cli_pick,
     _light_tier_pins,
     _lts_kiro_successor,
     _parent_run_is_silent,
@@ -558,6 +561,12 @@ _COLLECTED_IDS_CAP = 1000
 _SPAWN_STATUS_MAX_LINES = 2000  # cap lines returned per spawn_status page
 _SPAWN_STATUS_MAX_GREP_LEN = 500
 
+#: Last reported truncation of a NON-internal persisted spawn listing, per
+#: ``auditee``: the ``overflow_is_lower_bound`` it was reported with, the key
+#: absent once complete. Only those callers are remembered because their listing
+#: depends on the app claim alone; an internal caller's is scoped to its own session.
+_PERSISTED_TRUNCATION_REPORTED: dict[str, bool] = {}
+
 
 #: No unit holds the child, so no crew-log record was owed or written.
 DISMISSAL_LOG_ABSENT = "absent"
@@ -717,13 +726,10 @@ async def api_send_message(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"target_channel={target_channel}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {
-                "error": f"channel {target_channel} not in tracked channels. "
-                "Add it to config.json: "
-                f'{{"slack": {{"tracking_channels": [{{"channel_id": "{target_channel}"}}]}}}}. '
-                "Then restart the gateway."
-            },
+            {"error": untracked_channel_error(target_channel), "code": "channel_not_tracked"},
             status=403,
         )
 

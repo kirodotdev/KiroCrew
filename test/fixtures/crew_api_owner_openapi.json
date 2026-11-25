@@ -87,6 +87,34 @@
         }
       }
     },
+    "/v1/crew/owner/grants": {
+      "get": {
+        "operationId": "get_v1_crew_owner_grants",
+        "summary": "The grants that work now, oldest first; a revoked grant is not listed",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "status", "in": "query", "required": false, "schema": {"enum": ["active", "throttled", "paused", "revoked"]}},
+          {"name": "after", "in": "query", "required": false, "schema": {"type": "string", "pattern": "^grt_"}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+        ],
+        "responses": {
+          "200": {
+            "description": "The grants",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GrantList"}}}
+          },
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/v1/crew/owner/grants/{grant_id}": {
       "delete": {
         "operationId": "delete_v1_crew_owner_grants_grant_id",
@@ -178,7 +206,8 @@
           },
           "400": {"$ref": "#/components/responses/Error"},
           "401": {"$ref": "#/components/responses/Error"},
-          "403": {"$ref": "#/components/responses/Error"}
+          "403": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
         }
       }
     },
@@ -205,7 +234,8 @@
           },
           "401": {"$ref": "#/components/responses/Error"},
           "403": {"$ref": "#/components/responses/Error"},
-          "404": {"$ref": "#/components/responses/Error"}
+          "404": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
         }
       }
     },
@@ -240,7 +270,8 @@
           "401": {"$ref": "#/components/responses/Error"},
           "403": {"$ref": "#/components/responses/Error"},
           "404": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
         }
       }
     }
@@ -297,6 +328,7 @@
           "redirect_uri": {"type": "string", "maxLength": 512, "description": "The loopback address the authorization code goes to"},
           "user_code": {"type": "string", "description": "Short code the app shows, so the owner can tell requests apart"},
           "requested_scopes": {"type": "array", "items": {"type": "string"}},
+          "requested_bots": {"type": "array", "items": {"type": "string"}, "description": "The Bot names the app sends as the repeated bots query parameter of GET /oauth/authorize, one Bot per occurrence, without splitting; empty when omitted. The app is expected to send the exact model id from GET /v1/models. Names follow kiro_crew.members.is_dispatchable_member_name with the MEMBER_NAME_MAX_CHARS length limit; duplicates are refused. Asking checks format, never existence. Malformed bots gives 400 invalid_request even with an invalid scope. Asking again requires the same bots values in the same order. MAX_REQUESTED_BOTS is the chosen bound for one request and one decision, set equal to crew_teams.TEAM_MEMBERS_MAX (500), the largest Bot list the product keeps elsewhere. The request must fit aiohttp's 8190-byte request line. The decision body must fit 4 KiB (_BODY_MAX); a bots list that does not fit gives 400 invalid_request, and the owner gives a shorter list."},
           "created_at": {"type": "integer"},
           "expires_at": {"type": "integer"},
           "decided_at": {"type": ["integer", "null"]},
@@ -306,6 +338,7 @@
             "properties": {"kind": {"type": "string"}, "via": {"type": "string"}}
           },
           "granted_scopes": {"type": "array", "items": {"type": "string"}, "description": "Only when approved"},
+          "granted_bots": {"type": "array", "items": {"type": "string"}, "description": "Only when approved; the Bot names the owner gave, which may be none. They become the grant's bots with mode selected. Names follow kiro_crew.members.is_dispatchable_member_name and MEMBER_NAME_MAX_CHARS, with no duplicates. MAX_REQUESTED_BOTS is the chosen bound for one request and one decision, set equal to crew_teams.TEAM_MEMBERS_MAX (500), the largest Bot list the product keeps elsewhere. The decision body must fit 4 KiB (_BODY_MAX); a bots list that does not fit gives 400 invalid_request, and the owner gives a shorter list. The decision checks expiry, pending status and the requested subset before reading the roster. The grants list returns the owner's recorded selection; no route enforces it yet."},
           "grant_id": {"type": ["string", "null"], "pattern": "^grt_", "description": "Set once the app redeemed its code"}
         }
       },
@@ -329,6 +362,49 @@
           "has_more": {"type": "boolean"}
         }
       },
+      "Grant": {
+        "type": "object",
+        "required": ["id", "object", "kind", "namespace", "client_id", "scopes", "status", "created_at", "expires_at"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^grt_"},
+          "object": {"const": "grant"},
+          "kind": {"const": "local", "description": "Made through local authorization, by this gateway"},
+          "namespace": {"const": "default", "description": "Stored on every record; one fixed value today"},
+          "client_id": {"type": "string", "maxLength": 128, "description": "As the app reported it"},
+          "app": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "maxLength": 80, "description": "As the app reported it"},
+              "icon_url": {"type": "null"}
+            }
+          },
+          "scopes": {"type": "array", "items": {"type": "string"}},
+          "bots": {
+            "type": "object",
+            "required": ["mode", "ids"],
+            "description": "The owner's recorded Bot selection, returned by the grants list; no route enforces it yet.",
+            "properties": {
+              "mode": {"const": "selected"},
+              "ids": {"type": "array", "items": {"type": "string"}}
+            }
+          },
+          "status": {"const": "active", "description": "A revoked grant is not listed"},
+          "created_at": {"type": "integer"},
+          "expires_at": {"type": "integer", "description": "The latest the grant can last; it ends earlier when its refresh token runs out unused"}
+        }
+      },
+      "GrantList": {
+        "type": "object",
+        "required": ["object", "data", "has_more"],
+        "properties": {
+          "object": {"const": "list"},
+          "data": {"type": "array", "items": {"$ref": "#/components/schemas/Grant"}},
+          "first_id": {"type": ["string", "null"]},
+          "last_id": {"type": ["string", "null"]},
+          "has_more": {"type": "boolean"}
+        }
+      },
       "GrantRequestDecision": {
         "type": "object",
         "required": ["decision"],
@@ -339,6 +415,11 @@
             "type": "array",
             "items": {"type": "string"},
             "description": "Only with approve: the scopes to give, a subset of requested_scopes. Left out: all of them."
+          },
+          "bots": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Only with approve: a JSON array of exact Bot names from GET /v1/models, a subset of requested_bots. Names follow kiro_crew.members.is_dispatchable_member_name and MEMBER_NAME_MAX_CHARS, with no duplicates. MAX_REQUESTED_BOTS is the chosen bound for one request and one decision, set equal to crew_teams.TEAM_MEMBERS_MAX (500), the largest Bot list the product keeps elsewhere. The decision body must fit 4 KiB (_BODY_MAX); a bots list that does not fit gives 400 invalid_request, and the owner gives a shorter list. After the body's size, decision and scopes form (each 400 invalid_request), the handler checks the request before any Bot check (404 not_found if unknown or expired, 409 grant_request_already_resolved if answered), then the requested subset, then the roster. Each Bot must exist in that read. When an approval gives at least one Bot, unreadable configuration or a degraded Bot roster gives 503 instance_unavailable without recording a decision. An approval that gives none, and a deny, do not read the roster. Asking via GET /oauth/authorize uses repeated bots query parameters, one Bot per occurrence, and checks format only, never existence; asking again requires the same values in the same order. Left out: no Bot, because a Bot is never given by default. Explicit null gives 400 invalid_request (bots must be a list of strings). On a deny, the server ignores bots whatever its value, even though the schema declares an array."
           }
         }
       },
@@ -347,11 +428,11 @@
         "type": "object",
         "required": ["id", "object", "namespace", "conversation", "state", "created_at"],
         "properties": {
-          "id": {"type": "string", "pattern": "^apr_[0-9a-f]{32}$", "description": "Given by the gateway the first time an Owner route sees the request; held in memory for this gateway process only. After a restart an old id is 404"},
+          "id": {"type": "string", "pattern": "^apr_[0-9a-f]{32}$", "description": "Given by the gateway the first time an Owner route sees the request; kept on disk with its state, its times, why it expired and its session, so an old id is still readable after a restart"},
           "object": {"const": "approval"},
           "namespace": {"const": "default", "description": "Stored on every record; one fixed value today"},
           "conversation": {"type": ["string", "null"], "description": "The session the request was raised in; null for a request with no session, such as a cron job's"},
-          "client_id": {"type": ["string", "null"], "description": "The app that owns that session; null for the owner's own"},
+          "client_id": {"type": ["string", "null"], "description": "The app that owns that session; null for the owner's own, and null on every record from before a gateway restart"},
           "tool": {"type": "string", "maxLength": 200},
           "reason": {"type": "string", "maxLength": 500, "description": "Redacted and cut short"},
           "arguments": {
@@ -362,10 +443,10 @@
           "state": {"$ref": "#/components/schemas/ApprovalState"},
           "created_at": {"type": "integer", "description": "When the gateway gave the id"},
           "decided_at": {"type": ["integer", "null"]},
-          "expired_reason": {"enum": ["timeout", null], "description": "Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting"},
+          "expired_reason": {"enum": ["timeout", "gateway_restart", null], "description": "Only with state expired. timeout: nobody answered, the turn was cancelled, or the request stopped waiting. gateway_restart: after a restart, a row still pending on disk reads expired whether its request was still waiting or had ended without its ending being written."},
           "decided_by": {
             "type": ["object", "null"],
-            "description": "Who answered through this API. Null while pending and for an ending made elsewhere (the dashboard, a Stop)",
+            "description": "Who answered through this API. Null while pending, for an ending made elsewhere (the dashboard, a Stop), and on every record from before a gateway restart",
             "properties": {
               "kind": {"type": "string"},
               "principal": {"type": "string"},

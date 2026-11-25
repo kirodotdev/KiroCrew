@@ -706,6 +706,74 @@ def test_paste_is_refused_where_type_is(
         assert "paste" not in fake.page_methods(), "nothing reaches the page"
 
 
+_DAEMON_LINE_BYTES = 64 * 1024  # Harness's request line: asyncio's StreamReader limit
+#: About the size of the comment-stripped walker on the daemon's line, so the paste
+#: boundary below does not move with every walker change.
+_STRIPPED_WALKER = "(() => {" + "x" * 50_000 + "})()"
+
+
+def test_type_splits_a_long_text_so_each_daemon_line_fits(fake: FakeBrowser) -> None:
+    """20,000 non-ASCII characters JSON-escape to 120 KB: typed in several pieces."""
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "textarea"}
+    text = "漢" * ops.TEXT_CAP
+    out = run(ops.run_op("type", {"text": text}, fake.ctx()))
+    assert out["ok"] is True and out["chars"] == ops.TEXT_CAP
+    typed = [kw["text"] for h, kw in fake.calls if h == "type_text"]
+    assert len(typed) > 1 and "".join(typed) == text
+    for chunk in typed:
+        line = json.dumps({"method": "Input.insertText", "params": {"text": chunk}})
+        assert len(line) < _DAEMON_LINE_BYTES
+
+
+def _harness_line(expression: str) -> bytes:
+    """The request line Harness writes for one isolated-world evaluate of *expression*."""
+    params = {"expression": expression, "contextId": 2**31 - 1, "returnByValue": True}
+    request = {"id": 2**31 - 1, "method": "Runtime.evaluate", "params": params}
+    return (json.dumps({**request, "session_id": "S" * 64}) + "\n").encode()
+
+
+@pytest.mark.parametrize("unit", ["x", '"', "漢"], ids=["ascii", "quote", "cjk"])
+def test_paste_takes_what_fits_the_daemon_line_and_refuses_one_more(
+    fake: FakeBrowser, monkeypatch: pytest.MonkeyPatch, unit: str
+) -> None:
+    from kiro_crew.browser_harness import daemon_line
+
+    monkeypatch.setattr(ops, "WALKER_SOURCE", _STRIPPED_WALKER)
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = {"ok": True, "handled": True}
+
+    def walker_call(text: str) -> str:
+        return f'{_STRIPPED_WALKER}.paste(null, "", {json.dumps(text)})'
+
+    # The longest text of *unit* whose whole walker call fits, beside the envelope.
+    room = daemon_line.DAEMON_LINE_BYTES - daemon_line.ENVELOPE_BYTES
+    most = (room - daemon_line.wire_bytes(walker_call(""))) // daemon_line.wire_bytes(
+        json.dumps(unit)[1:-1]
+    )
+    assert daemon_line.expression_fits(walker_call(unit * most))
+    assert len(_harness_line(walker_call(unit * most))) <= _DAEMON_LINE_BYTES
+    assert run(ops.run_op("paste", {"text": unit * most}, fake.ctx()))["ok"] is True
+    fake.calls.clear()
+    out = run(ops.run_op("paste", {"text": unit * (most + 1)}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "bad_text"
+    assert "paste" not in fake.page_methods(), "nothing reaches the page"
+    assert "type_text" not in fake.helper_names()
+
+
+def test_type_judges_the_field_again_before_each_later_piece(fake: FakeBrowser) -> None:
+    """A page that moves focus to a password box while one piece lands gets no more text."""
+    field = {"focused": True, "password": False, "tag": "textarea"}
+    fake.page["activeField"] = lambda: dict(field)
+    fake.helpers["type_text"] = lambda **_kw: field.update(password=True)
+    text = "漢" * ops.TEXT_CAP
+    out = run(ops.run_op("type", {"text": text, "submit": True}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "password_field"
+    (typed,) = [kw["text"] for h, kw in fake.calls if h == "type_text"]
+    assert out["chars_typed"] == len(typed) < len(text)
+    assert f"the first {len(typed)} of {len(text)} characters were typed" in out["error"]
+    assert "press_key" not in fake.helper_names()
+
+
 def test_press_key_named_single_and_modifiers(fake: FakeBrowser) -> None:
     assert run(ops.run_op("press_key", {"key": "Enter"}, fake.ctx()))["ok"] is True
     assert fake.calls[-1] == ("press_key", {"key": "Enter", "modifiers": 0})

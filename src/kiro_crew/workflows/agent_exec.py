@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 
 from kiro_crew.acp_backends import (
     backend_from_stored,
+    requested_kiro_pick,
     selectable_backends,
     selectable_stored_backend_values,
 )
@@ -41,6 +42,7 @@ from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.workflows import WorkflowStepInterrupted
 
 logger = logging.getLogger(__name__)
@@ -81,19 +83,26 @@ class StepStopWatch:
             )
 
 
-def step_text(refusals: list[str], text: str, *, has_schema: bool) -> str:
+def step_text(refusals: list[str], text: str, opts: dict) -> str:
     """A step's text, led by its directive refusals unless the step has a ``schema=``.
 
     A ``schema=`` step's text is parsed as JSON, and a refusal line ahead of a
-    scalar reply would fail that parse and spend the step's re-asks. There the
-    refusal stays in its SEL ``denied`` row and the step's log line only.
+    scalar reply would fail that parse and spend the step's re-asks. There each
+    refusal goes to the runner's ``_on_refusal`` in *opts*, which puts it on the
+    run's event stream, and nothing is put in front of the text.
+
+    Either way the text loses each line that only quotes a directive tool's marker:
+    the model read it in the tool result, and it is protocol, not the step's answer.
     """
+    text = strip_quoted_markers(text)
     if not refusals:
         return text
-    if has_schema:
-        logger.info("workflow step: refused %d person-only directive(s)", len(refusals))
-        return text
-    return "\n\n".join([*refusals, text])
+    if opts.get("schema") is None:
+        return "\n\n".join([*refusals, text])
+    logger.info("workflow step: refused %d person-only directive(s)", len(refusals))
+    for refusal in refusals:
+        opts["_on_refusal"](refusal)
+    return text
 
 
 class WorkflowSpawnRefused(Exception):
@@ -136,12 +145,14 @@ def step_backend_kwargs(opts: dict) -> dict[str, str]:
     backend = backend_from_stored(name)
     if backend is None:
         return {}
-    if not isinstance(backend, str) or backend not in selectable_backends():
+    selectable = selectable_backends()
+    if not isinstance(backend, str) or backend not in selectable:
         raise WorkflowSpawnRefused(
             f"backend {name!r} is not available; choose one of "
             f"{selectable_stored_backend_values()}"
         )
-    return {"backend_override": backend}
+    # "kiro" runs where a Bot's Kiro CLI pin runs, as spawn_run(backend="kiro") does.
+    return {"backend_override": requested_kiro_pick(backend, selectable) or backend}
 
 
 def step_session_name(opts: dict) -> Optional[str]:
@@ -412,7 +423,7 @@ def build_agent_fn(
                 on_complete=stop.on_complete,
                 on_event=person_only_directive_refuser(key, refusals),
             )
-            text = step_text(refusals, text, has_schema=opts.get("schema") is not None)
+            text = step_text(refusals, text, opts)
             # ── Per-turn usage row: attribute workflow spend. ──
             # One shared writer for both executors (see persist_step_usage_row).
             # Written before the stop check: a turn cut off from outside still

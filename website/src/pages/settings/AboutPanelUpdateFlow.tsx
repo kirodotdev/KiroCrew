@@ -7,7 +7,7 @@
  * (`AGENT_REQUEST_POLL_MS`, `AgentUpdateRequestCard`, `InAppUpdateFlow`,
  * `RestartGatewayButton`, `resolveUnarmedPhase`), so their importers keep that path.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, AlertCircle, GitBranch, ArrowUp, X, Download, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
@@ -102,6 +102,10 @@ export async function copyCommand(
  *
  * Rendered at two call sites with the same behaviour and different emphasis, so
  * the confirm step cannot drift between them.
+ *
+ * `armedNote` is a line shown beside the button only while it is armed, and the
+ * armed button's description, for a caller whose restart loses something the
+ * user can still see (an unsaved form). Without it the button renders alone.
  */
 export function RestartGatewayButton({
   primary,
@@ -111,6 +115,7 @@ export function RestartGatewayButton({
   testId,
   disabled,
   describedBy,
+  armedNote,
 }: {
   primary?: boolean
   pending: boolean
@@ -121,8 +126,10 @@ export function RestartGatewayButton({
   disabled?: boolean
   /** Id of the element that says why the button is disabled. */
   describedBy?: string
+  armedNote?: string
 }) {
   const [armed, setArmed] = useState(false)
+  const noteId = useId()
   useEffect(() => {
     if (!armed) return
     const timer = window.setTimeout(() => setArmed(false), ARM_TIMEOUT_MS)
@@ -135,30 +142,34 @@ export function RestartGatewayButton({
   // React's pattern for a prop change; it settles in one pass).
   if (disabled && armed) setArmed(false)
   const live = armed && !disabled
+  const showNote = live && !!armedNote
   return (
-    <Btn
-      primary={primary && !live}
-      className={live ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
-      disabled={busy || disabled}
-      aria-describedby={describedBy}
-      data-testid={testId}
-      // No static aria-label: the visible text IS the accessible name, and it is
-      // what changes to announce the armed step. Pinning the label to "Restart
-      // gateway" made a screen reader say the same thing on both clicks, hiding
-      // the confirm from exactly the users who cannot see the colour change.
-      onClick={() => {
-        if (busy || disabled) return
-        if (!live) { setArmed(true); return }
-        setArmed(false)
-        onConfirm()
-      }}
-    >
-      <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
-        ? i18nT('pages.settings.aboutPanel.restarting')
-        : live
-          ? i18nT('pages.settings.aboutPanel.restart_confirm')
-          : i18nT('pages.settings.aboutPanel.restart_gateway')}
-    </Btn>
+    <>
+      <Btn
+        primary={primary && !live}
+        className={live ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
+        disabled={busy || disabled}
+        aria-describedby={showNote ? noteId : describedBy}
+        data-testid={testId}
+        // No static aria-label: the visible text IS the accessible name, and it is
+        // what changes to announce the armed step. Pinning the label to "Restart
+        // gateway" made a screen reader say the same thing on both clicks, hiding
+        // the confirm from exactly the users who cannot see the colour change.
+        onClick={() => {
+          if (busy || disabled) return
+          if (!live) { setArmed(true); return }
+          setArmed(false)
+          onConfirm()
+        }}
+      >
+        <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
+          ? i18nT('pages.settings.aboutPanel.restarting')
+          : live
+            ? i18nT('pages.settings.aboutPanel.restart_confirm')
+            : i18nT('pages.settings.aboutPanel.restart_gateway')}
+      </Btn>
+      {showNote && <span id={noteId} className="ml-2 text-[12px] text-warn-text">{armedNote}</span>}
+    </>
   )
 }
 
@@ -702,10 +713,13 @@ export function InAppUpdateFlow({
               testId="arm-copy-error"
             />
           )}
+          {/* `error`, not `failureReason`: React Query clears the reason when each
+              poll starts and keeps the error until the next answer. */}
           {armPollFailing && (
             <ErrorNotice
               variant="inline"
               message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}
+              report={reportForError(armStatusQuery.error)}
               askAgent={askAgent}
               onHandoff={onHandoff}
               testId="arm-poll-error"
@@ -787,21 +801,22 @@ export function AgentUpdateRequestCard({
   foundVersion?: string
   busy: boolean
   /**
-   * A failure the PANEL owns and the card must show: the request poll failing
-   * repeatedly, or the download the card started being refused. The card's own
-   * Decline failure is tracked inside.
+   * A failure the PANEL owns and the card must show, with the failed request's
+   * report when there is one: the request poll failing repeatedly, or the
+   * download the card started being refused. The card's own Decline failure is
+   * tracked inside.
    */
-  panelError?: string
+  panelError?: { message: string; report?: ErrorReport }
   onInstall: () => void
   onDeclined: () => void
 }) {
-  const [error, setError] = useState('')
+  const [error, setError] = useState<{ message: string; report?: ErrorReport }>({ message: '' })
   const decline = useMutation({
     // Bound to the request this card RENDERED: a stale click must not remove a
     // newer request the user has not seen.
     mutationFn: () => api.dismissUpdateArm(request.request_id || ''),
-    onSuccess: () => { setError(''); onDeclined() },
-    onError: () => setError(i18nT('pages.settings.aboutPanel.agent_request_decline_failed')),
+    onSuccess: () => { setError({ message: '' }); onDeclined() },
+    onError: (e: unknown) => setError({ message: i18nT('pages.settings.aboutPanel.agent_request_decline_failed'), report: reportForError(e) }),
   })
   // Anchor a deadline on each poll answer and tick locally, so the countdown
   // moves every second instead of jumping with the 5s poll.
@@ -845,7 +860,7 @@ export function AgentUpdateRequestCard({
         {askedAt && !isNaN(askedAt.getTime()) ? ` · ${fmtRelative(askedAt)}` : ''}
       </span>
       {panelError && (
-        <ErrorNotice message={panelError} askAgent testId="agent-update-request-panel-error" />
+        <ErrorNotice message={panelError.message} report={panelError.report} askAgent testId="agent-update-request-panel-error" />
       )}
       {differs && (
         <span className="text-[12px] text-muted" data-testid="agent-update-request-differs">
@@ -859,7 +874,7 @@ export function AgentUpdateRequestCard({
           })}
         </span>
       )}
-      <ErrorNotice message={error} askAgent testId="agent-update-request-error" />
+      <ErrorNotice message={error.message} report={error.report} askAgent testId="agent-update-request-error" />
       <div className="flex items-center gap-2">
         {/* The button names the version it will actually deliver. When the feed
             offers something other than what was requested, "Install & restart"

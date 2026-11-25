@@ -13,16 +13,20 @@
  * never enter the page. `useBrowserCoords(slot)` converts to and from the page's
  * frame pixels.
  *
+ * Below the picture it lists what the Bot did this turn, from the same `steps` the
+ * chat card's step strip reads, so it shows only this slot's own browsing.
+ *
  * Shows a placeholder instead of the page when the `app_browser_sdk` preview is
  * off (`not enabled`) or the slot is not this app's (`denied`); see
  * `browserViewHooks.ts` for that rule and why it is not a security boundary.
  */
 import { useCallback, useContext, useEffect, useId, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight } from 'lucide-react'
 
 import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
-import { browserLiveStore, useBrowserLiveCurrent } from '../hooks/useBrowserLive'
+import { browserLiveStore, useBrowserLiveCurrent, type BrowserLiveStep } from '../hooks/useBrowserLive'
 import type { FrameSize } from '../hooks/useBrowserLive.input'
 import type { BrowserHandbackSaid } from '../api/client/browserLive'
 import { useDocumentVisible } from '../lib/pollRule'
@@ -67,6 +71,52 @@ export interface BrowserViewProps {
 
 const LIVE = new Set(['live', 'in_control', 'waiting_allow', 'login_needed'])
 
+/** Actions the view lists; the toggle counts them all. */
+const BROWSER_VIEW_ACTIONS_SHOWN = 5
+
+/**
+ * What the Bot did on the page this turn: the same step strip the chat card shows
+ * (`browser_live` `steps`), newest last, the latest few only. Folded or open by the
+ * person; the labels are agent text and go through `sanitizeLlmOutput`.
+ */
+function BrowserViewActions({ steps }: { steps: readonly BrowserLiveStep[] }) {
+  const [open, setOpen] = useState(true)
+  const listId = useId()
+  const latest = steps.slice(-BROWSER_VIEW_ACTIONS_SHOWN)
+  return (
+    <div className="border-t border-border px-2 py-1.5 text-[12px]" data-testid="app-browser-view-actions">
+      <button
+        type="button"
+        className="flex items-center gap-1 rounded text-muted hover:text-text focus-ring-accent"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen(o => !o)}
+        data-testid="app-browser-view-actions-toggle"
+      >
+        {open ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+        <span>{i18nT('appSdk.browserView.actions')}</span>
+        <span className="rounded-full border border-border px-1.5 leading-4 tabular-nums">{steps.length}</span>
+      </button>
+      {open && (
+        <ol id={listId} className="mt-1 grid gap-0.5" data-testid="app-browser-view-actions-list">
+          {latest.map((s, i) => (
+            <li
+              key={`${steps.length - latest.length + i}`}
+              aria-current={s.status === 'active' ? 'step' : undefined}
+              className={`flex min-w-0 items-center gap-1.5 ${s.status === 'active' ? 'text-accent' : s.status === 'done' ? 'text-text' : 'text-muted'}`}
+            >
+              {s.status === 'done'
+                ? <Check size={11} aria-hidden="true" className="shrink-0 text-ok" />
+                : <span aria-hidden="true" className={`inline-block size-1.5 shrink-0 rounded-full ${s.status === 'active' ? 'bg-accent' : 'bg-border'}`} />}
+              <span className="truncate">{sanitizeLlmOutput(s.label).slice(0, 120)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
 function Placeholder({ state, text, className }: { state: string; text: string; className?: string }) {
   return (
     <div
@@ -108,11 +158,27 @@ export default function BrowserView({
     return () => io.disconnect()
   }, [rootEl])
   const shown = hostActive && onScreen
+  // A new turn moves this view's report to it in ONE write. Reporting "off" for the
+  // old turn and then "on" for the new one would send two writes the gateway may
+  // take in either order; an "off" taken last stops the screencast under a view
+  // that is on screen, and the store, having said "on", never says it again.
+  const visibleTurn = ok ? turnId : null
+  const reported = useRef<{ slot: string; turnId: string } | null>(null)
   useEffect(() => {
-    if (!ok || !turnId) return
-    browserLiveStore.setVisible(slot, instanceId, shown, turnId)
-    return () => browserLiveStore.setVisible(slot, instanceId, false, turnId)
-  }, [ok, slot, instanceId, turnId, shown])
+    const was = reported.current
+    if (was && (was.slot !== slot || !visibleTurn)) {
+      browserLiveStore.setVisible(was.slot, instanceId, false, was.turnId)
+      reported.current = null
+    }
+    if (!visibleTurn) return
+    browserLiveStore.setVisible(slot, instanceId, shown, visibleTurn)
+    reported.current = { slot, turnId: visibleTurn }
+  }, [slot, instanceId, visibleTurn, shown])
+  useEffect(() => () => {
+    const was = reported.current
+    reported.current = null
+    if (was) browserLiveStore.setVisible(was.slot, instanceId, false, was.turnId)
+  }, [instanceId])
 
   // The picture box's size, for useBrowserCoords.
   useEffect(() => {
@@ -335,6 +401,7 @@ export default function BrowserView({
           </div>
         </PictureBox>
       </div>
+      {!inControl && turn.steps.length > 0 && <BrowserViewActions steps={turn.steps} />}
       {inControl && interactive && (
         <BrowserLiveHandbackBar
           key={turn.turnId}

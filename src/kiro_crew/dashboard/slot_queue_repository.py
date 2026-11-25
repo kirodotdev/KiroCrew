@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
@@ -277,6 +278,11 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     continue
                 if not isinstance(value, dict):
                     continue
+                # Each paste block repeats a span of ``content``, so keeping
+                # them would store the paste twice and could push a long send
+                # past the budget. A restored send's row shows the full text
+                # instead of chips; no words are lost.
+                value.pop(PASTES_META_KEY, None)
             entry[key] = value
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
@@ -1038,6 +1044,7 @@ class SlotQueueRepository:
             # the same set: the server-written cards' pencil
             # (`isServerWrittenQueued`), a gateway prompt's whole card
             # (`isNonInteractiveQueued`).
+            from kiro_crew.dashboard.chat_delivery import EXPANSIONS_OFF_META_KEY
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
@@ -1087,6 +1094,8 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+                # They are typed, too, so their mentions expand.
+                item["meta"].pop(EXPANSIONS_OFF_META_KEY, None)
             item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True

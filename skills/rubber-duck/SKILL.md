@@ -67,7 +67,7 @@ extra model run per round *and* real Presenter effort. A deliberate, occasional 
 5. **Iterate to convergence** — keep running rounds while each surfaces a NEW ungrounded
    claim, gap, or contradiction. Each round re-spawns the same-model Listener with a
    **distilled** transcript (open findings + live probes, not the verbatim dialogue — a
-   raw transcript blows the 5000-char `task` cap by round 2-3). STOP when a full round
+   raw transcript grows every round toward the 50,000-character `task` cap). STOP when a full round
    yields nothing new *and* every prior finding is resolved (HELD-grounded, DOWNGRADED,
    fixed, or logged as an honest OPEN gap). Convergence is the **Listener running dry —
    not you declaring "done"** (a Presenter's self-satisfaction is the very blind spot

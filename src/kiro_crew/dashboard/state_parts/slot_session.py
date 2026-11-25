@@ -12,7 +12,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_reported_resume``, ``_eager_spawn_retry_at``, ``_eager_spawn_task``,
-``_effort_pick_gen``, ``_fork_lock``, ``_fork_title_spent``,
+``_effort_pick_gen``, ``_engine_promoted_model``, ``_fork_lock``, ``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_mcp_sign_in_notice_shown``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
@@ -26,9 +26,9 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_telemetry_notice_shown``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
-``_title_retry_pending``, ``_title_task``, ``_titled``,
+``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_pick_gen``, ``_unconfirmed_creator``,
 ``_welcome_preview``, ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
-``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
+``channel_origin``, ``created_at``, ``crew_mode_agent``, ``cron_run_read_only``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``.
 Reads only: ``model``.
@@ -166,9 +166,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # the first real turn -- and the eager one publishes its successor over
     # the slot's mapping before the turn runs, so a turn that read the mapping
     # itself would read the successor and name no predecessor at all. Written
-    # only while empty, because the second observation is the successor rather
-    # than an earlier store. Cleared once `session/opened` has carried it, so
-    # the next supersede of this slot latches afresh. "" = nothing to follow.
+    # only while nothing is determined, because the second observation is the
+    # successor rather than an earlier store. Cleared once `session/opened` has
+    # carried it, so the next supersede of this slot latches afresh. "" =
+    # nothing to follow.
     self._crew_log_previous_sid = ""
     # Whether the resolver COULD NOT NAME this slot's predecessor, as opposed to
     # there being none. Both leave the id above empty and they are different
@@ -203,6 +204,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     # inheriting rather than pinning. "" = unknown. Written through
     # `record_served_model`.
     self.served_model = ""
+    # The served model an engine promotion moved this slot's session onto, for
+    # a slot with no pin of its own. "" = none. Written by `engine_fallback`.
+    self._engine_promoted_model = ""
     # Reasoning effort: "" = provider default, else one of
     # low/medium/high/xhigh/max (``EFFORT_LEVELS`` in ``effort.py``). A live
     # session applies it as ``session/set_config_option`` on the backends in
@@ -232,6 +236,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     self.executor = "local"
     self.instance_id = ""
     self.remote_slot = ""
+    # In memory only: set by the History resume (``relay_archive``) on a cron
+    # run's transcript whose tab could never save a reply.
+    self.cron_run_read_only = False
     self.created_at = datetime.now(timezone.utc).isoformat()
     self._titled = False  # True once a title has been assigned
     # Provenance of the current title: "auto" (LLM auto-titler or its
@@ -321,6 +328,13 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: save writes it back in place of ``unverified:creator``. It grants nothing:
     #: session-control ownership reads ``_created_by`` alone.
     self._saved_created_by = ""
+    #: The ``created_by`` a restart's restore read and could not confirm yet, while
+    #: ``_created_by`` holds ``unverified:creator``; ``""`` otherwise. In memory only.
+    #: The session tree may learn the creation record after the restore (a seed that
+    #: lands later, a unit admitted later), so each tree change re-checks this claim
+    #: and lifts the fence when the crew log confirms it
+    #: (``session_revive.reconfirm_restored_creators``). Never read as ownership.
+    self._unconfirmed_creator = ""
     #: The creator's ACP session id, FROZEN at mint (see ``session_control``).
     #: Read at the child's first turn to stamp ``parent_sid`` on the immutable
     #: ``session/opened`` crew log entry -- never re-read live, so a creator slot
@@ -433,6 +447,11 @@ def init_session_fields(self: _ChatSlot) -> None:
     # generation as a person's pick (the Issue Radar crew's triage model
     # switch) skips a generation that equals this one.
     self._model_runtime_pick_gen = None
+    # The pick generation the slot's last turn ran under, stamped by
+    # ``_settle_session_model``: a generation past it is a pick made since the
+    # session last ran a turn. Both start at 0, so after a restart the slot's
+    # stored model counts as an older value until a pick moves the generation.
+    self._turn_pick_gen = 0
     # A save thread records a stricter folded line mode for loop-side adoption.
     self._pending_memory_mode = None
     self._app = ""  # App identity tag (App Kit §5.2)
@@ -572,7 +591,9 @@ def latch_crew_log_previous(
     second observation names the successor rather than an earlier store.
     Keeping the FIRST observation keeps the predecessor a `session/opened` can
     cite, and an empty ``sid`` latches nothing rather than latching a store
-    with no name.
+    with no name. A first answer that DETERMINED there is none (``undecided``
+    false) is kept the same way: the turn's later read finds the successor the
+    prefetch mapped, and citing it would cite the store being written.
 
     ``sid`` is what the slot's MAPPING answers, and the mapping is a proxy for
     this question rather than its authority. An allocation whose history replay
@@ -591,7 +612,7 @@ def latch_crew_log_previous(
     resumability instead, and the store's own units carry a wall-clock stamp
     and are written by a background writer that has not run yet.
     """
-    if self._crew_log_previous_sid:
+    if self._crew_log_previous_sid or self._crew_log_previous_undecided is False:
         return
     chosen = self._crew_log_opened_sid or sid
     if chosen:
@@ -618,7 +639,7 @@ def latch_crew_log_previous(
     #
     # ASSIGNED, not merely set. Two latches before one entry is owed is ordinary,
     # since the eager prefetch and the turn each run their own resolver, and a
-    # later answer supersedes an earlier one: a prefetch whose store read REFUSED
+    # later answer supersedes an earlier undetermined one: a prefetch whose store read REFUSED
     # carries no information about the content, so leaving its refusal standing
     # would have the entry report a predecessor as existing-but-unnameable for a
     # slot the turn's own successful read determined has none. The branch above
@@ -704,3 +725,4 @@ def forget_session_model_state(self: _ChatSlot) -> None:
     self.record_model_withheld(None)
     self._session_requested_model = None
     self.record_served_model(None)
+    self._engine_promoted_model = ""

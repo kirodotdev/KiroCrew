@@ -1,6 +1,6 @@
 # Design Document: Config Schema
 
-Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`.
+Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`. Historical where it differs from main: the dataclasses live in `config/sections_*.py` and `config/memory_sections.py`, not all in `config/loader.py`; the handler is `api_config_schema` in `src/kiro_crew/dashboard/handlers/agents.py` (it also returns `lockedByPolicy` and a settings descriptor); `agent.provider` is `enum=["acp"]` (`config/sections_agent.py`), with no Bedrock fields; the data home is `~/.kiro/crew/config.json`, not `~/.kirocrew/config.json`; and the baseline carries `generatedBy` and `entries` only, with no `generatedAt` (`KIROCREW_BASELINE_OUTPUT` can redirect where it is written).
 
 ## Overview
 
@@ -187,14 +187,13 @@ Same DFS approach as OpenClaw's `collectConfigDocBaselineEntries`:
 
 A standalone script that:
 1. Imports `SCHEMA_REGISTRY` from `config/schema.py`.
-2. Serializes to JSON with `generatedBy`, `generatedAt`, and `entries` keys.
+2. Serializes to JSON with `generatedBy` and `entries` keys.
 3. Writes to `config-baseline.json` in the repo root.
 
 Output format (matching OpenClaw's structure):
 ```json
 {
   "generatedBy": "scripts/generate_config_baseline.py",
-  "generatedAt": "2026-01-15T12:00:00Z",
   "entries": [
     {
       "path": "agent",
@@ -645,7 +644,7 @@ Unit tests cover specific examples, edge cases, and integration points:
 - Known enum fields (`approval_mode`, `provider`, `sandbox`, `embedding_provider`) have `enum` in metadata (Req 1.2)
 - Schema registry is populated after import (Req 3.1)
 - `GET /api/config/schema` returns 200 with `Content-Type: application/json` (Req 5.1, 5.4)
-- Baseline generator script produces valid JSON with `generatedBy` and `generatedAt` (Req 4.1, 4.2, 4.5)
+- Baseline generator script produces valid JSON with `generatedBy` and `entries` (Req 4.1, 4.2, 4.5)
 - Sensitive field validation warning masks value as `"***"` (Req 7.2)
 - Deprecated field produces deprecation warning with help text (Req 8.1)
 - Malformed JSON input returns default config (Req 6.5, edge case)

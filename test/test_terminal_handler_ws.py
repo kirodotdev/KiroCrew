@@ -130,18 +130,26 @@ class TestApiTerminalWs:
 
     @pytest.mark.asyncio
     async def test_rejects_when_max_sessions_reached(self):
+        # The refusal rides an accepted socket (a browser cannot read a refused
+        # handshake), carries its code, and reserves nothing.
         registry = {"s1": _make_session(), "s2": _make_session(), "s3": _make_session()}
         req = _make_request(registry=registry, session_id="new")
+        refusal_ws = MagicMock()
+        refusal_ws.prepare = AsyncMock()
+        close = AsyncMock()
         with (
             patch.object(terminal, "_sel") as mock_sel,
             patch.object(
                 terminal, "_get_config", return_value={"enabled": True, "max_sessions": 3}
             ),
+            patch.object(terminal.web, "WebSocketResponse", return_value=refusal_ws),
+            patch.object(terminal, "_close_terminal_ws_bounded", close),
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_ws(req)
-        assert isinstance(resp, web.Response)
-        assert resp.status == 409
+        assert resp is refusal_ws
+        assert close.await_args.kwargs["error_code"] == "terminal_max_sessions"
+        assert set(registry) == {"s1", "s2", "s3"}
 
     @pytest.mark.asyncio
     async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
@@ -940,6 +948,70 @@ class TestSweepTerminals:
         assert "12 hours" in note.body
         # The feed reaches every dashboard session: no session id in the note.
         assert "s1" not in note.body and "s1" not in json.dumps(note.meta)
+
+    @pytest.mark.asyncio
+    async def test_one_sweep_posts_one_note_for_every_shell_it_ends(self):
+        shells = [
+            _make_session(session_id=sid, alive=True, disconnect=_DETACHED_AT + offset)
+            for sid, offset in (("a", 0), ("b", 5), ("c", 9))
+        ]
+        bus = MagicMock()
+        app, registry = _sweep_app(*shells, bus=bus)
+        mock_kill, mock_sel = await _sweep(app, terminal._ORPHAN_TIMEOUT_S + 10)
+        assert mock_kill.await_count == 3
+        assert registry == {}
+        # The audit trail stays per shell.
+        audits = [c.kwargs for c in mock_sel.return_value.log_api_access.call_args_list]
+        assert [a["operation"] for a in audits] == ["terminal.session.reap"] * 3
+        assert [a["resources"].split(",")[0] for a in audits] == [
+            "session=a",
+            "session=b",
+            "session=c",
+        ]
+        bus.push.assert_called_once()
+        note = bus.push.call_args.args[0]
+        assert note.title == "Terminal closed"
+        assert note.body.startswith(
+            "3 terminal shells, and everything running in them, were ended after 12 hours"
+        )
+        assert note.meta == {"count": 3, "idle_s": terminal._ORPHAN_TIMEOUT_S + 10}
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_that_ends_one_shell_words_its_note_in_the_singular(self):
+        ended = _make_session(session_id="ended", alive=True, disconnect=_DETACHED_AT)
+        exited = _make_session(session_id="exited", alive=False, disconnect=None)
+        kept = _make_session(session_id="kept", alive=True, disconnect=None)
+        bus = MagicMock()
+        app, registry = _sweep_app(ended, exited, kept, bus=bus)
+        await _sweep(app, terminal._ORPHAN_TIMEOUT_S + 1)
+        assert registry == {"kept": kept}
+        bus.push.assert_called_once()
+        note = bus.push.call_args.args[0]
+        assert note.body.startswith(
+            "A terminal shell, and everything running in it, was ended after 12 hours"
+        )
+        assert note.meta == {"count": 1, "idle_s": terminal._ORPHAN_TIMEOUT_S + 1}
+
+    @pytest.mark.asyncio
+    async def test_a_failing_teardown_still_announces_the_shells_already_ended(self):
+        first = _make_session(session_id="a", alive=True, disconnect=_DETACHED_AT)
+        second = _make_session(session_id="b", alive=True, disconnect=_DETACHED_AT)
+        bus = MagicMock()
+        app, _registry = _sweep_app(first, second, bus=bus)
+        with (
+            patch.object(terminal, "_read_terminal_config", return_value={}),
+            patch.object(
+                terminal,
+                "_kill_session",
+                new_callable=AsyncMock,
+                side_effect=[None, RuntimeError("teardown failed")],
+            ),
+            patch.object(terminal, "_sel"),
+            pytest.raises(RuntimeError, match="teardown failed"),
+        ):
+            await terminal._sweep_terminals(app, _DETACHED_AT + terminal._ORPHAN_TIMEOUT_S + 1)
+        bus.push.assert_called_once()
+        assert bus.push.call_args.args[0].meta["count"] == 1
 
     @pytest.mark.asyncio
     async def test_keeps_a_shell_detached_for_longer_than_a_lunch_break(self):

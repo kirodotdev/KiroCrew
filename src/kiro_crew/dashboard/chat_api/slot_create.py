@@ -56,7 +56,6 @@ if TYPE_CHECKING:
         effective_session_key,
         folder_principal,
         is_owner_dashboard_request,
-        is_sensitive_canonical_path,
         logger,
         members_mod,
         owner_start_priority,
@@ -75,8 +74,8 @@ if TYPE_CHECKING:
         slot_history_key,
         slot_not_found,
         tags_write_lock,
+        usable_default_project,
         validate_folder_tag_ids,
-        voice_runtime_workspace_conflict,
         wait_for_memory_preparation,
     )
     from kiro_crew.remote_dispatch_mailbox import MailboxRequest
@@ -152,19 +151,7 @@ async def _birth_default_project(cfg: KiroCrewConfig | None, workspace: str) -> 
     cfg_proj = cfg.dashboard.default_project if cfg else ""
 
     def resolve() -> str:
-        if isinstance(cfg_proj, str) and cfg_proj:
-            resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-            # *resolved* is canonical, so the canonical gate judges it: it answers
-            # inline off the loop, where a resolver stall cannot read as a match.
-            # A configured default that overlaps the data home would be refused
-            # at spawn anyway, so it is skipped here like a sensitive path.
-            if (
-                os.path.isdir(resolved)
-                and not is_sensitive_canonical_path(resolved)
-                and voice_runtime_workspace_conflict(resolved) is None
-            ):
-                return resolved
-        return default_project_dir(workspace)
+        return usable_default_project(cfg_proj) or default_project_dir(workspace)
 
     # Off the loop: every branch, the workspace fallback included, touches the
     # disk or reloads config.
@@ -713,6 +700,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     count_new_chat = False
     born_crew = False
     crew_repeat = False
+    # Why the owner's stored start mode did not apply (`chat_default_mode`), or "".
+    default_mode_refused = ""
     async with contextlib.AsyncExitStack() as creation_stack:
         request_deferred_flush = creation_stack.enter_context(state.suspend_slots_push())
         if request_app and _requested_key:
@@ -934,8 +923,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # failing the turn. The folder's un-hide and claim are writes, so
             # they run once nothing later can refuse the create (below);
             # this only reads whether the folder is there.
+            # An agent-socket call carries no secret but is marked internal_auth.
             claim_folder = (
-                folder_id != previous_folder and request.headers.get("X-Internal-Secret") is None
+                folder_id != previous_folder
+                and request.headers.get("X-Internal-Secret") is None
+                and request.get("internal_auth") is not True
             )
             if not await state.read_folders(
                 lambda folders: any(f["id"] == folder_id for f in folders)
@@ -1121,6 +1113,28 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     )
                 if assigned_store:
                     slot.memory_store = assigned_store
+                # The owner's start mode for a plain New chat, before its first
+                # frame. Asked for explicitly (`start_mode_default: true`, sent by
+                # the person's own New chat entry points), so an app page's or any
+                # other caller's create keeps how it starts. A named create can
+                # reopen a saved session, and an app's, a cron's, a worker's or a
+                # helper's chat is never a plain one.
+                if body.get("start_mode_default") is True and not (
+                    _requested_key
+                    or request_app
+                    or cron_creator
+                    or _mode
+                    or app_agent_owner
+                    or work_item is not None
+                    or embed_app
+                    or body.get("ephemeral")
+                    or "app_launch" in body
+                ):
+                    from kiro_crew.dashboard.chat_default_mode import seed_new_chat
+
+                    default_mode_refused = await seed_new_chat(
+                        state, request, slot, cfg, chosen.execution_context
+                    )
         if is_new_slot and not getattr(slot, "crew_mode_agent", ""):
             # A chat born on the Crew Mode conductor (the conductor as the default
             # template, or a create naming it) is stamped the way the agent switch
@@ -1401,6 +1415,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice
+    if default_mode_refused:
+        created["default_mode_refused"] = default_mode_refused
     if headroom is not None:
         created["headroom"] = headroom
     if work_item is not None:

@@ -283,10 +283,18 @@ async def stop_channel(
     Returns the channel's own session's stop info (``"idle"`` when it was not
     running). Routing's helpers are read off the module, where tests patch them.
     """
-    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels import routing, thread_runtime
 
+    # A Conductor thread's Stop speaks in the thread, names it in its audit rows
+    # and leaves the code-channel-only surfaces alone (its status, its board scope).
+    thread = thread_runtime.is_thread(binding)
+    anchor = thread_runtime.post_thread_ts(binding) if thread else None
+    where = f"{channel} thread={anchor}" if thread else channel
     state = routing._dashboard_state()
     slot = routing.bound_slot(state, binding) if binding is not None else None
+    if thread and slot is not None:
+        # First, before any await: the stopped turn dispatches nothing more.
+        fence_thread_dispatch(slot)
     conductor = binding.session_key if binding is not None else ""
     # Read before the first await: a turn the channel's session starts during the
     # sweep (the person's next message) began after the press and is not stopped.
@@ -295,11 +303,13 @@ async def stop_channel(
         state,
         slot,
         conductor,
-        own=lambda: _stop_channel_session(state, slot, sender_id, channel, source, pressed),
+        own=lambda: _stop_channel_session(state, slot, sender_id, where, source, pressed),
     )
     info = tally.own
     if info == "error":
-        routing._audit(sender_id, source, "allowed", f"channel={channel} result=error")
+        routing._audit(sender_id, source, "allowed", f"channel={where} result=error")
+    elif thread and info == "idle":
+        pass  # no agents.* status in a thread: the thread's own loader is the handler's
     elif info == "idle" and not getattr(slot, "running", False):
         # Nothing to stop, but Slack never clears "processing" by itself. After
         # the stops, so a failure here cannot read as a stop that failed, and
@@ -316,27 +326,49 @@ async def stop_channel(
             if service is not None:
                 service._forget_worker_status(binding)
     elif info == "compacting":
-        await routing._post(orch, channel, routing.COMPACTING_STOP_TEXT, None)
-    for key, result in tally.helpers:
-        routing._audit(
-            sender_id, source, "allowed", f"channel={channel} slot={key} result={result}"
+        await routing._post(
+            orch, channel, thread_runtime.say(binding, routing.COMPACTING_STOP_TEXT), anchor
         )
+    for key, result in tally.helpers:
+        routing._audit(sender_id, source, "allowed", f"channel={where} slot={key} result={result}")
     own = info not in NOT_STOPPED and info not in ("idle", "error", "refused")
     # No await from here to the raw send: the sessions counted as left running
     # are the ones the board's scope admits then.
-    tally.others = left_running(state, binding, tally)
+    # shortcut: a thread has no work-board scope to count other running sessions
+    # in, so it reports none; give the thread board's scope a count when part C lands.
+    tally.others = 0 if thread else left_running(state, binding, tally)
     if not (own or tally.stopped or tally.subagents or tally.notes) and not (
         say_idle and info != "compacting"
     ):
         return info
-    await routing._post(orch, channel, reply_text(own, tally), None)
+    await routing._post(orch, channel, thread_runtime.say(binding, reply_text(own, tally)), anchor)
     return info
+
+
+def fence_thread_dispatch(slot: Any) -> None:
+    """Refuse any further dispatch from a stopped Conductor thread's current turn.
+
+    A code channel's Stop does this through its channel-wide stop fence, which the
+    dispatch exemption reads (``surface.channel_stopped``); that fence is keyed by
+    the channel and a thread's turns never record their start in it. A thread's
+    Stop instead marks the slot stopped in the exemption (``fence_stopped_turn``) and
+    narrows the running turn to channel authority (``_turn_channel_narrowed``, which
+    the turn runner resets at the turn's end), so the exemption refuses every
+    ``session_create`` and ``send`` the unwinding turn still makes: a stopped worker
+    is not started again from it, and no new worker is born after the Stop's sweeps.
+    The recorded Slack authors are left as they are. The owner's next message in the
+    thread lifts the mark; a new dashboard turn is not narrowed.
+    """
+    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as cce
+
+    slot._turn_channel_narrowed = True
+    cce.fence_stopped_turn(slot)
 
 
 async def _stop_channel_session(
     state: Any, slot: Any, sender_id: str, channel: str, source: str, pressed: bool
 ) -> str:
-    """Stop the channel's own session; ``"idle"`` when it was not running at the press.
+    """Stop the channel's own session (*channel*: its audit label); ``"idle"`` when it was not running at the press.
 
     *pressed* is whether it ran when Stop was pressed (read before any await).
     Only the stop and its audit row: what follows a stop (the status settle, the

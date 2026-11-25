@@ -33,6 +33,7 @@ import {
   allModelsRefused,
   configuredModelRefused,
   isRefusedHostedDefault,
+  stillSendingSentence,
 } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
@@ -263,8 +264,13 @@ export function DecisionsCard() {
     mutationFn: (value: boolean) => api.saveDecisionsConsent(value, view.configuredEndpoint),
     // RETURNED, not just started: react-query holds a mutation pending only while
     // `onSettled` has an unresolved promise outstanding, and without the return the
-    // switch re-enabled while `checked` still read the pre-flip value.
-    onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
+    // switch re-enabled while `checked` still read the pre-flip value. The provider
+    // read is refetched too: its `still_sending` holds only while consent stands.
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
+        qc.invalidateQueries({ queryKey: DECISIONS_PROVIDER_QUERY_KEY }),
+      ]),
   })
   // A point's own egress scope, with `enabled` OMITTED: see the file comment.
   const scopeMut = useMutation({
@@ -467,6 +473,9 @@ export function DecisionsCard() {
   const configuredRefused = providerQ.data !== undefined && configuredModelRefused(providerQ.data)
   // Every model is refused, so "pick one below" would point at rows none can be picked.
   const allRefused = providerQ.data !== undefined && allModelsRefused(providerQ.data)
+  // The refusal is the dashboard surface's; these are the surfaces that still send,
+  // whichever rule refused it. The picker's saved-and-refused entry says it instead.
+  const stillSending = providerQ.data && !refusedDefault ? stillSendingSentence(providerQ.data) : null
   // The configured model is refused and no consent stands for it, so nothing leaves the
   // machine for it. With a recorded consent the egress disclosure stays: the refusal is
   // the dashboard surface's answer, and a surface the ceiling permits still sends.
@@ -520,6 +529,11 @@ export function DecisionsCard() {
               ? 'pages.developer.featurePreviewsTab.decisions_configured_blocked_consent'
               : 'pages.developer.featurePreviewsTab.decisions_configured_blocked',
           )}
+        </p>
+      )}
+      {view.supported && stillSending && (
+        <p className="text-[12px] text-warn m-0" data-testid="decisions-still-sending">
+          {stillSending}
         </p>
       )}
       {/* The egress fact carries body weight, not muted fine print: it is what a
@@ -864,12 +878,17 @@ export function DecisionsCard() {
             {/* Every row's state as a SENTENCE, for a reader who gets no chip at all.
                 One per row rather than one for the shown row: a reader arrowing down
                 the list is told each point's state as they reach it, which is the only
-                way the list is scannable without sight. */}
+                way the list is scannable without sight. Browse mode reads this block
+                as text, so each row is its own paragraph, worded by one catalog
+                message that joins the point's description to its status. */}
             <div className="sr-only">
               {rows.map(row => (
-                <span key={row.id} id={pointStatusId(row.id)}>
-                  {`${POINT_WHAT[row.id] ?? row.id} ${statusWord(row)}`}
-                </span>
+                <p key={row.id} id={pointStatusId(row.id)}>
+                  {i18nT('pages.developer.featurePreviewsTab.decisions_point_status_sentence', {
+                    what: POINT_WHAT[row.id] ?? row.id,
+                    status: statusWord(row),
+                  })}
+                </p>
               ))}
             </div>
 

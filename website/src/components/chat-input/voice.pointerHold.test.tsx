@@ -41,7 +41,6 @@ function renderWith(onVoiceStart: ((opts?: { silent?: boolean }) => void) | unde
     disabled: false,
     optimizing: false,
     placeholder: '',
-    showDictation: null,
   }))
 }
 

@@ -4,8 +4,10 @@ import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectPageLoaded,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
@@ -15,6 +17,7 @@ import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
+import { EngineSubagentLiveCard } from './chat/EngineSubagentRecord'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
 import { usePromoteSlot } from './chat/usePromoteSlot'
@@ -86,12 +89,12 @@ import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
+import { holdChatTranscriptMount } from '../lib/mountedChatTranscript'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isComposerSendHeld, useComposerSendHeld } from '../utils/composerSendHolds'
 
 import JumpRevealContext from '../hooks/JumpRevealContext'
 import { useJumpMark } from './chat/page/jumpMark'
-import SearchHighlightContext from '../hooks/SearchHighlightContext'
 import { useChatProjectDir } from '../components/sessionEnvironmentHooks'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { scaleContentWidth } from './chat/contentWidth'
@@ -156,6 +159,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useChatPageEnvironment({
     embedded, embedMode, popout,
   })
+  // The sessions-only embed renders no transcript, so its active slot stays off screen.
+  useEffect(() => (embedMode === 'sessions' ? undefined : holdChatTranscriptMount()), [embedMode])
   // Tool-call ids already routed to a tab, so re-renders of the same app don't
   // yank focus back to the panel on every streaming update.
   useEffect(() => {
@@ -234,19 +239,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useModelPickerModels({
     slots, activeSlot, effectiveModels, selectionCapabilitiesQ,
   })
-  // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
-  const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
-    open: agentDropdown,
-    dropdownRef: agentDropdownRef,
-    inputRef: agentInputRef,
-    hasFilterInput: true,
-    filteredCount: filteredAgents.length,
-    onEnterSingleMatch: () => {
-      const a = filteredAgents[0]
-      if (a) { switchAgent(a.name, a.selection_kind); setAgentDropdown(false) }
-    },
-    closeToTrigger: () => setAgentDropdown(false),
-  })
+  // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector);
+  // the agent one sits below `pickerAgents`, the list it counts.
   const { onListKeyDown: onModelListKeyDown } = useListboxKeyboard({
     open: modelDropdown,
     dropdownRef: modelDropdownRef,
@@ -483,8 +477,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleSnipComplete,
     handleSnipCancel,
     composerUploadFiles,
-    cancelUpload,
-    uploadCount,
     handleOptimizeResult,
     dragOver,
     dropTargetProps,
@@ -648,6 +640,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Auto-scroll during streaming — only when pinned to bottom
   const lastMsg = messages[messages.length - 1]
   const isStreaming = lastMsg?.role === 'streaming'
+  // Text for the transcript's one live region (TranscriptScrollShell's
+  // `announcement`), spoken when a turn lands and released shortly after. The
+  // turn is read as running while the slot runs, not only while a row streams:
+  // a turn of several model calls finalizes each segment into an `assistant`
+  // row mid-turn, and reading that as the landing would speak partial text.
+  const pendingApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const tailUserSpeaker = useUserRowSpeaker(
+    lastMsg?.meta ?? undefined,
+    activeSlot ?? undefined,
+    lastMsg?.content,
+    connected ? sessionTitles : undefined,
+  )
+  const pageLoaded = useAppSelector(s => selectPageLoaded(s, activeSlot ?? ''))
+  const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker, pageLoaded)
   // Follow-up option chips and the ownership of the text they append.
   const {
     followUpOptions, followUpSourceKey, followUpMulti,
@@ -663,6 +669,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = usePageFlags({
     activeSlot, messages, splitMode, fileDrafts, saveDrafts, prevSlot, activeSlotRef, composerSlotRef, pendingFilesRef, setPendingFiles,
   })
+  const pageOwnsComposer = !(activeSlotRemoteBound || (splitMode && splitFeatureEnabled) || crewWindow)
   const {
     refusedPress, setRefusedPress, showRefusedPress,
   } = useRefusedPress()
@@ -675,7 +682,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
     messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
-    setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
+    setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason, announceSent,
   })
 
   // Submit inline document comments to the session the file was opened from,
@@ -731,7 +738,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // offer to turn Crew Mode off, since the server refuses that once a message was
   // sent (`crew_mode_locked`) and the loaded rows are the only way to know.
   const hasUserMessage = slotLoading || messages.some(m => m.role === 'user')
-  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView, autoOpenBoard: autoOpenConductorBoard })
+  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, leaveCrewModeTo, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView, autoOpenBoard: autoOpenConductorBoard })
+  // A conductor mode root that may still leave its conductor lists the agent
+  // templates only: the gateway refuses a Bot there (`crew_mode_locked`).
+  const pickerAgents = leaveCrewModeTo ? filteredAgents.filter(a => a.selection_kind !== 'member') : filteredAgents
+  const pickAgent = leaveCrewModeTo ?? switchAgent
+  const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
+    open: agentDropdown,
+    dropdownRef: agentDropdownRef,
+    inputRef: agentInputRef,
+    hasFilterInput: true,
+    filteredCount: pickerAgents.length,
+    onEnterSingleMatch: () => {
+      const a = pickerAgents[0]
+      if (a) { pickAgent(a.name, a.selection_kind); setAgentDropdown(false) }
+    },
+    closeToTrigger: () => setAgentDropdown(false),
+  })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
@@ -767,7 +790,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     revealAppInPanel,
   } = useAppPanelReveal({
-    dispatch, activeSlot, boundStore, search, tabsCtlRef,
+    dispatch, activeSlot, boundStore, tabsCtlRef,
   })
   // `@`-mentions of files and folders and the file chips they stage.
   // The composer's polite status line for an attachment the reconciliation
@@ -860,7 +883,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // `mode` prop is always '' — the slot's own mode is the source of truth.
   const effectiveMode = currentSlot?.mode || mode
   const title = currentSlot?.title && !isUntitledSession(currentSlot) ? currentSlot.title : activeSlot || ''
-  const displayMode = slotApprovalMode(approvalMode, currentSlot)
+  const displayMode = slotApprovalMode(approvalMode, currentSlot, selectionCapabilitiesQ.data?.approve_for_me)
   // What the composer's model, effort and project chips show.
   const {
     shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, effortAutoNote,
@@ -888,7 +911,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     embedMode, dispatch, slots, activeSlot, autoOpenGitPanel, autoOpenGitPanelKnown, setSplitMode, splitMode, setSplitAnchor, tabsCtl, splitFeatureEnabled, _slotProject, projectGit, projectGitError, embedded, popout, isMobile, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, activityOpen,
   })
   const {
-    lastTextIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
+    lastTextIdx, regenerateIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
   } = useRegenerate({
     activeSlot, messages, messagesRef, slotRunning, activeSlotRemoteBound, isStreaming, setRefusedPress, showRefusedPress,
   })
@@ -921,11 +944,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     activeSlot, boundStore, connected, dispatch, showActionError,
   })
   const {
-    handleEditResend, editLast, setEditLast, editSeqRef, farmPassRef, handleEditConsumed, searchCtxValue, renderUserContentCb, lastRole, streamTick, transcriptHot, railWidth, winW,
+    handleEditResend, editLast, setEditLast, editSeqRef, farmPassRef, handleEditConsumed, renderUserContentCb, lastRole, streamTick, transcriptHot, railWidth, winW,
     effectiveSidebarWidth, toggleAct, handleSpeak, handleApplyPlan,
   } = useMessageActions({
-    dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
-    tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
+    dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, showRefusedPress, handleFileOpen, handleFolderOpen, handleArtifactOpen,
+    tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating, announceSent,
     // The same document test appShell's `isEmbed` makes, plus the pop-out session window: a companion chat renders on its host's route.
     embedChatFrame: embedMode === 'chat' && (popout || location.pathname.startsWith('/embed/')),
   })
@@ -938,16 +961,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // landed page waits to render: in that window a loaded message can have no
   // row yet, and the jumps wait for the rows instead of giving the message up.
   const rowsTrailList = renderedTranscript.messages !== messages
-  // The find's indices point into the live list. A row knows it holds the
-  // current match by comparing its own index with the match's, so the rows get
-  // the index of the match's message in their own list. A message the store
-  // replaced in that window marks no row until the rows catch up.
-  const rowsSearchCtx = useMemo(() => {
-    const live = searchCtxValue.currentMessageIdx
-    if (live < 0 || !rowsTrailList) return searchCtxValue
-    const match = messages[live]
-    return { ...searchCtxValue, currentMessageIdx: match ? renderedTranscript.messages.indexOf(match) : -1 }
-  }, [searchCtxValue, messages, renderedTranscript.messages, rowsTrailList])
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
   // above chatConfig and reads it through a ref), and recompute after the list
@@ -982,7 +995,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // A busy turn: steer into it, answer its question card, stop it, and the queued-message cards.
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
-    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
+    handleCancelQueued, handleCancelAllQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
     handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   } = useBusyTurnControls({
     activeSlot,
@@ -1008,6 +1021,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch,
     onSlashRefused: reportSlashRefusal,
     showActionError,
+    announceSent,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
   // decision for the active slot (never the flipped chord), including a worker
@@ -1041,22 +1055,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, quoteJumpFor, quoteMark,
   } = useTranscriptPins({
     embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
     isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, navToMessage, pinnedJumpChrome, scrollToPinnedPrompt, markStep, markJump, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
     renderedDisplayItems, renderedTranscript, rowsTrailList, insertIntoComposer: insertDashboardReply,
   })
-  // Search steps and clicks, the approval bar's "Show in chat", and ?msg= deep links.
-  const { jumpToSearchResult } = useTranscriptJumps({
-    search,
+  // The approval bar's "Show in chat", ?msg= deep links and Search all chats.
+  useTranscriptJumps({
     messages,
-    messagesRef,
     messageToDisplayIdx,
-    rowsTrailList,
     navToMessage,
     rowOfMessage,
-    scrollerRef,
     activeSlot,
     cursorIsForActiveSlot,
     slotHasMore,
@@ -1067,15 +1077,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     markJump,
     handleJumpToPinnedMessage,
   })
+  // Quote and fork on the messages the history search previews,
+  // offered where the transcript's own rows offer them.
+  const closeHistorySearch = search.close
+  const historyActions = useMemo(() => ({
+    onQuoteMessage: activeSlot && pageOwnsComposer ? messageQuote.quoteMessage : undefined,
+    onForkMessage: embedded && !popout ? undefined : async (mid: string) => {
+      const opened = await handleFork(0, mid)
+      if (!opened) closeHistorySearch()
+      return opened
+    },
+  }), [activeSlot, pageOwnsComposer, messageQuote.quoteMessage, embedded, popout, handleFork, closeHistorySearch])
   const {
     activeSlotTitle, renderMessage, renderTurnItem, renderFarmItem,
   } = useTranscriptRendering({
     embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
     activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
     handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
-    decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
+    decideRow, revealAppInPanel, lastTextIdx, regenerateIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
-    handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
+    handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote, quoteJumpFor, quoteMark,
     handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
     editSkillAgent: activeAgentName, editSkillProject: currentSlot?.project || '',
   })
@@ -1084,13 +1105,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
-    embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-    hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
+    embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, personSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
+    hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
     sidebarAutoHidden, toggleAct,
   })
   // Desktop: a two-finger trackpad swipe drags the right side panel.
   const panelTrackpad = useChatPanelTrackpadSwipe({
-    isMobile, embedded, activitySlot, activityOpen, searchOpen: search.isOpen, sidePanelDock, toggleAct, dispatch, activeSlot: activeSlot ?? null,
+    isMobile, embedded, activitySlot, activityOpen, sidePanelDock, toggleAct, dispatch, activeSlot: activeSlot ?? null,
   })
   // "Open Sidebar Sessions in a Session Tab" (Settings > Chat > Sessions). A
   // sidebar row's click, Enter/Space and source chip all call `onSelectSlot`
@@ -1119,7 +1140,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     flyout.close()
   }, [dispatch, flyout, setSplitMode, sidebarClickOpensTab, ensureSlotTab])
   const {
-    flyoutNew, panelReserve, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip, memorySwitching, composerOptimizing, handleOptimizingChange,
+    flyoutNew, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip, memorySwitching, composerOptimizing, handleOptimizingChange,
   } = usePanelLayout({
     mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
     mobileNewSessionInFlightRef, setMobileNewSessionBusy, setSidebarPinned, sidebarPinned, railWidth, winW, effectiveSidebarWidth, mobileSessions, openSidebar, closeSidebar, previewExpanded,
@@ -1171,6 +1192,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </>
   ), [composerAbove, deliveryStrip.show, deliveryStrip.onDismiss])
 
+  // Split View's "show this session in that pane", for the sidebar's drop on a pane.
+  const paneDropRef = useRef<((leafId: string, slot: string) => void) | null>(null)
+  const showSessionInPane = useCallback((leafId: string, slot: string) => paneDropRef.current?.(leafId, slot), [])
   return (
     <ChatPageFrame
       embedded={embedded} activeSlot={activeSlot} chatConfig={chatConfig} jiraSourceHosts={jiraSourceHosts} runInTerminalScope={runInTerminalScope} activitySlot={activitySlot}
@@ -1190,7 +1214,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         drawerX={drawerX} expandFrom={expandFrom} expandSidebar={expandSidebar} flyout={flyout} flyoutEligible={flyoutEligible} flyoutSurfaceRef={flyoutSurfaceRef} flyoutTriggerRef={flyoutTriggerRef}
         openSidebar={openSidebar} revealSourceLink={revealSourceLink} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen} flyoutSwitch={flyoutSwitch} flyoutNew={flyoutNew}
         mobileNewSessionItem={mobileNewSessionItem} topbarSessionsToggle={topbarSessionsToggle}
-        onPromote={promote} promoting={promoting}
+        onPromote={promote} promoting={promoting} onOpenSearch={search.open}
+        // A crew window covers the panes, so they take no drop under it.
+        showSessionInPane={splitMode && splitFeatureEnabled && !crewWindow && !isMobile ? showSessionInPane : undefined}
       />
       {promoteConfirmDialog}
       <ComposerDraftSync store={composerDraft} inputRef={inputRef} onCommit={onComposerDraftCommit} />
@@ -1210,6 +1236,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         />
         {splitMode && splitFeatureEnabled ? (
           <SessionGridView
+            paneDropRef={paneDropRef}
             seedSlot={splitAnchor ?? activeSlot}
             seedDir={splitSeedDir}
             openSideChat={connected ? openSideChatForPane : undefined}
@@ -1249,7 +1276,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             closedElsewhere={!!ownChatClosedElsewhere} inPopout={!!popout}
           />
         ) : (
-          <SearchHighlightContext.Provider value={rowsSearchCtx}>
           <JumpRevealContext.Provider value={jumpReveal}>
           <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
             <ChatTitleOverlay
@@ -1261,11 +1287,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               setEditingTitleSlot={setEditingTitleSlot} setSidebarPinned={setSidebarPinned} sidebarAutoHidden={sidebarAutoHidden} sidebarPinned={sidebarPinned} sidePanelDock={sidePanelDock}
               splitAnchorForActive={splitAnchorForActive} toggleAct={toggleAct} openSidebar={openSidebar} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen}
               sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle}
-              onPromote={promote} promoting={promoting}
+              onPromote={promote} promoting={promoting} onOpenSearch={search.open}
             />
             <ChatDropOverlay active={dragOver} />
             <ChatTranscriptView
-              embedded={embedded} popout={popout} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} workerBreadcrumb={workerBreadcrumb} activityOpen={activityOpen}
+              embedded={embedded} popout={popout} steerOnly={!!(currentCrewRoot && currentSlot)} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} workerBreadcrumb={workerBreadcrumb} activityOpen={activityOpen}
               completedTurnCount={completedTurnCount} cursorIsForActiveSlot={cursorIsForActiveSlot} kiroCrewVersion={kiroCrewVersion} loadingOlder={loadingOlder} olderFailed={olderFailed}
               setTurnDisclosureFor={setTurnDisclosureFor} slotHasMore={slotHasMore} slotLoading={slotLoading} slotRunning={slotRunning} slotState={slotState} environmentStart={environmentStart} slotStopping={slotStopping}
               slotSwitchTarget={slotSwitchTarget} turnDisclosure={turnDisclosure} turnRowMayBeLive={turnRowMayBeLive} setInput={setInput} isWelcomeState={transcriptWelcome} crewModeOn={crewModeOn || crewWelcomeHeld} openTaskBoard={openTaskBoard} chatConfig={chatConfig}
@@ -1274,8 +1300,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               footerActivityKey={!slotLoading && slotSwitchTarget !== activeSlot && (slotRunning || !currentSlot?.preparing) ? transcriptActivityKey(messages) : undefined}
               footerSentHere={turnSentHere(messages)}
               footerToolsReturned={footerToolsReturned}
+              liveFoot={<EngineSubagentLiveCard slot={activeSlot} running={slotRunning} turnMark={`${currentSlot?.turn_gen ?? ''}:${currentSlot?.turn ?? ''}`} />}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
-              spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
+              spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement} announcement={announcement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
             />
             <ConductorModeEffect />
@@ -1285,10 +1312,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               pendingFollowup={pendingFollowup} pendingQuestion={pendingQuestion} projectLocked={projectLocked} restoredQuestionNotice={restoredQuestionNotice} sentMessages={sentMessages}
               slotRunning={slotRunning} slotStopping={slotStopping} composerDraft={composerDraft} historySuggestions={historySuggestions} showHistorySuggestions={showHistorySuggestions}
               chatConfig={chatConfig} agentDropdown={agentDropdown} agentDropdownRef={agentDropdownRef} agentFilter={agentFilter} agentInputRef={agentInputRef} defaultAgent={defaultAgent}
-              defaultAgentFailed={defaultAgentFailed} effectiveAgents={effectiveAgents} filteredAgents={filteredAgents} installedAgents={installedAgents} setAgentDropdown={setAgentDropdown}
+              defaultAgentFailed={defaultAgentFailed} effectiveAgents={effectiveAgents} filteredAgents={pickerAgents} installedAgents={installedAgents} setAgentDropdown={setAgentDropdown}
               setAgentFilter={setAgentFilter} toggleDefaultAgent={toggleDefaultAgent} codexPairModels={codexPairModels} filteredModels={filteredModels} hiddenModelsQ={hiddenModelsQ}
               ownModelsFailed={ownModelsFailed} ownModelsFetching={ownModelsQuery.isFetching} retryOwnModels={() => { void ownModelsQuery.refetch() }}
-              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode} fastMode={selectionCapabilitiesQ.data?.fast} fastUnavailable={selectionCapabilitiesQ.data?.fast_unavailable}
+              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode} fastMode={selectionCapabilitiesQ.data?.fast} fastUnavailable={selectionCapabilitiesQ.data?.fast_unavailable} approveForMe={selectionCapabilitiesQ.data?.approve_for_me}
               jevRouteOn={jevRouteOn} modelDropdown={modelDropdown} modelDropdownRef={modelDropdownRef} modelFilter={modelFilter} modelInputRef={modelInputRef}
               modelPickerConfigured={modelPickerConfigured} modelPickerReturnsFocusRef={modelPickerReturnsFocusRef} setModelDropdown={setModelDropdown} setModelFilter={setModelFilter}
               onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote} onJumpToQuote={handleJumpToQuote}
@@ -1296,12 +1323,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               automationSnapshotFailed={automationSnapshotFailed} setAutomationOpen={setAutomationOpen} prefillHint={prefillHint} setPrefillHint={setPrefillHint} pasteSlice={pasteSlice}
               pendingFiles={pendingFiles} pendingSessions={pendingSessions} resizedInfo={resizedInfo} unstageSessionRef={unstageSessionRef} uploading={uploading} agentBtnRect={agentBtnRect}
               anchorAgentBtn={anchorAgentBtn} projectPickerOpen={projectPickerOpen} setProjectPickerOpen={setProjectPickerOpen} anchorProjectBtn={anchorProjectBtn} projectBtnRect={projectBtnRect}
-              pendingDirs={pendingDirs} composerRef={composerRef} composerVoiceOptions={composerVoiceOptions} isMac={isMac} cancelUpload={cancelUpload} composerUploadFiles={composerUploadFiles}
-              dropTargetProps={dropTargetProps} handleCapture={handleCapture} handleFileOpen={handleFileOpen} handleOptimizeResult={handleOptimizeResult} search={search} tabsCtl={tabsCtl}
-              uploadCount={uploadCount} sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
+              pendingDirs={pendingDirs} composerRef={composerRef} composerVoiceOptions={composerVoiceOptions} isMac={isMac} composerUploadFiles={composerUploadFiles}
+              dropTargetProps={dropTargetProps} handleCapture={handleCapture} handleFileOpen={handleFileOpen} handleOptimizeResult={handleOptimizeResult} tabsCtl={tabsCtl}
+              sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
               composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
               followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
-              refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} composerSend={composerSend} pickModel={pickModel} setProject={setProject} projectSwitching={projectSwitching} switchAgent={switchAgent} currentSlot={currentSlot}
+              refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} composerSend={composerSend} pickModel={pickModel} setProject={setProject} projectSwitching={projectSwitching} switchAgent={pickAgent} currentSlot={currentSlot}
               activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
               sessionControlKey={sessionControlKey} sessionControlRect={sessionControlRect} sessionControls={sessionControls} setOpenSessionControl={setOpenSessionControl}
               activeAgentName={activeAgentName} attachmentAnnouncement={attachmentAnnouncement} clampOutOfTokens={clampOutOfTokens} handleAddToContext={handleAddToContext}
@@ -1312,7 +1339,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               pinModelToAgentMut={pinModelToAgentMut} projectBranch={projectBranch} projectGit={projectGit} projectGitError={projectGitError} shownModel={shownModel}
               cardOwnsRecovery={cardOwnsRecovery} resumeAfterSignIn={resumeAfterSignIn} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
               endQuoteFlight={endQuoteFlight} flyingQuote={flyingQuote} inputAreaRef={inputAreaRef} isAtBottom={isAtBottom} answerQuestionCard={answerQuestionCard}
-              handleCancelQueued={handleCancelQueued} handleEditQueued={handleEditQueued} handleEditOpenQueued={handleEditOpenQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
+              handleCancelQueued={handleCancelQueued} handleCancelAllQueued={handleCancelAllQueued} handleEditQueued={handleEditQueued} handleEditOpenQueued={handleEditOpenQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
               keepQuestionAnswer={keepQuestionAnswer} queuedMessages={queuedMessages} queuePendingIds={queuePendingIds} steer={steer} stopTurn={stopTurn} systemDeliveryCount={systemDeliveryCount}
               handleEditLastRequest={handleEditLastRequest} composerOptimizing={composerOptimizing} handleOptimizingChange={handleOptimizingChange} memorySwitching={memorySwitching}
               // Crew Mode is chosen on the welcome state: while it is on neither the
@@ -1328,8 +1355,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               crewChipPressed={crewChipPressed}
               // Hidden while turning on, and on a chat the gateway conducts with (a
               // root or a crew member). A chat another session opened onto a
-              // conductor outside any crew keeps its picker: nothing locks it (#39260).
-              agentPickerHidden={!crewModeLeaving && (crewModeSwitching === 'on' || showsAsCrewMode(currentSlot))}
+              // conductor outside any crew keeps its picker: nothing locks it (#39260),
+              // and so does a new root that may still leave a conductor that is the default agent.
+              agentPickerHidden={!leaveCrewModeTo && !crewModeLeaving && (crewModeSwitching === 'on' || showsAsCrewMode(currentSlot))}
+              agentPickerKept={!!leaveCrewModeTo}
               // In an LTS build too: the raw `crew_mode_root` stamp is the gateway's
               // own lock (`crew_mode_locked` once the chat has a message), so no switch.
               agentSwitchLocked={hasUserMessage && !!currentSlot?.crew_mode_root}
@@ -1339,20 +1368,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             />
           </div>
           </JumpRevealContext.Provider>
-          </SearchHighlightContext.Provider>
         )}
       </div>
       )}
       <ChatSidePanels
-        mode={mode} activeSlot={activeSlot} connected={connected} isMobile={isMobile} activityOpen={activityOpen} cursorIsForActiveSlot={cursorIsForActiveSlot} messages={messages}
-        slotHasMore={slotHasMore} insertDashboardReply={insertDashboardReply} addSourceCommentToChat={addSourceCommentToChat} handleArtifactOpen={handleArtifactOpen} handleFileOpen={handleFileOpen}
+        mode={mode} activeSlot={activeSlot} connected={connected} isMobile={isMobile} activityOpen={activityOpen}
+        insertDashboardReply={insertDashboardReply} addSourceCommentToChat={addSourceCommentToChat} handleArtifactOpen={handleArtifactOpen} handleFileOpen={handleFileOpen}
         handleFileSave={handleFileSave} handleOpenWorkingTreeDiff={handleOpenWorkingTreeDiff} hasBrowserTab={hasBrowserTab} hasLiveAppTab={hasLiveAppTab} panelIssues={panelIssues}
         panelSources={panelSources} dismissSource={dismissSource} reconcileIssueUrl={reconcileIssueUrl} reconcileSourceUrl={reconcileSourceUrl} search={search} selectedIssueUrl={selectedIssueUrl}
         selectedSourceUrl={selectedSourceUrl} selectIssueUrl={selectIssueUrl} selectSourceUrl={selectSourceUrl} tabsCtl={tabsCtl} submitComments={submitComments} currentSlot={currentSlot}
         handleAddToContext={handleAddToContext} sidePanelDock={sidePanelDock} sidePanelDockAnim={sidePanelDockAnim} effectiveSidebarWidth={effectiveSidebarWidth} toggleAct={toggleAct}
-        chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handlePutPinInComposer={activeSlotRemoteBound || (splitMode && splitFeatureEnabled) || crewWindow ? undefined : handlePutPinInComposer} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
+        chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handlePutPinInComposer={pageOwnsComposer ? handlePutPinInComposer : undefined} handleUnpinById={handleUnpinById} historyActions={historyActions}
         activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} refreshActivitySlot={refreshActivitySlot} embedded={!!embedded || !!popout} chatPaneEl={chatPaneEl} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
-        sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized} panelReserve={panelReserve}
+        sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized}
         pinSummary={sidePanelPinSummary} trackpad={panelTrackpad}
       />
     </ChatPageFrame>

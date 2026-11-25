@@ -275,6 +275,7 @@ async def _force_reap(
             # merge, which re-derives the disk copy after _sync().
             job.last_status = "error"
             job.last_error = last_error
+            job.last_error_kind = ""
             job.last_run_ts = last_run_ts
             # A reaped one-shot is parked like a timed-out one, because the
             # finalizer skips the result merge and _execute's disable never
@@ -321,6 +322,9 @@ async def _force_reap(
             # Record timeout in history
             try:
                 record = CronRunRecord(
+                    # The run's marker token: a boot that finds its marker
+                    # left on disk sees the run is filed (``_file_cut_run``).
+                    run_id=taken.marker_run,
                     job_id=job_id,
                     trigger=reap_trigger,
                     started_at=reap_started_at,
@@ -496,6 +500,7 @@ async def cancel(self: CronService, job_id: str) -> bool:
             # the locked merge is authoritative.
             job.last_status = "error"
             job.last_error = last_error
+            job.last_error_kind = ""
             job.last_run_ts = last_run_ts
             # A cancelled one-shot is parked, not left due: its run never
             # reaches _execute's one-shot disable. The hold is provisional:
@@ -595,6 +600,9 @@ async def cancel(self: CronService, job_id: str) -> bool:
                 pause_not_saved = seams.CronPauseNotSaved(message)
             try:
                 record = CronRunRecord(
+                    # The run's marker token: a boot that finds its marker
+                    # left on disk sees the run is filed (``_file_cut_run``).
+                    run_id=claim.marker_run,
                     job_id=job_id,
                     trigger=trigger,
                     started_at=started_at,

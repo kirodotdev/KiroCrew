@@ -46,6 +46,8 @@ class WorkbookRows:
     cut: bool = False
     #: The read broke after ``rows``; they are real, the rest was never seen.
     failure: Exception | None = None
+    #: With *mark_sheets*, where in ``rows`` each sheet reached begins; the last is where it stopped.
+    starts: list[int] | None = None
 
 
 @dataclass
@@ -58,6 +60,8 @@ class _Budget:
     chars: int
     #: Raw characters whitespace folding may still read.
     scan: int
+    #: An empty cell before a later value in its row is kept, at the separator's cost.
+    keep_blanks: bool = False
 
     def expired(self) -> bool:
         return time.monotonic() >= self.deadline
@@ -72,6 +76,8 @@ def read_workbook_rows(
     stride: int,
     labels_count: bool = False,
     collapse_whitespace: bool = False,
+    keep_blanks: bool = False,
+    mark_sheets: bool = False,
     scrub_title: Callable[[str], str] | None = None,
     max_members: int = WORKBOOK_MAX_MEMBERS,
     max_expanded_bytes: int = WORKBOOK_MAX_EXPANDED_BYTES,
@@ -94,6 +100,10 @@ def read_workbook_rows(
     ``_TITLE_MAX`` characters of the title; *scrub_title* (file grep passes its
     credential redactor) runs on the WHOLE title before that cut, because half a
     credential matches no pattern.
+    With *keep_blanks* an empty cell before a later value in its row keeps its place
+    as an empty string, so a reader that types columns sees each value in its own
+    column; only those kept blanks cost budget, the separator's length each.
+    *mark_sheets* fills ``starts``, so a reader can split rows by sheet.
     *collapse_whitespace* folds every whitespace run in a title or cell to one
     space, and the budget counts the folded text; folding reads at most
     ``_SCAN_PER_CHAR`` raw characters per character of *max_chars* over the walk.
@@ -113,8 +123,8 @@ def read_workbook_rows(
     import openpyxl  # type: ignore[import-untyped]
 
     book = openpyxl.load_workbook(fileobj, read_only=True, data_only=True)
-    walk = WorkbookRows()
-    budget = _Budget(deadline, stride, max_chars, max_chars * _SCAN_PER_CHAR)
+    walk = WorkbookRows(starts=[] if mark_sheets else None)
+    budget = _Budget(deadline, stride, max_chars, max_chars * _SCAN_PER_CHAR, keep_blanks)
     try:
         _walk(book, walk, budget, separator, labels_count, collapse_whitespace, scrub_title)
     except Exception as exc:
@@ -135,6 +145,8 @@ def _walk(
 ) -> None:
     for sheet in book.worksheets:
         walk.sheets += 1
+        if walk.starts is not None:
+            walk.starts.append(len(walk.rows))
         if not hasattr(sheet, "iter_rows"):  # a chartsheet has no cell grid
             continue
         if hasattr(sheet, "reset_dimensions"):
@@ -156,6 +168,8 @@ def _walk(
                 walk.cut = True
                 return
             cells, left, whole = _row_cells(row, room, budget, separator, collapse)
+            while budget.keep_blanks and cells and not cells[-1]:
+                cells.pop()
             if cells:
                 walk.rows.append((label, separator.join(cells)))
                 budget.chars = left
@@ -191,6 +205,11 @@ def _row_cells(
                 if not whole or room <= 0:
                     return cells, room, False
                 continue
+        if budget.keep_blanks and position > len(cells):  # blanks before a value keep its column
+            room -= (position - len(cells)) * len(separator)
+            if room <= 0:
+                return cells, room, False
+            cells += [""] * (position - len(cells))
         if not whole or len(piece) >= room:
             cells.append(piece[: max(room, 0)])
             return cells, 0, False

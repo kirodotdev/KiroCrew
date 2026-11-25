@@ -184,8 +184,8 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // is what the source picker renders its checkmark from, so the UI reports
   // the device that is really recording rather than the user's intent.
   const [deviceId, setDeviceId] = useState('')
-  // Latest partial hypothesis, mirrored so the dictation panel can render it
-  // muted. Cleared on final/stop so a stale partial can't linger as grey text.
+  // Latest partial hypothesis. Cleared on final/stop so a stale partial cannot
+  // be mistaken for the current in-flight recognition result.
   const [partial, setPartial] = useState('')
   // What the recogniser is doing while the live session waits for it: the
   // one-time model download, or the load that follows it. Surfaced to the
@@ -193,7 +193,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // microphone.
   const [download, setDownload] = useState<SttModelProgress | null>(null)
   // Unthrottled per-frame audio features, written in place by the level meter
-  // and read by the shader's render loop. A ref (not state) on purpose: this
+  // and sampled by the waveform loop. A ref (not state) on purpose: this
   // updates ~60x/sec and must never trigger a React render.
   const sampleRef = useRef(createAudioSample())
   const mediaRef = useRef<MediaRecorder | null>(null)

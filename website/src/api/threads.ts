@@ -27,6 +27,9 @@ export interface ThreadReply {
   /** A crewmate reply's blocked-link records (`link_blocks`): the links its
    *  bubble draws as a Blocked link card. Validated where they are drawn. */
   link_blocks?: unknown
+  /** A crewmate reply's credential records (`redactions`): what its lock tags
+   *  draw from. Validated where they are drawn. */
+  redactions?: unknown
 }
 
 export interface ThreadParent {
@@ -36,6 +39,8 @@ export interface ThreadParent {
   ts: string
   /** The parent's blocked-link records when the crewmate wrote it. */
   link_blocks?: unknown
+  /** The parent's credential records when the crewmate wrote it. */
+  redactions?: unknown
 }
 
 export interface ThreadDetail {

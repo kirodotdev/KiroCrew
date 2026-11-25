@@ -26,6 +26,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | Command | Description |
 |---------|-------------|
 | `!yolo` / `!yolo on/off/renew` | Show, toggle, or renew auto-approve for all tool calls |
+| `!trust` / `!trust off` / `!trust status` | Put this thread's session on Trust (its tools run without asking), take it off, or show it. See "Trust one thread" below |
 | `!agent <name>` | Switch to a different agent globally |
 | `!agent off` | Switch back to default kirocrew agent |
 | `!ta <name>` | Set agent for this thread only |
@@ -34,18 +35,21 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `/agent <name>` | Same as `!ta <name>` (type a space first if Slack offers it as a slash command) |
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
-| `!channel agent <name/off>` | Set per-channel agent override |
+| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot |
 | `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
+| `!voice global on/off` | On: voice replies in every thread. Off: only in threads that ran `!voice on` (or set a voice, engine, speed or pitch), plus replies to voice memos if you set `voice_reply.auto_reply_to_voice` to `true`. Saved, so a restart keeps it; bare `!voice global` toggles it |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 | `!restart` | Same as `/kirocrew restart` |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
 `slack.allowed_users` in config has no effect.
 
-The `!` commands still work. `!yolo`, `!voice`, `!agent`, `!ta`, `!dashboard` and
-`!restart` are deprecated in favour of their `/kirocrew` slash commands below, and
-each use posts a short note naming the slash form.
+The `!` commands still work. `!yolo`, `!agent`, `!ta`, `!dashboard` and `!restart`
+are deprecated in favour of their `/kirocrew` slash commands below, and each use
+posts a short note naming the slash form. `!voice` is not: `!voice on/off` acts on
+the thread it is typed in, which a slash command cannot name, and `!voice global
+on/off` works when the `/kirocrew` command is turned off.
 
 ## Commands for All Allowed Users
 
@@ -84,6 +88,8 @@ Available to all allowed users (no `!` prefix needed):
 |---------|-------------|
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
+| `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
+| `/kirocrew conductor <goal>` | The owner, or a shared user (`slack.shared_access`). Post the goal as a new message here and make its thread a Conductor thread: one way, only the owner's and the starter's messages reach it, workers show as status. In an existing thread, send `!conductor [goal]` instead. Off until Conductor threads are turned on |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
 | `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
@@ -108,6 +114,27 @@ When Kiro Crew needs to run a tool (file write, bash command, etc.):
    channels that prompt at all wait five minutes, and four channels do not
    prompt. See [Channel capabilities](channel-capabilities.md).
 4. In interactive mode, "Trust session" approves all remaining tools for that session
+
+### Trust one thread
+
+`!trust` puts the thread you type it in on Trust before any tool asks. Its tools
+then run without a prompt; the deny list, sensitive paths and your organization's
+policy still refuse what they refuse. It is owner-only and works in DMs and channel threads.
+`!trust off` turns it off. `!trust status` shows it.
+
+The grant covers that one thread's session and lasts until `!trust off` or a gateway
+restart. In a channel thread it covers the turns of everyone on the allowlist, not
+only yours. A shared user's turn in a trusted thread still asks. Sent while the thread
+is working, `!trust` and `!trust off` wait for that turn to end; `!stop` ends it now.
+Helper agents the thread starts still ask.
+
+If the thread's dashboard tab is on Trust (from the card's "Trust session" button),
+`!trust off` leaves that tab's Trust alone and says so. Its tools and helper agents
+may still run without asking. Set that tab to Normal in its approval picker.
+
+A Slack Code channel or Conductor thread has its own setting: use
+`/kirocrew approval trust` there. A thread linked to a dashboard chat follows that
+chat: set Trust in the chat's approval picker.
 
 Approval buttons appear in both Slack and the dashboard. Approving in either
 place resolves both.
@@ -144,6 +171,10 @@ With `slack.reactions_enabled` on, where Slack shows the bot's native thread sta
 while it is answered, removed when the reply lands (the reply is the done signal).
 A failed turn gets 😱.
 
+After each reply a small "Finished in 23s · ctx 8%" line shows how long the turn
+took and how full the context is. Set `slack.show_timing_footer` to `false` to hide
+it from the next reply on; choice buttons and the Link to Dashboard button still post.
+
 ## File attachments
 
 Slack ingests attachments on incoming messages and can upload local image references from completed replies, including a scheduled cron's result posted to Slack: an `![alt](/abs/path.png)` the reply embeds is uploaded as a native image into the same thread, limited to files inside the session's workspace. Outbound uploads are limited to 10 files, 10 MiB per file, and 25 MiB total per reply. A reference that cannot be sent is named in a short note in the thread rather than dropped.
@@ -167,6 +198,14 @@ there, each top-level DM message still starts its own thread session.
 
 Off by default, because turning it on routes your next DM to a different session
 than the previous one. Existing threads keep working either way.
+
+A button on the bot's Home tab whose `action_id` starts with `options_choice_`
+followed by a name rather than a bare number and does not contain `_done_`, and
+whose `value` starts with `action::`, starts a new thread in your DM with the
+bot, with the button's label as its first message. Such a turn does not join the
+DM's one session when `slack.dm_single_session` is on, and `!stop` or Slack's Stop
+button in its thread still stops it. A Home tab button is never marked as clicked,
+so each click starts another thread.
 
 ## Auto-connect new dashboard sessions
 
@@ -234,7 +273,9 @@ one is for Slack only and takes effect at once.
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, each one is a button: one click sends that
-choice back to the conversation. To send several at once, open the card's ⋯ menu
+choice back to the conversation, as an answer and never as a command. In a
+thread linked to a dashboard session the choice reaches the agent word for word:
+an `@prompt`, `$skill` or quick-prompt name in it is not expanded. To send several at once, open the card's ⋯ menu
 and pick **Choose several…**, then tick them in the dialog and press Send. Once a
 card is answered its buttons give way to a line saying who chose what and when;
 a later click on it only gets a private "Already answered".
@@ -259,29 +300,54 @@ own cron, task and spawn tools also still run as the owner in their turns, even
 though the `run` and cron keywords are refused to them, and a schedule they set
 up that way keeps running as the owner after they are removed: to stop one, open
 **Schedule** in the dashboard and delete it. Only add people you trust. The page
-shows this warning, and turning the switch on needs an explicit confirm. The page
-doesn't turn it on while anyone on the list isn't confirmed by Slack: remove them,
-or fix what their row says, first.
+shows this warning, and turning the switch on needs an explicit confirm. With
+`verify_with_slack` on, the page doesn't turn it on while anyone on the list isn't
+confirmed by Slack: remove them, or fix what their row says, first.
 
-- **Who counts.** Each Slack member ID on the list is checked with Slack
-  (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
-  person rather than a bot or app, not deactivated, and not the owner. The page
-  refuses an ID that fails, and shows each person's name next to their ID. An ID
-  added with `kirocrew config` gets the same check from the gateway before its
-  first message counts. A confirmation is re-checked every 10 minutes, and a
-  refusal after a minute: an ID that stays on the list gets access as soon as
-  Slack confirms it, so remove an ID to keep that person out.
+- **Who counts.** By default (`slack.shared_access.verify_with_slack` is
+  `false`) every well-formed member ID on the list counts, except the owner's own.
+  A config that already shared access before the key existed (`enabled: true`, no
+  `verify_with_slack`) has `true` written on its first load, so an upgrade keeps
+  Slack's check; to go list-only, set the key to `false`. Turning sharing on in the
+  dashboard stores `false`.
+  Slack is not asked, so the bot needs no `users:read` scope, and a bot, a
+  deactivated account or someone in another workspace (Slack Connect included) on
+  the list can act as the owner too: keep the list right yourself. The page marks
+  each such row "On your list" and shows no name.
+- **Checking with Slack.** Set `slack.shared_access.verify_with_slack` to `true`
+  to have each ID checked with Slack (`users.info`, which needs `users:read`)
+  before it is used: same workspace as the bot (`auth.test`), a person rather than
+  a bot or app, not deactivated, and not the owner. The page then refuses an ID
+  that fails, and shows each person's name next to their ID. A confirmation is
+  re-checked every 10 minutes, and a refusal after a minute: an ID that stays on
+  the list gets access as soon as Slack confirms it, so remove an ID to keep that
+  person out. A failed check logs Slack's error code (for example `missing_scope`).
+- **Adding people.** You can add a person by their email instead of their ID: the
+  page looks it up with `users.lookupByEmail` (bot scope `users:read.email`, in the
+  shipped manifest; an older install needs a reinstall) and keeps the member ID,
+  and the audit log records the ID, never the email. Pasting a Slack profile link
+  (`https://<workspace>.slack.com/team/U…`) works too. Nobody can be added until
+  the Owner Slack member ID is saved, and an ID that becomes the owner's is shown
+  as the owner's own row and left out of the switch's confirm. An ID added with
+  `kirocrew config` gets the same check from the gateway before its first message
+  counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
-  `!title`, `!compact`, answer question cards, answer the tool-approval
-  prompts their own turns post, and send or edit the review-mode draft of their
-  own turn.
-- **What stays the owner's.** The access list and the switch; Trust, YOLO and
-  approval-mode changes (a shared user's Trust click is refused); approving a
-  prompt someone else's turn posted; `!dashboard` and other dashboard links; every
+  `!title`, `!compact`, `!bot`, `!conductor` and `/kirocrew conductor` (a Conductor
+  thread they start admits them and the owner only; its goal cannot be a `/`
+  command; `!stop`, Trust and worker cards there stay the owner's), answer
+  question cards, answer the tool-approval
+  prompts their own turns post (Approve, Reject, and **Trust session** where
+  the card offers it, which turns on the same per-session Trust the owner's
+  click does; the audit log names who clicked), and send or edit the review-mode draft of their own
+  turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  call a background sub-agent makes, the approval prompt goes to the owner.
+- **What stays the owner's.** The access list and the switch; YOLO and
+  approval-mode changes; answering (Trust included) a prompt someone else's turn
+  posted, or one that is no longer waiting; `!dashboard` and other dashboard links; every
   other `!` command, including `!channel` and agent overrides, and the
   `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
-  agent's own commands such as `/agent`, `/model` or `/tools`); the `/kirocrew`
-  slash command; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
+  agent's own commands such as `/agent`, `/model` or `/tools`); the other `/kirocrew`
+  slash commands; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
   keywords (the agent's own schedule tools are not narrowed, see below); Slack
   settings and the manifest; and code channels (a shared
   user's messages and card answers in one are refused, quietly in a bound channel
@@ -290,9 +356,16 @@ or fix what their row says, first.
   that."
 - **Changes apply to the next event.** Removing someone, or turning the switch
   off, stops their next message, including one already waiting in the Slack
-  queue (one already queued on a linked dashboard chat still runs). A
-  `kirocrew config` edit applies once the gateway reads it, within a couple of
-  seconds. If another `slack.*` setting in `config.json` is broken the gateway
+  queue (one already queued on a linked dashboard chat still runs). No restart
+  is needed. Edit the list with `kirocrew config set` or `kirocrew config edit`,
+  and the gateway applies it within a couple of seconds. On Linux, a hand edit of
+  `config.json` (any other editor) is held for review and is **not** in effect
+  until you apply it. When the edit changes Slack settings, the gateway logs a
+  warning and the bell shows a note listing the changed keys. Run
+  `kirocrew config pending` to review every change; it prints the
+  `kirocrew config pending apply config.json <signature>` command that applies
+  them. A restart does not apply a held edit.
+  If another `slack.*` setting in `config.json` is broken the gateway
   cannot apply the change, and the settings page says so instead of reporting it
   done.
 - **Audit.** Every admission and refusal is written to the security event log
@@ -316,6 +389,12 @@ example, heartbeat reports) and for the startup probe that checks whether each
 tracked channel is readable. It does not grant inbound access or enable member
 allowlisting: Slack remains owner-only, and member-join events do not prompt for
 new users.
+
+Only the owner changes the list, from either of two places, and both apply
+without a restart: **Settings → Messaging Channels → Slack → Tracked channels**
+in the dashboard (then Save), or `/kirocrew channels` in Slack, which also sets
+each channel's activation mode and agent. A refused post, reaction, pin or
+history read on an untracked channel names both routes.
 
 ### Channel Activation Modes
 
@@ -345,7 +424,8 @@ The steps below are the manual path.
 2. **Add a bot user** with these Bot Token Scopes:
    `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
    `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
-   `im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+   `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read`, and
+   `users:read.email`.
 3. **Add User Token Scopes** if the same app supplies a user token to a
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
@@ -400,6 +480,11 @@ exactly as with the switch off, and the page says why under the switch.
   steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  Kiro Crew opens one when a request in Slack takes several steps, or when someone asks
+  for one ("put that in a code channel"); anything unclear is answered where it was
+  asked. Asking again in the same thread opens a channel that starts with that thread; a
+  new top-level message starts without it. Slack can't open a code channel from a Slack
+  Connect conversation.
   When the channel's agent starts helper agents for pieces of the work (**Let code
   channels start helper agents**), the channel also gets a pinned **work board**, kept
   up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),
@@ -525,7 +610,7 @@ can name, create or archive a channel.
 |---|---|
 | `code_channel_rename` | Renames the channel and its session (1-200 characters). |
 | `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
-| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
+| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads; ask for a preview of a page or site and the agent sends it here as one), a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs), or `diff`, which opens the channel's Code tab now (the channel's own changes and its helper agents' commits): ask to see the diff, or pick a "Show me the diff" option, and the agent opens it there instead of pasting it, or sends it as an html view when the Code tab has nothing to show. The same `view_key` updates the same tab; a channel holds up to five tabs. |
 | `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
 | `code_channel_read_plan_canvas` | Reads the plan canvas back: its current markdown and the open comments on it. Use it after a restart or when the plan is no longer in the agent's context. |
 | `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |

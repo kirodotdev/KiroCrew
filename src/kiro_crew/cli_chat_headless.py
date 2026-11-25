@@ -81,6 +81,9 @@ POLL_SECS = float(os.environ.get("KIROCREW_HEADLESS_POLL_SECS") or 5.0)
 #: How long a finished background agent's result can be held before it reaches its
 #: parent: ``subagent_parts.run_limits._RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE``.
 _DELIVERY_GRACE_SECS = 60.0
+#: How long each sign-in request waits: as long as ``kirocrew token`` waits for the
+#: same mint, since a gateway that is up but busy can take 12-14 s to answer.
+_SIGN_IN_TIMEOUT_SECS = 20.0
 
 #: A turn that ends with an option list is asking the person to pick.
 _OPTIONS_MARK = "[OPTIONS:"
@@ -275,12 +278,12 @@ class GatewayClient:
             mint = urllib.request.Request(
                 f"{self.base}/api/token/local?ttl=1m", headers={"X-Local-Secret": secret}
             )
-            with self._open(mint, 10, "cli_headless_token") as resp:
+            with self._open(mint, _SIGN_IN_TIMEOUT_SECS, "cli_headless_token") as resp:
                 self._token = json.loads(resp.read())["token"]
             prime = urllib.request.Request(
                 f"{self.base}/api/status?token={urllib.parse.quote(self._token, safe='')}"
             )
-            with self._open(prime, 10, "cli_headless_session") as resp:
+            with self._open(prime, _SIGN_IN_TIMEOUT_SECS, "cli_headless_session") as resp:
                 jar = http.cookies.SimpleCookie()
                 for raw in resp.headers.get_all("Set-Cookie") or []:
                     jar.load(raw)
@@ -347,24 +350,20 @@ def transcript_path(slot: str) -> Path:
     return Path(data_home()) / "sessions" / f"dashboard_{slot}.jsonl"
 
 
-def transcript_credits(path: Path) -> float:
-    """Sum of ``meta.turn_stats.credits`` over a slot's transcript; 0 when absent."""
-    total = 0.0
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0.0
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        meta = entry.get("meta") if isinstance(entry, dict) else None
-        stats = meta.get("turn_stats") if isinstance(meta, dict) else None
-        value = stats.get("credits") if isinstance(stats, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            total += float(value)
-    return total
+def usage_credits(slots: set[str], since: float) -> float:
+    """The credits the per-turn usage store holds for *slots*' turns since *since*.
+
+    Read from the usage rows (``<data home>/usage/tokens``) every billed turn writes
+    when it ends, whether or not it left a reply. A transcript's ``meta.turn_stats``
+    is not enough: it sits on the turn's reply row, so a turn that ends on tool calls
+    with no reply (a conductor turn that stops after ``autonudge_stop``) has no
+    footer and its credits were missed. The window starts at the run's own start, so
+    a run of any length keeps every turn it paid for.
+    """
+    from kiro_crew.dashboard.handlers.usage import slot_turn_usage
+
+    days = max(time.time() - since, 0.0) / 86400
+    return sum(float(row.get("credits", 0.0)) for k in slots for row in slot_turn_usage(k, days))
 
 
 def ledger_items(client: "GatewayClient", slot: str) -> list[dict[str, Any]]:
@@ -585,13 +584,13 @@ def spawn_credits(client: GatewayClient, slots: set[str], settled: Spawns) -> fl
 
 
 def run_spend(client: GatewayClient, slots: set[str], since: float, settled: Spawns) -> float:
-    """The run's credits: its chats' saved turns plus its finished background agents.
+    """The run's credits: its chats' finished turns plus its finished background agents.
 
     Both halves use the same chat set, so the agents of a chat closed between two
     polls (found only from its transcript) count as well.
     """
     chats = spend_slots(slots, since)
-    spent = sum(transcript_credits(transcript_path(k)) for k in chats)
+    spent = usage_credits(chats, since)
     return spent + spawn_credits(client, chats, settled)
 
 
@@ -961,6 +960,19 @@ def main(args: argparse.Namespace) -> int:
         opts = options_from_args(args)
     except UsageError as exc:
         print(f"kirocrew chat --headless: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    from kiro_crew.cloud.aws import _in_agent_session
+
+    # A run signs in as the owner and can open a Trust chat, which an agent's own
+    # shell must not do outside its session's approval mode.
+    if _in_agent_session():
+        print(
+            "kirocrew chat --headless: refused inside an agent session: it signs in as "
+            "the owner and opens a new chat outside this session's approval mode. "
+            "Run it yourself from a normal terminal, or start a sub-agent from the "
+            "agent instead (spawn_run).",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.port_resolution import resolve_client_port

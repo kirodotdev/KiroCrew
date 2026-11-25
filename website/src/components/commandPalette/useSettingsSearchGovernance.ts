@@ -1,8 +1,9 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { api, type RemoteControlState, type SlackConfigData } from '../../api/client'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, type ComputerUseConfigData, type RemoteControlState, type SlackConfigData } from '../../api/client'
 import { REMOTE_CONTROL_QUERY_KEY } from '../../api/client/remoteAccess'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { ACP_BACKEND_KAS, type AcpBackendConfig } from '../../api/acpBackend'
@@ -93,8 +94,20 @@ export function useSettingsSearchGovernance(
     ...(fetch ? FRESH_ENOUGH : CACHED_ONLY),
   })
   const remoteControlShown = remoteControlQ.isSuccess && (remoteControlQ.data.requested || remoteControlQ.data.running)
+  // The `['computer-use-config']` answer ComputerUsePanel draws Show cursor motion by,
+  // read from the cache without an observer: each fetch runs a permission probe on
+  // the gateway, and an observer here would keep the panel's entry alive past its own
+  // cache lifetime while the palette stays mounted. Only its host facts withhold the
+  // entry; `enabled` can change elsewhere while the entry stands. Until the panel has
+  // been opened, the gateway platform the prerequisite gate already cached answers for
+  // Windows, where the overlay never exists.
+  const computerUse = useQueryClient().getQueryData<ComputerUseConfigData>(['computer-use-config'])
+  const gatewayPlatform = useGatewayPlatform()
+  const cursorMotionShown = computerUse
+    ? computerUse.supported && computerUse.cursor_motion_supported
+    : gatewayPlatform === 'windows' ? false : undefined
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown, cursorMotionShown }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown, cursorMotionShown],
   )
 }

@@ -174,7 +174,8 @@ def _scoring_term_index(store: VectorMemoryStore, scoring: _SemanticScoringSet, 
                 key_texts.append(label.replace("_", " ").replace(".", " "))
                 texts.append(key_texts[-1])
                 texts.append(str(raw["value_json"]).lower())
-            index = _term_index.RowTermIndex.build(texts, vm.np)
+            seed = derived.pop("term_index_seed", None)  # set by _install_scoring_set
+            index = _term_index.RowTermIndex.build(texts, vm.np, previous=seed)
             derived["term_index"] = None if index is None else (index, tuple(key_texts))
     return derived["term_index"]
 
@@ -1259,6 +1260,8 @@ def _install_scoring_set(
         data_version=version,
         derived={"used_bytes": used, "max_bytes": max_bytes},
     )
+    # The first term-index build here reuses the replaced set's ids for unchanged texts.
+    built.derived["term_index_seed"] = _term_index.seed_from(store._semantic_scoring)
     store._semantic_scoring_refused = None
     store._semantic_scoring = built
     return built

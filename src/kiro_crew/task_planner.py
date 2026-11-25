@@ -16,6 +16,7 @@ from kiro_crew.llm_helpers import _extract_json_of_type, _steer_host_deny
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_models import (
@@ -40,6 +41,18 @@ _DECOMPOSITION_DENY_REASON = (
     "the planning phase runs no tools: it only decomposes the spec into steps and "
     "has no hook store to gate a tool call, so every call is refused here"
 )
+
+
+class PlanSandboxRefused(ValueError):
+    """A plan the host could not make because it cannot sandbox the planning session.
+
+    Its text is the failed plan's ordinary message; ``refusal`` is the refusal's own text,
+    the machine owner's runbook, which only a caller answering that owner shows.
+    """
+
+    def __init__(self, message: str, refusal: str) -> None:
+        super().__init__(message)
+        self.refusal = refusal
 
 
 # ── Name Resolution ──
@@ -380,7 +393,10 @@ async def decompose(
                             outcome="denied",
                             request_id=event.request_id,
                             error="hook_deny",
-                            metadata={"phase": "decomposition"},
+                            metadata={
+                                "phase": "decomposition",
+                                **({"rule_id": hook_result.tier} if hook_result.tier else {}),
+                            },
                         )
                         await _steer_host_deny(
                             client,
@@ -461,6 +477,11 @@ async def decompose(
                 break
 
         return parse_tasks(text)
+    except (SandboxCeilingUnsealable, SandboxUnavailableError):
+        # The host cannot sandbox the planning session. The refusal's own text names
+        # the host's remedy, so it reaches the caller instead of becoming an empty plan
+        # behind a stack trace.
+        raise
     except Exception:
         logger.exception("Decomposition failed")
         return []

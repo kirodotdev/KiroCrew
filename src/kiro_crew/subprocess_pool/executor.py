@@ -364,9 +364,10 @@ class _Child:
         resolver the caller is the event loop, and a ``Popen`` there is a loop freeze
         per empty slot.  Non-blocking: a child mid-request holds the lock and is
         skipped.  A slot is left empty only while the pool's bounded list of
-        killed-but-unexited children is full.  A spawn that raises
-        leaves the slot empty and the ``OSError`` in ``spawn_error`` for the executor
-        to report to its callers.
+        killed-but-unexited children is full.  A spawn that raises leaves the slot
+        empty and the exception in ``spawn_error`` (a non-``OSError`` wrapped in one)
+        for the executor to report to its callers.  Any exception counts: one escaping
+        here would end the reaper thread, the pool's only spawn site, for good.
         """
         if not self._lock.acquire(blocking=False):
             return False
@@ -383,10 +384,14 @@ class _Child:
                 return False
             try:
                 self.proc = self._spawn()
-            except OSError as exc:
-                # Cannot spawn here (a hardened host, a broken venv): the slot stays
-                # empty and the executor reports the failure to its callers.
-                self.spawn_error = exc
+            except Exception as exc:
+                # Cannot spawn here: the slot stays empty and the executor reports the
+                # failure.  Callers treat only an ``OSError`` as "no child can be
+                # started", so another type is wrapped to reach that same path.
+                if isinstance(exc, OSError):
+                    self.spawn_error = exc
+                else:
+                    self.spawn_error = OSError(f"{type(exc).__name__}: {exc}")
                 return False
             self.spawn_error = None
             return True

@@ -90,6 +90,11 @@ function makeHotkeyStub() {
     state,
     module: {
       DEFAULT_GLOBAL_HOTKEY,
+      // Stands in for the real check, which global-hotkey.test.js covers: ""
+      // and anything starting "Alt+" pass, the rest is refused.
+      parseRecordedHotkey(value) {
+        return value === "" || (typeof value === "string" && value.startsWith("Alt+")) ? value : null;
+      },
       createSummonHandler(deps) {
         state.summonDeps = deps;
         return () => { state.summonCalls += 1; };
@@ -189,6 +194,8 @@ function harness({
   // What the fake native folder dialog answers: a value, or a function of the
   // call's arguments so a test can hold the dialog open.
   dialogResult = { canceled: true, filePaths: [] },
+  // Whether the fake shell.openExternal rejects, as when no browser is registered.
+  openExternalRejects = false,
   externalTerminal = undefined,
   downloadExpectations = undefined,
   internalSecret = "",
@@ -274,6 +281,10 @@ function harness({
         if (onOpenPath) onOpenPath();
         if (openPathThrows) throw new Error("shell.openPath blew up");
         return openPathResult;
+      },
+      openExternal: async (...args) => {
+        shellCalls.push(["openExternal", ...args]);
+        if (openExternalRejects) throw new Error("no browser registered");
       },
     },
     webContents: { getAllWebContents: () => [liveContents, destroyedContents] },
@@ -483,6 +494,15 @@ function wslEvent(url = "http://localhost:5476/system/services") {
   };
 }
 
+// Senders the three-gate local-dashboard check refuses: [label, harness
+// options, sender URL].
+const PICK_REJECTIONS = [
+  ["wrong origin", {}, "https://remote.example/chat"],
+  ["remote window", { wslOwner: { fake: "remote-window" }, wslGatewayLocal: false }, undefined],
+  ["foreign port owner", { primaryPortOwner: "foreign" }, undefined],
+  ["unknown port owner", { primaryPortOwner: "unknown" }, undefined],
+];
+
 async function assertWslRejected(invoke) {
   await assert.rejects(invoke, (error) => {
     assert.equal(error && error.message, WSL_RESTRICTED_ERROR);
@@ -519,6 +539,7 @@ const SHELL_HANDLES = [
   "gateway:can-restart",
   "gateway:restart",
   "global-hotkey:get",
+  "global-hotkey:set",
   "image:copy-at",
   "local-gateway:get",
   "local-gateway:set",
@@ -535,8 +556,10 @@ const SHELL_HANDLES = [
   "relay-crew:pane-overlay",
   "relay-crew:prewarm-pane",
   "remote-crew:forward-pane-ports",
+  "remote-crew:usage",
   "tray-icon:get",
   "tray-icon:set",
+  "wakatime:open-in-browser",
   "wsl:detect",
   "zoom:get",
   "zoom:set",
@@ -589,4 +612,5 @@ module.exports = {
   WSL_RESTRICTED_ERROR,
   wslEvent,
   assertWslRejected,
+  PICK_REJECTIONS,
 };

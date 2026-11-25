@@ -283,10 +283,6 @@ function localiseTitles(tabs: PanelTab[]): PanelTab[] {
  *  re-creates the tab and re-renders it. Only in-app edit state is lost. */
 export const MAX_APP_TABS_PER_CHAT = 3
 
-/** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,
- *  openTerminal focuses/reuses the most-recent terminal instead of spawning. */
-export const MAX_TERMINALS_PER_CHAT = 4
-
 /** Monotonic id for reveal requests — see `PanelTab.revealLine`. Module-level so
  *  it is unique across slots and across tab identities, which is all the
  *  consumer's effect needs to tell one request from the next. */
@@ -514,7 +510,7 @@ function mutateSlot(key: string, fn: (b: Bucket) => Bucket, unfocusedShows: stri
  * while Summary stays pinned and active. The chat page reports the strip with
  * `notePanelShown`, which ends a show when the panel closes or shows another
  * chat; the panel calls `takePlainPanelShow` when it shows a strip. A remount
- * (the find pane closing, a resize across the phone breakpoint, or a return to
+ * (a resize across the phone breakpoint, or a return to
  * the chat page on the same chat) stops nothing, so it lands nothing. With Keep
  * side panel open on, a phone width or an embedded chat holds the setting off
  * and closes a panel the setting opened, so the panel it reopens afterwards is
@@ -814,6 +810,10 @@ export function closePanelTerminalTabs(sessionId: string): void {
   }
 }
 
+/** Every `keepFocusIds` entry any strip was given: on-demand host tabs whose
+ *  focus `serializeBucket` never persists. */
+const onDemandFocusIds = new Set<string>()
+
 /** Strip heavy bodies (file/diff/artifact content) before persisting — those
  *  can be MBs and blow the localStorage quota. Terminal + view tabs and all
  *  tab METADATA (path / slug / sessionId / cwd / order / focus) are kept, so
@@ -843,12 +843,15 @@ function serializeBucket(b: Bucket): string {
   const droppedFocus = b.activeId !== null
     && b.tabs.some(t => t.id === b.activeId)
     && !tabs.some(t => t.id === b.activeId)
+  // The focus history loses the same dropped tabs and keeps every other id,
+  // a leading tab's included, for the reason the focus above does. An on-demand
+  // host tab (`keepFocusIds`) is never written: a reload must not bring it back.
+  const recent = b.recent?.filter(id => !onDemandFocusIds.has(id) && (tabs.some(t => t.id === id) || !b.tabs.some(t => t.id === id)))
   const activeId = droppedFocus
     ? (tabs.length ? tabs[tabs.length - 1].id : null)
-    : b.activeId
-  // The focus history loses the same dropped tabs and keeps every other id,
-  // a leading tab's included, for the reason the focus above does.
-  const recent = b.recent?.filter(id => tabs.some(t => t.id === id) || !b.tabs.some(t => t.id === id))
+    : b.activeId !== null && onDemandFocusIds.has(b.activeId)
+      ? (recent?.at(-1) ?? tabs.at(-1)?.id ?? null)
+      : b.activeId
   return JSON.stringify({ activeId, tabs, recent })
 }
 
@@ -982,10 +985,17 @@ export function usePanelTabs(
      *  own, the Git tab) adds or updates its tab and leaves the focus where it
      *  is: on the Board, or on the tab the person last clicked. */
     boardFirst?: boolean
+    /** Ids of on-demand host tabs, shown only while something is open (a
+     *  chat's history search): like `leadingIds`, a focus on one is never
+     *  "repaired" away by `syncPinned`, but none is ever the strip's default
+     *  focus, and none is persisted. Pass a module constant. */
+    keepFocusIds?: readonly string[]
   },
 ) {
   const key = bucketKey(slotKey)
   const leadingIds = opts?.leadingIds
+  const keepFocusIds = opts?.keepFocusIds
+  keepFocusIds?.forEach(id => onDemandFocusIds.add(id))
   const boardFirst = !!opts?.boardFirst
   const defaultLeadingId = leadingIds?.[0] ?? null
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
@@ -1116,7 +1126,7 @@ export function usePanelTabs(
       // would throw away a choice the person made.
       // Without leading tabs there is nothing to derive from on read, so the
       // first pinned view is still written, exactly as before.
-      const keep = b.activeId && (leadingIds?.includes(b.activeId) || nextTabs.some(t => t.id === b.activeId))
+      const keep = b.activeId && (leadingIds?.includes(b.activeId) || keepFocusIds?.includes(b.activeId) || nextTabs.some(t => t.id === b.activeId))
         ? b.activeId
         : null
       const activeId = keep
@@ -1127,7 +1137,7 @@ export function usePanelTabs(
       if (sameOrder && activeId === b.activeId) return b
       return { tabs: nextTabs, activeId }
     })
-  }, [update, leadingIds])
+  }, [update, leadingIds, keepFocusIds])
 
   const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean; hold?: boolean }) => {
     // `revealLine` is always present in the object, `undefined` when absent:
@@ -1377,20 +1387,10 @@ export function usePanelTabs(
 
   /** Open a NEW terminal tab (its own PTY session). Unlike singleton views,
    *  every call mints a fresh session so a chat can hold several shells; the
-   *  per-slot bucketing makes those sessions chat-specific automatically. At
-   *  the per-chat cap we focus (reuse) the most-recent terminal instead of
-   *  spawning another. Returns the session id to connect / run against. */
+   *  per-slot bucketing makes those sessions chat-specific automatically.
+   *  No per-chat cap: the gateway's ceiling refuses a shell past it, and that
+   *  tab says so. Returns the session id to connect / run against. */
   const openTerminal = useCallback((opts?: { cwd?: string; remoteSlot?: string; title?: string }): string => {
-    const terms = tabs.filter(t => t.kind === 'terminal')
-    if (terms.length >= MAX_TERMINALS_PER_CHAT) {
-      // Reuse only a terminal on the same machine: a remote request must never
-      // land in a gateway shell, nor a local one in a workspace. None: refuse.
-      const same = terms.filter(t => (t.remoteSlot ?? '') === (opts?.remoteSlot ?? ''))
-      const last = same[same.length - 1]
-      if (!last) return ''
-      setActive(last.id)
-      return last.sessionId ?? ''
-    }
     // Cryptographically-strong id — a terminal session id is a security token
     // that addresses a live PTY, so it must not come from Math.random().
     // secureRandomId() uses crypto.randomUUID in a secure context and a
@@ -1405,7 +1405,7 @@ export function usePanelTabs(
       ...(opts?.remoteSlot ? { remoteSlot: opts.remoteSlot } : {}),
     })
     return sessionId
-  }, [tabs, upsert, setActive])
+  }, [upsert])
 
   const activeTab = useMemo(() => tabs.find(t => t.id === effectiveActiveId) ?? null, [tabs, effectiveActiveId])
 

@@ -66,20 +66,20 @@ export interface HostClaims {
   /** Exact hostnames. */
   exact: ReadonlySet<string>
   /** Domain suffixes, each starting with a dot (`.example.dev`). */
-  suffixes: readonly string[]
+  suffixes: ReadonlySet<string>
 }
 
 /** Read a manifest `hosts` value: normalized, refused entries dropped, at most
- *  `max`, and, when `granted` is given, only what the owner approved. */
-export function readHostClaims(raw: unknown, max: number, granted?: ReadonlySet<string> | null): HostClaims {
+ *  `max` when given, and, when `granted` is given, only what the owner approved. */
+export function readHostClaims(raw: unknown, max?: number, granted?: ReadonlySet<string> | null): HostClaims {
   const exact = new Set<string>()
-  const suffixes: string[] = []
+  const suffixes = new Set<string>()
   for (const h of Array.isArray(raw) ? raw.slice(0, max) : []) {
     if (typeof h !== 'string') continue
     const host = normalizeHost(h)
     if (!host || !isClaimableHost(host)) continue
     if (granted && !granted.has(host)) continue
-    if (host.startsWith('.')) suffixes.push(host)
+    if (host.startsWith('.')) suffixes.add(host)
     else exact.add(host)
   }
   return { exact, suffixes }
@@ -108,8 +108,15 @@ export function claimableUrlHost(href: string): string | null {
 /** Whether `claims` covers `host` (already from `claimableUrlHost`). */
 export function claimsHost(claims: HostClaims, host: string): boolean {
   if (claims.exact.has(host)) return true
-  // `.example.dev` matches `example.dev` and `a.example.dev`.
-  return claims.suffixes.some((s) => host === s.slice(1) || host.endsWith(s))
+  if (!claims.suffixes.size) return false
+  // `.example.dev` matches `example.dev` and `a.example.dev`. One set lookup per
+  // label of the host, so a long hosts list costs nothing per hover.
+  for (let s = `.${host}`; ; ) {
+    if (claims.suffixes.has(s)) return true
+    const next = s.indexOf('.', 1)
+    if (next === -1) return false
+    s = s.slice(next)
+  }
 }
 
 /** The URL a point is handed by default: no query and no fragment, which can carry

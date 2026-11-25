@@ -5,7 +5,9 @@
 The agent-facing babysit flow prefers `monitor_watch`. It creates a durable,
 typed structured monitor through a session-bound directive. The controller probes
 the provider before invoking the model, persists canonical observations and
-budgets, and wakes the owning session only for a new actionable fingerprint.
+budgets, and wakes the owning session for a new actionable fingerprint, and once
+when a pending pull request's checks finish green outside draft or, on GitHub, a
+person other than its author writes (`monitor-architecture.md`).
 Provider-fact-only GitHub review readiness therefore spends no agent turn while
 the pull request is unchanged.
 

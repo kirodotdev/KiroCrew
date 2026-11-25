@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ntpath
+import os
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -184,6 +187,32 @@ def test_a_read_grant_covers_reading_only():
 
 def test_any_other_key_is_stored_exactly():
     assert bht.grant_pattern("rm *.tmp") == "rm [*].tmp"
+
+
+@pytest.mark.parametrize(
+    ("granted", "others"),
+    [
+        (r"\\?\C:\Tools\x.exe /q", [r"\\.\C:\Tools\x.exe /q", r"\\h\C:\Tools\x.exe /q"]),
+        (r"\\?\UNC\srv\share\x.exe /q", [r"\\h\UNC\srv\share\x.exe /q"]),
+        (r"\\srv*\share\x.exe", [r"\\srvOTHER\share\x.exe"]),
+        (r"\\srv\sh[1]\x.exe", [r"\\srv\sh1\x.exe"]),
+        ("//srv*/share/x.exe", ["//srvOTHER/share/x.exe"]),
+    ],
+)
+def test_an_exact_grant_escapes_a_windows_drive_prefix(granted, others):
+    # Windows glob.escape skips the ntpath.splitdrive part. A host key never holds a
+    # drive, so its pattern is the same on either platform.
+    act = bht.trust_key("a.example", "act")
+    posix_act = bht.grant_pattern(act)
+    with (
+        patch.object(os.path, "splitdrive", ntpath.splitdrive),
+        patch.object(os.path, "normcase", ntpath.normcase),
+    ):
+        pattern = bht.grant_pattern(granted)
+        assert matches_trusted_pattern(granted, {pattern}) == pattern
+        for other in others:
+            assert matches_trusted_pattern(other, {pattern}) is None
+        assert bht.grant_pattern(act) == posix_act
 
 
 # ── The op route's re-check ──
@@ -701,7 +730,7 @@ async def test_a_call_refused_for_a_tab_move_takes_its_own_note(route):
     ("op", "args"),
     [
         ("cdp", {"method": "Storage.getCookies"}),
-        ("js", {"expression": "1"}),
+        ("js", {"expression": "1", "target_id": "F-other"}),
         ("http_get", {"url": "https://example.com/"}),
     ],
 )
@@ -714,6 +743,8 @@ def test_a_call_that_reaches_past_one_site_gets_no_site_key(op: str, args: dict)
     # tabs close names a tab whose host no grant names: it always asks too.
     assert op_classes.host_trust_class("tabs", {"action": "close", "target_id": "T"}) == ""
     assert op_classes.host_trust_class("tabs", {"action": "switch"}) == op_classes.CLASS_ACT
+    # js in the current tab acts on that one page: an act grant there covers it.
+    assert op_classes.host_trust_class("js", {"expression": "1"}) == op_classes.CLASS_ACT
 
 
 def test_a_full_session_refuses_a_new_note_and_keeps_the_old_ones(monkeypatch) -> None:

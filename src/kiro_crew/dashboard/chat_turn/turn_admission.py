@@ -100,6 +100,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.prompt_file_notice import _notice_unread_prompt_file
     from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -729,6 +730,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             from kiro_crew.dashboard.member_rebind_notice import surface_rebind_notice
 
             await surface_rebind_notice(state, slot, session_key, loaded_cfg, bindings)
+            if bindings.selection_kind == "member":
+                # A chat running a Bot keeps its own harness; it says so once
+                # when the Bot's own chat runs another.
+                from kiro_crew.dashboard.member_harness_notice import surface_harness_notice
+
+                await surface_harness_notice(
+                    state, slot, session_key, loaded_cfg, execution_context
+                )
         elif bindings.selection_kind == "member":
             execution_context = resolve_member_execution(
                 loaded_cfg,
@@ -835,6 +844,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # runs on the worktree, under the dispatch lock it still holds.
             selected_binding = _current_binding(turn)
             turn.selected_binding = selected_binding
+        # A worker whose session this turn starts, or runs for the first time, on
+        # the conducting kit holds no posture looser than its Profile's (never
+        # raised); checked again after the claim, once the start is known. Before the
+        # claim, only a start predicted to mount session control is held, read once
+        # the folder the start runs in is chosen.
+        from kiro_crew.dashboard.crewmate_approval import (
+            predicted_start_mounts,
+            tighten_for_conducting,
+        )
+
+        start_mounts = await predicted_start_mounts(state, slot, loaded_cfg)
+        tighten_for_conducting(
+            state, slot, loaded_cfg, execution_context, start_mounts=start_mounts
+        )
 
     # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
     # self-heal must NOT run the default agent — that generic-substitution is
@@ -1051,7 +1074,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         if _wait_if_busy
         else not state.sessions.resumable_hint(session_key)
     )
-    if _starts_fresh and not is_slash and not _message_rewritten_before_build(slot, message):
+    if _starts_fresh and not is_slash and not _message_rewritten_before_build(message):
         await _prewarm_startup_query(
             state,
             slot,
@@ -1145,6 +1168,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # claim consumed the one-shot resume, so every later exit owes it.
             turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
+            if is_new:
+                # A Bot chat that just started on a harness without its app tools
+                # gets its one notice here, where the slot is in hand.
+                from kiro_crew.bot_chat_app_tools import deliver_harness_notice
+
+                await deliver_harness_notice(slot, session_key)
             break
         except SessionBusyError:
             if _wait_if_busy or _claim:
@@ -1423,6 +1452,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         await deliver_kas_telemetry_note(state, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
+        await _notice_unread_prompt_file(state, slot, client, turn)
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early
@@ -1670,6 +1700,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             },
         )
 
+    # The session's start is known now: a Bot's worker whose start took the
+    # conducting kit is held to its Profile here, before the policy below is stored
+    # from its posture, whatever the admission's config predicted.
+    if bindings is not None and loaded_cfg is not None:
+        from kiro_crew.dashboard.crewmate_approval import tighten_for_conducting
+
+        tighten_for_conducting(state, slot, loaded_cfg, turn.execution_context)
+
     # Propagate trust/YOLO to session so subagents inherit auto-approve.
     # A scoped grant is excluded on purpose — see _persistable_session_policy.
     # Assigned unconditionally (not only when granting) so a turn that starts
@@ -1762,7 +1800,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._is_quick_prompt = _is_quick_prompt
     prompt_expanded = _is_quick_prompt
     turn.prompt_expanded = prompt_expanded
-    if message.startswith("@") and not is_slash and _prompt_depth < 1:
+    if message.startswith("@") and not is_slash and _prompt_depth < 1 and not turn._expansions_off:
         original = message
         # Off the loop, for the same reason the `$skill` expansion in _turn_dispatch_prep is:
         # this resolves and READS files — the project's prompt directory is

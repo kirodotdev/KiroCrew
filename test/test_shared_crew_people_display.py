@@ -336,11 +336,10 @@ def test_people_rows_say_who_is_here_and_where_by_the_tab_slot_key() -> None:
 
     state = SimpleNamespace()
     presence_for(state).report("c1", BOB, "Release_plan", Activity.TYPING)
-    request = SimpleNamespace(app={"state": state})
     body = {"people": [{"principal": BOB.to_public_dict()}, {"principal": {"id": "p_gone"}}]}
     # The catalog lists the session under its file-stem key.
     rows = [{"key": "dashboard_Release_plan", "title": "Release plan"}]
-    _attach_live(request, body, rows)  # type: ignore[arg-type]
+    _attach_live(state, body, rows)
     here, gone = body["people"]
     assert here["live"] == {
         "activity": "typing",
@@ -358,7 +357,6 @@ def test_people_owner_row_uses_presence_from_every_local_owner_id() -> None:
     state = SimpleNamespace()
     startup = local_operator_principal("local-startup")
     presence_for(state).report("c1", startup, "Owner_session", Activity.TYPING)
-    request = SimpleNamespace(app={"state": state})
     body = {
         "people": [
             {"principal": local_operator_principal("local-app").to_public_dict(), "is_owner": True},
@@ -366,7 +364,7 @@ def test_people_owner_row_uses_presence_from_every_local_owner_id() -> None:
         ]
     }
 
-    _attach_live(request, body, [])  # type: ignore[arg-type]
+    _attach_live(state, body, [])
 
     owner, unrelated = body["people"]
     assert owner["live"]["activity"] == "typing"

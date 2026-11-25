@@ -231,6 +231,13 @@ def inject_workflow_result(
                 slot._dismissed_source_links = set()
                 slot.invalidate_source_links()
                 slot._dismissed_hydrated = False
+                # The originating session's chips-off switch is on that line
+                # too and is not read here: saves write the stored value back.
+                from kiro_crew.dashboard.slot_persistence.metadata_values import (
+                    _mark_source_links_off_unread,
+                )
+
+                _mark_source_links_off_unread(slot)
                 note_crew_log_class(state, slot)
                 from kiro_crew.dashboard.transcript_binding import bind_transcript
 
@@ -471,6 +478,16 @@ async def inject_bound_workflow_result(
                 )
                 slot.memory_store = execution.store.legacy_name
                 _seed_turn_timeout(state, slot, limit_meta if limit_readable else None)
+                # The chips-off switch comes from the same read, or stays on disk.
+                from kiro_crew.dashboard.slot_persistence.metadata_values import (
+                    _mark_source_links_off_unread,
+                    _restore_source_links_off,
+                )
+
+                if limit_readable:
+                    _restore_source_links_off(slot, limit_meta)
+                else:
+                    _mark_source_links_off_unread(slot)
             on_injected = None
         delivered = dict(snapshot)
         delivered["memory_mode"] = execution.memory_mode

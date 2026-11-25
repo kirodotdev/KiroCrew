@@ -25,6 +25,7 @@ from kiro_crew.dashboard.recovery_replays import (
     cancel_notice_meta,
     replays_of,
 )
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
 from kiro_crew.members import DM_SLOT_MODE
@@ -112,8 +113,15 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # prompt author's embedded $tokens from silently loading extra skills into
     # the context (expand-what-the-user-typed, principle of least surprise).
     # Skipped for slash commands; _prompt_depth<1 blocks the recursive _run_chat
-    # path. Token is left literal; resolved bodies are appended.
-    if "$" in message and not is_slash and not prompt_expanded and _prompt_depth < 1:
+    # path. Token is left literal; resolved bodies are appended. Skipped for a
+    # chat option tap too (`_expansions_off`): the model wrote that label.
+    if (
+        "$" in message
+        and not is_slash
+        and not prompt_expanded
+        and _prompt_depth < 1
+        and not turn._expansions_off
+    ):
         # Offloaded: expansion walks the skills tree(s) and reads skill
         # bodies, which is filesystem work that must not run on the event
         # loop — a large tree would stall the gateway heartbeat and every
@@ -555,6 +563,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # answer as much as to the echo — so it is one gate, not four. A turn the
     # agent started resolves it too: its reply is owed to the thread, and the
     # echo below skips it (``_prompt_typed_in_dashboard`` reads actor ``agent``).
+    # A Slack reconnect clears the client for its window: a linked turn waits for
+    # that attempt and mirrors through the client it publishes.
+    if (
+        not state.slack_client
+        and not _slash_withholds_mirror
+        and not slack_mirror_is_paused(state, session_key)
+        and all(state.sessions.get_slack_link(session_key))
+    ):
+        await wait_for_slack_reconnect(state)
     if (
         state.slack_client
         and not _slash_withholds_mirror

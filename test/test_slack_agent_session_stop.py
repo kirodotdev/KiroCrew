@@ -32,10 +32,12 @@ class FakeSessions:
         owners: dict[str, str] | None = None,
         compacting: set[str] | None = None,
         outcome: str = "soft",
+        busy: set[str] | None = None,
     ) -> None:
         self.live = live or set()
         self.owners = owners or {}
         self.compacting = compacting or set()
+        self.busy = busy or set()
         self.outcome = outcome
         self.stops: list[tuple[str, dict[str, Any]]] = []
         self.on_stop: Any = None
@@ -67,6 +69,9 @@ class FakeSessions:
 
     def is_compacting(self, key: str) -> bool:
         return self._fold(key) in self.compacting
+
+    def is_busy(self, key: str) -> bool:
+        return self._fold(key) in self.busy
 
     def dequeue(self, key: str) -> Any:
         return self.queue.pop(0) if self.queue else None
@@ -350,6 +355,26 @@ class TestStop:
         finally:
             fence.exit_turn(turn_b)
         assert not [p for _, p in orch.web.calls if p.get("thread_ts") == "1700.2"]
+
+    @pytest.mark.asyncio
+    async def test_a_single_session_dm_thread_stops_the_turn_its_own_session_runs(
+        self,
+    ) -> None:
+        """A button click's turn runs in its thread's own session, outside the DM's one
+        session: a Stop pressed there stops that turn, as with the flag off."""
+        sessions = FakeSessions(live={"slack:D1", "slack:1700.9"}, busy={"slack:1700.9"})
+        orch = Orch(sessions, flat=True)
+        await _working(orch, channel="D1", thread="1700.9")
+        assert session_events.resolve_session(orch, "D1", "1700.9", stop=True) == (
+            "1700.9",
+            "1700.9",
+            False,
+        )
+        outcome = await session_events.handle_stopped(
+            orch, stop_event(channel="D1", thread_ts="1700.9")
+        )
+        assert outcome == "soft"
+        assert [k for k, _ in sessions.stops] == ["1700.9"]
 
     @pytest.mark.asyncio
     async def test_a_dashboard_linked_thread_stops_its_owner_without_flat_dms(self) -> None:

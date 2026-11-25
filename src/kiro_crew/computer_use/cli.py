@@ -258,7 +258,12 @@ def build_doctor_report() -> dict:
 
     enabled = False
     try:
-        enabled = enable_state.is_enabled()
+        # One read: ``is_enabled`` fails soft to off, so a present file it could not use
+        # is named here from the same read the enable comes from.
+        state, state_problem = enable_state.load_state_for_report()
+        if state_problem is not None:
+            errors.append(state_problem)
+        enabled = enable_state.is_enabled(state)
     except Exception as exc:
         errors.append(f"could not read the computer-use state file: {exc}")
 

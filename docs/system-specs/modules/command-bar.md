@@ -44,8 +44,12 @@ request.
 
 The folders view is the cheapest of the four, and its shape follows from that. Its corpus is
 the folder tree the sidebar already holds under `['chat-folders']`, so a keystroke costs a local
-filter rather than a request. The view's own query key nests under that prefix
-(`['chat-folders', 'command-bar', 'view', sort, q]`), so every sidebar folder write that
+filter rather than a request. It offers the folders the Sessions list draws, by the same
+`foldersForSessionList` rule over the person's listed sessions: a Bot's home that none of them
+sits in has no row there, so the view leaves it and its folders out rather than offer a reveal
+that lands on nothing. The view's own query key nests under that prefix
+(`['chat-folders', 'command-bar', 'view', sort, q, listed]`, where `listed` names the folders the
+listed sessions sit in), so every sidebar folder write that
 invalidates `['chat-folders']` invalidates the view too: it has no minimum query length, where the two views above each
 hold their first characters back, and no row cap, because the count is the reader's own filing
 rather than a corpus that grows on its own. Entering the view pays for at most one folder read,
@@ -82,8 +86,8 @@ frames the root's attention group already uses (`mode === 'member'` and
 to its crew's exact name. That running set is part of the view's query KEY, not merely a
 dependency of the engine: rebuilding the engine does not re-run a resolved query, so without it
 a Bot that had finished would keep its busy dot for the rest of the stale window. The same key
-carries `placeholderData`, which is the cost of that decision paid back — this is the only view
-whose key moves on an event the reader did not cause, and without held-over rows a member slot
+carries `placeholderData`, which is the cost of that decision paid back — this view's key moves
+on an event the reader did not cause (as the folders view's does), and without held-over rows a member slot
 finishing anywhere in the dashboard blanks the list and the selection clamp pulls the reader's
 keyboard selection back to row 0 mid-typing. The indicator itself is the dot, colour, pulse AND
 WORD the bar already shows for a running session (`recentsProvider`'s own key): "agent is busy"
@@ -368,9 +372,14 @@ latched Enter act on a stale no-match or empty-crewmates row at the dead end whe
 another character.
 
 The query matching is not on its own enough for the Bots view, which holds its previous rows
-across a key change (see the running-set key above). That hold is scoped to the running set: rows
-are never held across a change of the query, because those answer the previous words while the
-debounced query already matches the new ones.
+across a key change (see the running-set key above), nor for the folders view, which holds them
+across a change of the listed sessions' folders or of the sort mode. Each hold covers every key
+part except the query: rows are never held across a change of the query, because those answer the
+previous words while the debounced query already matches the new ones. While the folders view
+re-derives, a held row can name a Bot home that just left the Sessions list, and picking it then
+lands on no row, the outcome the view otherwise rules out. That lasts as long as the
+re-derivation, which reads the folder list again once `['chat-folders']` is past its 30-second
+stale window.
 
 ## Keyboard and focus contract
 
@@ -474,6 +483,8 @@ debounced query already matches the new ones.
 | an older same-key read landing first defers the caret to the newer claim | a stale fulfilment focusing while the live read is still out, then its 404 stranding the typed text |
 | the `apps` query is a pure cache consumer (`enabled: false`) | a second identical fetch per open |
 | the folders view's query key nests under `['chat-folders']` (`CommandBarOverlay.folders.test.tsx`) | a sidebar folder write leaves the bar listing folders that were renamed, moved or deleted |
+| the folders view offers a Bot's home only while the Sessions list draws it, and its key carries the listed sessions' folders (`CommandBarOverlay.folders.test.tsx`) | a pick reveals a folder with no row and lands on nothing |
+| that query holds its rows across that key part, and the selection follows its row, in either direction (`CommandBarOverlay.folders.test.tsx`) | a session entering or leaving the list blanks the view, or moves the reader's selection onto another folder |
 | in split view the caret goes only to the pane whose `data-pane-slot` is the opened key (`paletteOpenSessionFocusesPaneComposer.test.tsx`) | keystrokes land in a pane bound to a session the gesture did not open |
 | every `['apps']` reader goes through the one api call | a divergent shape silently poisons the shared cache |
 | no builtin declares both `ui.overlays` and `ui.entry` | origin downgrade on restart refuses its own slot |

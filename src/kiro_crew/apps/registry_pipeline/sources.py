@@ -726,6 +726,9 @@ def _context_clone_sandbox_mode(git_url: str) -> str:
     else strict).  A companion can add
     further internal git hosts to the trusted set.  Any failure falls back to the
     bare module decision so the security gate never disappears.
+
+    Edition hooks may block, so never call this on the event loop: an async
+    caller awaits ``asyncio.to_thread(_context_clone_sandbox_mode, git_url)``.
     """
     if _git_target_is_unsupported(git_url):
         return "strict"

@@ -48,7 +48,7 @@ own repo.
 
 | Field | Rules |
 |-------|-------|
-| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install`, `register` and `market` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
+| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install`, `register` and `market` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. A folder or git install that takes a built-in app's name is not refused, but while that built-in still runs it keeps serving the name, so its routes and hooks run instead of the install's; the install message and the app's row (`shadowedBuiltin`) say so. |
 | `version` | Required. Semver (`major.minor.patch`, optionally with a pre-release or build suffix). Bump on every release. |
 | `displayName` | Required. Rendered in a fixed-width row that truncates, so keep it short. |
 | `description` | Required. Plain text, no markdown. Discover's list row shows one truncated line; the feature cards clamp to two; the detail page shows it in full. Two or three sentences is the useful range. |
@@ -204,7 +204,7 @@ Execution model:
   install <dir>`) copies and registers the app but does not run `onInstall`. Do
   any build step yourself while iterating locally.
 - An update of an enabled app re-runs `onEnable` once the new version is in
-  place. The update replaces the installed folder with a fresh copy that never
+  place. The update replaces the installed folder's files with a fresh copy that never
   carries `node_modules` or `.venv`, so an `onEnable` that installs them (for
   example `cd runtime && npm ci --omit=dev`) puts them back. Keep it idempotent.
   If it fails, the app stays enabled on the new version and the user is told
@@ -251,8 +251,10 @@ stock install.
 
 `dependencies.capabilities.mcp` is not `mcpServers`. `mcpServers` are servers
 your app itself provides and runs, and the gateway registers them into
-Kiro Crew's own agent config. `capabilities.mcp` are external servers your app
-merely consumes.
+Kiro Crew's own agent config. A user's own agent whose `tools` grants
+`tool_search` gets them too, with none of their tools auto-approved
+([agent spec fields](../../src/kiro_crew/docs/agent-spec-fields.md)).
+`capabilities.mcp` are external servers your app merely consumes.
 
 Resolved dependencies are recorded in a reference-counting ledger at
 `~/.kiro/crew/dependency-ledger.json`. On uninstall each declared dependency is

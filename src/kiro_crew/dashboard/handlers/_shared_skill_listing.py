@@ -585,7 +585,29 @@ def collect_skills_blocking(
     result.extend(workspace_rows)
     annotate_skills_with_agents(result, project_dir=project_dir)
     _qualify_colliding_package_rows(result, project_dir)
-    return _one_row_per_skill_file(result)
+    rows = _one_row_per_skill_file(result)
+    # ``list_kiro_skills`` reads top-level folders only, so a skill in a category folder
+    # (``utils/tiny-url``) reached through ``skills.extra_paths`` is listed under its bare
+    # key alone, while an agent's mapping of it reads back as ``kiro-user/utils/tiny-url``
+    # (``kiro-user/`` leads the catalog walk). A row in the user skills folder answers to
+    # that key too, or the skill editor flags the mapping as not installed. The
+    # loader spells each skill file resolved, so a linked folder is matched both ways.
+    user_root = Path.home() / ".kiro" / "skills"
+    user_roots = (user_root, Path(os.path.realpath(user_root)))
+    for row in rows:
+        if row.get("source") == "kiro-workspace":
+            continue
+        parent = Path(row.get("path") or "").parent
+        for root in user_roots:
+            try:
+                key = f"kiro-user/{parent.relative_to(root).as_posix()}"
+            except ValueError:
+                continue
+            aliases = list(row.get("aliases") or [])
+            if key != row.get("key") and key not in aliases:
+                row["aliases"] = [*aliases, key]
+            break
+    return rows
 
 
 def _qualify_colliding_package_rows(rows: list[dict[str, Any]], project_dir: Path | None) -> None:

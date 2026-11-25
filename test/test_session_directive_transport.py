@@ -126,6 +126,20 @@ class TestEnvelopeExtractorBoundaries:
         assert _mcp_content_text({"content": [{"type": "image", "data": "b64"}]}) is None
         assert _mcp_content_text({"content": [{"type": "text", "text": 7}]}) is None
 
+    def test_an_image_beside_the_text_leaves_the_row_the_text(self):
+        image = {"type": "image", "data": "QUJD" * 50_000, "mimeType": "image/png"}
+        served = {
+            "content": [{"type": "text", "text": "Browser screenshot saved: /s/a.png"}, image]
+        }
+        update = {
+            "toolCallId": "tc-5",
+            "status": "completed",
+            "rawOutput": {"items": [{"Json": served}]},
+        }
+        event = _build_tool_result_event(update)
+        assert event is not None
+        assert event.tool_output == "Browser screenshot saved: /s/a.png"
+
     def test_structured_json_payload_still_serialized(self):
         update = {
             "toolCallId": "tc-4",

@@ -33,6 +33,7 @@ _TO_DICT_KEYS = (
     "jev_route",
     "model_withheld",
     "served_model",
+    "engine_promoted_model",
     "reasoning_effort",
     "mode",
     "surface",
@@ -42,6 +43,8 @@ _TO_DICT_KEYS = (
     # "runs locally" from "the field is missing on an older gateway".
     "executor",
     "instance_id",
+    # A cron run's transcript reopened read-only, also on every slot.
+    "cron_run_read_only",
     # The row's identity, resolved server-side. `<instance_id>:<peer_key>` for a
     # remote-bound session, the slot key otherwise. The peer's own slot key is NOT
     # projected; this is what the sidebar needs from it.
@@ -77,6 +80,7 @@ _TO_DICT_KEYS = (
     "unread_failed",
     "waiting_for_input",
     "needs_input",
+    "needs_full_chat",
     "interrupted",
     "interrupted_stale",
     "interrupted_by_sign_in",
@@ -108,6 +112,7 @@ _TO_DICT_KEYS = (
     "pinned",
     "mutes_opened",
     "muted",
+    "source_links_off",
     "tags",
     "tags_revision",
     "color_index",

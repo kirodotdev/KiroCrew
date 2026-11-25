@@ -7,6 +7,7 @@ import {
   formatShortcut,
   type ShortcutDef,
 } from './useKeyboardShortcuts'
+import { keyCapGlyph, keyboardLayoutSnapshot, subscribeKeyboardLayout, type LayoutMap } from '../lib/shortcutRegistry'
 
 /**
  * Per-control shortcut hint for a left-rail nav row, DERIVED from the shortcut
@@ -76,9 +77,9 @@ export function ariaKeyshortcutsFor(def: ShortcutDef, mac: boolean = IS_MAC): st
   if (def.ctrl) mods.push('Control')
   if (def.alt) mods.push('Alt')
   if (def.shift) mods.push('Shift')
-  // Single characters are announced uppercase (matching the shipped Control+Z);
-  // named keys are already DOM `key` values and pass through as themselves.
-  const key = def.key.length === 1 ? def.key.toUpperCase() : def.key
+  // Single characters name the same key the visible hint does (upper-case
+  // letters, matching the shipped Control+Z); named keys are DOM `key` values.
+  const key = def.key.length === 1 ? keyCapGlyph(def.key, !!def.alt && mac) : def.key
   return [...mods, key].join('+')
 }
 
@@ -140,6 +141,14 @@ export function useShortcutsEnabled(): boolean {
   )
 }
 
+/**
+ * Re-renders the caller once the keyboard layout map arrives, so a chord label
+ * rendered at boot switches from the US glyph to the user's key. Returns the
+ * map for a memo that derives labels from it.
+ */
+export function useKeyboardLayout(): LayoutMap | null {
+  return useSyncExternalStore(subscribeKeyboardLayout, keyboardLayoutSnapshot, keyboardLayoutSnapshot)
+}
 
 export interface NavShortcutHint {
   /** Display chord for the eye, platform-formatted by `formatShortcut()`. */
@@ -157,6 +166,7 @@ export interface NavShortcutHint {
  * keypress that does nothing.
  */
 export function useNavShortcutHint(route: string): NavShortcutHint | null {
+  useKeyboardLayout()
   const enabled = useShortcutsEnabled()
   if (!enabled) return null
   const def = navShortcutDef(route)

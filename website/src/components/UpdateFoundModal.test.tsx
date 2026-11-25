@@ -3,7 +3,7 @@ import { useState, type ReactElement } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
-import { sseStatus, setUpdateProgress } from '../store/dashboardSlice'
+import { sseConnected, sseDisconnected, sseStatus, setUpdateProgress } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
@@ -201,8 +201,7 @@ describe('UpdateFoundModal — desktop source', () => {
     }
     const { container } = await mount(found)
     // Their consent prompt is the staged-build modal at `downloaded`; a popup
-    // here would claim "nothing downloads until you choose" while the main
-    // process is already downloading.
+    // here would ask about a download the main process has already started.
     expect(container.firstChild).toBeNull()
     expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
   })
@@ -268,7 +267,6 @@ describe('UpdateFoundModal — desktop source', () => {
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     expect(screen.getByTestId('update-found-preference-error')).toHaveTextContent(
       i18nT('pages.settings.aboutPanel.auto_download_unreadable'))
-    expect(screen.queryByText(i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to'))).toBeNull()
   })
 
   it('still asks when a later re-read fails, rather than trusting the older answer', async () => {
@@ -645,6 +643,63 @@ describe('UpdateFoundModal — gateway source', () => {
     await waitFor(() => expect(dialog()).toBeInTheDocument())
 
     expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument()
+  })
+
+  const restartReadyStatus: Partial<StatusData> = {
+    update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    update_restart_ready: true,
+  }
+
+  it('a restart request lost in transit while the gateway is still connected ends as failed at once', async () => {
+    // The gateway answers a Restart before it restarts, so a dropped request
+    // with the dashboard socket still up means no restart is coming.
+    mockedApi.restartGateway.mockRejectedValue(new TypeError('fetch failed'))
+    const store = gatewayStore(restartReadyStatus)
+    store.dispatch(sseConnected())
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    expect(await screen.findByTestId('update-found-action-error'))
+      .toHaveTextContent(i18nT('components.updateFoundModal.update_failed'))
+    expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
+    expect(byName('components.updateFoundModal.restart_to_update')).toBeEnabled()
+    expect(byName('components.updateFoundModal.dismiss')).toBeEnabled()
+    expect(byName('components.updateFoundModal.skip_this_version')).toBeEnabled()
+    expect(byName('components.updateFoundModal.remind_me_tomorrow')).toBeEnabled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(dialog()).not.toBeInTheDocument())
+  })
+
+  it('reads the connection when the restart request fails, not when it was sent', async () => {
+    // Connected at the click, dropped before the request fails: the restart
+    // the person asked for, so the popup stays on restarting.
+    let rejectRestart!: (e: unknown) => void
+    mockedApi.restartGateway.mockReturnValue(new Promise((_, reject) => { rejectRestart = reject }) as never)
+    const store = gatewayStore(restartReadyStatus)
+    store.dispatch(sseConnected())
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseDisconnected(null)) })
+    await act(async () => { rejectRestart(new TypeError('fetch failed')) })
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    expect(screen.queryByTestId('update-found-action-error')).toBeNull()
+    expect(byName('components.updateFoundModal.dismiss')).toBeDisabled()
+  })
+
+  it('a restart request that fails once the socket has dropped stays on restarting', async () => {
+    // The gateway went down under the request: the restart the person asked for.
+    mockedApi.restartGateway.mockRejectedValue(new TypeError('fetch failed'))
+    await mount(undefined, gatewayStore(restartReadyStatus))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    expect(screen.queryByTestId('update-found-action-error')).toBeNull()
   })
 
   it('an unrelated progress event before any apply here leaves the modal alone', async () => {

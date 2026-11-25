@@ -40,8 +40,12 @@ class _Tab:
         return dict(answer)
 
 
-PLAYING = {"ok": True, "ended": False, "duration": 200.0, "origin": "https://www.youtube.com"}
-ENDED = {"ok": True, "ended": True, "duration": 200.0, "origin": "https://www.youtube.com"}
+ORIGIN = "https://www.youtube.com"
+PLAYING = {"ok": True, "ended": False, "endId": None, "duration": 200.0, "origin": ORIGIN}
+#: The walker's answer once it counted the song's ending (``snapshot_walker.js``).
+ENDED = {"ok": True, "ended": True, "endId": "d0c:1", "duration": 200.0, "origin": ORIGIN}
+#: The next song's ending in the same document.
+ENDED_2 = {**ENDED, "endId": "d0c:2"}
 
 
 @pytest.fixture
@@ -119,10 +123,54 @@ async def test_a_new_song_ending_is_a_new_event(
     env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = _state(**{"tunes-1": "tunes"})
-    tab = _Tab([ENDED, ENDED, PLAYING, ENDED])
+    tab = _Tab([ENDED, ENDED, PLAYING, ENDED_2])
     monkeypatch.setattr(watch, "_read", tab.read)
     watch.ensure_watch(state, "tunes-1")
     await _run_until_reads(monkeypatch, tab, 6)
+    assert len(env.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_ending_whose_source_was_taken_away_is_still_one_event(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # YouTube removes the source when a song ends: the element reads paused at 0
+    # with no duration and is never ``ended`` itself. The walker counted the ending
+    # as it happened, so its ``endId`` moved and the hook is called once.
+    state = _state(**{"tunes-1": "tunes"})
+    emptied = {**ENDED, "ended": True, "duration": None, "paused": True, "currentTime": 0}
+    tab = _Tab([PLAYING, emptied])
+    monkeypatch.setattr(watch, "_read", tab.read)
+    watch.ensure_watch(state, "tunes-1")
+    await _run_until_reads(monkeypatch, tab, 5)
+    assert [event["duration"] for _app, _hook, event in env.sent] == [None]
+
+
+@pytest.mark.asyncio
+async def test_an_ended_element_the_tab_did_not_count_is_no_event(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An advert ending before the song on the same page: the element is ``ended``
+    # for a moment, but the walker drops it once the song plays, so ``endId`` stays.
+    state = _state(**{"tunes-1": "tunes"})
+    advert_over = {**PLAYING, "ended": True, "duration": 15.0}
+    tab = _Tab([PLAYING, advert_over, PLAYING])
+    monkeypatch.setattr(watch, "_read", tab.read)
+    watch.ensure_watch(state, "tunes-1")
+    await _run_until_reads(monkeypatch, tab, 5)
+    assert env.sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_ending_in_a_new_document_is_a_new_event(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A navigation starts the walker's count again under another document's id.
+    state = _state(**{"tunes-1": "tunes"})
+    tab = _Tab([ENDED_2, PLAYING, {**ENDED, "endId": "e1f:1"}])
+    monkeypatch.setattr(watch, "_read", tab.read)
+    watch.ensure_watch(state, "tunes-1")
+    await _run_until_reads(monkeypatch, tab, 5)
     assert len(env.sent) == 2
 
 

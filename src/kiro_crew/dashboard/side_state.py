@@ -129,13 +129,22 @@ class SideState:
         return str(entry["id"])
 
     def append_assistant(
-        self, content: str, ts: str = "", *, run_id: str = "", is_error: bool = False
+        self,
+        content: str,
+        ts: str = "",
+        *,
+        run_id: str = "",
+        is_error: bool = False,
+        redactions: list[dict[str, Any]] | None = None,
     ) -> str:
         """Append an assistant turn and return its id. ``is_error`` marks a row the
-        panel draws as a notice, the way the frame that announced it did."""
+        panel draws as a notice, the way the frame that announced it did;
+        ``redactions`` are the credential records its placeholders need."""
         entry = self._entry("assistant", content, ts, run_id)
         if is_error:
             entry["is_error"] = True
+        if redactions:
+            entry["redactions"] = redactions
         self.messages.append(entry)
         return str(entry["id"])
 

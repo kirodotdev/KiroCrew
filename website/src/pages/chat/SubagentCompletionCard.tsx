@@ -11,8 +11,8 @@
  * Render-only: the underlying message content is untouched, so the parent agent
  * still receives the complete result as context.
  */
-import { memo, useId } from 'react'
-import { Bot, CheckCircle2, AlertCircle, Square, ChevronDown, CircleDashed } from 'lucide-react'
+import { memo, useId, type ReactNode } from 'react'
+import { Bot, CheckCircle2, AlertCircle, Square, ChevronDown, CircleDashed, Loader2 } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -66,6 +66,8 @@ export function headline(parsed: ParsedSubagentCompletion): string {
 }
 
 const CHIP = 'shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded border'
+/** The card's chip geometry, for a caller's own chips (`CompletionCardFrame`'s `extraChips`). */
+export const CARD_CHIP = CHIP
 
 /**
  * Make a wave digest's per-agent outcomes readable without an emoji font.
@@ -122,10 +124,71 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const parsed = parseSubagentCompletionMessage(message)
-  const failed = parsed !== null && (parsed.kind === 'single' ? parsed.outcome === 'failed' : parsed.failed > 0)
+  if (!parsed) return null
+  return (
+    <CompletionCardFrame
+      parsed={parsed}
+      disclosureKey={disclosureKey}
+      onOpenPanel={onOpenPanel ? () => onOpenPanel(parsed) : undefined}
+      body={parsed.body ? (
+        // softBreaks: the payload is machine-composed plain text whose line
+        // structure carries meaning (one line per agent, an indented result
+        // path under it). Without hard breaks CommonMark collapses the
+        // digest into a single run-on paragraph.
+        <MarkdownRenderer
+          content={parsed.kind === 'batch' ? legibleDigest(parsed.body) : parsed.body}
+          onFileOpen={onFileOpen}
+          onFolderOpen={onFolderOpen}
+          onArtifactOpen={onArtifactOpen}
+          onSessionOpen={onSessionOpen}
+          sessions={sessions}
+          activeSession={activeSession}
+          messageTs={messageTs}
+          softBreaks
+          // The row's blocked-link records: a link the server blocked is its chip
+          // here too, never a live anchor.
+          blockedLinks={message.meta?.link_blocks}
+        />
+      ) : undefined}
+    />
+  )
+})
+
+/**
+ * The card a sub-agent outcome is drawn as: a state glyph, the headline, the outcome
+ * chips, Panel and Show details over a folded body. `SubagentCompletionCard` draws a
+ * `spawn_run` completion event with it; `EngineSubagentRecord` draws a turn's KAS
+ * engine sub-agents with it, live and after the turn.
+ */
+export function CompletionCardFrame({
+  parsed,
+  running = 0,
+  extraChips,
+  body,
+  disclosureKey,
+  onOpenPanel,
+  testId = 'subagent-completion-card',
+  detailsTestId,
+}: {
+  parsed: ParsedSubagentCompletion
+  /** How many of a live batch's sub-agents still run. Above zero the glyph spins
+   *  and the headline says how many run. */
+  running?: number
+  /** Chips drawn after the outcome chips (an engine batch's duration and credits). */
+  extraChips?: ReactNode
+  /** The folded body. Absent: no Show details control. */
+  body?: ReactNode
+  disclosureKey?: string
+  /** Opens the Subagents side panel. Absent: no Panel control. */
+  onOpenPanel?: () => void
+  testId?: string
+  /** The Show details control's test id. */
+  detailsTestId?: string
+}) {
+  const failed = parsed.kind === 'single' ? parsed.outcome === 'failed' : parsed.failed > 0
   // A run a gateway restart cut off mid-turn: a fragment of its output is on
   // disk, so it warns rather than alarming (failure) or reassuring (success).
-  const interrupted = parsed !== null && parsed.kind === 'single' && parsed.outcome === 'interrupted'
+  const interrupted = parsed.kind === 'single' && parsed.outcome === 'interrupted'
   // Anything that did not simply succeed opens expanded. The header can only say
   // THAT it failed or was cut short; the reason — an error, or where the orphaned
   // result was saved — is the reader's next question, and a digest already orders
@@ -135,7 +198,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   // Names the expanded body's scroll region after the headline. useId keeps it
   // unique when a transcript renders many cards.
   const headlineId = useId()
-  if (!parsed) return null
+  const live = running > 0
 
   const stopped = parsed.kind === 'single' && parsed.outcome === 'stopped'
   // The model the run actually served (issue #3582), shown as a chip on the
@@ -167,11 +230,14 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   return (
     <div
       className="rounded-md bg-accent/10 ring-1 ring-inset forced-colors:border ring-accent/20 overflow-hidden"
-      data-testid="subagent-completion-card"
+      data-testid={testId}
+      data-running={live || undefined}
     >
       <div className="flex items-center gap-2 px-3 py-2">
         <span className="shrink-0">
-          {failed ? (
+          {live ? (
+            <Loader2 size={15} className="text-accent animate-spin" data-testid="glyph-running" />
+          ) : failed ? (
             <AlertCircle size={15} className="text-danger" />
           ) : interrupted ? (
             <AlertCircle size={15} className="text-warn" data-testid="glyph-interrupted" />
@@ -187,7 +253,9 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               so its glyph gets sr-only words. */}
           {parsed.kind === 'batch' && (
             <span className="sr-only" data-testid="glyph-state">
-              {failed
+              {live
+                ? i18nT('pages.chat.subagentRunCard.state_running')
+                : failed
                 ? i18nT('pages.chat.subagentCompletionCard.state_some_failed')
                 : partial
                   ? i18nT('pages.chat.subagentCompletionCard.state_partial')
@@ -196,7 +264,9 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           )}
         </span>
         <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
-        <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">{headline(parsed)}</span>
+        <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">
+          {live ? i18nT('pages.chat.subagentRunCard.agent_running', { count: running }) : headline(parsed)}
+        </span>
         {parsed.kind === 'single' ? (
           <span
             className={`${CHIP} ${
@@ -296,7 +366,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           {onOpenPanel && (
             <button
               type="button"
-              onClick={() => onOpenPanel(parsed)}
+              onClick={onOpenPanel}
               title={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
               aria-label={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
               className="pi-morph flex items-center gap-1 text-[11px] leading-4 text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
@@ -305,12 +375,13 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               <span className="hidden sm:inline">{i18nT('pages.chat.subagentCompletionCard.panel')}</span>
             </button>
           )}
-          {parsed.body && (
+          {body && (
             <button
               type="button"
               onClick={() => setExpanded(e => !e)}
               aria-expanded={expanded}
               title={detailsLabel}
+              data-testid={detailsTestId}
               className="flex items-center gap-1 text-[11px] leading-4 text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
             >
               {detailsLabel}
@@ -319,6 +390,14 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           )}
         </div>
       </div>
+      {extraChips && (
+        // A row of its own that wraps, under the header: the header does not wrap,
+        // and at a phone's width more chips there would push Panel and Show details
+        // off the card.
+        <div className="flex flex-wrap items-center gap-1 px-3 pb-2 -mt-1" data-testid="subagent-card-extra-chips">
+          {extraChips}
+        </div>
+      )}
       {modelDowngraded && (
         // Visible (not hover-only) requested-vs-served text. The chip's tooltip
         // is invisible to touch / keyboard / screen-reader users, but the
@@ -339,7 +418,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           </span>
         </div>
       )}
-      {expanded && parsed.body && (
+      {expanded && body && (
         // max-h + overflow-y-auto: a wave digest grows one block per agent, so a
         // 7+-agent batch renders taller than the viewport. The body scrolls
         // internally past 24rem, so its height cannot displace the rows below.
@@ -362,28 +441,11 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
           tabIndex={0}
         >
-          {/* softBreaks: the payload is machine-composed plain text whose line
-              structure carries meaning (one line per agent, an indented result
-              path under it). Without hard breaks CommonMark collapses the
-              digest into a single run-on paragraph. */}
-          <MarkdownRenderer
-            content={parsed.kind === 'batch' ? legibleDigest(parsed.body) : parsed.body}
-            onFileOpen={onFileOpen}
-            onFolderOpen={onFolderOpen}
-            onArtifactOpen={onArtifactOpen}
-            onSessionOpen={onSessionOpen}
-            sessions={sessions}
-            activeSession={activeSession}
-            messageTs={messageTs}
-            softBreaks
-            // The row's blocked-link records: a link the server blocked is its chip
-            // here too, never a live anchor.
-            blockedLinks={message.meta?.link_blocks}
-          />
+          {body}
         </div>
       )}
     </div>
   )
-})
+}
 
 export default SubagentCompletionCard

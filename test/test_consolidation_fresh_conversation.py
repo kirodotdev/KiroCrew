@@ -227,6 +227,7 @@ async def test_the_reset_fallback_on_bg_does_not_resume_the_judges_history(tmp_p
 class _Client:
     def __init__(self, calls: list, *, fail: bool = False) -> None:
         self.last_prompt_stats = None
+        self.session_id = "sess-old"
         self._calls = calls
         self._fail = fail
 
@@ -235,11 +236,15 @@ class _Client:
         if self._fail:
             raise RuntimeError("refused")
 
+    async def cleanup_session(self, session_id: str) -> None:
+        self._calls.append(("cleanup", session_id))
+
 
 class _Sessions:
-    def __init__(self, client: object | None = None) -> None:
+    def __init__(self, client: object | None = None, *, fail_reset: bool = False) -> None:
         self.calls: list = []
         self.client = client if client is not None else _Client(self.calls)
+        self._fail_reset = fail_reset
 
     async def get_or_create(self, key: str, **_kw: object):
         self.calls.append(("acquire", key))
@@ -250,6 +255,10 @@ class _Sessions:
 
     async def reset(self, key: str, **kw: object) -> bool:
         self.calls.append(("reset", key, kw.get("ends_conversation")))
+        if self._fail_reset:
+            raise RuntimeError("reset failed")
+        # The replacement runtime reports its own conversation from here on.
+        self.client.session_id = "sess-new"
         return True
 
     def release(self, key: str) -> None:
@@ -298,11 +307,39 @@ async def test_a_raising_new_conversation_falls_back_to_reset():
     sessions = _Sessions(_Client(calls, fail=True))
     sessions.calls = calls
     await _one_turn(sessions)
-    assert calls[-3:] == [
+    # The reset only ends the old conversation's process; its record goes after.
+    assert calls[-4:] == [
         "new_conversation",
         ("reset", CONSOLIDATE_KEY, True),
+        ("cleanup", "sess-old"),
         ("release", CONSOLIDATE_KEY),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_reset_keeps_the_old_conversations_record():
+    calls: list = []
+    sessions = _Sessions(_Client(calls, fail=True), fail_reset=True)
+    sessions.calls = calls
+    await _one_turn(sessions)
+    assert ("reset", CONSOLIDATE_KEY, True) in calls
+    assert not [c for c in calls if c[0] == "cleanup"]
+
+
+class _ClearingClient(_Client):
+    async def new_conversation(self) -> None:
+        # A client whose failed swap resets its state reports an empty id afterwards.
+        self.session_id = ""
+        await super().new_conversation()
+
+
+@pytest.mark.asyncio
+async def test_the_record_deleted_is_the_id_held_before_a_failed_new_conversation():
+    calls: list = []
+    sessions = _Sessions(_ClearingClient(calls, fail=True))
+    sessions.calls = calls
+    await _one_turn(sessions)
+    assert ("cleanup", "sess-old") in calls
 
 
 @pytest.mark.asyncio
@@ -328,7 +365,7 @@ async def test_a_bg_provider_that_cannot_swap_in_place_is_recycled_not_reset():
         async with background_turn(sessions, task="skill_dedupe", fresh_conversation=True):
             pass
     assert "new_conversation" not in sessions.calls
-    assert not [c for c in sessions.calls if c[0] == "reset"]
+    assert not [c for c in sessions.calls if c[0] in ("reset", "cleanup")]
     assert sessions.calls[-1] == ("recycle", "_bg")
 
 

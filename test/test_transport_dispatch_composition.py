@@ -280,10 +280,13 @@ MOVED_MEMBERS = {
         "_handle_status",
         "_handle_unlink",
         "_run_reply_command",
+        "_apply_privacy_mode",
+        "_recorded_mode_refusal",
     ),
     "interactions": (
         "_interaction_actionable",
         "_interaction_reply",
+        "_on_autocomplete_interaction",
         "_on_command_interaction",
         "on_interaction",
     ),
@@ -299,6 +302,7 @@ MOVED_MEMBERS = {
         "_persist_turn",
         "_record_turn",
         "_session_restricted",
+        "_blocks_memory_reads",
         "_uploads_restricted",
     ),
 }
@@ -324,7 +328,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     ),
     "_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),
     "_channel_reply": ("function", False, "(self, channel_id: 'str') -> \"'ReplyFn'\""),
-    "_channel_turns": ("function", False, "(self) -> 'ChannelTurns'"),
+    "_channel_turns": ("function", False, "(self, images: 'Sequence[str]' = ()) -> 'ChannelTurns'"),
     "_configured_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_drain_queue": ("function", True, "(self, session_key: 'str') -> 'None'"),
     "_enqueue_with_receipt": (
@@ -349,7 +353,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, user_id: 'str', channel_id: 'str', thread_id: 'str', resumed_key: 'str | "
-            "None') -> 'None'"
+            "None', *, reply: \"'ReplyFn | None'\" = None) -> 'None'"
         ),
     ),
     "_handle_link": (
@@ -357,13 +361,16 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, user_id: 'str', channel_id: 'str', thread_id: 'str', resumed_key: 'str | "
-            "None') -> 'None'"
+            "None', *, reply: \"'ReplyFn | None'\" = None) -> 'None'"
         ),
     ),
     "_handle_model": (
         "function",
         True,
-        ("(self, channel_id: 'str', scope_id: 'str', session_key: 'str', arg: 'str') -> " "'None'"),
+        (
+            "(self, channel_id: 'str', scope_id: 'str', session_key: 'str', arg: 'str', *, "
+            "reply: 'ReplyFn | None' = None, user_id: 'str' = '') -> 'None'"
+        ),
     ),
     "_handle_resumed_busy": (
         "function",
@@ -383,13 +390,16 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, user_id: 'str', channel_id: 'str', thread_id: 'str', resumed_key: 'str | "
-            "None') -> 'None'"
+            "None', *, reply: 'ReplyFn | None' = None) -> 'None'"
         ),
     ),
     "_handle_unlink": (
         "function",
         True,
-        ("(self, user_id: 'str', channel_id: 'str', thread_id: 'str' = '') -> 'None'"),
+        (
+            "(self, user_id: 'str', channel_id: 'str', thread_id: 'str' = '', *, reply: "
+            "\"'ReplyFn | None'\" = None) -> 'None'"
+        ),
     ),
     "_inbound_session_key": (
         "function",
@@ -404,7 +414,10 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_interaction_reply": (
         "function",
         False,
-        ("(self, itx: \"'DiscordInteraction'\") -> \"'ReplyFn'\""),
+        (
+            "(self, itx: \"'DiscordInteraction'\") -> "
+            "\"'tuple[ReplyFn, Callable[[], Awaitable[None]]]'\""
+        ),
     ),
     "_live_cfg": ("function", False, "(self) -> \"'KiroCrewConfig'\""),
     "_maybe_notice": (
@@ -419,6 +432,11 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         "function",
         False,
         ("(self, session_key: 'str') -> 'tuple[tuple[str, str], ...]'"),
+    ),
+    "_on_autocomplete_interaction": (
+        "function",
+        True,
+        ("(self, itx: \"'DiscordInteraction'\") -> 'None'"),
     ),
     "_on_command_interaction": (
         "function",
@@ -450,8 +468,12 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         ),
     ),
     "_receipt_surface": ("function", False, "(self, channel_id: 'str') -> 'ReceiptSurface'"),
-    "_record_turn": ("function", True, "(self, record: 'TurnRecord') -> 'None'"),
-    "_render_config": ("function", False, "(self) -> 'tuple[bool, bool]'"),
+    "_record_turn": (
+        "function",
+        True,
+        "(self, record: 'TurnRecord', images: 'Sequence[str]' = ()) -> 'None'",
+    ),
+    "_render_config": ("function", False, "(self) -> 'tuple[bool, bool, bool]'"),
     "_resolve_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_routing_turn": (
         "function",
@@ -465,6 +487,21 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
             "(self, cmd: 'str', reply: \"'ReplyFn'\", *, user_id: 'str', thread_id: 'str', "
             "text: 'str') -> 'None'"
         ),
+    ),
+    # Added after the split, by the Discord !temporary / !incognito change.
+    "_apply_privacy_mode": (
+        "function",
+        True,
+        (
+            "(self, mode: 'str', session_key: 'str', user_id: 'str', say: \"'ReplyFn'\") "
+            "-> 'bool | None'"
+        ),
+    ),
+    "_blocks_memory_reads": ("function", True, "(self, session_key: 'str') -> 'bool'"),
+    "_recorded_mode_refusal": (
+        "function",
+        True,
+        "(self, mode: 'str', session_key: 'str') -> 'str | None'",
     ),
     "_scope_id": ("staticmethod", False, "(user_id: 'str', thread_id: 'str' = '') -> 'str'"),
     "_seed_gen": ("function", False, "(self, scope_id: 'str') -> 'int'"),
@@ -505,7 +542,8 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
             "(self, msg: 'InboundMessage', *, drain: 'bool' = True, interpret_commands: "
             "'bool' = True, origin_tag: 'str' = '', monitor_completion: "
             "'MonitorCompletionHook | None' = None, monitor_session_key: 'str | None' = "
-            "None, skill_trigger_text: 'str | None' = None) -> 'MonitorDispatchResult | None'"
+            "None, skill_trigger_text: 'str | None' = None, reply: 'ReplyFn | None' = None) -> "
+            "'MonitorDispatchResult | None'"
         ),
     ),
     "is_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),
@@ -810,7 +848,14 @@ def test_every_owner_logs_under_the_facades_name() -> None:
         for value in vars(_owner(stem)).values()
         if isinstance(value, logging.Logger)
     }
-    assert set(loggers) == {"commands", "interactions", "midturn", "model_picker", "spawn_approval"}
+    assert set(loggers) == {
+        "commands",
+        "interactions",
+        "ledger",
+        "midturn",
+        "model_picker",
+        "spawn_approval",
+    }
     assert {logger.name for logger in loggers.values()} == {FACADE}
     assert td.logger is logging.getLogger(FACADE)
 

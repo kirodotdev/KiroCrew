@@ -30,7 +30,31 @@ _HASH = "ab" * 32
 _TOKENS_KEY = f"kiro.mcp.{_HASH}.tokens"
 _CLIENT_KEY = f"kiro.mcp.{_HASH}.client"
 _PATH_CLIENT_KEY = f"kiro.mcp.{_HASH}.kiro-path-client"
-_ENGINE_KINDS = ("client", "kiro-path-client", "tokens", "verifier", "discovery")
+# Key shapes copied from KAS source, not from a running engine. ``kiro-path-tokens``
+# and ``first-party-document-refused`` are ``CredentialKind`` values keyed
+# ``kiro.mcp.<hash>.<kind>`` in ``mcp/oauth/credential-storage-manager.ts``; the
+# two client-secret keys come from ``mcp/oauth/client-secret-store.ts``. Each
+# shape's source commit and first stable release are in ``KAS_KEY_SOURCES``.
+KAS_KEY_SOURCES = {
+    "kiro-path-tokens": "kiro-team/kiro-agent 66107e986181, first in 0.66.121",
+    "first-party-document-refused": "kiro-team/kiro-agent 0b475fdfa4a2, first in 0.66.123",
+    "client-secret": "kiro-team/kiro-agent e14417703eaf, first in 0.66.135",
+    "client-secret-issuer": "kiro-team/kiro-agent e14417703eaf, first in 0.66.135",
+}
+_PATH_TOKENS_KEY = f"kiro.mcp.{_HASH}.kiro-path-tokens"
+_FIRST_PARTY_REFUSED_KEY = f"kiro.mcp.{_HASH}.first-party-document-refused"
+_CS_HASH = "cd" * 32
+_CS_KEY_NAME = f"kiro.mcp.client-secret.{_CS_HASH}"
+_ISSUER_KEY_NAME = f"kiro.mcp.client-secret-issuer.{_CS_HASH}"
+_ENGINE_KINDS = (
+    "client",
+    "kiro-path-client",
+    "tokens",
+    "kiro-path-tokens",
+    "verifier",
+    "discovery",
+    "first-party-document-refused",
+)
 _VERIFIER_KEY = f"kiro.mcp.{_HASH}.verifier"
 _DISCOVERY_KEY = f"kiro.mcp.{_HASH}.discovery"
 _IDP_SESSION_KEY = f"kiro.mcp.idp.{_HASH}.session"
@@ -47,7 +71,18 @@ def _server(tmp_path) -> kss.SecretStorageServer:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", [_TOKENS_KEY, _CLIENT_KEY, _PATH_CLIENT_KEY, _IDP_SESSION_KEY])
+@pytest.mark.parametrize(
+    "key",
+    [
+        _TOKENS_KEY,
+        _PATH_TOKENS_KEY,
+        _CLIENT_KEY,
+        _PATH_CLIENT_KEY,
+        _IDP_SESSION_KEY,
+        _CS_KEY_NAME,
+        _ISSUER_KEY_NAME,
+    ],
+)
 async def test_client_and_tokens_outlive_the_engine_process(tmp_path, key):
     first = _server(tmp_path)
     assert await first.answer(kss.METHOD_SECRET_GET, {"key": key}) == {}
@@ -79,7 +114,7 @@ async def test_every_engine_key_kind_is_served_and_only_the_grants_persist(tmp_p
         for kind in _ENGINE_KINDS
         if await fresh.answer(kss.METHOD_SECRET_GET, {"key": f"kiro.mcp.{_HASH}.{kind}"})
     }
-    assert survivors == {"client", "kiro-path-client", "tokens"}
+    assert survivors == {"client", "kiro-path-client", "tokens", "kiro-path-tokens"}
 
 
 @pytest.mark.asyncio
@@ -103,7 +138,7 @@ async def test_a_client_registration_moves_to_the_path_client_key(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", [_VERIFIER_KEY, _DISCOVERY_KEY])
+@pytest.mark.parametrize("key", [_VERIFIER_KEY, _DISCOVERY_KEY, _FIRST_PARTY_REFUSED_KEY])
 async def test_verifier_and_discovery_stay_in_this_process(tmp_path, key):
     server = _server(tmp_path)
     await server.answer(kss.METHOD_SECRET_STORE, {"key": key, "value": "pkce-verifier"})
@@ -117,14 +152,52 @@ async def test_verifier_and_discovery_stay_in_this_process(tmp_path, key):
 
 
 @pytest.mark.asyncio
+async def test_an_unknown_engine_kind_is_kept_in_memory_and_warned_once(tmp_path, caplog):
+    """A kind a newer engine adds keeps the connection working, in memory only."""
+    caplog.set_level(logging.WARNING, logger=kss.logger.name)
+    server = _server(tmp_path)
+    future = f"kiro.mcp.{_HASH}.future-kind"
+    other = f"kiro.mcp.{'ef' * 32}.future-kind"
+    await server.answer(kss.METHOD_SECRET_STORE, {"key": future, "value": "SECRET-v"})
+    assert await server.answer(kss.METHOD_SECRET_GET, {"key": future}) == {"value": "SECRET-v"}
+    await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": other})
+    await server.answer(kss.METHOD_SECRET_GET, {"key": f"kiro.mcp.{_HASH}.another"})
+
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": future}) == {}
+    assert not (tmp_path / "kas" / "mcp-grants" / ".vault" / "secrets.enc").exists()
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert "'future-kind'" in warnings[0] and "'another'" in warnings[1]
+    assert "SECRET" not in caplog.text and _HASH not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_known_in_memory_kinds_are_not_warned_about(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger=kss.logger.name)
+    server = _server(tmp_path)
+    for kind in _ENGINE_KINDS:
+        await server.answer(kss.METHOD_SECRET_GET, {"key": f"kiro.mcp.{_HASH}.{kind}"})
+    assert caplog.records == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "params",
     [
         {"key": "kiro.auth.refreshToken"},
-        {"key": f"kiro.mcp.{_HASH}.other"},
-        {"key": f"kiro.mcp.{_HASH}.kiro-path-clientx"},
-        {"key": f"kiro.mcp.{_HASH}.path-client"},
+        {"key": f"kiro.mcp.{_HASH}.Tokens"},
+        {"key": f"kiro.mcp.{_HASH}.{'a' * 33}"},
+        {"key": f"kiro.mcp.{_HASH}.tok.ens"},
+        {"key": f"kiro.mcp.{_HASH}."},
         {"key": f"kiro.mcp.{'AB' * 32}.kiro-path-client"},
+        {"key": f"kiro.mcp.client-secret.{'CD' * 32}"},
+        {"key": f"kiro.mcp.client-secret.{'cd' * 31}"},
+        {"key": f"kiro.mcp.client-secret.{_CS_HASH}\n"},
+        {"key": f"kiro.mcp.client-secret.{_CS_HASH}.tokens"},
+        {"key": f"kiro.mcp.client-secret-issuer.{'cd' * 31}"},
+        {"key": f"kiro.mcp.client-secrets.{_CS_HASH}"},
+        {"key": f"x.kiro.mcp.client-secret.{_CS_HASH}"},
+        {"key": f"kiro.mcp.other.{_CS_HASH}"},
         {"key": f"kiro.mcp.{'AB' * 32}.tokens"},
         {"key": f"kiro.mcp.{'ab' * 31}.tokens"},
         {"key": f"kiro.mcp.{_HASH}.tokens\n"},
@@ -134,7 +207,6 @@ async def test_verifier_and_discovery_stay_in_this_process(tmp_path, key):
         {"key": f"kiro.mcp.idp.{'AB' * 32}.session"},
         {"key": f"kiro.mcp.idp.{'ab' * 31}.session"},
         {"key": f"kiro.mcp.idp.{_HASH}.session\n"},
-        {"key": f"kiro.mcp.{_HASH}.session"},
         {"key": 7},
         {},
         "not-an-object",
@@ -153,10 +225,6 @@ async def test_keys_outside_the_mcp_namespace_are_refused(tmp_path, params, meth
 @pytest.mark.parametrize(
     ("key", "message"),
     [
-        (
-            f"kiro.mcp.{_HASH}.path-client",
-            "key kind 'path-client' is outside the MCP sign-in namespace",
-        ),
         (
             f"kiro.mcp.idp.{_HASH}.client",
             "key kind 'client' is outside the MCP sign-in namespace",
@@ -191,9 +259,9 @@ async def test_a_refused_secret_request_is_logged_at_warning(tmp_path, caplog):
         _server(tmp_path),
         5,
         kss.METHOD_SECRET_GET,
-        {"key": f"kiro.mcp.{_HASH}.path-client"},
+        {"key": f"kiro.mcp.idp.{_HASH}.client"},
     )
-    message = "key kind 'path-client' is outside the MCP sign-in namespace"
+    message = "key kind 'client' is outside the MCP sign-in namespace"
     assert runtime.errors == [(5, message)]
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert [r.getMessage() for r in warnings] == [f"MCP grant store request refused: {message}"]
@@ -728,13 +796,86 @@ async def test_a_repeated_get_with_the_same_answer_logs_once(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_the_path_tokens_entry_is_logged_like_tokens(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    server = _server(tmp_path)
+    await server.answer(kss.METHOD_SECRET_GET, {"key": _PATH_TOKENS_KEY})
+    await server.answer(kss.METHOD_SECRET_STORE, {"key": _PATH_TOKENS_KEY, "value": _TOKEN_VALUE})
+    assert _sign_in_lines(caplog) == [
+        f"MCP sign-in for server {_SERVER_ID}: no saved sign-in, the server will ask to sign in",
+        f"MCP sign-in for server {_SERVER_ID}: sign-in saved",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_client_secret_is_logged_under_its_own_label_never_its_value(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    secret = "cs-SECRET-77e1"
+    first = _server(tmp_path)
+    await first.answer(kss.METHOD_SECRET_GET, {"key": _CS_KEY_NAME})
+    await first.answer(kss.METHOD_SECRET_STORE, {"key": _CS_KEY_NAME, "value": secret})
+    await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _CS_KEY_NAME})
+    # The issuer key holds an issuer url, not a credential: not logged.
+    await first.answer(
+        kss.METHOD_SECRET_STORE, {"key": _ISSUER_KEY_NAME, "value": "https://SECRET"}
+    )
+
+    await first.answer(kss.METHOD_SECRET_DELETE, {"key": _CS_KEY_NAME})
+    await first.answer(kss.METHOD_SECRET_DELETE, {"key": _CS_KEY_NAME})
+
+    label = f"MCP client secret {_CS_HASH[:12]}"
+    assert _sign_in_lines(caplog) == [
+        f"{label}: none saved",
+        f"{label}: saved",
+        f"{label}: found",
+        f"{label}: cleared: it was the entry this engine last read or saved",
+        f"{label}: clear skipped: this engine holds no saved secret"
+        " (read none, or already cleared)",
+    ]
+    assert "SECRET" not in caplog.text and _CS_HASH not in caplog.text
+    assert "client-se" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_only_the_tokens_entry_is_logged(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger=kss.logger.name)
     server = _server(tmp_path)
     for key in (_CLIENT_KEY, _PATH_CLIENT_KEY, _VERIFIER_KEY, _DISCOVERY_KEY):
         await server.answer(kss.METHOD_SECRET_GET, {"key": key})
         await server.answer(kss.METHOD_SECRET_STORE, {"key": key, "value": "v"})
+        await server.answer(kss.METHOD_SECRET_DELETE, {"key": key})
     assert _sign_in_lines(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_clear_says_whether_it_removed_this_engines_copy_or_kept_the_entry(
+    tmp_path, caplog
+):
+    """Two engines on one vault: each clear names the branch it took."""
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    a, b = _server(tmp_path), _server(tmp_path)
+    await a.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "v1"})
+    await b.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "v2"})
+    caplog.clear()
+
+    await a.answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+    await b.answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+    await b.answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+    await a.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "v3"})
+    await _server(tmp_path).answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+
+    prefix = f"MCP sign-in for server {_SERVER_ID}: "
+    assert _sign_in_lines(caplog) == [
+        prefix
+        + "clear skipped: the saved sign-in is no longer the one this engine last read or saved"
+        " (replaced or already cleared)",
+        prefix + "cleared: it was the entry this engine last read or saved",
+        prefix
+        + "clear skipped: this engine holds no saved sign-in (read none, or already cleared)",
+        prefix + "sign-in saved",
+        prefix + "cleared without a check: this engine never read or saved it",
+    ]
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {}
 
 
 @pytest.mark.asyncio

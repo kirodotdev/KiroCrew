@@ -34,12 +34,23 @@ export interface LessonSavedRef {
   rule: string
   /** `updated` for a write that enriched a stored lesson, else `saved`. */
   status: 'saved' | 'updated'
+  /** The semantic row the write landed on (`lesson.<hex>`), when the store has
+   *  one: the link opens that exact lesson. */
+  key?: string
+  /** The named memory store the lesson was saved in; absent for global. */
+  store?: string
 }
 
 /** Where lessons are reviewed: the Memory view, landed on its lessons
  *  (`focus=lessons`): the Lessons card, or the Semantic browser filtered to
  *  `lesson.` rows when vector memory keeps them (pages/overview/MemoryTab). */
 export const LESSONS_ROUTE = '/settings/overview?view=memory&focus=lessons'
+
+/** The lessons route, opened on one saved lesson when its key is known
+ *  (`lesson=`: the Semantic browser pins and highlights that row). */
+export function lessonsRoute(key?: string, store?: string): string {
+  return LESSONS_ROUTE + (key ? `&lesson=${encodeURIComponent(key)}` : '') + (store ? `&store=${encodeURIComponent(store)}` : '')
+}
 
 export default function LessonSavedRow({ lesson }: { lesson: LessonSavedRef }) {
   const text = i18nT(
@@ -63,7 +74,7 @@ export default function LessonSavedRow({ lesson }: { lesson: LessonSavedRef }) {
         <BookOpen size={12} className="lucide-inline shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate" data-testid="lesson-saved-text">{text}</span>
         <Link
-          to={LESSONS_ROUTE}
+          to={lessonsRoute(lesson.key, lesson.store)}
           className="shrink-0 rounded-full px-1.5 py-0.5 text-accent hover:bg-accent-subtle"
           aria-describedby={descId}
           data-testid="lesson-saved-review"

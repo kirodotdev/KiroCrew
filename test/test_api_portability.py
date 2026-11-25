@@ -630,6 +630,232 @@ async def test_a_memory_export_names_no_unbundled_templates(monkeypatch) -> None
     assert whole.headers.get(module.UNBUNDLED_TEMPLATES_HEADER) == '["reviewer"]'
 
 
+def _install_app_record(
+    mc,
+    app_id: str,
+    *,
+    origin: str,
+    display_name: str | None = None,
+    manifest: str | None = None,
+    enabled: bool = True,
+    source: str | None = None,
+    source_url: str = "",
+) -> None:
+    """An app folder as an install leaves it: ``installed.json``, and ``app.json``
+    when *display_name* or a raw *manifest* text is given."""
+    entry = mc / "apps" / app_id
+    entry.mkdir(parents=True)
+    record = {
+        "name": app_id,
+        "version": "1.0.0",
+        "origin": origin,
+        "source": origin if source is None else source,
+        "sourceUrl": source_url,
+        "enabled": enabled,
+    }
+    (entry / "installed.json").write_text(json.dumps(record), encoding="utf-8")
+    if display_name is not None:
+        manifest = json.dumps({"name": app_id, "displayName": display_name, "version": "1.0.0"})
+    if manifest is not None:
+        (entry / "app.json").write_text(manifest, encoding="utf-8")
+
+
+async def _export_headers(monkeypatch, module, mc, query: str = "") -> dict[str, str]:
+    monkeypatch.setenv("KIROCREW_HOME", str(mc))
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    _patch_streaming_export(monkeypatch, module, plan=_FakePlan())
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+        assert response.status == 200
+        return dict(response.headers)
+
+
+@pytest.mark.asyncio
+async def test_a_whole_install_export_names_every_app_but_an_off_built_in(
+    monkeypatch, tmp_path
+) -> None:
+    """Every app that is on, and every app the person installed, is named as the Apps
+    page shows it, a damaged manifest or record by its id. A built-in that is off,
+    adopted onto its repository or not, arrives off on every install, so it is not."""
+    module = _handler_module()
+    adoption = importlib.import_module("kiro_crew.apps.builtin_adoption")
+    pinned = sorted(adoption.adoption_pin_names())[0]
+    mc = tmp_path / "home"
+    _install_app_record(mc, "notes", origin="builtin", display_name="Notes Board")
+    _install_app_record(mc, "quiet", origin="builtin", display_name="Quiet", enabled=False)
+    _install_app_record(
+        mc,
+        pinned,
+        origin="registry",
+        source=f"registry:{pinned}",
+        source_url=adoption.adoption_repository(pinned),
+        display_name="Adopted",
+        enabled=False,
+    )
+    _install_app_record(mc, "minimal-app", origin="local", display_name="Minimal App")
+    _install_app_record(mc, "parked", origin="local", display_name="Parked", enabled=False)
+    _install_app_record(mc, "broken", origin="registry", manifest="{not json")
+    _install_app_record(mc, "deep", origin="local")
+    (mc / "apps" / "deep" / "installed.json").write_text("[" * 100_000, encoding="utf-8")
+    (mc / "apps" / "not-installed").mkdir()
+
+    whole = await _export_headers(monkeypatch, module, mc)
+    memory = await _export_headers(monkeypatch, module, mc, "?components=memory")
+    # An uninstall that keeps the app's data leaves its folder without a record.
+    for leftover in ("installed.json", "app.json"):
+        (mc / "apps" / "parked" / leftover).unlink()
+    (mc / "apps" / "parked" / "data").mkdir()
+    after_uninstall = await _export_headers(monkeypatch, module, mc)
+
+    assert json.loads(whole[module.UNBUNDLED_APPS_HEADER]) == [
+        "broken",
+        "deep",
+        "Minimal App",
+        "Notes Board",
+        "Parked",
+    ]
+    assert module.UNBUNDLED_APPS_HEADER not in memory
+    assert json.loads(after_uninstall[module.UNBUNDLED_APPS_HEADER]) == [
+        "broken",
+        "deep",
+        "Minimal App",
+        "Notes Board",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_export_of_a_home_without_apps_names_none(monkeypatch, tmp_path) -> None:
+    module = _handler_module()
+    mc = tmp_path / "home"
+    mc.mkdir()
+
+    headers = await _export_headers(monkeypatch, module, mc)
+
+    assert module.UNBUNDLED_APPS_HEADER not in headers
+    assert not (mc / "apps").exists()
+
+
+@pytest.mark.asyncio
+async def test_the_app_notice_is_bounded_like_the_template_notice(monkeypatch, tmp_path) -> None:
+    module = _handler_module()
+    portability = importlib.import_module("kiro_crew.portability")
+    mc = tmp_path / "home"
+    total = portability.MAX_TEMPLATE_WARNINGS + 3
+    for i in range(total):
+        _install_app_record(mc, f"app-{i:02d}", origin="local")
+    long_name = "A" * (portability.MAX_TEMPLATE_NAME_CHARS + 10)
+    _install_app_record(mc, "long", origin="local", display_name=long_name)
+
+    headers = await _export_headers(monkeypatch, module, mc)
+
+    named = json.loads(headers[module.UNBUNDLED_APPS_HEADER])
+    assert named[0] == "A" * (portability.MAX_TEMPLATE_NAME_CHARS - 1) + "\u2026"
+    assert named[1:] == [f"app-{i:02d}" for i in range(19)] + ["+4"]
+
+
+def test_the_import_names_the_apps_this_machine_has_not_set_up(monkeypatch, tmp_path) -> None:
+    """The export records the apps its notice names; the import names each one this
+    machine lacks, or has off though it was on there. One that was off there and is
+    installed here is not named, and the import installs nothing."""
+    portability = importlib.import_module("kiro_crew.portability")
+    source, target = tmp_path / "source", tmp_path / "target"
+    _install_app_record(source, "notes", origin="builtin", display_name="Notes Board")
+    _install_app_record(source, "quiet", origin="builtin", display_name="Quiet", enabled=False)
+    _install_app_record(source, "minimal-app", origin="local", display_name="Minimal App")
+    _install_app_record(source, "parked", origin="local", display_name="Parked", enabled=False)
+    _install_app_record(target, "notes", origin="builtin", display_name="Notes", enabled=False)
+    _install_app_record(target, "parked", origin="local", display_name="Parked", enabled=False)
+    monkeypatch.setenv("KIROCREW_HOME", str(source))
+    archive, manifest = portability.create_export_zip()
+    zip_path = tmp_path / "export.zip"
+    zip_path.write_bytes(archive)
+    monkeypatch.setenv("KIROCREW_HOME", str(target))
+
+    summary = portability.apply_import_zip(zip_path, mode="merge")
+
+    assert summary.get("missing_apps") == ["Minimal App", "Notes Board"]
+    assert "missing_apps_more" not in summary
+    assert manifest.get("unbundled_apps") == [
+        {"id": "minimal-app", "name": "Minimal App", "enabled": True},
+        {"id": "notes", "name": "Notes Board", "enabled": True},
+        {"id": "parked", "name": "Parked", "enabled": False},
+    ]
+    assert sorted(entry.name for entry in (target / "apps").iterdir()) == ["notes", "parked"]
+
+
+def test_the_import_reads_the_archive_app_list_as_untrusted(monkeypatch, tmp_path) -> None:
+    """An id that is not an app name is skipped, a name is clipped, an unreadable
+    record here counts as off, and an archive with no list names none."""
+    portability = importlib.import_module("kiro_crew.portability")
+    mc = tmp_path / "home"
+    _install_app_record(mc, "here", origin="local")
+    _install_app_record(mc, "deep", origin="local")
+    (mc / "apps" / "deep" / "installed.json").write_text("[" * 100_000, encoding="utf-8")
+    monkeypatch.setenv("KIROCREW_HOME", str(mc))
+    long_name = "L" * (portability.MAX_TEMPLATE_NAME_CHARS + 5)
+    rows = [
+        {"id": "../escape", "name": "Escape", "enabled": True},
+        {"id": "here", "name": "Here", "enabled": True},
+        {"id": "deep", "name": "Deep", "enabled": True},
+        {"id": "gone", "name": "", "enabled": "no"},
+        {"id": "long", "name": long_name},
+        "junk",
+    ]
+
+    assert portability.apps_not_set_up({"unbundled_apps": rows}) == (
+        ["Deep", "gone", "L" * (portability.MAX_TEMPLATE_NAME_CHARS - 1) + "\u2026"],
+        0,
+        0,
+    )
+    assert portability.apps_not_set_up({"version": 3}) == ([], 0, 0)
+    assert portability.apps_not_set_up(None) == ([], 0, 0)
+
+
+def test_the_import_counts_the_apps_past_the_recorded_list(monkeypatch, tmp_path) -> None:
+    """The export counts the apps past `MAX_RECORDED_APPS`, and the import counts them,
+    with an archive list's own rows past the cap, as not checked here: never named and
+    never folded into `missing_apps_more`."""
+    portability = importlib.import_module("kiro_crew.portability")
+    # Shared by the facade and its owner, so patched through the facade (the mirror).
+    monkeypatch.setattr(portability, "MAX_RECORDED_APPS", 2)
+    source, target = tmp_path / "source", tmp_path / "target"
+    for app_id in ("app-a", "app-b", "app-c", "app-d", "app-e"):
+        _install_app_record(source, app_id, origin="local")
+    _install_app_record(target, "app-b", origin="local")
+    monkeypatch.setenv("KIROCREW_HOME", str(source))
+    archive, manifest = portability.create_export_zip()
+    _, memory_manifest = portability.create_export_zip(memory_only=True)
+    zip_path = tmp_path / "export.zip"
+    zip_path.write_bytes(archive)
+    monkeypatch.setenv("KIROCREW_HOME", str(target))
+
+    summary = portability.apply_import_zip(zip_path, mode="merge")
+
+    assert [app["id"] for app in manifest["unbundled_apps"]] == ["app-a", "app-b"]
+    assert manifest.get("unbundled_apps_past_cap") == 3
+    assert "unbundled_apps" not in memory_manifest
+    assert "unbundled_apps_past_cap" not in memory_manifest
+    assert summary.get("missing_apps") == ["app-a"]
+    assert "missing_apps_more" not in summary
+    assert summary.get("missing_apps_unlisted") == 3
+    rows = [{"id": f"x-{i}", "name": f"X{i}", "enabled": True} for i in range(5)]
+    listed = {"unbundled_apps": rows}
+    assert portability.apps_not_set_up({**listed, "unbundled_apps_past_cap": 4}) == (
+        ["X0", "X1"],
+        0,
+        7,
+    )
+    for bad in (True, -1, 0, 2.5, "9", None):
+        assert portability.apps_not_set_up({**listed, "unbundled_apps_past_cap": bad}) == (
+            ["X0", "X1"],
+            0,
+            3,
+        )
+    assert portability.apps_not_set_up({"unbundled_apps_past_cap": 9}) == ([], 0, 0)
+
+
 # --- The export streams, so the first byte does not wait for the whole build ---
 
 

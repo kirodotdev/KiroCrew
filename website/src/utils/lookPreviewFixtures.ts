@@ -1,4 +1,5 @@
 import { i18nT } from '../i18n/t'
+import type { SlotEnvironment } from '../api/client'
 import type { ChatMessage } from '../types'
 
 /**
@@ -10,7 +11,8 @@ import type { ChatMessage } from '../types'
  * transcript to show on.
  *
  * Fixtures, not state: the frame answers `GET /api/chat/slots` and the slot
- * detail from here (`api/client/chat.ts`) and ignores every socket frame
+ * detail from here (`api/client/chat.ts`), and the slot's Session Environment
+ * (`api/client/chatSlotSettings.ts`), and ignores every socket frame
  * (`hooks/useWebSocket.ts`), so nothing the user has is read into the preview
  * and nothing in the preview can be acted on.
  */
@@ -47,4 +49,9 @@ export function lookPreviewSlotDetail() {
     msg(8, 'assistant', 'components.lookPreview.turn_5_assistant'),
   ]
   return { messages, running: false, stopping: false, has_more: false, total: messages.length, next_before: 0, queue: [] }
+}
+
+/** This machine and no profiles: the composer's environment chip shows nothing. */
+export function lookPreviewSlotEnvironment(): SlotEnvironment {
+  return { profile: null, profiles: [] }
 }

@@ -10,6 +10,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import type { ChatPin } from '../../api/pins'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useDoneFlash } from '../../hooks/useDoneFlash'
 
 interface PinnedMessagesPanelProps {
   pins: ChatPin[]
@@ -19,7 +20,8 @@ interface PinnedMessagesPanelProps {
   mode?: string
   onJumpToMessage: (messageTs: string, mid?: string) => void
   /** Put a pinned USER message back in the composer (never sent). Absent: no such button. */
-  onPutInComposer?: (messageTs: string, mid?: string) => void
+  /** True when the text is in the composer now; anything else shows no done state. */
+  onPutInComposer?: (messageTs: string, mid?: string) => boolean | void
   onUnpin: (id: string) => void
 }
 
@@ -91,6 +93,8 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
   // answer either way.
   const [copyFeedback, setCopyFeedback] = useState<{ id: string; ok: boolean } | null>(null)
   const [linkFeedback, setLinkFeedback] = useState<{ id: string; ok: boolean } | null>(null)
+  // The pin whose Put in composer just ran.
+  const [put, flashPut] = useDoneFlash<string>()
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const linkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // A success is spoken by the polite live region below; the button title and
@@ -187,11 +191,16 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
               <div className="flex">
                 <Btn
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); onPutInComposer(pin.message_ts, pin.mid) }}
+                  onClick={(e) => { e.stopPropagation(); if (onPutInComposer(pin.message_ts, pin.mid) === true) flashPut(pin.id) }}
                   className={HOVER_NONE_ACTION_BTN_CLS}
+                  aria-label={i18nT('pages.chat.pins.put_in_composer')}
                 >
-                  <CornerDownLeft size={14} aria-hidden="true" />
-                  {i18nT('pages.chat.pins.put_in_composer')}
+                  {/* The text lands in the composer, which this panel can sit
+                      beside, so the button says it took for a moment. */}
+                  {put === pin.id ? <Check size={14} className="text-ok" aria-hidden="true" /> : <CornerDownLeft size={14} aria-hidden="true" />}
+                  {put === pin.id
+                    ? <span role="status" data-testid="pin-put-done">{i18nT('pages.chat.pins.put_in_composer_done')}</span>
+                    : i18nT('pages.chat.pins.put_in_composer')}
                 </Btn>
               </div>
             )}

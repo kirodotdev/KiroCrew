@@ -9,8 +9,10 @@ The MCP Tools repair and probe and the MCP Governance read stay in
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import platform as _plat
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.doctor_checks import agents, render
@@ -23,6 +25,25 @@ if TYPE_CHECKING:
 #: Mirrors ``agent._MAIN_AGENT_NAME``, which is private; the doctor row below
 #: reports on that spec because it is the one every default session resolves.
 _MAIN_AGENT_NAME = "kirocrew"
+
+
+@contextlib.contextmanager
+def _dry_projection() -> Iterator[None]:
+    """Silence WARNING records while the doctor projects a spec no session will run.
+
+    Each mirror logs a server it withholds as a starting session would, so without
+    this a stock report opens with one WARNING per mirror and withheld server, for
+    backends nobody selected, and appends the same lines to ``gateway.log``. The
+    ``mcp tool refs`` rows already say what each projection leaves out and why.
+    ``logging.disable`` is process-wide, which is fine in the short-lived
+    ``kirocrew doctor`` process and is why this lives here, not in the projection.
+    """
+    previous = logging.root.manager.disable
+    logging.disable(logging.WARNING)
+    try:
+        yield
+    finally:
+        logging.disable(previous)
 
 
 def _doctor_unresolved_mcp_refs() -> None:
@@ -51,8 +72,9 @@ def _doctor_unresolved_mcp_refs() -> None:
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, mirror_withheld_crew_refs
 
     try:
-        spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
-        by_design = mirror_withheld_crew_refs(_MAIN_AGENT_NAME)
+        with _dry_projection():
+            spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
+            by_design = mirror_withheld_crew_refs(_MAIN_AGENT_NAME)
     except Exception:
         # Triage must survive an unreadable spec or registry; the rows are advisory.
         return
@@ -163,10 +185,12 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
     AIM) is just as able to name a server nothing it is handed defines, and its
     sessions then run without that server's tools. Each agent is judged on the
     SELECTED backend only, through the same ``agent_spec_mcp_refs`` seam, with Kiro
-    Crew's default servers modelled as a spawn adds them, so an agent relying on
+    Crew's default servers modelled as a spawn adds them
+    (``acp.default_crew_servers.session_spec_on``), so an agent relying on
     ``@kirocrew-core`` is not reported where its spawn gets the server: on KAS
-    always, and on kiro-cli only while a spawn would project the skill view, the
-    one thing that carries it there. On kiro-cli the global settings file's servers are
+    always, on Claude Code and Codex in their ``session/new`` array, and on kiro-cli
+    only while a spawn would project the skill view, the one thing that carries it
+    there. On kiro-cli the global settings file's servers are
     counted too, for an agent that loads that file. Silent for a backend that
     runs no spec server at all (the selected-backend projection row says so) and
     for agents whose refs resolve.
@@ -179,32 +203,43 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
     install. Agent names and refs come off hand-editable files, so both are
     printed through ``_safe_display``.
     """
-    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, backend_delivers_spec_servers
+    from kiro_crew import crew_mode
+    from kiro_crew.agent_sdk.drivers.acp import (
+        agent_spec_mcp_refs,
+        backend_delivers_spec_servers,
+        default_crew_servers_pass,
+    )
 
     try:
         backend = cfg.agent.acp_backend
         if not backend_delivers_spec_servers(backend):
             return
+        # A spawn gives a Crew Mode conductor no app server; this process knows a
+        # custom ``agent.crew_mode_agent`` only from the config it loaded.
+        crew_mode.remember(cfg)
         names = _authored_agent_names()
     except Exception:
         # Triage must survive an unreadable agents directory; the rows are advisory.
         return
     label = agents._backend_policy_label(backend)
     reported = False
-    for name in names[:_AUTHORED_AGENT_REF_CHECK_CAP]:
-        try:
-            _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
-        except Exception:
-            continue
-        for _backend, unresolved, _has_mirror in rows:
-            if not unresolved:
+    # One read, for every agent, of the host state the default servers depend on.
+    with default_crew_servers_pass():
+        for name in names[:_AUTHORED_AGENT_REF_CHECK_CAP]:
+            try:
+                with _dry_projection():
+                    _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
+            except Exception:
                 continue
-            refs = ", ".join(render._safe_display(ref) for ref in unresolved)
-            print(
-                f"  mcp tool refs: \u26a0 agent {render._safe_display(name)} on {label}: "
-                f"Kiro Crew's projection delivers none of {refs}"
-            )
-            reported = True
+            for _backend, unresolved, _has_mirror in rows:
+                if not unresolved:
+                    continue
+                refs = ", ".join(render._safe_display(ref) for ref in unresolved)
+                print(
+                    f"  mcp tool refs: \u26a0 agent {render._safe_display(name)} on {label}: "
+                    f"Kiro Crew's projection delivers none of {refs}"
+                )
+                reported = True
     unchecked = len(names) - _AUTHORED_AGENT_REF_CHECK_CAP
     if unchecked > 0:
         print(f"  mcp tool refs: \u23f9 {unchecked} more authored agent(s) not checked")

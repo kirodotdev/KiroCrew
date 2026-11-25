@@ -41,6 +41,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS, DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -213,6 +214,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
 
         msgs = slot.messages
         ai_idx = -1
+        echo_idx = -1
         for i in range(len(msgs) - 1, -1, -1):
             role = msgs[i].get("role")
             # A taken-back steer keeps its row, text cleared, inside the turn it
@@ -233,8 +235,15 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # frontend's Regenerate scan runs the same skip.
             if is_system_notice("assistant", msgs[i].get("meta")):
                 continue
+            # A stored alternation placeholder is the target only when its turn has
+            # no other reply, so that turn re-runs (the dashboard offers no press there).
+            if is_stored_echo_row(msgs[i]):
+                echo_idx = i if echo_idx < 0 else echo_idx
+                continue
             ai_idx = i
             break
+        if ai_idx < 0:
+            ai_idx = echo_idx
         if ai_idx < 0:
             return web.json_response(
                 {"error": "no assistant message to regenerate", "code": "no_assistant_message"},
@@ -287,7 +296,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         _rv = ai_msg.get("variants")
         variants: list[dict] = list(_rv) if isinstance(_rv, list) else []  # type: ignore[arg-type]
         current_entry = variant_from_row(ai_msg)
-        if not any(v.get("content") == current_entry["content"] for v in variants):
+        # The placeholder is not a reply, so it is not kept as a variant.
+        if not is_stored_echo_row(ai_msg) and not any(
+            v.get("content") == current_entry["content"] for v in variants
+        ):
             variants.append(current_entry)
         if len(variants) > _MAX_VARIANTS:
             variants = _cap_keeping_shown(

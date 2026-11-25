@@ -192,7 +192,10 @@ def _sse_reply(queued: list[dict[str, Any]]) -> str:
 async def _openai_reply(queued: list[dict[str, Any]]) -> str:
     """The OpenAI-compatible (non-streaming) reply built from the queued rows."""
     slot = SimpleNamespace(
-        _pending=[*copy.deepcopy(queued), {"cls": "done"}], event=asyncio.Event(), task=None
+        _pending=[*copy.deepcopy(queued), {"cls": "done"}],
+        _stream_epoch=0,
+        event=asyncio.Event(),
+        task=None,
     )
 
     def _drain() -> list[dict[str, Any]]:
@@ -437,7 +440,6 @@ _NOT_PLAIN_ENDS = (
 _CONTINUATIONS = (
     f"{_TAIL} after.",
     _PARAM + _VALUE,
-    _PARAM[1:] + _VALUE,
     "M" + "a" * 23 + ".abcdef." + "b" * 27,
     "ey" + "J" + "hbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxIn0.sig" + "0" * 30,
     "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9fG",
@@ -452,6 +454,14 @@ def test_a_plain_sentence_end_is_released_and_joins_no_credential(run: str) -> N
     assert turn_reply_seams._ends_plain_sentence(run)
     for after in _CONTINUATIONS:
         assert turn_reply_seams._stands_alone(run, after), (run, after)
+
+
+@pytest.mark.parametrize("run", _PLAIN_ENDS)
+def test_a_named_token_after_a_plain_sentence_end_does_not_stand_alone(run: str) -> None:
+    """``token=<value>`` is masked on its own, but written straight after a ``.`` it joins
+    that run into one longer name and stays visible: the held run is not released early."""
+    assert turn_reply_seams._ends_plain_sentence(run)
+    assert not turn_reply_seams._stands_alone(run, _PARAM[1:] + _VALUE), run
 
 
 @pytest.mark.parametrize("run", _NOT_PLAIN_ENDS)

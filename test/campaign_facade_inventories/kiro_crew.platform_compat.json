@@ -158,6 +158,7 @@
   "proc_subtree_sample",
   "process_age_secs",
   "process_alarm_available",
+  "process_argv",
   "process_argv_fingerprint",
   "process_argv_matches_exact",
   "process_can_read_under_sandbox",

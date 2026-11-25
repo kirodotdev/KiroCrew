@@ -260,3 +260,19 @@ class TestNewestIsStopFlagClears:
         preview, _, stopped = after_reply.last_message_info(KEY)
         assert preview == "actually, hold on"
         assert stopped is False
+
+
+class TestPreviewSkipsAStoredAlternationPlaceholder:
+    def test_last_message_preview_skips_a_placeholder_row_for_the_older_reply(
+        self, tmp_path: Path
+    ) -> None:
+        placeholder = (
+            "(No assistant response was recorded for the preceding turn. This placeholder "
+            "was inserted automatically to preserve message alternation \u2014 it is not a "
+            "reply the assistant produced.)"
+        )
+        log = ConversationLog(base_dir=tmp_path)
+        log.append(KEY, "user", "two")
+        log.append(KEY, "assistant", "real reply B1")
+        log.append(KEY, "assistant", placeholder)
+        assert ConversationLog(base_dir=tmp_path).last_message_preview(KEY) == "real reply B1"

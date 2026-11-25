@@ -10,8 +10,10 @@ name: Issue Gate Retrigger
 # The gate reads the PR body and the issue labels from the API at run time, so
 # the re-run judges today's state; a PR that merely mentions the issue is judged
 # the same way. A gate that is green, still running, or has no run on the PR's
-# head is left alone. The re-run's completion reaches `PR Readiness` through
-# `pr-readiness-sweep.yml`, like any other re-run attempt.
+# head is left alone; an empty runs listing is first read through the head's
+# check-runs, so "no run" means neither names one. The re-run's completion
+# reaches `PR Readiness` through `pr-readiness-sweep.yml`, like any other
+# re-run attempt.
 #
 # Nothing here checks out or runs repository code, and the only event text the
 # script reads is the issue number.
@@ -22,6 +24,7 @@ on:
 
 permissions:
   actions: write # re-run the Issue Gate job
+  checks: read # the head's check-runs, read when its runs listing answers none
   issues: read # the issue's cross-reference timeline
   pull-requests: read # the referencing PRs' state and head
 
@@ -90,6 +93,46 @@ jobs:
               echo "::warning::PR #$pr: could not read its Issue Gate runs."
               failed=1
               continue
+            fi
+            # The head_sha listing is a filtered search that can answer no runs
+            # for a head whose runs exist, so an empty answer is read through
+            # the head's check-runs (every row, filter=all): an Actions job's
+            # check-run names its run as `details_url` =
+            # .../<repo>/actions/runs/<run id>/job/<job id>. Each named run is
+            # read and kept on the same terms as the listing's; ids ascend, so
+            # the newest kept run wins. A named run that cannot be read is
+            # unknown, never absent.
+            if [ -z "$run" ]; then
+              unreadable=0
+              if ! ids="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100&filter=all" \
+                --paginate \
+                --jq '.check_runs[] | (.details_url // "")
+                      | select(contains("/" + env.REPO + "/actions/runs/"))
+                      | split("/actions/runs/")[1] | split("/")[0]
+                      | select(test("^[0-9]+$"))')"; then
+                unreadable=1
+                ids=""
+              fi
+              for id in $(sort -un <<< "$ids"); do
+                if ! line="$(SHA="$sha" HEAD_REPO="$head_repo" HEAD_REF="$head_ref" gh api \
+                  "repos/$REPO/actions/runs/$id" \
+                  --jq 'select(.path == ".github/workflows/issue-gate.yml"
+                               and .event == "pull_request" and .head_sha == env.SHA
+                               and .head_repository.full_name == env.HEAD_REPO
+                               and .head_branch == env.HEAD_REF)
+                        | "\(.id) \(.status) \(.conclusion)"')"; then
+                  unreadable=1
+                  break
+                fi
+                if [ -n "$line" ]; then
+                  run="$line"
+                fi
+              done
+              if [ "$unreadable" = 1 ]; then
+                echo "::warning::PR #$pr: could not read the Issue Gate runs its head's check-runs name."
+                failed=1
+                continue
+              fi
             fi
             if [ -z "$run" ]; then
               echo "PR #$pr: no Issue Gate run on head $sha; left alone."

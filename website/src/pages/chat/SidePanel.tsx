@@ -38,7 +38,7 @@ import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
-import { MAX_TERMINALS_PER_CHAT, offerPanelView, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
+import { offerPanelView, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePinnedViews } from './usePinnedViews'
 import { usePanelTabDescriptors, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
 import { appIcon } from '../../apps/appIcons'
@@ -63,7 +63,7 @@ import type { ChatPin } from '../../api/pins'
 
 import { i18nT } from '../../i18n/t'
 import { UI_LOCATION_ATTR, uiLocation } from '../../uiLocations/uiLocation'
-import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, type SidePanelWithholdable } from './SidePanelAddMenu'
+import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, type AddMenuKind, type SidePanelWithholdable } from './SidePanelAddMenu'
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
 import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import type { ArtifactPanelHandle } from '../../components/ArtifactPanel'
@@ -98,6 +98,10 @@ export interface SidePanelLeadingTab {
   icon: ReactNode
   /** Preserve a visited body that owns drafts or a published iframe. */
   keepMounted?: boolean
+  /** While this tab is in front, the panel draws no tab strip: the body is the
+   *  whole panel (the phone's full-screen history search, which has its own
+   *  Cancel). */
+  bare?: boolean
   /** Body; query-only views normally mount just while active. */
   render: () => ReactNode
   /** Optional count / status pill after the label, for a tab whose headline
@@ -119,6 +123,9 @@ export interface SidePanelLeadingTab {
    *  May answer asynchronously, because the honest answer is usually a themed
    *  confirm dialog (`useConfirm`) rather than a synchronous guess. */
   onBeforeLeave?: () => boolean | Promise<boolean>
+  /** Gives the chip a close button, for a tab the host shows only while
+   *  something is open (the session chat's history search). */
+  onClose?: () => void
 }
 
 /** A leading tab that is a registered UI location: named in `segments` at the
@@ -197,7 +204,7 @@ interface SidePanelProps {
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
-  onPutPinInComposer?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => boolean | void
   onUnpin?: (id: string) => void
   /** Only shape the copyable deep link a pin row offers. */
   slotTitle?: string
@@ -256,7 +263,7 @@ interface SidePanelProps {
   onActiveTabChange?: (id: string | null) => void
   /** Is the whole panel mounted-but-invisible? A live app or browser tab keeps
    *  the subtree mounted through a close (its iframe / WebContentsView cannot
-   *  survive a remount), and the find pane hides it while owning the dock — so
+   *  survive a remount) — so
    *  "panel closed" is a visibility state, not an unmount. Tab bodies that bind
    *  document-level keys need it: the SELECTED tab is still selected while the
    *  panel is hidden, so tab selection alone does not mean the user can see it. */
@@ -275,6 +282,10 @@ interface SidePanelProps {
    *  panel always renders as the right column and the dock toggle is hidden,
    *  regardless of the global dock preference. */
   canDockBottom?: boolean
+  /** Opens the history search of the chat on screen, which the host owns and
+   *  draws. Absent where there is no chat to search: the + menu then offers
+   *  no Search row. */
+  onOpenHistorySearch?: () => void
 }
 
 /**
@@ -293,7 +304,7 @@ export default function SidePanel({
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
   leadingTabs, segments, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
-  viewTitles,
+  viewTitles, onOpenHistorySearch,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder } = tabsCtl
   const hiddenViews = hostHiddenViews
@@ -380,7 +391,7 @@ export default function SidePanel({
     summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
     crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModeOffered && !hiddenViews?.has('workers'),
   })
-  const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hasWorkflowRuns, hiddenViews, crewMode })
+  const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hasWorkflowRuns, hiddenViews, crewMode, searchAvailable: !!onOpenHistorySearch })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
@@ -462,6 +473,7 @@ export default function SidePanel({
   // withholds every slot view for the moment its thread POST is in flight), and
   // a stored focus on Files must come back as Files once the views return.
   useEffect(() => { onActiveTabChange?.(activeId) }, [activeId, onActiveTabChange])
+  const bareActive = !!leadingTabs?.find(t => t.id === activeId)?.bare
   activeLeadingIdRef.current = activeId
   // Closing the panel destroys the active tab's body exactly as switching away from it
   // does -- the host stops mounting the panel at all -- so it asks the same question a
@@ -515,17 +527,13 @@ export default function SidePanel({
   // Files header's per-project quick action (issue #1142) so the two entry
   // points cannot drift on WHERE the shell starts — that cwd is the whole point
   // of the affordance.
-  const [workspaceTerminalCapped, setWorkspaceTerminalCapped] = useState(false)
   const openProjectTerminal = useCallback(() => {
     // A remote session's terminal is a shell in its workspace, opened by the
     // gateway over `coder ssh`; unread placement is never permission to run
     // on the gateway. Read again after a pending leave confirmation.
     const placement = placementRef.current
-    if (placement) {
-      // At the per-chat cap with no workspace terminal to reuse, openTerminal
-      // opens nothing and returns ''; say so instead of doing nothing.
-      setWorkspaceTerminalCapped(!openTerminal({ remoteSlot: slot, title: placement.name }))
-    } else if (placement === null) openTerminal({ cwd: projectDir })
+    if (placement) openTerminal({ remoteSlot: slot, title: placement.name })
+    else if (placement === null) openTerminal({ cwd: projectDir })
   }, [openTerminal, projectDir, slot])
   // A folder a Side Chat reply names opens as a folder tab here, for this chat.
   // Stable, so the side transcript's row renderers are not rebuilt every render.
@@ -534,15 +542,16 @@ export default function SidePanel({
   // bodies). Held here rather than in the Files tab, which that fallback takes
   // out of view.
   const [externalTerminalNote, setExternalTerminalNote] = useState<ExternalTerminalFallbackNote | null>(null)
-  const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
+  const openMenuItem = useCallback((kind: AddMenuKind) => {
     const run = () => {
       if (kind === 'terminal') openProjectTerminal()
+      else if (kind === 'search') onOpenHistorySearch?.()
       else openView(kind)
     }
     const ask = leavingHook()
     if (!ask) { run(); return }
     void Promise.resolve(ask()).then(ok => { if (ok) run() })
-  }, [openProjectTerminal, openView, leavingHook])
+  }, [openProjectTerminal, openView, leavingHook, onOpenHistorySearch])
   // The side-terminal chord (#15174): hide the panel when a terminal is showing
   // (the tab and its shell stay), else focus this session's terminal or open one.
   const isHereTerminal = useCallback((t?: PanelTab) =>
@@ -729,7 +738,7 @@ export default function SidePanel({
           frameless Linux paint their caption controls — the panel chrome below
           would sit under them, covered and unclickable. Bottom-docked the strip
           is nowhere near that corner, so it takes no reserve. */}
-      <div data-dynamic-active={dynamicActive ? 'true' : undefined} className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}${summaryPinned ? ' side-panel-strip-summary-pinned' : ''}`}>
+      <div data-dynamic-active={dynamicActive ? 'true' : undefined} data-testid="side-panel-strip" className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}${summaryPinned ? ' side-panel-strip-summary-pinned' : ''}${bareActive ? ' !hidden' : ''}`}>
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
@@ -754,8 +763,8 @@ export default function SidePanel({
           className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none -mb-px"
           data-testid="side-panel-fixed-tabs"
         >
-          {/* The host's leading tabs, ahead of the pinned views: non-closable
-              chips, never Reorder items — they are the strip's identity, not
+          {/* The host's leading tabs, ahead of the pinned views: chips closable
+              only when the host passes `onClose`, never Reorder items — they are the strip's identity, not
               documents. Named by visible text and `host`'s aria-label; a
               badge rides after the label. No `role="tablist"` here —
               the strip already carries one on the dynamic group, and the
@@ -770,12 +779,12 @@ export default function SidePanel({
                   icon={lt.icon}
                   badge={lt.badge}
                   active={lt.id === activeId}
-                  closable={false}
+                  closable={!!lt.onClose}
                   pinned={false}
                   host
                   uiLocationId={segments?.find(seg => seg.key === lt.id)?.[UI_LOCATION_ATTR]}
                   onSelect={() => { void requestActive(lt.id, activeId) }}
-                  onClose={() => {}}
+                  onClose={lt.onClose ?? (() => {})}
                   testId={`side-panel-leading-tab-${lt.id}`}
                 />
               ))}
@@ -989,16 +998,6 @@ export default function SidePanel({
           link straight to it, inside the notice as its footer so the link reads
           as part of it. No hand-off: the adjacent chat composer can hold
           unsent text. */}
-      {workspaceTerminalCapped && (
-        <div className="shrink-0 px-3 pt-3">
-          <ErrorNotice
-            className="w-full"
-            message={i18nT('sessionEnvironments.workspaceTerminalCapped', { max: MAX_TERMINALS_PER_CHAT })}
-            onDismiss={() => setWorkspaceTerminalCapped(false)}
-            testId="side-panel-workspace-terminal-capped"
-          />
-        </div>
-      )}
       {externalTerminalNote && (
         <div className="shrink-0 px-3 pt-3">
           <ErrorNotice

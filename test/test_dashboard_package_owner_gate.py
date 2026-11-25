@@ -265,6 +265,22 @@ class TestTheStoredBindingIsAuthorizedToo:
             == ""
         )
 
+    def test_an_agent_socket_caller_is_gated_like_one_with_the_secret(self, worker: None) -> None:
+        """The agent socket carries no secret; token auth marks it ``internal_auth``.
+        Read as "no secret = the person", a worker on an enforced backend skipped the
+        stored-binding check and could rebind another crewmate's page."""
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.handlers import member_dashboard_fields as mdf
+
+        request = make_mocked_request("PUT", "/api/artifacts/atlas")
+        request["internal_auth"] = True
+        said = mdf.package_write_refusal(
+            request, _package_text("crewmate:nyx"), _package_text("crewmate:atlas")
+        )
+        assert said, "an agent-socket worker passes the gate as the person"
+        assert "atlas" in said
+
 
 class TestAnAppTokenCannotWriteAPackage:
     """An app token carries no internal secret, so the person's exemption must not be

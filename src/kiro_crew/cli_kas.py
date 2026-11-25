@@ -16,9 +16,11 @@ from pathlib import Path
 
 from kiro_crew.agent_sdk import kas_bundle
 from kiro_crew.agent_sdk.kas_bundle import (
-    KAS_PIN_MANIFEST_SHA256,
+    KAS_PIN_AL2_VERSION,
+    KAS_PIN_MANIFESTS,
     KAS_PIN_VERSION,
     KAS_VERSION_OVERRIDE_ENV,
+    host_pin_version,
     pinned_version,
 )
 
@@ -37,7 +39,8 @@ def add_kas_parser(parser: argparse.ArgumentParser) -> None:
         "--version",
         default=None,
         help=(
-            f"Engine version to install (default: this release's pin, {KAS_PIN_VERSION}). "
+            f"Engine version to install (default: this release's pin, {KAS_PIN_VERSION}; "
+            f"{KAS_PIN_AL2_VERSION} on a linux-x64 host below glibc 2.28). "
             "Any other version needs --unpinned"
         ),
     )
@@ -177,6 +180,9 @@ def _install_now(args: argparse.Namespace) -> int:
     from kiro_crew.config.loader import KiroCrewConfig
 
     on_progress = _progress_printer()
+    # This host's pin: the AL2 republish on a linux-x64 host below glibc 2.28.
+    pin = host_pin_version()
+    pin_sha256 = KAS_PIN_MANIFESTS[pin]
 
     try:
         # Before any "Fetching"/"Installing" line, so a host that cannot run the
@@ -201,7 +207,7 @@ def _install_now(args: argparse.Namespace) -> int:
                 print(f"❌ {manifest_path} is not a readable JSON manifest: {exc}", file=sys.stderr)
                 return 1
             manifest = kas_bundle.parse_manifest(manifest_doc)
-            want = args.version or KAS_PIN_VERSION
+            want = args.version or pin
             if manifest.version != want:
                 print(
                     f"❌ {manifest_path} describes KAS {manifest.version}, not {want}",
@@ -209,12 +215,11 @@ def _install_now(args: argparse.Namespace) -> int:
                 )
                 return 1
             if not args.unpinned and (
-                manifest.version != KAS_PIN_VERSION
-                or kas_bundle.sha256_bytes(manifest_bytes) != KAS_PIN_MANIFEST_SHA256
+                manifest.version != pin or kas_bundle.sha256_bytes(manifest_bytes) != pin_sha256
             ):
                 print(
                     f"❌ {manifest_path} is not the manifest this release pins "
-                    f"(KAS {KAS_PIN_VERSION}); pass --unpinned to install it anyway",
+                    f"(KAS {pin}); pass --unpinned to install it anyway",
                     file=sys.stderr,
                 )
                 return 1
@@ -223,10 +228,10 @@ def _install_now(args: argparse.Namespace) -> int:
                 return _report_installed(present, already=True)
             source = str(source_dir)
         else:
-            version = args.version or KAS_PIN_VERSION
-            if version != KAS_PIN_VERSION and not args.unpinned:
+            version = args.version or pin
+            if version != pin and not args.unpinned:
                 print(
-                    f"❌ this release pins KAS {KAS_PIN_VERSION}; pass --unpinned to install "
+                    f"❌ this release pins KAS {pin}; pass --unpinned to install "
                     f"{version} for testing",
                     file=sys.stderr,
                 )
@@ -241,7 +246,7 @@ def _install_now(args: argparse.Namespace) -> int:
             manifest, manifest_url = kas_bundle.fetch_manifest(
                 base,
                 version=version,
-                sha256=None if args.unpinned else KAS_PIN_MANIFEST_SHA256,
+                sha256=None if args.unpinned else pin_sha256,
             )
             source = manifest_url
 
@@ -253,7 +258,7 @@ def _install_now(args: argparse.Namespace) -> int:
         installed = kas_bundle.install_bundle(
             manifest, source=source, force=args.force, on_progress=on_progress
         )
-        if args.force and installed.version == KAS_PIN_VERSION:
+        if args.force and installed.version == pin:
             runs = kas_bundle.installed_bundle(version=installed.version)
             if runs is not None and runs.packaged:
                 print(
@@ -289,8 +294,8 @@ def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool
     # Decide the closing advice from the route the next spawn actually takes --
     # the same predicate `kirocrew doctor` reads (kas_bundle.kas_route) -- not from
     # agent.kas_bundle alone. With the flag off but no kiro-cli (or a signed-out
-    # one), the route resolves to the bundle automatically, so telling the user to
-    # "turn it on" contradicted doctor's "in use".
+    # one), the route resolves to the bundle automatically, and telling the user to
+    # "turn it on" would contradict doctor's "route: bundle" row.
     route = kas_bundle.kas_route()
     if not route.bundle:
         print(
@@ -327,8 +332,9 @@ def _status(_args: argparse.Namespace) -> int:
     runs = pinned_version()
     installed = kas_bundle.installed_bundle()
     print(f"bundle route:  {'on' if cfg.kas_bundle else 'off'}  (agent.kas_bundle)")
-    pin_note = "" if runs == KAS_PIN_VERSION else f"  ({KAS_VERSION_OVERRIDE_ENV} override)"
-    print(f"pinned:        KAS {KAS_PIN_VERSION}; runs {runs}{pin_note}")
+    pin = host_pin_version()
+    pin_note = "" if runs == pin else f"  ({KAS_VERSION_OVERRIDE_ENV} override)"
+    print(f"pinned:        KAS {pin}; runs {runs}{pin_note}")
     print(f"manifest base: {cfg.kas_bundle_url}")
     print(f"engines root:  {root}")
     others = [v for v in kas_bundle.installed_versions(root=root) if v != runs]
@@ -339,11 +345,12 @@ def _status(_args: argparse.Namespace) -> int:
         # Engine guarantee: a missing engine is a failure on any host that
         # can run one, whatever agent.kas_bundle says.
         return 0 if _host_unsupported_reason() else 1
-    where = (
-        "  (built into the wheel)"
-        if installed.packaged
-        else "  (built into the app)" if installed.bundled else ""
-    )
+    if installed.packaged:
+        where = "  (built into the wheel)"
+    elif installed.bundled:
+        where = "  (built into the app)"
+    else:
+        where = ""
     print(f"installed:     KAS {installed.version}, Node {installed.node_version or '?'}{where}")
     print(f"  engine: {installed.acp_server}")
     print(f"  node:   {installed.node_bin}")

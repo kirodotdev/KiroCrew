@@ -453,7 +453,8 @@ class TestResolveKirocrewBin:
         _real_isfile = os.path.isfile
 
         def _fake_isfile(p):
-            return p == str(fallback_bin) and _real_isfile(p)
+            # ``Path.is_file`` hands the path object itself over on CPython 3.14.
+            return os.fspath(p) == str(fallback_bin) and _real_isfile(p)
 
         old_val = agent_mod._KIROCREW_BIN
         try:

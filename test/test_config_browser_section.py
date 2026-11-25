@@ -161,6 +161,27 @@ class TestNormalization:
         # anything else is worth a line.
         assert warned is (raw not in ("30", " 15 ", None))
 
+    @pytest.mark.parametrize(
+        "raw",
+        ["\u00b2", "\u2460", "9" * 5000],
+        ids=["superscript-two", "circled-one", "5000-digits"],
+    )
+    def test_a_digit_string_the_int_reader_refuses_reads_as_the_default(self, raw, caplog):
+        caplog.set_level(logging.WARNING, logger="kiro_crew.config.loader")
+        assert BrowserLiveConfig.from_raw({"max_fps": raw}).max_fps == 60
+        assert SB.live_max_fps_resolution(raw) == 60
+        messages = [r.getMessage() for r in caplog.records]
+        assert sum("browser.live.max_fps" in m for m in messages) == 1
+
+    def test_a_config_file_with_an_unreadable_frame_rate_still_loads(self, cfg_home):
+        cfg_home.write_text(
+            json.dumps({"browser": {"live": {"max_fps": "\u00b2"}}}), encoding="utf-8"
+        )
+        assert KiroCrewConfig.load().browser.live.max_fps == 60
+
+    def test_a_non_ascii_digit_the_int_reader_accepts_still_reads_as_its_number(self):
+        assert BrowserLiveConfig.from_raw({"max_fps": "\u0663\u0660"}).max_fps == 30
+
     def test_a_non_bool_flag_reads_as_its_default(self):
         cfg = BrowserConfig.from_raw({"live": {"enabled": "no", "mask_passwords": 0}})
         assert cfg.live.enabled is True
@@ -201,7 +222,7 @@ class TestRoundTrip:
             # Unset: ``None`` and ``[]`` both mean "follow the edition's default".
             "credentials": {"enabled": None, "domains": []},
             "recording": {"enabled": True, "max_session_mb": 200, "max_total_mb": 1024},
-            "run": {"max_ops": 0, "max_repeats": 0},
+            "run": {"max_ops": 0, "max_repeats": 0, "max_minutes": 0},
         }
 
     def test_the_retired_first_run_flag_is_dropped_on_save(self, cfg_home):

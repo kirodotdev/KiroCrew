@@ -1,9 +1,8 @@
 /** The three list lanes: the conductor lane (sessions nested under the one that
  *  opened them), the flat lane (date segments, no folders) and the folder tree,
- *  with the drag overlay and the chat-pane drop target the flat and tree lanes
- *  share. */
+ *  with the drag overlay and the chat-area drop targets (the open chat, or each
+ *  Split View pane) the flat and tree lanes share. */
 import { Fragment } from 'react'
-import { createPortal } from 'react-dom'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { motion } from 'framer-motion'
 import { DndContext, DragOverlay, MeasuringStrategy, type Modifier } from '@dnd-kit/core'
@@ -17,7 +16,7 @@ import { SessionRowWindowContext } from '../chat/sessionRowWindow'
 import { slotActivityTs } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
-import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
+import { ChatDropZones, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
 import type { Slot } from './types'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
@@ -68,12 +67,12 @@ const SESSION_DRAG_GHOST_MODIFIERS = [offsetSessionDragGhost]
 
 /** The list lane renderers for one shell render. */
 export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
-  const { activeDrag, activeSlot, allHiddenFolders, chatDropTarget, citedCreatorExists, conductorExpanded,
+  const { activeDrag, dragOpenSlot, allHiddenFolders, citedCreatorExists, conductorExpanded,
     conductorMatching, conductorRows, dndSensors, flatSlots, folderCreateError, folderCreateMountAbsent,
     folderDragWithheld, folderNameMatchIds, folderReorderable, folderSubtrees, folders,
     handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragOver, handleSidebarDragStart,
-    heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, kindSections, laneRowWindow, laneScrollMemory,
-    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, pinned,
+    heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, keepCrewWorkerShown, kindSections, laneRowWindow, laneScrollMemory,
+    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, onShowSessionInPane,
     renderCrewGroups, renderFolderBlock, renderFolderCreateError, renderHiddenReveal,
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchHeader, searchLaneActive, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
@@ -91,10 +90,14 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
   const draggingRefRefusal = activeDrag?.type === 'session'
     ? sessionRefBlockReason({
       key: activeDrag.id,
-      activeSlot,
+      activeSlot: dragOpenSlot,
       memoryMode: localSlots.find(x => x.key === activeDrag.id)?.memory_mode,
     })
     : null
+  // The drag's target in the chat area, flat and tree lanes alike: in Split View
+  // one per pane, otherwise the open chat's composer.
+  const chatDropZone = activeDrag?.type !== 'session' ? null
+    : <ChatDropZones draggedKey={activeDrag.id} onShow={onShowSessionInPane} takesReference={!!onDropSessionRef} refusal={draggingRefRefusal} />
   // True while dragging a folder that currently has a parent — the only case
   // where "drop on the root lane to move to top level" applies.
   const draggingNestedFolder = activeDrag?.type === 'folder' && !!folders.find(f => f.id === activeDrag.id)?.parent_id
@@ -111,7 +114,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     // under their conductor, as they do inside a folder.
     const rootFold = foldCodeChannelCrews(ungroupedSlots, rootSplit.fresh, rootSplit.stale, {
       narrowed: listNarrowed || slotFilter.trim() !== '', expanded: conductorExpanded,
-      keepShown: w => isActiveRow(w) || pinned.has(w.key),
+      keepShown: keepCrewWorkerShown,
       signals: crewSignalsFrom({ isRunning: sidebarRows.isRunning, subagentApprovalCounts, unreadSet }),
     })
     const freshRootRaw = rootFold.fresh
@@ -125,10 +128,8 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
           <PinnedSessionDivider caption={pinnedBandCaption} />
         )}
         {freshRoot.map((s, i) => {
-          const nextIsActive = isActiveRow(freshRoot[i + 1])
-          const isActive = isActiveRow(s)
-          const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
-            && !startsAutomaticSection(freshRoot, i + 1) && !rootHeaders[i + 1]
+          const dividerNext = i < freshRoot.length - 1
+            && !startsAutomaticSection(freshRoot, i + 1) && !rootHeaders[i + 1] ? freshRoot[i + 1] : null
           const kindHeader = rootHeaders[i]
           const crew = rootFold.viewOf(s)
           const openWorkers = crew ? rootFold.openWorkersOf(s) : null
@@ -139,10 +140,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
             <Fragment key={sessionRowIdentity(s)}>
               {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
               {kindHeader && <KindSectionHeader kind={kindHeader} />}
-              {renderSessionRow(s, 0, showDivider && !crewWorkers, treeRootScope, treeRootScope, treeRootContainer, undefined, undefined, crew)}
+              {renderSessionRow(s, 0, crewWorkers ? null : dividerNext, treeRootScope, treeRootScope, treeRootContainer, undefined, undefined, crew)}
               {crewWorkers && (
                 <CodeChannelCrewWorkers conductorId={sessionRowIdentity(s)}>
-                  {crewWorkers.map((w, j) => renderSessionRow(w, 1, j < crewWorkers.length - 1 && !isActiveRow(w) && !isActiveRow(crewWorkers[j + 1]), treeRootScope, treeRootScope, crewHold!.container))}
+                  {crewWorkers.map((w, j) => renderSessionRow(w, 1, crewWorkers[j + 1] ?? null, treeRootScope, treeRootScope, crewHold!.container))}
                 </CodeChannelCrewWorkers>
               )}
             </Fragment>
@@ -327,8 +328,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
 
               return rows.map((row, i) => {
                 const next = i < rows.length - 1 ? rows[i + 1] : null
-                const isActive = isActiveRow(row.slot)
-                const showDivider = next != null && !isActive && !isActiveRow(next.slot) && !rootHeaderAt.get(i + 1)
+                const dividerNext = next != null && !rootHeaderAt.get(i + 1) ? next.slot : null
                 const kindHeader = rootHeaderAt.get(i)
                 return (
                   <Fragment key={row.id}>
@@ -340,7 +340,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                      *  beside it narrowed the card: its title truncated early, its own
                      *  divider stopped short of the row, and the counts took the column
                      *  the top line keeps for the time. */}
-                    {renderSessionRow(row.slot, row.depth, showDivider, 'conductor', 'conductor', 'conductor', {
+                    {renderSessionRow(row.slot, row.depth, dividerNext, 'conductor', 'conductor', 'conductor', {
                       depth: row.depth,
                       childCount: row.childCount,
                       expanded: row.expanded,
@@ -388,8 +388,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
           // Inactive without folders (the toggle is hidden then too), so a
           // persisted flat preference can never strand the user.
           //
-          // Its DndContext carries EXACTLY ONE target: the chat pane. No
-          // SortableContext and no folder droppables are registered, so
+          // Its DndContext carries the chat-area targets (the chat pane, or
+          // each pane in Split View). No SortableContext and no folder
+          // droppables are registered, so
           // dragging a session into the open chat works here just as it does in
           // the tree, while row order stays a pure function of the sort key —
           // there is nothing for a drop inside the lane to land on. (Order is
@@ -401,11 +402,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
             measuring={dndMeasuring}
             onDragStart={handleSidebarDragStart} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
             <DndActiveProbe report={reportDndActive} />
-            {chatDropTarget && onDropSessionRef && activeDrag?.type === 'session'
-              && createPortal(
-                <ChatPaneDropZone refusal={draggingRefRefusal} />,
-                chatDropTarget,
-              )}
+            {chatDropZone}
             <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
             <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {/* Flat view renders no folder headers, so the per-folder mount
@@ -425,11 +422,13 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
                 // date sorts (segments mislead on name/created order, same
                 // guard as the history pane), and pinned rows render first
-                // without segments since pinning overrides date order.
+                // without segments since pinning overrides date order, as do
+                // the running rows "In progress, then newest" lifts above the rest.
                 // A search orders by relevance, so date segments would mislabel it.
-                const isDateSort = !searchLaneActive && (sortKey === 'date-desc' || sortKey === 'date-asc')
+                const isDateSort = !searchLaneActive && (sortKey === 'date-desc' || sortKey === 'date-asc' || sortKey === 'active-then-date')
+                const undated = (s: Slot) => sidebarRows.isPinned(s) || (sortKey === 'active-then-date' && sidebarRows.isRunning(s))
                 // Hoisted above the hold so the pixel anchor can count header heights.
-                const baseSeg = (s: Slot) => (isDateSort && !sidebarRows.isPinned(s) ? dateSegment(slotActivityTs(s)) : '')
+                const baseSeg = (s: Slot) => (isDateSort && !undated(s) ? dateSegment(slotActivityTs(s)) : '')
                 // "Group by kind": the unpinned rows by section, each in lane order.
                 const flatOrdered = sectionRows(flatSlots, sidebarRows.isPinned, kindSections)
                 const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatOrdered, 'flat', 'flat', baseSeg, sectionRankOf(sidebarRows.isPinned, kindSections))
@@ -452,12 +451,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                   const showHeader = seg !== '' && seg !== prevSeg
                   if (seg) prevSeg = seg
                   const next = i < flatRows.length - 1 ? flatRows[i + 1] : null
-                  const nextIsActive = isActiveRow(next)
-                  const isActive = isActiveRow(s)
                   // No divider before a segment header — the header separates.
                   const nextSeg = next ? segOf(next) : seg
-                  const showDivider = next != null && !isActive && !nextIsActive && nextSeg === seg
-                    && !startsAutomaticSection(flatOrdered, i + 1) && !flatHeaders[i + 1]
+                  const dividerNext = next != null && nextSeg === seg
+                    && !startsAutomaticSection(flatOrdered, i + 1) && !flatHeaders[i + 1] ? next : null
                   return (
                     <Fragment key={sessionRowIdentity(s)}>
                       {startsAutomaticSection(flatOrdered, i) && <PinnedSessionDivider />}
@@ -465,7 +462,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                       {showHeader && (
                         <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}
-                      {renderSessionRow(s, 0, showDivider, flatLaneScope, flatLaneScope, flatHoldContainer)}
+                      {renderSessionRow(s, 0, dividerNext, flatLaneScope, flatLaneScope, flatHoldContainer)}
                     </Fragment>
                   )
                 })
@@ -520,11 +517,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                *  React portals preserve context, and useDroppable measures the
                *  node where it actually renders. Mounted only during a session
                *  drag, and only when a pane and a handler exist. */}
-              {chatDropTarget && onDropSessionRef && activeDrag?.type === 'session'
-                && createPortal(
-                  <ChatPaneDropZone refusal={draggingRefRefusal} />,
-                  chatDropTarget,
-                )}
+              {chatDropZone}
               {/* Root lane is the fallback drop target: dropping a session on
                *  empty space (not over a folder) ungroups it (folderId: null). */}
               <DndDroppable id="root-lane" data={{ type: 'folder-drop', folderId: null }}>

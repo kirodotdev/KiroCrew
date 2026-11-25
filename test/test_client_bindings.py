@@ -17,7 +17,9 @@ port see the same object they always did. This file pins the binding contract:
   every name the test trees patch there (the facade's mirror, ``_facade_mirror``);
 * the class statement lives in ``client_class`` and still names the facade as its module,
   for reprs, pickles and type hints;
-* the facade fills the session start's ``_resolve_spawn_env``, which stays defined there.
+* the session start binds ``_resolve_spawn_env`` from ``client_spawn_env``, which defines
+  it, and no owner declares a name for the facade to fill, so each owner is complete in a
+  process that never imports the facade.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_agent_turn_pending": ("function", False, "a6632a57e602", "client_transport"),
     "_agent_turn_start": ("data", False, "", ""),
     "_antigravity_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
-    "_append_member_dispatch_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
+    "_append_member_dispatch_server": ("function", False, "e22253e379eb", "client_mcp_array"),
     "_append_member_panel_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
     "_apply_session_identity_env": ("function", False, "1b5cd29daa82", "client_spawn_env"),
     "_apply_session_permission_routing": ("function", True, "b60c5fea256e", "client_permissions"),
@@ -378,6 +380,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_model": ("function", True, "bcd0cd3aa159", "client_model_selection"),
     "set_resume_session_id": ("function", False, "df97aaea4e38", "client_lifecycle"),
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_class"),
+    "settings_withheld_reason": ("function", False, "e5abe83e2f2f", "client_class"),
     "shutdown": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "spec_zero_tools": ("property", False, "a6632a57e602", "client_class"),
     "steer": ("function", True, "19314a5fce4a", "client_turn_control"),
@@ -507,6 +510,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
     "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_seed_ownership"),
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_seed_ownership"),
+    "settings_withheld_reason": ("function", False, "e5abe83e2f2f", "client_seed_ownership"),
 }
 
 #: ``GooseAcpClient``'s own members: what only a goose session does, bound from the goose
@@ -1204,15 +1208,19 @@ def test_a_facade_patch_of_the_class_reaches_its_class_resident_statics(
 
 
 # --------------------------------------------------------------------------- #
-# The session start reads ``_resolve_spawn_env``, which the facade defines and fills in.
+# The session start reads ``_resolve_spawn_env`` from the owner that defines it, and no
+# owner waits for the facade to fill a name.
 # --------------------------------------------------------------------------- #
 
 
-def test_the_facade_fills_the_session_starts_spawn_env_resolver() -> None:
-    from kiro_crew.acp import client_start
+def test_the_session_start_binds_the_spawn_env_resolver_its_owner_defines() -> None:
+    from kiro_crew.acp import client_spawn_env, client_start
 
-    assert client_start._resolve_spawn_env is vars(acp_client)["_resolve_spawn_env"]
-    assert client_start._resolve_spawn_env.__module__ == acp_client.__name__
+    resolver = vars(client_spawn_env)["_resolve_spawn_env"]
+    assert resolver.__module__ == client_spawn_env.__name__
+    assert client_start._resolve_spawn_env is resolver
+    assert vars(acp_client)["_resolve_spawn_env"] is resolver
+    assert vars(acp_client)["_resolve_ssh_auth_sock"] is client_spawn_env._resolve_ssh_auth_sock
     spawn = inspect.unwrap(client_start._spawn)
     codes, names = [spawn.__code__], set()
     while codes:  # the read sits in a nested function of the spawn
@@ -1238,13 +1246,69 @@ def test_a_facade_patch_of_the_spawn_env_resolver_reaches_the_session_start(
     assert client_start._resolve_spawn_env is before
 
 
+def _names_left_for_another_module(tree: ast.Module) -> list[str]:
+    """Module-level names *tree* annotates and never binds: a slot another module fills."""
+    bound: set[str] = set()
+    declared: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            bound.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            bound.update(a.asname or a.name for a in node.names)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound.update(n.id for t in node.targets for n in ast.walk(t) if isinstance(n, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            (declared if node.value is None else bound).add(node.target.id)
+    return sorted(declared - bound)
+
+
+def _writes_onto_a_module(tree: ast.Module) -> list[int]:
+    """Lines where *tree*, at module level, assigns an attribute of a module it imported."""
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module == _PACKAGE:
+            modules.update(a.asname or a.name for a in node.names)
+    lines: list[int] = []
+    for node in tree.body:
+        for target in node.targets if isinstance(node, ast.Assign) else []:
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
+                if target.value.id in modules and not target.attr.startswith("__"):
+                    lines.append(node.lineno)
+    return lines
+
+
+def test_the_slot_scans_can_fail() -> None:
+    tree = ast.parse(
+        "from kiro_crew.acp import client_start as _start\n"
+        "import os\n"
+        "_hook: int\n"
+        "_bound: int = 1\n"
+        "_start._hook = 2\n"
+        "os.environ = {}\n"
+    )
+    assert _names_left_for_another_module(tree) == ["_hook"]
+    assert _writes_onto_a_module(tree) == [5, 6]
+
+
+@pytest.mark.parametrize("owner", acp_client._CLIENT_OWNERS)
+def test_no_owner_leaves_a_name_for_the_facade_to_fill(owner: str) -> None:
+    assert _names_left_for_another_module(_tree(sys.modules[owner])) == []
+
+
+def test_the_facade_writes_no_name_onto_another_module() -> None:
+    assert _writes_onto_a_module(_tree(acp_client)) == []
+
+
 def _imports_the_session_start(tree: ast.Module) -> bool:
     return f"{_PACKAGE}.client_start" in _owner_imports(tree)
 
 
 def test_only_the_facade_and_the_class_import_the_session_start() -> None:
-    """Nothing reaches ``client_start`` before the facade has filled it: the package
-    imports the facade first, and the class module is the only other importer."""
     src = Path(acp_client.__file__ or "").resolve().parents[1]
     importers = sorted(
         path.relative_to(src).as_posix()
@@ -1253,9 +1317,6 @@ def test_only_the_facade_and_the_class_import_the_session_start() -> None:
         and _imports_the_session_start(ast.parse(path.read_text(encoding="utf-8")))
     )
     assert importers == ["acp/client.py", "acp/client_class.py"]
-    package = ast.parse((src / "acp" / "__init__.py").read_text(encoding="utf-8"))
-    first = next(n for n in package.body if isinstance(n, (ast.Import, ast.ImportFrom)))
-    assert isinstance(first, ast.ImportFrom) and first.module == acp_client.__name__
 
 
 def test_the_session_start_import_scan_can_fail() -> None:
