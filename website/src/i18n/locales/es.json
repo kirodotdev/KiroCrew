@@ -24846,6 +24846,7 @@
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
       "hide_folders": "ocultar carpetas",
       "manage_apps": "gestionar apps",
+      "manage_crews": "gestionar crews remotos",
       "menu_reason": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
       "move_folders": "mover carpetas",
       "move_artifacts": "mover artefactos",

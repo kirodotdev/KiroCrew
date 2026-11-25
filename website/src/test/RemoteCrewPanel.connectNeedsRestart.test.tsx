@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { createTestStore, renderWithProviders } from './helpers'
+import { createConnectedTestStore, createTestStore, renderWithProviders } from './helpers'
 import { setUpdateProgress } from '../store/dashboardSlice'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { RemoteCrewRestartBanner } from '../pages/settings/RemoteCrewPanelRestartBanner'
@@ -89,7 +89,7 @@ describe('RemoteCrewPanel — Connect while the gateway needs a restart', () => 
   it('disables Connect and says why when management is on but not active yet', async () => {
     // active:false is exactly the state that shows the "not active yet" banner.
     vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
     const connect = screen.getByRole('button', { name: /^Connect$/i })
@@ -108,7 +108,7 @@ describe('RemoteCrewPanel — Connect while the gateway needs a restart', () => 
 
   it('leaves Connect enabled once the gateway is active', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
     const connect = screen.getByRole('button', { name: /^Connect$/i })
@@ -186,7 +186,7 @@ describe('RemoteCrewPanel — the not-active-yet banner', () => {
 
   it('clears once the socket reconnects to a gateway that is active, with no Refresh', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
-    const { queryClient } = renderWithProviders(<RemoteCrewPanel />)
+    const { queryClient } = renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     expect(await screen.findByTestId('remote-crew-restart-gateway')).toBeInTheDocument()
 
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })

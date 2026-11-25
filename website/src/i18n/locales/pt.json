@@ -24846,6 +24846,7 @@
       "gateway_offline_reconnect": "Gateway offline — reconecte para {{action}}",
       "hide_folders": "ocultar pastas",
       "manage_apps": "gerenciar apps",
+      "manage_crews": "gerenciar crews remotas",
       "menu_reason": "Gateway offline — as ações esmaecidas precisam de conexão",
       "move_folders": "mover pastas",
       "move_artifacts": "mover artefatos",

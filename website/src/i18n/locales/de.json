@@ -24244,6 +24244,7 @@
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
       "hide_folders": "das Ausblenden von Ordnern",
       "manage_apps": "das Verwalten von Apps",
+      "manage_crews": "das Verwalten von Remote-Crews",
       "menu_reason": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "move_folders": "das Verschieben von Ordnern",
       "move_artifacts": "das Verschieben von Artefakten",
