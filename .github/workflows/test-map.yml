@@ -68,8 +68,9 @@ jobs:
             pyproject.toml
             setup.cfg
 
+      # Same extras as backend-test, so the map records the files the shards run.
       - name: Install dependencies
-        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+        run: uv pip install --system -e ".[voice,desktop,otlp,feishu]" --group dev
 
       - name: Run tests with the recorder
         env:
