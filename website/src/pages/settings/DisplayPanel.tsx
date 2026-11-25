@@ -44,11 +44,12 @@ import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
 import { TaskRunnerSetting } from './TaskRunnerSetting'
+import { ThemeScheduleMethodSetting } from './ThemeScheduleMethodSetting'
 import { ChannelsSetting } from './ChannelsSetting'
 import ErrorNotice from '../../components/ErrorNotice'
 import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import type { ThemeSchedule } from '../../utils/themeSchedule'
+import { isLatitude, isLongitude, type ThemeSchedule } from '../../utils/themeSchedule'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
@@ -145,6 +146,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     const changed = next.light !== schedule.light || next.dark !== schedule.dark
     if (next.light && next.dark && (changed || scheduleSaveFailed)) setSchedule(next)
   }
+  // While the sun decides here, the two times are only the fallback for where no location is set.
+  const sunDecides = preference === 'schedule' && schedule.method === 'sun'
+    && isLatitude(schedule.latitude) && isLongitude(schedule.longitude)
   // The load-error notice is shown only for a pack that is actually unstyled.
   // `installedThemeLoadFailed` is derived in the provider from the selection,
   // the catalog and the detail map, so a failed reload whose last good detail
@@ -1355,9 +1359,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={v => setTheme(v as ModePreference)} />
           {preference === 'schedule' && (
             <>
-              <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_light_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_light_from_hint')} value={scheduleDraft.light ?? schedule.light}
+              <ThemeScheduleMethodSetting />
+              <SettingsInput type="time" label={sunDecides ? i18nT('pages.settings.displayPanel.theme_schedule_light_from_fallback') : i18nT('pages.settings.displayPanel.theme_schedule_light_from')}
+                hint={sunDecides ? i18nT('pages.settings.displayPanel.theme_schedule_fixed_fallback_hint') : i18nT('pages.settings.displayPanel.theme_schedule_light_from_hint')}
+                value={scheduleDraft.light ?? schedule.light}
                 onChange={light => setScheduleDraft(d => ({ ...d, light }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_light" />
-              <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_dark_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_dark_from_hint')} value={scheduleDraft.dark ?? schedule.dark}
+              <SettingsInput type="time" label={sunDecides ? i18nT('pages.settings.displayPanel.theme_schedule_dark_from_fallback') : i18nT('pages.settings.displayPanel.theme_schedule_dark_from')}
+                hint={sunDecides ? i18nT('pages.settings.displayPanel.theme_schedule_fixed_fallback_hint') : i18nT('pages.settings.displayPanel.theme_schedule_dark_from_hint')}
+                value={scheduleDraft.dark ?? schedule.dark}
                 onChange={dark => setScheduleDraft(d => ({ ...d, dark }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_dark" />
               {/* No hand-off: navigating away would discard `scheduleDraft`,
                   `shellDraft` or `installValue` on this panel. Leaving a time

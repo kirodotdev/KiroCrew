@@ -535,6 +535,8 @@ export interface ThemeContextValue {
   /** The times Scheduled mode switches at, in the device's time zone. */
   schedule: ThemeSchedule
   setSchedule: (schedule: ThemeSchedule) => void
+  /** The sunrise and sunset method and its location, kept in this browser only. */
+  setSunSchedule: (sun: Pick<ThemeSchedule, 'method' | 'latitude' | 'longitude'>) => void
   /** The last `setSchedule` save was refused; this device still uses those times. */
   scheduleSaveFailed: boolean
   colorTheme: ColorTheme
@@ -1120,7 +1122,7 @@ function useThemeState(): ThemeContextValue {
   const { mutate: persistSchedule } = useMutation({
     mutationFn: (body: { schedule_light: string; schedule_dark: string }) => api.updateThemeConfig(body),
   })
-  const { schedule, setSchedule, adoptSchedule, saveFailed: scheduleSaveFailed } = useThemeSchedule(mode, setResolved, persistSchedule)
+  const { schedule, setSchedule, setSunSchedule, adoptSchedule, saveFailed: scheduleSaveFailed } = useThemeSchedule(mode, setResolved, persistSchedule)
 
   // Fetch workspace theme config from server on boot.
   // Server is the source of truth; localStorage is a render cache.
@@ -1174,8 +1176,9 @@ function useThemeState(): ThemeContextValue {
       ? 'keep'
       : needsLegacyMigration ? 'migrate' : 'adopt'
     // Saved as a pair; a workspace that never saved one keeps this browser's.
+    // Merged, so this browser keeps its own sunrise and sunset method and location.
     const servedSchedule = bootData.schedule_light || bootData.schedule_dark
-      ? normalizeThemeSchedule(bootData.schedule_light, bootData.schedule_dark)
+      ? { ...schedule, ...normalizeThemeSchedule(bootData.schedule_light, bootData.schedule_dark) }
       : null
     if (servedSchedule) adoptSchedule(servedSchedule)
     if (modeChanged) {
@@ -1612,6 +1615,7 @@ function useThemeState(): ThemeContextValue {
     setTheme: setMode_,
     schedule,
     setSchedule,
+    setSunSchedule,
     scheduleSaveFailed,
     colorTheme,
     setColorTheme,

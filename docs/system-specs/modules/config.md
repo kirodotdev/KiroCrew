@@ -4597,6 +4597,10 @@ mode switches at (themes.md, *Mode preference*), surfaced as `schedule_light` /
 24-hour `HH:MM` and refuses anything else (400); the frontend saves both together
 and adopts them at boot only when the workspace has saved one, so a browser's own
 copy holds on a workspace that never did.
+The sunrise and sunset method and its latitude and longitude are browser-local by
+design (`mc-theme-schedule` only, never in the config or either payload),
+because the boot read needs no sign-in and must not serve a location; unlike
+`translucent_panels` below, they are per origin on purpose.
 
 `translucent_panels` is the "Translucent panels" switch (Settings -> Display ->
 View; the Liquid Glass primitive). It is a string like `theme_mode`, not a bool,
