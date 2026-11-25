@@ -2169,10 +2169,12 @@ parent's sibling sessions. A caller the gateway issued no key to is refused with
 an explanation rather than silently borrowing one.
 
 The routes are **strict-internal** (`_STRICT_INTERNAL_API_PATHS`): loopback plus
-`X-Internal-Secret`, with no cookie fall-through. No browser calls them, and they
-are the entry point to opening, stopping, and reading another live conversation —
-a cookie path there would be a new authorization surface rather than a
-convenience. The MCP process holds the secret; an agent's own sandbox does not
+`X-Internal-Secret`. No browser calls them, and they are the entry point to
+opening, stopping, and reading another live conversation. A loopback request with
+no secret falls through to cookie auth, which admits only the owner's or a
+teammate's dashboard session (`require_owner_dashboard_request`; any other gets
+403 `owner_only`) and keeps an app token under its own scope
+(`token_auth.token_auth_middleware`). The MCP process holds the secret; an agent's own sandbox does not
 (the gateway mints the secret in-process and never puts it in an agent's env),
 which is why these are tools rather than something an agent can curl.
 
