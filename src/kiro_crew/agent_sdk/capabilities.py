@@ -340,6 +340,17 @@ class SessionCapabilities:
     #: included: there no handed server list is read at dispatch.
     names_crew_tools_by_fused_name: bool
 
+    #: Whether an Auto pick moves a live session to ``auto`` in place even when
+    #: the slot already holds ``auto``: the harness advertises no model list,
+    #: runs ``auto`` on a new session, and can come back on a concrete model (a
+    #: reopened chat, a start that inherits kiro-cli's ``chat.defaultModel``), so
+    #: the Auto pick is sent as a live ``set_model`` rather than a reset.
+    #:
+    #: True for KAS. False everywhere else, an unknown backend included: there
+    #: Auto goes live only when the backend advertised it, and a slot already on
+    #: ``auto`` keeps the same-value shortcut.
+    model_auto_switches_in_place: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -387,6 +398,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         keeps_prompt_on_unlanded_turn=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
         ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
         names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
+        model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -430,6 +442,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     keeps_prompt_on_unlanded_turn=False,
     ends_turn_on_permission_reject=False,
     names_crew_tools_by_fused_name=False,
+    model_auto_switches_in_place=False,
     keeps_session_across_compaction=False,
 )
 
