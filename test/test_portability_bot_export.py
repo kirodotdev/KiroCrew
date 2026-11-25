@@ -556,7 +556,11 @@ class TestRoster:
 
         assert portability_bot_export.roster(KiroCrewConfig.load()) == [("Atlas", "atlas-7")]
 
-    @pytest.mark.parametrize("body", ["{not json", "[]", '{"agents": []}'])
+    @pytest.mark.parametrize(
+        "body",
+        ["{not json", "[]", '{"agents": []}', '{"agents": ' + "[" * 100_000 + "]" * 100_000 + "}"],
+        ids=["not-json", "not-an-object", "agents-not-an-object", "nested-past-the-decoder-limit"],
+    )
     def test_an_unreadable_config_means_no_roster(self, tmp_path, body):
         (tmp_path / "config.json").write_text(body)
 
@@ -701,6 +705,48 @@ def test_the_carried_pin_reads_the_highest_numbered_versions_by_number(homes, tm
 
 def test_a_non_ascii_digit_name_is_no_version_name() -> None:
     assert portability_bot_export._newest_version_names(["².json", "1.json"]) == {"1.json"}
+
+
+def test_a_leading_zero_name_is_no_version_name() -> None:
+    from kiro_crew.dashboard_templates.instance import MAX_RETAINED_VERSIONS
+
+    canonical = [f"{n}.json" for n in range(1, MAX_RETAINED_VERSIONS + 2)]
+    newest = set(canonical[-MAX_RETAINED_VERSIONS:])
+    names = canonical + ["07.json", "00.json", f"0{MAX_RETAINED_VERSIONS + 1}.json"]
+    assert portability_bot_export._newest_version_names(names) == newest
+
+
+def test_a_version_file_with_a_leading_zero_is_neither_carried_nor_read_for_the_pin(
+    homes, tmp_path
+):
+    # The import reads version n from "<n>.json" only, so a hand-named "07.json" is no
+    # version on either side: it is not archived, not held, and pins no package.
+    from portability_bot_helpers import archive_members, export_archive
+
+    from kiro_crew.config.paths import data_home
+
+    homes.use("a")
+    atlas, _applied = _atlas_on_its_template()
+    versions = data_home() / "members" / atlas.slug / "dashboard" / "versions"
+    names = sorted(p.name for p in versions.iterdir())
+    # The one version that pins the package, renamed by hand.
+    (versions / "2.json").rename(versions / "07.json")
+    held: dict[str, int] = {}
+    fd = os.open(versions / "07.json", os.O_RDONLY)
+    try:
+        portability_bot_export._hold_if_newest(held, "07.json", fd)
+    finally:
+        os.close(fd)
+        for dup in held.values():
+            os.close(dup)
+    assert held == {}
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+    prefix = f"bot-members/{atlas.slug}/dashboard/versions/"
+    carried = {rel[len(prefix) :] for rel in archive_members(archive) if rel.startswith(prefix)}
+    assert carried == set(names) - {"2.json"}
 
 
 def test_the_export_parses_only_the_newest_version_files(homes, monkeypatch):

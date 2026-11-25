@@ -401,11 +401,14 @@ def _installed_config() -> Any:
     (``loader_pipeline.read_config_document`` then ``build_config``), never through
     ``KiroCrewConfig.load``: its write-back (``persist_write_back``) migrates an
     unmigrated ``config.json`` on disk, and a Merge keeps this install's config as it
-    is. The view differs from a full load only in what that write-back seeds in
-    memory, a ``default`` crew row when ``agents`` is empty and ``default_agent``;
-    no Bot step reads either (the reserved name is never a Bot). The validated-data
-    cache is dropped before the read, so the import's own write is seen, and after
-    it, so the next ordinary load reads the file and decides its migration itself.
+    is. The view differs from a full load only in the write-back's in-memory half,
+    which it skips whole: the ``default`` crew row seeded when ``agents`` is empty,
+    ``default_agent``, the star-default template moved into ``agent.default_agent``,
+    ``connections_ui`` turned back on, and each confirmed superseded-default adoption
+    (the legacy ``skills.lazy_load`` rewrite among them). No Bot step reads any of
+    those (the reserved name is never a Bot). The validated-data cache is dropped
+    before the read, so the import's own write is seen, and after it, so the next
+    ordinary load reads the file and decides its migration itself.
     """
     from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
     from kiro_crew.config.loader_pipeline import build_config, read_config_document

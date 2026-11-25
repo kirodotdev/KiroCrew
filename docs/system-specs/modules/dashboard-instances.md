@@ -399,8 +399,10 @@ runs its catalog template (as after a rollback to a template version) the pin of
 highest-numbered retained version that names a package, among the
 `instance.MAX_RETAINED_VERSIONS` newest `versions/<n>.json` names by number (the set
 `instance._prune_versions` keeps, chosen by name before any file is parsed; a version name
-is ASCII digits only, by `portability_bot_types.version_file_number`, so a name such as
-`².json` is none). The export walks every version file into the archive and parses only
+is ASCII digits spelling `n` as `str(n)` does, by `portability_bot_types.version_file_number`,
+so neither `².json` nor a leading-zero `07.json` is one: version `n` is read from `<n>.json`
+only, so the export does not carry such a file and the import does not install it).
+The export walks every version file into the archive and parses only
 those newest ones, once the walk is done, from descriptors it duplicated off the walked
 ones (`portability_bot_export._hold_if_newest`). A template
 record's package is carried only while its live version is bound to `crewmate:<slug>` on

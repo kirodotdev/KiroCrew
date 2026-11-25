@@ -45,7 +45,7 @@ def _retained_version_docs(slug: str) -> Retained:
     """*slug*'s newest retained version files, read once for every consumer.
 
     Of the names ``instance._list_versions`` lists that are version names by
-    ``portability_bot_types.version_file_number`` (ASCII digits only), the
+    ``portability_bot_types.version_file_number`` (ASCII digits, no leading zero), the
     ``instance.MAX_RETAINED_VERSIONS`` highest by ``(n, name)`` (the set
     ``instance._prune_versions`` keeps), each read with ``instance._read_version`` in
     its own ``try``. A file that cannot be read (one nested past the decoder's limit

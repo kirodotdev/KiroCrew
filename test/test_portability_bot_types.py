@@ -387,8 +387,13 @@ def test_the_carried_single_files_are_the_member_space_and_welcome_names() -> No
     ("name", "number"),
     [
         ("1.json", 1),
+        ("7.json", 7),
         ("12.json", 12),
-        ("007.json", 7),
+        ("0.json", 0),
+        ("07.json", None),
+        ("007.json", None),
+        ("00.json", None),
+        ("010.json", None),
         ("².json", None),
         ("٣.json", None),
         ("x.json", None),
@@ -401,10 +406,15 @@ def test_a_version_file_number_is_read_from_ascii_digits_only(
     name: str, number: int | None
 ) -> None:
     # str.isdigit() admits superscripts and other scripts' digits, which int() then
-    # refuses: none of them is a version name, and none raises.
+    # refuses: none of them is a version name, and none raises. A leading zero is no
+    # version name either: the store reads version n from str(n) + ".json" only, so
+    # "07.json" is never the file a reader of version 7 opens.
     from kiro_crew import portability_bot_types
 
     assert portability_bot_types.version_file_number(name) == number
+    # The archive carries a version file exactly when it is a version name.
+    carried = portability_bot_types.carried_member_file(("dashboard", "versions", name))
+    assert carried is (number is not None)
 
 
 @pytest.mark.skipif(

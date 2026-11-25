@@ -1080,9 +1080,9 @@ def _restore_kept_records_artifact(
     write failing after its package was published) leaves the part not whole:
     ``page_not_rebuilt`` with that reason. ``kept`` with no reason only when there was
     nothing to bring back: the page is in place, or the package is missing and the
-    archive holds nothing to restore it from. A kept record that cannot be read, or
-    reads in the error state, stays as it is and the part is ``not_restored`` /
-    ``unreadable_record``.
+    archive holds nothing to restore it from. A kept record that cannot be read (one
+    nested past the decoder's limit included), or reads in the error state, stays as
+    it is and the part is ``not_restored`` / ``unreadable_record``.
 
     Once the current page is in place, the retained versions' pages are brought back
     too (:func:`_retained_pages`); a kept record that runs its template gets its
@@ -1099,7 +1099,7 @@ def _restore_kept_records_artifact(
     unreadable = PartOutcome(bot.name, "dashboard", "not_restored", "unreadable_record")
     try:
         record = instance.read(bot.slug)
-    except (OSError, ValueError, instance.InstanceError):
+    except (OSError, ValueError, RecursionError, instance.InstanceError):
         return unreadable
     if record.state == instance.STATE_ERROR:
         return unreadable

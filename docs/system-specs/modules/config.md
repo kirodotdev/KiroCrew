@@ -1802,7 +1802,8 @@ pinned walk:
 - under `members/<slug>/`, only the files the allowlist
   `portability_bot_types.carried_member_file` admits (the export opens each of
   `CARRIED_MEMBER_SINGLE_FILES` by name and lists only `dashboard/versions/`): `members/<slug>/dashboard/instance.json`,
-  `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json` (`n` ASCII digits),
+  `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json` (`n` ASCII
+  digits with no leading zero, `version_file_number`),
   `briefing.md` and `welcome_claimed.json`, written into the archive under the top-level
   tree `bot-members/<slug>/` (`portability_bot_types.BOT_MEMBERS_DIR`), never
   `members/<slug>/`: `members` is a whole-tree snapshot component, so an earlier
@@ -1934,9 +1935,12 @@ summary are byte-identical to one built without the Bot work.
   disk. The roster step's user-agent scan and the crewmate step's check
   (`mate_config.user_agent_named(name, pins=...)`) take that view's spec pins
   (`portability_bots.spec_pins_of`), and the roster's and the bindings' config
-  defaults read the same view. The view differs from a full load only in what the
-  write-back seeds in memory (a `default` crew row when `agents` is empty, and
-  `default_agent`), which no Bot step reads. The one load left is the
+  defaults read the same view. The view differs from a full load only in the
+  write-back's in-memory half, which it skips whole: the `default` crew row seeded
+  when `agents` is empty, `default_agent`, the star-default template moved into
+  `agent.default_agent`, `connections_ui` turned back on, and each confirmed
+  superseded-default adoption (the legacy `skills.lazy_load` rewrite among them).
+  No Bot step reads any of those. The one load left is the
   dispatchable-name check inside the roster's locked mutation (its redaction reads the
   live config); its write-back declines while `update_config_locked` holds the config
   lock, so it cannot change the file. The roster merge's own locked write is then the

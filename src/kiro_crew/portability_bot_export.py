@@ -164,7 +164,7 @@ def read_config_document(mc_real: str) -> Mapping[str, Any] | None:
         return None
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         logger.warning("config.json unreadable, read as no roster")
         return None
     return doc if isinstance(doc, Mapping) else None
@@ -224,10 +224,10 @@ def _read_record_doc(fd: int) -> Mapping[str, Any] | None:
 def _newest_version_names(names: Sequence[str]) -> set[str]:
     """The ``instance.MAX_RETAINED_VERSIONS`` newest ``<n>.json`` names of *names*.
 
-    Chosen by name (``portability_bot_types.version_file_number``: ASCII digits only),
-    in ``instance._prune_versions``'s order (by ``(n, name)``), before any file is
-    parsed, so a file that does not parse still takes its place: the import chooses the
-    same set from the same names.
+    Chosen by name (``portability_bot_types.version_file_number``: ASCII digits with
+    no leading zero), in ``instance._prune_versions``'s order (by ``(n, name)``), before
+    any file is parsed, so a file that does not parse still takes its place: the import
+    chooses the same set from the same names.
     """
     from kiro_crew.dashboard_templates.instance import MAX_RETAINED_VERSIONS
 

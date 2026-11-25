@@ -316,6 +316,46 @@ def test_a_template_record_with_no_versions_folder_is_restored(
     assert notices == {}
 
 
+def test_the_export_and_the_import_choose_the_same_newest_version_names() -> None:
+    from kiro_crew import portability_bot_export
+
+    canonical = [f"{n}.json" for n in range(1, instance.MAX_RETAINED_VERSIONS + 2)]
+    newest = set(canonical[-instance.MAX_RETAINED_VERSIONS :])
+    names = canonical + ["07.json", "00.json", f"0{instance.MAX_RETAINED_VERSIONS + 1}.json"]
+    assert portability_bot_export._newest_version_names(names) == newest
+    keys = [("versions", name) for name in names] + [("instance.json",)]
+    assert stores._newest_versions(keys) == {("versions", name) for name in newest}
+
+
+@pytest.mark.parametrize(("name", "is_version"), [("7.json", True), ("07.json", False)])
+def test_a_version_file_with_a_leading_zero_is_neither_installed_nor_read_for_the_pin(
+    world: tuple[_Source, _Import], name: str, is_version: bool
+) -> None:
+    # Version 7 is read from "7.json" only, so "07.json" is no version on the import's
+    # side either: not installed, not read for the carried pin, and not counted unread,
+    # just as the export neither archives it nor reads it.
+    src, dst = world
+    template, pinned = _record_doc(src, 1), _record_doc(src, 2)
+    snap = dst.snap_from(src)
+    dash = snap / "bot-members" / SLUG / "dashboard"
+    shutil.rmtree(dash)
+    (dash / "versions").mkdir(parents=True)
+    (dash / "instance.json").write_text(json.dumps(template), encoding="utf-8")
+    (dash / "versions" / "1.json").write_text(json.dumps(template), encoding="utf-8")
+    (dash / "versions" / name).write_text(json.dumps(pinned), encoding="utf-8")
+    rows, notices = _install(snap, dst.mc)
+    assert rows["dashboard"] == PartOutcome(BOT.name, "dashboard", "restored")
+    installed = dst.mc / "members" / SLUG / "dashboard" / "versions"
+    expected = ["1.json", name] if is_version else ["1.json"]
+    assert sorted(p.name for p in installed.iterdir()) == expected
+    assert (dst.mc / "artifacts" / src.package).is_dir() is is_version
+    assert notices == {}
+    # A kept record's versions folder holding the same name reads the same way.
+    (installed / name).write_text(json.dumps(pinned), encoding="utf-8")
+    docs, unread = stores._retained_version_docs(SLUG)
+    assert (sorted(docs), unread) == ([1, 7] if is_version else [1], 0)
+
+
 def test_the_retained_version_docs_never_raise_on_a_listing_that_fails(
     world: tuple[_Source, _Import], monkeypatch: pytest.MonkeyPatch
 ) -> None:

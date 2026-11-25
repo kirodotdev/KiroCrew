@@ -61,6 +61,31 @@ def test_a_non_directory_at_the_member_path_is_a_failed_write(
     assert not os.path.lexists(dst.mc / "artifacts" / src.package)
 
 
+@pytest.mark.parametrize(
+    "body",
+    ["[" * 100_000 + "]" * 100_000, "not json at all"],
+    ids=["nested-past-the-decoder-limit", "not-json"],
+)
+def test_a_kept_record_that_cannot_be_read_still_lets_the_briefing_install(
+    world: tuple[_Source, _Import], body: str
+) -> None:
+    # A record nested past the JSON decoder's limit is as unreadable as one that is no
+    # JSON: the dashboard part says so, the record stays, and the briefing installs.
+    src, dst = world
+    snap = dst.snap_from(src)
+    dash = dst.mc / "members" / SLUG / "dashboard"
+    dash.mkdir(parents=True)
+    (dash / "instance.json").write_text(body, encoding="utf-8")
+    rows = _run(snap, dst.mc, owned_slugs=OWNED)
+    assert rows["dashboard"] == PartOutcome(
+        BOT.name, "dashboard", "not_restored", "unreadable_record"
+    )
+    assert rows["briefing"] == PartOutcome(BOT.name, "briefing", "restored")
+    member = dst.mc / "members" / SLUG
+    assert (member / "briefing.md").read_text(encoding="utf-8") == "# Atlas briefing\n"
+    assert (dash / "instance.json").read_text(encoding="utf-8") == body
+
+
 def test_a_kept_record_rebuilds_its_missing_page_from_its_own_package(
     world: tuple[_Source, _Import],
 ) -> None:

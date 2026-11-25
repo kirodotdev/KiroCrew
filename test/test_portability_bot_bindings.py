@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -363,6 +364,19 @@ def test_an_oversize_claim_reads_as_none(tmp_path):
     claims = _claims_dir(snap)
     padded = dict(_derived_claim(), pad="x" * bindings.MAX_CLAIM_BYTES)
     (claims / "atlas.json").write_text(json.dumps(padded), encoding="utf-8")
+    assert bindings.read_archive_binding_claims(snap) == {"atlas": None}
+
+
+def test_a_claim_nested_past_the_decoder_limit_reads_as_none(tmp_path, monkeypatch):
+    # Within MAX_CLAIM_BYTES a document can nest past the limit of a Python whose decoder
+    # counts the interpreter's recursion limit; the decoder raising is stood in for here.
+    snap = _snap(tmp_path)
+    (_claims_dir(snap) / "atlas.json").write_text(json.dumps(_derived_claim()), encoding="utf-8")
+
+    def nested_too_deep(_text: str) -> object:
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+    monkeypatch.setattr(bindings, "json", SimpleNamespace(loads=nested_too_deep))
     assert bindings.read_archive_binding_claims(snap) == {"atlas": None}
 
 

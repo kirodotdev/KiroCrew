@@ -180,17 +180,22 @@ _VERSION_FILE = re.compile(r"[0-9]+\.json")
 def version_file_number(name: str) -> int | None:
     """``n`` of a ``versions/<n>.json`` file *name*, or ``None`` when it is no such name.
 
-    The one rule every Bot-store reader parses a version name by: ASCII digits only
-    (:data:`_VERSION_FILE`, the rule :func:`carried_member_file` admits by), so a name
-    ``str.isdigit`` would accept but ``int`` refuses (``².json``) is no version name,
-    and so is a run of digits past ``int``'s own limit. Never raises.
+    The one rule every Bot-store reader parses a version name by, and the rule
+    :func:`carried_member_file` admits a version file by: ASCII digits
+    (:data:`_VERSION_FILE`) spelling ``n`` exactly as ``str(n)`` does, the only name
+    ``instance`` writes version ``n`` under and reads it from. So a name ``str.isdigit``
+    would accept but ``int`` refuses (``².json``) is no version name, nor is one with a
+    leading zero (``07.json``, ``00.json``: a reader of version 7 opens ``7.json``),
+    nor a run of digits past ``int``'s own limit. Never raises.
     """
     if not _VERSION_FILE.fullmatch(name):
         return None
+    stem = name[: -len(".json")]
     try:
-        return int(name[: -len(".json")])
+        n = int(stem)
     except ValueError:
         return None
+    return n if str(n) == stem else None
 
 
 #: The single files below ``members/<slug>/`` an export carries.
@@ -239,11 +244,13 @@ def carried_member_file(parts: Sequence[str]) -> bool:
     """Whether the path *parts* below ``members/<slug>/`` is one an export carries.
 
     Exactly the dashboard record (``instance.json``, ``history.json`` and each
-    ``versions/<n>.json`` with ``n`` all digits), ``briefing.md`` and
-    ``welcome_claimed.json``. Everything else there is host state or Bot-written
-    history an archive must not install: ``activity.jsonl`` would import as trusted
-    history, ``welcome_owed.json`` makes the Bot greet again, and lock, preview and
-    request files belong to the host that wrote them.
+    ``versions/<n>.json`` whose name is a version name, :func:`version_file_number`),
+    ``briefing.md`` and ``welcome_claimed.json``. Everything else there is host state
+    or Bot-written history an archive must not install: ``activity.jsonl`` would import
+    as trusted history, ``welcome_owed.json`` makes the Bot greet again, and lock,
+    preview and request files belong to the host that wrote them. A file under
+    ``versions/`` that is no version name (``07.json``) is not carried: no reader of a
+    version opens it.
     """
     key = tuple(parts)
     if key in _CARRIED_MEMBER_FILES:
@@ -251,7 +258,7 @@ def carried_member_file(parts: Sequence[str]) -> bool:
     return (
         len(key) == 3
         and key[:2] == ("dashboard", "versions")
-        and bool(_VERSION_FILE.fullmatch(key[2]))
+        and version_file_number(key[2]) is not None
     )
 
 
