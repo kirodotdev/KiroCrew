@@ -1898,8 +1898,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # INTERNAL_ERROR (3) tell a caller the run did not complete, and overwriting
     # either with TESTS_FAILED would report a finished, failing suite instead.
     # The residue is reported either way, since it is real regardless of how the
-    # run ended.
-    if exitstatus == pytest.ExitCode.OK:
+    # run ended. Read from the session, not the argument: a plugin's earlier
+    # hook (scripts/ci_shard_retry.py, after a green retry) can clear a failure.
+    if session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
     if reporter is None:
         return
