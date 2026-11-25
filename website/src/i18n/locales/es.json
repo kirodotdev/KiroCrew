@@ -17273,6 +17273,7 @@
         "could_not_read_account_name": "No se pudo leer el nombre de la cuenta de Kiro CLI",
         "could_not_check_kiro_cli": "No se pudo comprobar el inicio de sesión de Kiro CLI",
         "could_not_check_kiro_crew": "No se pudo comprobar el inicio de sesión guardado en {{productName}}",
+        "could_not_check_kiro_crew_hint": "Inicia sesión de nuevo para reemplazarlo.",
         "maybe_two_accounts_body_by_place": "Si son cuentas diferentes, Kiro Agent no está usando la cuota de tu cuenta de Kiro CLI. Se ejecuta con el inicio de sesión guardado en {{productName}}. El inicio de sesión de Kiro CLI también está ahí, y {{productName}} no puede saber si son la misma cuenta.",
         "two_accounts_body_by_place": "Kiro Agent no está usando la cuota de tu cuenta de Kiro CLI. Se ejecuta con el inicio de sesión guardado en {{productName}}, y el inicio de sesión de Kiro CLI es de otra cuenta.",
         "using_kiro_cli_body_unnamed": "Kiro Agent se ejecuta con la cuenta con la que Kiro CLI ha iniciado sesión. No necesitas iniciar sesión aquí. Si inicias sesión abajo, Kiro Agent usará esa cuenta en su lugar.",

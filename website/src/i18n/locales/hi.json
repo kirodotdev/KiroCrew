@@ -16832,6 +16832,7 @@
         "could_not_read_account_name": "Kiro CLI खाते का नाम नहीं पढ़ा जा सका",
         "could_not_check_kiro_cli": "Kiro CLI साइन-इन की जाँच नहीं हो सकी",
         "could_not_check_kiro_crew": "{{productName}} में रखे साइन-इन की जाँच नहीं हो सकी",
+        "could_not_check_kiro_crew_hint": "इसे बदलने के लिए फिर से साइन इन करें।",
         "maybe_two_accounts_body_by_place": "अगर ये अलग खाते हैं, तो Kiro Agent तुम्हारे Kiro CLI खाते का कोटा इस्तेमाल नहीं कर रहा है। यह {{productName}} में सहेजे गए साइन इन के रूप में चलता है। Kiro CLI का साइन इन भी मौजूद है, और {{productName}} यह नहीं बता सकता कि ये एक ही खाता हैं या नहीं।",
         "two_accounts_body_by_place": "Kiro Agent तुम्हारे Kiro CLI खाते का कोटा इस्तेमाल नहीं कर रहा है। यह {{productName}} में सहेजे गए साइन इन के रूप में चलता है, और Kiro CLI का साइन इन किसी दूसरे खाते का है।",
         "using_kiro_cli_body_unnamed": "Kiro Agent उस खाते के रूप में चलता है जिसमें Kiro CLI साइन इन है। तुम्हें यहाँ साइन इन करने की ज़रूरत नहीं है। अगर तुम नीचे साइन इन करते हो, तो Kiro Agent उसकी जगह वह खाता इस्तेमाल करेगा।",

@@ -11600,6 +11600,7 @@
         "could_not_read_account_name": "Could not read the Kiro CLI account name",
         "could_not_check_kiro_cli": "Could not check the Kiro CLI sign-in",
         "could_not_check_kiro_crew": "Could not check the sign-in stored in {{productName}}",
+        "could_not_check_kiro_crew_hint": "Sign in again to replace it.",
         "maybe_two_accounts_body_by_place": "If these are different accounts, Kiro Agent is not using your Kiro CLI account's quota. It runs as the sign-in stored in {{productName}}. The Kiro CLI sign-in is also there, and {{productName}} cannot tell whether they are the same account.",
         "two_accounts_body_by_place": "Kiro Agent is not using your Kiro CLI account's quota. It runs as the sign-in stored in {{productName}}, and the Kiro CLI sign-in is a different account.",
         "using_kiro_cli_body_unnamed": "Kiro Agent runs as the account Kiro CLI is signed in to. You don't need to sign in here. If you sign in below, Kiro Agent uses that account instead.",

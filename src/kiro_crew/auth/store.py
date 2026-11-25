@@ -186,6 +186,16 @@ def _parse_dt(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _free_backup_name(path: Path, stamp: str) -> Path:
+    """``<path>.unreadable-<stamp>``, with a counter when that name is taken."""
+    candidate = path.with_name(f"{path.name}.unreadable-{stamp}")
+    n = 1
+    while os.path.lexists(candidate):
+        n += 1
+        candidate = path.with_name(f"{path.name}.unreadable-{stamp}-{n}")
+    return candidate
+
+
 class TokenStoreError(Exception):
     """The vault store could not be read or written (distinct from a bad identity).
 
@@ -325,7 +335,14 @@ class TokenStore:
 
         def _write() -> None:
             try:
-                self._vault.set_sync(name, token.to_json())
+                try:
+                    self._vault.set_sync(name, token.to_json())
+                except ValueError:
+                    # A store no key can open refuses every write, so a sign-in
+                    # could never replace it. Move it aside and write a new vault.
+                    if not self._set_aside_unopenable_vault():
+                        raise
+                    self._vault.set_sync(name, token.to_json())
             except (OSError, ValueError, TypeError, AttributeError) as err:
                 raise TokenStoreError(f"could not persist KAS token {token.identity}") from err
             # A credential that just landed supersedes any refusal recorded
@@ -342,6 +359,52 @@ class TokenStore:
             _write()
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the identity slug only, never the token value
         logger.debug("saved KAS token for identity=%s", token.identity)
+
+    def _set_aside_unopenable_vault(self) -> bool:
+        """Rename a vault that can never be opened again; True when one was moved.
+
+        Unopenable means ``secrets.enc`` exists and its key file is missing or is not
+        a 32-byte key, or the store is not a vault envelope. The vault refuses to mint
+        a key over an existing store, so without this every later sign-in fails to
+        save. The files are renamed to ``<name>.unreadable-<UTC time>`` beside the
+        vault, never deleted, so a restored key can still open the old one. A key file
+        that exists but cannot be read (a lock, a privacy prompt) is NOT lost: the
+        files stay where they are and the save reports the failure.
+        """
+        vault = self._vault
+        store_path, key_path = vault._store_path, vault._key_path
+        with vault.hold_cross_process_lock():
+            try:
+                os.stat(store_path)
+            except FileNotFoundError:
+                return False
+            try:
+                key_size: int | None = os.stat(key_path).st_size
+            except FileNotFoundError:
+                key_size = None
+            if key_size is None:
+                reason = "key missing"
+            elif key_size != 32:
+                reason = "key has the wrong length"
+            else:
+                try:
+                    vault._load_entries()
+                except ValueError:
+                    reason = "store is not a vault"
+                else:
+                    return False
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            # A key of the wrong length opens nothing, so it moves with its store.
+            moves = [store_path] if key_size in (None, 32) else [store_path, key_path]
+            for path in moves:
+                os.replace(path, _free_backup_name(path, stamp))
+        logger.warning(
+            "KAS sign-in vault could not be opened (%s); kept it as *.unreadable-%s "
+            "and started a new one",
+            reason,
+            stamp,
+        )
+        return True
 
     def load(self, identity: str) -> KasToken | None:
         name = self._entry(identity)

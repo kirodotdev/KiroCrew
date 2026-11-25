@@ -17714,6 +17714,7 @@
         "could_not_read_account_name": "Не удалось прочитать имя аккаунта Kiro CLI",
         "could_not_check_kiro_cli": "Не удалось проверить вход в Kiro CLI",
         "could_not_check_kiro_crew": "Не удалось проверить вход, сохранённый в {{productName}}",
+        "could_not_check_kiro_crew_hint": "Войдите снова, чтобы заменить его.",
         "maybe_two_accounts_body_by_place": "Если это разные аккаунты, Kiro Agent не использует квоту твоего аккаунта Kiro CLI. Он работает от имени входа, сохранённого в {{productName}}. Вход в Kiro CLI тоже есть, и {{productName}} не может определить, один ли это аккаунт.",
         "two_accounts_body_by_place": "Kiro Agent не использует квоту твоего аккаунта Kiro CLI. Он работает от имени входа, сохранённого в {{productName}}, а вход в Kiro CLI относится к другому аккаунту.",
         "using_kiro_cli_body_unnamed": "Kiro Agent работает от имени аккаунта, в который вошёл Kiro CLI. Входить здесь не нужно. Если ты войдёшь ниже, Kiro Agent будет использовать тот аккаунт.",
