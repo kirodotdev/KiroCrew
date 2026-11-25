@@ -17784,10 +17784,12 @@
         "bot_notice_starting_abilities_only": "Bot “{{name}}” 仅以初始能力启动：在另一台电脑上添加的能力没有带过来。",
         "bot_notice_rules_not_carried": "Bot “{{name}}” 的规则没有带过来。请在这台电脑上重新设置。",
         "bot_notice_goals_not_carried": "Bot “{{name}}” 的目标没有带过来。请在这台电脑上重新设置。",
+        "bot_notice_runs_on_user_agent": "Bot “{{name}}” 使用你 Kiro 代理文件夹中同名代理运行，而不是存档里的代理文件。",
+        "bot_notice_older_pages_not_restored": "Bot “{{name}}” 的仪表板已恢复，但部分早期版本无法找回：回滚到其中任一版本时，将显示模板页面。",
         "import_bots_more": "未显示的其他 Bot 结果：{{bots}}。",
-        "import_bot_chats_orphaned": "因没有已导入的 Bot 拥有而未导入的 Bot 聊天：{{chats}}。",
+        "import_bot_chats_orphaned": "以下 Bot 聊天未导入，因为其 Bot 未在此处添加、其 DM 会话关联无法恢复，或它们属于该 Bot 以前的记忆设置：{{chats}}。",
         "bot_chat_orphan_matches": "{{slug}}（与这里的 {{names}} 短名称相同）",
-        "import_bot_chats_withheld": "因没有已导入的 Bot 拥有而未导入的 Bot 聊天：{{withheld}}。",
+        "import_bot_chats_withheld": "以下 Bot 聊天未导入，因为其 Bot 未在此处添加、其 DM 会话关联无法恢复，或它们属于该 Bot 以前的记忆设置：{{withheld}}。",
         "import_bot_dashboards_not_carried": "此归档来自旧版本，不含 Bot 仪表板。",
         "import_bot_records_more": "规则或目标没有带过来的其他 Bot 条目：{{bots}}。",
         "import_bot_abilities_more": "仅以初始能力启动的其他 Bot 条目：{{bots}}。",
@@ -17797,7 +17799,8 @@
         "import_bots_failed_no_detail": "无法恢复 Bot 数据。",
         "import_bot_not_set_up": "无法设置 Bot “{{name}}”。原因：{{reasons}}。",
         "import_bot_not_set_up_no_reason": "无法设置 Bot “{{name}}”。",
-        "import_bot_agent_file_held": "Bot “{{name}}” 正在使用这台电脑上原有的代理文件，该文件不是本次导入写入的。使用此 Bot 之前，请检查该文件允许哪些操作。"
+        "import_bot_agent_file_held": "Bot “{{name}}” 正在使用这台电脑上原有的代理文件，该文件不是本次导入写入的。使用此 Bot 之前，请检查该文件允许哪些操作。",
+        "import_bot_agent_file_review": "检查其代理文件"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

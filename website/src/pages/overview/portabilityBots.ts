@@ -66,6 +66,8 @@ export const BOT_NOTICE_KEYS = {
   starting_abilities_only: 'pages.overview.portabilityTab.bot_notice_starting_abilities_only',
   rules_not_carried: 'pages.overview.portabilityTab.bot_notice_rules_not_carried',
   goals_not_carried: 'pages.overview.portabilityTab.bot_notice_goals_not_carried',
+  runs_on_user_agent: 'pages.overview.portabilityTab.bot_notice_runs_on_user_agent',
+  older_pages_not_restored: 'pages.overview.portabilityTab.bot_notice_older_pages_not_restored',
 } as const
 export type BotNotice = keyof typeof BOT_NOTICE_KEYS
 
@@ -294,11 +296,17 @@ export function notWholeLine(row: BotRow): string | null {
     : i18nT('pages.overview.portabilityTab.import_bot_incomplete', { name, parts })
 }
 
-/** The line for a Bot that runs on another Bot's agent file, or null (`runsOnHeldAgentFile`). */
-export function heldAgentFileLine(row: BotRow): string | null {
-  return runsOnHeldAgentFile(row)
-    ? i18nT('pages.overview.portabilityTab.import_bot_agent_file_held', { name: row.bot })
-    : null
+/** The line for a Bot that runs on an agent file this import did not write (`runsOnHeldAgentFile`). */
+export function heldAgentFileLine(name: string): string {
+  return i18nT('pages.overview.portabilityTab.import_bot_agent_file_held', { name })
+}
+
+/**
+ * Where that Bot's agent file is reviewed: the Approvals section of its crewmate
+ * editor, the link the chat's capability refusal row opens too.
+ */
+export function agentFileReviewPath(name: string): string {
+  return `/capabilities?tab=crews&crew=${encodeURIComponent(name)}&pane=capabilities`
 }
 
 /** One line per notice the row carries. */
@@ -309,13 +317,18 @@ export function noticeLines(row: BotRow): string[] {
 /**
  * Every line the import summary's Bot keys produce. A Bot that is not whole is a
  * failure (`errors`); a notice, the withheld chats and the counts are caveats
- * (`warnings`). A whole Bot with no notice adds nothing.
+ * (`warnings`). A Bot that runs on an agent file this import did not write is
+ * named in `held`, because its line comes with a button to review that file
+ * (`heldAgentFileLine`, `agentFileReviewPath`). A whole Bot with no notice adds
+ * nothing.
  */
-export function botImportLines(summary: Record<string, unknown>): { errors: string[]; warnings: string[] } {
+export function botImportLines(summary: Record<string, unknown>): { errors: string[]; warnings: string[]; held: string[] } {
   const rows = botRows(summary.bots)
-  const errors = rows.flatMap(row => [notWholeLine(row), heldAgentFileLine(row)].filter(
-    (line): line is string => line !== null,
-  ))
+  const errors = rows.flatMap(row => {
+    const line = notWholeLine(row)
+    return line === null ? [] : [line]
+  })
+  const held = [...new Set(rows.filter(runsOnHeldAgentFile).map(row => row.bot))]
   const failed = restoreFailure(summary.bots_failed)
   if (failed !== null) {
     errors.unshift(failed
@@ -346,5 +359,5 @@ export function botImportLines(summary: Record<string, unknown>): { errors: stri
   if (recordsMore) warnings.push(i18nT('pages.overview.portabilityTab.import_bot_records_more', { bots: recordsMore }))
   const abilitiesMore = count(summary.crewmate_files_customised_more)
   if (abilitiesMore) warnings.push(i18nT('pages.overview.portabilityTab.import_bot_abilities_more', { bots: abilitiesMore }))
-  return { errors, warnings }
+  return { errors, warnings, held }
 }

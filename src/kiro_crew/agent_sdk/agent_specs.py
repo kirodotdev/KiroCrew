@@ -21,6 +21,7 @@ own module is seen here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -86,15 +87,22 @@ def is_unsafe_prompt_path(path: Path) -> bool:
     return kas_prompt_paths.is_unsafe_prompt_path(path)
 
 
-def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
+def agent_spec_absent(
+    agents_dir: Path, agent_id: str, pins: Mapping[str, str] | None = None
+) -> bool:
     """Whether *agents_dir* holds no spec at all for *agent_id*. Blocking.
 
     A spec that exists but cannot be read is NOT absent. Raises ``OSError`` when
-    the directory cannot be scanned (``acp.kas_agents.agent_spec_absent``).
+    the directory cannot be scanned (``acp.kas_agents.agent_spec_absent``). *pins*
+    are the spec pins to resolve a declared name with; ``None`` reads the live
+    config's.
     """
     from kiro_crew.acp import kas_agents
 
-    return kas_agents.agent_spec_absent(agents_dir, agent_id)
+    # Without pins the call keeps the two-argument shape every other caller uses.
+    if pins is None:
+        return kas_agents.agent_spec_absent(agents_dir, agent_id)
+    return kas_agents.agent_spec_absent(agents_dir, agent_id, pins)
 
 
 def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:

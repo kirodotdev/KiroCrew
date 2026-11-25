@@ -371,7 +371,8 @@ async def test_s2_merge_adds_the_free_bot_whole_and_leaves_the_destination_uncha
     assert [o["slug"] for o in summary["bot_transcripts_orphaned"]] == [atlas.slug]
     assert "Atlas!" in summary["bot_transcripts_orphaned"][0]["candidates"]
     assert summary["sessions_member_withheld"] == 1
-    assert "bots" in summary["refused_merges"]
+    # The roster step chose not to add Atlas (slug_taken): no refused merge.
+    assert "bots" not in summary.get("refused_merges", [])
 
     row = _row(summary, "Vega")
     assert row["roster"] == "added", row
@@ -723,7 +724,8 @@ async def test_a_merge_never_takes_the_destinations_first_crewmate(homes, tmp_pa
     row = _row(summary, "mate")
     assert (row["roster"], row["reasons"]) == ("skipped", ["name_taken"]), row
     assert row["in_roster"] is False, row
-    assert "bots" in summary["refused_merges"]
+    # The roster step chose not to add the archive's mate: no refused merge.
+    assert "bots" not in summary.get("refused_merges", [])
     assert _mate_here(mc, mate_b) == before
 
 
@@ -753,11 +755,13 @@ async def test_an_installs_own_used_first_crewmate_is_kept_and_reported(
         assert (row["roster"], row["reasons"]) == ("skipped", ["name_taken"]), row
         assert row["in_roster"] is False
         assert _config(mc)["agents"]["mate"] == entry
+        # The roster step chose not to add it: no refused merge.
+        assert "bots" not in summary.get("refused_merges", [])
     else:
         # Its file grants nothing, so it serves the imported mate; its binding does not.
         assert row["binding"] == "not_rebuilt", row
         assert row["part_reasons"]["binding"] == "held_by_other_bot", row
-    assert "bots" in summary["refused_merges"]
+        assert "bots" in summary["refused_merges"]
     assert dm_binding_path(mate_b.slug).read_bytes() == kept["binding"]
     assert _thread_files(mc, mate_b) == kept["thread"]
     assert mate_config.mate_config_path("mate").read_bytes() == kept["crewmate"]

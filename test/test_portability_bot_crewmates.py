@@ -315,15 +315,49 @@ def test_a_mate_service_name_never_reaches_the_crewmate_step(kiro: Path) -> None
     assert _tree(kiro) == before
 
 
-def test_user_level_agent_of_that_name_is_refused(kiro: Path) -> None:
+def test_a_user_level_agent_on_a_bot_that_was_here_is_not_needed(kiro: Path) -> None:
+    # The default owned_slugs (None) owns every slug: the Bot was here and runs on the
+    # person's own user-level agent of its name, as it did before the import.
     (kiro / "agents" / "ada.json").write_text(
         json.dumps({"name": "ada", "prompt": "mine"}), encoding="utf-8"
     )
+    before = _tree(kiro)
+    notices: dict[str, list[str]] = {}
 
-    assert _only(restore_crewmate_files([_bot("ada")])) == (
-        "not_written",
+    assert _only(restore_crewmate_files([_bot("ada")], notices=notices)) == (
+        "not_needed",
         "user_agent_named",
     )
+    assert notices == {}
+    assert not mate_config.mate_config_path("ada").exists()
+    assert _tree(kiro) == before
+
+
+def test_a_user_level_agent_on_a_bot_new_here_is_still_not_written(kiro: Path) -> None:
+    (kiro / "agents" / "ada.json").write_text(
+        json.dumps({"name": "ada", "prompt": "mine"}), encoding="utf-8"
+    )
+    before = _tree(kiro)
+
+    outcomes = restore_crewmate_files([_bot("ada")], owned_slugs=frozenset())
+    assert _only(outcomes) == ("not_written", "user_agent_named")
+    assert not mate_config.mate_config_path("ada").exists()
+    assert _tree(kiro) == before
+
+
+def test_a_user_level_agent_on_a_bot_of_a_fresh_home_is_not_needed_with_a_notice(
+    kiro: Path,
+) -> None:
+    (kiro / "agents" / "ada.json").write_text(
+        json.dumps({"name": "ada", "prompt": "mine"}), encoding="utf-8"
+    )
+    notices: dict[str, list[str]] = {}
+
+    outcomes = restore_crewmate_files(
+        [_bot("ada")], owned_slugs=frozenset(), fresh_home=True, notices=notices
+    )
+    assert _only(outcomes) == ("not_needed", "user_agent_named")
+    assert notices == {"ada": ["runs_on_user_agent"]}
     assert not mate_config.mate_config_path("ada").exists()
 
 

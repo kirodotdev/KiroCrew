@@ -5282,18 +5282,44 @@ crewmate file that is not its own by the same rule (`crewmate_name_held`, roster
 `held_by_other_bot`). A Replace installs the archive config as given and rewrites
 nothing in it: a Bot whose crewmate file is held by another Bot is reported
 `crewmate_file` `not_written` / `held_by_other_bot`, and the Portability tab says the
-Bot runs on an agent file this import did not write (`import_bot_agent_file_held`).
+Bot runs on an agent file this import did not write (`import_bot_agent_file_held`),
+with one button, "Review its agent file" (`import_bot_agent_file_review`), that opens
+that Bot's crewmate editor at its capabilities
+(`/capabilities?tab=crews&crew=<name>&pane=capabilities`).
 The owner record is read by `mate_config._read_owners` through
-`_read_owner_bytes` (a pinned parent, a no-follow open, at most `MAX_OWNERS_BYTES`)
-and decoded as strict UTF-8.
+`_read_owner_bytes` (a pinned parent, a no-follow open of a regular file only, without
+blocking, at most `MAX_OWNERS_BYTES`) and decoded as strict UTF-8. The import decides
+from that record whether an existing crewmate file, which can carry grants, is a Bot's
+own, so a link, a FIFO, another non-regular file or an oversized record at
+`~/.kiro/mates/owners.json` is an unreadable record (`MateConfigError`) and the file is
+never adopted: a plain read would follow a link to whatever JSON it names, and would
+wait forever for a writer on a FIFO, hanging an import whose data home is already
+written.
 The name must be safe first (`portability_bot_types.safe_path_component`:
 no slash, backslash, NUL, `:`, `<`, `>`, `"`, `|`, `?`, `*` or control character,
 no leading dot, and not a Windows reserved device name: `CON`, `PRN`, `AUX`, `NUL`,
 `COM1` to `COM9` or `LPT1` to `LPT9`, in any case, with or without an extension),
 `mate_config_path(name)` must sit
-directly inside `mate_agents_dir()`, and it must not be a mate service name or a
-user-level agent (`unsafe_name`, `user_agent_named`); a
-`MateConfigError` is reported (`foreign_owner`, `write_failed`), never raised. The
+directly inside `mate_agents_dir()`, and it must not be a mate service name
+(`unsafe_name`); a `MateConfigError` is reported (`foreign_owner`, `write_failed`),
+never raised. A Bot whose name a user-level agent file declares
+(`mate_config.user_agent_named`, read with the spec pins of the import's own config
+view, `user_agent_named(name, pins=...)`, so the check never loads the config through
+the loader's write-back) gets no crewmate file: it runs on that file whatever the
+import writes, because a user-level file of that name wins
+(`mate_worker._mate_file_on_disk`; main's rule, from #23010 and #24894). Its part is
+`not_needed` with reason `user_agent_named`, which is whole, when this install had the
+same Bot (its slug is in `owned_slugs`) or had no `config.json` before the import
+(`fresh_home`): a legacy template crew the agent sync wrote, restored onto its own
+install or into a fresh data home on the same Kiro home, runs on the person's own
+agent as before. A Bot accepted only through `fresh_home` also gets the notice
+`runs_on_user_agent` (`restore_crewmate_files(notices=...)`), so the import says the
+new Bot runs on the user-level agent of its name rather than on a file from the
+archive; the notice names no file, because the declaring spec may be `<name>.md` or a
+file of another stem. Any other Bot of that name is `not_written` with
+`user_agent_named`, and a Merge that keeps this install's `config.json` does not add
+such a Bot (`crewmate_name_held`, roster `user_agent_named`); nothing is refused or
+renamed on a Replace. The
 export lists the Bots whose crewmate file was not minimal
 (`crewmate_files_customised`), and the import's
 `portability_bot_crewmates.crewmate_file_notices` gives each of them whose file THIS

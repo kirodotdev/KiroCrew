@@ -486,3 +486,27 @@ def test_live_binding_of_reads_bound_to_and_leaves_bad_text_to_the_caller() -> N
     assert dp.live_binding_of(json.dumps(["crewmate:atlas"])) is None
     with pytest.raises(ArtifactError):
         dp.live_binding_of("{not json")
+
+
+def test_the_live_pointer_rule_is_the_stores_own(
+    world: tuple[_Source, _Import], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ArtifactStore._is_live_pointer`` is the one live-pointer rule both readers ask.
+
+    With the store's rule answering True for one bound package, the bound-dashboard scan
+    skips it, the import's index proves no other package of the Bot (asked about a
+    SECOND package: about the patched one the answer is the same either way), and the
+    import's own ownership check reads it as no Bot's dashboard.
+    """
+    src, dst = world
+    snap = dst.snap_from(src)
+    store = _package_here(snap, dst.mc, src.package)
+    art = store.get(src.package)
+    assert dp.scan_bound_dashboards(store).bound == {f"crewmate:{SLUG}": [src.package]}
+    assert not stores._not_a_bound_dashboard(art)
+    monkeypatch.setattr(
+        ArtifactStore, "_is_live_pointer", staticmethod(lambda record: record.slug == src.package)
+    )
+    assert dp.scan_bound_dashboards(store).bound == {}
+    assert stores.BoundIndex(dst.mc).refusal("second-board", SLUG) == ""
+    assert stores._not_a_bound_dashboard(art)

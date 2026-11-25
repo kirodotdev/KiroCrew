@@ -1,8 +1,10 @@
 """What a whole-install export carries for each roster Bot, and what it records it did not.
 
 A Bot is more than its config entry: its dashboard record lives under
-``members/<slug>/dashboard/``, the package that dashboard pins lives under
-``artifacts/<package>/``, and it may have a briefing and a claimed welcome. This
+``members/<slug>/dashboard/``, the package that dashboard carries (its record's pin,
+or for a record that runs its template the one its newest retained versions pin,
+``portability_bot_types.carried_pin``) lives under ``artifacts/<package>/``, and it
+may have a briefing and a claimed welcome. This
 module enumerates exactly those files for :func:`portability_stream._build_export_zip`
 and :func:`portability_stream._measure_nonsession_footprint`, through the same pinned,
 no-follow walk the other trees use (``portability._walk_contained``).
@@ -46,6 +48,7 @@ from kiro_crew.portability_bot_types import (
     MAX_RECORD_BYTES,
     BoundedReadError,
     carried_member_file,
+    carried_pin,
     crewmate_file_state,
     is_reserved_bot_name,
     raw_entry_slug,
@@ -197,30 +200,85 @@ def _read_fd_bounded(fd: int, limit: int) -> bytes | None:
         os.lseek(fd, 0, os.SEEK_SET)
 
 
-def _pinned_package(fd: int) -> str:
-    """The package slug a dashboard ``instance.json`` behind *fd* pins, or ``""``.
+def _read_record_doc(fd: int) -> Mapping[str, Any] | None:
+    """The JSON object a dashboard record or version file behind *fd* holds, or ``None``.
 
     Read up to ``portability_bot_types.MAX_RECORD_BYTES``, the cap the import reads
-    the staged record with.
+    the staged record and version files with, and rewound, so the caller archives the
+    same bytes.
     """
-    from kiro_crew.dashboard_templates.instance import _package_field
-
     try:
         raw = _read_fd_bounded(fd, MAX_RECORD_BYTES)
     except OSError:
-        return ""
+        return None
     if raw is None:
-        return ""
+        return None
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return doc if isinstance(doc, Mapping) else None
+
+
+def _newest_version_names(names: Sequence[str]) -> set[str]:
+    """The ``instance.MAX_RETAINED_VERSIONS`` newest ``<n>.json`` names of *names*.
+
+    Chosen by name, in ``instance._prune_versions``'s order (by ``(n, name)``), before
+    any file is parsed, so a file that does not parse still takes its place: the import
+    chooses the same set from the same names.
+    """
+    from kiro_crew.dashboard_templates.instance import MAX_RETAINED_VERSIONS
+
+    found = sorted(
+        (int(name[: -len(".json")]), name)
+        for name in names
+        if name.endswith(".json") and name[: -len(".json")].isdigit()
+    )
+    return {name for _n, name in found[-MAX_RETAINED_VERSIONS:]}
+
+
+def _live_binding_is(mc_real: str, package: str, binding: str) -> bool:
+    """Whether *package*'s live version on the source is bound to *binding*.
+
+    Read by ``dashboard_package.live_binding_of``, the rule ``scan_bound_dashboards``
+    reads, from the source's own artifact store. Anything that cannot be read is no.
+    """
+    from pathlib import Path
+
+    from kiro_crew.artifact_store import dashboard_package
+    from kiro_crew.artifact_store.model import ArtifactError
+    from kiro_crew.artifacts import ArtifactStore
+
+    try:
+        live = ArtifactStore(Path(mc_real) / ARTIFACTS_DIR).get(package)
+        return dashboard_package.live_binding_of(live.content or "") == binding
+    except (ArtifactError, OSError, ValueError, RecursionError):
+        return False
+
+
+def _carried_package(
+    mc_real: str,
+    slug: str,
+    record: Mapping[str, Any] | None,
+    versions: Mapping[int, Mapping[str, Any]],
+) -> str:
+    """The package slug the export carries for Bot *slug*, or ``""``.
+
+    The carried pin (``portability_bot_types.carried_pin``) of the record and its newest
+    retained versions. When the record pins a package that is the one, whatever its
+    live binding (the import judges it). When the record runs its template the package
+    its versions pin is carried only while its live version is bound to
+    ``crewmate:<slug>`` on the source: a package since rebound to another Bot is that
+    Bot's to carry.
+    """
+    from kiro_crew.dashboard_templates.instance import _package_field
+
+    pin = carried_pin(record if record is not None else {}, versions)
+    if pin is None or not _valid_slug(pin[0]):
         return ""
-    if not isinstance(doc, Mapping):
-        return ""
-    slug, _version, _digest, released = _package_field(doc)
-    if released or not _valid_slug(slug):
-        return ""
-    return slug
+    if record is not None and _package_field(record)[0]:
+        return pin[0]
+    return pin[0] if _live_binding_is(mc_real, pin[0], f"crewmate:{slug}") else ""
 
 
 def _keep_member_file(rel: PurePath) -> bool:
@@ -271,7 +329,9 @@ def iter_bot_store_files(
     opened by name, ``dashboard/versions/`` walked, ``briefing.md`` and
     ``welcome_claimed.json`` opened by name), then every regular file under
     ``artifacts/<P>/`` that ``portability._keep_for_export`` admits, where ``P`` is
-    the package that Bot's ``dashboard/instance.json`` pins. *arcrel* is the archive
+    the package that Bot carries (:func:`_carried_package`: the record's pin, or for a
+    record that runs its template the package its newest retained versions pin while it
+    is still this Bot's). *arcrel* is the archive
     path: a member file is renamed to ``bot-members/<slug>/...``
     (:data:`BOT_MEMBERS_DIR`), a package file to ``bot-artifacts/<P>/...``
     (:data:`BOT_ARTIFACTS_DIR`). Every open pins the
@@ -281,8 +341,11 @@ def iter_bot_store_files(
     *mc_real*. A package two Bots pin is carried once.
 
     The caller closes each descriptor, as with ``_walk_contained``. ``instance.json``
-    is read (bounded) before it is yielded and its descriptor is rewound, so the caller
-    archives the same bytes the package was read from.
+    and each of the ``instance.MAX_RETAINED_VERSIONS`` newest ``versions/<n>.json``
+    names (:func:`_newest_version_names`, chosen by name before any is parsed) are read
+    (bounded) before they are yielded and their descriptors rewound, so the caller
+    archives the same bytes the package was chosen from. Every carried file is archived
+    whether or not it parses.
     """
     from kiro_crew import portability as _pf
     from kiro_crew.members import MemberSlugError, validate_slug
@@ -293,11 +356,24 @@ def iter_bot_store_files(
             validate_slug(slug)
         except (MemberSlugError, ValueError):
             continue
-        package = ""
+        record: Mapping[str, Any] | None = None
+        walked: list[str] = []
+        docs: dict[str, Mapping[str, Any]] = {}
         for rel, fd in _member_store_files(mc_real, slug):
             if rel.parts[2:] == ("dashboard", "instance.json"):
-                package = _pinned_package(fd)
+                record = _read_record_doc(fd)
+            elif rel.parts[2:4] == ("dashboard", "versions") and len(rel.parts) == 5:
+                walked.append(rel.name)
+                doc = _read_record_doc(fd)
+                if doc is not None:
+                    # Only what the pin reads is kept, so a large file costs no memory.
+                    docs[rel.name] = {"package": doc["package"]} if "package" in doc else {}
             yield PurePath(BOT_MEMBERS_DIR, *rel.parts[1:]), fd
+        chosen = _newest_version_names(walked)
+        versions = {
+            int(name[: -len(".json")]): doc for name, doc in sorted(docs.items()) if name in chosen
+        }
+        package = _carried_package(mc_real, slug, record, versions)
         if not package or package in carried_packages:
             continue
         carried_packages.add(package)

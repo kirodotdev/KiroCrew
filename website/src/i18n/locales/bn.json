@@ -18268,10 +18268,12 @@
         "bot_notice_starting_abilities_only": "Bot “{{name}}” শুধু শুরুর ক্ষমতা নিয়ে শুরু হয়: অন্য কম্পিউটারে যোগ করা ক্ষমতা আনা হয়নি।",
         "bot_notice_rules_not_carried": "Bot “{{name}}”-এর নিয়ম আনা হয়নি। এই কম্পিউটারে আবার ঠিক করো।",
         "bot_notice_goals_not_carried": "Bot “{{name}}”-এর লক্ষ্য আনা হয়নি। এই কম্পিউটারে আবার ঠিক করো।",
+        "bot_notice_runs_on_user_agent": "Bot “{{name}}” আর্কাইভের এজেন্ট ফাইলে নয়, তোমার Kiro এজেন্ট ফোল্ডারের একই নামের এজেন্টে চলছে।",
+        "bot_notice_older_pages_not_restored": "Bot “{{name}}”-এর ড্যাশবোর্ড আছে, কিন্তু আগের কিছু সংস্করণ ফেরানো যায়নি: সেগুলোর কোনোটিতে রোলব্যাক করলে টেমপ্লেট পেজ দেখা যাবে।",
         "import_bots_more": "দেখানো হয়নি এমন আরও Bot ফলাফল: {{bots}}।",
-        "import_bot_chats_orphaned": "ইমপোর্ট হওয়া কোনো Bot মালিক নয় বলে ইমপোর্ট না হওয়া Bot চ্যাট: {{chats}}।",
+        "import_bot_chats_orphaned": "ইমপোর্ট না হওয়া Bot চ্যাট, কারণ এদের Bot এখানে যোগ করা হয়নি, এর DM থ্রেডের সংযোগ ফেরানো যায়নি, অথবা এগুলো সেই Bot-এর আগের মেমরি সেটআপের: {{chats}}।",
         "bot_chat_orphan_matches": "{{slug}} (এখানকার {{names}}-এর মতো একই ছোট নাম)",
-        "import_bot_chats_withheld": "ইমপোর্ট হওয়া কোনো Bot মালিক নয় বলে ইমপোর্ট না হওয়া Bot চ্যাট: {{withheld}}।",
+        "import_bot_chats_withheld": "ইমপোর্ট না হওয়া Bot চ্যাট, কারণ এদের Bot এখানে যোগ করা হয়নি, এর DM থ্রেডের সংযোগ ফেরানো যায়নি, অথবা এগুলো সেই Bot-এর আগের মেমরি সেটআপের: {{withheld}}।",
         "import_bot_dashboards_not_carried": "এই আর্কাইভ পুরোনো সংস্করণের এবং এতে কোনো Bot ড্যাশবোর্ড নেই।",
         "import_bot_records_more": "আরও Bot এন্ট্রি যাদের নিয়ম বা লক্ষ্য আনা হয়নি: {{bots}}।",
         "import_bot_abilities_more": "আরও Bot এন্ট্রি যা শুধু শুরুর ক্ষমতা নিয়ে শুরু হয়: {{bots}}।",
@@ -18281,7 +18283,8 @@
         "import_bots_failed_no_detail": "Bot ডেটা পুনরুদ্ধার করা যায়নি।",
         "import_bot_not_set_up": "Bot “{{name}}” সেট আপ করা যায়নি। কারণ: {{reasons}}।",
         "import_bot_not_set_up_no_reason": "Bot “{{name}}” সেট আপ করা যায়নি।",
-        "import_bot_agent_file_held": "Bot “{{name}}” এমন একটি এজেন্ট ফাইলে চলছে যা এই ইমপোর্ট লেখেনি এবং যা এই কম্পিউটারে আগে থেকেই ছিল। এই Bot ব্যবহারের আগে দেখে নিন ফাইলটি কী অনুমতি দেয়।"
+        "import_bot_agent_file_held": "Bot “{{name}}” এমন একটি এজেন্ট ফাইলে চলছে যা এই ইমপোর্ট লেখেনি এবং যা এই কম্পিউটারে আগে থেকেই ছিল। এই Bot ব্যবহারের আগে দেখে নিন ফাইলটি কী অনুমতি দেয়।",
+        "import_bot_agent_file_review": "এর এজেন্ট ফাইল দেখো"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

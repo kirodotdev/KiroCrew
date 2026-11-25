@@ -769,10 +769,13 @@ def test_imported_bots_any_other_failure_is_unreadable(home, monkeypatch):
 
 
 def test_imported_bots_never_raises_on_an_unreadable_roster(home, monkeypatch):
+    from kiro_crew import portability_bots
+
     def boom():
         raise RuntimeError("unreadable")
 
-    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(boom))
+    # The default config is the import's view of the document, not a loader read.
+    monkeypatch.setattr(portability_bots, "_installed_config", boom)
 
     bots, outcomes = roster.imported_bots(home, ["Atlas", "Nova"])
 

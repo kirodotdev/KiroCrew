@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import { useInRouterContext, useNavigate } from 'react-router-dom'
 import { Download, Upload, FileArchive, AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
 import { Card, CardTitle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -12,7 +13,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
 import { downloadBlob } from '../../utils/download'
 import { apiTransport } from '../../api/apiTransport'
-import { botImportLines } from './portabilityBots'
+import { agentFileReviewPath, botImportLines, heldAgentFileLine } from './portabilityBots'
 
 /**
  * Where a settings restore leaves its result for the load it triggers.
@@ -31,6 +32,8 @@ interface ImportResult {
   errors: string[]
   /** What the import did with the archive's chats (`chatImportLines`); absent when it carried none. */
   chats?: string[]
+  /** Bots that run on an agent file this import did not write (`botImportLines`); absent when none. */
+  held?: string[]
 }
 
 /** Non-empty strings only; anything else a stored record holds is dropped. */
@@ -43,9 +46,17 @@ export function readCarriedImportResult(): ImportResult | null {
   try {
     const raw: unknown = JSON.parse(sessionStorage.getItem(IMPORT_RESULT_KEY) ?? 'null')
     if (!raw || typeof raw !== 'object') return null
-    const { msg, warnings, errors, chats } = raw as { msg?: unknown; warnings?: unknown; errors?: unknown; chats?: unknown }
+    const { msg, warnings, errors, chats, held } = raw as {
+      msg?: unknown; warnings?: unknown; errors?: unknown; chats?: unknown; held?: unknown
+    }
     if (typeof msg !== 'string' || !msg) return null
-    return { msg, warnings: storedStrings(warnings), errors: storedStrings(errors), chats: storedStrings(chats) }
+    return {
+      msg,
+      warnings: storedStrings(warnings),
+      errors: storedStrings(errors),
+      chats: storedStrings(chats),
+      held: storedStrings(held),
+    }
   } catch {
     return null
   }
@@ -293,6 +304,35 @@ export function chatImportLines(summary: Record<string, unknown>): string[] {
   return lines
 }
 
+/** The button that opens a held Bot's agent file in its crewmate editor's Approvals section. */
+function ReviewAgentFileButton({ name }: { name: string }) {
+  const navigate = useNavigate()
+  return (
+    <button type="button" onClick={() => navigate(agentFileReviewPath(name))}>
+      {i18nT('pages.overview.portabilityTab.import_bot_agent_file_review')}
+    </button>
+  )
+}
+
+/**
+ * The line for a Bot that runs on an agent file this import did not write, with
+ * the button to review that file. A host with no router draws the line alone: it
+ * has no crewmate editor to open.
+ */
+function HeldAgentFileNotice({ name }: { name: string }) {
+  const routed = useInRouterContext()
+  // No hand-off: the chosen archive lives in the file input and in `preview`,
+  // neither saved anywhere durable, so the hand-off would lose the selection.
+  return (
+    <ErrorNotice
+      message={heldAgentFileLine(name)}
+      className="mt-3"
+      testId="portability-import-agent-file-held"
+      actions={routed ? <ReviewAgentFileButton name={name} /> : undefined}
+    />
+  )
+}
+
 /** A status line for a warning the call still succeeded through. */
 function WarnLine({ msg, testId }: { msg: string; testId: string }) {
   if (!msg) return null
@@ -317,6 +357,7 @@ export default function PortabilityTab() {
   const [exportChatsSkipped, setExportChatsSkipped] = useState('')
   const [importWarnings, setImportWarnings] = useState<string[]>(carried?.warnings ?? [])
   const [importErrors, setImportErrors] = useState<string[]>(carried?.errors ?? [])
+  const [importHeld, setImportHeld] = useState<string[]>(carried?.held ?? [])
   const [preview, setPreview] = useState<Manifest | null>(null)
   const [previewError, setPreviewError] = useState('')
   // True while the server checks the chosen archive; a large one takes minutes.
@@ -406,6 +447,7 @@ export default function PortabilityTab() {
     setImportStatus({ type: 'idle', msg: '' })
     setImportWarnings([])
     setImportErrors([])
+    setImportHeld([])
     setChatLines([])
     if (!file) return
 
@@ -445,6 +487,7 @@ export default function PortabilityTab() {
     setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
     setImportWarnings([])
     setImportErrors([])
+    setImportHeld([])
     setChatLines([])
     const fd = new FormData()
     fd.append('file', file)
@@ -510,8 +553,10 @@ export default function PortabilityTab() {
         }
         const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items, summary.report_items) })
         const chats = [...templateLines, ...chatImportLines(summary)]
+        const held = bots.held
         setImportWarnings(warnings)
         setImportErrors(errors)
+        setImportHeld(held)
         setChatLines(chats)
         setImportStatus({ type: 'ok', msg })
         if (summary.ui_prefs_restored) {
@@ -528,7 +573,7 @@ export default function PortabilityTab() {
           // Said before the reload, so the page does not just blink: the full
           // result is re-shown from sessionStorage once the next load mounts.
           setImportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.import_reloading_display_settings') })
-          carryImportResult({ msg, warnings, errors, ...(chats.length ? { chats } : {}) })
+          carryImportResult({ msg, warnings, errors, ...(chats.length ? { chats } : {}), ...(held.length ? { held } : {}) })
           window.location.reload()
         }
       } else {
@@ -807,6 +852,7 @@ export default function PortabilityTab() {
         {importErrors.map((e, i) => (
           <ErrorNotice key={i} variant="inline" message={e} className="mt-3" testId="portability-import-refused" />
         ))}
+        {importHeld.map(name => <HeldAgentFileNotice key={name} name={name} />)}
         {chatLines.length > 0 && (
           <div className="flex flex-col items-start">
             {chatLines.map((line, i) => (

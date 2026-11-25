@@ -15,6 +15,16 @@ before the import (:func:`_own_claim`); otherwise it belongs to another
 Bot that had the name, and the part is ``not_written`` with ``held_by_other_bot``.
 No archive byte is read here.
 
+A Bot whose name a user-level agent file declares runs on that file whatever the
+import writes (a user-level file of that name wins, ``mate_worker._mate_file_on_disk``),
+so no crewmate file is written for it. Its part is ``not_needed`` with reason
+``user_agent_named`` when the destination had the same Bot before the import, or had
+no ``config.json`` before it; a Bot accepted only through that fresh home also gets
+the notice ``runs_on_user_agent``, so the import says the new Bot runs on the
+user-level agent of its name rather than on a file from the archive. Any other Bot of
+that name is ``not_written`` with ``user_agent_named``. The check reads the spec pins
+of the import's own config view, never the live config through the loader.
+
 A Bot the exporting host listed in ``crewmate_files_customised`` had abilities
 added to its file that this import does not carry. When this import wrote the
 minimal file for it, its summary row carries the notice ``starting_abilities_only``
@@ -25,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 
 from kiro_crew import mate_config
 from kiro_crew.config import paths as paths_mod
@@ -42,6 +52,8 @@ PART = "crewmate_file"
 
 #: The notice a Bot whose exported crewmate file had added abilities gets.
 NOTICE_STARTING_ABILITIES_ONLY = "starting_abilities_only"
+#: The notice a Bot new here gets when it runs on the user-level agent of its name.
+NOTICE_RUNS_ON_USER_AGENT = "runs_on_user_agent"
 
 #: What makes an existing crewmate file a Bot's own (:func:`_own_claim`).
 _OWNED, _MINIMAL, _FRESH_OWN = "owned", "minimal", "fresh_own"
@@ -69,6 +81,9 @@ def _restore_one(
     owned_slugs: Collection[str] | None,
     fresh_home: bool,
     minimal: set[str] | None = None,
+    *,
+    notices: dict[str, list[str]] | None = None,
+    pins: Mapping[str, str] | None = None,
 ) -> PartOutcome:
     def outcome(status: str, reason: str = "") -> PartOutcome:
         return PartOutcome(bot=bot.name, part=PART, status=status, reason=reason)
@@ -77,8 +92,8 @@ def _restore_one(
         return outcome("not_needed")
     if not safe_crewmate_name(bot.name):
         return outcome("not_written", "unsafe_name")
-    if mate_config.user_agent_named(bot.name):
-        return outcome("not_written", "user_agent_named")
+    if mate_config.user_agent_named(bot.name, pins=pins):
+        return _on_user_agent(bot, owned_slugs, fresh_home, notices)
     try:
         path = mate_config.write_mate_config(bot.name, only_if_absent=True)
     except mate_config.ForeignMateFileError:
@@ -96,6 +111,33 @@ def _restore_one(
     if claim == _MINIMAL and minimal is not None:
         minimal.add(bot.name)
     return outcome("kept")
+
+
+def _on_user_agent(
+    bot: ImportedBot,
+    owned_slugs: Collection[str] | None,
+    fresh_home: bool,
+    notices: dict[str, list[str]] | None,
+) -> PartOutcome:
+    """The part of *bot*, whose name a user-level agent file declares.
+
+    ``not_needed`` with ``user_agent_named`` when the destination had the same Bot
+    (its slug is in *owned_slugs*; ``None``: every slug), or had no ``config.json``
+    before the import (*fresh_home*): the Bot runs on that file as the loader binds
+    it. A Bot accepted only through *fresh_home* gets :data:`NOTICE_RUNS_ON_USER_AGENT`
+    in *notices*. Otherwise ``not_written`` with ``user_agent_named``. Not the
+    :data:`_FRESH_OWN` rule: a user-level agent file has no owner record.
+    """
+    reason = "user_agent_named"
+    if owned_slugs is None or bot.slug in owned_slugs:
+        return PartOutcome(bot=bot.name, part=PART, status="not_needed", reason=reason)
+    if not fresh_home:
+        return PartOutcome(bot=bot.name, part=PART, status="not_written", reason=reason)
+    if notices is not None:
+        listed = notices.setdefault(bot.name, [])
+        if NOTICE_RUNS_ON_USER_AGENT not in listed:
+            listed.append(NOTICE_RUNS_ON_USER_AGENT)
+    return PartOutcome(bot=bot.name, part=PART, status="not_needed", reason=reason)
 
 
 def _own_claim(bot: ImportedBot, owned_slugs: Collection[str] | None, *, fresh_home: bool) -> str:
@@ -134,16 +176,19 @@ def _owner_of(name: str) -> str:
         return "unreadable"
 
 
-def crewmate_name_held(name: str, *, fresh_home: bool = False) -> str:
+def crewmate_name_held(
+    name: str, *, fresh_home: bool = False, pins: Mapping[str, str] | None = None
+) -> str:
     """Why an added Bot named *name* would resolve to a file this import did not write.
 
-    ``user_agent_named`` when a user-level agent declares *name*, else
-    :func:`crewmate_file_held`. ``""`` when neither holds the name. The caller has
-    established that no Bot of *name* is in the roster. A Merge adds a Bot as running
-    as its own agent (``kiro_agent`` is its name), so with either one here it would
-    run with grants the import never wrote.
+    ``user_agent_named`` when a user-level agent declares *name* (read with the spec
+    *pins* given, ``mate_config.user_agent_named``), else :func:`crewmate_file_held`.
+    ``""`` when neither holds the name. The caller has established that no Bot of
+    *name* is in the roster. A Merge adds a Bot as running as its own agent
+    (``kiro_agent`` is its name), so with either one here it would run with grants the
+    import never wrote.
     """
-    if mate_config.user_agent_named(name):
+    if mate_config.user_agent_named(name, pins=pins):
         return "user_agent_named"
     return crewmate_file_held(name, fresh_home=fresh_home)
 
@@ -176,26 +221,36 @@ def restore_crewmate_files(
     owned_slugs: Collection[str] | None = None,
     fresh_home: bool = False,
     minimal: set[str] | None = None,
+    notices: dict[str, list[str]] | None = None,
+    pins: Mapping[str, str] | None = None,
 ) -> list[PartOutcome]:
     """Write the minimal crewmate file of each imported Bot that has none; one outcome per Bot.
 
-    ``not_needed`` for a Bot whose ``kiro_agent`` is not its own name; ``written``
-    when this call created the file; ``kept`` when a file was already there and it
-    is the Bot's own (:func:`_own_claim`; *fresh_home* says the destination
-    had no ``config.json`` before the import), ``not_written`` with
-    ``held_by_other_bot`` when one was there and it is not; ``not_written`` with
-    ``unsafe_name``, ``user_agent_named``, ``foreign_owner`` or
-    ``write_failed`` otherwise. Never raises for one Bot: an
+    ``not_needed`` for a Bot whose ``kiro_agent`` is not its own name, and with
+    ``user_agent_named`` for one whose name a user-level agent file declares when it
+    was here or *fresh_home* (:func:`_on_user_agent`); ``written`` when this call
+    created the file; ``kept`` when a file was already there and it is the Bot's own
+    (:func:`_own_claim`; *fresh_home* says the destination had no ``config.json``
+    before the import), ``not_written`` with ``held_by_other_bot`` when one was there
+    and it is not; ``not_written`` with ``unsafe_name``, ``user_agent_named``,
+    ``foreign_owner`` or ``write_failed`` otherwise. Never raises for one Bot: an
     unexpected error is that Bot's ``write_failed``. What the archive says about a
     customised file changes nothing written here; :func:`crewmate_file_notices`
     reports it. *minimal*, when given, receives the name of each Bot the destination
     did not have whose ``kept`` file this step judged to be the minimal file, so the
-    caller reads that classification instead of the file again.
+    caller reads that classification instead of the file again. *notices*, when
+    given, receives by Bot name the notice ``runs_on_user_agent`` of each Bot that
+    runs on a user-level agent file and was accepted only through *fresh_home*.
+    *pins* are the spec pins of the import's config view
+    (``agent_spec_pins._derive_pins``), which the user-level agent check reads instead
+    of the live config; ``None`` reads the live pins.
     """
     outcomes: list[PartOutcome] = []
     for bot in bots:
         try:
-            outcomes.append(_restore_one(bot, owned_slugs, fresh_home, minimal))
+            outcomes.append(
+                _restore_one(bot, owned_slugs, fresh_home, minimal, notices=notices, pins=pins)
+            )
         except Exception:  # noqa: BLE001 - one Bot's failure is reported, never raised
             logger.exception("import crewmate file step failed for Bot %r", bot.name)
             outcomes.append(

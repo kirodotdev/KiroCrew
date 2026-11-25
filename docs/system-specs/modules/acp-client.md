@@ -2245,6 +2245,17 @@ or decline fields through their provider-mirror contracts. The authoritative
 per-backend matrix is [agent-host-contract.md](agent-host-contract.md#1-agent-definition-and-layout).
 The details below describe the Kiro and Claude paths implemented directly here:
 
+- **Spec presence**: `kas_agents.agent_spec_absent(agents_dir, agent_id, pins=None)`
+  answers whether any spec declares the id, through the same declared-name scan
+  `load_agent_spec` reads (`_declared_spec`), which resolves a contested name with
+  the `agent.spec_pins` pins. `pins=None` reads the live config's
+  (`agent_spec_pins.spec_pins`); a caller that holds a config of its own passes that
+  config's pins instead, so the check never loads the config again. The instance
+  import does (`mate_config.user_agent_named(name, pins=...)`, through
+  `agent_sdk.agent_specs.agent_spec_absent`): it reads the destination config as a
+  view without the loader's write-back, and a second load here would migrate an
+  unmigrated `config.json` the import keeps (see
+  [config](config.md#bots-in-a-whole-install-export-and-import)).
 - **Model (kiro-cli)**: `set_model` is skipped for custom agents — kiro-cli uses the
   agent's own `model` field. Only the default kirocrew agent gets Kiro Crew's
   configured model override.

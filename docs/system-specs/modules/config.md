@@ -1810,10 +1810,18 @@ pinned walk:
 - every regular file under the data home's `artifacts/<P>/` that `_keep_for_export`
   admits, written into the archive under the top-level tree `bot-artifacts/<P>/`
   (`portability_bot_types.BOT_ARTIFACTS_DIR`), never `artifacts/<P>/`, where `P`
-  is the package slug that Bot's `members/<slug>/dashboard/instance.json` pins (read
+  is the Bot's carried package: the package of
+  `portability_bot_types.carried_pin(record, versions)`, which is the pin of
+  `members/<slug>/dashboard/instance.json` when that names a package, and otherwise
+  (the record runs its catalog template, as after a rollback to a template version)
+  the pin of the highest-numbered of the newest `instance.MAX_RETAINED_VERSIONS`
+  `dashboard/versions/<n>.json` that names one, chosen by numeric `n`, the set
+  `instance._prune_versions` keeps. For a record that runs its template `P` is carried
+  only while its live version is bound to `crewmate:<slug>` on the source
+  (`dashboard_package.live_binding_of`). Every record and version file is read
   through `portability_bot_types.read_fd_at_most`, capped at
-  `portability_bot_types.MAX_RECORD_BYTES` on export and import alike, and checked with
-  `artifacts.slug_is_well_formed`).
+  `portability_bot_types.MAX_RECORD_BYTES` on export and import alike, and the slug is
+  checked with `artifacts.slug_is_well_formed`.
 
 The manifest version is unchanged. An older release importing the archive does
 not know `bot-artifacts/` and leaves the Bot stores out, touching nothing on its
@@ -1842,15 +1850,20 @@ summary are byte-identical to one built without the Bot work.
   them first, and this install's own Bots as they were before the import (name to
   `member_id`, `memory_store` and slug).
 - **Replace** passes `portability_bots.INSTANCE_REPLACE_COMPONENTS` (every
-  `snapshot_components.COMPONENTS` name except `artifacts` and `uploads`) to
-  `_do_replace`, so an instance import never clears this install's `artifacts/` or
-  `uploads/`.
+  `snapshot_components.COMPONENTS` name except `artifacts`, `uploads` and `members`) to
+  `_do_replace`, so an instance import never clears this install's `artifacts/`,
+  `uploads/` or Bot folders under `members/`, and never installs a `members/` tree an
+  archive carries (no export writes one; a hand-built one is ignored). Every Bot
+  folder here stays byte-for-byte, and a Bot's folder files arrive only from
+  `bot-members/<slug>/`, add-only through the checked Bot stores. The CLI snapshot
+  restore (`snapshot_restore`) keeps its own whole-tree Replace of `members/`.
 - **Merge into an install that has `config.json`** keeps that config (see above), so
   the archive's Bots are added by `portability_bot_roster.merge_roster`, which runs
   AFTER the named-store merge and takes the set of stores that merge created here
   (`_merge_named_stores` returns the stores it kept and added; the added ones are
   `stores_added`).
-  The reserved `default` agent (`portability_bot_types.RESERVED_DEFAULT_MEMBER`),
+  The reserved `default` agent (`agent_files.RESERVED_DEFAULT_MEMBER`, which
+  `portability_bot_types` and `members_roster` import),
   like every name `is_reserved_bot_name` reserves, is never a Bot: it has no row and
   never reaches `refused_merges`, and its member-thread transcripts are imported as
   any chat is (see [history](history.md)). Reserved slugs are `PreImport.reserved_slugs`, filled in by `before_import` from this install's PRE-IMPORT config (`_destination_reserved_slugs`; `default`'s slug is always reserved, unless a non-reserved Bot uses it, since the loader seeds `default` even when the document lists no agents or this install has no readable `config.json`), minus every slug a Bot uses. The slugs of archive Bots the roster step skipped, and of any non-reserved archive entry, are left out of the reserved set, so a skipped Bot's thread at a reserved slug is withheld. An archive Bot that is the
@@ -1912,8 +1925,24 @@ summary are byte-identical to one built without the Bot work.
   reports only after the write landed, and a Merge that neither kept nor installed
   `config.json` imports no Bots. A Merge whose archive `config.json` failed to
   install reports every archive Bot with roster `skipped` and `config_rejected`.
-- After the mode branch the destination config is loaded once and passed to every
-  later step, and `RosterStep.added` is derived from the step's names.
+- After the mode branch the destination config is read once and passed to every
+  later step, and `RosterStep.added` is derived from the step's names. Every config
+  read a Bot step makes is `portability_bots._installed_config()`: the document built
+  with the loader's two pure stages (`loader_pipeline.read_config_document`, then
+  `build_config`), never `KiroCrewConfig.load`, whose write-back
+  (`loader_pipeline.persist_write_back`) would migrate an unmigrated `config.json` on
+  disk. The roster step's user-agent scan and the crewmate step's check
+  (`mate_config.user_agent_named(name, pins=...)`) take that view's spec pins
+  (`portability_bots.spec_pins_of`), and the roster's and the bindings' config
+  defaults read the same view. The view differs from a full load only in what the
+  write-back seeds in memory (a `default` crew row when `agents` is empty, and
+  `default_agent`), which no Bot step reads. The one load left is the
+  dispatchable-name check inside the roster's locked mutation (its redaction reads the
+  live config); its write-back declines while `update_config_locked` holds the config
+  lock, so it cannot change the file. The roster merge's own locked write is then the
+  only `config.json` write a Bot step makes: the added Bots' `agents`, `memory_stores`
+  and `workspaces` entries, plus the `meta` stamp and the retired-key drop every
+  `update_config_locked` write of the base file carries.
   `prepare_bots(mc, step, pre)` resolves each imported Bot's
   slot (`portability_bot_roster.imported_bots`) and derives `owned_slugs`: the slugs
   of Bots this install already had as the same Bot (`portability_bots.was_here`, the
@@ -1940,7 +1969,11 @@ summary are byte-identical to one built without the Bot work.
   of its own type (`""`, `[]` or `{}`), so the boot
   migration's shorter file counts too; it grants nothing whoever wrote it); or
   `mate_config.crewmate_file_on_record` names this data home AND this install had no
-  `config.json` before the import (`fresh_home`); one that
+  `config.json` before the import (`fresh_home`). A Bot whose name a user-level agent
+  file declares gets no crewmate file: its part is `not_needed` with
+  `user_agent_named` when its slug is owned or the home is fresh (the fresh-home case
+  with the notice `runs_on_user_agent`), and `not_written` with `user_agent_named`
+  otherwise. One that
   belonged to a different Bot is left alone and reported `held_by_other_bot`
   (dashboard and briefing `not_restored`, the crewmate file `not_written`, the
   binding `not_rebuilt`). Another package already bound to the same Bot is
@@ -1960,13 +1993,29 @@ the Bot; false on every row when the installed config cannot be read), `bot`, `s
 reason vocabulary of `portability_bot_types`. A Bot is whole when no part has a
 not-whole status (`skipped`, `not_rebuilt`, `not_written`, `not_restored`,
 `page_not_rebuilt`). Each Bot that is not whole adds one `items` line naming what is
-missing, and the import appends `bots` to `refused_merges`. A notice
+missing. The import appends `bots` to `refused_merges` only for a Bot that is not
+whole for a cause other than not being added (`portability_bots._refuses`): a part
+other than `roster` is not whole, or `roster` is `skipped` with a reason outside
+`portability_bot_types.NOT_ADDED_REASONS` (`config_rejected`, `unreadable_record`,
+`write_failed`, or none); `bots_failed` still appends it. An archive Bot the roster
+step chose not to add (`name_taken`, `slug_taken`, `member_id_taken`, `store_taken`,
+`store_not_carried`, `workspace_taken`, `no_member_id`, `held_by_other_bot`,
+`foreign_owner` or `user_agent_named`) keeps its row and its line, as a Merge that
+keeps this install's `config.json` reports `settings_kept` without a refusal. A notice
 (`starting_abilities_only` only when this import wrote the minimal crewmate file,
 or when the Bot is new to this install and the crewmate file it kept is minimal
 (`_minimal_file_bots`, from the crewmate step's own classification, its
 `minimal=` set, not a second read);
 `rules_not_carried` or `goals_not_carried` only when this install has no record of
-that kind for the slug after the import) adds one `items` line, does not make the Bot not whole and does not touch `refused_merges`; a
+that kind for the slug after the import; `runs_on_user_agent` for a Bot new here,
+accepted only because this install had no `config.json`, that runs on the user-level
+agent file of its name (`restore_crewmate_files(notices=...)`, see
+[crew-mode](crew-mode.md)); `older_pages_not_restored` when some retained version of
+the Bot's dashboard pins a page the import could not rebuild, so a rollback to it shows
+the template page (`install_bot_stores(notices=...)`, see
+[dashboard instances](dashboard-instances.md))) adds one `items` line, does not make
+the Bot not whole and does not touch `refused_merges`; the steps' notices reach the
+row through `_notices_for`, crewmate-file notices first. A
 whole Bot with no notice adds no line. An archive whose manifest lacks `bot_stores`
 and whose config names at least one Bot other than `default` sets
 `bot_dashboards_not_carried` and adds one line saying Bot dashboards were not

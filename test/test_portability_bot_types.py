@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
+from pathlib import Path
 
 import pytest
 
@@ -296,11 +298,75 @@ def test_the_store_installer_has_no_unused_refusal_type():
     assert not hasattr(portability_bot_stores, "_StoreRefused")
 
 
-def test_the_reserved_default_member_is_the_members_rosters() -> None:
-    from kiro_crew.dashboard.handlers import members_roster
-    from kiro_crew.portability_bot_types import RESERVED_DEFAULT_MEMBER
+def _binds_name(target: ast.expr, name: str) -> bool:
+    """Whether assignment *target* binds *name*: a ``Name``, or one inside a tuple, list or star."""
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, ast.Starred):
+        return _binds_name(target.value, name)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_binds_name(element, name) for element in target.elts)
+    return False
 
-    assert RESERVED_DEFAULT_MEMBER == members_roster.RESERVED_DEFAULT_MEMBER
+
+def _module_bindings(tree: ast.Module, name: str) -> int:
+    """How many module-level statements of *tree* assign a value to *name*."""
+    count = 0
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            count += any(_binds_name(target, name) for target in node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            count += _binds_name(node.target, name)
+    return count
+
+
+def test_the_reserved_default_member_is_the_members_rosters() -> None:
+    """``RESERVED_DEFAULT_MEMBER`` has one home, ``agent_files``; every other module imports it.
+
+    Every module-level spelling that binds the name counts: a plain or chained
+    assignment, a tuple, list or starred target, and an annotated assignment with a
+    value (``X: Final = "default"``).
+    """
+    import kiro_crew
+    from kiro_crew import agent_files, portability_bot_types
+    from kiro_crew.dashboard.handlers import members_roster
+
+    name = "RESERVED_DEFAULT_MEMBER"
+    root = Path(kiro_crew.__file__).resolve().parent
+    homes = {
+        path.relative_to(root).as_posix(): bound
+        for path in sorted(root.rglob("*.py"))
+        if (bound := _module_bindings(ast.parse(path.read_text(encoding="utf-8")), name))
+    }
+    assert homes == {"agent_files.py": 1}
+    assert getattr(agent_files, name) == "default"
+    for module in (portability_bot_types, members_roster):
+        assert getattr(module, name) is getattr(agent_files, name), module.__name__
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'RESERVED_DEFAULT_MEMBER = "default"',
+        'RESERVED_DEFAULT_MEMBER: str = "default"',
+        'RESERVED_DEFAULT_MEMBER: Final = "default"',
+        'RESERVED_DEFAULT_MEMBER, _ = "default", 0',
+        'other = RESERVED_DEFAULT_MEMBER = "default"',
+        '[*RESERVED_DEFAULT_MEMBER] = ["default"]',
+    ],
+)
+def test_every_spelling_of_a_module_binding_is_counted(source: str) -> None:
+    assert _module_bindings(ast.parse(source), "RESERVED_DEFAULT_MEMBER") == 1
+
+
+def test_an_import_a_bare_annotation_or_a_local_is_not_a_module_binding() -> None:
+    source = (
+        "from kiro_crew.agent_files import RESERVED_DEFAULT_MEMBER\n"
+        "RESERVED_DEFAULT_MEMBER: str\n"
+        "def f():\n"
+        "    RESERVED_DEFAULT_MEMBER = 'x'\n"
+    )
+    assert _module_bindings(ast.parse(source), "RESERVED_DEFAULT_MEMBER") == 0
 
 
 def test_the_carried_single_files_are_the_member_space_and_welcome_names() -> None:

@@ -10,13 +10,17 @@ replaced.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
 import pytest
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
+from conftest import requires_symlinks
 from kiro_crew import mate_config, platform_compat
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 #: Windows publishes with ``os.rename`` (its own tests below); the link and
 #: exclusive-create fallbacks and POSIX modes run everywhere else.
@@ -264,11 +268,11 @@ def _inode(path: Path) -> int:
         return -1
 
 
-def test_the_owner_record_is_read_pinned_and_bounded(
-    kiro: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+@requires_symlinks
+def test_the_owner_record_link_is_never_followed(kiro: Path, tmp_path: Path) -> None:
     # A40: the owner record is read through pinned_fs.read_file_pinned, so a link at
-    # its name is never followed and an oversized one never reads as a record.
+    # its name is never followed. The harness has no privilege-free FILE link, so
+    # this half keeps the capability guard.
     assert mate_config._read_owners() == {}
     mate_config.write_mate_config("Ana", only_if_absent=True)
     owners = mate_config._owners_path()
@@ -276,17 +280,57 @@ def test_the_owner_record_is_read_pinned_and_bounded(
     elsewhere = tmp_path / "elsewhere.json"
     elsewhere.write_text(json.dumps({"Ana": "/somewhere/else"}), encoding="utf-8")
     owners.unlink()
-    try:
-        owners.symlink_to(elsewhere)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks are not available here")
+    owners.symlink_to(elsewhere)
     with pytest.raises(mate_config.MateConfigError):
         mate_config._read_owners()
-    owners.unlink()
+
+
+def test_an_oversized_owner_record_is_unreadable(
+    kiro: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A record past MAX_OWNERS_BYTES never reads as a record (its JSON is cut off).
+    mate_config.write_mate_config("Ana", only_if_absent=True)
+    owners = mate_config._owners_path()
+    assert mate_config._read_owners().get("Ana")
     monkeypatch.setattr(mate_config, "MAX_OWNERS_BYTES", 8)
     owners.write_text(json.dumps({"Ana": "/a/long/enough/home"}), encoding="utf-8")
     with pytest.raises(mate_config.MateConfigError):
         mate_config._read_owners()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX only")
+def test_a_fifo_at_the_owner_record_is_unreadable_without_blocking(kiro: Path) -> None:
+    # The import decides from the owner record whether an existing crewmate file with
+    # grants is a Bot's own; a FIFO at the record's name must fail the read at once,
+    # never wait for a writer and hang an import whose data home is already written.
+    mate_config.write_mate_config("Ana", only_if_absent=True)
+    owners = mate_config._owners_path()
+    owners.unlink()
+    os.mkfifo(owners)
+    raised: list[BaseException] = []
+
+    def read() -> None:
+        try:
+            mate_config._read_owners()
+        except BaseException as exc:  # noqa: BLE001 - the thread hands it to the test
+            raised.append(exc)
+
+    # A daemon thread: a reader stuck in open() would not hold the process at exit.
+    reader = threading.Thread(target=read, daemon=True)
+    try:
+        reader.start()
+        reader.join(FALLBACK_TIMEOUT_SECS)
+        assert not reader.is_alive(), "the owner-record read blocked on a FIFO"
+        assert len(raised) == 1
+        assert isinstance(raised[0], mate_config.MateConfigError), raised
+    finally:
+        # Release a reader still blocked in open(); no reader waiting is ENXIO.
+        try:
+            fd = os.open(owners, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            pass
+        else:
+            os.close(fd)
 
 
 @pytest.mark.parametrize(

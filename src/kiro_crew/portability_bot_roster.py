@@ -334,7 +334,11 @@ def merge_roster(
     stores_root = mc / MEMORY_STORES_DIR_NAME
     names = [n for n in archive_agents if isinstance(n, str) and not is_reserved_bot_name(n)]
     # The user-agent and crewmate-file scans, once: the mutation below can run again.
-    held = {name: _held_reason(crewmate_name_held, name) for name in names}
+    # The user-agent scan reads the spec pins of this install's config view, never
+    # the live config through the loader, whose write-back would rewrite config.json.
+    pins = _destination_pins()
+    scan = functools.partial(crewmate_name_held, pins=pins)
+    held = {name: _held_reason(scan, name) for name in names}
     added: list[str] = []
     kept: list[str] = []
     skipped: dict[str, PartOutcome] = {}
@@ -444,6 +448,21 @@ def merge_roster(
     return RosterMerge(added=list(added), skipped=ordered, kept=list(kept))
 
 
+def _destination_pins() -> dict[str, str]:
+    """The spec pins of this install's config view (``portability_bots._installed_config``).
+
+    ``{}`` when it cannot be read: no pin applies, the fail-closed reading.
+    """
+    from kiro_crew import portability_bots
+
+    try:
+        config = portability_bots._installed_config()
+    except Exception:  # noqa: BLE001 - no pins is the fail-closed reading
+        logger.warning("import: this install's config could not be read", exc_info=True)
+        return {}
+    return portability_bots.spec_pins_of(config)
+
+
 def _held_reason(scan: Any, name: str) -> str:
     """``scan(name)`` (the crewmate-name pre-scan); ``config_rejected`` when it raises."""
     try:
@@ -511,9 +530,9 @@ def imported_bots(
 
     *mc* is the data home the import wrote. *config* is its loaded config, which the
     import reads once after its mode branch; ``None`` says it could not be read
-    (every Bot is ``unreadable_record``), and the default reads ``config.json``
-    through the ordinary loader (the cache is dropped first, so the import's own
-    write is seen).
+    (every Bot is ``unreadable_record``), and the default reads the import's config
+    view (``portability_bots._installed_config``: the document without the loader's
+    write-back, the cache dropped first, so the import's own write is seen).
     The slot key and its memory generation come from the dashboard's own rule,
     ``members_thread._member_thread_slot``, so the import derives exactly the key an
     open of the thread would. A Bot whose store does not resolve as its own
@@ -526,7 +545,7 @@ def imported_bots(
     wanted = [n for n in names if isinstance(n, str)]
     try:
         from kiro_crew import members as members_mod
-        from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
+        from kiro_crew import portability_bots
         from kiro_crew.config.paths import config_dir
         from kiro_crew.dashboard.handlers.members import _member_thread_slot
 
@@ -535,8 +554,7 @@ def imported_bots(
         if config is None:
             raise ValueError("the installed config could not be read")
         if config is LOAD_CONFIG:
-            _invalidate_config_cache()
-            config = KiroCrewConfig.load()
+            config = portability_bots._installed_config()
         cfg = config
     except Exception:
         logger.warning("import: the installed roster could not be read", exc_info=True)

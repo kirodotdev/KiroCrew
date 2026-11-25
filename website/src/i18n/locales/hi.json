@@ -18268,10 +18268,12 @@
         "bot_notice_starting_abilities_only": "Bot “{{name}}” सिर्फ़ शुरुआती क्षमताओं के साथ शुरू होता है: दूसरे कंप्यूटर पर जोड़ी गई क्षमताएँ साथ नहीं आईं।",
         "bot_notice_rules_not_carried": "Bot “{{name}}” के नियम साथ नहीं आए। इन्हें इस कंप्यूटर पर फिर से तय करो।",
         "bot_notice_goals_not_carried": "Bot “{{name}}” के लक्ष्य साथ नहीं आए। इन्हें इस कंप्यूटर पर फिर से तय करो।",
+        "bot_notice_runs_on_user_agent": "Bot “{{name}}” आर्काइव की एजेंट फ़ाइल पर नहीं, बल्कि तुम्हारे Kiro एजेंट फ़ोल्डर में उसी नाम के एजेंट पर चलता है।",
+        "bot_notice_older_pages_not_restored": "Bot “{{name}}” का डैशबोर्ड आ गया है, पर कुछ पुराने वर्ज़न वापस नहीं लाए जा सके: उनमें से किसी पर रोलबैक करने से टेम्पलेट पेज दिखता है।",
         "import_bots_more": "न दिखाए गए और Bot नतीजे: {{bots}}।",
-        "import_bot_chats_orphaned": "Bot चैट जो इम्पोर्ट नहीं हुईं क्योंकि कोई इम्पोर्ट हुआ Bot उनका मालिक नहीं: {{chats}}।",
+        "import_bot_chats_orphaned": "Bot चैट जो इम्पोर्ट नहीं हुईं, क्योंकि उनका Bot यहाँ नहीं जोड़ा गया, उसका DM थ्रेड का जुड़ाव वापस नहीं लाया जा सका, या वे उस Bot के पुराने मेमोरी सेटअप की हैं: {{chats}}।",
         "bot_chat_orphan_matches": "{{slug}} (यहाँ {{names}} जैसा ही छोटा नाम)",
-        "import_bot_chats_withheld": "Bot चैट जो इम्पोर्ट नहीं हुईं क्योंकि कोई इम्पोर्ट हुआ Bot उनका मालिक नहीं: {{withheld}}।",
+        "import_bot_chats_withheld": "Bot चैट जो इम्पोर्ट नहीं हुईं, क्योंकि उनका Bot यहाँ नहीं जोड़ा गया, उसका DM थ्रेड का जुड़ाव वापस नहीं लाया जा सका, या वे उस Bot के पुराने मेमोरी सेटअप की हैं: {{withheld}}।",
         "import_bot_dashboards_not_carried": "यह आर्काइव पुराने वर्ज़न का है और इसमें कोई Bot डैशबोर्ड नहीं है।",
         "import_bot_records_more": "और Bot प्रविष्टियाँ जिनके नियम या लक्ष्य साथ नहीं आए: {{bots}}।",
         "import_bot_abilities_more": "और Bot प्रविष्टियाँ जो सिर्फ़ शुरुआती क्षमताओं के साथ शुरू होती हैं: {{bots}}।",
@@ -18281,7 +18283,8 @@
         "import_bots_failed_no_detail": "Bot डेटा बहाल नहीं हो सका।",
         "import_bot_not_set_up": "Bot “{{name}}” सेट अप नहीं हो सका। कारण: {{reasons}}।",
         "import_bot_not_set_up_no_reason": "Bot “{{name}}” सेट अप नहीं हो सका।",
-        "import_bot_agent_file_held": "Bot “{{name}}” ऐसी एजेंट फ़ाइल पर चल रहा है जो इस इंपोर्ट ने नहीं लिखी और जो इस कंप्यूटर पर पहले से थी। इस Bot का उपयोग करने से पहले देखो कि वह फ़ाइल क्या अनुमति देती है।"
+        "import_bot_agent_file_held": "Bot “{{name}}” ऐसी एजेंट फ़ाइल पर चल रहा है जो इस इंपोर्ट ने नहीं लिखी और जो इस कंप्यूटर पर पहले से थी। इस Bot का उपयोग करने से पहले देखो कि वह फ़ाइल क्या अनुमति देती है।",
+        "import_bot_agent_file_review": "इसकी एजेंट फ़ाइल देखो"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

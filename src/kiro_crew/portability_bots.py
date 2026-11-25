@@ -8,7 +8,8 @@ by store into the ``portability_bot_*`` units, and this module runs them in orde
    and records which Bots this install had, so a later step can tell a Bot's own
    existing entry from one another Bot of that name or slug left here.
 2. Replace passes :data:`INSTANCE_REPLACE_COMPONENTS`, so the destination's artifact
-   library and uploads are never cleared by an instance import.
+   library, uploads and Bot folders (``members/``) are never cleared by an instance
+   import, and an archive's ``members/`` tree is never installed.
 3. :func:`merge_roster_step`, in a Merge right after the named-store merge, keeps the
    archive Bots that are already here (an install merging its own export) and adds the
    ones that are free, on a destination that kept its own config.
@@ -45,6 +46,7 @@ from kiro_crew import (
 from kiro_crew.portability_bot_bindings import REBUILD
 from kiro_crew.portability_bot_types import (
     LOAD_CONFIG,
+    NOT_ADDED_REASONS,
     NOT_WHOLE_STATUSES,
     NOTICES,
     PARTS,
@@ -60,11 +62,16 @@ from kiro_crew.snapshot import COMPONENTS
 logger = logging.getLogger("kiro_crew.portability")
 
 #: The snapshot components an instance Replace restores: every one except the artifact
-#: library and the uploads. An instance export carries only the artifacts the roster's
-#: dashboards pin, and a whole-tree component the archive carries is removed and
-#: refilled, so passing either would erase every other artifact or upload here.
+#: library, the uploads and the Bots' folders. A whole-tree component the archive
+#: carries is removed and refilled. An instance export carries only the artifacts the
+#: roster's dashboards pin, so passing ``artifacts`` or ``uploads`` would erase every
+#: other artifact or upload here. ``members`` would install a hand-built archive's
+#: ``members/`` tree unchecked and remove every Bot folder it does not carry: a Bot's
+#: folder files arrive only from ``bot-members/<slug>/`` (``BOT_MEMBERS_DIR``), add-only
+#: through the checked Bot stores, and the CLI snapshot restore keeps its own
+#: whole-tree Replace of ``members/``.
 INSTANCE_REPLACE_COMPONENTS: tuple[str, ...] = tuple(
-    name for name in COMPONENTS if name not in ("artifacts", "uploads")
+    name for name in COMPONENTS if name not in ("artifacts", "uploads", "members")
 )
 
 #: Most Bot rows a summary lists; ``bots_more`` counts the rest.
@@ -388,11 +395,41 @@ def _rejected_step(agents: Mapping[str, Any]) -> RosterStep:
 
 
 def _installed_config() -> Any:
-    """The destination config as the import left it (the cache is dropped first)."""
+    """The destination config as the import left it: the config view every Bot step reads.
+
+    Built from the document with the loader's two pure stages
+    (``loader_pipeline.read_config_document`` then ``build_config``), never through
+    ``KiroCrewConfig.load``: its write-back (``persist_write_back``) migrates an
+    unmigrated ``config.json`` on disk, and a Merge keeps this install's config as it
+    is. The view differs from a full load only in what that write-back seeds in
+    memory, a ``default`` crew row when ``agents`` is empty and ``default_agent``;
+    no Bot step reads either (the reserved name is never a Bot). The validated-data
+    cache is dropped before the read, so the import's own write is seen, and after
+    it, so the next ordinary load reads the file and decides its migration itself.
+    """
     from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
+    from kiro_crew.config.loader_pipeline import build_config, read_config_document
 
     _invalidate_config_cache()
-    return KiroCrewConfig.load()
+    try:
+        return build_config(read_config_document(), KiroCrewConfig)
+    finally:
+        _invalidate_config_cache()
+
+
+def spec_pins_of(config: Any) -> dict[str, str]:
+    """The spec pins of config view *config* (``agent_spec_pins._derive_pins``).
+
+    ``{}`` for an unread config: no pin applies, the fail-closed reading
+    ``agent_spec_pins.spec_pins`` gives a config it cannot load.
+    """
+    from kiro_crew import agent_spec_pins
+
+    try:
+        return agent_spec_pins._derive_pins(config)
+    except Exception:  # noqa: BLE001 - no pins is the fail-closed reading
+        logger.warning("Could not read the spec pins of the import's config", exc_info=True)
+        return {}
 
 
 def prepare_bots(mc: Path, step: RosterStep | None, pre: PreImport | None = None) -> PreparedBots:
@@ -831,19 +868,31 @@ def _restore_bots(
 
     # Each unit's call runs inside the capture, so one that raises costs that part
     # of every Bot, reported, and never the steps after it.
+    store_notices: dict[str, list[str]] = {}
     outcomes += _per_bot(
         imported,
         {"dashboard": "not_restored", "briefing": "not_restored"},
         lambda some: portability_bot_stores.install_bot_stores(
-            snap, mc, some, allow_unpinned=allow_unpinned, owned_slugs=owned
+            snap,
+            mc,
+            some,
+            allow_unpinned=allow_unpinned,
+            owned_slugs=owned,
+            notices=store_notices,
         ),
     )
     minimal_kept: set[str] = set()
+    crewmate_notices: dict[str, list[str]] = {}
     crewmates = _per_bot(
         imported,
         {"crewmate_file": "not_written"},
         lambda some: portability_bot_crewmates.restore_crewmate_files(
-            some, owned_slugs=owned, fresh_home=bots.fresh_home, minimal=minimal_kept
+            some,
+            owned_slugs=owned,
+            fresh_home=bots.fresh_home,
+            minimal=minimal_kept,
+            notices=crewmate_notices,
+            pins=spec_pins_of(bots.config),
         ),
     )
     outcomes += crewmates
@@ -886,11 +935,31 @@ def _restore_bots(
         bots,
         outcomes,
         orphans,
-        _ability_notices(imported, customised, written),
+        _merged_notices(
+            _ability_notices(imported, customised, written), crewmate_notices, store_notices
+        ),
         records,
         manifest,
         archive_bots=bots.archive_bots,
     )
+
+
+def _merged_notices(*maps: Mapping[str, Iterable[str]]) -> dict[str, list[str]]:
+    """The steps' notices by Bot name, in step order, each notice once per Bot.
+
+    The crewmate-file notices (``crewmate_file_notices``, then
+    ``restore_crewmate_files(notices=...)``) come before the stores' notices
+    (``install_bot_stores(notices=...)``); :func:`_notices_for` keeps only the
+    closed ``NOTICES`` vocabulary.
+    """
+    merged: dict[str, list[str]] = {}
+    for notices in maps:
+        for name, listed in notices.items():
+            mine = merged.setdefault(name, [])
+            for notice in listed:
+                if isinstance(notice, str) and notice not in mine:
+                    mine.append(notice)
+    return merged
 
 
 def _minimal_file_bots(
@@ -951,12 +1020,12 @@ def _write_summary(
     imported = {bot.name for bot in bots.bots}
     rows: list[dict[str, Any]] = []
     lines: list[str] = []
-    any_not_whole = False
+    any_refused = False
     more = 0
     for name in sorted(by_bot, key=lambda n: (n.casefold(), n)):
         parts = by_bot[name]
         whole = all(o.whole for o in parts)
-        any_not_whole = any_not_whole or not whole
+        any_refused = any_refused or _refuses(parts)
         if len(rows) >= MAX_BOT_ROWS:
             # Past the cap a Bot is only counted: no row, no notice read, no line.
             more += 1
@@ -991,5 +1060,18 @@ def _write_summary(
         summary["crewmate_files_customised_more"] = customised_more
         lines.append(f"bots ({customised_more} more had added abilities that were not carried)")
     report_lines(summary, lines)
-    if any_not_whole:
+    if any_refused:
         _flag_refused(summary)
+
+
+def _refuses(parts: Iterable[PartOutcome]) -> bool:
+    """Whether a Bot's *parts* make the import a refused merge (``bots`` in ``refused_merges``).
+
+    A part that is not whole does, except a ``roster`` ``skipped`` whose reason is in
+    ``NOT_ADDED_REASONS``: the roster step chose not to add that archive Bot, through
+    no failure of the import, as a Merge keeps this install's ``config.json``. Its row
+    and its items line still say so.
+    """
+    return any(
+        not o.whole and not (o.part == "roster" and o.reason in NOT_ADDED_REASONS) for o in parts
+    )

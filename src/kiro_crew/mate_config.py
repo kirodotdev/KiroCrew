@@ -16,7 +16,7 @@ import errno
 import json
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -68,17 +68,25 @@ def _refuse_service_name(mate_id: str) -> None:
         )
 
 
-def user_agent_named(name: str) -> bool:
+def user_agent_named(name: str, *, pins: Mapping[str, str] | None = None) -> bool:
     """Whether a user-level agent declares *name*. Blocking.
 
     A crewmate's own file is published under its name only when no user-level
     agent declares it (``publish_mate_agents``, ``mate_worker.mate_file_for_member``),
     so a crewmate of that name would be bound to someone's custom agent instead of
-    its copy. Every create path refuses the name.
+    its copy. Every create path refuses the name. *pins* are the spec pins a
+    declared name resolves with (``agent_specs.agent_spec_absent``); ``None`` reads
+    the live config's, and an import passes its own config view's.
     """
     from kiro_crew.agent_sdk import agent_specs
 
-    return bool(name) and not agent_specs.agent_spec_absent(paths_mod.kiro_agents_dir(), name)
+    if not name:
+        return False
+    agents_dir = paths_mod.kiro_agents_dir()
+    # Without pins the call keeps the two-argument shape every other caller uses.
+    if pins is None:
+        return not agent_specs.agent_spec_absent(agents_dir, name)
+    return not agent_specs.agent_spec_absent(agents_dir, name, pins)
 
 
 #: Why a create naming another template is refused (:func:`start_template_refusal`).

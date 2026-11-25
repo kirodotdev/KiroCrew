@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import pinned_fs
 from kiro_crew import portability_bot_stores as stores
 from kiro_crew.agent_panel import panel_dir
@@ -445,15 +445,15 @@ def test_archive_without_bot_stores_reports_none(world: tuple[_Source, _Import])
     assert not (dst.mc / "members").exists()
 
 
-@requires_symlinks
 def test_linked_archive_dashboard_is_not_followed(
     world: tuple[_Source, _Import], tmp_path: Path
 ) -> None:
+    # A junction on Windows (no privilege needed), a symlink elsewhere: both are links.
     src, dst = world
     snap = dst.snap_from(src)
     outside = tmp_path / "outside-dashboard"
     shutil.move(str(snap / "bot-members" / SLUG / "dashboard"), str(outside))
-    os.symlink(outside, snap / "bot-members" / SLUG / "dashboard", target_is_directory=True)
+    make_dir_link(snap / "bot-members" / SLUG / "dashboard", outside)
     (snap / "bot-members" / SLUG / "briefing.md").unlink()
     (snap / "bot-members" / SLUG / "welcome_claimed.json").unlink()
     rows = _run(snap, dst.mc)
@@ -1410,6 +1410,7 @@ def test_a_multi_version_dashboard_of_this_bot_restores(
     world: tuple[_Source, _Import], pin: str
 ) -> None:
     src, dst = world
+    first_digest = src.digest
     store = ArtifactStore(src.home / "artifacts")
     updated = store.update(
         src.package,
@@ -1439,7 +1440,11 @@ def test_a_multi_version_dashboard_of_this_bot_restores(
     ]
     art = ArtifactStore(dst.mc / "artifacts").get(src.package, version=src.version)
     assert art.kind == dp.DASHBOARD_KIND and not art.source_path
-    assert _page_snapshots() == [f"{SLUG}.dashboard-page.{src.digest}.json"]
+    pages = [f"{SLUG}.dashboard-page.{src.digest}.json"]
+    if pin == "latest":
+        # The retained version that pinned version 1 gets its page back too.
+        pages.append(f"{SLUG}.dashboard-page.{first_digest}.json")
+    assert _page_snapshots() == sorted(pages)
 
 
 def test_rewriting_a_staged_meta_goes_through_the_shared_pinned_writer(

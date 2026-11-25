@@ -27,7 +27,7 @@ REQUIRED_IDENTIFIERS: dict[str, tuple[str, ...]] = {
         "same_bot",
         "kept",
         "merged_entry",
-        "RESERVED_DEFAULT_MEMBER",
+        "agent_files.RESERVED_DEFAULT_MEMBER",
         "config_installed",
         "briefing",
         "bot_dashboards_not_carried",
@@ -70,6 +70,13 @@ REQUIRED_IDENTIFIERS: dict[str, tuple[str, ...]] = {
         "_destination_reserved_slugs",
         "import_bot_not_set_up_no_reason",
         "_minimal_file_bots",
+        "NOT_ADDED_REASONS",
+        "refused_merges",
+        "older_pages_not_restored",
+        "runs_on_user_agent",
+        "carried_pin",
+        "_installed_config",
+        "persist_write_back",
     ),
     "history.md": (
         "member_stem_allowed",
@@ -127,6 +134,7 @@ REQUIRED_IDENTIFIERS: dict[str, tuple[str, ...]] = {
         "binding_ladder",
         "is_reserved_bot_name",
         "is_minimal_crewmate_file",
+        "ArtifactStore._is_live_pointer",
     ),
     "crew-mode.md": (
         "only_if_absent",
@@ -148,6 +156,9 @@ REQUIRED_IDENTIFIERS: dict[str, tuple[str, ...]] = {
         "crewmate_file_notices",
         "held_by_other_bot",
         "owned_slugs",
+        "user_agent_named",
+        "runs_on_user_agent",
+        "import_bot_agent_file_review",
     ),
     "dashboard-instances.md": (
         "_write_page_snapshot",
@@ -162,8 +173,13 @@ REQUIRED_IDENTIFIERS: dict[str, tuple[str, ...]] = {
         "scan_bound_dashboards",
         "another_package_of_this_bot",
         "_owned_package",
-        "is_live_pointer",
+        "ArtifactStore._is_live_pointer",
         "live_binding",
+        "carried_pin",
+        "_rebuild_retained_pages",
+        "_publish_template_package",
+        "_retained_version_docs",
+        "older_pages_not_restored",
     ),
     "artifacts.md": (
         "portability_bot_stores",
@@ -186,7 +202,7 @@ REQUIRED_IDENTIFIERS: dict[str, tuple[str, ...]] = {
         "BoundScan",
         "another_package_of_this_bot",
         "_owned_package",
-        "is_live_pointer",
+        "ArtifactStore._is_live_pointer",
         "live_binding",
         "_archive_carries",
     ),
@@ -212,6 +228,10 @@ REMOVED_IDENTIFIERS: tuple[str, ...] = (
     "crewmate_file_is_own",
     "binding_verdict",
     "portability_bot_types.read_crewmate_file",
+    # The live-pointer rule is the artifact store's own, `ArtifactStore._is_live_pointer`.
+    "dashboard_package.is_live_pointer",
+    # The reserved name has one home, `agent_files.RESERVED_DEFAULT_MEMBER`.
+    "portability_bot_types.RESERVED_DEFAULT_MEMBER",
 )
 
 

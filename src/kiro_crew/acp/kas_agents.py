@@ -1168,15 +1168,20 @@ def to_client_custom_agent(
 _SPEC_SCAN_MEMO: AgentsDirMemo[dict[str, Any] | None] = AgentsDirMemo()
 
 
-def _declared_spec(agents_dir: Path, agent_id: str) -> dict[str, Any] | None:
+def _declared_spec(
+    agents_dir: Path, agent_id: str, pins: Mapping[str, str] | None = None
+) -> dict[str, Any] | None:
     """The spec that declares *agent_id*, memoised; the one directory scan both
-    :func:`load_agent_spec` and :func:`agent_spec_absent` read."""
+    :func:`load_agent_spec` and :func:`agent_spec_absent` read.
+
+    *pins* are the spec pins to resolve with; ``None`` reads the live config's
+    (``agent_spec_pins.spec_pins``)."""
     # The pin is part of the key: the revision is of the directory, and a pin change
     # in config.json must not be answered from the previous choice. One snapshot
     # keys and resolves, so a concurrent pin write cannot cross the two.
     from kiro_crew import agent_spec_pins
 
-    pins = agent_spec_pins.spec_pins()
+    pins = agent_spec_pins.spec_pins() if pins is None else dict(pins)
     return _SPEC_SCAN_MEMO.get(
         agents_dir,
         pinned_memo_key(agent_id, pins),
@@ -1186,19 +1191,24 @@ def _declared_spec(agents_dir: Path, agent_id: str) -> dict[str, Any] | None:
     )
 
 
-def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
+def agent_spec_absent(
+    agents_dir: Path, agent_id: str, pins: Mapping[str, str] | None = None
+) -> bool:
     """Whether *agent_id* has no spec at all in *agents_dir*.
 
     True when no spec declares the id and neither ``<agent_id>.json`` nor
     ``<agent_id>.md`` exists: a KAS built-in mode (``vibe``) a session switched
     to. A spec that exists but cannot be read is NOT absent; the caller keeps
     its own fail-closed answer for that. Raises when the directory cannot be
-    scanned, as :func:`load_agent_spec` does.
+    scanned, as :func:`load_agent_spec` does. *pins* are the spec pins the
+    declared-name scan resolves with; ``None`` reads the live config's, and a
+    caller holding a config of its own (an import's view of the destination)
+    passes that config's pins so the check never loads the config again.
     """
     if any(p.is_file() for p in agent_spec_candidates(agents_dir, agent_id)):
         return False
     try:
-        declared = _declared_spec(agents_dir, agent_id)
+        declared = _declared_spec(agents_dir, agent_id, pins)
     except AmbiguousAgentSpecError:
         return False
     except OSError as exc:

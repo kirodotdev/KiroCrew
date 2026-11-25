@@ -8839,10 +8839,12 @@
         "bot_notice_starting_abilities_only": "Bot “{{name}}” starts with its starting abilities only: abilities added on the other computer were not carried.",
         "bot_notice_rules_not_carried": "The rules of Bot “{{name}}” were not carried. Set them again on this computer.",
         "bot_notice_goals_not_carried": "The goals of Bot “{{name}}” were not carried. Set them again on this computer.",
+        "bot_notice_runs_on_user_agent": "Bot “{{name}}” runs on the agent of that name in your Kiro agents folder, not on an agent file from the archive.",
+        "bot_notice_older_pages_not_restored": "Bot “{{name}}” has its dashboard, but some earlier versions could not be brought back: rolling back to one shows the template page.",
         "import_bots_more": "More Bot results not shown: {{bots}}.",
-        "import_bot_chats_orphaned": "Bot chats not imported because no imported Bot owns them: {{chats}}.",
+        "import_bot_chats_orphaned": "Bot chats not imported, because their Bot was not added here, its DM thread link could not be restored, or they belong to an earlier memory setup of that Bot: {{chats}}.",
         "bot_chat_orphan_matches": "{{slug}} (same short name as {{names}} here)",
-        "import_bot_chats_withheld": "Bot chats not imported because no imported Bot owns them: {{withheld}}.",
+        "import_bot_chats_withheld": "Bot chats not imported, because their Bot was not added here, its DM thread link could not be restored, or they belong to an earlier memory setup of that Bot: {{withheld}}.",
         "import_bot_dashboards_not_carried": "This archive comes from an earlier version and carries no Bot dashboards.",
         "import_bot_records_more": "More Bot entries whose rules or goals were not carried: {{bots}}.",
         "import_bot_abilities_more": "More Bot entries that start with their starting abilities only: {{bots}}.",
@@ -8852,7 +8854,8 @@
         "import_bots_failed_no_detail": "Bot data could not be restored.",
         "import_bot_not_set_up": "Bot “{{name}}” could not be set up. Why: {{reasons}}.",
         "import_bot_not_set_up_no_reason": "Bot “{{name}}” could not be set up.",
-        "import_bot_agent_file_held": "Bot “{{name}}” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot."
+        "import_bot_agent_file_held": "Bot “{{name}}” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.",
+        "import_bot_agent_file_review": "Review its agent file"
       },
       "usageTab": {
         "credits": "Credits",

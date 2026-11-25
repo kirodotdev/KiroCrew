@@ -1126,7 +1126,13 @@ vetted on the way in. What the code does
 - **`members/<slug>/` is carried through the allowlist `carried_member_file` only**:
   `members/<slug>/dashboard/instance.json`, `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json`,
   `briefing.md` and `welcome_claimed.json`, archived under `bot-members/<slug>/`, never
-  `members/`, which an earlier release's Replace clears as a whole tree. The directory
+  `members/`, which an earlier release's Replace clears as a whole tree. An instance
+  Replace never installs an archive's `members/` tree either:
+  `portability_bots.INSTANCE_REPLACE_COMPONENTS` leaves out `members` as it leaves out
+  `artifacts` and `uploads`, so every `members/<slug>/` here stays byte for byte and a
+  Bot's folder files arrive only from `bot-members/<slug>/` through the checked stores
+  (a forged dashboard record under `members/` is never installed; the CLI snapshot
+  restore still replaces `members/` whole). The directory
   is the Bot's own agent-writable space, so everything else stays behind. `activity.jsonl` is excluded
   because on a fresh install it has no fenced fold marker and would be read as
   trusted history the Bot wrote itself; `welcome_owed.json`, `create_request.json`,
@@ -1157,8 +1163,8 @@ vetted on the way in. What the code does
   `artifacts/<P>/` here is this Bot's only when both its live and its pinned version
   are bound to `crewmate:<slug>` (`_owned_package`; a live pointer never counts); one
   that is not is left alone (`held_by_other_bot` when bound to another Bot,
-  `artifact_rejected` when it is not a dashboard, is a live pointer by
-  `dashboard_package.is_live_pointer`, or is bound to no Bot). An archive package whose
+  `artifact_rejected` when it is not a dashboard, is a live pointer by the store's
+  own rule `ArtifactStore._is_live_pointer`, or is bound to no Bot). An archive package whose
   staged `current.html` is bound to a different Bot is refused too
   (`held_by_other_bot`), before `BoundIndex`, so two archive Bots pinning one package
   get the same outcome in either order. `BoundIndex` checks the live

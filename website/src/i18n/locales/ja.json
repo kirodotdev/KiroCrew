@@ -17784,10 +17784,12 @@
         "bot_notice_starting_abilities_only": "Bot「{{name}}」は初期の能力だけで始まります。別のコンピューターで追加した能力は引き継がれませんでした。",
         "bot_notice_rules_not_carried": "Bot「{{name}}」のルールは引き継がれませんでした。このコンピューターで設定し直してください。",
         "bot_notice_goals_not_carried": "Bot「{{name}}」の目標は引き継がれませんでした。このコンピューターで設定し直してください。",
+        "bot_notice_runs_on_user_agent": "Bot「{{name}}」は、アーカイブのエージェントファイルではなく、Kiro のエージェントフォルダーにある同じ名前のエージェントで動作します。",
+        "bot_notice_older_pages_not_restored": "Bot「{{name}}」のダッシュボードはありますが、以前のバージョンの一部は元に戻せませんでした。そのバージョンにロールバックすると、テンプレートのページが表示されます。",
         "import_bots_more": "表示していない Bot の結果: {{bots}}。",
-        "import_bot_chats_orphaned": "インポートした Bot のどれのものでもないため、インポートしなかった Bot のチャット: {{chats}}。",
+        "import_bot_chats_orphaned": "Bot がここに追加されなかった、DM スレッドとのつながりを復元できなかった、またはその Bot の以前のメモリー設定のものであるため、インポートしなかった Bot のチャット: {{chats}}。",
         "bot_chat_orphan_matches": "{{slug}}(ここの {{names}} と同じ短い名前)",
-        "import_bot_chats_withheld": "インポートした Bot のどれのものでもないため、インポートしなかった Bot のチャット: {{withheld}}。",
+        "import_bot_chats_withheld": "Bot がここに追加されなかった、DM スレッドとのつながりを復元できなかった、またはその Bot の以前のメモリー設定のものであるため、インポートしなかった Bot のチャット: {{withheld}}。",
         "import_bot_dashboards_not_carried": "このアーカイブは古いバージョンのもので、Bot のダッシュボードを含みません。",
         "import_bot_records_more": "ルールまたは目標が引き継がれなかったほかの Bot: {{bots}}。",
         "import_bot_abilities_more": "初期の能力だけで始まるほかの Bot: {{bots}}。",
@@ -17797,7 +17799,8 @@
         "import_bots_failed_no_detail": "Bot のデータを復元できませんでした。",
         "import_bot_not_set_up": "Bot「{{name}}」をセットアップできませんでした。理由: {{reasons}}。",
         "import_bot_not_set_up_no_reason": "Bot「{{name}}」をセットアップできませんでした。",
-        "import_bot_agent_file_held": "Bot「{{name}}」は、このインポートが書き込んでいない、このコンピューターに以前からあったエージェントファイルで動作しています。この Bot を使う前に、そのファイルが何を許可しているか確認してください。"
+        "import_bot_agent_file_held": "Bot「{{name}}」は、このインポートが書き込んでいない、このコンピューターに以前からあったエージェントファイルで動作しています。この Bot を使う前に、そのファイルが何を許可しているか確認してください。",
+        "import_bot_agent_file_review": "エージェントファイルを確認"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

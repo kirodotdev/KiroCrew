@@ -436,13 +436,15 @@ def rebuild_bindings(
        again.
 
     *config* is the destination's config, which the import loads once after its mode
-    branch; ``None`` (unreadable) rebuilds none, and the default loads it here.
+    branch; ``None`` (unreadable) rebuilds none, and the default reads the import's
+    config view here (``portability_bots._installed_config``, never the loader's
+    write-back).
     """
-    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew import portability_bots
 
     if config is LOAD_CONFIG:
         try:
-            config = KiroCrewConfig.load()
+            config = portability_bots._installed_config()
         except Exception:
             logger.warning("config unreadable; no Bot binding rebuilt", exc_info=True)
             config = None

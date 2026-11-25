@@ -18752,10 +18752,12 @@
         "bot_notice_starting_abilities_only": "O Bot “{{name}}” começa só com as habilidades iniciais: as habilidades adicionadas no outro computador não vieram.",
         "bot_notice_rules_not_carried": "As regras do Bot “{{name}}” não vieram. Defina-as de novo neste computador.",
         "bot_notice_goals_not_carried": "Os objetivos do Bot “{{name}}” não vieram. Defina-os de novo neste computador.",
+        "bot_notice_runs_on_user_agent": "O Bot “{{name}}” usa o agente com esse nome da sua pasta de agentes do Kiro, e não um arquivo de agente do arquivo exportado.",
+        "bot_notice_older_pages_not_restored": "O Bot “{{name}}” tem o seu painel, mas algumas versões anteriores não puderam ser recuperadas: voltar a uma delas mostra a página do modelo.",
         "import_bots_more": "Mais resultados de Bot não exibidos: {{bots}}.",
-        "import_bot_chats_orphaned": "Conversas de Bot não importadas porque nenhum Bot importado é dono delas: {{chats}}.",
+        "import_bot_chats_orphaned": "Conversas de Bot não importadas, porque o Bot delas não foi adicionado aqui, o vínculo da conversa de DM dele não pôde ser restaurado ou elas pertencem a uma configuração de memória anterior desse Bot: {{chats}}.",
         "bot_chat_orphan_matches": "{{slug}} (mesmo nome curto que {{names}} aqui)",
-        "import_bot_chats_withheld": "Conversas de Bot não importadas porque nenhum Bot importado é dono delas: {{withheld}}.",
+        "import_bot_chats_withheld": "Conversas de Bot não importadas, porque o Bot delas não foi adicionado aqui, o vínculo da conversa de DM dele não pôde ser restaurado ou elas pertencem a uma configuração de memória anterior desse Bot: {{withheld}}.",
         "import_bot_dashboards_not_carried": "Este arquivo vem de uma versão anterior e não traz painéis de Bot.",
         "import_bot_records_more": "Mais entradas de Bot cujas regras ou objetivos não vieram: {{bots}}.",
         "import_bot_abilities_more": "Mais entradas de Bot que começam só com as habilidades iniciais: {{bots}}.",
@@ -18765,7 +18767,8 @@
         "import_bots_failed_no_detail": "Não foi possível restaurar os dados de Bot.",
         "import_bot_not_set_up": "Não foi possível configurar o Bot “{{name}}”. Motivo: {{reasons}}.",
         "import_bot_not_set_up_no_reason": "Não foi possível configurar o Bot “{{name}}”.",
-        "import_bot_agent_file_held": "O Bot “{{name}}” usa um arquivo de agente que esta importação não gravou e que já estava neste computador. Verifique o que ele permite antes de usar este Bot."
+        "import_bot_agent_file_held": "O Bot “{{name}}” usa um arquivo de agente que esta importação não gravou e que já estava neste computador. Verifique o que ele permite antes de usar este Bot.",
+        "import_bot_agent_file_review": "Revisar o arquivo de agente dele"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

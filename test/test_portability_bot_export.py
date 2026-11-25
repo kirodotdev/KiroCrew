@@ -572,3 +572,128 @@ class TestRoster:
         portability.plan_export(include_sessions=True)
 
         assert (mc / "config.json").read_bytes() == before
+
+
+# The carried package of a Bot whose dashboard runs its template: real Bots on a real
+# artifact store, exported through create_export_zip.
+
+
+@pytest.fixture
+def homes(tmp_path, _floor_monkeypatch):
+    from portability_bot_helpers import Homes, install_fixture_catalog
+
+    install_fixture_catalog(tmp_path / "catalog", _floor_monkeypatch)
+    return Homes(tmp_path / "homes", _floor_monkeypatch)
+
+
+def _bot_artifacts(archive: Path) -> set[str]:
+    from portability_bot_helpers import archive_members
+
+    return {
+        rel.split("/")[1] for rel in archive_members(archive) if rel.startswith("bot-artifacts/")
+    }
+
+
+def _atlas_on_its_template():
+    """Atlas applies package ``atlas-board``, then rolls back to its template version."""
+    from portability_bot_helpers import apply_dashboard, create_bot
+
+    from kiro_crew.dashboard_templates import instance
+
+    atlas = create_bot("Atlas")
+    applied = apply_dashboard(atlas, '<p data-dashboard-field="goal">board</p>')
+    assert not instance.rollback(atlas.slug, 1).package_slug
+    return atlas, applied
+
+
+def _rebind_away(package: str, slug: str) -> None:
+    """Rebind *package* to Bot *slug* the ordinary way: same layout, no new version."""
+    from portability_bot_helpers import dashboard_package
+
+    from kiro_crew.artifact_store import dashboard_package as dp
+    from kiro_crew.artifacts import ArtifactStore
+    from kiro_crew.config.paths import data_home
+
+    store = ArtifactStore(data_home() / "artifacts")
+    before = store.get(package, assign_token=True)
+    html = dp._decode_package(before.content or "")["view"]["html"]
+    store.update(
+        package,
+        content=dp.dump_package(dashboard_package(slug, html)),
+        expected_token=before.content_token,
+    )
+    assert store.get(package).version == before.version
+
+
+def test_a_bot_on_its_template_carries_the_package_its_retained_versions_pin(homes, tmp_path):
+    from portability_bot_helpers import export_archive
+
+    homes.use("a")
+    _atlas, applied = _atlas_on_its_template()
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == {applied.package}
+
+
+def test_a_template_bot_does_not_carry_a_package_rebound_to_another_bot(homes, tmp_path):
+    from portability_bot_helpers import export_archive
+
+    homes.use("a")
+    _atlas, applied = _atlas_on_its_template()
+    _rebind_away(applied.package, "other")
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+
+
+def test_the_carried_pin_reads_the_highest_numbered_versions_by_number(homes, tmp_path):
+    from portability_bot_helpers import dashboard_package, export_archive
+
+    from kiro_crew.artifact_store import dashboard_package as dp
+    from kiro_crew.artifacts import ArtifactStore
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.dashboard_templates import instance
+    from kiro_crew.portability_bot_types import carried_pin
+
+    homes.use("a")
+    atlas, applied = _atlas_on_its_template()
+    store = ArtifactStore(data_home() / "artifacts")
+    beta = store.create(
+        name="beta board",
+        content=dp.dump_package(dashboard_package(atlas.slug, "<p>beta</p>")),
+        kind=dp.DASHBOARD_KIND,
+        source="dashboard",
+    )
+    assert beta.slug == "beta-board"
+    beta_digest = instance._page_digest(
+        dp.canonical_package_content(store.get(beta.slug).content or "")
+    )
+    _rebind_away(applied.package, "other")
+    versions = data_home() / "members" / atlas.slug / "dashboard" / "versions"
+    pinned = json.loads((versions / "2.json").read_text())
+    assert pinned["package"]["slug"] == applied.package
+    docs: dict[int, dict] = {}
+    for n in range(1, 31):
+        doc = dict(pinned)
+        if n == 30:
+            doc["package"] = {"slug": beta.slug, "version": 1, "digest": beta_digest}
+        docs[n] = doc
+        (versions / f"{n}.json").write_text(json.dumps(doc))
+    record = json.loads((versions.parent / "instance.json").read_text())
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == {beta.slug}
+    expected = (beta.slug, 1, beta_digest)
+    by_name = {n: docs[n] for n in sorted(docs, key=str)}
+    for order in (docs, dict(reversed(list(docs.items()))), by_name):
+        assert carried_pin(record, order) == expected
+    assert carried_pin(record, {n: docs[n] for n in range(1, 30)}) == (
+        applied.package,
+        applied.version,
+        applied.digest,
+    )
+    assert carried_pin(pinned, {}) == (applied.package, applied.version, applied.digest)
+    assert carried_pin(record, {}) is None

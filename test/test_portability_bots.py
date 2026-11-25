@@ -74,6 +74,8 @@ class Units:
         self.crewmate_status = "written"
         self.refusals: dict[str, str] = {}
         self.archive_stems: set[str] = set()
+        # Notices a unit hands back through its ``notices`` out-parameter, by unit.
+        self.notices: dict[str, dict[str, list[str]]] = {}
         self.modules: dict[str, types.ModuleType] = {}
         for unit, funcs in {
             "portability_bot_bindings": (
@@ -155,16 +157,27 @@ class Units:
         self.calls.append("read_config_document")
         return self.destination
 
-    def install_bot_stores(self, snap, mc, bots, *, allow_unpinned, owned_slugs):
-        self._enter("install_bot_stores", bots=bots, owned_slugs=owned_slugs)
+    def install_bot_stores(self, snap, mc, bots, *, allow_unpinned, owned_slugs, notices=None):
+        self._enter("install_bot_stores", bots=bots, owned_slugs=owned_slugs, notices=notices)
+        for name, listed in self.notices.get("install_bot_stores", {}).items():
+            notices.setdefault(name, []).extend(listed)
         return [PartOutcome(b.name, "dashboard", "restored") for b in bots] + [
             o for b in bots for o in self.extra.get(f"dashboard:{b.name}", [])
         ]
 
-    def restore_crewmate_files(self, bots, *, owned_slugs, fresh_home, minimal=None):
+    def restore_crewmate_files(
+        self, bots, *, owned_slugs, fresh_home, minimal=None, notices=None, pins=None
+    ):
         self._enter(
-            "restore_crewmate_files", bots=bots, owned_slugs=owned_slugs, fresh_home=fresh_home
+            "restore_crewmate_files",
+            bots=bots,
+            owned_slugs=owned_slugs,
+            fresh_home=fresh_home,
+            notices=notices,
+            pins=pins,
         )
+        for name, listed in self.notices.get("restore_crewmate_files", {}).items():
+            notices.setdefault(name, []).extend(listed)
         return [PartOutcome(b.name, "crewmate_file", self.crewmate_status) for b in bots]
 
     def crewmate_file_notices(self, bots, customised, *, written):
@@ -295,6 +308,34 @@ class TestOrder:
         assert summary["bots"][0]["notices"] == ["starting_abilities_only", "goals_not_carried"]
         assert "refused_merges" not in summary
 
+    def test_the_stores_and_crewmate_steps_notices_merge_into_the_row(
+        self, tmp_path, dest, monkeypatch, fake_replace
+    ):
+        # Both steps hand notices back by Bot name through their ``notices`` dict; the
+        # row carries them once each, crewmate file first, and each adds one line.
+        units = Units(monkeypatch, [_bot("Atlas"), _bot("Bea")])
+        units.notices = {
+            "install_bot_stores": {"Atlas": ["older_pages_not_restored"]},
+            "restore_crewmate_files": {
+                "Atlas": ["runs_on_user_agent", "runs_on_user_agent"],
+                "Bea": ["not_a_notice"],
+            },
+        }
+        summary = _replace(
+            tmp_path, {"MANIFEST.json": _manifest(), "config.json": _config("Atlas", "Bea")}
+        )
+        assert isinstance(units.args["install_bot_stores"]["notices"], dict)
+        assert isinstance(units.args["restore_crewmate_files"]["notices"], dict)
+        assert units.args["restore_crewmate_files"]["pins"] == {}
+        rows = {row["bot"]: row for row in summary["bots"]}
+        assert rows["Atlas"]["notices"] == ["runs_on_user_agent", "older_pages_not_restored"]
+        assert rows["Bea"]["notices"] == []
+        assert [line for line in summary["items"] if line.startswith("bot ")] == [
+            "bot Atlas (notice: runs_on_user_agent)",
+            "bot Atlas (notice: older_pages_not_restored)",
+        ]
+        assert "refused_merges" not in summary
+
     def test_no_notice_for_what_is_still_here(self, tmp_path, dest, monkeypatch, fake_replace):
         # The crewmate file was already here (kept) and the goals record is too: the
         # Bot lost neither, so the summary claims no loss (A13).
@@ -347,6 +388,7 @@ class TestOrder:
         assert set(portability_bots.INSTANCE_REPLACE_COMPONENTS) == set(COMPONENTS) - {
             "artifacts",
             "uploads",
+            "members",
         }
 
     def test_claims_are_read_before_the_replace_strip(
@@ -411,7 +453,8 @@ class TestMerge:
         assert rows["Local"]["reasons"] == ["name_taken"]
         assert rows["Local"]["slug"] == "local"
         assert "bot Local (not whole: roster skipped: name_taken)" in summary["items"]
-        assert summary["refused_merges"] == ["bots"]
+        # The roster step chose not to add Local: that is no refused merge (C2).
+        assert "bots" not in summary.get("refused_merges", [])
         # A41: the skipped Bot is not in the installed roster; the added one is.
         assert (rows["Local"]["in_roster"], rows["Atlas"]["in_roster"]) == (False, True)
         assert rows["Local"]["part_reasons"]["roster"] == "name_taken"
@@ -503,7 +546,8 @@ class TestTemplateWarning:
         (agents / "builder.json").write_text(json.dumps({"name": "builder"}), encoding="utf-8")
         for name in ("Atlas", "Nova"):
             (mates / f"{name}.json").write_text(json.dumps({"name": name}), encoding="utf-8")
-        monkeypatch.setattr(pt, "kiro_agents_dir", lambda: agents)
+        # Through the facade: portability and portability_templates both bind it.
+        monkeypatch.setattr(portability, "kiro_agents_dir", lambda: agents)
         monkeypatch.setattr(paths, "mate_agents_dir", lambda: mates)
         cfg = tmp_path / "config.json"
         crews = {
@@ -934,6 +978,39 @@ class TestSummary:
         assert summary["bots"][0]["dashboard"] == "page_not_rebuilt"
         assert summary["bots"][0]["reasons"] == ["digest_mismatch", "write_failed"]
 
+    def test_a_bot_the_merge_does_not_add_is_not_a_refused_merge(self):
+        # C2: the roster step chose not to add an archive Bot (a NOT_ADDED_REASONS
+        # reason). Its row and its line stay; the import is not a refused merge.
+        skipped = [
+            PartOutcome("Nina", "roster", "skipped", "name_taken"),
+            PartOutcome("Vee", "roster", "skipped", "no_member_id"),
+        ]
+        summary = _summary_for([_bot("Atlas")], list(skipped), bot_stores=1)
+        rows = {row["bot"]: row for row in summary["bots"]}
+        assert (rows["Nina"]["roster"], rows["Nina"]["part_reasons"]["roster"]) == (
+            "skipped",
+            "name_taken",
+        )
+        assert (rows["Vee"]["roster"], rows["Vee"]["part_reasons"]["roster"]) == (
+            "skipped",
+            "no_member_id",
+        )
+        assert summary["items"] == [
+            "bot Nina (not whole: roster skipped: name_taken)",
+            "bot Vee (not whole: roster skipped: no_member_id)",
+        ]
+        assert "bots" not in summary.get("refused_merges", [])
+
+        # A roster refusal that is a failure of the import still flags it.
+        rejected = PartOutcome("Zed", "roster", "skipped", "config_rejected")
+        summary = _summary_for([_bot("Atlas")], [*skipped, rejected], bot_stores=1)
+        assert "bot Zed (not whole: roster skipped: config_rejected)" in summary["items"]
+        assert summary["refused_merges"] == ["bots"]
+        # So does a part other than the roster, of a Bot the merge did add.
+        broken = PartOutcome("Atlas", "dashboard", "not_restored", "write_failed")
+        summary = _summary_for([_bot("Atlas")], [*skipped, broken], bot_stores=1)
+        assert summary["refused_merges"] == ["bots"]
+
     def test_each_row_carries_the_reason_of_each_part_and_whether_it_is_in_the_roster(self):
         # A41: the witness row: the agent file failed to write, the binding is another
         # Bot's. Each part names its own reason, next to the merged list.
@@ -1182,7 +1259,7 @@ def test_the_minimal_file_bots_come_from_the_crewmate_steps_own_classification(m
 
     # The step fills the set for a Bot new here whose kept file is the minimal one.
     monkeypatch.setattr(crewmates, "safe_crewmate_name", lambda _n: True)
-    monkeypatch.setattr(crewmates.mate_config, "user_agent_named", lambda _n: False)
+    monkeypatch.setattr(crewmates.mate_config, "user_agent_named", lambda _n, **_k: False)
     monkeypatch.setattr(crewmates.mate_config, "write_mate_config", lambda *_a, **_k: None)
     monkeypatch.setattr(crewmates, "_owner_of", lambda _n: "none")
     monkeypatch.setattr(crewmates, "crewmate_file_state", lambda _n: "minimal")
@@ -1209,3 +1286,114 @@ def test_a_rows_part_status_and_reason_come_from_one_chosen_outcome():
     assert portability_bots._part_outcome(outcomes, "binding") is None
     assert portability_bots._part_status(outcomes, "binding", "none") == "none"
     assert portability_bots._part_reason(outcomes, "binding") == ""
+
+
+# -- the Bot steps never let the loader's write-back change config.json (C1) --------
+
+
+@pytest.fixture
+def homes(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch):
+    from portability_bot_helpers import Homes, install_fixture_catalog
+
+    install_fixture_catalog(tmp_path / "catalog", _floor_monkeypatch)
+    return Homes(tmp_path / "homes", _floor_monkeypatch)
+
+
+#: The keys the loader's write-back adds to a config.json that predates them.
+_WRITE_BACK_KEYS = ("agent", "default_agent")
+
+
+def _unmigrate(doc: dict) -> dict:
+    """*doc* as an older release left it: no ``meta`` and none of the write-back's keys."""
+    return {k: v for k, v in doc.items() if k not in ("meta", *_WRITE_BACK_KEYS)}
+
+
+def _unmigrated_destination(homes, name: str = "b") -> dict:
+    """Home *name* with its own Bot Atlas and an unmigrated ``config.json``; that document."""
+    from portability_bot_helpers import create_bot
+
+    from kiro_crew.config.loader import _invalidate_config_cache
+    from kiro_crew.config.paths import config_dir
+
+    homes.use(name)
+    create_bot("Atlas")
+    path = config_dir() / "config.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    original = {"dashboard": {"language": "de"}, "agents": {"Atlas": doc["agents"]["Atlas"]}}
+    for key in ("memory_stores", "workspaces"):
+        if key in doc:
+            original[key] = doc[key]
+    path.write_text(json.dumps(original), encoding="utf-8")
+    _invalidate_config_cache()
+    return original
+
+
+def _nova_archive(homes, tmp_path: Path) -> Path:
+    from portability_bot_helpers import create_bot, export_archive
+
+    homes.use("a")
+    create_bot("Nova")
+    return export_archive(tmp_path / "a.zip")
+
+
+def test_a_merge_adding_a_bot_writes_only_its_entries_into_an_unmigrated_config(homes, tmp_path):
+    from kiro_crew.config.paths import config_dir
+
+    archive = _nova_archive(homes, tmp_path)
+    original = _unmigrated_destination(homes)
+    path = config_dir() / "config.json"
+
+    summary = portability.apply_import_zip(archive, mode="merge")
+
+    assert [(r["bot"], r["roster"]) for r in summary["bots"]] == [("Nova", "added")]
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert set(after.pop("meta")) == {"lastTouchedVersion", "lastTouchedAt"}
+    for key in _WRITE_BACK_KEYS:
+        assert key not in after, key
+    sections = ("agents", "memory_stores", "workspaces")
+    assert {k: v for k, v in after.items() if k not in sections} == {
+        k: v for k, v in original.items() if k not in sections
+    }
+    assert set(after["agents"]) - set(original["agents"]) == {"Nova"}
+    nova = after["agents"]["Nova"]
+    for key, own in (("memory_stores", nova["memory_store"]), ("workspaces", nova["workspace"])):
+        assert set(after[key]) - set(original[key]) == {own}, key
+    for key in sections:
+        assert {k: v for k, v in after[key].items() if k in original[key]} == original[key]
+
+
+@pytest.mark.parametrize("mode", ["merge", "replace"])
+def test_no_bot_step_lets_the_write_back_change_config_json(homes, tmp_path, monkeypatch, mode):
+    import inspect
+
+    from portability_bot_helpers import rewrite_archive
+
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.config import loader_pipeline
+    from kiro_crew.config.paths import config_dir
+
+    archive = _nova_archive(homes, tmp_path)
+    if mode == "merge":
+        _unmigrated_destination(homes)
+    else:
+        archive = rewrite_archive(archive, tmp_path / "b.zip", edit={"config.json": _unmigrate})
+        homes.use("c")
+    path = config_dir() / "config.json"
+    real = loader_pipeline.persist_write_back
+    calls: list[dict] = []
+
+    def recording(cfg, doc):
+        before = path.read_bytes() if path.exists() else b""
+        in_lock = any(f.function == "update_config_locked" for f in inspect.stack())
+        real(cfg, doc)
+        after = path.read_bytes() if path.exists() else b""
+        calls.append({"in_lock": in_lock, "changed": after != before})
+
+    # Through the facade, which routes the patch to the binding the loader reads.
+    monkeypatch.setattr(config_loader, "persist_write_back", recording)
+    assert loader_pipeline.persist_write_back is recording
+
+    summary = portability.apply_import_zip(archive, mode=mode)
+
+    assert [r["bot"] for r in summary["bots"] if r["bot"] == "Nova"] == ["Nova"]
+    assert not [call for call in calls if call["changed"]], calls

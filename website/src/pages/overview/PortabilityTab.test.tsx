@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 
 import PortabilityTab, { IMPORT_RESULT_KEY, chatImportLines, importedItemCount, keptSettingsFiles, refusalText, settingsFileLabel, refusedItems, unbundledTemplates } from './PortabilityTab'
 import { __resetUiPrefsSyncForTests, resumeUiPrefsSync } from '../../lib/uiPrefs'
@@ -699,7 +700,7 @@ describe('PortabilityTab Bot results', () => {
     expect(refused.some(t => t.includes('left unchanged'))).toBe(false)
     expect(screen.getAllByTestId('portability-import-warning').map(n => n.textContent)).toEqual([
       'The rules of Bot “Ada” were not carried. Set them again on this computer.',
-      'Bot chats not imported because no imported Bot owns them: cid.',
+      'Bot chats not imported, because their Bot was not added here, its DM thread link could not be restored, or they belong to an earlier memory setup of that Bot: cid.',
       'This archive comes from an earlier version and carries no Bot dashboards.',
     ])
   })
@@ -722,5 +723,95 @@ describe('PortabilityTab Bot results', () => {
     expect(refused.some(t => t.includes('left unchanged'))).toBe(false)
     // config and the sessions item count; the report line does not.
     expect(screen.getByText(i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: 2 }))).toBeTruthy()
+  })
+})
+
+describe('PortabilityTab agent file held by another Bot', () => {
+  const originalLocation = window.location
+  const REVIEW_PATH = '/capabilities?tab=crews&crew=Comet%20%26%20Co&pane=capabilities'
+  const held = {
+    bot: 'Comet & Co', slug: 'comet-co', roster: 'imported', binding: 'rebuilt', crewmate_file: 'not_written',
+    dashboard: 'restored', reasons: ['held_by_other_bot'], part_reasons: { crewmate_file: 'held_by_other_bot' },
+    in_roster: true, notices: [],
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    __resetUiPrefsSyncForTests()
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...originalLocation, reload: vi.fn() } })
+  })
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    vi.unstubAllGlobals()
+    sessionStorage.clear()
+    __resetUiPrefsSyncForTests()
+  })
+
+  /** Where the router is now, so a test reads the navigation the button made. */
+  function Landed() {
+    const { pathname, search } = useLocation()
+    return <div data-testid="landed">{`${pathname}${search}`}</div>
+  }
+
+  function renderRouted() {
+    return render(
+      <MemoryRouter initialEntries={['/settings/imports']}>
+        <Routes>
+          <Route path="/settings/imports" element={<PortabilityTab />} />
+          <Route path="/capabilities" element={<Landed />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  async function importWith(summary: Record<string, unknown>) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('preview')
+        ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
+        : { ok: true, summary },
+    ), { status: 200 })))
+    const view = renderRouted()
+    const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['PK'], 'e.zip')] } })
+    const importButton = screen.getByRole('button', { name: /^import$/i })
+    await waitFor(() => expect((importButton as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(importButton)
+    await screen.findByText(/Import complete/)
+    return view
+  }
+
+  it('shows the held line with a button that opens the Bot\'s agent file for review', async () => {
+    await importWith({ items: ['config (restored)'], bots: [held] })
+    const notice = screen.getByTestId('portability-import-agent-file-held')
+    expect(notice.textContent).toContain(
+      'Bot “Comet & Co” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.',
+    )
+    // It is its own notice, never one of the refused-item lines.
+    expect(screen.queryByTestId('portability-import-refused')).toBeNull()
+    fireEvent.click(within(notice).getByRole('button', { name: 'Review its agent file' }))
+    expect((await screen.findByTestId('landed')).textContent).toBe(REVIEW_PATH)
+  })
+
+  it('carries the held Bots across the reload and still offers the review button', async () => {
+    localStorage.setItem('mc-ui-prefs-synced', '{}')
+    const view = await importWith({ items: ['ui-prefs (restored)'], ui_prefs_restored: true, bots: [held] })
+    await waitFor(() => expect(window.location.reload).toHaveBeenCalledTimes(1))
+    expect(JSON.parse(sessionStorage.getItem(IMPORT_RESULT_KEY) ?? 'null')?.held).toEqual(['Comet & Co'])
+    view.unmount()
+    vi.unstubAllGlobals()
+    renderRouted()
+    const notice = screen.getByTestId('portability-import-agent-file-held')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Review its agent file' }))
+    expect((await screen.findByTestId('landed')).textContent).toBe(REVIEW_PATH)
+  })
+
+  it('shows the held line without the button where there is no router to navigate with', async () => {
+    sessionStorage.setItem(IMPORT_RESULT_KEY, JSON.stringify({ msg: 'Import complete (1 item).', warnings: [], errors: [], held: ['Ada'] }))
+    render(<PortabilityTab />)
+    const notice = screen.getByTestId('portability-import-agent-file-held')
+    expect(notice.textContent).toContain('Bot “Ada” runs on an agent file this import did not write')
+    expect(within(notice).queryByRole('button', { name: 'Review its agent file' })).toBeNull()
   })
 })

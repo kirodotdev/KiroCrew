@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { BOT_NOTICE_KEYS, BOT_REASON_KEYS, botImportLines, botRows, isWholeBot, orphanChats } from './portabilityBots'
+import {
+  BOT_NOTICE_KEYS, BOT_REASON_KEYS, agentFileReviewPath, botImportLines, botRows, heldAgentFileLine, isWholeBot,
+  orphanChats,
+} from './portabilityBots'
 import { i18nT } from '../../i18n/t'
 
 const wholeRow = { bot: 'Ada', slug: 'ada', roster: 'added', binding: 'rebuilt', crewmate_file: 'written', dashboard: 'restored', reasons: [], notices: [] }
+const NO_LINES = { errors: [], warnings: [], held: [] }
+const CHATS_WHY = 'because their Bot was not added here, its DM thread link could not be restored, or they belong to an earlier memory setup of that Bot'
 
 describe('the closed vocabulary', () => {
   // The backend's tuples in src/kiro_crew/portability_bot_types.py, copied here
@@ -16,7 +21,10 @@ describe('the closed vocabulary', () => {
     'artifact_missing', 'artifact_rejected', 'digest_mismatch', 'held_by_other_bot',
     'another_package_of_this_bot',
   ]
-  const NOTICES = ['starting_abilities_only', 'rules_not_carried', 'goals_not_carried']
+  const NOTICES = [
+    'starting_abilities_only', 'rules_not_carried', 'goals_not_carried', 'runs_on_user_agent',
+    'older_pages_not_restored',
+  ]
 
   it('has a catalog string for every reason and notice', () => {
     expect(Object.keys(BOT_REASON_KEYS).sort()).toEqual([...REASONS].sort())
@@ -56,8 +64,8 @@ describe('botRows', () => {
 
 describe('botImportLines', () => {
   it('adds nothing for a whole Bot with no notice', () => {
-    expect(botImportLines({ bots: [wholeRow] })).toEqual({ errors: [], warnings: [] })
-    expect(botImportLines({})).toEqual({ errors: [], warnings: [] })
+    expect(botImportLines({ bots: [wholeRow] })).toEqual(NO_LINES)
+    expect(botImportLines({})).toEqual(NO_LINES)
   })
 
   it('names a skipped Bot with its reasons', () => {
@@ -94,6 +102,29 @@ describe('botImportLines', () => {
     ])
   })
 
+  it('says a Bot on a user-level agent and a Bot with older pages lost are whole, with a notice each', () => {
+    const { errors, warnings, held } = botImportLines({ bots: [
+      {
+        ...wholeRow,
+        crewmate_file: 'not_needed',
+        part_reasons: { crewmate_file: 'user_agent_named' },
+        notices: ['runs_on_user_agent'],
+      },
+      { ...wholeRow, bot: 'Bea', slug: 'bea', notices: ['older_pages_not_restored'] },
+    ] })
+    expect(errors).toEqual([])
+    expect(held).toEqual([])
+    expect(warnings).toEqual([
+      'Bot “Ada” runs on the agent of that name in your Kiro agents folder, not on an agent file from the archive.',
+      'Bot “Bea” has its dashboard, but some earlier versions could not be brought back: rolling back to one shows the template page.',
+    ])
+  })
+
+  it('adds no line for a Bot that runs on a user-level agent of its name, as it did before the import', () => {
+    const row = { ...wholeRow, crewmate_file: 'not_needed', reasons: ['user_agent_named'], part_reasons: { crewmate_file: 'user_agent_named' } }
+    expect(botImportLines({ bots: [row] })).toEqual(NO_LINES)
+  })
+
   it('lists the withheld Bot chats, with the Bots here that share their short name', () => {
     const { warnings } = botImportLines({
       bot_transcripts_orphaned: [
@@ -104,13 +135,37 @@ describe('botImportLines', () => {
       sessions_member_withheld: 4,
     })
     expect(warnings).toEqual([
-      'Bot chats not imported because no imported Bot owns them: cid (same short name as Cid here), dot, and 2 more.',
+      `Bot chats not imported, ${CHATS_WHY}: cid (same short name as Cid here), dot, and 2 more.`,
     ])
+  })
+
+  it('names every cause of a withheld chat when its Bot was imported with a refused DM thread link', () => {
+    // The Bot came in, but its link was refused, so its chat is withheld and is
+    // also an orphan row: "no imported Bot owns them" would be false here.
+    const { errors, warnings } = botImportLines({
+      bots: [{ ...wholeRow, bot: 'Cid', slug: 'cid', binding: 'not_rebuilt', part_reasons: { binding: 'archive_binding_disagrees' } }],
+      bot_transcripts_orphaned: [{ slug: 'cid', generation: '', candidates: ['Cid'] }],
+      sessions_member_withheld: 1,
+    })
+    expect(errors).toEqual([
+      'Bot “Cid” was imported without everything it had. Missing: DM thread link. Why: The archive\'s DM thread link does not match this Bot.',
+    ])
+    expect(warnings).toEqual([`Bot chats not imported, ${CHATS_WHY}: cid (same short name as Cid here).`])
+  })
+
+  it('names every cause of a withheld chat of an earlier memory setup of a Bot imported whole', () => {
+    const { errors, warnings } = botImportLines({
+      bots: [{ ...wholeRow, bot: 'Cid', slug: 'cid' }],
+      bot_transcripts_orphaned: [{ slug: 'cid', generation: 'work-old', candidates: ['Cid'] }],
+      sessions_member_withheld: 1,
+    })
+    expect(errors).toEqual([])
+    expect(warnings).toEqual([`Bot chats not imported, ${CHATS_WHY}: cid (same short name as Cid here).`])
   })
 
   it('gives the count alone when no orphan row is listed', () => {
     expect(botImportLines({ sessions_member_withheld: 3 }).warnings)
-      .toEqual(['Bot chats not imported because no imported Bot owns them: 3.'])
+      .toEqual([`Bot chats not imported, ${CHATS_WHY}: 3.`])
   })
 
   it('shows the count lines', () => {
@@ -129,7 +184,7 @@ describe('botImportLines', () => {
   })
 
   it('reads the briefing part, whole when it is none and missing when not restored', () => {
-    expect(botImportLines({ bots: [{ ...wholeRow, briefing: 'none' }] })).toEqual({ errors: [], warnings: [] })
+    expect(botImportLines({ bots: [{ ...wholeRow, briefing: 'none' }] })).toEqual(NO_LINES)
     expect(botImportLines({ bots: [{ ...wholeRow, briefing: 'not_restored', reasons: ['held_by_other_bot'] }] }).errors).toEqual([
       'Bot “Ada” was imported without everything it had. Missing: briefing. Why: It kept a different Bot\'s copy that was already on this computer.',
     ])
@@ -177,17 +232,17 @@ describe('what the roster and agent-file lines say', () => {
     ])
   })
 
-  it('says a Bot runs on an agent file this import did not write when another Bot held it', () => {
+  it('names a Bot that runs on an agent file another Bot held, apart from the failure lines', () => {
     const held = { ...wholeRow, crewmate_file: 'not_written', reasons: ['held_by_other_bot'] }
-    const { errors } = botImportLines({ bots: [held] })
-    expect(errors).toEqual([
-      'Bot “Ada” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.',
-    ])
-    // Another missing part still gets its own line next to it.
-    expect(botImportLines({ bots: [{ ...held, briefing: 'not_restored' }] }).errors).toEqual([
-      'Bot “Ada” was imported without everything it had. Missing: briefing. Why: It kept a different Bot\'s copy that was already on this computer.',
-      'Bot “Ada” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.',
-    ])
+    // The held line has its own notice with a review button, so it is not an error line.
+    expect(botImportLines({ bots: [held] })).toEqual({ errors: [], warnings: [], held: ['Ada'] })
+    expect(heldAgentFileLine('Ada')).toBe('Bot “Ada” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.')
+    // Another missing part still gets its own error line.
+    expect(botImportLines({ bots: [{ ...held, briefing: 'not_restored' }] })).toEqual({
+      errors: ['Bot “Ada” was imported without everything it had. Missing: briefing. Why: It kept a different Bot\'s copy that was already on this computer.'],
+      warnings: [],
+      held: ['Ada'],
+    })
     // An agent file refused for its own reason is no other Bot's file.
     expect(botImportLines({ bots: [{ ...wholeRow, crewmate_file: 'not_written', reasons: ['user_agent_named'] }] }).errors)
       .toEqual(['Bot “Ada” was imported without everything it had. Missing: agent file. Why: One of your own agents already has this name.'])
@@ -222,19 +277,25 @@ describe('the per-part reasons a current backend sends (part_reasons, in_roster)
       part_reasons: { ...parts, crewmate_file: 'held_by_other_bot', briefing: 'write_failed' },
       in_roster: true,
     }
-    expect(botImportLines({ bots: [row] }).errors).toEqual([
-      'Bot “Ada” was imported without everything it had. Missing: briefing. Why: A file could not be written.',
-      'Bot “Ada” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.',
-    ])
+    expect(botImportLines({ bots: [row] })).toEqual({
+      errors: ['Bot “Ada” was imported without everything it had. Missing: briefing. Why: A file could not be written.'],
+      warnings: [],
+      held: ['Ada'],
+    })
   })
 
   it('says a Bot runs on an agent file this import did not write when another data home owns it', () => {
-    const heldLine = 'Bot “Ada” runs on an agent file this import did not write, which was already on this computer. Check what it allows before you use this Bot.'
+    const heldOnly = { errors: [], warnings: [], held: ['Ada'] }
     const older = { ...wholeRow, crewmate_file: 'not_written', reasons: ['foreign_owner'] }
     const row = { ...older, part_reasons: { ...parts, crewmate_file: 'foreign_owner' }, in_roster: true }
-    expect(botImportLines({ bots: [row] }).errors).toEqual([heldLine])
+    expect(botImportLines({ bots: [row] })).toEqual(heldOnly)
     // An older row (no part_reasons): foreign_owner is only ever the agent file's.
-    expect(botImportLines({ bots: [older] }).errors).toEqual([heldLine])
+    expect(botImportLines({ bots: [older] })).toEqual(heldOnly)
+  })
+
+  it('links the review button to the Approvals section of the Bot\'s crewmate editor', () => {
+    expect(agentFileReviewPath('Ada')).toBe('/capabilities?tab=crews&crew=Ada&pane=capabilities')
+    expect(agentFileReviewPath('Ada & Bea?')).toBe('/capabilities?tab=crews&crew=Ada%20%26%20Bea%3F&pane=capabilities')
   })
 
   it('never says "runs on another agent file" for an older row whose agent file failed to write', () => {

@@ -18268,10 +18268,12 @@
         "bot_notice_starting_abilities_only": "Bot „{{name}}“ startet nur mit seinen Startfähigkeiten: Fähigkeiten, die auf dem anderen Rechner hinzugefügt wurden, wurden nicht übernommen.",
         "bot_notice_rules_not_carried": "Die Regeln von Bot „{{name}}“ wurden nicht übernommen. Lege sie auf diesem Rechner neu fest.",
         "bot_notice_goals_not_carried": "Die Ziele von Bot „{{name}}“ wurden nicht übernommen. Lege sie auf diesem Rechner neu fest.",
+        "bot_notice_runs_on_user_agent": "Bot „{{name}}“ läuft mit dem gleichnamigen Agent aus dem Agents-Ordner von Kiro, nicht mit einer Agent-Datei aus dem Archiv.",
+        "bot_notice_older_pages_not_restored": "Bot „{{name}}“ hat sein Dashboard, aber einige frühere Versionen konnten nicht zurückgeholt werden: Wer auf eine davon zurücksetzt, sieht die Vorlagenseite.",
         "import_bots_more": "Weitere, nicht angezeigte Bot-Ergebnisse: {{bots}}.",
-        "import_bot_chats_orphaned": "Nicht importierte Bot-Chats, weil kein importierter Bot sie besitzt: {{chats}}.",
+        "import_bot_chats_orphaned": "Nicht importierte Bot-Chats, weil ihr Bot hier nicht hinzugefügt wurde, seine Verknüpfung zum DM-Thread nicht wiederhergestellt werden konnte oder sie zu einer früheren Speichereinrichtung dieses Bots gehören: {{chats}}.",
         "bot_chat_orphan_matches": "{{slug}} (derselbe Kurzname wie {{names}} hier)",
-        "import_bot_chats_withheld": "Nicht importierte Bot-Chats, weil kein importierter Bot sie besitzt: {{withheld}}.",
+        "import_bot_chats_withheld": "Nicht importierte Bot-Chats, weil ihr Bot hier nicht hinzugefügt wurde, seine Verknüpfung zum DM-Thread nicht wiederhergestellt werden konnte oder sie zu einer früheren Speichereinrichtung dieses Bots gehören: {{withheld}}.",
         "import_bot_dashboards_not_carried": "Dieses Archiv stammt aus einer älteren Version und enthält keine Bot-Dashboards.",
         "import_bot_records_more": "Weitere Bot-Einträge, deren Regeln oder Ziele nicht übernommen wurden: {{bots}}.",
         "import_bot_abilities_more": "Weitere Bot-Einträge, die nur mit ihren Startfähigkeiten starten: {{bots}}.",
@@ -18281,7 +18283,8 @@
         "import_bots_failed_no_detail": "Bot-Daten konnten nicht wiederhergestellt werden.",
         "import_bot_not_set_up": "Bot „{{name}}“ konnte nicht eingerichtet werden. Grund: {{reasons}}.",
         "import_bot_not_set_up_no_reason": "Bot „{{name}}“ konnte nicht eingerichtet werden.",
-        "import_bot_agent_file_held": "Bot „{{name}}“ läuft mit einer Agent-Datei, die dieser Import nicht geschrieben hat und die schon auf diesem Rechner war. Prüfe, was sie erlaubt, bevor du diesen Bot verwendest."
+        "import_bot_agent_file_held": "Bot „{{name}}“ läuft mit einer Agent-Datei, die dieser Import nicht geschrieben hat und die schon auf diesem Rechner war. Prüfe, was sie erlaubt, bevor du diesen Bot verwendest.",
+        "import_bot_agent_file_review": "Agent-Datei prüfen"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

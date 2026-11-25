@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew import members
 from kiro_crew import portability_bot_bindings as bindings
 from kiro_crew.config.loader_locations import config_path
@@ -327,12 +328,13 @@ def test_an_unexpected_error_for_one_bot_does_not_stop_the_next(monkeypatch):
 
 
 def test_an_unreadable_config_writes_nothing(monkeypatch):
-    from kiro_crew.config import loader
+    from kiro_crew import portability_bots
 
     def unreadable():
         raise ValueError("bad config")
 
-    monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(unreadable))
+    # The default config is the import's view of the document, not a loader read.
+    monkeypatch.setattr(portability_bots, "_installed_config", unreadable)
     outcome = _rebuild()
     assert (outcome.status, outcome.reason) == ("not_rebuilt", "unreadable_record")
 
@@ -379,7 +381,7 @@ def test_a_linked_bindings_directory_is_not_followed(tmp_path):
     elsewhere.mkdir()
     (elsewhere / "atlas.json").write_text(json.dumps(_derived_claim()), encoding="utf-8")
     (snap / "member-records").mkdir()
-    _symlink_or_skip(elsewhere, snap / "member-records" / "member-bindings")
+    make_dir_link(snap / "member-records" / "member-bindings", elsewhere)
     assert bindings.read_archive_binding_claims(snap) == {}
 
 

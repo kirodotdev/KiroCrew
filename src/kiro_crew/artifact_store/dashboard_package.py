@@ -1258,19 +1258,6 @@ class BoundScan:
         return self.listed <= MAX_BINDING_SCAN and not self.unread
 
 
-def is_live_pointer(art: object) -> bool:
-    """Whether stored record *art* serves a file's current bytes, read off its metadata alone.
-
-    ``ArtifactStore._is_live_pointer``'s rule (a ``source_path`` without
-    ``source_copy_only``), for any record a listing returns: a field it lacks reads as
-    empty. A copy with provenance (``source_copy_only``) owns its bytes. Every reader
-    that must skip a live pointer before opening it asks this one rule.
-    """
-    return bool(str(getattr(art, "source_path", "") or "")) and not bool(
-        getattr(art, "source_copy_only", False)
-    )
-
-
 def live_binding_of(content: str) -> str | None:
     """The binding a dashboard package's text names, by the rule the binding scan reads it.
 
@@ -1289,8 +1276,9 @@ def scan_bound_dashboards(store: "ArtifactStore | None" = None) -> BoundScan:
     """Every binding the stored dashboards name, by the rules :func:`resolve_bound_slug` reads by.
 
     The ``kind="dashboard"`` artifacts the store lists, newest first and at most
-    :data:`MAX_BINDING_SCAN`; a live pointer (:func:`is_live_pointer`) is skipped
-    before it is opened, and a record that cannot be
+    :data:`MAX_BINDING_SCAN`; a live pointer (the store's own rule,
+    ``ArtifactStore._is_live_pointer``: a ``source_path`` without ``source_copy_only``)
+    is skipped before it is opened, and a record that cannot be
     opened or whose envelope cannot be decoded is counted in ``unread``. The binding
     is read off the stored envelope, not a validated package. Why each rule holds is
     :func:`resolve_bound_slug`'s docstring.
@@ -1305,7 +1293,7 @@ def scan_bound_dashboards(store: "ArtifactStore | None" = None) -> BoundScan:
     bound: dict[str, list[str]] = {}
     unread = 0
     for art in records[:MAX_BINDING_SCAN]:
-        if is_live_pointer(art):
+        if store._is_live_pointer(art):
             continue
         try:
             loaded = store.get(art.slug)

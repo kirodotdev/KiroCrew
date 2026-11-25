@@ -275,6 +275,7 @@ BOT_SIBLINGS = (
     "kiro_crew.portability_bot_export",
     "kiro_crew.portability_bot_roster",
     "kiro_crew.portability_bot_stores",
+    "kiro_crew.portability_bot_stores_retained",
     "kiro_crew.portability_bot_types",
     "kiro_crew.portability_bots",
 )

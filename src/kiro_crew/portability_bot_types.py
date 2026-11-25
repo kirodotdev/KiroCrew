@@ -17,16 +17,16 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.agent_files import RESERVED_DEFAULT_MEMBER
 from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 #: The parts of one Bot an import restores, in the order the summary lists them.
 PARTS: tuple[str, ...] = ("roster", "binding", "crewmate_file", "dashboard", "briefing")
 
-#: The built-in agent every install has. The Members roster reserves the name
-#: (``dashboard.handlers.members_roster.RESERVED_DEFAULT_MEMBER``) and it is never a
-#: Bot: no import step adds, keeps or reports it.
-RESERVED_DEFAULT_MEMBER = "default"
+# ``RESERVED_DEFAULT_MEMBER`` (imported above from ``agent_files``, its one home) is the
+# built-in agent every install has. The Members roster reserves the name and it is
+# never a Bot: no import step adds, keeps or reports it.
 
 
 def is_reserved_bot_name(name: object) -> bool:
@@ -84,8 +84,34 @@ REASONS: tuple[str, ...] = (
     "another_package_of_this_bot",
 )
 
-#: Information about a Bot that does not make it not whole.
-NOTICES: tuple[str, ...] = ("starting_abilities_only", "rules_not_carried", "goals_not_carried")
+#: Information about a Bot that does not make it not whole. ``older_pages_not_restored``:
+#: some retained dashboard versions have no page after the import, so a rollback to one
+#: shows the template page. ``runs_on_user_agent``: a Bot new here runs on the agent of
+#: its name in the person's Kiro agents folder, not on a file from the archive.
+NOTICES: tuple[str, ...] = (
+    "starting_abilities_only",
+    "rules_not_carried",
+    "goals_not_carried",
+    "older_pages_not_restored",
+    "runs_on_user_agent",
+)
+
+#: The roster reasons for an archive Bot a Merge chose not to add. Such a Bot keeps its
+#: row and its line, and does not mark the import refused (``refused_merges``).
+NOT_ADDED_REASONS: frozenset[str] = frozenset(
+    {
+        "name_taken",
+        "slug_taken",
+        "member_id_taken",
+        "store_taken",
+        "store_not_carried",
+        "workspace_taken",
+        "no_member_id",
+        "held_by_other_bot",
+        "foreign_owner",
+        "user_agent_named",
+    }
+)
 
 #: The archive tree an instance export carries a Bot's pinned package under
 #: (``bot-artifacts/<P>/``); the import publishes it to the data home's
@@ -162,6 +188,34 @@ _CARRIED_MEMBER_FILES: frozenset[tuple[str, ...]] = frozenset(
 
 #: :data:`_CARRIED_MEMBER_FILES` in a fixed order, for an export that opens each by name.
 CARRIED_MEMBER_SINGLE_FILES: tuple[tuple[str, ...], ...] = tuple(sorted(_CARRIED_MEMBER_FILES))
+
+
+def carried_pin(
+    record_doc: Mapping[str, Any], versions: Mapping[int, Mapping[str, Any]]
+) -> tuple[str, int, str] | None:
+    """``(package, version, digest)`` of the package a Bot's dashboard carries, or ``None``.
+
+    The record's own pin when *record_doc* (a parsed ``instance.json``) names a package.
+    Otherwise the record runs its catalog template, and the carried pin is that of the
+    highest-numbered document of *versions* (parsed ``versions/<n>.json`` by ``n``)
+    that names one, among its ``instance.MAX_RETAINED_VERSIONS`` highest keys by number:
+    the set ``instance._prune_versions`` keeps. A released or template-only version pins
+    nothing. *version* is the PACKAGE version the pin names, never ``n``. The keys are
+    sorted here, so the answer does not depend on the order the files were met in. Each
+    document is read with ``instance._package_field``, imported here so this module stays
+    free of the instance code.
+    """
+    from kiro_crew.dashboard_templates.instance import MAX_RETAINED_VERSIONS, _package_field
+
+    docs = [record_doc]
+    docs.extend(versions[n] for n in sorted(versions, reverse=True)[:MAX_RETAINED_VERSIONS])
+    for doc in docs:
+        if not isinstance(doc, Mapping):
+            continue
+        package, version, digest, _released = _package_field(doc)
+        if package:
+            return package, version, digest
+    return None
 
 
 def carried_member_file(parts: Sequence[str]) -> bool:

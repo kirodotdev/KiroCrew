@@ -22,6 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import members as members_mod
+from kiro_crew.agent_files import RESERVED_DEFAULT_MEMBER
 from kiro_crew.config.loader import load_config_with_content_stamp
 from kiro_crew.dashboard import members_roster_goals
 from kiro_crew.dashboard.conditional_get import conditional_json_response
@@ -153,11 +154,6 @@ def _absence_is_confirmed(slug: str) -> bool:
 _SOURCE_KIROCREW = "kirocrew"
 _SOURCE_BUILTIN = "builtin"
 _SOURCE_PACKAGE = "package"
-
-#: The reserved main member every install carries (``cfg.default_agent``'s
-#: seed). It is never a crewmate the person created, and the roster lists it
-#: only once its thread holds a message the person sent.
-RESERVED_DEFAULT_MEMBER = "default"
 
 
 def normalize_member_source(raw: object) -> str:

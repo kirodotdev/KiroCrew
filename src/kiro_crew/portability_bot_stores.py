@@ -1,8 +1,10 @@
 """Install each imported Bot's own stores from an instance archive, add-only.
 
 Three stores per Bot ride an instance export: the dashboard record directory
-``members/<slug>/dashboard/``, the dashboard artifact directory its record pins
-(archive ``bot-artifacts/<P>/``, published to the data home's ``artifacts/<P>/``),
+``members/<slug>/dashboard/``, the dashboard artifact directory of its carried pin
+(``portability_bot_types.carried_pin``: the record's own, or for a record that runs its
+template the newest retained version's; archive ``bot-artifacts/<P>/``, published to
+the data home's ``artifacts/<P>/``),
 and the single files ``briefing.md`` and ``welcome_claimed.json``. The record and
 the single files ride under the archive's ``bot-members/<slug>/``
 (``BOT_MEMBERS_DIR``) and install to the data home's ``members/<slug>/``.
@@ -66,7 +68,12 @@ or the archive held nothing to restore it from.
 The page that runs is not carried. It is rebuilt from the checked package (or, for
 an ``artifacts/<P>/`` the destination already has, from this Bot's own package there
 through the same gate, and only when no other package here is bound to the Bot) and
-only then is the gateway-owned snapshot written, under the instance lock.
+only then is the gateway-owned snapshot written, under the instance lock. So are the
+pages of the record's retained versions that pin the carried package, through the same
+judge (``portability_bot_stores_retained``); one that cannot be rebuilt is the Bot's
+``older_pages_not_restored`` notice, never a not-whole part. A record that runs its
+template has its carried package published add-only once the record is in place, and a
+refusal there never changes the record's row.
 """
 
 from __future__ import annotations
@@ -84,10 +91,17 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path, PurePath
 from typing import Any
 
-from kiro_crew import pinned_fs, platform_compat
+from kiro_crew import pinned_fs, platform_compat, portability_bot_types
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.members import BRIEFING_FILE_NAME, MEMBERS_DIR_NAME
 from kiro_crew.owner_only_files import mkdirs_owner_only
+from kiro_crew.portability_bot_stores_retained import (
+    Retained,
+    _installed_record_doc,
+    _publish_template_package,
+    _rebuild_retained_pages,
+    _retained_version_docs,
+)
 from kiro_crew.portability_bot_types import (
     BOT_ARTIFACTS_DIR,
     BOT_MEMBERS_DIR,
@@ -100,6 +114,11 @@ from kiro_crew.portability_bot_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The notice a Bot gets when some retained dashboard version has no page after the
+#: import, so a rollback to it shows the template page. It does not make the Bot not
+#: whole.
+OLDER_PAGES_NOTICE = "older_pages_not_restored"
 
 #: The prefix of each Bot's stage directory inside the import's private extraction
 #: directory; :func:`_new_stage` appends a random suffix.
@@ -789,14 +808,15 @@ def _present(bot: ImportedBot, part: str, owned: bool) -> PartOutcome:
 def _not_a_bound_dashboard(art: Any) -> bool:
     """Whether stored artifact *art* (its metadata is enough) can be no Bot's dashboard.
 
-    It is not a dashboard, or it is a live pointer (``dashboard_package.is_live_pointer``,
-    the one rule ``scan_bound_dashboards`` skips a record by): its bytes are a file's
-    elsewhere, so no binding it names is held. A copy with provenance
+    It is not a dashboard, or it is a live pointer (``ArtifactStore._is_live_pointer``,
+    the store's own rule and the one ``scan_bound_dashboards`` skips a record by): its
+    bytes are a file's elsewhere, so no binding it names is held. A copy with provenance
     (``source_copy_only``) owns its bytes and is read as any dashboard.
     """
     from kiro_crew.artifact_store import dashboard_package
+    from kiro_crew.artifacts import ArtifactStore
 
-    return art.kind != dashboard_package.DASHBOARD_KIND or dashboard_package.is_live_pointer(art)
+    return art.kind != dashboard_package.DASHBOARD_KIND or ArtifactStore._is_live_pointer(art)
 
 
 def _envelope(text: str) -> tuple[Any, str | None]:
@@ -976,8 +996,55 @@ def _roll_back(mc: Path, parts: Sequence[str], stage: Path, name: str) -> bool:
     return True
 
 
+def _retained_pages(
+    snap: Path,
+    mc: Path,
+    bot: ImportedBot,
+    stage: Path,
+    index: BoundIndex,
+    pin: tuple[str, int, str],
+    *,
+    owned: bool,
+    notices: dict[str, list[str]] | None,
+) -> bool:
+    """Bring back the pages of the installed record's retained versions; True when any came.
+
+    Runs once the record is in place, and for a record that pins a package only once
+    its current page is. *pin* is that record's own ``(package, version, digest)``, or
+    empty for a record that runs its template. The newest retained version files are
+    read once (:func:`_retained_version_docs`) for both consumers: the carried pin
+    (``portability_bot_types.carried_pin``) and the rebuild
+    (:func:`_rebuild_retained_pages`). A pinned record's carried package is its own. A
+    template record's is published add-only first (:func:`_publish_template_package`),
+    and its retained pages come only from it when that left it installed and this
+    Bot's. When some retained pin could not be rebuilt the Bot gets
+    :data:`OLDER_PAGES_NOTICE` in *notices*. True when a page was rebuilt or the
+    template record's package was published.
+    """
+    retained: Retained = _retained_version_docs(bot.slug)
+    published = False
+    carried, current = pin[0], pin[2]
+    if not carried:
+        found = portability_bot_types.carried_pin(_installed_record_doc(bot.slug), retained[0])
+        if found is None:
+            return False
+        reason, published = _publish_template_package(
+            snap, mc, bot, stage, index, found, owned=owned
+        )
+        carried = "" if reason else found[0]
+    rebuilt, missed = _rebuild_retained_pages(mc, bot, index, carried, current, retained)
+    if missed and notices is not None and OLDER_PAGES_NOTICE not in notices.get(bot.name, []):
+        notices.setdefault(bot.name, []).append(OLDER_PAGES_NOTICE)
+    return published or rebuilt > 0
+
+
 def _restore_kept_records_artifact(
-    snap: Path, mc: Path, bot: ImportedBot, stage: Path, index: BoundIndex
+    snap: Path,
+    mc: Path,
+    bot: ImportedBot,
+    stage: Path,
+    index: BoundIndex,
+    notices: dict[str, list[str]] | None = None,
 ) -> PartOutcome:
     """This Bot's dashboard record is kept; bring back the artifact it pins if absent.
 
@@ -999,6 +1066,12 @@ def _restore_kept_records_artifact(
     archive holds nothing to restore it from. A kept record that cannot be read, or
     reads in the error state, stays as it is and the part is ``not_restored`` /
     ``unreadable_record``.
+
+    Once the current page is in place, the retained versions' pages are brought back
+    too (:func:`_retained_pages`); a kept record that runs its template gets its
+    carried package published add-only. A ``kept`` row becomes ``restored`` when either
+    brought something back. A retained page that could not be is only the
+    ``older_pages_not_restored`` notice.
     """
     from kiro_crew.artifacts import slug_is_well_formed
     from kiro_crew.dashboard_templates import instance
@@ -1014,8 +1087,36 @@ def _restore_kept_records_artifact(
     if record.state == instance.STATE_ERROR:
         return unreadable
     package, version, digest = record.package_slug, record.package_version, record.package_digest
-    if not package or not digest or not slug_is_well_formed(package):
+    if not package:
+        came_back = _retained_pages(
+            snap, mc, bot, stage, index, ("", 0, ""), owned=True, notices=notices
+        )
+        return PartOutcome(bot.name, "dashboard", "restored") if came_back else kept
+    if not digest or not slug_is_well_formed(package):
         return kept
+    pin = (package, version, digest)
+    found = _kept_pinned_record(snap, mc, bot, stage, index, pin)
+    page_in_place = found.status == "restored" or (
+        found.status == "kept" and not _page_missing(bot.slug, digest)
+    )
+    if page_in_place and _retained_pages(
+        snap, mc, bot, stage, index, pin, owned=True, notices=notices
+    ):
+        return PartOutcome(bot.name, "dashboard", "restored")
+    return found
+
+
+def _kept_pinned_record(
+    snap: Path,
+    mc: Path,
+    bot: ImportedBot,
+    stage: Path,
+    index: BoundIndex,
+    pin: tuple[str, int, str],
+) -> PartOutcome:
+    """The kept record pinning *pin*: bring back its package, or its page, when missing."""
+    package, version, digest = pin
+    kept = PartOutcome(bot.name, "dashboard", "kept")
 
     def outcome(reason: str) -> PartOutcome:
         if reason:
@@ -1091,6 +1192,35 @@ def _judge_here(
     return _Staged(pin=pin, page=page, here="" if page else here.content)
 
 
+def _newest_versions(keys: Sequence[tuple[str, ...]]) -> set[tuple[str, ...]]:
+    """The ``versions/<n>.json`` keys a record stages: the newest ``MAX_RETAINED_VERSIONS``.
+
+    Chosen by NAME, in ``instance._prune_versions``'s order (by ``(n, name)``), the set
+    the source keeps after every commit and the set the export read its carried pin
+    from, before any file is parsed. An older file of a hand-built archive is not
+    installed, so no version a rollback could reach is left unjudged and unnamed.
+    """
+    from kiro_crew.dashboard_templates import instance
+
+    found = sorted((int(key[1][: -len(".json")]), key) for key in keys if key[0] == "versions")
+    return {key for _n, key in found[-instance.MAX_RETAINED_VERSIONS :]}
+
+
+def _drop_unparsed_version(staged: Path) -> None:
+    """Remove a staged version file that is not a JSON object within ``MAX_RECORD_BYTES``.
+
+    A rollback to it would raise rather than serve a page, and the page prune of every
+    later apply would stall on it, so it is not installed (and never named).
+    """
+    try:
+        doc = json.loads(_read_staged(staged, MAX_RECORD_BYTES).decode("utf-8"))
+    except (ValueError, RecursionError):
+        doc = None
+    if not isinstance(doc, dict):
+        logger.warning("import: a dashboard version file %r does not parse", staged.name)
+        os.unlink(staged)
+
+
 def _stage_dashboard(
     snap: Path, mc: Path, bot: ImportedBot, stage: Path, index: BoundIndex, *, owned: bool
 ) -> _Staged:
@@ -1105,7 +1235,9 @@ def _stage_dashboard(
     so two archive Bots pinning one package end the same in either order. Otherwise
     :meth:`BoundIndex.refusal` must prove no other package is bound to the Bot, and the
     staged package must pass the gate; whatever keeps it from being published is the
-    page's reason, not the record's. Raises one of :data:`_FAILURES` when staging fails.
+    page's reason, not the record's. Of the record's version files only the newest
+    names are staged (:func:`_newest_versions`), and of those only the ones that parse
+    (:func:`_drop_unparsed_version`). Raises one of :data:`_FAILURES` when staging fails.
     """
     from kiro_crew.artifacts import slug_is_well_formed
 
@@ -1117,8 +1249,13 @@ def _stage_dashboard(
     ]
     if ("instance.json",) not in admitted:
         return _Staged("unreadable_record")
+    newest = _newest_versions(admitted)
     for key in admitted:
+        if key[0] == "versions" and key not in newest:
+            continue
         _copy_file(snap.parent, src_dash.joinpath(*key), stage, PurePath("dashboard", *key))
+        if key in newest:
+            _drop_unparsed_version(stage.joinpath("dashboard", *key))
     pin = package, version, digest = _staged_pin(stage / "dashboard" / "instance.json")
     if not package:
         return _Staged(pin=pin)
@@ -1143,7 +1280,14 @@ def _stage_dashboard(
 
 
 def _install_dashboard(
-    snap: Path, mc: Path, bot: ImportedBot, stage: Path, index: BoundIndex, *, owned: bool
+    snap: Path,
+    mc: Path,
+    bot: ImportedBot,
+    stage: Path,
+    index: BoundIndex,
+    *,
+    owned: bool,
+    notices: dict[str, list[str]] | None = None,
 ) -> PartOutcome:
     """Install the record, and the package it pins when that one may be published.
 
@@ -1159,6 +1303,12 @@ def _install_dashboard(
     import published back into the stage (:data:`ROLLED_BACK_RECORD`, then, only once
     the record moved, :data:`ROLLED_BACK_PACKAGE`), so no package nobody's record pins
     is left behind; the part is then ``not_restored``.
+
+    Once the record is in place (and, for a record that pins a package, its page),
+    the retained versions' pages are brought back from the carried package
+    (:func:`_retained_pages`); for a record that runs its template that package is
+    published add-only first. Neither changes the row; a page that could not be
+    brought back is the Bot's ``older_pages_not_restored`` notice.
     """
     slug = bot.slug
     dest_member = (MEMBERS_DIR_NAME, slug)
@@ -1170,7 +1320,7 @@ def _install_dashboard(
     if os.path.lexists(mc.joinpath(*dest_dash)):
         if not owned:
             return _present(bot, "dashboard", owned)
-        return _restore_kept_records_artifact(snap, mc, bot, stage, index)
+        return _restore_kept_records_artifact(snap, mc, bot, stage, index, notices)
     try:
         staged = _stage_dashboard(snap, mc, bot, stage, index, owned=owned)
     except _FAILURES:
@@ -1221,11 +1371,14 @@ def _install_dashboard(
     if not package:
         # An unpinned record runs a catalog template: the archive never carries one, so
         # it is whole only when this install serves that template.
-        if _template_served(slug):
-            return row("restored")
-        return row("page_not_rebuilt", "artifact_missing")
+        served = _template_served(slug)
+        _retained_pages(snap, mc, bot, stage, index, staged.pin, owned=owned, notices=notices)
+        return row("restored") if served else row("page_not_rebuilt", "artifact_missing")
     page = staged.page or _write_page(slug, staged.checked or staged.here)
-    return row("page_not_rebuilt", page) if page else row("restored")
+    if page:
+        return row("page_not_rebuilt", page)
+    _retained_pages(snap, mc, bot, stage, index, staged.pin, owned=owned, notices=notices)
+    return row("restored")
 
 
 def _install_briefing(
@@ -1293,7 +1446,14 @@ def _failed_rows(bot: ImportedBot, has_dash: bool, briefs: Sequence[str]) -> lis
 
 
 def _install_one(
-    snap: Path, mc: Path, bot: ImportedBot, index: BoundIndex, *, refused: bool, owned: bool
+    snap: Path,
+    mc: Path,
+    bot: ImportedBot,
+    index: BoundIndex,
+    *,
+    refused: bool,
+    owned: bool,
+    notices: dict[str, list[str]] | None = None,
 ) -> list[PartOutcome]:
     has_dash, briefs = _carried(snap, bot.slug)
     if refused or not (has_dash or briefs):
@@ -1304,7 +1464,7 @@ def _install_one(
         logger.warning("import: no stage for %r's stores", bot.slug, exc_info=True)
         return _failed_rows(bot, has_dash, briefs)
     dashboard = (
-        _install_dashboard(snap, mc, bot, stage, index, owned=owned)
+        _install_dashboard(snap, mc, bot, stage, index, owned=owned, notices=notices)
         if has_dash
         else PartOutcome(bot.name, "dashboard", "none")
     )
@@ -1323,6 +1483,7 @@ def install_bot_stores(
     *,
     allow_unpinned: bool,
     owned_slugs: frozenset[str] | None = None,
+    notices: dict[str, list[str]] | None = None,
 ) -> list[PartOutcome]:
     """Install every imported Bot's dashboard and briefing stores; one row per part.
 
@@ -1332,6 +1493,10 @@ def install_bot_stores(
     otherwise. The same rule decides whether the page is rebuilt from an
     ``artifacts/<P>`` the destination already has. Each store is all or nothing.
     Never raises for one Bot: a failure is that Bot's row.
+
+    *notices*, when given, is filled by Bot name with the notices this step raises
+    (:data:`OLDER_PAGES_NOTICE` when a retained dashboard version's page could not be
+    brought back); the caller merges them into each row.
     """
     from kiro_crew.snapshot import _staging_is_pinned
 
@@ -1346,7 +1511,9 @@ def install_bot_stores(
     for bot in bots:
         try:
             owned = owned_slugs is None or bot.slug in owned_slugs
-            out.extend(_install_one(snap, mc, bot, index, refused=refused, owned=owned))
+            out.extend(
+                _install_one(snap, mc, bot, index, refused=refused, owned=owned, notices=notices)
+            )
         except Exception:
             logger.warning("import: %r's stores were not installed", bot.slug, exc_info=True)
             out.extend(
