@@ -682,6 +682,7 @@ def resolve_worker_spec(
     refuse_spec_policy: bool = False,
     mcp_tool_limits_carried: bool = False,
     native_tool_limits_carried: bool = False,
+    conducting: bool = False,
 ) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
@@ -698,6 +699,10 @@ def resolve_worker_spec(
     With *refuse_spec_policy* (a host that applies none of ``hooks``, ``permissions``
     and ``toolsSettings``), a file that sets any refuses with
     :class:`~kiro_crew.mate_spec_policy.SpecPolicyUncarried` naming them.
+    With *conducting* (the session is one of the Bot's conducting workers, decided
+    by :func:`worker_session_spec`), the conducting kit
+    (:func:`kiro_crew.mate_worker_conducts.conducting_worker_kit`) is layered on
+    the governed merge before the revocations and held approvals strip it.
     """
     from kiro_crew import mate_approval_revocations as revocations
 
@@ -712,7 +717,9 @@ def resolve_worker_spec(
                 f"by a user-level agent, so its worker would run without its limits"
             )
         return revocations.strip(
-            merge_worker_spec(base, _with_global_tool_offs(base, {})),
+            _with_conducting_kit(
+                merge_worker_spec(base, _with_global_tool_offs(base, {})), conducting
+            ),
             _revoked_or_refuse(member_id, _binding_alias(member_id)),
         )
     from kiro_crew.agent_sdk import agent_specs
@@ -772,12 +779,23 @@ def resolve_worker_spec(
     # and a capability a held limit covers keeps no pre-approval, so its calls ask.
     return strip_held_approvals(
         revocations.strip(
-            merge_worker_spec(base, _with_global_tool_offs(base, additions)),
+            _with_conducting_kit(
+                merge_worker_spec(base, _with_global_tool_offs(base, additions)), conducting
+            ),
             _revoked_or_refuse(member_id, name),
         ),
         member_id,
         name,
     )
+
+
+def _with_conducting_kit(spec: dict[str, Any], conducting: bool) -> dict[str, Any]:
+    """*spec* with the conducting kit layered on when *conducting*, else untouched."""
+    if not conducting:
+        return spec
+    from kiro_crew.mate_worker_conducts import conducting_worker_kit
+
+    return conducting_worker_kit(spec)
 
 
 def _use_registered_app_launch_lines(base: dict[str, Any], mate_spec: dict[str, Any]) -> None:
@@ -950,6 +968,21 @@ def is_own_worker_execution(execution: Any) -> bool:
     )
 
 
+def is_conducting_worker_execution(session_key: str, execution: Any, config: Any = None) -> bool:
+    """Whether *execution* on *session_key* is a crewmate's own worker that conducts.
+
+    :func:`is_own_worker_execution` on the attested record, and the session the
+    Bot's own thread created with the Bot's ``worker_conducts`` switch on
+    (``members.conducting_worker_session``: marked thread-born, known as the Bot's
+    worker, switch read now). A worker a worker created never answers True. The
+    switch is read from *config* when the caller holds the loaded config, else from
+    the cached load (blocking; such callers run it off the loop).
+    """
+    from kiro_crew.members import conducting_worker_session
+
+    return is_own_worker_execution(execution) and conducting_worker_session(session_key, config)
+
+
 def cron_worker_execution(execution: Any, config: Any = None) -> Any:
     """The worker execution a crewmate's scheduled agent turn runs, else ``None``.
 
@@ -1031,6 +1064,7 @@ def worker_session_spec(
     refuse_spec_policy: bool = False,
     mcp_tool_limits_carried: bool = False,
     native_tool_limits_carried: bool = False,
+    mounted: bool | None = None,
 ) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
@@ -1040,6 +1074,14 @@ def worker_session_spec(
     projection reads it, and so does the session MCP projection the member-capable
     mirrored hosts read (``acp.session_mcp.session_mcp_projection``, keyed by the
     session). Blocking.
+
+    *mounted* is what a caller that builds the spec for one session start knows of
+    that start: whether it takes the session-control mount (KAS's projection, the
+    session MCP projection the client and the runtime compose, and the context block
+    from the live session). The conducting kit then follows the mount, so a start that
+    mounted nothing carries no conductor verbs, and one that did is not judged again
+    against the switch. ``None``, every other reader's call, reads the switch as the
+    mount did.
     """
     from kiro_crew.execution_context import read_session_execution
 
@@ -1065,6 +1107,23 @@ def worker_session_spec(
         raise WorkerKitUnreadable(
             f"worker session {session_key}: it names no Bot, so whose limits apply is unknown"
         )
+    # A worker the Bot's thread opened conducts while the Bot's switch is on
+    # (``members.conducting_worker_session``, read here at every projection), or,
+    # for a caller that knows this start's mount, when that start mounted session
+    # control for it (``mate_worker_conducts.holds_conducting_kit`` reads the same
+    # two facts). Handed down only when it holds, so every other worker's
+    # projection is the call, and the spec, it was before.
+    if mounted is None:
+        conducts = is_conducting_worker_execution(session_key, execution)
+    else:
+        from kiro_crew.members import is_thread_born_crewmate_worker
+
+        conducts = (
+            mounted
+            and is_own_worker_execution(execution)
+            and is_thread_born_crewmate_worker(session_key)
+        )
+    kit: dict[str, bool] = {"conducting": True} if conducts else {}
     if refuse_tool_limits or refuse_spec_policy:
         return resolve_worker_spec(
             literal_base,
@@ -1073,8 +1132,9 @@ def worker_session_spec(
             refuse_spec_policy=refuse_spec_policy,
             mcp_tool_limits_carried=mcp_tool_limits_carried,
             native_tool_limits_carried=native_tool_limits_carried,
+            **kit,
         )
-    return resolve_worker_spec(literal_base, member_id)
+    return resolve_worker_spec(literal_base, member_id, **kit)
 
 
 def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None) -> str:

@@ -588,9 +588,14 @@ async def _mount_member_panel(
     from kiro_crew.members import (
         MEMBER_PANEL_SERVER,
         crew_panel_enabled,
+        is_member_session_key,
         member_panel_session_server,
     )
 
+    # The thread's alone: a Bot's conducting worker shares the session-control
+    # key (``members.mounts_session_control``) and never gets the panel.
+    if not is_member_session_key(member_session_key):
+        return mcp_servers, False
     where = " on resume" if resuming else ""
     if not await asyncio.to_thread(crew_panel_enabled):
         logger.info(
@@ -682,6 +687,7 @@ async def _mirrored_session_mcp(
     session_key: str,
     channel_id: str,
     permission_surface_owned: bool = False,
+    session_control_mounted: bool | None = None,
     harness_state: Any = None,
 ) -> _MirroredSessionMcp | None:
     """This session's ``mcpServers``, built by the host's agent-config MIRROR.
@@ -726,6 +732,10 @@ async def _mirrored_session_mcp(
     session). False is the fail-CLOSED direction: a mirror in claude's class -- one
     whose tools could be pre-approved in a file Crew does not own, where Crew's gate
     never fires -- withholds its array here rather than delivering it.
+
+    ``session_control_mounted`` is the caller's answer for whether this start mounts
+    session control, read before the projection so a crewmate worker's conducting kit
+    follows it.
 
     Blocking work (an agent-spec parse, an overlay read) runs off the loop, the
     same as the pooled resolution it replaces.
@@ -806,6 +816,7 @@ async def _mirrored_session_mcp(
             # previous owner. The token is per session and its mapping is
             # republished, so it stays right in both cases.
             session_token=stub_token,
+            session_control_mounted=session_control_mounted,
         )
         withdrawn: frozenset[str] = frozenset()
         if active_agent == MATE_WORKER_AGENT:

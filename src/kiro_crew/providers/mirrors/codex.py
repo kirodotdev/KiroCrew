@@ -423,6 +423,7 @@ def codex_projection(
     session_key: str = "",
     channel_id: str = "",
     session_token: str = "",
+    session_control_mounted: bool | None = None,
 ) -> SessionProjection:
     """The whole codex array -- spec translation AND pooled stubs -- plus the deny set.
 
@@ -464,9 +465,11 @@ def codex_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
-        # A crewmate's worker reads its own spec by its session's record.
+        # A crewmate's worker reads its own spec by its session's record, and its
+        # conducting kit follows what the runtime decided this start mounts.
         session_key=session_key,
         default_crew_servers=ACP_BACKEND_CODEX in ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
+        session_control_mounted=session_control_mounted,
         bot_app_tools_carried=ACP_BACKEND_CODEX in ACP_BACKENDS_MATE_WORKER_KIT,
     )
     withheld = codex_withheld_servers(projection.restricted)
@@ -805,6 +808,7 @@ class CodexMirror(AgentConfigMirror):
         session_key: str = "",
         channel_id: str = "",
         session_token: str = "",
+        session_control_mounted: bool | None = None,
         **kwargs: object,
     ) -> SessionProjection:
         """The structured face: :func:`codex_projection`, with ``kwargs`` ignored as
@@ -818,4 +822,5 @@ class CodexMirror(AgentConfigMirror):
             session_key=session_key,
             channel_id=channel_id,
             session_token=session_token,
+            session_control_mounted=session_control_mounted,
         )

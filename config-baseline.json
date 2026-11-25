@@ -13951,7 +13951,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Workers at once",
-      "help": "How many of this Bot's own worker sessions (on its worker template) may be open at once. A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit; otherwise 1 to 32.",
+      "help": "How many of this Bot's own worker sessions (on its worker template) may be open at once. A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit while Workers can conduct is off; while it is on, 0 means at most 4. Otherwise 1 to 32, used as set.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
@@ -13980,6 +13980,20 @@
       "tags": [],
       "label": "Dynamic capabilities",
       "help": "Preview, per Bot: this Bot can find new skills or tools for its worker and ask for them on a card in its chat. Off (the default): only you add them, in this Bot's advanced settings, and it tells you when its worker lacks one. Read per request, so a change reaches the Bot's next session.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agents.*.worker_conducts",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Workers can conduct",
+      "help": "Off (the default): a worker this Bot opens does its task itself. On: each worker the Bot's own thread opens can split its task into tracked work-ledger items, open further workers of this Bot for them, follow them and check their results. Those workers keep the Bot's identity, memory, permissions and limits and count toward Workers at once. While this is on and Workers at once is 0, at most 4 of the Bot's workers are open at once. Set by the owner; the Bot cannot change it. A change reaches each worker at its next start: saving it reloads the Bot's workers, an idle one at once and a busy one when its turn ends.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

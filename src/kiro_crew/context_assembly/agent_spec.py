@@ -721,7 +721,9 @@ def _read_agent_prompt_file(agent: str, ref: str, spec_path: Path, project: str 
     return text
 
 
-def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> str:
+def _crewmate_worker_prompt(
+    agent: str, base_prompt: str, session_key: str, mounted: bool | None = None
+) -> str:
     """*base_prompt*, or for a crewmate's worker session the prompt its worker runs.
 
     *base_prompt* is the contract this block selected (the worker is a default-named
@@ -735,7 +737,10 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     backend gets its prompt from this block alone
     (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude, codex, pi)
     carries both here; KAS's wire spec already does, so its block keeps the base.
-    Any other agent, or no session, keeps the base too.
+    Any other agent, or no session, keeps the base too. *mounted* is whether the live
+    session's start mounted session control (its ``member_dispatch_mounted``), so the
+    conducting rules ride this block only for a worker that holds the tools they name;
+    ``None`` (no session evidence) reads the switch.
     """
     from kiro_crew.mate_worker import (
         MATE_WORKER_AGENT,
@@ -756,7 +761,9 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     try:
         disk = _worker_base().get("prompt")
         disk_prompt = disk if isinstance(disk, str) else ""
-        merged = worker_session_spec({"prompt": disk_prompt}, session_key).get("prompt")
+        merged = worker_session_spec({"prompt": disk_prompt}, session_key, mounted=mounted).get(
+            "prompt"
+        )
     except (WorkerKitUnreadable, AgentSpecUnreadable):
         # The session itself is refused where its spec is projected; the
         # contract keeps the worker's base rather than failing the turn's assembly.
@@ -777,13 +784,16 @@ def _resolve_agent_prompt(
     private_owner: bool,
     session_start: bool,
     provider_type: str | None = None,
+    member_dispatch_mounted: bool | None = None,
 ) -> str:
     """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
     Session start and post-compaction reinjection both call this, so the
     contract a compacted session gets back is the one it started with. Only
     a session start takes a fresh reading of the delegation cap; the call
-    that restores the block reuses the session's own.
+    that restores the block reuses the session's own. *member_dispatch_mounted*
+    is the live session's own answer for its session-control mount, which a
+    crewmate worker's conducting rules follow (:func:`_crewmate_worker_prompt`).
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -850,6 +860,7 @@ def _resolve_agent_prompt(
             lambda: _live_engine_subagents(provider_type, agent, key),
             refresh=session_start,
         ),
+        member_dispatch_mounted=member_dispatch_mounted,
     )
 
 
@@ -875,6 +886,7 @@ def _render_contract(
     browser: Callable[[], bool],
     substitute_bot_name: Callable[[str], str],
     engine_subagents: Callable[[], str] = lambda: "",
+    member_dispatch_mounted: bool | None = None,
 ) -> str:
     """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
 
@@ -891,7 +903,9 @@ def _render_contract(
 
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
-    agent_prompt = _crewmate_worker_prompt(agent or "", agent_prompt, session_key or "")
+    agent_prompt = _crewmate_worker_prompt(
+        agent or "", agent_prompt, session_key or "", member_dispatch_mounted
+    )
     # That worker reports to its crewmate's conductor, not to a person, so it
     # drops the widget pointer the default contract carries.
     if agent == MATE_WORKER_AGENT:

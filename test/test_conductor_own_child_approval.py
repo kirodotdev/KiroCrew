@@ -1,11 +1,12 @@
 """A conductor's ``session_send`` / ``session_close`` into a session it created needs no
 per-call approval (rfc-conductor-own-child-verbs.md, section 5.2).
 
-Only ``kirocrew-conductor`` and ``kirocrew-team-lead`` qualify, only for those two
-verbs, only with a verified ``kirocrew-dashboard`` identity and arguments, and only
-when the ``target`` is the exact key of a live session whose GATEWAY-VOUCHED
-creator is the caller. ``agent.conductor_own_child_verbs`` turns it off. Everything
-else asks.
+Only ``kirocrew-conductor``, ``kirocrew-team-lead`` and a Bot's conducting worker
+(``members.conducting_worker_session``; rfc-bot-workers-conduct.md, section 5.3)
+qualify, only for those two verbs, only with a verified ``kirocrew-dashboard``
+identity and arguments, and only when the ``target`` is the exact key of a live
+session whose GATEWAY-VOUCHED creator is the caller.
+``agent.conductor_own_child_verbs`` turns it off. Everything else asks.
 """
 
 from __future__ import annotations
@@ -14,9 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew import crew_mode
+from kiro_crew import crew_mode, members
 from kiro_crew.agent_sdk.capabilities import capabilities_for
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import chat_runner  # noqa: F401  (composes tool_approval's names)
 from kiro_crew.dashboard.chat_turn import tool_approval
@@ -29,8 +30,14 @@ from kiro_crew.hook_runtime.hook_types import HooksConfig
 _RULE_NS = _conductor_own_child_call.__globals__
 
 
+#: The live provider of each running session, by session key: what its handle took
+#: at its start (``member_dispatch_mounted``). Filled by :func:`_start`.
+_LIVE: dict[str, SimpleNamespace] = {}
+
+
 @pytest.fixture(autouse=True)
 def _defaults(_floor_monkeypatch):
+    _LIVE.clear()
     # The crew log off: no session tree, so the birth stamp with its mint witness decides.
     _floor_monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
     # The rule does not wait for the Crew panel's routing switch (off on main).
@@ -56,9 +63,20 @@ def _builder(**hooks: object) -> SimpleNamespace:
     return SimpleNamespace(hooks=SimpleNamespace(_config=HooksConfig(**hooks)))
 
 
+def _start(key: str) -> None:
+    """(Re)start *key*'s session: its live provider reports whether the composer
+    mounted session control at that start, decided by the predicate every composer
+    reads (``members.mounts_session_control``) at the moment of the start."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    mounted = members.mounts_session_control(key)
+    _LIVE[effective_session_key(_slot(key))] = SimpleNamespace(member_dispatch_mounted=mounted)
+
+
 def _state(**hooks: object) -> SimpleNamespace:
     return SimpleNamespace(
         context_builder=_builder(**hooks),
+        sessions=SimpleNamespace(get_provider=_LIVE.get),
         _slots={
             "cond": _slot("cond", agent="kirocrew-conductor"),
             "lead": _slot("lead", agent="kirocrew-team-lead"),
@@ -71,8 +89,43 @@ def _state(**hooks: object) -> SimpleNamespace:
             "tab": _slot("tab"),
             # A birth stamp this process never minted (read back from saved metadata).
             "restored": _slot("restored", agent="kirocrew-worker", created_by="cond", minted=False),
+            # A Bot's thread, two workers it opened on the Bot's worker template and a
+            # child each worker opened. Which worker conducts is decided by the
+            # registry (``conducting_bot_worker`` below), never by the template.
+            "member-pixel": _slot("member-pixel", agent="kirocrew-mate-conductor"),
+            "w-bot": _slot("w-bot", agent="kirocrew-mate-worker", created_by="member-pixel"),
+            "w-plainbot": _slot(
+                "w-plainbot", agent="kirocrew-mate-worker", created_by="member-pixel"
+            ),
+            "gc-bot": _slot("gc-bot", agent="kirocrew-mate-worker", created_by="w-bot"),
+            "gc-plainbot": _slot(
+                "gc-plainbot", agent="kirocrew-mate-worker", created_by="w-plainbot"
+            ),
         },
     )
+
+
+@pytest.fixture
+def conducting_bot_worker(monkeypatch):
+    """``w-bot`` conducts through the REAL registry: thread-born, known as pixel's
+    worker, pixel's record has the switch on, and its session started with the
+    session-control mount. ``w-plainbot`` is the control on the same template:
+    known as pixel's worker but never marked."""
+    members.note_worker_lineage("w-bot", "member-pixel")
+    members.note_crewmate_worker_session("w-bot", "member-id-pixel")
+    members.note_crewmate_worker_session("w-plainbot", "member-id-pixel")
+    cfg = SimpleNamespace(
+        agents={
+            "pixel": KiroCrewAgentConfig(
+                kiro_agent="pixel", member_id="member-id-pixel", worker_conducts=True
+            )
+        },
+        degraded_sections=frozenset(),
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    _start("w-bot")
+    _start("w-plainbot")
+    return cfg
 
 
 def _event(tool: str = "session_send", target: object = "w-cond", **over: object):
@@ -152,6 +205,103 @@ def test_a_codex_envelope_reads_the_target_from_its_arguments() -> None:
 def test_anything_else_still_asks(caller: str, event: SimpleNamespace) -> None:
     state = _state()
     assert _conductor_own_child_call(state, state._slots[caller], event) is False
+
+
+# --- A Bot's conducting worker (rfc-bot-workers-conduct.md, section 5.3) -------------
+
+
+@pytest.mark.parametrize("tool", ["session_send", "session_close"])
+def test_a_conducting_worker_sends_and_closes_its_own_child_unprompted(
+    conducting_bot_worker, tool
+) -> None:
+    state = _state()
+    assert _conductor_own_child_call(state, state._slots["w-bot"], _event(tool, "gc-bot")) is True
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        _event(target="gc-plainbot"),  # a sibling worker's child
+        _event(target="w-cond"),  # a conductor's child
+        _event(target="member-pixel"),  # its own Bot's thread
+        _event(target="tab"),  # a person's tab
+        _event(tool="session_stop", target="gc-bot"),  # a gated verb, as for every conductor
+        _event(tool="session_broadcast", target="gc-bot"),
+        _event(tool="work_dispatch", target="gc-bot"),
+        _event(target="gc-bot", sub_session_id="sub-1"),  # its subagent's call
+        _event(target="gc-bot", mcp_identity_trusted=False),
+    ],
+)
+def test_a_conducting_worker_still_asks_for_anything_else(
+    conducting_bot_worker, event: SimpleNamespace
+) -> None:
+    state = _state()
+    assert _conductor_own_child_call(state, state._slots["w-bot"], event) is False
+
+
+@pytest.mark.parametrize("tool", ["session_send", "session_close"])
+def test_an_unmarked_worker_on_the_same_template_never_gets_the_exemption(
+    conducting_bot_worker, tool
+) -> None:
+    """Admitted by the conducting kit, never by ``kirocrew-mate-worker``: a worker
+    the thread opened that is not thread-born (here: never marked) prompts for its
+    own child, switch on or not, and even with a mount on its running handle."""
+    state = _state()
+    plain = state._slots["w-plainbot"]
+    assert _conductor_own_child_call(state, plain, _event(tool, "gc-plainbot")) is False
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    _LIVE[effective_session_key(plain)] = SimpleNamespace(member_dispatch_mounted=True)
+    assert _conductor_own_child_call(state, plain, _event(tool, "gc-plainbot")) is False
+
+
+@pytest.mark.parametrize("tool", ["session_send", "session_close"])
+def test_the_switch_off_reaches_the_worker_at_its_next_start(conducting_bot_worker, tool) -> None:
+    """Keyed on the kit the worker's session started with, never the live switch:
+    turned off mid-task, its own-child send or close still runs without a prompt;
+    from its next start (the reload the owner's save brings) it prompts."""
+    conducting_bot_worker.agents["pixel"].worker_conducts = False
+    state = _state()
+    worker = state._slots["w-bot"]
+    assert _conductor_own_child_call(state, worker, _event(tool, "gc-bot")) is True
+    _start("w-bot")
+    assert _conductor_own_child_call(state, worker, _event(tool, "gc-bot")) is False
+
+
+def test_the_switch_on_reaches_a_running_plain_worker_at_its_next_start(
+    conducting_bot_worker,
+) -> None:
+    """A thread-born worker whose session started with the switch off keeps prompting
+    until its next start, however the switch moves meanwhile."""
+    conducting_bot_worker.agents["pixel"].worker_conducts = False
+    _start("w-bot")
+    conducting_bot_worker.agents["pixel"].worker_conducts = True
+    state = _state()
+    worker = state._slots["w-bot"]
+    assert _conductor_own_child_call(state, worker, _event("session_send", "gc-bot")) is False
+    _start("w-bot")
+    assert _conductor_own_child_call(state, worker, _event("session_send", "gc-bot")) is True
+
+
+def test_the_operator_switch_off_covers_the_conducting_worker_too(
+    conducting_bot_worker, _floor_monkeypatch
+) -> None:
+    _floor_monkeypatch.setitem(_RULE_NS, "_conductor_own_child_verbs_enabled", lambda: False)
+    state = _state()
+    for tool in ("session_send", "session_close"):
+        assert not _conductor_own_child_call(state, state._slots["w-bot"], _event(tool, "gc-bot"))
+
+
+def test_a_grandchild_is_no_conductor(conducting_bot_worker) -> None:
+    """One conducting level, by lineage: the conducting worker's own child was
+    created by a ``chat-`` key, so it holds no mark and prompts for everything."""
+    members.note_crewmate_worker_session("gc-bot", "member-id-pixel")
+    members.note_worker_lineage("gc-bot", "w-bot")
+    state = _state()
+    state._slots["ggc-bot"] = _slot("ggc-bot", agent="kirocrew-mate-worker", created_by="gc-bot")
+    assert (
+        _conductor_own_child_call(state, state._slots["gc-bot"], _event(target="ggc-bot")) is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -248,9 +398,15 @@ def test_the_switch_defaults_on_and_fails_closed(monkeypatch) -> None:
 
 
 def _decide(
-    *, target: str = "w-cond", backend: str = "", deny: bool = False, native_child: bool = False
+    *,
+    target: str = "w-cond",
+    backend: str = "",
+    deny: bool = False,
+    native_child: bool = False,
+    caller: str = "cond",
+    agent: str = "kirocrew-conductor",
 ):
-    """Run ``_decide_permission_request`` for ``cond``'s ``session_send`` to *target*.
+    """Run ``_decide_permission_request`` for *caller*'s ``session_send`` to *target*.
 
     Returns (approved by the auto-approve rung, the audit rows' outcome and metadata).
     """
@@ -263,12 +419,14 @@ def _decide(
     state.context_builder.hooks.on_tool_call = lambda *a, **k: ToolHookResult(action=TOOL_ALLOW)
     state.is_yolo_active = lambda: False
     state.broadcast_ws = lambda *a, **k: None
-    slot = MagicMock(key="cond", agent="kirocrew-conductor", _app="", _trust=False)
+    slot = MagicMock(key=caller, agent=agent, _app="", _trust=False)
     slot._trust_reads = False
+    # A dashboard slot of its own: its session is ``dashboard:<caller>``.
+    slot.linked_session_key = ""
     client = MagicMock()
     client.approve_tool = AsyncMock(return_value=True)
     client.reject_tool = AsyncMock(return_value=True)
-    turn = MagicMock(client=client, slot=slot, state=state, session_key="dashboard:cond")
+    turn = MagicMock(client=client, slot=slot, state=state, session_key=f"dashboard:{caller}")
     turn._native_tracker, turn._native_child_tc = {}, set()
     turn._refusal_notices, turn._refusal_reasons = [], []
     turn._wt_pending_coding, turn.assistant_text = set(), ""
@@ -318,6 +476,21 @@ def test_a_native_sub_agent_call_still_asks() -> None:
 def test_the_claude_backend_still_asks() -> None:
     # Its permission requests do not say which session sent them.
     assert _decide(backend="claude") == (False, [])
+
+
+def test_the_decider_approves_a_conducting_workers_own_child(conducting_bot_worker) -> None:
+    worker = dict(caller="w-bot", agent="kirocrew-mate-worker", target="gc-bot")
+    assert _decide(**worker) == (True, [("auto_approved", "conductor_own_child")])
+    # The same template, unmarked: the rung does not fire.
+    plain = dict(caller="w-plainbot", agent="kirocrew-mate-worker", target="gc-plainbot")
+    assert _decide(**plain) == (False, [])
+
+
+def test_the_claude_backend_still_asks_a_conducting_worker(conducting_bot_worker) -> None:
+    """A Bot pinned to claude gets the mount and the grants, and every seed and
+    close prompts (rfc-bot-workers-conduct.md, section 10)."""
+    worker = dict(caller="w-bot", agent="kirocrew-mate-worker", target="gc-bot")
+    assert _decide(backend="claude", **worker) == (False, [])
 
 
 def test_a_deny_rule_runs_first() -> None:

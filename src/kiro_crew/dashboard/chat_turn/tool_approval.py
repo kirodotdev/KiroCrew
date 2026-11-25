@@ -349,8 +349,10 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
 _CREW_ROOT_OWN_WORKER_VERBS = frozenset({"session_status", "session_read_message"})
 
 #: The writes a conductor makes into its OWN children without a prompt, and the
-#: agents allowed to (rfc-conductor-own-child-verbs.md, section 5.2). Any other
-#: conductor agent, verb or target keeps prompting.
+#: agents allowed to (rfc-conductor-own-child-verbs.md, section 5.2). A Bot's
+#: conducting worker is admitted beside them by ``members.conducting_worker_session``,
+#: never by its template's name. Any other conductor agent, verb or target keeps
+#: prompting.
 _CONDUCTOR_OWN_CHILD_VERBS = frozenset({"session_send", "session_close"})
 _CONDUCTOR_OWN_CHILD_AGENTS = frozenset({"kirocrew-conductor", "kirocrew-team-lead"})
 
@@ -449,14 +451,22 @@ def _conductor_own_child_call(state: Any, slot: Any, event: Any) -> bool:
     """A conductor's OWN ``session_send`` / ``session_close`` into a session it created.
 
     The caller's agent must be ``kirocrew-conductor`` or ``kirocrew-team-lead``
-    (:data:`_CONDUCTOR_OWN_CHILD_AGENTS`); the rest is the same verified-target,
-    vouched-creator fence as the read exemption (:func:`_targets_own_child`), and
-    ``agent.conductor_own_child_verbs`` must be on. Unlike the read exemption it does
-    not wait for ``crew_mode.APPROVAL_ROUTING_LIVE``: it is keyed on the agent, so
-    it serves a Bot conductor in an ordinary tab and a conductor mode chat alike.
-    Deny rules and PreToolUse hooks have already run by the time it is consulted.
+    (:data:`_CONDUCTOR_OWN_CHILD_AGENTS`), or the caller is a Bot's conducting worker
+    (``mate_worker_conducts.holds_conducting_kit``: the Bot's own worker, created by
+    the Bot's thread, whose running handle took the session-control mount at start,
+    so a switch change reaches it at its next start; never admitted by its
+    template's name, so an unmarked worker on the same template keeps asking);
+    the rest is the same verified-target, vouched-creator fence as the read
+    exemption (:func:`_targets_own_child`), and ``agent.conductor_own_child_verbs``
+    must be on. Unlike the read exemption it does not wait for
+    ``crew_mode.APPROVAL_ROUTING_LIVE``: it is keyed on the caller, so it serves a
+    Bot conductor in an ordinary tab and a conductor mode chat alike. Deny rules
+    and PreToolUse hooks have already run by the time it is consulted.
     """
-    if (getattr(slot, "agent", "") or "") not in _CONDUCTOR_OWN_CHILD_AGENTS:
+    from kiro_crew.mate_worker_conducts import holds_conducting_kit
+
+    agent = getattr(slot, "agent", "") or ""
+    if agent not in _CONDUCTOR_OWN_CHILD_AGENTS and not holds_conducting_kit(state, slot):
         return False
     if not _targets_own_child(state, slot, event, _CONDUCTOR_OWN_CHILD_VERBS):
         return False

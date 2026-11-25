@@ -270,11 +270,13 @@ class ClaudeCodeMirror(AgentConfigMirror):
         a client-side refusal. ``kwargs`` may carry ``session_key`` /
         ``channel_id``; only the key is read, and only to find a crewmate's worker
         spec -- a claude MCP child inherits the adapter's process env, so identity
-        needs no element-level carry.
+        needs no element-level carry. ``session_control_mounted``, when the client
+        hands it, is what this start mounts, which a worker's conducting kit follows.
 
         Same blocking allowance and the same wiring obligation as
         :meth:`session_params` (H13).
         """
+        mounted = kwargs.get("session_control_mounted")
         projection = session_mcp_projection(
             agent,
             stub_server_names=stub_server_names,
@@ -288,6 +290,7 @@ class ClaudeCodeMirror(AgentConfigMirror):
             worker_native_tool_limits_honoured=self.backend
             in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
             default_crew_servers=self.backend in ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
+            session_control_mounted=mounted if isinstance(mounted, bool) else None,
             bot_app_tools_carried=self.backend in ACP_BACKENDS_MATE_WORKER_KIT,
         )
         builtin_tools = _session_builtin_tools(
