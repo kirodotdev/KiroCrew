@@ -1399,6 +1399,21 @@ class TestWindowsRespellings:
         r"del /s /q C:\* ",
         r"rm -rf C:/",
         r"rm -rf 'C:\'",
+        r"rm -r -fo ~ -WhatIf:($false)",  # an expression may be false: no preview
+        r"rm -r -fo ~ -WhatIf:",
+        r"Remove-Item -Recurse -Force ~ -WhatIf:($false)",
+        r"Remove-Item -Recurse -Force C:\ -wi:",
+        "bash -c 'rm -r -f ~'",
+        "rm -r -f ~",
+    )
+    #: Windows only: on Linux and macOS the GNU reading takes the ``f`` in ``-WhatIf``
+    #: as force, as on main.
+    _WINDOWS_PREVIEWS = (
+        r"rm -r -fo ~ -WhatIf",
+        r"rm -r -fo ~ -WHATIF",
+        r"rm -r -fo ~ -WhatIf:$True",
+        r"Remove-Item -Recurse -Force C:\ -WhatIf:1",
+        r"Remove-Item -Recurse -Force ~ -wi:$true",
     )
     _WINDOWS_ORDINARY_DELETES = (
         r"Remove-Item -Recurse -Force D:\work\repo\build",
@@ -1425,6 +1440,8 @@ class TestWindowsRespellings:
         r"rm -Force C:\ ",
         r"rm -Recurse -Force C:/ -WhatIf",  # a preview; the f in -WhatIf is not GNU force
         "bash -c 'rm -fr \\\n/tmp/x'",  # a line continuation is not a path separator
+        "bash -c 'rm -r -f ~\\\n/.cache'",  # bash folds it into ~/.cache, not home
+        "bash -c 'rm -r -f C:\\\n/build'",
         "cat <<EOF\n\\$(x=$((1<<2))\nrm -r -f ~\n)\nEOF",  # an escape in heredoc body data
     )
 
@@ -1442,7 +1459,7 @@ class TestWindowsRespellings:
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
         for cmd in self._WINDOWS_ROOT_WIPES:
             assert is_denied(cmd.rstrip()) is not None, cmd
-        for cmd in self._WINDOWS_ORDINARY_DELETES:
+        for cmd in self._WINDOWS_ORDINARY_DELETES + self._WINDOWS_PREVIEWS:
             assert is_denied(cmd.rstrip()) is None, cmd
         # the floor keeps reading a quoted ``~`` as a literal name for rm (the row is separate)
         assert rm_floor._rm_wipe_targets('rm -rf "~"') == set()

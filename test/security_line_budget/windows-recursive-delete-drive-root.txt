@@ -1,4 +1,4 @@
-+125
++139
 On Windows the rm floor reads PowerShell Remove-Item and its aliases (rm only when
 -Recurse and -Force both bind) with
 -Recurse, binding its parameters the way PowerShell does (-WhatIf and -Recurse:$false
@@ -7,4 +7,5 @@ no parameter but holds a comma is a path array), and cmd rd/rmdir/del/erase with
 against a drive root, as recursive deletes, and reads a drive root (C:, C:/, C:\, C:\*)
 as the root target. A view with the \ after a drive letter or ~/$HOME read as / lets C:\ or ~\ followed
 by a parameter stay its own word. Linux and macOS verdicts are unchanged; the views only
-add refusals.
+add refusals. A -WhatIf exempts only when bare or glued to $true / 1, and the view keeps
+a backslash-newline continuation.

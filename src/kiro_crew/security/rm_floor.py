@@ -129,8 +129,13 @@ _CMD_SWITCH_RE = re.compile(r"(?:/[A-Za-z?][-:A-Za-z]*)+")
 #: reading drops an unquoted ``\``, so ``C:\*`` also arrives as ``C:*``.
 _DRIVE_ROOT_RE = re.compile(r"[A-Za-z]:[\\/]*\*?")
 #: Windows only. The ``\`` right after a drive letter or a leading home word (``~\*``,
-#: ``$HOME\``), read as ``/`` for the Windows view.
-_ROOT_BACKSLASH_RE = re.compile(r"(?<![\w\\])([A-Za-z]:|~|\$HOME|\$\{HOME\})\\")
+#: ``$HOME\``), read as ``/`` for the Windows view. A ``\`` before a newline is a bash
+#: line continuation (``~\`` + newline + ``/.cache`` is ``~/.cache``) and stays.
+#: shortcut: a PowerShell line ending in ``~\`` with more lines after it is not read as
+#: home, because bash would fold it; reading it needs to know which shell runs the text.
+_ROOT_BACKSLASH_RE = re.compile(r"(?<![\w\\])([A-Za-z]:|~|\$HOME|\$\{HOME\})\\(?!\n)")
+#: The glued values that turn a PowerShell switch on: ``-WhatIf:$true``, ``-WhatIf:1``.
+_PS_TRUE_VALUES = frozenset({"$true", "1"})
 
 
 def _is_scratch_entry(word: str) -> bool:
@@ -329,7 +334,9 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
             if not param and "," in arg:  # an array its quotes made a word: ``"-x",C:\``
                 operands.extend(arg.split(","))
             role = _PS_PARAMS.get(param, "switch")
-            if role == "switch" and param in flags:
+            if param == "whatif":
+                flags[param] = _ps_preview_on(glued, value)
+            elif role == "switch" and param in flags:
                 flags[param] = not glued or value.lower() not in ("$false", "0")
             elif role == "path" and glued:
                 operands.extend(value.split(","))
@@ -346,15 +353,22 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
 
 
 def _ps_previews(args: "list[str]") -> bool:
-    """A word of *args* before ``--`` binds ``-WhatIf`` (not ``-WhatIf:$false``): the delete
-    only previews. After ``--`` both shells read it as a file name."""
+    """A word of *args* before ``--`` binds ``-WhatIf`` on (:func:`_ps_preview_on`): the
+    delete only previews. After ``--`` both shells read it as a file name."""
     for arg in args:
         if arg == "--":
             return False
         param, glued, value = arg[1:].partition(":") if arg[:1] == "-" else ("", "", "")
         if _ps_param(param.lower()) == "whatif":
-            return not glued or value.lower() not in ("$false", "0")
+            return _ps_preview_on(glued, value)
     return False
+
+
+def _ps_preview_on(glued: str, value: str) -> bool:
+    """A ``-WhatIf`` word turns the preview on only when that is certain: bare, or glued to
+    ``$true`` / ``1``. An empty or expression value (``-WhatIf:($false)``, which the reader
+    cuts at the paren) may be false, so it exempts nothing."""
+    return not glued or value.lower() in _PS_TRUE_VALUES
 
 
 def _ps_param(word: str) -> str:
