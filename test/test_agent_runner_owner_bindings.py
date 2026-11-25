@@ -91,6 +91,7 @@ _DEFINED: dict[str, frozenset[str]] = {
             "_GIT_SAFE_CONFIG",
             "_UNFINISHED_TURN_ERROR",
             "_adopt_authored_test",
+            "_raise_on_failed_status",
             "_repro_test_dir",
             "author_bug_fix",
             "author_perf_fix",

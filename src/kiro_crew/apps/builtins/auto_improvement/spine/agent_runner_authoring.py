@@ -64,6 +64,20 @@ def _repro_test_dir(worktree: Path) -> str:
     return max(counts, key=lambda n: (counts[n], n))
 
 
+def _raise_on_failed_status(st: subprocess.CompletedProcess[str]) -> None:
+    """Raise when ``git status --porcelain`` failed, so a failure is never read as "no change".
+
+    A failed status (a damaged index, a refused repository) prints nothing on stdout, which
+    reads exactly like a clean tree. ``Proposer.propose_one`` turns the raise into
+    ``STATUS_ERROR`` with this message, so the failure is logged and counted instead of
+    dropping the agent's fix as ``no_defect``.
+    """
+    if st.returncode != 0:
+        lines = (st.stderr or "").strip().splitlines()
+        detail = lines[0] if lines else "no stderr"
+        raise RuntimeError(f"git status failed in the worktree (exit {st.returncode}): {detail}")
+
+
 def author_bug_fix(
     # ``Any``, not ``AgentRunner``: the runner is DUCK-TYPED — anything exposing
     # ``run(prompt, ...) -> AgentResult`` qualifies, and the in-process
@@ -220,6 +234,7 @@ def author_bug_fix(
         cwd=where,
         **UTF8_TEXT,
     )
+    _raise_on_failed_status(st)
     if not st.stdout.strip():
         return False
     # RECONCILE the candidate's reproducing-test path to the file the agent ACTUALLY
@@ -381,4 +396,5 @@ def author_perf_fix(
         cwd=where,
         **UTF8_TEXT,
     )
+    _raise_on_failed_status(st)
     return bool(st.stdout.strip())

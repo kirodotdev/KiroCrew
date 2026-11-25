@@ -1591,11 +1591,13 @@ def _candidate(repro=None):
 @pytest.fixture
 def fake_git(monkeypatch):
     """Replace the host-side ``git status --porcelain`` probe; never runs real git."""
-    state = {"stdout": "", "argv": None}
+    state = {"stdout": "", "argv": None, "returncode": 0, "stderr": ""}
 
     def _run(argv, **kw):
         state["argv"] = list(argv)  # type: ignore[assignment]
-        return SimpleNamespace(returncode=0, stdout=state["stdout"], stderr="")
+        return SimpleNamespace(
+            returncode=state["returncode"], stdout=state["stdout"], stderr=state["stderr"]
+        )
 
     monkeypatch.setattr(R, "require_pinned", lambda cwd: None)
     monkeypatch.setattr(R.subprocess, "run", _run)
@@ -1621,6 +1623,18 @@ def test_author_bug_fix_treats_a_clean_tree_as_no_defect_found(tmp_path, fake_gi
     fake_git["stdout"] = "   \n"
     runner = _FakeAgentRunner(R.AgentResult(ok=True, text="NO DEFECT FOUND — already handled"))
     assert R.author_bug_fix(runner, candidate=_candidate(), worktree=tmp_path) is False
+
+
+@pytest.mark.parametrize("author", ["author_bug_fix", "author_perf_fix"])
+def test_a_failed_git_status_raises_instead_of_reading_as_no_change(tmp_path, fake_git, author):
+    """A failed status prints nothing on stdout; it must not pass for a clean tree (#42343)."""
+    fake_git["returncode"] = 128
+    fake_git["stderr"] = "error: bad signature 0x41544f4e\nfatal: index file corrupt\n"
+    runner = _FakeAgentRunner(R.AgentResult(ok=True, text="fixed it"))
+    with pytest.raises(RuntimeError, match=r"exit 128\): error: bad signature 0x41544f4e$"):
+        getattr(R, author)(runner, candidate=_candidate(), worktree=tmp_path)
+    assert "--porcelain" in fake_git["argv"]
+    assert "core.fsmonitor=false" in fake_git["argv"]
 
 
 def test_author_bug_fix_adopts_the_test_the_agent_actually_wrote(tmp_path, fake_git):
