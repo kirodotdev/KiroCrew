@@ -218,6 +218,7 @@ def test_every_socket_and_recogniser_error_code_is_in_the_closed_list() -> None:
         "stt/decoder.py",
         "stt/codex.py",
         "stt/codex_rpc.py",
+        "stt/openai_compat.py",
     ):
         text = (src / rel).read_text(encoding="utf-8")
         declared.update(re.findall(r'^_?CODE_\w+ = "([a-z_]+)"', text, flags=re.MULTILINE))

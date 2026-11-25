@@ -21,6 +21,7 @@ import {
   FALLBACK_STREAMING_PROVIDERS,
   PROVIDER_APPLE,
   PROVIDER_CODEX,
+  PROVIDER_OPENAI_COMPATIBLE,
   PROVIDER_LABEL_KEY,
   PROVIDER_LOCAL,
   PROVIDER_TRANSCRIBE,
@@ -49,7 +50,14 @@ describe('provider labels', () => {
     // it exists to catch — including a retired provider left behind, which would
     // keep offering a label for something the backend refuses.
     expect(Object.keys(PROVIDER_LABEL_KEY).sort()).toEqual(
-      [PROVIDER_APPLE, PROVIDER_CODEX, PROVIDER_LOCAL, 'off', PROVIDER_TRANSCRIBE].sort(),
+      [
+        PROVIDER_APPLE,
+        PROVIDER_CODEX,
+        PROVIDER_LOCAL,
+        PROVIDER_OPENAI_COMPATIBLE,
+        'off',
+        PROVIDER_TRANSCRIBE,
+      ].sort(),
     )
   })
 
@@ -119,6 +127,9 @@ describe('availability reasons', () => {
       'stt_model_missing',
       'stt_native_probe_crashed',
       'stt_no_wheel_for_platform',
+      'stt_openai_auth_failed',
+      'stt_openai_failed',
+      'stt_openai_not_configured',
       'stt_provider_off',
       'stt_unsupported_cpu',
     ])

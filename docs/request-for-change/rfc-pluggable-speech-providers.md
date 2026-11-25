@@ -144,6 +144,7 @@ Each phase is independently shippable. Phase 3 can be dropped if the selectors s
 - **Patch core in each edition.** Works once, conflicts on every pull, and is forbidden by companion rules that keep vendored core read-only.
 - **An app.** Apps run in their own sandbox and do not sit on the in-process audio path, so latency and the streaming session do not fit. Apps also should not be able to register code that receives every user's microphone audio.
 - **A config-driven HTTP provider.** A URL in config would let any config writer redirect microphone audio. Rejected for the same reason providers must come from composition.
+  - Note ([#34591](https://github.com/kirodotdev/KiroCrew/issues/34591)): the built-in `openai_compatible` STT provider is an HTTP provider that answers this objection rather than reversing it. Config selects it by name and carries only the model id (`stt.openai_model`). The server address and API key are read from two fixed, owner-written vault entries, `OPENAI_STT_BASE_URL` and `OPENAI_STT_API_KEY`, which the agent can neither read nor write, so a config writer still cannot redirect microphone audio. It ships as a built-in rather than through this registry, because the registry is for a whole-platform companion package, not a single provider. Details: [stt-streaming.md](../system-specs/modules/stt-streaming.md#openai-compatible-provider).
 
 ## Open questions
 
