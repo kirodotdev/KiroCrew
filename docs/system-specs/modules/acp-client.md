@@ -4374,7 +4374,7 @@ A pager is advisory only (under the tool, stdout is a pipe, so a pager degrades
 to `cat` on its own); the other four classes are `INTERACTIVE_NARROWING_RISKS`.
 
 On Windows each segment's program word is read the way Windows runs it
-(`acp.program_name.windows_program_name`, the fold the batch write guard also
+(`program_name.windows_program_name`, the fold the batch write guard also
 applies): `git.exe`, `GIT.EXE`, `Git` and `C:\tools\vim.exe` classify as `git`
 and `vim`. POSIX keeps the exact, case-sensitive `/` basename. The oracle's
 `first_program` and process-row match keep that basename on every platform: the
