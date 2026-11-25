@@ -350,6 +350,14 @@ run = sdk.get(run_id); time.sleep(0.02)
 run = await asyncio.to_thread(sdk.get, run_id); await asyncio.sleep(0.02)
 ```
 
+A test that waits for a child's signal file has the same race on the read side.
+`path.exists()` turns true the instant a child's `os.replace` lands, while the
+rename's own handle (or a scanner's) can still refuse an open with
+`PermissionError` (errno 13, a sharing violation). Never wait on `exists()` and
+then read: make the read the predicate,
+`await async_wait_until(lambda: path.read_text(...), ignoring=(PermissionError,), off_loop=True)`
+(`test_runtime_cleanup_windows.py` `wait_for_file`).
+
 The write side has the same rule: `replace_with_retry` is one attempt on the loop
 thread, so a synchronous helper that ends in a session-file rename
 (`ConversationLog.update_metadata`, `bind_session_execution`) called from an
