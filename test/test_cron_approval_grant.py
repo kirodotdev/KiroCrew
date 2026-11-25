@@ -2,7 +2,8 @@
 
 ``cron_service.approval_grant`` stores an HMAC (``approval_grant``) on every job a
 gateway write gives ``approval_mode="auto"`` or a Bot owner grant. These pin: a
-hand-written or copied grant fires interactive and the job is kept; a job made
+hand-written or copied grant fires interactive and the job is kept, as does an
+earlier MAC written back once the grant's stored nonce is gone; a job made
 through the gateway keeps ``auto`` across a reload and across a change of who it
 runs as; a process with no key signs nothing and erases nothing; the one-time
 start pass signs older jobs once and its marker sits in a sandbox-hidden leaf.
@@ -305,7 +306,7 @@ def test_a_bot_grant_holds_only_once_the_gateway_signed_it(tmp_path) -> None:
     assert not owner_grant.owner_grant_holds(unsigned, _worker(), _config())
     assert owner_grant.fire_approval_mode(unsigned, _worker(), _config()) == ""
 
-    approval_grant.sign(unsigned)
+    approval_grant.sign(unsigned, {})
 
     assert owner_grant.owner_grant_holds(unsigned, _worker(), _config())
     assert owner_grant.fire_approval_mode(unsigned, _worker(), _config()) == "auto"
@@ -326,11 +327,14 @@ def test_a_signed_raw_record_holds_once_decoded(tmp_path) -> None:
         "execution_context": {"member_id": "m-1", "store": {"store_id": "s"}, "z": [1, "\u00e9"]},
         "agent_sequence": ["a", "b"],
     }
-    assert approval_grant.sign_record(record)
+    nonces: dict[str, str] = {}
+    assert approval_grant.sign_record(record, nonces)
+    approval_grant.write_nonces(tmp_path, nonces)
 
     (job,) = store.decode_jobs(
         json.dumps({"version": store._STORE_VERSION, "jobs": [record]}).encode()
     )
+    approval_grant.attach_nonces([job], tmp_path)
 
     assert approval_grant.holds(job)
     assert job_fire_approval_mode(job) == "auto"
@@ -487,3 +491,89 @@ def test_an_unreadable_store_spends_the_pass(tmp_path) -> None:
 
     assert "approval_grant" not in _row(tmp_path, job_id)
     assert job_fire_approval_mode(_reload(tmp_path, job_id)) == ""
+
+
+def test_an_earlier_mac_written_back_after_auto_was_turned_off_fires_interactive(tmp_path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600)
+    assert svc.update_job(job.id, approval_mode="auto") is not None
+    earlier = _row(tmp_path, job.id)["approval_grant"]
+    assert earlier
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+
+    assert svc.update_job(job.id, approval_mode="") is not None
+    assert job.id not in approval_grant.read_nonces(tmp_path)
+    _rewrite(tmp_path, job.id, approval_mode="auto", approval_grant=earlier)
+
+    reloaded = _reload(tmp_path, job.id)
+    assert (reloaded.approval_mode, reloaded.approval_grant) == ("auto", earlier)
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+def test_an_earlier_mac_on_a_removed_job_added_back_fires_interactive(tmp_path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+    record = _row(tmp_path, job.id)
+    assert record["approval_grant"]
+
+    assert svc.remove_job(job.id, actor="test", source="test")
+    assert job.id not in approval_grant.read_nonces(tmp_path)
+    data = _store(tmp_path)
+    data["jobs"].append(record)
+    (tmp_path / "crons.json").write_text(json.dumps(data))
+
+    reloaded = _reload(tmp_path, job.id)
+    assert (reloaded.approval_mode, reloaded.approval_grant) == ("auto", record["approval_grant"])
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+def test_turning_auto_off_and_on_again_signs_with_a_new_nonce(tmp_path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+    first = approval_grant.read_nonces(tmp_path)[job.id]
+
+    assert svc.update_job(job.id, approval_mode="") is not None
+    assert job.id not in approval_grant.read_nonces(tmp_path)
+    assert svc.update_job(job.id, approval_mode="auto") is not None
+
+    second = approval_grant.read_nonces(tmp_path)[job.id]
+    assert second != first
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+
+
+@pytest.mark.parametrize("damage", ["malformed", "link", "directory"])
+def test_an_unreadable_nonces_file_fires_interactive_and_keeps_the_job(tmp_path, damage) -> None:
+    job = CronService(base_dir=tmp_path).add_job(
+        name="a", message="go", every_secs=3600, approval_mode="auto"
+    )
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+    path = tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.NONCES_FILE
+    if damage == "malformed":
+        path.write_text("{not json")
+    elif damage == "link":
+        # The link names a copy of the real file: a link is never followed.
+        copy = tmp_path / "nonces-copy.json"
+        copy.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(copy)
+    else:
+        path.unlink()
+        path.mkdir()
+
+    reloaded = _reload(tmp_path, job.id)
+    assert reloaded.approval_mode == "auto"
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+def test_a_failed_nonce_write_fails_the_save_and_publishes_no_mac(tmp_path, monkeypatch) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600)
+    before = (tmp_path / "crons.json").read_bytes()
+
+    with monkeypatch.context() as mp:
+        mp.setattr("kiro_crew.atomic_write.atomic_write", _failing_for(approval_grant.NONCES_FILE))
+        with pytest.raises(OSError):
+            svc.update_job(job.id, approval_mode="auto")
+
+    assert (tmp_path / "crons.json").read_bytes() == before
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == ""

@@ -350,6 +350,9 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
         settled = not document.predates_local_default or _keep_unzoned_jobs_on_utc(
             document.jobs, document.extra, document.skipped
         )
+        # A stored grant holds only with the nonce the gateway stored for it.
+        # Attached before the jobs are published, so no fire sees one without it.
+        approval_grant.attach_nonces(document.jobs, self._dir)
         # decode_store skips a malformed record with a warning and keeps an
         # object a snapshot restore accepts for _save to write back; only a file
         # with nothing parseable resets the whole store.
@@ -512,15 +515,29 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     # Re-sign each job this process trusts, so a gateway change to who it runs
     # as (adopt, release, update) keeps its grant. A job not held keeps the MAC
     # it was loaded with: a process without the key must not erase a valid one.
-    # These are the live jobs, so a save that fails puts each previous MAC back
-    # (a caller's own rollback restores only the fields it set).
-    previous = [(job, job.approval_grant) for job in written if job.grant_held]
+    # These are the live jobs, so a save that fails puts each previous MAC and
+    # nonce back (a caller's own rollback restores only the fields it set).
+    previous = [(job, job.approval_grant, job.grant_nonce) for job in written if job.grant_held]
     # Deferred import to avoid a circular dependency.
     from kiro_crew.atomic_write import atomic_write, fsync_dir
 
     try:
-        for job, _ in previous:
-            approval_grant.sign(job)
+        # The nonces are read once and written at most once, before the store, so
+        # a MAC this save publishes always has its nonce stored; a nonce write
+        # that fails fails the save. Only a process holding the key keeps them. A
+        # nonce is dropped once its job is gone or stores no grant, so a grant the
+        # owner turned off or removed cannot be written back with its earlier MAC.
+        keyed = approval_grant._key() is not None
+        nonces = approval_grant.read_nonces(self._dir) if keyed else {}
+        stored = dict(nonces)
+        for job, _, _ in previous:
+            approval_grant.sign(job, nonces)
+        if keyed:
+            carrying = {job.id for job in written if approval_grant.carries_grant(job)}
+            for job_id in [job_id for job_id in nonces if job_id not in carrying]:
+                del nonces[job_id]
+            if nonces != stored:
+                approval_grant.write_nonces(self._dir, nonces)
         document = encode_store(
             written,
             version=self._store_version,
@@ -538,8 +555,9 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
         # save that returned can come back as an empty or missing crons.json.
         atomic_write(self._path, document, fsync=True)
     except BaseException:
-        for job, grant in previous:
+        for job, grant, nonce in previous:
             job.approval_grant = grant
+            job.grant_nonce = nonce
         raise
     # Best-effort: the replace has already published the new store, so a
     # filesystem that refuses a directory fsync must not turn a committed

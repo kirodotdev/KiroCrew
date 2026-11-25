@@ -73,7 +73,7 @@ def _row(tmp_path, job_id: str) -> dict:
     return next(r for r in data["jobs"] if r["id"] == job_id)
 
 
-def _as_job(row: dict) -> SimpleNamespace:
+def _as_job(row: dict, store_dir) -> SimpleNamespace:
     return SimpleNamespace(
         id=row["id"],
         approval_mode=row.get("approval_mode", ""),
@@ -86,6 +86,7 @@ def _as_job(row: dict) -> SimpleNamespace:
         execution_context=row.get("execution_context"),
         agent_sequence=row.get("agent_sequence", []),
         approval_grant=row.get("approval_grant", ""),
+        grant_nonce=approval_grant.read_nonces(store_dir).get(row["id"], ""),
     )
 
 
@@ -98,7 +99,7 @@ def test_a_job_its_bot_made_gets_the_bots_mode(tmp_path, _world) -> None:
 
     row = _row(tmp_path, job_id)
     assert (row["owner_member_id"], row["owner_approval_mode"]) == (_MEMBER, "trust")
-    job = _as_job(row)
+    job = _as_job(row, tmp_path)
     assert owner_grant.fire_approval_mode(job, _execution(_MEMBER), _world["cfg"]) == "auto"
 
 
@@ -178,7 +179,7 @@ def test_a_job_with_a_grant_already_is_not_restamped(tmp_path, _world) -> None:
 def test_a_lowered_profile_still_asks_after_the_stamp(tmp_path, _world) -> None:
     job_id = _bot_job(tmp_path)
     owner_grant.migrate_owner_grants(tmp_path, _world["cfg"])
-    job = _as_job(_row(tmp_path, job_id))
+    job = _as_job(_row(tmp_path, job_id), tmp_path)
 
     assert owner_grant.fire_approval_mode(job, _execution(_MEMBER), _config("normal")) == ""
 
@@ -189,6 +190,6 @@ def test_a_bot_not_on_trust_at_migration_keeps_its_jobs_asking(tmp_path, _world)
 
     owner_grant.migrate_owner_grants(tmp_path, _world["cfg"])
 
-    job = _as_job(_row(tmp_path, job_id))
+    job = _as_job(_row(tmp_path, job_id), tmp_path)
     assert job.owner_approval_mode == "normal"
     assert owner_grant.fire_approval_mode(job, _execution(_MEMBER), _config("trust")) == ""

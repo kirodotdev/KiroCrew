@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.cron_service import approval_grant
 from kiro_crew.cron_service.model import (
     _ALERT_AFTER_DEFAULT,
     _AUTO_PAUSE_THRESHOLD,
@@ -426,10 +425,6 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
         secret_env_resurfaced_pin=_guard_str("secret_env_resurfaced_pin"),
     )
-    # Trusted only when the gateway signed it (approval_grant). A job with no
-    # auto or owner fields never reads the key.
-    if approval_grant.carries_grant(job):
-        job.grant_held = approval_grant.holds(job)
     # Measured on what the save writes back, so a coerced field does not count.
     # Skipping the record rather than clearing the field keeps a too-deep
     # execution_context or env from running the job under one it was not given.

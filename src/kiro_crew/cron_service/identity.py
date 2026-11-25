@@ -447,6 +447,9 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
             records = data.get("jobs") if isinstance(data, dict) else None
             if not isinstance(records, list):
                 return []
+            # A held record already has its stored nonce, which signing it again
+            # reuses, so these passes never write the nonces file.
+            nonces = approval_grant.read_nonces(store_dir)
             migrated: list[str] = []
             for record in records:
                 # The old build wrote no execution_context key at all.
@@ -475,11 +478,11 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
                     )
                     continue
                 # A grant the gateway signed stays signed over the new capture.
-                held = approval_grant.holds(record)
+                held = approval_grant.holds(record, nonces)
                 record["execution_context"] = execution.to_record()
                 record["member_id"] = execution.member_id or ""
                 if held:
-                    approval_grant.sign_record(record)
+                    approval_grant.sign_record(record, nonces)
                 migrated.append(job.id)
             if migrated:
                 atomic_write(path, json.dumps(data, indent=2))
@@ -717,6 +720,9 @@ def migrate_member_named_template_schedules(store_dir: Path) -> list[str]:
             records = data.get("jobs") if isinstance(data, dict) else None
             if not isinstance(records, list):
                 return []
+            # A held record already has its stored nonce, which signing it again
+            # reuses, so these passes never write the nonces file.
+            nonces = approval_grant.read_nonces(store_dir)
             moved: list[str] = []
             for record in records:
                 if (
@@ -752,13 +758,13 @@ def migrate_member_named_template_schedules(store_dir: Path) -> list[str]:
                     )
                     continue
                 # A grant the gateway signed stays signed over the moved capture.
-                held = approval_grant.holds(record)
+                held = approval_grant.holds(record, nonces)
                 record["agent_id"] = ""
                 record["execution_context"] = new.to_record()
                 record["member_id"] = new.member_id or ""
                 record["memory_store"] = new.store.legacy_name
                 if held:
-                    approval_grant.sign_record(record)
+                    approval_grant.sign_record(record, nonces)
                 moved.append(job.id)
             if moved:
                 atomic_write(path, json.dumps(data, indent=2))

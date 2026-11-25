@@ -93,7 +93,7 @@ class TestCronApprovalModeGateway:
             approval_mode=approval_mode,
         )
         if signed:
-            approval_grant.sign(job)
+            approval_grant.sign(job, {})
 
         captured_cb = None
 
@@ -203,7 +203,7 @@ class TestCronApprovalModeExtraEnv:
             env=job_env or {},
         )
         if signed:
-            approval_grant.sign(job)
+            approval_grant.sign(job, {})
 
         captured_cb = None
 

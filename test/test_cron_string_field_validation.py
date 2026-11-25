@@ -371,6 +371,9 @@ class TestAntiDrift:
             # The gateway's MAC, written only by cron_service.approval_grant on
             # save; no create or update path accepts it from a caller.
             "approval_grant",
+            # In memory only (never persisted): the nonce approval_grant reads from
+            # its own file at load and sets when a save signs the job.
+            "grant_nonce",
         }
     )
 

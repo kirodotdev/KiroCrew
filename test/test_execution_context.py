@@ -1225,14 +1225,18 @@ def test_the_capture_keeps_a_signed_grant_signed_and_an_unsigned_one_unsigned(me
     store_dir = tmp_path / "cron-store"
     store_dir.mkdir()
     signed = _insider_record("signed", "alice", approval_mode="auto")
-    assert approval_grant.sign_record(signed)
+    nonces: dict[str, str] = {}
+    assert approval_grant.sign_record(signed, nonces)
+    approval_grant.write_nonces(store_dir, nonces)
     unsigned = _insider_record("unsigned", "alice", approval_mode="auto")
     _write_crons(store_dir / "crons.json", [signed, unsigned])
 
     assert migrate_legacy_member_schedules(store_dir) == ["signed", "unsigned"]
 
     saved = json.loads((store_dir / "crons.json").read_text(encoding="utf-8"))["jobs"]
-    assert job_fire_approval_mode(_job_from_record(saved[0])) == "auto"
+    captured = _job_from_record(saved[0])
+    approval_grant.attach_nonces([captured], store_dir)
+    assert job_fire_approval_mode(captured) == "auto"
     assert "approval_grant" not in saved[1]
     assert job_fire_approval_mode(_job_from_record(saved[1])) == ""
 
