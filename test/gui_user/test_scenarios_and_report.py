@@ -585,6 +585,19 @@ class TestShippedScenarios:
         assert f'Click the "{workspace}" tab' in text
         assert '"Files"' not in text
 
+    def test_crewmate_chat_clean_finds_the_speaker_in_the_chat_header(self) -> None:
+        """A Bot's replies carry no author line; the chat header names the speaker.
+
+        The reply is drawn as the bubble alone (``CrewmateMessage``), so a
+        scenario that asks for an avatar and a name above each reply fails
+        every night whatever the product does.
+        """
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-chat-clean.yaml")
+        speaker = [e for e in sc.expectations if "avatar" in e]
+        assert len(speaker) == 1
+        assert speaker[0].startswith("The header above the conversation shows")
+        assert "no avatar or name of their own" in speaker[0]
+
     def test_settings_security_scenarios_read_the_panes_as_they_render(self) -> None:
         """The Documentation and Layers scenarios quote what those panes draw.
 
