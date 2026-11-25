@@ -12,7 +12,7 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelVi
 import { setQuestionCard, switchSlot } from '../../../store/chatSlice'
 import { sseSlotPatch } from '../../../store/dashboardSlice'
 import { ApiError } from '../../../api/apiError'
-import { CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
+import { CREW_WORKERS_FAILED_POLL_MS, CREW_WORKERS_FALLBACK_POLL_MS, CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, crewWorkersPollMs, reopenCrewSession } from './CrewWorkerList'
 import ConductorModeCrewPanel, { CREW_BOARD_EXPANDED_KEY } from './ConductorModeCrewPanel'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 
@@ -387,10 +387,41 @@ describe('Conductor mode Crew tab', () => {
 
   it('Status: a failed board read says so instead of an empty milestone list', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    api.crewBoard.mockRejectedValue(new ApiError(500, 'board down', ''))
+    api.crewBoard.mockRejectedValue(new ApiError(500, 'Internal Server Error', ''))
     renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
-    expect(await screen.findByText('board down')).toBeInTheDocument()
+    // The panel's own sentence, never the server's text.
+    expect(await screen.findByTestId('conductor-mode-milestones-error')).toHaveTextContent('Could not load the milestones. Trying again shortly.')
+    expect(screen.queryByText('Internal Server Error')).toBeNull()
     expect(screen.queryByText('No milestones yet.')).toBeNull()
+  })
+
+  it('Status: a board read refused for permission keeps its reason and promises no retry', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockRejectedValue(new ApiError(403, 'owner authorization required', JSON.stringify({ error: 'owner authorization required', code: 'owner_only' })))
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('conductor-mode-milestones-error')).toHaveTextContent('owner authorization required')
+    expect(screen.queryByText(/Trying again/)).toBeNull()
+  })
+
+  it('List: a failed crew read with open crew members is a status notice above their rows', async () => {
+    api.crewWorkers.mockRejectedValue(new ApiError(500, 'boom', ''))
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />, [
+      { key: 'w-live', title: 'Live worker', agent: 'kirocrew-worker', messages: 2, running: true, crew_root: 'root-1', created_by: 'root-1' },
+    ])
+    await toList()
+    const notice = await screen.findByText('Could not refresh the crew list. Open crew members are still shown; trying again.')
+    // Amber and polite: the list still works, one part of it is stale.
+    expect(notice.closest('[role="status"]')).not.toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: /Live worker/ })).toBeInTheDocument()
+  })
+
+  it('a failed crew read is asked again sooner than a healthy one, a permission refusal is not', () => {
+    const failed = crewWorkersPollMs('poll-root', { status: 'error', error: new ApiError(500, 'boom', '') })
+    expect(failed).toBe(CREW_WORKERS_FAILED_POLL_MS)
+    expect(crewWorkersPollMs('poll-root', { status: 'success' })).toBe(CREW_WORKERS_FALLBACK_POLL_MS)
+    const refused = new ApiError(403, 'owner authorization required', JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }))
+    expect(crewWorkersPollMs('poll-root', { status: 'error', error: refused })).toBe(CREW_WORKERS_FALLBACK_POLL_MS)
   })
 
   it('List: a failed crew read says so', async () => {
