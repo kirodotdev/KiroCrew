@@ -978,7 +978,7 @@ export default function MembersPage() {
       <Suspense fallback={editingCrew ? <CrewEditorChunkLoading /> : null}>
         {/* The editor's way to this bot's Profile card: close the editor, open
             the card on its Profile tab. The editor's guard has asked by now. */}
-        <CrewEditorModal ctl={crewEditor} onOpenProfile={() => { crewEditing.closeCrewEditor(); openProfile('profile') }} />
+        <CrewEditorModal ctl={crewEditor} initialSection={crewEditing.crewLandingSection} onOpenProfile={() => { crewEditing.closeCrewEditor(); openProfile('profile') }} />
       </Suspense>
     </div>
     </RunInTerminalScope.Provider>

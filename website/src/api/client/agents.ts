@@ -84,6 +84,11 @@ export interface MemberRosterRow {
    *  the newest event is not a stop, and absent again once a newer
    *  conversational row lands. */
   last_message_stopped?: boolean
+  /** The agent file this bot runs on is gone (its package was uninstalled, or
+   *  the file was deleted), so its chats and schedules fail until the file is
+   *  back. The row is kept, because the bot still holds its memory and chats;
+   *  the page marks it and offers Delete bot. Omitted (not `false`) otherwise. */
+  agent_missing?: boolean
   kiro_agent?: string
   workspace?: string
   memory_store?: string
