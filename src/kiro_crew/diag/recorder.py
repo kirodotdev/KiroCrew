@@ -316,6 +316,28 @@ def _round(value: float | None, digits: int = 1) -> float | None:
     return None if value is None else round(value, digits)
 
 
+def _read_commit() -> dict[str, Any]:
+    """Commit charge and commit limit in MB on Windows; no fields elsewhere.
+
+    A Windows host can reach its commit limit with physical memory still free, and
+    that is when new threads and processes fail to start. ``meminfo`` is null
+    there, so these are the fields that show such a stall afterwards. Other
+    platforms get no key, so their rows keep their shape.
+    """
+    from kiro_crew import platform_compat
+
+    if not platform_compat.IS_WINDOWS:
+        return {}
+    commit = platform_compat.system_commit()
+    if commit is None:
+        return {"commit_used_mb": None, "commit_limit_mb": None}
+    limit, available = commit
+    return {
+        "commit_used_mb": _round(max(0, limit - available) / 1048576.0),
+        "commit_limit_mb": _round(limit / 1048576.0),
+    }
+
+
 def _read_mount_usage(path: str, statvfs: "Callable[[str], Any] | None") -> dict[str, Any]:
     """Usage of one filesystem, or null fields when it cannot be measured.
 
@@ -746,6 +768,7 @@ class Recorder:
         row: dict[str, Any] = {"ts": ts, "pid": os.getpid()}
         row.update(_read_loadavg(self._procfs))
         row.update(_read_meminfo(self._procfs))
+        row.update(_read_commit())
         row["posture"] = _read_posture()
         row["process"] = _read_self_process(self._procfs)
         row["loop_lag_ms_max"] = round(max(0.0, lag_ms), 2)
