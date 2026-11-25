@@ -373,9 +373,7 @@ def move_state_to_app_data(app_state_dir: Path, state_dir: Path) -> list[str]:
         # BEFORE any mkdir, which would walk through a planted link.
         refuse_linked_parent(app_state_dir / STATE_FILE_NAMES[0])
         if not _make_state_dir(app_state_dir):
-            raise OSError(
-                f"{app_state_dir.parent} is moved aside by an install, update or uninstall"
-            )
+            raise OSError(f"{app_state_dir.parent} is moved aside by an install or uninstall")
         for name in STATE_FILE_NAMES:
             data = _read_regular_no_follow(state_dir / name, sole_link=name == "pat")
             atomic_write(
@@ -412,7 +410,7 @@ def ensure_app_state_dir(app_state_dir: Path) -> None:
 def _make_state_dir(app_state_dir: Path) -> bool:
     """Create *app_state_dir* owner-only, never making a ``data/`` the lifecycle holds aside.
 
-    An install, update or keep-data uninstall moves ``apps/<name>/data/`` to
+    An install over kept data or a keep-data uninstall moves ``apps/<name>/data/`` to
     ``apps/.<name>-data-tmp/`` and back by rename, so a ``data/`` made in between would
     turn the move back into a move INTO it, nesting the kept state where nothing masks
     it. So with ``data/`` present only ``state/`` is made in it; with ``data/`` absent the

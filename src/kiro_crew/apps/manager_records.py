@@ -77,7 +77,7 @@ def _is_sidecar_entry(entry_name: str) -> bool:
     """Whether an ``apps_dir()`` entry is a gateway sidecar rather than an app.
 
     No admissible app name starts with a dot, and every working path the gateway
-    puts beside an app directory does (``.<name>-update-old-<pid>-<hex>``,
+    puts beside an app directory does (``.<name>-update-{new,out,old}-<pid>-<hex>``,
     ``.<name>-update-inflight``, ``.<name>-data-tmp``). A retired tree still holds
     the app's previous ``installed.json``, so a walk that reads every entry's
     record lists the app twice. Every walk of ``apps_dir()`` skips these.
@@ -447,7 +447,7 @@ class InstalledApp:
 # update undoes its consent-pending mark). The lock is a SIDECAR outside the app
 # directories, never installed.json: the record is replaced via os.replace, so a
 # lock on it would sit on an inode the next writer never opens; and update_app
-# moves the whole app directory aside, so a lock inside it would too.
+# moves the app's own entries out of its directory, so a lock there would move too.
 _record_lock_state = threading.local()
 
 
@@ -785,7 +785,7 @@ def _write_installed(
             )
         # The credential masks the manifest declares must outlive it beside the data
         # (apps.credential_masks). Best-effort here: the update and the uninstall
-        # refresh the record again, strictly, before they move the data.
+        # refresh the record again, strictly, before they move the manifest or the data.
         try:
             credential_masks.remember_declaration(name)
         except OSError:
@@ -1211,13 +1211,23 @@ def _held_back_entries(
     return held
 
 
+#: The phases of ``update_app``'s sibling trees: the new tree it builds, the old
+#: root entries while it moves them out, and those entries once all are out.
+UPDATE_TREE_PHASES = ("new", "out", "old")
+
+
+def _update_tree_prefix(name: str, phase: str) -> str:
+    """Name prefix of *name*'s ``update_app`` sibling tree in *phase*."""
+    return f".{name}-update-{phase}-"
+
+
 def _update_retired_tree_prefix(name: str) -> str:
-    """Name prefix of the tree ``update_app`` moves *name*'s live tree to."""
-    return f".{name}-update-old-"
+    """Name prefix of the tree holding *name*'s old root entries once all are out."""
+    return _update_tree_prefix(name, "old")
 
 
 # Tree-swap fencing for this process. ``update_app`` holds a swap open from
-# before it moves an app's tree aside until the moved-aside tree is gone. Each
+# before it moves an app's old entries out until their retired tree is gone. Each
 # swap start and end takes the next value of a process-wide sequence; an app's
 # last value is kept in a bounded LRU, and its in-flight count only while one
 # is open. A grant read that sees a swap in flight, or a change across its
