@@ -113,9 +113,10 @@ def engine_record(tracker: object, now: float | None = None) -> dict[str, Any] |
             turn = key
         ends[_end_of(info)] += 1
         started = _clock(info.get("started"))
-        ended = _clock(
-            info.get("done_at") if info.get("done") else (time.time() if now is None else now)
-        )
+        if info.get("done"):
+            ended = _clock(info.get("done_at"))
+        else:
+            ended = _clock(time.time() if now is None else now)
         if started is not None and ended is not None and ended >= started:
             first = started if first is None else min(first, started)
             last = ended if last is None else max(last, ended)
