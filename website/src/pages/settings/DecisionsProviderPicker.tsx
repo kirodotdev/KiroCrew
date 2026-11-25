@@ -13,7 +13,7 @@ import type {
 } from '../../api/client/decisions'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
-import { fmtPercent, fmtUnit } from '../../i18n/format'
+import { fmtList, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { DecisionsHostedKeyField } from './DecisionsHostedKeyField'
 import {
@@ -21,9 +21,11 @@ import {
   PRESET_HOSTED,
   PRESET_NONE,
   allModelsRefused,
+  configuredModelRefused,
   isRefusedHostedDefault,
   isRefusedSageMaker,
   providerPermitted,
+  surfacesStillSending,
 } from './decisionsProviderQuery'
 
 /** Preset id for the hosted provider; the gateway's `local_models.PRESET_JEV`. */
@@ -344,10 +346,14 @@ export function DecisionsProviderPicker({
   frozen: frozenByCard,
   cardReadFailed = false,
   consentOn = true,
+  consentRecorded = false,
 }: {
   frozen: boolean
   /** Whether consent stands for the configured endpoint: a model only answers while it does. */
   consentOn?: boolean
+  /** Whether consent is recorded for the configured endpoint, whatever the dashboard's
+   *  ceiling says: another surface the ceiling permits sends under it. */
+  consentRecorded?: boolean
   /** The card already shows its own read-failure notice: one failure, one notice. */
   cardReadFailed?: boolean
 }) {
@@ -455,6 +461,10 @@ export function DecisionsProviderPicker({
   // saved one is marked as saved and refused instead.
   const refusedDefault = isRefusedHostedDefault(data)
   const savedRefusedId = refusedDefault ? (isRefusedSageMaker(data) ? PRESET_SAGEMAKER : PRESET_JEV) : null
+  // The dashboard's refusal binds the dashboard's turns only: the configured model's
+  // entry names the surfaces whose ceiling still lets the recorded consent send to it.
+  const refusedConfiguredId = savedRefusedId ?? (configuredModelRefused(data) ? data.active : null)
+  const stillSending = surfacesStillSending(data, consentRecorded)
   const configuredChoice =
     data.active === 'custom' || hiddenId(data.active) || refusedDefault ? '' : data.active
   const chosen = selected ?? configuredChoice
@@ -580,6 +590,13 @@ export function DecisionsProviderPicker({
         {blockedId(id) && (
           <span className="text-[12px] text-warn">
             {i18nT('pages.developer.featurePreviewsTab.decisions_provider_blocked')}
+          </span>
+        )}
+        {id === refusedConfiguredId && stillSending.length > 0 && (
+          <span className="text-[12px] text-warn" data-testid="decisions-still-sent-from">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_still_sent_from', {
+              surfaces: fmtList(stillSending),
+            })}
           </span>
         )}
       </span>

@@ -1,3 +1,6 @@
+import { i18nT } from '../../i18n/t'
+import { channelBrandLabel } from '../../utils/channelOrigin'
+
 /**
  * Query key for `GET /api/decisions/provider`, shared by the Decisions card and its
  * lazily loaded model picker. It lives outside the picker module so the card can
@@ -40,6 +43,22 @@ export function isRefusedSageMaker(data: { configured_refused?: boolean; configu
  */
 export function configuredModelRefused(data: Parameters<typeof providerPermitted>[0] & { active: string }): boolean {
   return data.active !== PRESET_NONE && !providerPermitted(data, data.active)
+}
+
+/**
+ * The surfaces that still send to the configured model the dashboard refuses, under a
+ * recorded consent: the dashboard's refusal binds only the dashboard's own turns. Empty
+ * without a consent recorded for the configured address, and on an older gateway.
+ * Named as the owner knows them: a channel by its brand, the command line, and the
+ * runtime's own surfaces (cron, subagents, the task runner, ...) as one group.
+ */
+export function surfacesStillSending(data: { permitted_surfaces?: string[] }, consentRecorded: boolean): string[] {
+  if (!consentRecorded || !Array.isArray(data.permitted_surfaces)) return []
+  const label = (id: string) =>
+    id === 'cli'
+      ? i18nT('pages.developer.featurePreviewsTab.decisions_surface_cli')
+      : channelBrandLabel(id) || i18nT('pages.developer.featurePreviewsTab.decisions_surface_background')
+  return [...new Set(data.permitted_surfaces.map(label))]
 }
 
 /**

@@ -95,6 +95,7 @@ async function renderPicker({
   frozen = false,
   data = undefined as DecisionsProviderData | undefined,
   consentOn = true,
+  consentRecorded = false,
 } = {}) {
   // `null` stands for "the gateway reported no memory figure": an `undefined` here
   // would take the default instead.
@@ -107,7 +108,7 @@ async function renderPicker({
   })
   const view = render(
     <QueryClientProvider client={client}>
-      <DecisionsProviderPicker frozen={frozen} consentOn={consentOn} />
+      <DecisionsProviderPicker frozen={frozen} consentOn={consentOn} consentRecorded={consentRecorded} />
     </QueryClientProvider>,
   )
   // The machine's memory is a SEPARATE read from the preset list, so a frame that
@@ -555,6 +556,33 @@ describe('refused hosted default (round-14 repro)', () => {
     expect(await screen.findByText(/Your SageMaker endpoint is still saved in your settings, but your administrator does not allow it/)).toBeTruthy()
     expect(screen.queryByText(/Jev, hosted by TypeSafe is still saved in your settings, but your administrator does not allow it/)).toBeNull()
     expect(screen.getAllByRole('button', { name: 'Clear from settings' })).toHaveLength(1)
+  })
+})
+
+describe('a refusal on the dashboard surface only', () => {
+  const refusedHere = { ...providerOf('none'), hosted_permitted: false, permitted_surfaces: ['cli', 'slack'] }
+
+  it('names the surfaces that still send under a recorded consent, in the refused entry', async () => {
+    await renderPicker({ data: refusedHere, consentOn: false, consentRecorded: true })
+    const line = await screen.findByTestId('decisions-still-sent-from')
+    expect(line.textContent).toContain('the command line and Slack')
+    expect(screen.getByTestId('decisions-provider-hosted-entry').contains(line)).toBe(true)
+  })
+
+  it('names no surface without a recorded consent: nothing is sent from any of them', async () => {
+    await renderPicker({ data: refusedHere, consentOn: false, consentRecorded: false })
+    await screen.findByTestId('decisions-saved-refused')
+    expect(screen.queryByTestId('decisions-still-sent-from')).toBeNull()
+  })
+
+  it('names the surfaces under a refused local preset too', async () => {
+    await renderPicker({
+      data: { ...providerOf('laya'), provider_permitted: { laya: false }, permitted_surfaces: ['cron'] },
+      consentOn: false,
+      consentRecorded: true,
+    })
+    const line = await screen.findByTestId('decisions-still-sent-from')
+    expect(line.closest('[data-provider-entry]')?.getAttribute('data-provider-entry')).toBe('laya')
   })
 })
 

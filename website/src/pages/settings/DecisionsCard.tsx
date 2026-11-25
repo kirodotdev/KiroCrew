@@ -26,13 +26,14 @@ import {
   readNudgeWake,
   type DecisionPointRow,
 } from './decisionsPreview'
-import { fmtPercent } from '../../i18n/format'
+import { fmtList, fmtPercent } from '../../i18n/format'
 import {
   DECISIONS_PROVIDER_QUERY_KEY,
   PRESET_NONE,
   allModelsRefused,
   configuredModelRefused,
   isRefusedHostedDefault,
+  surfacesStillSending,
 } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
@@ -475,6 +476,12 @@ export function DecisionsCard() {
   // administrator's policy refuses the model the config names. Only the first is told
   // to switch off and on again; under a refusal that advice cannot work.
   const consentInert = view.endpointMoved || view.withdrawn
+  // The surfaces whose ceiling still permits the model the dashboard refuses, so the
+  // recorded consent still sends from them: named beside the switch that revokes it.
+  const stillSending =
+    providerQ.data !== undefined && (configuredRefused || refusedDefault)
+      ? surfacesStillSending(providerQ.data, view.consentRecorded)
+      : []
 
   // Controls once drawn stay MOUNTED, hidden, while governance withholds them, so what
   // the reader typed into them (the hosted API key, a SageMaker endpoint, a budget)
@@ -520,6 +527,13 @@ export function DecisionsCard() {
               ? 'pages.developer.featurePreviewsTab.decisions_configured_blocked_consent'
               : 'pages.developer.featurePreviewsTab.decisions_configured_blocked',
           )}
+        </p>
+      )}
+      {view.supported && stillSending.length > 0 && (
+        <p className="text-[12px] text-warn m-0" data-testid="decisions-refused-still-sending">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_refused_still_sending', {
+            surfaces: fmtList(stillSending),
+          })}
         </p>
       )}
       {/* The egress fact carries body weight, not muted fine print: it is what a
@@ -598,6 +612,7 @@ export function DecisionsCard() {
             frozen={frozen}
             cardReadFailed={readFailed}
             consentOn={view.enabled && !consentInert}
+            consentRecorded={view.consentRecorded}
           />
         </Suspense>
       )}

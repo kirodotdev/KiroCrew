@@ -194,11 +194,15 @@ SAGEMAKER_REGIONS: tuple[str, ...] = (
 )
 
 
-def endpoint_refused(endpoint: str, *, audit: bool = True) -> bool:
+def endpoint_refused(
+    endpoint: str, *, audit: bool = True, surface_key: str | None = None, model: str | None = None
+) -> bool:
     """Whether the ceiling's ``endpoints`` list refuses the host a request to *endpoint* reaches.
 
     ``audit=False`` is for the picker's offer probe, which asks about many hosts and
-    acts on none: same answer, no SEL row.
+    acts on none: same answer, no SEL row. *surface_key* asks another surface's
+    ceiling (``decisions_surfaces``); the default is the dashboard's. *model* asks the
+    ``models`` list about it in the same bracket, as the send path does.
 
     A ``sagemaker://`` address is asked as the regional runtime URL the client is
     pinned to. The same question the send path asks, so an option the answer refuses
@@ -216,7 +220,13 @@ def endpoint_refused(endpoint: str, *, audit: bool = True) -> bool:
         # An address that names no host cannot be sent to, which is the send
         # path's own answer (``gate._targets_denied`` denies on the same raise).
         return True
-    return capability.targets_denied(point=None, model=None, endpoint=url, audit=audit)
+    return capability.targets_denied(
+        surface_key or capability.DASHBOARD_SURFACE_KEY,
+        point=None,
+        model=model,
+        endpoint=url,
+        audit=audit,
+    )
 
 
 def consent_endpoint_refused(endpoint: str) -> bool:
