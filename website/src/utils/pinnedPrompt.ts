@@ -55,6 +55,19 @@ export const ROW_PAD_Y = 4
 export const DEFAULT_PINNED_CARD_H = 46.75
 
 /**
+ * Height of the sender's name above another person's card: the transcript
+ * byline's line (`leading-5`, 20px) plus the gap under it (`mb-0.5`, 2px), the
+ * values `SenderLine` in MessageByline draws with. The card measures its own
+ * byline and reports it inside its resting height; this is what the geometry
+ * uses where no card can be measured: the seed for a named card's resting
+ * height, and the hand-off of a row that shows no name of its own
+ * (`pinBylineLead` in usePinnedPrompt).
+ * shortcut: a fixed px value, off by the difference if the root font size is
+ * ever scaled; have the card report its byline height once that ships.
+ */
+export const PINNED_BYLINE_H = 22
+
+/**
  * Viewport Y of the hand-off line: the card's own resting TOP edge. A prompt pins
  * once its row top has reached this line, and un-pins the moment it drops back
  * below it.
