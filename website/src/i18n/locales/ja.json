@@ -18505,9 +18505,6 @@
       "open_kiro_sign_in": "サインイン設定を開く",
       "back_to_overview": "概要に戻る",
       "connecting": "接続中…",
-      "memory_summary_kept_other": "{{hours}} 時間使われないとチャットをメモリに要約 · {{days}} 日分の履歴を保持",
-      "memory_summary_semantic": "{{hours}} 時間使われないとチャットをメモリに要約 · 意味的メモリがアクティブ",
-      "memory": "メモリ",
       "memory_developer_link": "メモリグラフと内部情報",
       "overview": "概要",
       "reconnecting": "再接続中…",
@@ -23436,6 +23433,10 @@
         "description": "SSH または AWS Session Manager 経由でリモートクルーを管理し、トップヘッダーからそれらを切り替え",
         "label": "リモートクルー"
       },
+      "memory": {
+        "description": "グローバル記憶と各 Bot の記憶：事実、レッスン、経験",
+        "label": "メモリ"
+      },
       "notifications": {
         "description": "サウンドエフェクトとソース別のアラート設定",
         "label": "通知"
@@ -23955,6 +23956,7 @@
     "created_on": "{{date}} に作成",
     "divider_no_confidence": "確信度スコアなし · 経験、新しい順",
     "divider_no_importance": "重要度スコアなし · 事実とレッスン、新しい順",
+    "embedded_tip": "{{total}} 件中 {{embedded}} 件の記憶を意味で検索できます。残りはバックグラウンドで補完されるまで、単語でのみ検索できます。",
     "facet_applies": "適用",
     "facet_confidence": "確信度",
     "facet_importance": "重要度",
@@ -23989,6 +23991,7 @@
     "reverse_order": "順序を逆にする",
     "saved_key": "{{key}} を保存しました",
     "scope_all_repos": "すべてのリポジトリ",
+    "search_filters": "フィルターを検索",
     "select": "選択",
     "select_limit_hint": "一度に {{limit}} 件まで",
     "selection_toolbar": "選択した記憶",

@@ -19529,11 +19529,6 @@
       "open_kiro_sign_in": "Abrir la configuración de inicio de sesión",
       "back_to_overview": "Volver al resumen",
       "connecting": "Conectando…",
-      "memory_summary_kept_one": "Resume los chats en la memoria después de {{hours}} h de inactividad · conserva {{days}} día de historial",
-      "memory_summary_kept_many": "Resume los chats en la memoria después de {{hours}} h de inactividad · conserva {{days}} días de historial",
-      "memory_summary_kept_other": "Resume los chats en la memoria después de {{hours}} h de inactividad · conserva {{days}} días de historial",
-      "memory_summary_semantic": "Resume los chats en la memoria después de {{hours}} h de inactividad · memoria semántica activa",
-      "memory": "Memoria",
       "memory_developer_link": "Grafo de memoria y detalles internos",
       "overview": "Resumen",
       "reconnecting": "Reconectando…",
@@ -24640,6 +24635,10 @@
         "description": "Gestiona crews remotos por SSH o AWS Session Manager; cambia entre ellos desde la cabecera superior",
         "label": "Crew remoto"
       },
+      "memory": {
+        "description": "Memoria global y la memoria de cada Bot: hechos, lecciones y experiencias",
+        "label": "Memoria"
+      },
       "notifications": {
         "description": "Efectos de sonido y preferencias de alerta por origen",
         "label": "Notificaciones"
@@ -25161,6 +25160,7 @@
     "created_on": "Creado el {{date}}",
     "divider_no_confidence": "Sin puntuación de confianza · experiencias, más recientes primero",
     "divider_no_importance": "Sin puntuación de importancia · hechos y lecciones, más recientes primero",
+    "embedded_tip": "{{embedded}} de {{total}} recuerdos se pueden encontrar por significado. Los demás solo se encuentran por palabras hasta que se completen, lo que ocurre en segundo plano.",
     "facet_applies": "Se aplica",
     "facet_confidence": "Confianza",
     "facet_importance": "Importancia",
@@ -25195,6 +25195,7 @@
     "reverse_order": "Invertir orden",
     "saved_key": "Guardado: {{key}}",
     "scope_all_repos": "Todos los repositorios",
+    "search_filters": "Buscar filtros",
     "select": "Seleccionar",
     "select_limit_hint": "Hasta {{limit}} a la vez",
     "selection_toolbar": "Recuerdos seleccionados",

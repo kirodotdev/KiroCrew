@@ -2,14 +2,15 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, ArrowDownUp, ChevronDown, Folder, History, Mail, MoreHorizontal, X } from 'lucide-react'
-import { Btn, IconButton, PanelSectionHeader, Slider } from '../../../components/ui'
+import { AlertTriangle, ArrowDownUp, ChevronDown, Folder, History, Mail, MoreHorizontal, Search, X } from 'lucide-react'
+import { Btn, IconButton, Input, PanelSectionHeader, Slider } from '../../../components/ui'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
-import { fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
+import { compareText, fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRecordFilters, MemoryRecordSort } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
-import { FACET_GROUPS, SCOPE_UNUSABLE, effectiveSort, facetLabel, lessonFacts, recordTags, recordTitle, type KindTab, type ListView } from './memoryListView'
+import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, lessonFacts, recordTags, recordTitle, type KindTab, type ListView } from './memoryListView'
 
 const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
 const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
@@ -18,7 +19,10 @@ const ORDER_KEYS: Record<MemoryRecordSort, [string, string]> = {
   confidence: ['memoryPage.order_highest', 'memoryPage.order_lowest'], importance: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
   key: ['memoryPage.order_z_a', 'memoryPage.order_a_z'], match: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
 }
-const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = { category: 'pages.overview.memoryTab.category', applies: 'memoryPage.facet_applies', scope: 'pages.overview.memoryTab.scope', tag: 'memoryPage.facet_tags', source: 'pages.overview.memoryTab.source' }
+const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = {
+  category: 'pages.overview.memoryTab.category', applies: 'memoryPage.facet_applies', scope: 'pages.overview.memoryTab.scope', tag: 'memoryPage.facet_tags', source: 'pages.overview.memoryTab.source',
+  surface: 'memoryV2.group_surface', crew: 'memoryV2.group_crew',
+}
 // A group heading names the kind it filters while the All pill shows every kind.
 const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences' }
 const CHIP = 'inline-flex h-[22px] max-w-full items-center gap-1 whitespace-nowrap rounded-full text-[12px] leading-none'
@@ -85,31 +89,42 @@ function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count
   </label>
 }
 
-/** The filter groups with live counts from `facets=1`, and the confidence range. */
-export function FilterPanel({ view, facets, onToggle, onRange }: {
-  view: ListView; facets?: MemoryRecordFacets
+/** The filter groups with live counts from `facets=1`, and the confidence range.
+ *  With `searchable` (the phone sheet), a box at the top narrows every group's values by label. */
+export function FilterPanel({ view, facets, searchable = false, onToggle, onRange }: {
+  view: ListView; facets?: MemoryRecordFacets; searchable?: boolean
   onToggle: (group: MemoryRecordFacetGroup, value: string) => void
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
   const { t } = useTranslation()
-  const groups = FACET_GROUPS.filter(group => view.kind === 'all' || group === 'source' || (view.kind === 'directive' ? group !== 'tag' : view.kind === 'episode' && group === 'tag'))
+  const [find, setFind] = useState('')
+  const needle = find.trim().toLocaleLowerCase()
+  const groups = FACET_GROUPS.filter(group => view.kind === 'all' || GROUP_KINDS[group].includes(view.kind))
   const low = view.filters.conf_min ?? 0
   const high = view.filters.conf_max ?? 1
+  const shown = groups.map(group => {
+    const counts = facets?.[group] || {}
+    const ticked = view.filters[group] || []
+    // A ticked value stays listed even when the other filters leave it no rows.
+    const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
+      .filter(value => !needle || facetLabel(group, value).toLocaleLowerCase().includes(needle))
+      .sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
+    return { group, counts, ticked, values }
+  }).filter(item => item.values.length)
   return <div className="space-y-5">
-    {groups.map(group => {
-      const counts = facets?.[group] || {}
-      const ticked = view.filters[group] || []
-      // A ticked value stays listed even when the other filters leave it no rows.
-      const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
-        .sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || a.localeCompare(b))
-      if (!values.length) return null
+    {searchable && <div className="relative">
+      <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
+      <Input type="search" className="min-h-11 w-full pl-9 sm:min-h-9" aria-label={t('memoryPage.search_filters')} placeholder={t('memoryPage.search_filters')} value={find} onChange={event => setFind(event.target.value)} />
+    </div>}
+    {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
+    {shown.map(({ group, counts, ticked, values }) => {
       const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
       return <section key={group} aria-label={heading}>
         <PanelSectionHeader label={heading} />
         {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
       </section>
     })}
-    {view.kind !== 'episode' && <section aria-label={t('memoryPage.facet_confidence')}>
+    {view.kind !== 'episode' && !needle && <section aria-label={t('memoryPage.facet_confidence')}>
       <PanelSectionHeader label={view.kind === 'all' ? t('memoryPage.for_facts_lessons', { group: t('memoryPage.facet_confidence') }) : t('memoryPage.facet_confidence')} />
       <div className="space-y-3 pt-1">
         <Slider label={t('memoryPage.conf_lowest')} showValue min={0} max={1} step={0.05} value={low} formatValue={fmtScore} onChange={value => onRange('conf_min', value > 0 ? Math.min(value, high) : undefined)} />
@@ -179,7 +194,10 @@ export function RecordRow({ row, sort, selecting, selected, selectDisabled, open
   const title = recordTitle(row, body)
   const negative = row.kind === 'directive' ? lessonFacts(row).negative : undefined
   const pending = row.metadata?.pending_conflicts || 0
-  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b border-border px-4 py-3.5 last:border-b-0 ${open || selected ? 'bg-accent-subtle' : ''} ${focus ? 'ring-2 ring-inset ring-accent' : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
+  // The first and last rows take the list's inner corner radius (16 px less its
+  // 1 px border), so the focus ring and the open tint follow the rounded corners
+  // instead of being cut by the list's clip.
+  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${open || selected ? 'bg-accent-subtle' : ''} ${focus ? 'ring-2 ring-inset ring-accent' : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
     {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
     <div className="min-w-0 space-y-1.5">
       <button type="button" onClick={onOpen} className="block w-full text-left focus-ring" aria-label={t('memoryV2.view_details')} aria-expanded={open}>

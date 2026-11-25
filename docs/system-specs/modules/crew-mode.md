@@ -1648,7 +1648,7 @@ by rewriting `template_id` alone. Ordinary owner/app, capability, native-history
 checks still apply to selection changes; see [session](session.md#agent-selection-provenance).
 
 The crew editor links to
-`/settings/overview?view=memory&store=<name>`. The member memory workspace has
+`/settings/memory?store=<name>`. The member memory workspace has
 Memories, Profile and Recovery tabs: browsing/search/correction/copy stay in
 Memories, preferences and project anchors stay in Profile, and backups plus
 retired experiences stay in Recovery. Advanced facet analysis is collapsed.

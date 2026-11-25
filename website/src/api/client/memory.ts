@@ -22,7 +22,7 @@ export function memoryRecordParams(store: string, query: MemoryRecordQuery, offs
   if (view.sort && view.order) params.set('order', view.order)
   if (view.facets) params.set('facets', '1')
   const filters = query.filters || {}
-  for (const group of ['category', 'applies', 'scope', 'source', 'tag'] as const) for (const value of filters[group] || []) params.append(group, value)
+  for (const group of ['category', 'applies', 'scope', 'source', 'surface', 'crew', 'tag'] as const) for (const value of filters[group] || []) params.append(group, value)
   if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
   if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
   return params

@@ -252,10 +252,9 @@ describe('memory store picker — the listing', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Recovery' }), { button: 0, ctrlKey: false })
     await waitFor(() => expect(api.memoryRetired).toHaveBeenCalledWith(CREW_STORE, expect.any(Number)))
     expect(api.memoryBackups).toHaveBeenCalledWith(CREW_STORE)
-    // Explore memory sits on the bot's Settings tab and reads only once that tab opens.
-    expect(api.memoryCarve).not.toHaveBeenCalled()
+    // The bot's Settings tab no longer groups by source: that lives in the filters.
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0, ctrlKey: false })
-    await waitFor(() => expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: CREW_STORE })))
+    expect(api.memoryCarve).not.toHaveBeenCalled()
     // Nothing was re-read under the store the user just left, which for the active
     // store means no storeless read either.
     expect(api.memoryPreferences).not.toHaveBeenCalledWith(undefined)
@@ -293,13 +292,10 @@ describe('memory store picker — the listing', () => {
 })
 
 describe('memory store picker — a store whose schema has no facets', () => {
-  it('shows one muted Global V1 explanation without making an inapplicable request', async () => {
+  it('the Global memory page makes no source-group request', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await pickerSeeded()
-    const explanations = screen.getAllByText(/This format has no source groups\./)
-    expect(explanations).toHaveLength(1)
-    expect(explanations[0]).toHaveClass('text-muted')
-    expect(explanations[0].closest('[role="alert"]')).toBeNull()
+    expect(screen.queryByText(/This format has no source groups\./)).toBeNull()
     expect(api.memoryCarve).not.toHaveBeenCalled()
     expect(screen.queryByRole('combobox', { name: 'Count by' })).toBeNull()
   })

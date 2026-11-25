@@ -188,3 +188,24 @@ def test_the_unusable_scope_value_is_no_real_scope(store):  # noqa: F811
         store, {"filters": {"scope": [memory_record_facets.SCOPE_UNUSABLE]}}
     )
     assert [entry["id"] for entry in body["entries"]] == ["lesson.bad"]
+
+
+def test_channel_and_crew_filter_and_count_on_a_bot_store_only(store):  # noqa: F811
+    from kiro_crew.memory_schema import LINEAGE_CREW, MemoryFacets
+
+    slack = MemoryFacets(surface="slack", crew="reviewer")
+    assert store.set_semantic("user.editor", "vim", 0.9, "user_explicit", facets=slack) is None
+    assert store.write_episodic("Reviewed a PR from cron.", facets=MemoryFacets(surface="cron"))
+    assert store.set_semantic("user.shell", "zsh", 0.9, "user_explicit") is None
+    body = memory_edit.list_records(store, {"filters": {"surface": ["slack"]}}, facets=True)
+    if store._lineage != LINEAGE_CREW:
+        # A Global V1 row carries no channel or crew, so it counts toward no value.
+        assert body["facets"]["surface"] == {} and body["facets"]["crew"] == {}
+        assert body["total"] == 0
+        return
+    assert _ids(body) == ["user.editor"]
+    # Surface ignores its own filter; crew is counted within it.
+    assert body["facets"]["surface"] == {"slack": 1, "cron": 1, "": 1}
+    assert body["facets"]["crew"] == {"reviewer": 1}
+    both = memory_edit.list_records(store, {"filters": {"crew": ["", "reviewer"]}}, facets=True)
+    assert both["total"] == 3

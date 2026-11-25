@@ -69,7 +69,7 @@ function NavigationVeto({ guard }: { guard: () => boolean }) {
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
-  window.history.replaceState({}, '', `/settings/overview?view=memory&store=${MEMBER_STORE}`)
+  window.history.replaceState({}, '', `/settings/memory?store=${MEMBER_STORE}`)
   api.memoryStores.mockResolvedValue({ stores, active: 'default' })
   api.vectorEmbeddingStatus.mockResolvedValue({ provider: 'none' })
   api.vectorStats.mockResolvedValue({})
@@ -166,11 +166,11 @@ describe('private member memory lifecycle', () => {
     } finally { scroll.mockRestore() }
   })
   it('clears the saved lesson search when navigating to another store', async () => {
-    const { default: OverviewPage } = await import('../pages/OverviewPage')
+    const { MemoryPanel } = await import('../pages/settings/MemoryPanel')
     const key = 'lesson.0123456789ab'
-    const route = `/settings/overview?view=memory&focus=lessons&lesson=${key}&store=${MEMBER_STORE}`
+    const route = `/settings/memory?focus=lessons&lesson=${key}&store=${MEMBER_STORE}`
     window.history.replaceState({}, '', route)
-    renderWithProviders(<><OverviewPage /><RouteLocation /></>, { route })
+    renderWithProviders(<><MemoryPanel /><RouteLocation /></>, { route })
 
     await screen.findByRole('tablist', { name: 'Memory for reviewer' })
     expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue(key)
@@ -189,7 +189,7 @@ describe('private member memory lifecycle', () => {
   })
 
   it('labels a named legacy store as usable Memory V1 without presenting private V2 actions', async () => {
-    window.history.replaceState({}, '', `/settings/overview?view=memory&store=${LEGACY_STORE}`)
+    window.history.replaceState({}, '', `/settings/memory?store=${LEGACY_STORE}`)
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
 
     await screen.findByRole('tablist', { name: `Memory for ${LEGACY_STORE}` })
@@ -521,11 +521,11 @@ describe('private member memory lifecycle', () => {
     await waitFor(() => expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE))
     expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE)
     expect(api.memoryRetired).toHaveBeenCalledWith(MEMBER_STORE, expect.any(Number))
-    // Explore memory sits on the Settings tab and reads once that tab opens.
-    expect(api.memoryCarve).not.toHaveBeenCalled()
+    // The Settings tab keeps the storage card; its source groups moved into the filters.
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0, ctrlKey: false })
-    await waitFor(() => expect(api.memoryCarve).toHaveBeenCalled())
-    expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: MEMBER_STORE }))
+    expect(await screen.findByText('Store')).toBeVisible()
+    expect(screen.queryByText('Explore memory')).toBeNull()
+    expect(api.memoryCarve).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     expect(api.lessons).not.toHaveBeenCalled()
     expect(api.memoryHistory).not.toHaveBeenCalled()
@@ -895,7 +895,7 @@ describe('private member memory lifecycle', () => {
     // No Repeated failures card, so no Draft lesson that would write Global memory from here.
     expect(screen.queryByRole('button', { name: 'Draft lesson' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Open failures in Global memory' }))
-    expect(screen.getByTestId('route-location')).toHaveTextContent('/settings/overview?view=memory&focus=failures')
+    expect(screen.getByTestId('route-location')).toHaveTextContent('/settings/memory?focus=failures')
   })
 
   it('opens the full experience and source from a three-line card preview', async () => {

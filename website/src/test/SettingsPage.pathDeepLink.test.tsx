@@ -20,12 +20,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // Stub the heavy panels — this test exercises the navigation chain, not panel
 // internals. ChannelsPanel renders REAL: it owns the SubNav under test.
 vi.mock('../pages/settings/OverviewPanel', () => ({ OverviewPanel: () => <div data-testid="overview-panel" /> }))
+vi.mock('../pages/settings/MemoryPanel', () => ({ MemoryPanel: () => <div data-testid="memory-panel" /> }))
 vi.mock('../pages/settings/ChatPanel', () => ({ ChatPanel: () => <div data-testid="chat-panel" /> }))
 vi.mock('../pages/settings/DisplayPanel', () => ({ DisplayPanel: () => <div data-testid="display-panel" /> }))
 vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data-testid="browser-panel" /> }))
@@ -83,12 +84,18 @@ vi.mock('../hooks/useContainerWidth', () => ({
 
 import SettingsPage from '../pages/SettingsPage'
 
+function Where() {
+  const location = useLocation()
+  return <output data-testid="where">{location.pathname + location.search}</output>
+}
+
 function renderAt(route: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[route]}>
         <SettingsPage />
+        <Where />
       </MemoryRouter>
     </QueryClientProvider>
   )
@@ -141,11 +148,11 @@ describe('path deep link /settings/channels/slack — cold open', () => {
   })
 })
 
-// An Overview drill-in (Memory, Usage, WakaTime) draws its own "‹ Overview" back
-// row and title, so the tab's "Overview" title, its subtitle and the mobile
+// An Overview drill-in (Usage, WakaTime) draws its own "‹ Overview" back row
+// and title, so the tab's "Overview" title, its subtitle and the mobile
 // "‹ Account & Settings" bar must not stack above it.
 describe('Overview drill-in owns the header', () => {
-  for (const view of ['memory', 'usage', 'wakatime']) {
+  for (const view of ['usage', 'wakatime']) {
     it(`mobile: ?view=${view} shows no Overview title or second back bar`, async () => {
       mobile = true
       mockWidth = 390
@@ -156,10 +163,10 @@ describe('Overview drill-in owns the header', () => {
     })
   }
 
-  it('wide: ?view=memory shows no Overview title above the drill-in', async () => {
+  it('wide: ?view=usage shows no Overview title above the drill-in', async () => {
     mobile = false
     mockWidth = 1000
-    renderAt('/settings/overview?view=memory')
+    renderAt('/settings/overview?view=usage')
     expect(await screen.findByTestId('overview-panel')).toBeInTheDocument()
     expect(screen.queryByTestId('side-panel-header')).toBeNull()
   })
@@ -170,5 +177,44 @@ describe('Overview drill-in owns the header', () => {
     renderAt('/settings/overview')
     expect(await screen.findByTestId('overview-panel')).toBeInTheDocument()
     expect(screen.getByTestId('mobile-detail-header')).toBeInTheDocument()
+  })
+})
+
+// Memory is its own Settings entry: inside Overview it was too hard to find.
+describe('Settings > Memory', () => {
+  it('is listed in the Settings rail next to Overview', async () => {
+    mobile = false
+    mockWidth = 1000
+    renderAt('/settings/memory')
+    expect(await screen.findByTestId('memory-panel')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Memory' }).className).toContain('bg-accent-subtle')
+    expect(screen.getByTestId('side-panel-header')).toHaveTextContent('Memory')
+  })
+
+  it('mobile: one back row to Settings and the Memory title', async () => {
+    mobile = true
+    mockWidth = 390
+    renderAt('/settings/memory?store=member-reviewer')
+    expect(await screen.findByTestId('memory-panel')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Account & Settings/ })).toHaveLength(1)
+    expect(screen.getByTestId('mobile-detail-header')).toHaveTextContent('Memory')
+    expect(screen.queryByTestId('overview-panel')).toBeNull()
+  })
+
+  it('an old Overview link lands on Settings > Memory with the same store, focus and lesson', async () => {
+    mobile = false
+    mockWidth = 1000
+    renderAt('/settings/overview?view=memory&store=member-reviewer&focus=lessons&lesson=lesson.a1')
+    expect(await screen.findByTestId('memory-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings/memory?store=member-reviewer&focus=lessons&lesson=lesson.a1')
+    expect(screen.queryByTestId('overview-panel')).toBeNull()
+  })
+
+  it('the legacy ?tab=overview&view=memory form lands there too', async () => {
+    mobile = false
+    mockWidth = 1000
+    renderAt('/settings?tab=overview&view=memory&focus=failures')
+    expect(await screen.findByTestId('memory-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings/memory?focus=failures')
   })
 })

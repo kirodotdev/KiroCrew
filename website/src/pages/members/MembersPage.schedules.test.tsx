@@ -955,7 +955,7 @@ describe('MembersPage Profile card — Memory tile', () => {
     })
     navigateSpy.mockClear()
     fireEvent.click(tile)
-    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=member-radar'))
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/memory?store=member-radar'))
   })
 
   it('stays a readout for a mate on the shared store', async () => {

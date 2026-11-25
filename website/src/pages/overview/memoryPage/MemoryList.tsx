@@ -140,9 +140,11 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
       {all && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.all_scope', { query: all.query.q || t('memoryV2.filter_all') })}</p>}
       {!all && selectedCount >= MANUAL_LIMIT && <p role="status" className="basis-full text-[12px] text-muted">{t('memoryEditing.selection_limit')}</p>}
       {total > SELECT_ALL_LIMIT && selectedCount > 0 && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.narrow_selection')}</p>}
-    </div> : <div className="flex min-w-0 flex-wrap gap-2 sm:flex-nowrap">
-      {/* A phone gives the search box its own row; the filter and sort buttons wrap below it. */}
-      <label className="relative min-w-0 flex-1 basis-full sm:basis-auto">
+    </div> : <div className={`flex min-w-0 gap-2 ${phone ? 'flex-wrap' : 'flex-nowrap'}`} data-testid="memory-toolbar">
+      {/* A phone gives the search box its own row; the filter and sort buttons wrap below it.
+          Keyed on the phone layout, not on a width class: a 640-767 px phone would
+          otherwise keep every control on one row and squeeze the search box. */}
+      <label className={`relative min-w-0 flex-1 ${phone ? 'basis-full' : ''}`}>
         <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
         <Input className="min-h-11 w-full pl-9 pr-10 sm:min-h-10" aria-label={t('memoryV2.search')} placeholder={t('memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
         {input && <IconButton aria-label={t('memoryV2.clear_search')} className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center" onClick={clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
@@ -190,7 +192,7 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       {detailPanel}
     </div>}
-    {phone && filtersOpen && <Modal open title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{filterPanel}</Modal>}
+    {phone && filtersOpen && <Modal open title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}><FilterPanel view={view} facets={facets} searchable onToggle={onToggleFilter} onRange={onRange} /></Modal>}
     {recallOpen && <MemoryRecallDialog store={store} initialTask={input.trim()} onClose={() => onRecallOpenChange(false)} />}
     {edit.dialog}
   </div>

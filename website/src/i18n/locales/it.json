@@ -19529,11 +19529,6 @@
       "open_kiro_sign_in": "Apri le impostazioni di accesso",
       "back_to_overview": "Torna alla panoramica",
       "connecting": "Connessione…",
-      "memory_summary_kept_one": "Riepiloga le chat nella memoria dopo {{hours}} h di inattività · mantiene {{days}} giorno di cronologia",
-      "memory_summary_kept_many": "Riepiloga le chat nella memoria dopo {{hours}} h di inattività · mantiene {{days}} giorni di cronologia",
-      "memory_summary_kept_other": "Riepiloga le chat nella memoria dopo {{hours}} h di inattività · mantiene {{days}} giorni di cronologia",
-      "memory_summary_semantic": "Riepiloga le chat nella memoria dopo {{hours}} h di inattività · memoria semantica attiva",
-      "memory": "Memoria",
       "memory_developer_link": "Grafo della memoria e dettagli interni",
       "overview": "Panoramica",
       "reconnecting": "Riconnessione…",
@@ -24640,6 +24635,10 @@
         "description": "Gestisci le crew remote tramite SSH o AWS Session Manager; passa da una all'altra dall'intestazione in alto",
         "label": "Crew remota"
       },
+      "memory": {
+        "description": "Memoria globale e memoria di ogni Bot: fatti, lezioni ed esperienze",
+        "label": "Memoria"
+      },
       "notifications": {
         "description": "Effetti sonori e preferenze di avviso per origine",
         "label": "Notifiche"
@@ -25161,6 +25160,7 @@
     "created_on": "Creato il {{date}}",
     "divider_no_confidence": "Senza punteggio di affidabilità · esperienze, prima le più recenti",
     "divider_no_importance": "Senza punteggio di importanza · fatti e lezioni, prima i più recenti",
+    "embedded_tip": "{{embedded}} ricordi su {{total}} si trovano per significato. Gli altri si trovano solo per parole finché non vengono completati in background.",
     "facet_applies": "Si applica",
     "facet_confidence": "Affidabilità",
     "facet_importance": "Importanza",
@@ -25195,6 +25195,7 @@
     "reverse_order": "Inverti ordine",
     "saved_key": "{{key}} salvato",
     "scope_all_repos": "Tutti i repository",
+    "search_filters": "Cerca nei filtri",
     "select": "Seleziona",
     "select_limit_hint": "Fino a {{limit}} alla volta",
     "selection_toolbar": "Ricordi selezionati",

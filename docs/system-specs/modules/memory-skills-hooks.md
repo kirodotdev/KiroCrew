@@ -1011,7 +1011,7 @@ The history consolidation prompt includes a `"lessons"` key that extracts only i
 {"history_idle_hours": 3.0, "history_max_days": 365}
 ```
 
-Exposed on dashboard: Overview → Memory tab → Memory Settings card. Changes apply immediately to running consolidator via `PUT /api/memory/settings`.
+Exposed on dashboard: Settings → Memory → Memory Settings card. Changes apply immediately to running consolidator via `PUT /api/memory/settings`.
 
 The PUT clamps, never refuses, an in-range type: `history_idle_hours` to 0.5–24 and
 `history_max_days` to 7–365. The card's inputs carry the same bounds and clamp before
@@ -1851,11 +1851,33 @@ raw agent file writes cannot modify managed SQLite state.
 | Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
 | The first Bot (`mate`) | An ordinary member, created with its own private V2 store like any explicit creation; never on Global memory ([crew mode](crew-mode.md)) |
 
-The Memory tab has separate global and member views. Member links address
-`/settings/overview?view=memory&store=<store>`; every member data request carries
-that explicit owner-authorized store. The global settings and global vector
-browser do not mount inside a member view. The member view supplies its own
-compact identity header and a single Overview back action. It uses the app's
+The memory page is its own Settings entry, **Settings > Memory**
+(`/settings/memory`; `pages/settings/MemoryPanel.tsx`, routes in
+`pages/settings/memoryRoute.ts`): inside Overview it was too hard to find. It has
+separate global and member views. Member links address
+`/settings/memory?store=<store>`; every member data request carries that explicit
+owner-authorized store. An old `/settings/overview?view=memory…` link (or bare
+`/settings?view=memory…`) is redirected there with its `store`, `focus` and
+`lesson` kept. The global settings and global vector browser do not mount inside
+a member view. Settings draws the page's one back row and the Memory title, so a
+phone shows "‹ Account & Settings" and "Memory" above the store picker.
+
+The Memories list filters on the lesson fields, the write origin (Source), an
+experience's tags and, on a bot's store, the **Channel** (`surface`) and
+**Member** (`crew`) that wrote each row (`memory_record_facets.FACET_GROUPS`; a
+Global V1 row has neither, so it counts toward no value). These two groups
+replace the gear tab's former Explore memory card, which grouped by the same
+columns. On a phone the filter sheet has a search box that narrows every group's
+values by label and keeps their counts; the wide rail has none. The phone layout
+is keyed on `useIsMobile` (below 768 px), not on a width class, so the toolbar
+wraps and the search box keeps its own row on a 640–767 px phone too.
+
+The embedded line under the header reads "X of Y embedded": X is every fact,
+lesson and experience with a stored vector (`memory_stats`'s `embedded_count`,
+experiences only, plus `semantic_embedded`), Y every live one. Its info tip says
+that the X rows can be found by meaning and the rest by words only until the
+gateway's repair pass fills their vectors in (`_repair_member_memory`, in the
+background). A gateway without `semantic_embedded` counts experiences only. It uses the app's
 theme colors, the owning member's avatar, category
 icons, three-line card previews and
 reduced-motion-aware transitions. Full content and readable source/copy
@@ -4487,7 +4509,7 @@ the findings: the sandbox withholds the security log from foreign-harness childr
 `memory.repeated_failures_notice` on (default off; a wrong-typed value reads as off,
 with the loader's type-mismatch warning), the bell gets at most one note per 7 days on
 the `system.memory` channel, and only when `scan` finds at least one recurring failure.
-The note names no tool and quotes no error; its link (`?view=memory&focus=failures`)
+The note names no tool and quotes no error; its link (`/settings/memory?focus=failures`)
 scrolls the Memory view to the card, which is where the findings are read. The
 heartbeat calls `RepeatedFailuresNotifier.maybe_check` on every beat, which costs one
 clock read: the first check runs 10 minutes after start and then once a day, in a task

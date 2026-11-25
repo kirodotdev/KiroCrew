@@ -19,7 +19,7 @@ export type ListView = {
   filters: MemoryRecordFilters
 }
 export const DEFAULT_VIEW: ListView = { q: '', kind: 'all', sort: 'updated', order: 'desc', filters: {} }
-export const FACET_GROUPS: MemoryRecordFacetGroup[] = ['category', 'applies', 'scope', 'tag', 'source']
+export const FACET_GROUPS: MemoryRecordFacetGroup[] = ['category', 'applies', 'scope', 'tag', 'source', 'surface', 'crew']
 const SORTS: MemoryRecordSort[] = ['updated', 'created', 'confidence', 'importance', 'key', 'match']
 
 /** The sort a request sends: Best match needs search words, so it falls back to Updated without them. */
@@ -27,7 +27,8 @@ export const effectiveSort = (view: ListView): MemoryRecordSort => view.sort ===
 
 /** Which kinds a facet group or a score belongs to. */
 export const GROUP_KINDS: Record<MemoryRecordFacetGroup, MemoryRecordKind[]> = {
-  category: ['directive'], applies: ['directive'], scope: ['directive'], tag: ['episode'], source: ['fact', 'directive', 'episode'],
+  category: ['directive'], applies: ['directive'], scope: ['directive'], tag: ['episode'],
+  source: ['fact', 'directive', 'episode'], surface: ['fact', 'directive', 'episode'], crew: ['fact', 'directive', 'episode'],
 }
 
 // The applied view, kept per store for the browser session. Not the URL: the
@@ -100,6 +101,8 @@ export function facetLabel(group: MemoryRecordFacetGroup, value: string): string
   if (group === 'applies') return APPLIES_KEYS[value] ? i18nT(APPLIES_KEYS[value]) : value
   if (group === 'scope') return value === '' ? i18nT('memoryPage.scope_all_repos') : value === SCOPE_UNUSABLE ? i18nT('pages.overview.memoryTab.scope_unusable') : value
   if (group === 'source') return SOURCE_KEYS[value] !== undefined ? i18nT(SOURCE_KEYS[value]) : value
+  // The channel and the crew are stamped on a bot's memory; an empty one was never recorded.
+  if (group === 'surface' || group === 'crew') return value === '' ? i18nT('pages.overview.memoryCarveCard.not_recorded') : value
   return `#${value}`
 }
 

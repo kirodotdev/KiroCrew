@@ -22,7 +22,6 @@ import {
   useMemoryStores,
 } from './MemoryStoreCard'
 import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
-import MemoryCarveCard from './MemoryCarveCard'
 import MemoryRetiredCard from './MemoryRetiredCard'
 import MemoryBackupsCard from './MemoryBackupsCard'
 import MemoryFailuresCard from './MemoryFailuresCard'
@@ -1043,7 +1042,6 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
           initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
           focusKey={focusLessons ? focusLessonKey : undefined}
         />
-        {storeReadable && <MemoryCarveCard key={`carve-${store}`} store={store} />}
           <Btn className="min-h-11 w-fit" onClick={() => leave(() => navigate(MEMORY_DEVELOPER_ROUTE), MEMORY_DEVELOPER_ROUTE)}>{i18nT('pages.overviewPage.memory_developer_link')}<ArrowRight className="lucide-inline" aria-hidden="true" /></Btn>
         </>,
       }} />

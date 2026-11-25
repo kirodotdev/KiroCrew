@@ -16,11 +16,11 @@ import { semanticValueText } from './VectorMemoryCard'
 import { MEMORY_QUERY_PREFIXES, MemoryStoreAvatar, MemoryStoreStats, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
 import MemoryRetiredCard from './MemoryRetiredCard'
 import MemoryBackupsCard from './MemoryBackupsCard'
-import MemoryCarveCard from './MemoryCarveCard'
 import MemoryDocCard from './MemoryDocCard'
 import MemoryPageShell from './memoryPage/MemoryPageShell'
 import MemoryList from './memoryPage/MemoryList'
 import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
+import { memoryRoute } from '../settings/memoryRoute'
 
 type Kind = 'fact' | 'directive' | 'episode'
 type MemoryRow = { key?: string; id?: string; value_json?: unknown; text?: string; source?: string; created_at?: string; derived_from?: string }
@@ -102,7 +102,7 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
 }
 
 /** The Global memory page on its Failures tab (the weekly bell note's link). */
-const GLOBAL_FAILURES_ROUTE = '/settings/overview?view=memory&focus=failures'
+const GLOBAL_FAILURES_ROUTE = memoryRoute({ focus: 'failures' })
 
 export default function MemberMemoryPanel({ store, summary, onDirtyChange, focusLessonKey, focusFailures = false, switcher, notices }: {
   store: string; summary: MemoryStoreSummary; onDirtyChange?: (dirty: boolean) => void; focusLessonKey?: string
@@ -167,7 +167,7 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange, focus
         settings: <><Card className="mb-0 min-w-0"><PanelSectionHeader label={t('memoryPage.store_title')} />
           {/* The memory version and saved count the old page header showed. */}
           <ul className="m-0 mt-3 flex list-none flex-wrap items-center gap-x-4 gap-y-1 p-0 text-[13px] text-text"><li>{privateMemory ? t('memoryV2.private_status') : summary.is_default ? t('pages.kiroCrewAgentsPage.global_memory_v1') : t('pages.kiroCrewAgentsPage.legacy_memory_v1')}</li>{total !== undefined && <li>{t('memoryV2.remembered_count', { count: fmtNumber(total) })}</li>}</ul>
-          <div className="mt-2"><MemoryStoreStats selected={summary} /></div></Card><MemoryCarveCard store={store} /></>,
+          <div className="mt-2"><MemoryStoreStats selected={summary} /></div></Card></>,
       }} />
     {copying && <SeedMemory store={store} member={summary.owner_member || summary.name} onClose={() => setCopying(false)} onCopied={refresh} />}
   </div>

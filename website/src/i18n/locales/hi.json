@@ -19017,10 +19017,6 @@
       "open_kiro_sign_in": "साइन-इन सेटिंग्स खोलो",
       "back_to_overview": "अवलोकन पर वापस",
       "connecting": "कनेक्ट हो रहा है…",
-      "memory_summary_kept_one": "{{hours}}h निष्क्रियता के बाद चैट को मेमोरी में सारांशित करता है · {{days}} दिन का इतिहास रखता है",
-      "memory_summary_kept_other": "{{hours}}h निष्क्रियता के बाद चैट को मेमोरी में सारांशित करता है · {{days}} दिनों का इतिहास रखता है",
-      "memory_summary_semantic": "{{hours}}h निष्क्रियता के बाद चैट को मेमोरी में सारांशित करता है · सिमैंटिक मेमोरी सक्रिय",
-      "memory": "मेमोरी",
       "memory_developer_link": "मेमोरी ग्राफ़ और आंतरिक जानकारी",
       "overview": "अवलोकन",
       "reconnecting": "फिर कनेक्ट हो रहा है…",
@@ -24038,6 +24034,10 @@
         "description": "SSH या AWS Session Manager के ज़रिए रिमोट क्रू प्रबंधित करो; ऊपर के हेडर से उनके बीच स्विच करो",
         "label": "रिमोट क्रू"
       },
+      "memory": {
+        "description": "वैश्विक मेमोरी और हर Bot की मेमोरी: तथ्य, सीख और अनुभव",
+        "label": "मेमोरी"
+      },
       "notifications": {
         "description": "साउंड इफ़ेक्ट और प्रति-स्रोत अलर्ट प्राथमिकताएँ",
         "label": "सूचनाएँ"
@@ -24558,6 +24558,7 @@
     "created_on": "{{date}} को बनी",
     "divider_no_confidence": "कोई भरोसा स्कोर नहीं · अनुभव, नए पहले",
     "divider_no_importance": "कोई महत्व स्कोर नहीं · तथ्य और सीख, नए पहले",
+    "embedded_tip": "{{total}} में से {{embedded}} मेमोरी अर्थ से खोजी जा सकती हैं। बाकी पृष्ठभूमि में भरे जाने तक सिर्फ़ शब्दों से मिलती हैं।",
     "facet_applies": "लागू",
     "facet_confidence": "भरोसा",
     "facet_importance": "महत्व",
@@ -24592,6 +24593,7 @@
     "reverse_order": "क्रम उलटें",
     "saved_key": "{{key}} सहेजा गया",
     "scope_all_repos": "सभी रिपो",
+    "search_filters": "फ़िल्टर खोजें",
     "select": "चुनें",
     "select_limit_hint": "एक बार में {{limit}} तक",
     "selection_toolbar": "चुनी गई स्मृतियाँ",

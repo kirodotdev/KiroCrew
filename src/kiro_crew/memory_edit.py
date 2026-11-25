@@ -254,7 +254,8 @@ def _rows(
         )
     if store._lineage == memory_schema.LINEAGE_CREW:
         sql = (
-            f"SELECT b.*, p.derived_from, p.source AS _source, p.updated_at AS _updated{search_meta} "
+            f"SELECT b.*, p.derived_from, p.source AS _source, p.updated_at AS _updated, "
+            f"p.surface AS _surface, p.crew AS _crew{search_meta} "
             f"FROM ({sql}) b JOIN memory_items p ON p.id = "
             f"CASE WHEN b.kind='episode' THEN b.id ELSE 'key:' || b.id END{search_join} ORDER BY b.kind,b.id"
         )
@@ -302,6 +303,8 @@ def _rows(
                 "_m_revision",
                 "_m_updated",
                 "_m_source_ref",
+                "_surface",
+                "_crew",
             ):
                 record.pop(column, None)
             record["source"] = record.pop("_source", record["source"] or meta.get("source_ref", ""))
@@ -345,7 +348,15 @@ def _summary(store: Any, row: Any, tokens: list[str], folded: str) -> dict:
         "confidence": score if kind != "episode" and score is not None else None,
         "importance": score if kind == "episode" and score is not None else None,
         "match": memory_record_facets.match_score(tokens, _normalized(row["key"] or ""), folded),
-        "facets": memory_record_facets.summary_facets(kind, row["value_json"], row["tags"], source),
+        "facets": memory_record_facets.summary_facets(
+            kind,
+            row["value_json"],
+            row["tags"],
+            source,
+            # Where a row came from: stamped on the crew lineage only.
+            surface=row["_surface"] if "_surface" in row.keys() else None,
+            crew=row["_crew"] if "_crew" in row.keys() else None,
+        ),
     }
 
 

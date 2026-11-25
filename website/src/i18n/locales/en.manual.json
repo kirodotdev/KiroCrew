@@ -11847,6 +11847,10 @@
         "description": "Manage remote crews over SSH or AWS Session Manager; switch between them from the top header",
         "label": "Remote Crew"
       },
+      "memory": {
+        "description": "Global memory and each bot's memory: facts, lessons and experiences",
+        "label": "Memory"
+      },
       "notifications": {
         "description": "Sound effects and per-source alert preferences",
         "label": "Notifications"
@@ -12382,6 +12386,7 @@
     "created_on": "Created {{date}}",
     "divider_no_confidence": "No confidence score · experiences, newest first",
     "divider_no_importance": "No importance score · facts and lessons, newest first",
+    "embedded_tip": "{{embedded}} of {{total}} memories can be found by meaning. The rest are found by words only until they’re filled in, which happens in the background.",
     "facet_applies": "Applies",
     "facet_confidence": "Confidence",
     "facet_importance": "Importance",
@@ -12416,6 +12421,7 @@
     "reverse_order": "Reverse order",
     "saved_key": "Saved {{key}}",
     "scope_all_repos": "All repos",
+    "search_filters": "Search filters",
     "select": "Select",
     "select_limit_hint": "Up to {{limit}} at a time",
     "selection_toolbar": "Selected memories",

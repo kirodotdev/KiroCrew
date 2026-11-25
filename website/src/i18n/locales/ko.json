@@ -18505,9 +18505,6 @@
       "open_kiro_sign_in": "로그인 설정 열기",
       "back_to_overview": "개요로 돌아가기",
       "connecting": "연결 중…",
-      "memory_summary_kept_other": "{{hours}}시간 유휴 후 채팅을 메모리로 요약 · {{days}}일간 기록 보관",
-      "memory_summary_semantic": "{{hours}}시간 유휴 후 채팅을 메모리로 요약 · 의미 기억 활성",
-      "memory": "메모리",
       "memory_developer_link": "메모리 그래프와 내부 정보",
       "overview": "개요",
       "reconnecting": "다시 연결하는 중…",
@@ -23436,6 +23433,10 @@
         "description": "SSH 또는 AWS Session Manager로 원격 크루 관리, 상단 헤더에서 전환",
         "label": "원격 크루"
       },
+      "memory": {
+        "description": "전역 메모리와 각 Bot의 메모리: 사실, 학습 내용, 경험",
+        "label": "메모리"
+      },
       "notifications": {
         "description": "효과음 및 소스별 알림 환경 설정",
         "label": "알림"
@@ -23955,6 +23956,7 @@
     "created_on": "{{date}} 생성",
     "divider_no_confidence": "신뢰도 점수 없음 · 경험, 최신순",
     "divider_no_importance": "중요도 점수 없음 · 사실과 학습 내용, 최신순",
+    "embedded_tip": "{{total}}개 중 {{embedded}}개 메모리를 의미로 찾을 수 있습니다. 나머지는 백그라운드에서 채워질 때까지 단어로만 찾을 수 있습니다.",
     "facet_applies": "적용",
     "facet_confidence": "신뢰도",
     "facet_importance": "중요도",
@@ -23989,6 +23991,7 @@
     "reverse_order": "순서 뒤집기",
     "saved_key": "{{key}} 저장됨",
     "scope_all_repos": "모든 저장소",
+    "search_filters": "필터 검색",
     "select": "선택",
     "select_limit_hint": "한 번에 최대 {{limit}}개",
     "selection_toolbar": "선택한 기억",

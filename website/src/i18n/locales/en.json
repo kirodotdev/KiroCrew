@@ -10539,10 +10539,6 @@
     },
     "overviewPage": {
       "back_to_overview": "Back to Overview",
-      "memory_summary_kept_one": "Summarizes chats into memory after {{hours}}h idle · keeps {{days}} day of history",
-      "memory_summary_kept_other": "Summarizes chats into memory after {{hours}}h idle · keeps {{days}} days of history",
-      "memory_summary_semantic": "Summarizes chats into memory after {{hours}}h idle · semantic memory active",
-      "memory": "Memory",
       "overview": "Overview",
       "uptime_line": "Up <uptime/>",
       "uptime_line_version": "Up <uptime/> · v{{version}}",

@@ -7,23 +7,6 @@
 import type { UiLocationArea } from '../types'
 
 export const LOCATIONS = {
-  // Settings > Overview, the Memory card's "View details" (OverviewPage's
-  // MemorySummaryCard): opens the memory browser at ?view=memory, the
-  // user-facing way to see and edit what is remembered (preferences, projects,
-  // history, lessons). Developer > Memory is only the memory graph.
-  'overview.memory-details': {
-    kind: 'button',
-    aliasKeys: ['pages.overviewPage.memory'],
-    terms: {
-      en: [
-        'see my memory', 'view my memory', 'edit my memory', 'what do you remember about me',
-        'what the bot remembers', 'what the assistant remembers', 'memory browser', 'manage memory',
-        'delete a memory', 'forget something', 'my preferences memory', 'saved lessons',
-      ],
-      'zh-CN': ['查看记忆', '编辑记忆', '管理记忆', '你记得我什么', '删除记忆', '记忆浏览', '让它忘掉', '我的偏好'],
-    },
-    placements: [{ surface: 'settings', parent: 'settings.tab.overview', entry: 'content' }],
-  },
   // Settings > Import / Export, "Back up & restore configuration"
   // (PortabilityTab): downloads a zip of settings, memory, skills and schedules.
   'backup.export': {

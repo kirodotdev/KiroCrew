@@ -6,7 +6,9 @@ orders the matches, so a page of records can be sorted across the whole store
 while only that page is assembled.
 
 A facet is something the page can filter on: the lesson fields (category, applies,
-repo scope), the write origin (source) and an experience's tags. Confidence is a
+repo scope), the write origin (source), the channel (surface) and crew a row came
+from, and an experience's tags. Surface and crew are stamped on the crew lineage
+only; a Global V1 row has neither, so it counts toward no value of them. Confidence is a
 range, not a facet: facts and lessons carry it, experiences do not.
 """
 
@@ -23,7 +25,7 @@ from kiro_crew.validation_parts.input_bounds import normalize_lesson_category
 # never holds ":" (project_scope.scope_is_admissible), so no real scope can equal it.
 SCOPE_UNUSABLE = ":unusable"
 SOURCE_UNKNOWN = "unknown"
-FACET_GROUPS = ("category", "applies", "scope", "source", "tag")
+FACET_GROUPS = ("category", "applies", "scope", "source", "surface", "crew", "tag")
 SORTS = ("updated", "created", "confidence", "importance", "key", "match")
 _MAX_VALUES = 50
 _MAX_VALUE_LENGTH = 512
@@ -79,12 +81,23 @@ def episode_tags(tags_json: Any) -> list[str]:
     return list(dict.fromkeys(tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()))
 
 
-def summary_facets(kind: str, value_json: Any, tags_json: Any, source: Any) -> dict[str, Any]:
+def summary_facets(
+    kind: str,
+    value_json: Any,
+    tags_json: Any,
+    source: Any,
+    *,
+    surface: str | None = None,
+    crew: str | None = None,
+) -> dict[str, Any]:
+    """The facet values one row carries; ``None`` is no value for that group."""
     facets: dict[str, Any] = {
         "category": None,
         "applies": None,
         "scope": None,
         "source": source.strip() if isinstance(source, str) and source.strip() else SOURCE_UNKNOWN,
+        "surface": surface,
+        "crew": crew,
         "tag": episode_tags(tags_json) if kind == "episode" else [],
     }
     if kind == "directive":

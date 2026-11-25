@@ -1,6 +1,6 @@
 export type MemoryRecordKind = 'fact' | 'directive' | 'episode'
 /** The facet groups `GET /api/memory/records` filters on (`memory_record_facets.FACET_GROUPS`). */
-export type MemoryRecordFacetGroup = 'category' | 'applies' | 'scope' | 'source' | 'tag'
+export type MemoryRecordFacetGroup = 'category' | 'applies' | 'scope' | 'source' | 'surface' | 'crew' | 'tag'
 /** Facet filters plus the confidence range; part of the query, so "select all
  *  matching" reaches exactly the filtered rows. */
 export type MemoryRecordFilters = Partial<Record<MemoryRecordFacetGroup, string[]>> & { conf_min?: number; conf_max?: number }

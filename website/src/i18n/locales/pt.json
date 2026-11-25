@@ -19529,11 +19529,6 @@
       "open_kiro_sign_in": "Abrir configurações de login",
       "back_to_overview": "Voltar à visão geral",
       "connecting": "Conectando…",
-      "memory_summary_kept_one": "Resume os chats na memória após {{hours}} h de inatividade · mantém {{days}} dia de histórico",
-      "memory_summary_kept_many": "Resume os chats na memória após {{hours}} h de inatividade · mantém {{days}} dias de histórico",
-      "memory_summary_kept_other": "Resume os chats na memória após {{hours}} h de inatividade · mantém {{days}} dias de histórico",
-      "memory_summary_semantic": "Resume os chats na memória após {{hours}} h de inatividade · memória semântica ativa",
-      "memory": "Memória",
       "memory_developer_link": "Grafo de memória e detalhes internos",
       "overview": "Visão geral",
       "reconnecting": "Reconectando…",
@@ -24640,6 +24635,10 @@
         "description": "Gerencie crews remotas por SSH ou AWS Session Manager; alterne entre elas no cabeçalho superior",
         "label": "Crew remota"
       },
+      "memory": {
+        "description": "Memória global e a memória de cada Bot: fatos, lições e experiências",
+        "label": "Memória"
+      },
       "notifications": {
         "description": "Efeitos sonoros e preferências de alerta por origem",
         "label": "Notificações"
@@ -25161,6 +25160,7 @@
     "created_on": "Criada em {{date}}",
     "divider_no_confidence": "Sem pontuação de confiança · experiências, mais recentes primeiro",
     "divider_no_importance": "Sem pontuação de importância · fatos e lições, mais recentes primeiro",
+    "embedded_tip": "{{embedded}} de {{total}} memórias podem ser encontradas pelo significado. As demais só são encontradas por palavras até serem preenchidas, o que acontece em segundo plano.",
     "facet_applies": "Aplica-se",
     "facet_confidence": "Confiança",
     "facet_importance": "Importância",
@@ -25195,6 +25195,7 @@
     "reverse_order": "Inverter ordem",
     "saved_key": "{{key}} salva",
     "scope_all_repos": "Todos os repositórios",
+    "search_filters": "Buscar filtros",
     "select": "Selecionar",
     "select_limit_hint": "Até {{limit}} por vez",
     "selection_toolbar": "Memórias selecionadas",

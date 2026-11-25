@@ -18505,9 +18505,6 @@
       "open_kiro_sign_in": "打开登录设置",
       "back_to_overview": "返回概览",
       "connecting": "正在连接…",
-      "memory_summary_kept_other": "闲置 {{hours}} 小时后将聊天总结进记忆 · 保留 {{days}} 天历史",
-      "memory_summary_semantic": "闲置 {{hours}} 小时后将聊天总结进记忆 · 语义记忆已启用",
-      "memory": "记忆",
       "memory_developer_link": "记忆图谱与内部信息",
       "overview": "概览",
       "reconnecting": "正在重连…",
@@ -23436,6 +23433,10 @@
         "description": "通过 SSH 或 AWS Session Manager 管理远程 Crew；可在顶部标题栏切换",
         "label": "远程 Crew"
       },
+      "memory": {
+        "description": "全局记忆和每个 Bot 的记忆：事实、经验和经历",
+        "label": "记忆"
+      },
       "notifications": {
         "description": "音效与各来源提醒偏好设置",
         "label": "通知"
@@ -23955,6 +23956,7 @@
     "created_on": "创建于 {{date}}",
     "divider_no_confidence": "无置信度分数 · 经历，最新在前",
     "divider_no_importance": "无重要度分数 · 事实和经验，最新在前",
+    "embedded_tip": "{{total}} 条记忆中有 {{embedded}} 条可按含义搜索。其余的在后台补全前只能按字词搜索。",
     "facet_applies": "适用",
     "facet_confidence": "置信度",
     "facet_importance": "重要度",
@@ -23989,6 +23991,7 @@
     "reverse_order": "反转顺序",
     "saved_key": "已保存 {{key}}",
     "scope_all_repos": "所有仓库",
+    "search_filters": "搜索筛选项",
     "select": "选择",
     "select_limit_hint": "一次最多 {{limit}} 条",
     "selection_toolbar": "已选记忆",

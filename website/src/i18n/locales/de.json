@@ -19017,10 +19017,6 @@
       "open_kiro_sign_in": "Anmeldeeinstellungen öffnen",
       "back_to_overview": "Zurück zur Übersicht",
       "connecting": "Verbinden…",
-      "memory_summary_kept_one": "Fasst Chats nach {{hours}} Std. Inaktivität in der Erinnerung zusammen · behält {{days}} Tag Verlauf",
-      "memory_summary_kept_other": "Fasst Chats nach {{hours}} Std. Inaktivität in der Erinnerung zusammen · behält {{days}} Tage Verlauf",
-      "memory_summary_semantic": "Fasst Chats nach {{hours}} Std. Inaktivität in der Erinnerung zusammen · semantische Erinnerung aktiv",
-      "memory": "Erinnerung",
       "memory_developer_link": "Erinnerungsgraph und Interna",
       "overview": "Übersicht",
       "reconnecting": "Neu verbinden…",
@@ -24038,6 +24034,10 @@
         "description": "Remote-Crews über SSH oder AWS Session Manager verwalten; über die obere Kopfzeile zwischen ihnen wechseln",
         "label": "Remote-Crew"
       },
+      "memory": {
+        "description": "Globaler Speicher und der Speicher jedes Bots: Fakten, Lektionen und Erfahrungen",
+        "label": "Erinnerung"
+      },
       "notifications": {
         "description": "Klangeffekte und Warnpräferenzen pro Quelle",
         "label": "Benachrichtigungen"
@@ -24558,6 +24558,7 @@
     "created_on": "Erstellt am {{date}}",
     "divider_no_confidence": "Ohne Konfidenzwert · Erfahrungen, neueste zuerst",
     "divider_no_importance": "Ohne Wichtigkeitswert · Fakten und Lektionen, neueste zuerst",
+    "embedded_tip": "{{embedded}} von {{total}} Erinnerungen findest du nach Bedeutung. Die übrigen findest du nur über Wörter, bis sie im Hintergrund ergänzt sind.",
     "facet_applies": "Gilt",
     "facet_confidence": "Konfidenz",
     "facet_importance": "Wichtigkeit",
@@ -24592,6 +24593,7 @@
     "reverse_order": "Reihenfolge umkehren",
     "saved_key": "{{key}} gespeichert",
     "scope_all_repos": "Alle Repos",
+    "search_filters": "Filter durchsuchen",
     "select": "Auswählen",
     "select_limit_hint": "Bis zu {{limit}} auf einmal",
     "selection_toolbar": "Ausgewählte Erinnerungen",

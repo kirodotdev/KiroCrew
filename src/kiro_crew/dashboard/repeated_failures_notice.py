@@ -59,7 +59,7 @@ NOTE_CHANNEL = "system.memory"
 NOTE_KIND = "agent"
 
 #: Where the note links: the Memory page, scrolled to the Repeated failures card.
-NOTE_URL = "/settings/overview?view=memory&focus=failures"
+NOTE_URL = "/settings/memory?focus=failures"
 
 #: The dashboard copy id the bell renders in the reader's language.
 NOTE_COPY_ID = "repeated_failures"

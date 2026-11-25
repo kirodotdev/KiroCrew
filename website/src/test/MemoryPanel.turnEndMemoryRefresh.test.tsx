@@ -1,6 +1,6 @@
 /**
  * The Memory view at the end of a turn, inside the window that holds the
- * config caches. The real socket hook, the real Overview page and the real
+ * config caches. The real socket hook, the real Settings > Memory panel and the real
  * Memory view share the real store; only the socket and the API are fakes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -10,7 +10,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { store } from '../store'
 import { useWebSocket } from '../hooks/useWebSocket'
-import OverviewPage from '../pages/OverviewPage'
+import { MemoryPanel } from '../pages/settings/MemoryPanel'
 
 const summary = (semantic: number) => ({ stores: [{ name: 'default', is_default: true, lineage: 'v1', exists: true, semantic_count: semantic }], active: 'default' })
 
@@ -80,7 +80,7 @@ async function mount() {
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
-        <MemoryRouter initialEntries={['/?view=memory']}><Socket /><OverviewPage /></MemoryRouter>
+        <MemoryRouter initialEntries={['/settings/memory']}><Socket /><MemoryPanel /></MemoryRouter>
       </Provider>
     </QueryClientProvider>,
   )
