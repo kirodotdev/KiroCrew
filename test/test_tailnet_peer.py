@@ -432,6 +432,10 @@ class TestVerifiedPeerStaysReadOnly:
             def __init__(self, state: Any) -> None:
                 self.app = {"state": state}
 
+            def get(self, _key, default=None):
+                # No app claim, as on the internal transport: the owner gate passes.
+                return default
+
         state = MagicMock()
         state.teams_connected = False
         state.teams_connect_error = ""
