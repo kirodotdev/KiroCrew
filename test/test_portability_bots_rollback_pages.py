@@ -172,3 +172,49 @@ async def test_a_self_restore_after_losing_every_page_brings_back_the_older_ones
     for to_version, text in ((4, FIRST_TEXT), (3, SECOND_TEXT), (2, FIRST_TEXT)):
         await _serves(atlas, to_version, text)
     assert row["notices"] == []
+
+
+def _apply_same_page_from_another_package(bot: MadeBot, html: str) -> str:
+    """Save a second package showing exactly *html* for *bot* and put it in force."""
+    store = ArtifactStore(data_home() / "artifacts")
+    art = store.create(
+        name=f"{bot.slug} copy",
+        content=dp.dump_package(dashboard_package(bot.slug, html)),
+        kind=dp.DASHBOARD_KIND,
+        source="dashboard",
+    )
+    loaded = store.get(art.slug)
+    instance.apply_package(
+        bot.slug,
+        package_slug=art.slug,
+        package_version=int(loaded.version),
+        content=dp.canonical_package_content(loaded.content or ""),
+    )
+    return art.slug
+
+
+@pytest.mark.asyncio
+async def test_another_packages_identical_page_does_not_mask_the_carried_packages_rebuild(
+    homes: Homes, tmp_path: Path, store_notices: dict[str, list[str]]
+) -> None:
+    # The page digest covers the canonical page only, never the package slug, so a
+    # newer version pinning another package with the same page shares the digest of
+    # an older version pinning the carried one: the carried package's pin rebuilds it.
+    homes.use("a")
+    atlas = create_bot("Atlas")
+    html = f'<p data-dashboard-field="goal">{FIRST_TEXT}</p>'
+    first = apply_dashboard(atlas, html)
+    other = _apply_same_page_from_another_package(atlas, html)
+    assert other != first.package
+    assert _next_package_version(atlas, first, SECOND_TEXT) == 4
+    pins = {n: instance._package_field(instance._read_version(atlas.slug, n)) for n in (2, 3)}
+    assert pins[2][0] == first.package and pins[3][0] == other
+    assert pins[2][2] == pins[3][2] == first.digest
+    archive = export_archive(tmp_path / "a.zip")
+    homes.use("b")
+    summary = apply_import_zip(archive, mode="replace")
+    row = _row(summary, "Atlas")
+    assert row["dashboard"] == "restored"
+    assert store_notices == {}
+    assert row["notices"] == []
+    await _serves(atlas, 2, FIRST_TEXT)

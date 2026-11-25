@@ -404,12 +404,17 @@ so neither `².json` nor a leading-zero `07.json` is one: version `n` is read fr
 only, so the export does not carry such a file and the import does not install it).
 The export walks every version file into the archive and parses only
 those newest ones, once the walk is done, from descriptors it duplicated off the walked
-ones (`portability_bot_export._hold_if_newest`). A template
+ones (`portability_bot_export._hold_if_newest`); when one of those newest files cannot
+be duplicated, a template record carries no package, since a pin chosen from the rest
+could name one the import, which parses every archived version file, never uses. A template
 record's package is carried only while its live version is bound to `crewmate:<slug>` on
-the source (`dashboard_package.live_binding_of`): one since rebound to another Bot is that
-Bot's to carry, and a record whose `kind` is not `dashboard_package.DASHBOARD_KIND` (the
-only kind `scan_bound_dashboards` lists) or that is a live pointer
-(`ArtifactStore._is_live_pointer`) is bound to no Bot.
+the source (`dashboard_package.live_binding_of`) and its metadata passes the import's
+staged-gate rule (`portability_bot_stores.is_carriable_dashboard_meta`, which
+`_check_staged_artifact` applies too): one since rebound to another Bot is that Bot's to
+carry, and a record whose `kind` or any `version_kinds` value is not
+`dashboard_package.DASHBOARD_KIND`, or that sets a `REFUSED_META_FIELDS` field (a live
+pointer, `ArtifactStore._is_live_pointer`, or a copy with provenance), is not carried,
+since the import would refuse it.
 That record is read by `artifacts.read_stored_artifact`, which writes nothing on the
 source, and one it cannot read (`artifacts.STORED_READ_FAILURES`) is not carried. The
 import (`portability_bot_stores.install_bot_stores`) installs the dashboard directory
@@ -465,7 +470,9 @@ and a file that cannot be read, one nested past the decoder's limit included, is
 and logged), and that one read feeds both the carried pin and
 `portability_bot_stores._rebuild_retained_pages`. For each distinct digest those
 versions pin, other than the current one, whose snapshot is missing, the page is rebuilt
-only from the carried package, through the judge the current page gets: `_owned_package`
+only from the carried package (from its newest pin of that digest: a snapshot is named by
+the Bot and the digest of the canonical page alone, so another package's pin of an
+identical page never masks it), through the judge the current page gets: `_owned_package`
 must find the package's live version and the pinned one bound to `crewmate:<slug>` and
 the pinned page hashing to its digest, and `BoundIndex.refusal` must be empty. A pin of
 another package (which the export does not carry, and whose old versions may still read

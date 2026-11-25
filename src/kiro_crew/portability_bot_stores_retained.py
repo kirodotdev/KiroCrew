@@ -110,8 +110,11 @@ def _rebuild_retained_pages(
     *retained* is the one :func:`_retained_version_docs` read the caller made for the
     carried pin. For each distinct digest its documents pin, other than
     *current_digest* (the record's own page, already judged; ``""`` for a record that
-    runs its template), whose snapshot is missing: a pin of a package other than
-    *carried* (``""`` when no package may serve one) is not rebuilt; a pin of the
+    runs its template), whose snapshot is missing, the newest pin of *carried* with that
+    digest is judged, else the newest pin of any package: a page snapshot is named by
+    the Bot and the digest of the canonical page alone, never the package, so another
+    package's pin of an identical page never masks the carried one's. A pin of a package
+    other than *carried* (``""`` when no package may serve one) is not rebuilt; a pin of the
     carried package is rebuilt only when ``_owned_package`` finds the package this
     Bot's (its live version and the pinned one bound to ``crewmate:<slug>``) and the
     pinned page matching its digest, and ``BoundIndex.refusal`` proves no other
@@ -129,8 +132,10 @@ def _rebuild_retained_pages(
         if not isinstance(doc, Mapping):
             continue
         package, version, digest, _released = instance._package_field(doc)
-        if package and digest and digest != current_digest:
-            pins.setdefault(digest, (package, version))
+        if not package or not digest or digest == current_digest:
+            continue
+        if digest not in pins or (package == carried and pins[digest][0] != carried):
+            pins[digest] = (package, version)
     rebuilt = missed = 0
     for digest, (package, version) in pins.items():
         try:

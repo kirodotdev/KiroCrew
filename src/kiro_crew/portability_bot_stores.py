@@ -557,6 +557,24 @@ def _is_store_empty(raw: dict[str, Any], name: str) -> bool:
     return type(value) is type(empty) and value == empty
 
 
+def is_carriable_dashboard_meta(meta: Any) -> bool:
+    """Whether decoded package metadata passes the staged gate's rule for a carried package.
+
+    *meta* is what ``records.decode_meta`` returns (an ``Artifact``, also what
+    ``artifacts.read_stored_artifact`` returns): ``kind`` and every ``version_kinds``
+    value are ``dashboard_package.DASHBOARD_KIND``, and no :data:`REFUSED_META_FIELDS`
+    field is set, so neither a live pointer nor a copy with provenance passes. The
+    gate (:func:`_check_staged_artifact`) applies it and the export's live-binding read
+    (``portability_bot_export._live_binding_is``) too, so the export never carries a
+    package the import refuses for its metadata.
+    """
+    from kiro_crew.artifact_store import dashboard_package
+
+    if any(getattr(meta, name) for name in REFUSED_META_FIELDS):
+        return False
+    return {meta.kind, *meta.version_kinds.values()} == {dashboard_package.DASHBOARD_KIND}
+
+
 def _store_text(data: bytes) -> str:
     """*data* decoded the way the artifact store reads a file: UTF-8, universal newlines."""
     return io.TextIOWrapper(io.BytesIO(data), encoding="utf-8").read()
@@ -613,10 +631,10 @@ def _check_staged_artifact(
       is ``artifact_rejected``); a :data:`REFUSED_META_FIELDS` key that is present refuses it unless
       its value is exactly the store's own empty value of that type
       (:data:`REFUSED_META_EMPTY`: the decoder stringifies any other value, so ``0``
-      or ``[]`` would still be a live pointer), and the decoded fields must be empty
-      too. ``kind`` and EVERY
-      ``version_kinds`` entry must be ``dashboard``, and *version* must be in
-      ``1..meta.version`` (``artifact_missing`` otherwise).
+      or ``[]`` would still be a live pointer); the decoded fields must be empty
+      too, and ``kind`` and EVERY ``version_kinds`` entry must be ``dashboard``
+      (:func:`is_carriable_dashboard_meta`, the rule the export applies as well);
+      *version* must be in ``1..meta.version`` (``artifact_missing`` otherwise).
     * The package holds nothing but ``meta.json``, ``current.html`` and
       ``versions/v<n>.html`` for ``n`` in ``1..meta.version``
       (:func:`_staged_versions`).
@@ -629,7 +647,7 @@ def _check_staged_artifact(
     A package that passes has its :data:`STRIPPED_META_FIELDS` removed from the staged
     ``meta.json`` (``write_failed`` when that rewrite fails).
     """
-    from kiro_crew.artifact_store import dashboard_package, records
+    from kiro_crew.artifact_store import records
     from kiro_crew.artifact_store.model import ArtifactError
 
     meta_path = art_dir / "meta.json"
@@ -647,9 +665,7 @@ def _check_staged_artifact(
         return "artifact_rejected", ""
     if meta.slug != package or not all(_is_store_empty(raw, name) for name in REFUSED_META_FIELDS):
         return "artifact_rejected", ""
-    if any(getattr(meta, name) for name in REFUSED_META_FIELDS):
-        return "artifact_rejected", ""
-    if {meta.kind, *meta.version_kinds.values()} != {dashboard_package.DASHBOARD_KIND}:
+    if not is_carriable_dashboard_meta(meta):
         return "artifact_rejected", ""
     if not 1 <= version <= meta.version:
         return "artifact_missing", ""

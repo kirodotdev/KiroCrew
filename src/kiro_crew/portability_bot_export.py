@@ -235,20 +235,22 @@ def _newest_version_names(names: Sequence[str]) -> set[str]:
     return {name for _n, name in found[-MAX_RETAINED_VERSIONS:]}
 
 
-def _hold_if_newest(held: dict[str, int], name: str, fd: int) -> None:
+def _hold_if_newest(held: dict[str, int], unheld: set[str], name: str, fd: int) -> None:
     """Keep a duplicate of *fd* in *held* while *name* is among the newest version names.
 
     *held* maps a version name to a descriptor duplicated from the walked one, and
     never holds more than ``instance.MAX_RETAINED_VERSIONS``: a name that falls out of
     :func:`_newest_version_names` has its duplicate closed. So the newest files are
     parsed after the walk, from the same open files the export archived, and no other
-    is. A duplicate that cannot be made leaves that name unparsed.
+    is. A duplicate that cannot be made leaves that name unparsed and adds it to
+    *unheld*, so the caller knows the newest set it parses may be incomplete.
     """
     if version_file_number(name) is None:
         return
     try:
         held[name] = os.dup(fd)
     except OSError:
+        unheld.add(name)
         return
     keep = _newest_version_names(list(held))
     for dropped in [n for n in held if n not in keep]:
@@ -273,14 +275,18 @@ def _held_versions(held: Mapping[str, int], chosen: set[str]) -> dict[int, Mappi
 
 
 def _live_binding_is(mc_real: str, package: str, binding: str) -> bool:
-    """Whether *package*'s live version on the source is bound to *binding*.
+    """Whether *package*'s live version on the source is a carriable package bound to *binding*.
 
-    Read by the rules ``scan_bound_dashboards`` reads a binding by: a record whose
-    ``kind`` is not ``dashboard_package.DASHBOARD_KIND`` names none (the scan lists only
-    that kind, so no Bot is bound to it there); a live pointer (the store's own rule,
-    ``ArtifactStore._is_live_pointer``) names none, so the import, which refuses a
-    carried live pointer, would bind none; any other record's binding is
-    ``dashboard_package.live_binding_of`` of its stored current content. The scan's
+    The record's metadata must first pass the import's staged-gate meta rule,
+    ``portability_bot_stores.is_carriable_dashboard_meta``: ``kind`` and every
+    ``version_kinds`` value are ``dashboard_package.DASHBOARD_KIND`` and no
+    ``REFUSED_META_FIELDS`` field is set. That rule holds every case in which
+    ``scan_bound_dashboards`` names no binding (a record of another kind, which the
+    scan does not list; a live pointer, ``ArtifactStore._is_live_pointer``) and the
+    ones the scan binds but the gate refuses (a retained version of another kind, a
+    copy with provenance), so the export never carries bytes the import refuses for
+    their metadata. A record that passes is bound to ``dashboard_package.live_binding_of``
+    of its stored current content, as the scan reads it. The scan's
     ``dashboard_package.MAX_BINDING_SCAN`` cap is no rule of a binding: past it the scan
     reports itself incomplete, never a different binding. The record is read by
     ``artifacts.read_stored_artifact``, the store's read that writes nothing (an export
@@ -291,11 +297,12 @@ def _live_binding_is(mc_real: str, package: str, binding: str) -> bool:
     from pathlib import Path
 
     from kiro_crew.artifact_store import dashboard_package
-    from kiro_crew.artifacts import STORED_READ_FAILURES, ArtifactStore, read_stored_artifact
+    from kiro_crew.artifacts import STORED_READ_FAILURES, read_stored_artifact
+    from kiro_crew.portability_bot_stores import is_carriable_dashboard_meta
 
     try:
         live = read_stored_artifact(Path(mc_real) / ARTIFACTS_DIR, package)
-        if live.kind != dashboard_package.DASHBOARD_KIND or ArtifactStore._is_live_pointer(live):
+        if not is_carriable_dashboard_meta(live):
             return False
         return dashboard_package.live_binding_of(live.content or "") == binding
     except STORED_READ_FAILURES:
@@ -306,24 +313,31 @@ def _carried_package(
     mc_real: str,
     slug: str,
     record: Mapping[str, Any] | None,
-    versions: Mapping[int, Mapping[str, Any]],
+    versions: Mapping[int, Mapping[str, Any]] | None,
 ) -> str:
     """The package slug the export carries for Bot *slug*, or ``""``.
 
     The carried pin (``portability_bot_types.carried_pin``) of the record and its newest
     retained versions. When the record pins a package that is the one, whatever its
-    live binding (the import judges it). When the record runs its template the package
+    live binding (the import judges it). *versions* is ``None`` when one of the newest
+    version files could not be held (:func:`_hold_if_newest`): the import parses every
+    archived version file, so a pin chosen from the rest could name a package it never
+    uses, and a record that runs its template then carries none. When the record runs
+    its template the package
     its versions pin is carried only while its live version is bound to
-    ``crewmate:<slug>`` on the source: a package since rebound to another Bot is that
-    Bot's to carry.
+    ``crewmate:<slug>`` on the source and its metadata passes the import's gate
+    (:func:`_live_binding_is`): a package since rebound to another Bot is that Bot's to
+    carry, and one the import would refuse is not carried.
     """
     from kiro_crew.dashboard_templates.instance import _package_field
 
-    pin = carried_pin(record if record is not None else {}, versions)
+    pin = carried_pin(record if record is not None else {}, versions or {})
     if pin is None or not _valid_slug(pin[0]):
         return ""
     if record is not None and _package_field(record)[0]:
         return pin[0]
+    if versions is None:
+        return ""
     return pin[0] if _live_binding_is(mc_real, pin[0], f"crewmate:{slug}") else ""
 
 
@@ -392,8 +406,10 @@ def iter_bot_store_files(
     (:func:`_newest_version_names`, chosen by name before any is parsed) are read, once
     the walk is done, from descriptors duplicated off the ones yielded
     (:func:`_hold_if_newest`), so the caller archives the same bytes the package was
-    chosen from and no other version file is parsed. Every carried file is archived
-    whether or not it parses.
+    chosen from and no other version file is parsed. One of those newest files whose
+    descriptor cannot be duplicated makes a record that runs its template carry no
+    package (:func:`_carried_package`). Every carried file is archived whether or not
+    it parses.
     """
     from kiro_crew import portability as _pf
     from kiro_crew.members import MemberSlugError, validate_slug
@@ -407,15 +423,17 @@ def iter_bot_store_files(
         record: Mapping[str, Any] | None = None
         walked: list[str] = []
         held: dict[str, int] = {}
+        unheld: set[str] = set()
         try:
             for rel, fd in _member_store_files(mc_real, slug):
                 if rel.parts[2:] == ("dashboard", "instance.json"):
                     record = _read_record_doc(fd)
                 elif rel.parts[2:4] == ("dashboard", "versions") and len(rel.parts) == 5:
                     walked.append(rel.name)
-                    _hold_if_newest(held, rel.name, fd)
+                    _hold_if_newest(held, unheld, rel.name, fd)
                 yield PurePath(BOT_MEMBERS_DIR, *rel.parts[1:]), fd
-            versions = _held_versions(held, _newest_version_names(walked))
+            newest = _newest_version_names(walked)
+            versions = None if unheld & newest else _held_versions(held, newest)
         finally:
             for fd in held.values():
                 os.close(fd)

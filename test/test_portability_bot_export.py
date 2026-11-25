@@ -732,14 +732,15 @@ def test_a_version_file_with_a_leading_zero_is_neither_carried_nor_read_for_the_
     # The one version that pins the package, renamed by hand.
     (versions / "2.json").rename(versions / "07.json")
     held: dict[str, int] = {}
+    unheld: set[str] = set()
     fd = os.open(versions / "07.json", os.O_RDONLY)
     try:
-        portability_bot_export._hold_if_newest(held, "07.json", fd)
+        portability_bot_export._hold_if_newest(held, unheld, "07.json", fd)
     finally:
         os.close(fd)
         for dup in held.values():
             os.close(dup)
-    assert held == {}
+    assert held == {} and unheld == set()
 
     archive = export_archive(tmp_path / "a.zip")
 
@@ -913,3 +914,130 @@ def test_a_package_of_another_kind_names_no_binding_for_a_template_bot(homes, tm
 
     assert _bot_artifacts(archive) == set()
     assert f"bot-members/{atlas.slug}/dashboard/instance.json" in archive_members(archive)
+
+
+#: Package metadata the import's staged-bytes gate always refuses, so the export must not
+#: carry it: a retained version of another kind, and a copy with provenance (its
+#: ``source_path`` is set, which a carried package never sets).
+_REFUSED_BY_THE_GATE = {
+    "version_kinds": {"version_kinds": {"1": "widget"}},
+    "provenance_copy": {"source_path": "elsewhere.html", "source_copy_only": True},
+}
+
+
+@pytest.mark.parametrize(
+    "change", list(_REFUSED_BY_THE_GATE.values()), ids=list(_REFUSED_BY_THE_GATE)
+)
+def test_a_template_bot_does_not_carry_a_package_the_import_would_refuse(homes, tmp_path, change):
+    from portability_bot_helpers import archive_members, export_archive
+
+    from kiro_crew.artifact_store.dashboard_package import scan_bound_dashboards
+    from kiro_crew.artifacts import ArtifactStore
+    from kiro_crew.config.paths import data_home
+
+    homes.use("a")
+    atlas, applied = _atlas_on_its_template()
+    if "source_path" in change:
+        change = {**change, "source_path": str(tmp_path / change["source_path"])}
+    _edit_meta(applied.package, change)
+    # Still bound to Atlas by the scan's rules: only the gate's meta rule refuses it.
+    assert scan_bound_dashboards(ArtifactStore(data_home() / "artifacts")).bound == {
+        f"crewmate:{atlas.slug}": [applied.package]
+    }
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+    members = archive_members(archive)
+    assert f"bot-members/{atlas.slug}/dashboard/instance.json" in members
+    assert f"bot-members/{atlas.slug}/dashboard/versions/2.json" in members
+
+
+def test_the_export_and_the_gate_share_one_package_meta_rule(homes) -> None:
+    from kiro_crew.artifacts import read_stored_artifact
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.portability_bot_stores import is_carriable_dashboard_meta
+
+    homes.use("a")
+    _atlas, applied = _atlas_on_its_template()
+    root = data_home() / "artifacts"
+    assert is_carriable_dashboard_meta(read_stored_artifact(root, applied.package))
+    for change in (
+        {"kind": "widget"},
+        {"version_kinds": {"1": "widget"}},
+        {"source_path": "elsewhere.html", "source_copy_only": True},
+        {"source_path": "elsewhere.html", "source_copy_only": False},
+        {"source_root": "/"},
+        {"source_copy_only": True},
+    ):
+        before = _package_meta(applied.package).read_text(encoding="utf-8")
+        _edit_meta(applied.package, change)
+        try:
+            assert not is_carriable_dashboard_meta(read_stored_artifact(root, applied.package))
+        finally:
+            _package_meta(applied.package).write_text(before, encoding="utf-8")
+
+
+class _DupFailsWhileArmed:
+    """``os`` for ``portability_bot_export``, whose ``dup`` raises EMFILE while armed."""
+
+    def __init__(self) -> None:
+        self.armed = False
+
+    def dup(self, fd: int) -> int:
+        if self.armed:
+            import errno
+
+            raise OSError(errno.EMFILE, "Too many open files")
+        return os.dup(fd)
+
+    def __getattr__(self, name: str):
+        return getattr(os, name)
+
+
+def test_a_newest_version_the_export_cannot_hold_carries_no_template_package(
+    homes, tmp_path, monkeypatch
+):
+    # The import parses every archived version file, so a pin chosen from the rest
+    # could name a package the import never uses: the export carries none instead.
+    from portability_bot_helpers import (
+        apply_dashboard,
+        archive_members,
+        create_bot,
+        export_archive,
+    )
+
+    from kiro_crew.dashboard_templates import instance
+
+    homes.use("a")
+    atlas = create_bot("Atlas")
+    older = apply_dashboard(atlas, '<p data-dashboard-field="goal">older</p>')
+    newer = apply_dashboard(atlas, '<p data-dashboard-field="goal">newer</p>')
+    assert newer.package != older.package
+    assert not instance.rollback(atlas.slug, 1).package_slug
+    numbers = [int(name.removesuffix(".json")) for name in instance._list_versions(atlas.slug)]
+    newest_pin = max(
+        n
+        for n in numbers
+        if instance._package_field(instance._read_version(atlas.slug, n))[0] == newer.package
+    )
+    assert _bot_artifacts(export_archive(tmp_path / "whole.zip")) == {newer.package}
+
+    fake_os = _DupFailsWhileArmed()
+    real_hold = portability_bot_export._hold_if_newest
+
+    def hold(*args):
+        # (held, name, fd), or (held, unheld, name, fd): the name is second to last.
+        fake_os.armed = args[-2] == f"{newest_pin}.json"
+        try:
+            return real_hold(*args)
+        finally:
+            fake_os.armed = False
+
+    monkeypatch.setattr(portability_bot_export, "os", fake_os)
+    monkeypatch.setattr(portability_bot_export, "_hold_if_newest", hold)
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+    members = archive_members(archive)
+    assert f"bot-members/{atlas.slug}/dashboard/versions/{newest_pin}.json" in members
