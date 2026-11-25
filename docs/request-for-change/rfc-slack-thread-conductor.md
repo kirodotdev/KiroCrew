@@ -476,7 +476,9 @@ which never puts a descendant above its creator. A worker's approval card is
 posted in the thread by `worker_approvals.py`, threaded under the anchor
 instead of top level. **Trust this channel** on such a card becomes **Trust
 this thread** and runs the same `approval_picker.set_channel_mode` mutation on
-the conductor's slot, with its warning line. Like every owner chat's Trust, it
+the conductor's slot, with its warning line. The conductor's own approval card
+in the thread offers the same **Trust this thread**, with the same owner gate,
+confirmation and mutation. Like every owner chat's Trust, it
 survives each gateway exit the owner did not choose and ends only on a stop the
 owner chose (`src/kiro_crew/dashboard/chat_trust_restart.py`, per
 [the 2026-11-18 decision](../decisions/2026-11-18-yolo-and-chat-trust-survive-every-exit-the-user-did-not-choose.md)).
