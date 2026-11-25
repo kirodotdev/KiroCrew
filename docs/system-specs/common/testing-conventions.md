@@ -5132,10 +5132,11 @@ with an LF `bytes` literal fails on every Windows shard, and so does any check t
 leans on the file's size (an ETag, a "same size, same inode" swap).
 `test/test_app_startup_modules.py` lost five cases this way
 ([#42396](https://github.com/kirodotdev/KiroCrew/issues/42396)): its helper wrote the
-module with `write_text`, so the served body carried `\r\n` and the swapped file was one
-byte per line shorter. When the test compares bytes or sizes, write the fixture with
-`write_bytes(text.encode("utf-8"))` or `write_text(text, encoding="utf-8",
-newline="")`. Keep `write_text` for fixtures the code under test reads back as text.
+module with `write_text`, so the served body carried `\r\n` and the LF swap was shorter
+than the CRLF original by one byte per line. When the test compares bytes or sizes,
+write the fixture with `write_bytes(text.encode("utf-8"))`, `write_text(text,
+encoding="utf-8", newline="")` or `open(path, "w", encoding="utf-8", newline="")`.
+Keep `write_text` for fixtures the code under test reads back as text.
 
 ### A frozen list of a surface other branches keep growing
 
