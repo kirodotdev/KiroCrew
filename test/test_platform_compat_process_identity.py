@@ -922,6 +922,15 @@ class TestPidLivenessPosix:
         assert pc.pid_liveness(10**100) == pc.PID_UNSIGNALABLE
         assert pc.pid_exists(10**100) is True
 
+    @pytest.mark.parametrize(
+        "pid", [2**32, 2**32 + 1, 10**100], ids=["2**32", "2**32+1", "10**100"]
+    )
+    def test_a_pid_wider_than_a_windows_dword_is_unknown(self, monkeypatch, pid):
+        """OpenProcess takes a DWORD: a wider stamp must not be truncated into another pid."""
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        assert pc.pid_liveness(pid) == pc.PID_UNSIGNALABLE
+        assert pc.pid_exists(pid) is True
+
     def test_pid_exists_true_on_permission_error(self, monkeypatch):
         # pid_exists EPERM branch: a PID we exist-but-cannot-signal must still
         # count as existing. Force os.kill to raise PermissionError; pid_exists

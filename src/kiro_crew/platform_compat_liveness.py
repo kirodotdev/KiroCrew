@@ -16,7 +16,7 @@ import os
 import sys
 from ctypes import wintypes
 
-from kiro_crew.platform_compat_native import IS_LINUX, IS_POSIX
+from kiro_crew.platform_compat_native import _WINDOWS_PID_MAX, IS_LINUX, IS_POSIX
 from kiro_crew.platform_compat_proctable import (
     _LINUX_EXITED_STATES,
     darwin_pid_is_zombie,
@@ -27,7 +27,7 @@ from kiro_crew.platform_compat_proctable import (
 # Tri-state liveness results for pid_liveness().
 PID_DEAD = "dead"  # confirmed not running -> safe to prune
 PID_ALIVE = "alive"  # confirmed running
-PID_UNSIGNALABLE = "unsignalable"  # exists but we cannot signal it (POSIX EPERM)
+PID_UNSIGNALABLE = "unsignalable"  # cannot be signalled or not knowable (POSIX EPERM, out of range)
 
 
 def live_thread_group_leaders() -> frozenset[int] | None:
@@ -116,7 +116,8 @@ def pid_liveness(pid: int) -> str:
     ``PermissionError`` or an out-of-range PID -> UNSIGNALABLE, success ->
     ALIVE.
     Windows: no EPERM distinction for our processes; map ``pid_exists`` onto
-    DEAD/ALIVE (UNSIGNALABLE never returned).
+    DEAD/ALIVE, except a PID wider than the Win32 DWORD boundary, which is
+    UNSIGNALABLE as on POSIX.
     """
     if IS_POSIX:
         try:
@@ -135,6 +136,8 @@ def pid_liveness(pid: int) -> str:
             # Unknown errno — be conservative and treat as unsignalable
             # (leave it alone) rather than risk pruning/killing a live PID.
             return PID_UNSIGNALABLE
+    if pid > _WINDOWS_PID_MAX:
+        return PID_UNSIGNALABLE
     return PID_ALIVE if pid_exists(pid) else PID_DEAD
 
 
@@ -200,7 +203,9 @@ def pid_exists(pid: int) -> bool:
     """Return True iff ``pid`` currently exists (best-effort).
 
     POSIX: ``os.kill(pid, 0)``.
-    Windows: ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)``.
+    Windows: ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)``. A PID wider
+    than its DWORD argument reads as existing (unknown), as an out-of-range PID
+    does on POSIX, rather than being truncated into a different process.
     """
     if IS_POSIX:
         try:
@@ -210,6 +215,8 @@ def pid_exists(pid: int) -> bool:
             return False
         except (PermissionError, OSError, OverflowError):
             return True  # exists but we can't signal it
+    if pid > _WINDOWS_PID_MAX:
+        return True
     try:
         _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806 — Windows API constant
         _STILL_ACTIVE = 259  # noqa: N806 — Windows STILL_ACTIVE exit code
