@@ -728,6 +728,13 @@ DESIGN_EVIDENCE_LANES = ("design-review.yml", "fork-design-review.yml")
 
 ATTACHMENT_SOURCE_LINE = '. "$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"'
 
+# Lines of the evidence harness's BASH_ENV stub that print failing commands to stderr.
+EVIDENCE_ERR_TRAP = (
+    "set -o errtrace\n"
+    "trap 'echo \"evidence step: exit $? at ${BASH_SOURCE[0]:-step}:$LINENO:"
+    " $BASH_COMMAND\" >&2' ERR\n"
+)
+
 
 class UxEvidenceGateHarness:
     """The evidence-gate harness the UX evidence classes inherit.
@@ -927,7 +934,7 @@ class UxEvidenceGateHarness:
         # for the binary only where this bash resolves none -- the step fails
         # closed without one, and a host's real jq is the truer instrument.
         stub = tmp_path / "stubs.sh"
-        stub_text = self._gh_stub()
+        stub_text = EVIDENCE_ERR_TRAP + self._gh_stub()
         if not _bash_has_jq(bash):
             stub_text = self._jq_stub(tmp_path, env) + stub_text
         stub.write_text(stub_text, encoding="utf-8", newline="\n")
@@ -998,10 +1005,13 @@ class UxEvidenceGateHarness:
                 **design_env,
             },
         )
+        detail = (
+            f"exit {out.returncode}\n--- stdout ---\n{out.stdout}\n--- stderr ---\n{out.stderr}"
+        )
         if expect_failure:
-            assert out.returncode != 0, out.stdout
+            assert out.returncode != 0, detail
         else:
-            assert out.returncode == 0, out.stderr
+            assert out.returncode == 0, detail
         self._evidence_stdout = out.stdout
         self._gh_calls = int((tmp_path / "gh-calls").read_text(encoding="utf-8") or 0)
         return (
