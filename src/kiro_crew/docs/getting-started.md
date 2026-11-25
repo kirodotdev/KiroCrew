@@ -41,22 +41,42 @@ faster one, or `--version X.Y.Z` to pin an exact release. The installer uses
 `pipx` when available, otherwise it creates a managed venv and symlinks
 `kirocrew` into `~/.local/bin`.
 
-`pip install kirocrew` alone does **not** work: Kiro Crew is not published to
-PyPI. To install with pip directly, point it at a release channel's index:
+Kiro Crew is not published to PyPI, and a different project named `kirocrew`
+is. So `pip install kirocrew` installs that project, and so does any pip setup
+that adds the release channel's index beside PyPI (`--extra-index-url`): pip
+takes the highest version from either index. Install from one index instead.
+
+**uv** tracks a channel. uv's default index strategy takes `kirocrew` only from
+the first index that has it, and PyPI serves only its dependencies:
 
 ```bash
 umask 022
-pip install kirocrew \
-  --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+cat > kirocrew-uv.toml <<'EOF'
+[[index]]
+url = "https://updates.crew.kiro.dev/feed/stable/simple/"
+# The CDN answers 403 for a package it does not host; this sends uv on to PyPI.
+ignore-error-codes = [403]
+EOF
+uv tool install --config-file kirocrew-uv.toml kirocrew
 ```
 
-Stable versions carry no prerelease suffix, so this needs no `--pre`. The
-`insider` and `nightly` indexes publish only prerelease versions and need
-`pip install --pre`, which also lets pip pick prerelease versions of
-third-party dependencies.
+uv records the index with the tool, so `uv tool upgrade kirocrew` upgrades from
+the same channel. Swap `stable` for `nightly` to track nightly builds. The
+`insider` index lists both stable and prerelease versions, and uv prefers the
+stable one; use the wheel URL below for insider.
 
-`--extra-index-url` (not `--index-url`) is required, because the channel index
-carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
+**pip** installs one exact wheel by URL. Read the channel's current wheel and
+its sha256 from `latest-cli.json`, then install it:
+
+```bash
+umask 022
+curl -fsS https://updates.crew.kiro.dev/feed/stable/latest-cli.json
+# Copy wheel_url and sha256 from the output:
+pip install "<wheel_url>#sha256=<sha256>"
+```
+
+pip checks the hash and looks up no `kirocrew` name on any index. Swap `stable`
+for `insider` or `nightly` in the URL for another channel.
 
 Create the venv and install under `umask 022`. Under umask `002`, a common
 default on Ubuntu and Fedora, `python -m venv` and pip leave the venv
