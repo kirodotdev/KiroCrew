@@ -320,6 +320,15 @@ describe('top bar', () => {
     // The streak words fold with the feedback labels on a narrow top bar; the ring stays.
     expect(within(pill).getByTestId('milestones-streak').className).toContain('tb-drop-feedback-label')
   })
+
+  it('shows its name as an in-page hint, since the desktop drag band never paints a title', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesPill />)
+    const button = await screen.findByTestId('milestones-indicator')
+    expect(button.getAttribute('title')).toBeNull()
+    act(() => { button.focus() })
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Explore: 1 of 7 features tried, 4-day streak')
+  })
 })
 
 describe('new-chat page', () => {
