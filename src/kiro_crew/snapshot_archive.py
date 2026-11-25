@@ -106,7 +106,9 @@ def _rejection_recording_filter(
             # Its names compare without case there, as the filesystem does.
             windows = platform_compat.IS_WINDOWS
             parts = (PureWindowsPath if windows else PurePosixPath)(info.name).parts
-            tree = (parts[1].casefold() if windows else parts[1]) if len(parts) > 1 else ""
+            tree = parts[1] if len(parts) > 1 else ""
+            if windows:
+                tree = tree.casefold()
             if tree and tree in (cleared_folded if windows else cleared_trees):
                 rejected.append(_safe_name(info.name))
             elif rejected_named is not None and tree and is_named_workspace_tree(tree):
@@ -776,7 +778,7 @@ def _staging_is_pinned(*, allow_unpinned: bool, what: str) -> bool:
 
     This is the whole "refuse rather than fall back" rule, in one place. The reason it
     is a refusal and not a warning: a by-name walk is not a slightly weaker version of
-    a pinned walk, it is the mechanism whose failure closed two pull requests. An
+    a pinned walk, because an ancestor swapped mid-walk can redirect every deeper open. An
     operator who needs a snapshot on a platform without ``dir_fd`` can still have one,
     but they say so on the command line and the archive records that they did, so the
     weaker mode is never something the tool chose on their behalf.
