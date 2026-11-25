@@ -173,6 +173,36 @@ async def test_a_slot_set_to_auto_moves_its_new_or_reloaded_session_to_auto(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("switches", [True, False])
+async def test_the_auto_move_follows_the_capability_not_the_backend_name(
+    _no_recorded_catalog, switches
+):
+    """A record's ``model_auto_switches_in_place``, not KAS's name, sends the move."""
+    import dataclasses
+
+    from kiro_crew.dashboard.chat_api.slot_model import _auto_repick_moves_session
+
+    slot = _ChatSlot("s1")
+    slot.model = "auto"
+    slot._model_pick_gen += 1
+    session, _handle, _runtime = _session_client("claude-haiku-5.5", ())
+    # kiro-cli's record with the field set, or KAS's with it cleared.
+    base = ACP_BACKEND_KIRO if switches else ACP_BACKEND_KAS
+    provider = _provider(base, session)
+    provider.capabilities = dataclasses.replace(
+        capabilities_for(base), model_auto_switches_in_place=switches
+    )
+
+    assert _auto_repick_moves_session(provider, "auto") is switches
+    await _settle_reloaded(slot, provider)
+
+    if switches:
+        provider.set_model.assert_awaited_once_with("auto")
+    else:
+        provider.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_reopened_kas_chat_whose_account_lists_no_auto_is_not_sent_it(
     _no_recorded_catalog, caplog
 ):

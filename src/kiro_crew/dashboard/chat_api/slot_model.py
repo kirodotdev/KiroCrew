@@ -187,7 +187,7 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
         # default needs a reset.
         return "" if is_default else model_registry.to_provider_id(model_name, namespace)
     if is_default:
-        if model_name == "auto" and getattr(provider, "is_kas_backend", False) is True:
+        if model_name == "auto" and capabilities_of(provider).model_auto_switches_in_place:
             # KAS advertises no list, and a reset would reload the session on the
             # model it runs; ``auto`` is what a new KAS session runs. Only a known
             # select that leaves it out keeps the reset. ``""`` (Inherited) is no
@@ -216,7 +216,7 @@ def _auto_repick_moves_session(provider: LLMProvider | None, model_name: str) ->
     """
     if model_name != "auto" or not isinstance(provider, AcpProvider):
         return False
-    if provider.is_kas_backend is not True:
+    if not capabilities_of(provider).model_auto_switches_in_place:
         return False
     running = provider_raw_model(provider.client)
     return bool(running) and running != "auto" and _wire_model_id(provider, "auto") == "auto"
