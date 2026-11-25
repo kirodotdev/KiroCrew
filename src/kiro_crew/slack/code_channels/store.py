@@ -158,7 +158,8 @@ class Binding:
     conversation as (:data:`ROOM_IM`, :data:`ROOM_PRIVATE` or
     :data:`ROOM_PUBLIC`), and ``ended_at`` is stamped when the thread ends; an
     ended thread admits no more dispatch and never becomes a plain thread again.
-    It records no ``opener``: a Conductor thread admits no shared user.
+    Its ``opener`` is the shared user who started it, if one did: the one person
+    besides the owner it admits.
     """
 
     channel_id: str

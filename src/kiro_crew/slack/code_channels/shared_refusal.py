@@ -230,7 +230,7 @@ def shared_user_refused_in(channel: str, thread_ts: str = "", *, sender: str = "
     live, ended, pruned into ``revoked`` or quarantined -- in any channel or DM,
     whatever the switch says, and when the store cannot be read.
     """
-    if thread_ts and _conductor_thread_refused(channel, thread_ts):
+    if thread_ts and _conductor_thread_refused(channel, thread_ts, sender):
         return True
     if not _r().recognition.could_be_code_channel(channel):
         return False
@@ -250,12 +250,22 @@ def shared_user_refused_in(channel: str, thread_ts: str = "", *, sender: str = "
         return True
 
 
-def _conductor_thread_refused(channel: str, thread_ts: str) -> bool:
-    """Whether *thread_ts* in *channel* is (or was) a Conductor thread; fails closed."""
+def _conductor_thread_refused(channel: str, thread_ts: str, sender: str = "") -> bool:
+    """Whether *thread_ts* in *channel* is (or was) a Conductor thread that does not
+    admit *sender* (its live opener, :func:`opener_admitted`); fails closed."""
     try:
         current = _r().store()
+        binding = current.get_thread_binding(channel, thread_ts)
+        if (
+            binding is not None
+            and not current.unreadable
+            and not current.is_thread_quarantined(channel, thread_ts)
+            and not current.revoked_anchor(thread_ts)
+            and opener_admitted(binding, sender)
+        ):
+            return False
         return (
-            current.get_thread_binding(channel, thread_ts) is not None
+            binding is not None
             or current.is_thread_quarantined(channel, thread_ts)
             or current.revoked_anchor(thread_ts)
             or current.unreadable
@@ -460,8 +470,8 @@ def shared_user_refused_for_slot(
     try:
         bindings = _r().store()
         admitted = ""  # the opener's own channel's session, when that is what matched
-        # Code channels and Conductor threads alike (loads the store first). A
-        # Conductor thread records no opener, so it admits no shared user.
+        # Code channels and Conductor threads alike (loads the store first). Each
+        # admits its own opener, if a shared user started it.
         for binding in (*bindings.bindings(), *bindings.thread_bindings()):
             if (
                 (bare and binding.session_key in (bare, slot_key))
