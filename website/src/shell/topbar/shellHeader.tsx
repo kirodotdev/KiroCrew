@@ -570,7 +570,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             segments.push(
               <HoverTip key="conn" label={capsuleActionMsg} className="tb-capsule-keep">
               <button
-                className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
+                className="flex items-center justify-center -mx-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
