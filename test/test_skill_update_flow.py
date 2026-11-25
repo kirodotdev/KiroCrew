@@ -949,6 +949,66 @@ async def test_stage_update_falls_back_to_live_description_when_candidate_empty(
     assert loader.staged[0]["description"] == "Live description"
 
 
+_DEMO_LIVE = (
+    "---\nname: auto/demo-skill\ndescription: Deploys the demo service\n"
+    "triggers: alpha, beta\nversion: 1\n---\n\n## Steps\n1. Deploy it.\n"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prefix,nl",
+    [(b"", "\n"), (b"\xef\xbb\xbf", "\n"), (b"", "\r\n"), (b"\xef\xbb\xbf", "\r\n")],
+    ids=["lf", "bom-lf", "crlf", "bom-crlf"],
+)
+async def test_update_keeps_live_triggers_and_description_on_a_real_loader(tmp_path, prefix, nl):
+    """A live SKILL.md saved with a UTF-8 BOM (or CRLF) is staged and approved
+    like a plain one. Uses the real loader, because the live read is the part
+    ``FakeLoader`` stands in for."""
+    from kiro_crew.skills import SkillsLoader
+
+    loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    live = tmp_path / "skills" / "auto" / "demo-skill" / "SKILL.md"
+    live.parent.mkdir(parents=True)
+    live.write_bytes(prefix + _DEMO_LIVE.replace("\n", nl).encode("utf-8"))
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    merge_inputs: list[str] = []
+
+    async def recording_merge(live_prose, *a):
+        merge_inputs.append(live_prose)
+        return None  # the product's fail-open path: stage the candidate's procedure
+
+    c._merge_skill_update = recording_merge  # type: ignore[assignment]
+    ctx = _sel_recorder([])
+    try:
+        await asyncio.to_thread(
+            c._stage_skill_update,
+            key="sess",
+            target_key="auto/demo-skill",
+            description="",
+            triggers="gamma",
+            procedure_md="## Steps\n1. New step for gamma.\n",
+        )
+    finally:
+        ctx.stop()
+
+    updates = [p for p in loader.list_pending_skills() if p.get("kind") == "update"]
+    assert len(updates) == 1
+    staged = updates[0]
+    assert staged["triggers"] == "alpha, beta, gamma"
+    assert staged["description"] == "Deploys the demo service"
+    assert len(merge_inputs) == 1
+    prose = merge_inputs[0]
+    assert not prose.startswith("\ufeff")
+    assert "name: auto/demo-skill" not in prose and "Deploy it." in prose
+
+    loader.approve_pending_update_checked(staged["slug"])
+    after = loader.read_auto_skill_body("auto/demo-skill")
+    assert H._frontmatter_value(after, "triggers") == "alpha, beta, gamma"
+    assert H._frontmatter_value(after, "description") == "Deploys the demo service"
+
+
 @pytest.mark.asyncio
 async def test_base_version_is_captured_before_the_body_it_describes():
     """base_version must describe the body the merge was computed from.
