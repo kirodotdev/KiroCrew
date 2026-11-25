@@ -383,17 +383,17 @@ class _Row:
 
 
 def _read_row(
-    msg: dict, *, file_rows: bool, artifact_kind: Callable[[str], str | None] | None = None
+    msg: dict, *, artifact_kind: Callable[[str], str | None] | None = None
 ) -> _Row | None:
     """*msg* as a search reads it, or None when it is not a message the chat
     draws: only speech (``is_speech_row``, the backend twin of what a chat draws
-    as a message) and, where the chat draws them, ``file_send`` cards.
+    as a message) and ``file_send`` cards, which both chats draw.
 
     *artifact_kind* names the kind of a linked artifact the caller may see (None
     otherwise); with it, a link to a saved html artifact counts as HTML."""
     role, content = msg.get("role"), msg.get("content")
     if role == "file":
-        record = file_record(msg) if file_rows else None
+        record = file_record(msg)
         if record is None:
             return None
         path = record.get("path")
@@ -526,11 +526,10 @@ def _hit(
     query: Any,
     kind: str,
     *,
-    file_rows: bool = True,
     artifact_kind: Callable[[str], str | None] | None = None,
 ) -> dict | None:
     """The hit *msg* makes at *index*, or None when a filter drops it."""
-    row = _read_row(msg, file_rows=file_rows, artifact_kind=artifact_kind)
+    row = _read_row(msg, artifact_kind=artifact_kind)
     if row is None or kind not in row.kinds or not _row_matches(row, query):
         return None
     return _hit_of(msg, index, row, query)
@@ -579,7 +578,6 @@ def search_history(
     before: int | None,
     limit: int,
     floor: str = "",
-    file_rows: bool = True,
     artifact_kind: Callable[[str], str | None] | None = None,
     pinned: Pinned | None = None,
 ) -> dict[str, Any]:
@@ -590,8 +588,7 @@ def search_history(
     written in time order). ``next_before`` is the index the next reply resumes
     below, or None when nothing older is left to search.
 
-    *file_rows* searches the ``file_send`` cards too; a bot chat draws messages
-    only, so it passes False. ``counts`` says, for every ``kind``, how many of the
+    The ``file_send`` cards are searched too, by file name. ``counts`` says, for every ``kind``, how many of the
     rows this reply scanned match the query and dates with that kind, the active
     one included: the rows a later reply scans add to it.
 
@@ -663,7 +660,7 @@ def search_history(
                 (until is not None and at >= until) or (since is not None and at < since)
             ):
                 continue
-            row = _read_row(msg, file_rows=file_rows, artifact_kind=artifact_kind)
+            row = _read_row(msg, artifact_kind=artifact_kind)
             if row is None or not _row_matches(row, query):
                 continue
             if pinned is not None and pinned.holds(msg):
@@ -736,7 +733,8 @@ def read_around(
 ) -> dict[str, Any] | None:
     """Rows ``[start, end)`` of *key*, clipped to the transcript; blocking IO.
 
-    *speech_only* keeps only the messages a bot chat draws (``is_speech_row``).
+    *speech_only* keeps only the messages a bot chat draws (``is_speech_row``)
+    and its ``file_send`` cards.
     ``has_earlier`` is False at the first row or at the display floor.
     With *mid*, re-centre on that message in one pinned revision. Check the
     requested range first, then scan at most ``SCAN_BUDGET_ROWS`` recent rows.
@@ -790,8 +788,11 @@ def read_around(
             m
             for m in rows
             if isinstance(m, dict)
-            and is_speech_row(
-                m.get("role"), m.get("content"), m.get("meta"), variants=m.get("variants")
+            and (
+                is_speech_row(
+                    m.get("role"), m.get("content"), m.get("meta"), variants=m.get("variants")
+                )
+                or file_record(m) is not None
             )
         ]
     if mid is not None and not any(
@@ -889,8 +890,6 @@ async def api_chat_slot_history_search(request: web.Request) -> web.Response:
             before=before if isinstance(before, int) else None,
             limit=hits_wanted,
             floor=floor,
-            # A bot chat draws messages only, so its file cards are not hits.
-            file_rows=not is_member_thread(slot),
             # The caller the auth middleware named: an app sees only the
             # artifacts its token may read.
             artifact_kind=artifact_kinds(_default_artifact_store, request.get("app", "") or ""),
