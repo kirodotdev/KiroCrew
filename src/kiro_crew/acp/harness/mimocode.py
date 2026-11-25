@@ -37,7 +37,7 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, NamedTuple
 
-from kiro_crew import acp_tool_gate
+from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.harness_tool_names import (
@@ -221,10 +221,13 @@ def _mimocode_reported_version(session: ProcessSession, argv: list[str]) -> tupl
     env = _mimocode_child_env(session)
     _apply_mimocode_env(env)
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -709,10 +712,13 @@ def _verify_mimocode_routing(
     _apply_mimocode_env(env)
     env[_ENV_MIMOCODE_CONFIG_CONTENT] = config_content
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             capture_output=True,
             text=True,
             encoding="utf-8",
