@@ -17,8 +17,9 @@ Six shapes escape the env var:
 - **A detached task.** `asyncio.create_task(...)` at boot with no one awaiting it keeps
   running after the test that started it has returned; when its work resolves a path
   (`peek_next` → `spool_path()` → `data_home()`, on a `to_thread` worker) it resolves
-  the OPERATOR's home. Fixed where the task is scheduled: `_start_channel_transports`
-  resolves `spool_path()` on the loop and hands it to the task, so the worker reads a
+  the OPERATOR's home. Fixed where the task is scheduled: `_schedule_inbound_replay`
+  (called from `_start_channel_transports`) resolves `spool_path()` on the loop and
+  hands it to the task, so the worker reads a
   location fixed at boot. Resolve every environment-derived input of a detached task on
   the calling side before detaching, or give the test a handle it can await.
 - **What a closed loop leaves behind.** pytest-asyncio 0.21 ends the loop with a bare
@@ -36,8 +37,10 @@ Six shapes escape the env var:
   registry; the floor pins `KIROCREW_POD_ROOT` / `KIROCREW_POD_ENV_DIR` for that reason.
   A new resolver with its own default gets a floor pin AND a ratchet in
   `test_host_isolation_floor.py` in the same change.
-- **Import-time from `config_dir()`** (`subagent_persistence._SUBAGENTS_DIR`): the var
-  is read after the module captured the path. Each has its own autouse pin. A
+- **Import-time from `config_dir()`**: the var is read after the module captured the
+  path. Each such capture has its own autouse pin; resolve per call instead, the way
+  `subagent_persistence._subagents_dir()` does (its `_SUBAGENTS_DIR` is an opt-in
+  override that defaults to `None`). A
   **collection-time probe** is the same shape one step earlier: a module-level
   probe used by a `skipif` (`_sandbox_can_spawn()` in `test/test_app_backend.py`)
   runs before any pin and would read the REAL `config.json`; run such probes under
