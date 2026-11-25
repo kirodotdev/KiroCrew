@@ -2151,8 +2151,8 @@ cleanly rewrites or removes that record. Only the app's own backend spawn gets i
 (`sandbox_tiers.app_declared_mask_targets`, through the carve-out guards), and only while
 the file is absent or a regular file with one name. Tightening
 only: no seal, carve-out or keystone disposition reads a declaration. The tool gate reads
-the shipped built-ins' declarations once, at import (`credential_masks.declared_crew_leaves(installed=False)`,
-splatted into `_CREW_SECRET_LEAVES`), so the agent's file tools refuse a built-in's
+the shipped built-ins' declarations at import (`credential_masks.declared_crew_leaves(installed=False)`,
+splatted into `_CREW_SECRET_LEAVES`), and the listing below reads them again, so the agent's file tools refuse a built-in's
 credential file as they refuse a core one with no core row naming the app. An installed
 app's declaration (every installed tree and retained record, so an adopted former
 built-in's too; seam level 10) reaches the read and the write gate through a listing
@@ -2177,7 +2177,11 @@ out a row the static lists already hold (a built-in's record repeats its shipped
 declaration), so a host with only the built-ins checks the static lists unchanged. It
 fails closed over the app's own data only: an `app.json` or record that is there but
 does not read cleanly fences that app's whole data directory at both spellings, with no
-artifact rule beside it, and an `apps/` that cannot be listed fences `apps/`. `sensitive_home_dirs()` stays the static rows, so
+artifact rule beside it, and an `apps/` that cannot be listed fences `apps/`. The listing
+reads the shipped built-ins' manifests again the same way, so a built-in whose `app.json`
+did not read at import (another process held it open) fences its app's data until it
+reads and its declared rows after; a manifest read that fails is not cached, so the next
+ask reads it again. `sensitive_home_dirs()` stays the static rows, so
 the fences derived from it (the ENFORCED harness's credential mask, the posture page)
 keep their scope. A declared leaf is HIDDEN in the spawn plan, so
 `test_sandbox_governance_mask.py`'s pin that every tool-gate crew entry has a sandbox

@@ -9665,7 +9665,10 @@ or record that is there but does not read cleanly (`_read_declaration`: not a re
 file under the size cap, unparseable, another app's `name`, an invalid entry) fences its
 app's whole `data/` and move-aside directory and what is beneath them
 (`ToolGateLeaves.unreadable`, which gets no artifact rule), and an `apps/` that exists
-but cannot be listed fences `apps/`. Only a declared leaf's own directory gets the
+but cannot be listed fences `apps/`. `tool_gate_home_rows` reads the shipped built-ins'
+manifests again the same way, so a built-in whose `app.json` did not read at import
+fences its app's data until it reads, then its declared rows; a manifest read that
+fails is not cached. Only a declared leaf's own directory gets the
 `.tmp` / `.lock` rule, so for a directory entry that is `data/` itself, as for a
 built-in's. No listed row can name anything outside `apps/<name>/data/` or
 `apps/.<name>-data-tmp/`, and `security.sensitive_home_dirs()` keeps only the static

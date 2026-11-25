@@ -194,7 +194,16 @@ class TestListCompletions:
             def __exit__(self, *exc):
                 return False
 
-        with patch.object(terminal.os, "scandir", return_value=_Scandir()):
+        real_scandir = os.scandir
+
+        def _scandir(target=".", *args, **kwargs):
+            # terminal.os IS the stdlib os, so fake only the completion's own read (of
+            # the directory fd it pinned); the path gate's listings stay real.
+            if isinstance(target, int):
+                return _Scandir()
+            return real_scandir(target, *args, **kwargs)
+
+        with patch.object(terminal.os, "scandir", _scandir):
             entries, _ = terminal._list_completions(str(tmp_path), "", False, 100)
         assert [e["name"] for e in entries] == ["safe.txt"]
 

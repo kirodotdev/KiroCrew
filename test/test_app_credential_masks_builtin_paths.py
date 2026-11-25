@@ -45,6 +45,9 @@ def test_the_listing_matches_the_shipped_tree():
     listed = [(name, str(path)) for name, path in credential_masks._builtin_manifests()]
     assert listed == _plain_listing(credential_masks._builtins_root())
     assert listed, "the shipped tree lists no built-in package"
+    # The tool gate fences a built-in's whole data while its manifest does not read cleanly.
+    for name, path in credential_masks._builtin_manifests():
+        assert credential_masks._read_declaration(path, name)[1], f"{path} does not read cleanly"
 
 
 def test_a_repeat_listing_parses_no_path(monkeypatch):
