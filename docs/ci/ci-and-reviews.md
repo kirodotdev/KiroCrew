@@ -1031,9 +1031,11 @@ pushes whose red jobs included a lint job.
 
 A pull request whose every changed path is a prose doc skips the expensive lanes
 and still gets a green `PR Readiness`. Prose docs are exactly `docs/**/*.md`,
-`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+`website/docs/**/*.md`, the root `README.md` and
 the root `CONTRIBUTING.md`. Anything else, a script or an image under `docs/`
-included, runs everything. A rename counts both paths. One script,
+included, runs everything. Markdown under `src/` is package data, not prose: the
+user docs in `src/kiro_crew/docs/` ship in the wheel and product code reads them
+at run time, so a change there runs everything too. A rename counts both paths. One script,
 `.github/scripts/docs_only.py`, decides it for every workflow below.
 
 | What | On a docs-only pull request |
