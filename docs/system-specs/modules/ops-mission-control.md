@@ -65,7 +65,10 @@ shrink. Each row is deleted in the change that removes what it names:
   agent tool gate too. The core still names the store's old root name,
   `ops_mission_control_secrets.json`: it stays masked, hard-link refused and fenced as a
   retired leaf, as `browser-cookies.txt` does, because a restored backup can bring it
-  back, and the adopted copy rewrites that file as the downgrade copy.
+  back, and the adopted copy rewrites that file as the downgrade copy. The core also puts
+  the live store file on the hard-link refused set (`sandbox_aliases.py`), as it does the
+  Notes PAT: a directory declaration does not judge the files in it, and a hard-linking
+  backup of the data home would otherwise give the tokens a second, unmasked name.
 * **The `security_posture*.py` rows** that classify the app's files: the core's audit of
   the app's code.
 * **The packaged skill** `builtin_skills/ops-mission-control/` and its row in the closed

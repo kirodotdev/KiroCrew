@@ -80,6 +80,18 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
             "readable under it inside the sandbox"
         )
 
+    def test_the_moved_ops_store_with_a_second_name_is_MASKED(self, crew_home):
+        """Its declared directory is not judged file by file, so the store is named itself."""
+        target = crew_home / "apps/ops-mission-control/data/secrets/secrets.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"{}")
+        alias = crew_home / "backup-secrets.json"
+        os.link(target, alias)
+
+        to_hide = sandbox._refuse_aliased_masked_leaves()
+
+        assert str(alias) in {m.path for m in to_hide}
+
     @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_HARDLINK_REFUSED_LEAVES))
     def test_one_link_is_accepted(self, crew_home, leaf):
         """The ordinary case must not refuse, or the rule is a blanket outage."""
@@ -292,6 +304,8 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
             "workspace/md-notebook/pat",
             # the ops provider-token store's retired root name; a restored copy is live
             "ops_mission_control_secrets.json",
+            # the same store at its live name, inside the app's declared secrets/ directory
+            "apps/ops-mission-control/data/secrets/secrets.json",
             # channel tokens
             ".env",
             # browser session material; a restored copy still carries live cookies
@@ -313,7 +327,9 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
         A test rather than a module-level ``assert``, for the reason the tolerated set's own
         invariant gives: ``python -O`` strips an assert.
         """
-        hidden = set(sandbox._CREW_HIDDEN_LEAVES)
+        # An app-declared credential mask hides its leaf in every sandbox too, so a file in a
+        # declared directory (the moved ops store) is a masked leaf.
+        hidden = set(sandbox._CREW_HIDDEN_LEAVES) | set(sandbox_aliases._app_declared_leaves())
 
         def masked(leaf: str) -> bool:
             # A leaf or any directory above it: a mask on a directory hides every name in it.
