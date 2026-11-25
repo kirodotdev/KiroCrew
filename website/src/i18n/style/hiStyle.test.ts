@@ -84,7 +84,7 @@ describe('hi tone (style/hi.md §4)', () => {
     // Baselined: the existing catalog uses आप extensively. Each block migrated
     // to तुम lowers this ceiling by the strings it converts, so the count can
     // only go down.
-    expect(bad.length, report(bad)).toBeLessThanOrEqual(113)
+    expect(bad.length, report(bad)).toBeLessThanOrEqual(73)
   })
 })
 
@@ -104,7 +104,7 @@ const CATALOG = 'website/src/i18n/locales/hi.json'
  * place the formal form appears.
  */
 const FORMAL_IMPERATIVE =
-  /(?<![\u0900-\u0963\u0966-\u097f])(?:करें|देखें|चुनें|खोलें|सहेजें|भरें|लिखें|रखें|पढ़ें|दें|लें|जाएं|जाएँ|बनाएं|बनाएँ|हटाएं|हटाएँ|लगाएं|लगाएँ|चलाएं|चलाएँ|बताएं|बताएँ|दबाएं|दबाएँ|कीजिए|कीजिये|करिए)(?![\u0900-\u0963\u0966-\u097f])/
+  /(?<![\u0900-\u0963\u0966-\u097f])(?:करें|देखें|चुनें|खोलें|सहेजें|भरें|लिखें|रखें|पढ़ें|दें|लें|जाएं|जाएँ|बनाएं|बनाएँ|हटाएं|हटाएँ|लगाएं|लगाएँ|चलाएं|चलाएँ|बताएं|बताएँ|दबाएं|दबाएँ|छोड़ें|जाँचें|जांचें|बदलें|लाएं|लाएँ|बढ़ाएं|बढ़ाएँ|डालें|पूछें|सौंपें|कीजिए|कीजिये|करिए)(?![\u0900-\u0963\u0966-\u097f])/
 
 /**
  * The hi values this branch added or edited, or null when there is nothing to
@@ -157,10 +157,21 @@ describe('hi register (style/hi.md §4)', () => {
       .toEqual([])
   })
 
-  // The Kiro CLI setup screen mixed both registers side by side (#34956); its block is all तुम.
-  it('addresses the reader as तुम throughout components.kiroPrerequisiteGate', () => {
-    const bad = Object.entries(hi)
-      .filter(([key]) => key.startsWith('components.kiroPrerequisiteGate.'))
+  // These screens mixed both registers side by side: the Kiro CLI setup screen
+  // (#34956), and the Kiro sign-in chooser and the first-run chapters (#35056).
+  // Each block is all तुम.
+  it.each([
+    'kiroPrerequisiteGate',
+    'kasLogin',
+    'onboardingChapterShell',
+    'meetCrewmatesFlow',
+    'onboardingFlow',
+    'agentImportFlow',
+  ])('addresses the reader as तुम throughout components.%s', (block) => {
+    const entries = Object.entries(hi).filter(([key]) => key.startsWith(`components.${block}.`))
+    // A block that matches no key would pass without checking anything.
+    expect(entries.length, `components.${block} has no keys in hi.json`).toBeGreaterThan(0)
+    const bad = entries
       .filter(([, value]) => hasFormalPronoun(value) || FORMAL_IMPERATIVE.test(value))
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, report(bad)).toEqual([])
