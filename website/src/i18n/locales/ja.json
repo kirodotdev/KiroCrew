@@ -17458,6 +17458,7 @@
         "always_allow_undo": "オフにすると、呼び出す前に毎回確認します。",
         "always_allow_hint": "このツールを呼び出す前に確認しなくなります。{{productName}} 自体の安全ルールは引き続き適用されます。",
         "always_allow_failed": "「常に許可」を変更できませんでした。もう一度お試しください。",
+        "always_allow_on_count": "常に許可: {{total}} 件中 {{on}} 件",
         "always_allow_refused_asks_every_time": "設定により、このサーバーのツールは呼び出しのたびに確認されるため、常に許可にはできません。",
         "always_allow_refused_set_elsewhere": "「常に許可」はこのコンピューターのローカル設定ファイルで管理されているため、ここでは変更できません。",
         "always_allow_refused_crew_owned": "{{productName}} 自体のツールは常に確認されます。",

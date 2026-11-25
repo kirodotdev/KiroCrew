@@ -18396,6 +18396,7 @@
         "always_allow_undo": "Desative para voltar a confirmar cada chamada.",
         "always_allow_hint": "Parar de perguntar antes de cada chamada desta ferramenta. As regras de segurança do próprio {{productName}} continuam valendo.",
         "always_allow_failed": "Não foi possível alterar Sempre permitir. Tente novamente.",
+        "always_allow_on_count": "Sempre permitidas: {{on}} de {{total}}",
         "always_allow_refused_asks_every_time": "Suas configurações perguntam antes de cada chamada às ferramentas deste servidor, então elas não podem ser sempre permitidas.",
         "always_allow_refused_set_elsewhere": "Sempre permitir é gerenciado por um arquivo de configuração local neste computador, então não pode ser alterado aqui.",
         "always_allow_refused_crew_owned": "As ferramentas do próprio {{productName}} sempre perguntam.",
