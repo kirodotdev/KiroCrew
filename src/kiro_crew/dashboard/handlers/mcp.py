@@ -23,6 +23,7 @@ from kiro_crew.agent import (
     AGENT_FILENAME,
     SharedAgentHomeRefused,
     _atomic_json_write,
+    _declares_server,
     _declined_foreign_spec_write,
     entry_as_enabled,
     gateway_routed_names,
@@ -1206,7 +1207,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_mcp_to_agent_unlocked,
     )
     from kiro_crew.dashboard.handlers.mcp_config_entries import (  # noqa: F401
+        _another_scope_declares,
         _get_kirocrew_entry,
+        _muted_raw_keys,
         _remove_from_agent_file,
         _replace_kirocrew_spec,
         _rmw_remove_entry,
