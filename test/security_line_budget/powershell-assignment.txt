@@ -1,0 +1,13 @@
++69
+The credential-mint floor also judges each source the way PowerShell reads its
+variables ($name = value opening a statement, its = and the ; or newline before
+it spaced or not, binds a quoted literal or a copy of a name bound earlier when
+the value is its whole statement, and a later word that is exactly $name, unless
+an assignment writes it, reads it; a bare value, which PowerShell runs as a
+command, a value holding $, and a use glued to other text bind or read nothing,
+so no word of that reading outgrows the line), beside the bash reading, so a
+mint whose verb or program a PowerShell variable holds is refused while bash's
+reading of the same words as a command or a test still stands. One helper reads
+the assignment's words, one builds that reading, the mint floor reads it (no
+other floor does), and the argv floor facade's type-checking manifest names the
+two helpers.
