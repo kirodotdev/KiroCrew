@@ -287,8 +287,6 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     rss_runtimes_read_under_ceiling,
     short_sock_dir,
 )
-
-# Per-test resets of process-global kiro_crew state, and the network fences.
 from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importers
     _approve_every_mcp_launch,
     _boot_pacer_reads_an_ample_host,
@@ -405,6 +403,11 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
 )
 from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_unsaved_relay_instance_ids,
+)
+
+# Per-test resets of process-global kiro_crew state, and the network fences.
+from conftest_resets_vault import (  # noqa: E402,F401 -- bound for pytest
+    _drop_held_vault_save_offers,
 )
 
 # The in-memory Slack client and the Slack state resets.

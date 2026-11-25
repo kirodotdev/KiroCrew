@@ -422,15 +422,28 @@ def shown(monkeypatch: pytest.MonkeyPatch) -> list[bool | None]:
     async def _shown(*_a: Any) -> bool | None:
         return out.pop(0) if len(out) > 1 else out[0]
 
-    monkeypatch.setattr(qa, "password_shown", _shown)
+    monkeypatch.setattr(vault_fill, "password_shown", _shown)
     monkeypatch.setattr(qa, "STEP_POLL_S", 0.0)
     monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 0.0)
     return out
 
 
-async def _watch(tab: _Tab, stop: bool = False) -> bool:
+async def _watch(
+    tab: _Tab,
+    stop: bool = False,
+    *,
+    stop_after: int = 0,
+    folded: bool = False,
+    base: tuple[str, str, str] | None = None,
+) -> bool:
     ask = SimpleNamespace(top_origin=ORIGIN)
-    return await REAL_WAIT(tab, ask, None, lambda: stop)  # type: ignore[arg-type]
+    asked = [0]
+
+    def _stop() -> bool:
+        asked[0] += 1
+        return stop or (stop_after > 0 and asked[0] > stop_after)
+
+    return await REAL_WAIT(tab, ask, None, _stop, lambda: folded, base)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -458,10 +471,11 @@ async def test_the_watch_gives_up_at_its_bound_and_on_stop(
     shown: list[bool | None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     shown[:] = [True]
-    monkeypatch.setattr(vault_fill, "LAND_WAIT_S", 0.0)
+    # The bound already spent is the case under test.
+    monkeypatch.setattr(vault_fill, "LAND_WAIT_S", 0.0)  # flake-ok: bound under test
     assert await _watch(_Tab(DOC)) is False
     # No password box, but not for LAND_QUIET_S yet when time is up.
-    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 3600.0)
+    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 3600.0)  # flake-ok: never reached
     shown[:] = [False]
     assert await _watch(_Tab(DOC)) is False
     shown[:] = [False]
@@ -477,3 +491,47 @@ async def test_no_free_name_writes_nothing() -> None:
             "github.com", "login", {"password": "pw"}, lambda _name: True
         )
     assert vault.list_items() == []
+
+
+def test_a_locked_password_box_still_counts_as_not_signed_in() -> None:
+    # A form that disables its fields while it checks the password has not landed:
+    # the landing read counts every laid-out password box, unlike the fill's finder.
+    js = vault_fill._PASSWORD_PRESENT_JS
+    assert "type" in js and "password" in js
+    assert "disabled" not in js and "readOnly" not in js
+    assert "disabled" in qa._FIND_JS
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_ends_mid_watch_lands_only_on_a_new_page_with_no_password_box(
+    shown: list[bool | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The agent finishes inside the quiet window: the hub drops the stream, so the
+    # watch stops early and its last read decides.
+    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 3600.0)  # flake-ok: never reached
+    shown[:] = [False]
+    new_page = _Tab(DOC, ("F1", "L2", ORIGIN))
+    assert await _watch(new_page, stop_after=1, folded=True) is True
+    assert await _watch(_Tab(DOC, ("F1", "L2", ORIGIN)), stop_after=1, folded=False) is False
+    # Same document, or a new one still asking for the password: not landed.
+    assert await _watch(_Tab(DOC), stop_after=1, folded=True) is False
+    shown[:] = [None]
+    assert await _watch(_Tab(DOC, ("F1", "L2", ORIGIN)), stop_after=1, folded=True) is False
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_moved_on_during_the_fill_counts_as_new_against_the_pre_fill_read(
+    shown: list[bool | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 3600.0)  # flake-ok: never reached
+    shown[:] = [False]
+    success = ("F1", "L2", ORIGIN)
+    # The success page was already up when the watch began; the turn then ends.
+    assert await _watch(_Tab(success), stop_after=1, folded=True, base=DOC) is True
+    assert await _watch(_Tab(success), stop_after=1, folded=True) is False
+
+
+@pytest.mark.asyncio
+async def test_the_offer_tells_the_sheet_how_long_it_is_held() -> None:
+    shown = vault_fill.hold_offer(KEY, ORIGIN, {"username": "a", "password": "pw-a"})
+    assert shown["expires_in_s"] == int(vault_fill.SAVE_OFFER_TTL_S)

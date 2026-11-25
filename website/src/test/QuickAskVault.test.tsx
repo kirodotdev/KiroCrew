@@ -7,7 +7,7 @@ import BrowserLiveCard from '../pages/chat/BrowserLiveCard'
 import { browserLiveStore } from '../hooks/useBrowserLive'
 import { askUi } from '../pages/chat/quickAsk/askUi'
 import { SHEET_PIN_MIN_PX } from '../pages/chat/quickAsk/QuickAskSheet'
-import { SAVED_SHOW_MS } from '../pages/chat/quickAsk/QuickAskVault'
+import { OFFER_EXPIRY_MARGIN_MS, SAVED_SHOW_MS } from '../pages/chat/quickAsk/QuickAskVault'
 import { recall, remember } from '../pages/chat/quickAsk/remember'
 import { readQuickAsk } from '../pages/chat/quickAsk/types'
 import { installInitialResizeObserver } from './initialResizeObserver'
@@ -196,6 +196,65 @@ describe('quick ask: logins from the vault', () => {
     fireEvent.click(screen.getByTestId('quick-ask-held-not-now'))
     await waitFor(() => expect(screen.queryByTestId('quick-ask-held-offer')).toBeNull())
     expect(screen.getByTestId('browser-live-card')).toHaveAttribute('data-state', 'done')
+  })
+
+  it.each(['signing', 'offer'])('a surface that goes while %s drops the held login and leaves no stuck sheet', async when => {
+    const settle = answerLater()
+    const { unmount } = show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    await screen.findByTestId('quick-ask-held-signing')
+    if (when === 'offer') {
+      await settle({ ok: true, outcome: 'filled', save_offer: OFFER })
+      await screen.findByTestId('quick-ask-held-offer')
+      unmount()
+    } else {
+      unmount()
+      await settle({ ok: true, outcome: 'filled', save_offer: OFFER })
+    }
+    await waitFor(() => expect(writes.saveOffer).toHaveBeenCalledWith({ session_key: S, offer_id: 'o1', action: 'drop' }))
+    expect(askUi.heldSheet(S)).toBeNull()
+  })
+
+  it.each(['close', 'escape'])('"Signing in…" keeps focus in the sheet and can be closed (%s); a late offer is dropped', async how => {
+    const settle = answerLater()
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    await screen.findByTestId('quick-ask-held-signing')
+    expect(document.activeElement).toBe(screen.getByTestId('quick-ask-sheet'))
+    if (how === 'close') fireEvent.click(screen.getByTestId('quick-ask-held-close'))
+    else fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('quick-ask-held-signing')).toBeNull())
+    // The ask is still pending on the gateway, yet its form does not come back.
+    expect(screen.queryByTestId('quick-ask-sheet')).toBeNull()
+    await settle({ ok: true, outcome: 'filled', save_offer: OFFER })
+    await waitFor(() => expect(writes.saveOffer).toHaveBeenCalledWith({ session_key: S, offer_id: 'o1', action: 'drop' }))
+    expect(screen.queryByTestId('quick-ask-held-offer')).toBeNull()
+  })
+
+  it('the question closes before the gateway lets go of the login', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    writes.answer.mockResolvedValueOnce({ ok: true, outcome: 'filled', save_offer: { ...OFFER, expires_in_s: 120 } })
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    await screen.findByTestId('quick-ask-held-offer')
+    act(() => { vi.advanceTimersByTime(120_000 - OFFER_EXPIRY_MARGIN_MS - 1000) })
+    expect(screen.getByTestId('quick-ask-held-offer')).toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(1000) })
+    await waitFor(() => expect(screen.queryByTestId('quick-ask-held-offer')).toBeNull())
+    expect(writes.saveOffer).not.toHaveBeenCalled()
+  })
+
+  it('a Save that lands after its sheet closed never marks another sheet saved', async () => {
+    let finish: (v: unknown) => void = () => {}
+    writes.answer.mockResolvedValueOnce({ ok: true, outcome: 'filled', save_offer: OFFER })
+    writes.saveOffer.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    fireEvent.click(await screen.findByTestId('quick-ask-held-save'))
+    fireEvent.click(screen.getByTestId('quick-ask-held-close'))
+    act(() => askUi.holdSheet(S, 'other-surface', { ...readQuickAsk(creds({ items: [] }))!, id: 'v2' }))
+    await act(async () => { finish({ ok: true, saved: true }) })
+    expect(askUi.heldSheet(S)?.phase).toBe('signing')
   })
 
   it.each(['click', 'escape'])('Not now (%s) closes the question and the gateway drops the login', async how => {

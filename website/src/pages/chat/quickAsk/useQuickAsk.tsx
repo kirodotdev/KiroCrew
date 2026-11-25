@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from 'react'
 import { ShieldCheck } from 'lucide-react'
 
 import { Btn } from '../../../components/ui'
@@ -10,6 +10,7 @@ import { askUi, useAskSurface } from './askUi'
 import { answerErrorText, isSignInTakeover, originHost, QuickAskTargetRing, takesOver, zoomStyle } from './QuickAskParts'
 import QuickAskInline from './QuickAskInline'
 import QuickAskSheet from './QuickAskSheet'
+import { foldHeldSheet } from './QuickAskVault'
 import type { QuickAsk } from './types'
 
 export interface QuickAskSlots {
@@ -34,6 +35,13 @@ export function useQuickAsk(sessionKey: string, ask: QuickAsk | null, priority: 
   const instanceId = useId()
   const isMobile = useIsMobile()
   const view = useAskSurface(instanceId, ask?.id ?? null, priority)
+  // A held sheet whose surface goes (the chat left, the big view closed) is closed
+  // with it: Not now on a question, and an answer still in flight finds no sheet
+  // and drops its offer (`QuickAskSheet`'s send).
+  useEffect(() => () => {
+    const h = askUi.heldSheet(sessionKey)
+    if (h && h.holder === instanceId) foldHeldSheet(sessionKey, h)
+  }, [sessionKey, instanceId])
   // A sign-in sheet kept open after its typed Fill stays on the surface that sent it, past its ask.
   const held = askUi.heldSheet(sessionKey)
   if (held && held.holder === instanceId) {

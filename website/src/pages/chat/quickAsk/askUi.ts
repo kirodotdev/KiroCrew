@@ -86,9 +86,9 @@ class AskUi {
     this.held.set(sessionKey, { ...h, phase: 'offer', offer }); this.notify()
     return true
   }
-  markHeldSaved(sessionKey: string): void {
+  markHeldSaved(sessionKey: string, askId: string): void {
     const h = this.held.get(sessionKey)
-    if (h) { this.held.set(sessionKey, { ...h, phase: 'saved' }); this.notify() }
+    if (h && h.ask.id === askId) { this.held.set(sessionKey, { ...h, phase: 'saved' }); this.notify() }
   }
   releaseSheet(sessionKey: string, askId?: string): void {
     const h = this.held.get(sessionKey)

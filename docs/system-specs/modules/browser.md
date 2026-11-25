@@ -1257,10 +1257,10 @@ Typing (no match, or **Other account** opened beside one) has no save box. After
 sheet open on **Signing in…** while the answer route, after settling the ask (the
 agent has its outcome), watches the tab for up to `vault_fill.LAND_WAIT_S` (30 s),
 reading only. The sign-in has landed when the tab leaves the bound site, or when
-the bound site has shown no usable password box for `LAND_QUIET_S` (2 s); a new
+the bound site has laid out no password box, locked or not, for `LAND_QUIET_S` (2 s); a new
 document that shows a password box again (as after a wrong password), the time
 running out, another ask or another tab means it has not, and the sheet closes.
-Once landed, the answer carries `save_offer` (`{id, site, username}`, never the
+Once landed, the answer carries `save_offer` (`{id, site, username, expires_in_s}`, never the
 password) and the same sheet asks **Save this login?** with the site and username,
 **Not now** and **Save** (primary). Until then and until the answer, the typed
 username and password live only in gateway memory (`vault_fill.hold_offer`, one

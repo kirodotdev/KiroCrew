@@ -1489,18 +1489,6 @@ async def page_moved(probe: PageProbe, ask: QuickAsk) -> bool:
         return True
 
 
-async def password_shown(probe: PageProbe, ask: QuickAsk, frames: Any = None) -> bool | None:
-    """Whether the bound site shows a usable password box now (the save offer's
-    landing check, ``vault_fill.wait_signed_in``). ``None`` when a read fails or
-    the tab is on another site. A page between two documents can read ``False``,
-    so the caller trusts only an answer that holds."""
-    try:
-        login = await _find_login(probe, ask.top_origin, ask.origin, frames)
-    except AskError:
-        return None
-    return login is not None and bool(login.password)
-
-
 async def human_check_passed(probe: PageProbe, ask: QuickAsk) -> bool:
     """Whether the widget reports success. Raises ``origin_changed`` when the page moved."""
     if await probe.top_frame() != (ask.top_frame_id, ask.top_loader_id, ask.top_origin):
@@ -1583,7 +1571,6 @@ __all__ = [
     "origin_of",
     "owner_problem",
     "page_moved",
-    "password_shown",
     "takeover_rect_now",
     "parse_ask",
     "target_problem",

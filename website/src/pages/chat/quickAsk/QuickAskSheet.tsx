@@ -121,6 +121,12 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse, holde
   // Esc folds, Tab stays inside. Keys typed here are the sheet's: the page's
   // shortcuts (and the big view's replay keys) must not act on them, so the
   // listener stops them here; React's own handlers on ancestors never see them.
+  // A held phase replaces the focused form in place: focus goes to the panel, so
+  // Esc still reaches it (the question's own effect then focuses Save).
+  const heldPhase = held?.phase ?? null
+  useEffect(() => {
+    if (heldPhase === 'signing' || heldPhase === 'saved') ref.current?.focus()
+  }, [heldPhase])
   // Past the ask (a held sheet), Esc and the backdrop close it: Not now on the question.
   const fold = () => { if (held) foldHeldSheet(sessionKey, held); else onCollapse() }
   const collapseRef = useRef(fold)

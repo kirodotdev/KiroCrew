@@ -854,12 +854,15 @@ class BrowserLiveStore {
     try {
       const r = await this.writes.answer({ session_key: sessionKey, ask_id: askId, action, ...(values ? { values } : {}), ...(vault ?? {}) })
       const d = (r ?? {}) as { ok?: unknown; outcome?: unknown; error?: unknown; save_offer?: unknown }
-      const offer = (d.save_offer && typeof d.save_offer === 'object' ? d.save_offer : {}) as { id?: unknown; site?: unknown; username?: unknown }
+      const offer = (d.save_offer && typeof d.save_offer === 'object' ? d.save_offer : {}) as { id?: unknown; site?: unknown; username?: unknown; expires_in_s?: unknown }
       return {
         ok: d.ok === true,
         ...(typeof d.outcome === 'string' ? { outcome: d.outcome } : {}),
         ...(typeof offer.id === 'string' && offer.id && typeof offer.site === 'string'
-          ? { saveOffer: { id: offer.id, site: offer.site, username: typeof offer.username === 'string' ? offer.username : '' } }
+          ? { saveOffer: {
+            id: offer.id, site: offer.site, username: typeof offer.username === 'string' ? offer.username : '',
+            ...(typeof offer.expires_in_s === 'number' && offer.expires_in_s > 0 ? { expiresInMs: offer.expires_in_s * 1000 } : {}),
+          } }
           : {}),
         ...(d.ok === true ? {} : { error: typeof d.error === 'string' && d.error ? d.error : 'send_failed' }),
       }

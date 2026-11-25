@@ -78,7 +78,7 @@ export type QuickAskError = 'origin_changed' | 'stale' | 'not_owner' | 'too_larg
 /** `saveOffer`: a typed sign-in landed and the gateway holds it in memory until the person answers. */
 export interface QuickAskAnswer { ok: boolean; outcome?: string; error?: QuickAskError | string; saveOffer?: QuickAskSaveOffer }
 /** What the sheet's "Save this login?" shows: never the password, which stays in the gateway. */
-export interface QuickAskSaveOffer { id: string; site: string; username: string }
+export interface QuickAskSaveOffer { id: string; site: string; username: string; /** How long the gateway holds the login, in ms from the answer. */ expiresInMs?: number }
 /** A credentials answer's vault part: fill from a picked login. */
 export interface QuickAskVaultChoice { vault_item?: string }
 

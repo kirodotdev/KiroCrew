@@ -349,6 +349,19 @@ def _moved_on(hub: LiveHub, key: str, ask: qa.QuickAsk, stream: Any) -> bool:
     )
 
 
+def _turn_folded(hub: LiveHub, key: str, ask: qa.QuickAsk, stream: Any) -> bool:
+    """Whether the agent's turn ended on the watched tab (the hub dropped its stream),
+    rather than the person or the agent moving to another tab or ask."""
+    sess = hub.get(key)
+    return (
+        sess is not None
+        and sess.ended
+        and sess.stream is None
+        and stream.target_id == ask.target_id
+        and (sess.ask is None or sess.ask is ask)
+    )
+
+
 async def _act(
     hub: LiveHub,
     key: str,
@@ -388,12 +401,16 @@ async def _act(
     # The typed login, kept past the fill only while its landing is watched.
     held = dict(values) if offer_save and values is not None else None
     landed = False
+    before_fill: tuple[str, str, str] | None = None
     try:
         async with hub.op_fence(key):
             # The fence may have waited on an agent op: the ask can have ended
             # meanwhile (the turn folded it), and a late write or click must not land.
             if ask.outcome or asyncio.get_running_loop().time() >= ask.deadline:
                 return _fail(409, "stale")
+            if held is not None:
+                # The document before the fill: the landing watch compares later reads with it.
+                before_fill = await vault_fill.read_top(probe)
             if action == "fill" and ask.spec.sign_in_takeover:
                 assert values is not None
                 await qa.sign_in(probe, ask, values, getattr(stream, "frames", None))
@@ -448,7 +465,12 @@ async def _act(
         # The agent has its outcome; the sheet's "Signing in…" waits for the page.
         frames = getattr(stream, "frames", None)
         if await vault_fill.wait_signed_in(
-            probe, ask, frames, lambda: _moved_on(hub, key, ask, stream)
+            probe,
+            ask,
+            frames,
+            lambda: _moved_on(hub, key, ask, stream),
+            folded=lambda: _turn_folded(hub, key, ask, stream),
+            base=before_fill,
         ):
             # The card's own question; the agent never sees it.
             return _ok(outcome=outcome, save_offer=vault_fill.hold_offer(key, ask.origin, held))

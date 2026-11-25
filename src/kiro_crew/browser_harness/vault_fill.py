@@ -273,7 +273,53 @@ async def save_login(origin: str, values: dict[str, str], reserved: Callable[[st
 # ---- asking to save after the sign-in landed ----------------------------------
 
 
-async def _top(probe: qa.PageProbe) -> tuple[str, str, str] | None:
+#: Is a password box laid out in this document (through open shadow roots)?
+#: Disabled and read-only boxes count: a form that locks its fields while it
+#: checks the password has not signed in yet.
+_PASSWORD_PRESENT_JS = """(function () {
+  var found = false;
+  var walk = function (root, depth) {
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length && !found; i++) {
+      var el = all[i];
+      if (el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'password') {
+        var r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+        if (r.width >= 2 && r.height >= 2 && cs.display !== 'none' && cs.visibility !== 'hidden') found = true;
+      }
+      if (el.shadowRoot && depth < 4) walk(el.shadowRoot, depth + 1);
+    }
+  };
+  walk(document, 0);
+  return found;
+})()"""
+
+
+async def password_shown(probe: qa.PageProbe, ask: qa.QuickAsk, frames: Any = None) -> bool | None:
+    """Whether a frame of the bound site lays out a password box now, locked or
+    not (the save offer's landing check, ``vault_fill.wait_signed_in``). ``None``
+    when the tab is on another site or mid-navigation, or a read fails. A page
+    between two documents can read ``False``, so the caller trusts only an
+    answer that holds."""
+    try:
+        top_id, _loader, now = await probe.top_frame()
+        if not top_id or not now or now != ask.top_origin:
+            return None
+        for fprobe, frame_id in await qa._login_frames(probe, top_id, frames):
+            if frame_id != top_id:
+                _fid, _floader, f_origin = await qa._frame_identity(probe, fprobe, frame_id)
+                if f_origin != ask.origin:
+                    continue
+            elif now != ask.origin:
+                continue
+            ctx = await fprobe.world(frame_id)
+            if await fprobe.evaluate(ctx, _PASSWORD_PRESENT_JS) is True:
+                return True
+    except qa.AskError:
+        return None
+    return False
+
+
+async def read_top(probe: qa.PageProbe) -> tuple[str, str, str] | None:
     try:
         return await probe.top_frame()
     except qa.AskError:
@@ -281,38 +327,49 @@ async def _top(probe: qa.PageProbe) -> tuple[str, str, str] | None:
 
 
 async def wait_signed_in(
-    probe: qa.PageProbe, ask: qa.QuickAsk, frames: Any, stop: Callable[[], bool]
+    probe: qa.PageProbe,
+    ask: qa.QuickAsk,
+    frames: Any,
+    stop: Callable[[], bool],
+    folded: Callable[[], bool] = lambda: False,
+    base: tuple[str, str, str] | None = None,
 ) -> bool:
     """Whether a typed sign-in landed, watched for up to :data:`LAND_WAIT_S`. Reads only.
 
     Landed: the tab left the bound site, or the bound site has shown no password
     box for :data:`LAND_QUIET_S`. Not landed: a new document shows a password box
     again (the site asked again, as after a wrong password), the time ran out,
-    or *stop* says the tab or the ask moved on.
+    or *stop* says the tab or the ask moved on. When *stop* fires because the
+    agent's turn ended (*folded*: the stream is gone, so the page cannot
+    be read), the last read decides: a new document with no password box landed.
+    *base* is the tab's document read before the fill, so a page that moved on
+    during the fill already counts as a new document.
     """
     loop = asyncio.get_running_loop()
     end = loop.time() + LAND_WAIT_S
-    base = await _top(probe)
+    base = base if base is not None else await read_top(probe)
     clear_since: float | None = None
+    new_doc = False
     while not stop():
-        top = await _top(probe)
+        top = await read_top(probe)
         now = loop.time()
         if top is not None and top[2]:
             if top[2] != ask.top_origin:
                 return True
-            shown = await qa.password_shown(probe, ask, frames)
+            new_doc = base is not None and top != base
+            shown = await password_shown(probe, ask, frames)
             if shown is False:
                 clear_since = now if clear_since is None else clear_since
                 if now - clear_since >= LAND_QUIET_S:
                     return True
             elif shown:
                 clear_since = None
-                if base is not None and top != base:
+                if new_doc:
                     return False
         if now >= end:
             return False
         await asyncio.sleep(qa.STEP_POLL_S)
-    return False
+    return folded() and new_doc and clear_since is not None
 
 
 class SaveOffer:
@@ -349,14 +406,19 @@ def _expire(session_key: str, held: SaveOffer) -> None:
         drop_offer(session_key)
 
 
-def hold_offer(session_key: str, origin: str, values: dict[str, str]) -> dict[str, str]:
+def hold_offer(session_key: str, origin: str, values: dict[str, str]) -> dict[str, Any]:
     """Hold a copy of *values* for :data:`SAVE_OFFER_TTL_S`; what the sheet shows:
-    ``{id, site, username}``. A newer offer for the session drops the older one."""
+    ``{id, site, username, expires_in_s}``. A newer offer for the session drops the older one."""
     drop_offer(session_key)
     held = SaveOffer(origin, values)
     held.timer = asyncio.get_running_loop().call_later(SAVE_OFFER_TTL_S, _expire, session_key, held)
     _offers[session_key] = held
-    return {"id": held.id, "site": item_name_for(origin), "username": held.values["username"]}
+    return {
+        "id": held.id,
+        "site": item_name_for(origin),
+        "username": held.values["username"],
+        "expires_in_s": int(SAVE_OFFER_TTL_S),
+    }
 
 
 def take_offer(session_key: str, offer_id: str) -> SaveOffer | None:
@@ -384,6 +446,8 @@ __all__ = [
     "item_name_for",
     "login_values",
     "offer",
+    "read_top",
+    "password_shown",
     "save_login",
     "shape",
     "take_offer",

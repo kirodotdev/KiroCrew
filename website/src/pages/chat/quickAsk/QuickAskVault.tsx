@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { Check, ChevronDown, KeyRound, Loader2, UserPlus, type LucideIcon } from 'lucide-react'
+import { Check, ChevronDown, KeyRound, Loader2, UserPlus, X, type LucideIcon } from 'lucide-react'
 
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -98,15 +98,20 @@ export function VaultLogins({ items, more = 0, busy, onPick, other }: {
 
 /** How long "Saved to Secrets store" shows before the sheet closes. */
 export const SAVED_SHOW_MS = 2500
+/** The question closes this long before the gateway's hold ends, so a Save sent at the last moment still lands. */
+export const OFFER_EXPIRY_MARGIN_MS = 5000
 
-/** The held sheet's heading row: the same icon tile and title as the ask's own. */
-function HeldHead({ icon: Icon, title, titleId, spin }: { icon: LucideIcon; title: string; titleId: string; spin?: boolean }) {
+/** The held sheet's heading row: the same icon tile, title and close button as the ask's own. */
+function HeldHead({ icon: Icon, title, titleId, spin, onClose }: { icon: LucideIcon; title: string; titleId: string; spin?: boolean; onClose: () => void }) {
   return (
     <div className="flex items-center gap-3">
       <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-subtle text-accent">
         <Icon size={20} aria-hidden="true" className={spin ? 'animate-spin' : undefined} />
       </div>
       <h2 id={titleId} className="min-w-0 flex-1 text-[16px] font-semibold leading-6 text-text-strong">{title}</h2>
+      <Btn type="button" className="!px-1.5 border-transparent shrink-0" onClick={onClose} aria-label={i18nT('pages.chat.quickAsk.not_now')} title={i18nT('pages.chat.quickAsk.not_now')} data-testid="quick-ask-held-close">
+        <X size={16} aria-hidden="true" />
+      </Btn>
     </div>
   )
 }
@@ -128,11 +133,20 @@ export function HeldSaveBody({ sessionKey, held, titleId }: { sessionKey: string
     const t = setTimeout(() => askUi.releaseSheet(sessionKey, askId), SAVED_SHOW_MS)
     return () => clearTimeout(t)
   }, [sessionKey, askId, phase])
+  // The question closes when the gateway lets go of the login, so a Save is never
+  // offered for a login that is already gone.
+  const expiresInMs = phase === 'offer' ? offer?.expiresInMs : undefined
+  useEffect(() => {
+    if (!expiresInMs) return
+    const t = setTimeout(() => askUi.releaseSheet(sessionKey, askId), Math.max(0, expiresInMs - OFFER_EXPIRY_MARGIN_MS))
+    return () => clearTimeout(t)
+  }, [sessionKey, askId, expiresInMs])
+  const close = () => foldHeldSheet(sessionKey, held)
   if (phase === 'signing') {
-    return <div role="status" data-testid="quick-ask-held-signing"><HeldHead icon={Loader2} spin title={i18nT('pages.chat.quickAsk.signing_in')} titleId={titleId} /></div>
+    return <div role="status" data-testid="quick-ask-held-signing"><HeldHead icon={Loader2} spin title={i18nT('pages.chat.quickAsk.signing_in')} titleId={titleId} onClose={close} /></div>
   }
   if (phase === 'saved') {
-    return <div role="status" data-testid="quick-ask-held-saved"><HeldHead icon={Check} title={i18nT('pages.chat.quickAsk.save_offer_saved')} titleId={titleId} /></div>
+    return <div role="status" data-testid="quick-ask-held-saved"><HeldHead icon={Check} title={i18nT('pages.chat.quickAsk.save_offer_saved')} titleId={titleId} onClose={close} /></div>
   }
   if (!offer) return null
   const notNow = () => {
@@ -143,12 +157,12 @@ export function HeldSaveBody({ sessionKey, held, titleId }: { sessionKey: string
     setBusy(true)
     const ok = await browserLiveStore.answerSaveOffer(sessionKey, offer.id, 'save')
     setBusy(false)
-    if (ok) askUi.markHeldSaved(sessionKey)
+    if (ok) askUi.markHeldSaved(sessionKey, askId)
     else { askUi.releaseSheet(sessionKey, askId); askUi.markUnsaved(sessionKey) }
   }
   return (
     <div data-testid="quick-ask-held-offer">
-      <HeldHead icon={KeyRound} title={i18nT('pages.chat.quickAsk.save_offer_title')} titleId={titleId} />
+      <HeldHead icon={KeyRound} title={i18nT('pages.chat.quickAsk.save_offer_title')} titleId={titleId} onClose={notNow} />
       <div className="mt-4 flex h-11 min-w-0 items-center gap-3 rounded-md border border-border bg-bg-hover px-3 text-[15px]" data-testid="quick-ask-held-login">
         <span className="min-w-0 truncate font-semibold text-text-strong">{offer.site}</span>
         {offer.username && <span className="ml-auto min-w-0 truncate text-text">{offer.username}</span>}
@@ -167,6 +181,8 @@ export function HeldSaveBody({ sessionKey, held, titleId }: { sessionKey: string
 
 /** Esc, or the phone's backdrop, on a held sheet: Not now on the question; else just close. */
 export function foldHeldSheet(sessionKey: string, held: HeldSheet): void {
+  // The ask was answered by its Fill: closing the held sheet must not bring the form back.
+  askUi.markAnswered(held.ask.id)
   askUi.releaseSheet(sessionKey, held.ask.id)
   if (held.phase === 'offer' && held.offer) void browserLiveStore.answerSaveOffer(sessionKey, held.offer.id, 'drop')
 }
