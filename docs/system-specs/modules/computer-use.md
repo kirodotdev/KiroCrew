@@ -563,10 +563,12 @@ models is the point.
 | `POST /api/computer-use/invoke` | loopback + `X-Internal-Secret` | the stdio shim ONLY |
 | `POST /api/computer-use/frame` | loopback + `X-Internal-Secret` | this gateway's own capture thread ONLY |
 
-`invoke` is in `server._STRICT_INTERNAL_API_PATHS` — no cookie fall-through, and
-non-loopback is denied outright. It is the entry point to accessibility reads and
-input synthesis, so it is the one route where a cookie fall-through would be a
-genuinely new attack path rather than a convenience. It is registered in
+`invoke` is in `server._STRICT_INTERNAL_API_PATHS`, and non-loopback is denied
+outright. A loopback request with no `X-Internal-Secret` falls through to cookie
+auth, where a dashboard session must be the owner's or a teammate's
+(`require_owner_dashboard_request`; any other session gets 403 `owner_only`) and
+an app token stays under its own scope (`token_auth.token_auth_middleware`). It is
+the entry point to accessibility reads and input synthesis. It is registered in
 `_register_mcp_routes` so the headless `--slack-only` server exposes it too (kiro-cli
 spawns the shim on both entrypoints). The config pair is deliberately NOT in that
 set: it is browser-called, like the browser-config pair.
