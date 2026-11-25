@@ -10,7 +10,7 @@ import type { useComposerChips } from './composerChips'
 import type { MemoryMode } from '../../../components/MemoryModeChip'
 import { anchorForSlot, sessionSlots, loadLayout } from '../../../hooks/splitLayoutStore'
 import type { SplitDir } from '../../../hooks/useSessionGrid'
-import { CHAT_PANE_MIN_W, sidePanelFillWidth } from '../SidePanel'
+import { sidePanelFillWidth } from '../SidePanel'
 import { useSidePanelDock } from '../../../hooks/useSidePanelDock'
 import { parseStoredSidebarWidth, SIDEBAR_MAX } from '../sidebarWidth'
 import { focusComposerAfter, focusComposer } from '../composerFocus'
@@ -88,8 +88,8 @@ export function usePaneLayoutState({
   }, [dispatch, companionEmbed, sidePanelAlwaysOpen, isMobile, sidePanelAlwaysOpenKnown])
   // Report the chat whose strip the side panel shows (null: none), so a show
   // ends when the panel closes or its chat changes. The report comes from this
-  // page, not from the panel's own mount, so a panel remount (the find pane
-  // closing, a resize across the phone breakpoint) is not a new show and does
+  // page, not from the panel's own mount, so a panel remount (a resize
+  // across the phone breakpoint) is not a new show and does
   // not move Pin Summary's tab. usePanelTabs keeps the last report (see
   // notePanelShown), so this page mounting again on the same chat ends nothing,
   // and a chat change made while it was unmounted ends the old chat's show.
@@ -303,16 +303,10 @@ export function usePanelLayout({
     }
   }, [slotsLoaded, filteredSlots.length, sidebarPinned, previewExpanded, setSidebarPinned])
 
-  // Horizontal space (px) the detail panel must keep clear so it never grows
-  // past its flex row and collapses the chat pane: the open sidebar's width
-  // plus a usable chat-pane minimum. On mobile the panel is full-screen (no
-  // shared row), so no reserve applies.
-  const CHAT_PANE_MIN = CHAT_PANE_MIN_W
-  const panelReserve = isMobile ? undefined : (sidebarOpen ? effectiveSidebarWidth : 0) + CHAT_PANE_MIN
   // The panel takes its maximum only while the session list is actually hidden.
   // That maximum is measured against the header's reserve, which knows nothing
   // about the session list's width — so keeping it while the user reopens the
-  // list inside expand mode pushes the chat pane below CHAT_PANE_MIN and clips
+  // list inside expand mode pushes the chat pane below CHAT_PANE_MIN_W and clips
   // its content. Reverting to the normal width maths there costs the preview a
   // few hundred px in a state the user asked for by reopening the list.
   const panelMaximized = previewExpanded && !sidebarOpen
@@ -501,7 +495,7 @@ export function usePanelLayout({
   // The welcome screen puts its memory chip directly above the composer.
   const showComposerMemoryChip = isWelcomeState
   return {
-    flyoutNew, panelReserve, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip,
+    flyoutNew, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip,
     memorySwitching, composerOptimizing, handleOptimizingChange,
   }
 }

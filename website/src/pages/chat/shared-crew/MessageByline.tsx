@@ -92,6 +92,27 @@ export function AppSenderByline({ meta }: { meta?: Record<string, unknown> }) {
   return app ? <AppSenderLine id={app.name} /> : null
 }
 
+/** The name a user row's sender goes by when it is not the viewer: the app that
+ *  sent it, or a teammate in a Crew that attributes. *fallback* (the viewer's
+ *  own "You") otherwise. The same rules as `MessageByline`, as plain text. */
+export function MessageSenderName({ meta, slotKey, fallback }: { meta?: Record<string, unknown>; slotKey?: string; fallback: string }) {
+  const app = appSender(meta)
+  if (app) return <AppName id={app.name} fallback={fallback} />
+  const author = messageAuthor(meta)
+  if (!author) return <>{fallback}</>
+  return <AuthorName author={author} slotKey={slotKey} fallback={fallback} />
+}
+
+function AppName({ id, fallback }: { id: string; fallback: string }) {
+  const name = useAppName(id)
+  return <>{name || i18nT('sharedCrew.sent_by_an_app') || fallback}</>
+}
+
+function AuthorName({ author, slotKey, fallback }: { author: PublicPrincipal; slotKey?: string; fallback: string }) {
+  const sender = useOtherSender(author, slotKey)
+  return <>{sender ? principalName(sender) || i18nT('sharedCrew.unattributed') : fallback}</>
+}
+
 /** `continuesRun`: the message above is the same person's
  *  (`continuesAuthorRun`), so the name is said once per run of messages. An
  *  app's label is not part of a run: it shows on every row an app sent. */

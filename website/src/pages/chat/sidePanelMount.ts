@@ -34,36 +34,31 @@ export interface SidePanelMountInput {
   hasBrowserTab: boolean
   /** Authored dashboard document and answer drafts survive hiding the panel. */
   hasTaskDashboard?: boolean
-  /** The find pane takes the dock slot exclusively. */
-  searchOpen: boolean
 }
 
 /** Whether to render the panel subtree at all.
  *
  *  A live app tab makes this UNCONDITIONAL. Everything else — the user closing
- *  the panel, the find pane claiming the dock — controls *visibility* only
+ *  the panel — controls *visibility* only
  *  (`isSidePanelHidden`), never mounting. Deciding not to mount is deciding to
  *  destroy the drawing, and no transient UI state is worth that. A live
  *  `browser` tab is kept mounted for the same reason: its WebContentsView is
  *  destroyed on unmount, so a close would lose the loaded page.
  *
- *  With no app tab, behaviour is exactly as before: the find pane takes the dock
- *  exclusively and closing the panel unmounts it, preserving the exit animation. */
-export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen }: SidePanelMountInput): boolean {
+ *  With no app tab, closing the panel unmounts it, preserving the exit animation. */
+export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard }: SidePanelMountInput): boolean {
   if (hasLiveAppTab || hasBrowserTab || hasTaskDashboard) return true
-  if (searchOpen) return false
   return activityOpen
 }
 
 /** Whether the rendered subtree should be visually hidden (mounted, not shown).
  *
- *  Two reasons to hide: the user closed the panel, or the find pane owns the dock.
- *  Both are reachable only via the keep-mounted path — with no app tab those
- *  states unmount instead, so this never returns true for a panel the user has
- *  open and unobstructed. */
+ *  The one reason to hide: the user closed the panel. It is reachable only via
+ *  the keep-mounted path — with no app tab a closed panel unmounts instead, so
+ *  this never returns true for a panel the user has open. */
 export function isSidePanelHidden(input: SidePanelMountInput): boolean {
   if (!shouldMountSidePanel(input)) return false
-  return input.searchOpen || !input.activityOpen
+  return !input.activityOpen
 }
 
 /**

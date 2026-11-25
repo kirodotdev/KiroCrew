@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, Link2, Pause, Settings } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
@@ -10,7 +10,8 @@ import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { useLabelTip } from '../../components/InstantTip'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import LinkedSurfacesSection from '../../components/LinkedSurfacesSection'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import SearchMenuRow from '../../components/chatHistorySearch/SearchMenuRow'
 import HeaderControl from './HeaderControl'
 
 /**
@@ -34,9 +35,23 @@ import HeaderControl from './HeaderControl'
  * shortcut: the chip names the first link only; a Bot linked to two channels
  * still gets every row in the menu. Name them all if that becomes common.
  */
-export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string; inBar: boolean }) {
+export default function BotLinkedChannels({ slotKey, inBar, onOpenSearch, searchFallback = null }: {
+  /** The CONFIRMED slot, or null while there is none: the rows write, so no
+   *  chip shows for a slot the thread endpoint has not confirmed. The header
+   *  renders this component either way, so the Search fallback keeps one place
+   *  in the tree as the slot confirms. */
+  slotKey: string | null | undefined
+  inBar: boolean
+  /** Opens the chat's history search. While the chip shows, Search is the
+   *  first row of its menu: the header holds the chip and the panel opener,
+   *  two peers (`max-two-buttons-per-row`), and the chip keeps its label. */
+  onOpenSearch?: () => void
+  /** What the header shows in the chip's place while there is no chip: the
+   *  Search button, so Search stays one click away. */
+  searchFallback?: ReactNode
+}) {
   const { t } = useTranslation()
-  const link = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))?.links?.[0]
+  const link = useAppSelector(s => (slotKey ? slotRowByKey(s.dashboard.slots, slotKey) : undefined))?.links?.[0]
   // The same query, key and shape the rows' offers read, so the two share one
   // cache entry and agree on whether anything can be connected.
   const { data, errorUpdatedAt, dataUpdatedAt } = useQuery({
@@ -45,6 +60,7 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
       Array.isArray(result) ? result as ConfiguredChannelTarget[] : []
     )),
     refetchInterval: 30_000,
+    enabled: !!slotKey,
   })
   const targets = data ?? []
   // A failed target read keeps the chip too: its menu carries the rows' own
@@ -53,7 +69,7 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
   // rows' own mount refetches, which would hide the chip, unmount the rows and
   // start the loop again.
   const targetsFailed = errorUpdatedAt > dataUpdatedAt
-  const visible = !!link || targets.length > 0 || targetsFailed
+  const visible = !!slotKey && (!!link || targets.length > 0 || targetsFailed)
   // Only once the read has answered "nothing": before it does, a settings link
   // would flash on a crew that has a channel.
   const setUp = !visible && data !== undefined
@@ -74,8 +90,12 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
     // would pop open by itself when the chip comes back.
     if (open) setOpen(false)
     // The phone bar has no room for it beside the centred identity pill.
-    if (!setUp || inBar) return null
+    if (!setUp || inBar) return <>{searchFallback}</>
+    // The set-up link takes the chip's place, and the header holds two
+    // controls (`max-two-buttons-per-row`): Search stays on the panel's
+    // + menu and ⌘F / Ctrl+F.
     return (
+      <>
       <HeaderControl
         inBar={false}
         chipClassName="glass-hover flex items-center justify-center gap-1.5 h-8 px-2.5 rounded-full min-w-0 max-w-full text-[12.5px] text-text cursor-pointer"
@@ -92,6 +112,7 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
         <span className="truncate">{label}</span>
         {tip.bubble}
       </HeaderControl>
+      </>
     )
   }
   return (
@@ -133,7 +154,14 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
           target.focus()
         }}
       >
-        <LinkedSurfacesSection slotKey={slotKey} variant="dropdown" withoutSessionMenu />
+
+        {onOpenSearch && (
+          <>
+            <SearchMenuRow onSelect={onOpenSearch} testId="member-header-search" />
+            <DropdownMenuSeparator />
+          </>
+        )}
+        <LinkedSurfacesSection slotKey={slotKey ?? ''} variant="dropdown" withoutSessionMenu />
       </DropdownMenuContent>
     </DropdownMenu>
   )

@@ -48,6 +48,8 @@ import type { ChatMessage } from '../types'
 import { structuredMonitorLoop } from './monitorFixtures'
 import { normalizeAutomationRecord, type AutomationRecord } from '../monitoring/automation'
 import { captureUrlToken } from '../lib/urlToken'
+import { panelStripOf } from '../hooks/usePanelTabs'
+import { CHAT_HISTORY_SEARCH_TAB_ID } from '../pages/chat/useChatHistorySearchTab'
 
 // --- Prop recorders for the two panels whose callbacks are under test --------
 
@@ -1119,18 +1121,20 @@ describe('ChatPage per-message pin toggle', () => {
     expect(store.getState().chat.activityOpen).toBe(false)
   })
 
-  it('a first pin made from an open search does not open the panel over it', async () => {
+  it('a first pin made from an open search adds the Pins tab behind the Search tab', async () => {
     // Pinning is not a navigation request. Someone who searched the transcript to
-    // FIND the message they are pinning would otherwise lose the find pane and
+    // FIND the message they are pinning would otherwise lose the search and
     // its results on the very click that acts on a result.
-    const { store } = renderChatPage([msg('user', 'pin me', { ts: 'u1', meta: { mid: 'm-1' } })])
+    renderChatPage([msg('user', 'pin me', { ts: 'u1', meta: { mid: 'm-1' } })])
     await waitFor(() => expect(userMsgProps?.onTogglePin).toBeInstanceOf(Function))
     // Cmd+F is the real entry point (document-level handler in useMessageSearch).
     act(() => { fireEvent.keyDown(document, { key: 'f', metaKey: true }) })
+    await waitFor(() => expect(panelStripOf('chat-1').activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID))
 
     await act(async () => { userMsgProps!.onTogglePin!() })
     await waitFor(() => expect(pinsCreateMock).toHaveBeenCalled())
-    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(panelStripOf('chat-1').ids).toContain('pins')
+    expect(panelStripOf('chat-1').activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID)
   })
 
 })
@@ -1243,43 +1247,6 @@ describe('ChatPage URL prompt hand-off', () => {
 
     await waitFor(() => expect(window.location.search).not.toContain('token'))
     expect(window.location.search).toContain('sid=chat-1')
-  })
-})
-
-describe('ChatPage search scope disclosure', () => {
-  /** Open the find pane the real way -- the Cmd+F handler in useMessageSearch --
-   *  and type a term, so the count span renders. */
-  const openSearchAndType = (term: string) => {
-    act(() => { fireEvent.keyDown(document, { key: 'f', metaKey: true }) })
-    fireEvent.change(screen.getByPlaceholderText('Find in chat…'), { target: { value: term } })
-  }
-
-  it('qualifies the scope while the paging cursor does not describe the active slot', async () => {
-    // switchSlot.pending nulls the cursor key while leaving slotHasMore describing
-    // the outgoing slot, so false here is not this slot's answer
-    // (slotSwitch.ts in store/chat).
-    const { store } = renderChatPage([msg('assistant', 'hello there', { ts: 'a1' })], {
-      chat: { slotMessages: {} },
-    })
-    await waitFor(() => expect(shown()).toContain('hello there'))
-    expect(store.getState().chat.slotHasMore).toBe(false)
-    act(() => { store.dispatch({ type: 'chat/switchSlot/pending', meta: { arg: 'chat-1', requestId: 'r-scope' } }) })
-    expect(store.getState().chat.slotCursorKey).toBeNull()
-
-    openSearchAndType('zzz-no-match')
-    await waitFor(() => expect(shown()).toMatch(/in loaded history/i))
-  })
-
-  it('reads as complete once the cursor DOES describe the active slot', async () => {
-    // Opposite direction: the qualifier must not become unconditional, or every
-    // fully-loaded chat claims its search was partial.
-    const { store } = renderChatPage([msg('assistant', 'hello there', { ts: 'a1' })])
-    await waitFor(() => expect(shown()).toContain('hello there'))
-    expect(store.getState().chat.slotCursorKey).toBe('chat-1')
-
-    openSearchAndType('zzz-no-match')
-    await waitFor(() => expect(shown()).toContain('No results'))
-    expect(shown()).not.toMatch(/in loaded history/i)
   })
 })
 

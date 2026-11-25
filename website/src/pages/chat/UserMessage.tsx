@@ -7,6 +7,8 @@ import { pasteBlocksOf, unseededUserText } from './userMessageText'
 import SenderAvatar from './SenderAvatar'
 import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, ChevronRight, type LucideIcon } from 'lucide-react'
+import { useDoneFlash } from '../../hooks/useDoneFlash'
+import QuotedMark, { QUOTED_BTN_CLS } from './QuotedMark'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -551,6 +553,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   const sideOf = (draw: (other: boolean) => ReactNode) => (
     <OtherSenderBubble meta={meta} slotKey={slotKey}>{draw}</OtherSenderBubble>
   )
+  // Quote's done state. The quote lands in the composer, which can sit far
+  // from this row (a search preview beside the chat), so the row says it took
+  // for a moment. Above the early returns: it is a hook.
+  const [quoted, flashQuoted] = useDoneFlash()
   if (retractedAction) {
     const settleAnimated = !mountedRetracted && !reducedMotion
     // The meta field is free text from the transcript; anything unknown reads as
@@ -707,7 +713,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     // refused) as well as rejecting — both are a copy that did not happen.
     copyToClipboard(shownContent).then(ok => flash(ok ? 'ok' : 'failed'), () => flash('failed'))
   }
-  const quoteShown = () => onQuoteMessage?.(quotableContent)
+  const quoteShown = () => { onQuoteMessage?.(quotableContent); flashQuoted(true) }
   const copyLink = () => {
     if (!messageTs || !slotKey) return
     // Same error surface as Copy: a refused write is reported under the row,
@@ -1044,14 +1050,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
         {quoteInRow && (
           <button
             onClick={quoteShown}
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
+            className={`inline-flex items-center gap-1 text-muted hover:text-text p-0.5 rounded transition-colors ${quoted ? QUOTED_BTN_CLS : ''}`}
             data-testid="quote-message"
             title={i18nT('pages.chat.userMessage.quote_message')}
             aria-label={i18nT('pages.chat.userMessage.quote_message')}
           >
-            <Quote size={14} />
+            {quoted ? <QuotedMark /> : <Quote size={14} />}
           </button>
         )}
+        {quoted && !quoteInRow && <span className="inline-flex items-center gap-1 p-0.5" data-testid="quote-done"><QuotedMark /></span>}
         <button
           onClick={copyMessage}
           className="text-muted hover:text-text p-0.5 rounded transition-colors"

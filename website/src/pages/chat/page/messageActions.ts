@@ -1,5 +1,5 @@
 import type { NavigateFunction } from 'react-router-dom'
-import { useCallback, useState, useRef, useEffect, useMemo, type RefObject, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useState, useRef, useEffect, type RefObject, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { useAppSelector, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
@@ -82,7 +82,6 @@ interface MessageActionsOptions {
   handleFileOpen: ReturnType<typeof useChatPageResourcesController>['handleFileOpen']
   handleFolderOpen: (dirPath: string) => void
   handleArtifactOpen: (slug: string) => void
-  search: ReturnType<typeof useChatPageResourcesController>['search']
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
   sessionTitles: Map<string, string>
   selectSessionTab: (key: string) => void
@@ -100,14 +99,14 @@ interface MessageActionsOptions {
 
 /**
  * Per-message actions and the transcript facts the rows read: edit-and-resend and
- * the Cmd/Ctrl+Up edit request, the search highlight context, user-row content
+ * the Cmd/Ctrl+Up edit request, user-row content
  * rendering, the stream tick and transcript heat, the side panel toggle and the
  * activity-tab bridge, read aloud, and apply plan.
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useMessageActions({
-  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, showRefusedPress, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
+  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, showRefusedPress, handleFileOpen, handleFolderOpen, handleArtifactOpen,
   tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating, announceSent,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
@@ -167,15 +166,6 @@ export function useMessageActions({
   // the slot discards any unconsumed request instead of letting a later,
   // unrelated remount treat it as fresh.
   useEffect(() => { setEditLast(null) }, [activeSlot])
-
-  const searchCtxValue = useMemo(() => ({
-    term: search.term,
-    caseSensitive: search.caseSensitive,
-    currentMessageIdx: search.currentMessageIdx,
-    currentOccurrenceIdx: search.currentOccurrenceIdx,
-    reveal: search.reveal,
-    revealLedger: search.revealLedger,
-  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx, search.reveal, search.revealLedger])
 
   const renderUserContentCb = useCallback(
     // The session triple matches what the assistant / note rows hand
@@ -276,15 +266,12 @@ export function useMessageActions({
     window.addEventListener('toggle-activity-panel', h)
     return () => window.removeEventListener('toggle-activity-panel', h)
   }, [toggleAct])
-  // A closed/search-covered panel only reveals an existing, restored terminal.
-  // A ready, visible SidePanel handles focusing or creating a terminal itself.
-  const searchOpen = search.isOpen
-  const closeSearch = search.close
+  // A closed panel only reveals an existing, restored terminal. A ready,
+  // visible SidePanel handles focusing or creating a terminal itself.
   const terminalsPending = usePanelTerminalsPending()
   useEffect(() => {
-    if (activityOpen && !searchOpen) return
+    if (activityOpen) return
     const h = () => {
-      if (searchOpen) closeSearch()
       if (!terminalsPending) {
         const last = tabsCtl.tabs.filter(t => t.kind === 'terminal').at(-1)
         if (last) tabsCtl.setActive(last.id)
@@ -293,7 +280,7 @@ export function useMessageActions({
     }
     window.addEventListener(TOGGLE_SIDE_TERMINAL_EVENT, h)
     return () => window.removeEventListener(TOGGLE_SIDE_TERMINAL_EVENT, h)
-  }, [activityOpen, searchOpen, closeSearch, terminalsPending, tabsCtl, dispatch])
+  }, [activityOpen, terminalsPending, tabsCtl, dispatch])
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
@@ -331,7 +318,7 @@ export function useMessageActions({
     return false
   }, [planTaskId, navigate, showActionError])
   return {
-    handleEditResend, editLast, setEditLast, editSeqRef, farmPassRef, handleEditConsumed, searchCtxValue, renderUserContentCb, lastRole, streamTick, transcriptHot, railWidth, winW,
+    handleEditResend, editLast, setEditLast, editSeqRef, farmPassRef, handleEditConsumed, renderUserContentCb, lastRole, streamTick, transcriptHot, railWidth, winW,
     effectiveSidebarWidth, toggleAct, handleSpeak, handleApplyPlan,
   }
 }

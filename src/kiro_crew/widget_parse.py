@@ -35,7 +35,7 @@ copies, so a parser change must update both.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 # ── Character classes: mirror the frontend EXACTLY ──────────────────────────
@@ -138,6 +138,12 @@ class ParsedWidget:
     title: str
     slug: str
     truncated: bool = False
+    #: ``(start, end)`` character offsets of the whole span in ``raw``, from
+    #: ``<mcwidget`` to just past ``</mcwidget>`` (or the end of input when
+    #: ``truncated``), so a reader can drop the span and keep the prose around
+    #: it. Not part of a widget's identity, so equality ignores it. Backend-only:
+    #: ``parseBlocks`` has no such field, and the parity above covers detection only.
+    span: tuple[int, int] = field(default=(0, 0), compare=False)
 
 
 def mask_inline_code(line: str) -> str:
@@ -213,8 +219,11 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
     fence_len = 0
     fence_nestable = False
     inner_fence_depth = 0
+    # Offset in ``raw`` of the line being read, and of the open widget's tag.
+    line_at = 0
+    widget_at = 0
 
-    def flush_widget(truncated: bool = False) -> None:
+    def flush_widget(end: int, truncated: bool = False) -> None:
         nonlocal widget_buf, widget_title, widget_slug, widget_fence_tick
         widgets.append(
             ParsedWidget(
@@ -226,6 +235,7 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
                 title=widget_title or "Widget",
                 slug=widget_slug,
                 truncated=truncated,
+                span=(widget_at, end),
             )
         )
         widget_buf = []
@@ -234,17 +244,20 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
         widget_fence_tick = ""
 
     for line in lines:
+        here = line_at
+        line_at += len(line) + 1
         if state == "outside":
             masked = mask_inline_code(line)
             w_open = _WIDGET_OPEN_RE.search(masked)
             if w_open:
                 widget_title, widget_slug = _parse_attrs(w_open.group(1) or "")
+                widget_at = here + w_open.start()
                 after_tag = line[w_open.end() :]
                 # Close tag on the same line -> single-line widget.
                 w_close = _WIDGET_CLOSE_RE.search(mask_inline_code(after_tag))
                 if w_close:
                     widget_buf.append(after_tag[: w_close.start()])
-                    flush_widget()
+                    flush_widget(here + w_open.end() + w_close.end())
                 else:
                     if after_tag:
                         widget_buf.append(after_tag)
@@ -278,7 +291,7 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
                 before = line[: w_close.start()]
                 if before:
                     widget_buf.append(before)
-                flush_widget()
+                flush_widget(here + w_close.end())
                 state = "outside"
                 continue
             fence = _FENCE_OPEN_RE.match(line)
@@ -300,5 +313,5 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
     # flushWidget(!streaming) on final text (see module docstring). An open plain
     # fence flushes as a code block there, which is never a widget — nothing to do.
     if state in ("widget", "widget-fence"):
-        flush_widget(truncated=True)
+        flush_widget(len(raw), truncated=True)
     return widgets
