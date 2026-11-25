@@ -154,6 +154,166 @@ class TestFrameMismatchFailsClosed:
             assert is_denied(cmd) is None, cmd
 
 
+class TestNamesThatDifferOnlyInCase:
+    # Bash keeps ``S`` and ``s`` apart, but the lowered reading made them one
+    # variable: ``$S`` took the value of ``s`` and that value (here a python line
+    # in a here-document body) read as a frame bash never runs. The two readings
+    # then disagreed on frame count and the line was refused with no git or tar
+    # in it. Reported from a Playwright screenshot script.
+    _REPORTED = (
+        "S=$KIROCREW_SCRATCH/shots.mjs; python3 - \"$S\" <<'EOF'\n"
+        "import sys\n"
+        "p=sys.argv[1]; s=open(p).read()\n"
+        "a=\"await page.goto(base + '/capabilities?tab=templates&template=team-writer')\\n\"\n"
+        's=s.replace(a,a+"""const skip = page.getByText(\'Skip all\')\n'
+        "await skip.waitFor({ timeout: 20000 }).then(() => skip.click()).catch(() => {})\n"
+        "await page.waitForTimeout(1500)\n"
+        "for (const t of ['Skip all', 'Skip', 'Not now', 'Close']) {\n"
+        "  const b = page.getByRole('button', { name: t, exact: true })\n"
+        "  if (await b.isVisible().catch(() => false)) "
+        "{ await b.click().catch(() => {}); await page.waitForTimeout(800) }\n"
+        "}\n"
+        '""",1)\n'
+        "open(p,'w').write(s)\n"
+        "EOF\n"
+        "cd /home/dev/KiroCrew/.worktrees/fallback-refusal-way-forward/website && "
+        "node $S $KIROCREW_SCRATCH/fb-shots $KIROCREW_SCRATCH/jar 2>&1 | grep -v OpenSSL "
+        "| tail -6; ls $KIROCREW_SCRATCH/fb-shots"
+    )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            _REPORTED,
+            's=s.".p.e"\n$S',
+            's=s.".p.e"; echo $S',
+            "S=x; s=s.'.p.e'; node $S",
+            f"S=x; s=github.com; s_kc1={_S}; git clone $s:x",
+        ],
+        ids=["reported", "minimal", "minimal-echo", "minimal-assigned", "name-like-a-new-name"],
+    )
+    def test_a_line_that_dials_no_self_host_is_allowed(self, cmd):
+        assert is_denied(cmd) is None, cmd
+
+    # The same lines with a real transport to this host stay refused: the copy
+    # with the names renamed apart is read with every fail-closed on.
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f's=s.".p.e"; echo $S; sudo -H git clone {_S}:x',
+            f's=s.".p.e"; echo $S; sudo -H tar -xf {_S}:/x',
+            f's=s.".p.e"; echo $S; git clone ssh://{_S}/r',
+            f's=s.".p.e"; S=-H; sudo $S git clone {_S}:x',
+            f"S=-H; s=-h; sudo $S git clone {_S}:x",
+            f"s=-h; S=-H; sudo $S git clone {_S}:x",
+            's=s.".p.e"; echo $S; git clone $HOSTNAME:x',
+            's=s.".p.e"; echo $S; echo "a;b"; sudo -H git clone ssh://' + _S + "/r; cat <<EOF\neof",
+            _REPORTED.replace("ls $KIROCREW", f"git clone {_S}:x; ls $KIROCREW"),
+        ],
+        ids=[
+            "git-sudo-H",
+            "tar-sudo-H",
+            "ssh-url",
+            "flag-from-uppercase",
+            "uppercase-first",
+            "lowercase-first",
+            "hostname",
+            "heredoc-disagreement",
+            "reported-plus-dial",
+        ],
+    )
+    def test_a_self_transport_on_the_same_shape_is_refused(self, cmd):
+        assert _denied_by(cmd) == _RULE, cmd
+
+    # A binding or indirect reference the rename cannot follow reaches a renamed
+    # name through a spelling the rename left alone, so the renamed read would
+    # clear a line that really dials this host. For each shape below, base refuses
+    # the line and HEAD must still refuse it: `_rename_can_follow` keeps the full
+    # frame-count fail-closed. The lead's 11-25 list drives the coverage.
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f's=s.".p.e"; echo $S; read t <<<"git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; read -r t <<<"git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; read -a t <<<"git clone {_S}:x"; T=1; eval "${{t[*]}}"',
+            f's=s.".p.e"; echo $S; for t in "git clone {_S}:x"; do T=1; eval "$t"; done',
+            f's=s.".p.e"; echo $S; select t in "git clone {_S}:x"; do T=1; eval "$t"; break; done',
+            f's=s.".p.e"; echo $S; printf -v t "git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; mapfile -t t <<<"git clone {_S}:x"; T=1; eval "${{t[0]}}"',
+            f's=s.".p.e"; echo $S; readarray t <<<"git clone {_S}:x"; T=1; eval "${{t[0]}}"',
+            f's=s.".p.e"; echo $S; declare t="git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; local t="git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; export t="git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; readonly t="git clone {_S}:x"; T=1; eval "$t"',
+            f's=s.".p.e"; echo $S; declare -n r=s2; s2="git clone {_S}:x"; S2=1; eval "$r"',
+            f's=s.".p.e"; echo $S; getopts x t; T=1; git clone {_S}:x',
+            f's=s.".p.e"; echo $S; v=s; eval "${{!v}}"; s="git clone {_S}:x"; S=1',
+            f's=s.".p.e"; echo $S; n=s; echo ${{!n*}}; s="git clone {_S}:x"; S=1; git clone {_S}:x',
+            f's=s.".p.e"; echo $S; x=$((1)); s="git clone {_S}:x"; S=1; git clone {_S}:x',
+            f's=s.".p.e"; echo $S; arr[0]="{_S}"; ARR=1; git clone ${{arr[0]}}:x',
+            f's=s.".p.e"; echo $S; bash -c \'read t <<<"git clone {_S}:x"; T=1; eval "$t"\'',
+        ],
+        ids=[
+            "read",
+            "read-r",
+            "read-a",
+            "for",
+            "select",
+            "printf-v",
+            "mapfile",
+            "readarray",
+            "declare",
+            "local",
+            "export",
+            "readonly",
+            "nameref",
+            "getopts",
+            "indirect-eval",
+            "indirect-prefix",
+            "arithmetic",
+            "array-assign",
+            "bash-c-nested",
+        ],
+    )
+    def test_a_binding_the_rename_cannot_follow_keeps_the_full_guard(self, cmd):
+        # Base refuses each of these; HEAD must not newly allow any of them.
+        assert _denied_by(cmd) == _RULE, cmd
+
+    def test_names_are_renamed_apart_only_when_their_case_differs(self):
+        from kiro_crew.security.argv_floor_tar import _case_distinct_names
+
+        assert _case_distinct_names("S=1; echo $S ${S} ${#S}") is None
+        assert _case_distinct_names("echo --Opt=1 --opt=2") is None
+        assert _case_distinct_names('s=a; S=b; echo $s ${S} "$s"') == (
+            's_kc1=a; S=b; echo $s_kc1 ${S} "$s_kc1"'
+        )
+        # A new name skips one the line already has, so renaming merges nothing.
+        assert _case_distinct_names("S=x; s=a; s_kc1=b; echo $s") == (
+            "S=x; s_kc2=a; s_kc1=b; echo $s_kc2"
+        )
+        # The all-uppercase spelling keeps its name: the floor knows GIT_SSH and HOSTNAME.
+        assert _case_distinct_names("git_ssh=x; GIT_SSH=y; Git_Ssh=z") == (
+            "git_ssh_kc1=x; GIT_SSH=y; git_ssh_kc2=z"
+        )
+
+    def test_rename_can_follow_only_a_command_with_no_unfollowable_reference(self):
+        from kiro_crew.security.argv_floor_git_tar import _rename_can_follow
+
+        # A plain command whose names live only at $name / ${name / name= sites,
+        # including the reported here-document script, is followable.
+        assert _rename_can_follow('s=s.".p.e"; echo $s')
+        assert _rename_can_follow("s=github.com; git clone $s:x")
+        assert _rename_can_follow(self._REPORTED.lower())
+        # A binding, an indirect reference or arithmetic is not. The body's own
+        # `for` and `(() => ...)` are inside the here-document, so they do not
+        # make the reported script unfollowable (masked before the lexer reads it).
+        assert not _rename_can_follow("read t <<<'x'; eval \"$t\"")
+        assert not _rename_can_follow('for t in a; do eval "$t"; done')
+        assert not _rename_can_follow('v=s; eval "${!v}"')
+        assert not _rename_can_follow("x=$((1+2)); git clone github.com:x")
+        assert not _rename_can_follow("bash -c 'read t; eval \"$t\"'")
+
+
 def test_case_replay_keeps_each_distinct_inherited_environment_once(monkeypatch):
     from kiro_crew.security import argv_floor_git_tar as floor
 

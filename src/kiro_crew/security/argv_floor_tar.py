@@ -50,6 +50,66 @@ _GLOB_WORDS: "ContextVar[tuple[frozenset[str], str]]" = ContextVar(
     "git_tar_glob_words", default=(frozenset(), "")
 )
 
+#: True while the floor reads a line whose names that differ only in case
+#: (``S`` and ``s``) it merged by lowering. Bash keeps them apart, so the lowered
+#: reading can give ``$S`` the value of ``s`` and find a frame bash never runs;
+#: the two readings then disagree on frame count for that reason alone. The
+#: floor first reads a copy with those names renamed apart
+#: (``_case_distinct_names``), the line as bash sees it, with every fail-closed
+#: on, then this merged reading with only the frame-count fail-closed off.
+_NAME_MERGED_READ: "ContextVar[bool]" = ContextVar("git_tar_name_merged_read", default=False)
+
+# A name where it is expanded (``$S``, ``${S``, ``${#S``, ``${!S``) or assigned at
+# the start of a word (``S=``, ``S+=``).
+# shortcut: names bound by ``read``, ``for``, ``export S`` and the like are not
+# renamed, so such a name keeps the merged reading in the renamed copy too;
+# widen this when one of those shapes is reported.
+_NAME_SITE_RE = re.compile(
+    r"(?P<ref>\$\{?[#!]?)(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|(?<![^\s;&|()`])(?P<lhs>[A-Za-z_][A-Za-z0-9_]*)(?=\+?=)"
+)
+
+
+def _case_distinct_names(raw: str) -> "str | None":
+    """*raw* with each shell name renamed apart from the names it equals once
+    lowered, or None when no two names in *raw* differ only in case.
+
+    Only names at ``$name`` / ``${name`` / ``name=`` sites are renamed. Whether
+    that rename faithfully stands for the whole command -- it does not when a name
+    is bound or read by a bare name (``read s``) or an indirect form -- is decided
+    by ``argv_floor_git_tar._rename_can_follow`` before the caller uses this copy.
+
+    In each such group the all-uppercase spelling (``GIT_SSH``, ``HOSTNAME``, the
+    ones the floor knows) keeps its name, else the first one written does; every
+    other spelling gets a ``_kc<n>`` suffix that no name in *raw* has, so the
+    renaming cannot merge two names either.
+    """
+    spellings: "dict[str, list[str]]" = {}
+    for match in _NAME_SITE_RE.finditer(raw):
+        name = match.group("name") or match.group("lhs")
+        seen = spellings.setdefault(name.lower(), [])
+        if name not in seen:
+            seen.append(name)
+    renamed: "dict[str, str]" = {}
+    taken = set(spellings)  # a new name must not merge with one the line already has
+    for lowered, names in spellings.items():
+        if len(names) > 1:
+            keep = next((name for name in names if name.isupper()), names[0])
+            n = 1
+            for name in (name for name in names if name != keep):
+                while f"{lowered}_kc{n}" in taken:
+                    n += 1
+                renamed[name] = f"{lowered}_kc{n}"
+                taken.add(renamed[name])
+    if not renamed:
+        return None
+
+    def _rename(match: "re.Match[str]") -> str:
+        ref, name = match.group("ref"), match.group("name") or match.group("lhs")
+        return (ref or "") + renamed.get(name, name)
+
+    return _NAME_SITE_RE.sub(_rename, raw)
+
 
 def _glob_host_is_self(word: str, host: str) -> bool:
     """True if the glob *host* of *word* keeps a literal character, may be active, and can name self.
