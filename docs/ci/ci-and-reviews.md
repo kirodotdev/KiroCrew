@@ -5561,7 +5561,12 @@ Two subtleties:
   reads an empty answer through the head's check-runs (every row, `filter=all`),
   fetches each run their Actions job links name, and keeps it only when it ran for
   that event on that exact head. A named run that cannot be fetched makes the
-  evaluation `could not be evaluated`, never `(not started)`. The evaluation and the
+  evaluation `could not be evaluated`, never `(not started)`. A caller that holds
+  pages of the head's runs for other events hands them over, and a run on any of
+  them is not fetched: it ran for another event, so it cannot be in the answer. The
+  lookup for a default-setup CodeQL (`dynamic`) run, empty wherever default setup
+  is off, is handed the `pull_request` and `pull_request_target` pages, which leaves
+  the check-runs read and the runs on neither page. The evaluation and the
   publish step's success re-check read runs through it, and
   `ai-review-human-override.yml`, `republish_withheld_verdict.py`,
   `pr-size-override.yml` (the PR Policy run it re-runs after an approval),
