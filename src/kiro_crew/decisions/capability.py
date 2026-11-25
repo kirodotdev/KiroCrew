@@ -334,6 +334,72 @@ def permitted_providers(surface_key: str = DASHBOARD_SURFACE_KEY) -> dict[str, b
     return answers
 
 
+#: A session key ``sel._infer_source`` files under each surface a turn can send from,
+#: so a display read can ask the ceiling as a turn on that surface would.
+SURFACE_KEYS: dict[str, str] = {
+    "cli": "cli_chat",
+    "cron": "cron:",
+    "subagent": "subagent:",
+    "taskrunner": "taskrunner",
+    "background": "_bg",
+    "heartbeat": "_hb",
+    **{
+        ns: f"{ns}:"
+        for ns in (
+            "discord",
+            "telegram",
+            "wecom",
+            "weixin",
+            "whatsapp",
+            "feishu",
+            "webex",
+            "teams",
+            "imessage",
+            "slack",
+        )
+    },
+}
+
+
+def still_sending(*, local: bool, provider: str | None, model: str, endpoint: str) -> dict | None:
+    """Which other surfaces still send when the dashboard surface refuses this model.
+
+    ``None`` when the dashboard surface sends (or the answer moved mid-read), else
+    ``{"surfaces": [bound surface ids that send], "unbound": <a surface with no
+    profile of its own sends>}``. Each surface is asked the send path's rows, list
+    entry and targets (``gate._consented_for`` and ``gate._targets_denied``, minus
+    ``points``) with ``audit=False``: a display read, not a request. The caller has
+    already held consent and the local-preset attestation. Blocking.
+    """
+    from kiro_crew.platform.governance_profiles import bound_surfaces
+
+    def sends(key: str) -> bool:
+        rows = [(DECISIONS_SCOPE, "")]
+        if local:
+            rows.append((DECISIONS_LOCAL_SCOPE, ""))
+        if provider not in (None, PROVIDER_NONE):
+            rows.append((DECISIONS_SCOPE, f"{PROVIDERS_LIST}:{provider}"))
+        return not any(_row_denied(key, s, i, audit=False) for s, i in rows) and not (
+            targets_denied(key, point=None, model=model, endpoint=endpoint, audit=False)
+        )
+
+    _prime_profiles()
+    before = _answer_generation()
+    if sends(DASHBOARD_SURFACE_KEY):
+        return None
+    bound = set(bound_surfaces())
+    surfaces = sorted(s for s in bound if s in SURFACE_KEYS and sends(SURFACE_KEYS[s]))
+    free = [
+        k
+        for s, k in SURFACE_KEYS.items()
+        if s not in bound and s not in ("background", "heartbeat")
+    ]
+    unbound = bool(free) and sends(free[0])
+    if before is None or _answer_generation() != before:
+        return None
+    return {"surfaces": surfaces, "unbound": unbound}
+
+
 def denied_sides(surface_key: str = DASHBOARD_SURFACE_KEY) -> tuple[bool, bool]:
     """``(hosted_denied, local_denied)``, each row evaluated and audited exactly once.
 
