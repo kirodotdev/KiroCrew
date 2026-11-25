@@ -5124,6 +5124,19 @@ Two rules close it:
   `Backend Tests (Windows)` shards of its own round. A recorder or spy that asserts it
   saw a call is the shape to watch for: on a host that refuses early it sees nothing.
 
+### A fixture written as text and compared as bytes
+
+`Path.write_text` (and `open(..., "w")`) turns every `\n` into `\r\n` on Windows. A
+test that writes a fixture that way and then compares what the code reads or serves
+with an LF `bytes` literal fails on every Windows shard, and so does any check that
+leans on the file's size (an ETag, a "same size, same inode" swap).
+`test/test_app_startup_modules.py` lost five cases this way
+([#42396](https://github.com/kirodotdev/KiroCrew/issues/42396)): its helper wrote the
+module with `write_text`, so the served body carried `\r\n` and the swapped file was one
+byte per line shorter. When the test compares bytes or sizes, write the fixture with
+`write_bytes(text.encode("utf-8"))` or `write_text(text, encoding="utf-8",
+newline="")`. Keep `write_text` for fixtures the code under test reads back as text.
+
 ### A frozen list of a surface other branches keep growing
 
 `test/test_context_composition_contract_facade.py` pins the full signature of
