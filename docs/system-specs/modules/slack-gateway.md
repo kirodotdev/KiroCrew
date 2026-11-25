@@ -672,6 +672,9 @@ the engine itself is described in
 [rfc-update-architecture](../../request-for-change/rfc-update-architecture.md).
 Nothing on this path re-runs `cli.sh`, which moves the live venv aside and
 rebuilds it in place.
+The staged tree carries the running install's optional extras; the packages
+it did not carry are named in a `Note:` line that goes to the gateway log
+(`release_apply._apply_wheel`), since an automatic update has no viewer.
 
 The gateway takes its running tree's liveness hold immediately after the
 optional `KIROCREW_READY` print and approval-ready signal, through
