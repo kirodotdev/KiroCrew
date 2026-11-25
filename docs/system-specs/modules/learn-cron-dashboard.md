@@ -6688,17 +6688,23 @@ here reads that closed format, but the 400 `unsupported_file_type` error from
 both `POST /api/upload/file` and `POST /api/directory-upload` names the
 File > Export To copy (PowerPoint, Word, Excel or PDF) that does upload.
 
-The composer can cancel uploads: while any upload request is in flight, a Cancel
-control replaces the attach control, and pressing it aborts every in-flight
-composer upload (paste, drop and Sketch inserts included, so more than one can
-run). An aborted request shows no error banner. A macOS screenshot capture shares
-the `uploading` flag but has no request behind it, so it offers no Cancel.
+The composer sends a set of files as one upload request per file, each with its
+own AbortController, Send hold and entry in the `composerSendHolds` registry (which
+records the file's name). Every upload in flight for the composer's slot is a chip
+above the staged files, in the same chip look: a spinner, the file name, its share
+of bytes sent, and an ✕ named "Cancel uploading <name>" that aborts that request
+only, so its siblings keep running and land. Paste, drop and Sketch inserts run
+beside a pick, so several chips can show at once. The "+" control stays "+" and
+stays usable while uploads run, so its menu rows (Upload file, Optimize prompt)
+are reachable mid-upload. Send stays held until the last request of the slot
+settles. An aborted request shows no error banner. A macOS screenshot capture shares
+the `uploading` flag but registers no request, so it shows no chip.
 The request goes over `XMLHttpRequest`, the one browser API with upload progress,
-and still through the transport journal. Beside the Cancel control the composer
-shows the share of bytes sent across the slot's uploads, and "Stalled" (one word, so a narrow row never cuts it) once
-no byte has moved for 20 seconds while bytes are left to send. A request reports its
-start when it is sent, so one that never reaches the gateway stalls too; files still
-being prepared (a HEIC conversion, a resize) are not sent yet and do not.
+and still through the transport journal. A chip shows "Stalled" (one word, so a
+narrow chip never cuts it) once no byte of its request has moved for 20 seconds while
+bytes are left to send. A request reports its start when it is sent, so one that
+never reaches the gateway stalls too; files still being prepared (a HEIC conversion,
+a resize) are not sent yet and do not.
 
 Audio upload accepts `.mp3`, `.m4a`, `.wav`, `.ogg`, `.oga`, `.opus`, and `.flac`.
 `_sniff_media_type` validates each container family before any bytes reach the

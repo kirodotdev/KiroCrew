@@ -70,9 +70,16 @@ describe('ChatInput Cmd/Ctrl+Shift+U opens the Upload file picker', () => {
     expect(pickerOpens[0].type).toBe('file')
   })
 
+  // An upload in flight is a chip of its own, and the Upload file tile stays
+  // pressable beside it, so the chord does too.
+  it('opens it while an upload is in flight, as the Upload file tile does', () => {
+    renderWithProviders(<Host uploading />)
+    expect(fireEvent.keyDown(textarea(), CHORD)).toBe(false)
+    expect(pickerOpens).toHaveLength(1)
+  })
+
   it.each([
     ['the host takes no uploads', { onUploadFiles: undefined }],
-    ['an upload is in flight', { uploading: true, onCancelUpload: vi.fn() }],
     ['another teammate holds the typing lock', { typingLock: { holderName: 'Alice' } }],
   ])('does nothing while %s, as the Upload file tile does', (_label, props) => {
     renderWithProviders(<Host {...props} />)

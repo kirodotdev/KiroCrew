@@ -720,8 +720,8 @@ export default function ChatPane({
   const { switchError, setSwitchError } = pickerActions
 
   const {
-    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadCount, uploadMutation,
-    cancelUpload, uploadFiles, dragOver, dropTargetProps,
+    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadMutation,
+    uploadFiles, dragOver, dropTargetProps,
   } = useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError })
 
 
@@ -1565,8 +1565,6 @@ export default function ChatPane({
           // plain chat's placeholder teaches them.
           placeholder={crewmate ? i18nT('components.chatInput.message_placeholder_crewmate', { bot: crewmate.label || crewmate.name }) : undefined}
           onUploadFiles={uploadFiles}
-          onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
-          uploadCount={uploadCount}
           uploadSlot={slotKey}
           pendingFiles={pendingFiles}
           pendingDirs={pendingDirs}

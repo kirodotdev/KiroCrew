@@ -71,9 +71,17 @@ async function openComposer(page: Page, baseURL: string) {
 async function startOptimize(page: Page, touch: boolean) {
   const composer = page.locator('textarea[data-composer-input]')
   await composer.fill(DRAFT)
-  const optimizeButton = page.getByRole('button', { name: 'Optimize prompt' }).first()
-  if (touch) await optimizeButton.tap()
-  else await optimizeButton.click()
+  // The main chat's composer is the collapsible host, so on touch "+" is a
+  // bare file picker and "Optimize prompt" sits in the ⋯ overflow; with a
+  // mouse it is a row in the "+" menu (ChatInput's `directFilePicker`,
+  // `stashRowsInOverflow`, `optimizeInOverflow`).
+  if (touch) {
+    await page.getByTestId('composer-more-trigger').tap()
+    await page.getByTestId('composer-more-optimize').tap()
+  } else {
+    await page.getByRole('button', { name: 'Add files & options' }).click()
+    await page.getByTestId('composer-menu-optimize').click()
+  }
   await expect(page.getByText(OPTIMIZING)).toBeVisible()
   return composer
 }
