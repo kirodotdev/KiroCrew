@@ -8358,10 +8358,12 @@ Writers: `apps/bot_grants.py`, `apps/routes_bot_grants.py`, `apps/manifest_secti
 ## 33. Former built-in adoption
 
 A built-in app that moves to its own repository keeps working for everyone who
-already has it. A release that pins the app still ships its wheel copy; on a host
+already has it. A release that pins the app first ships its wheel copy too; on a host
 whose record is builtin-owned, the gateway swaps the record **in place** onto the
 pinned repository tree, keeping `data/`, `.app_secret`, the approved grants and
-`enabled`. A host that cannot adopt keeps running the wheel copy unchanged. Core
+`enabled`. A host that cannot adopt keeps running the wheel copy unchanged. A later
+release may delete the wheel copy and keep the pin row, and adoption then runs from
+the row alone ("A pin row with no wheel copy" below). Core
 names no app anywhere in this machinery but one stated place, the row keys of
 `apps/legacy_state_moves` ("A legacy state move holds the swap" below): the pin table
 is data, and `test_builtin_adoption_pins.py` fails on a shipped built-in name in any
@@ -8444,7 +8446,11 @@ authored. `builtin_adoption_pins.load_adoption_pins` reads it once per process; 
 bad row is dropped, a duplicated name drops every row with it, more than 64 rows
 or an unreadable file is an empty table, which is today's behaviour. A
 first-adoption pin's `version` must equal the wheel built-in's (D12, so a
-one-release downgrade is data-safe).
+one-release downgrade is data-safe) while the wheel ships one; a row whose wheel copy
+is gone has no wheel version to match. `adoption_pin.py` runs the same tree checks the
+gateway runs, so for such a row it checks without a wheel manifest, carries
+`legacyNav` from the row (no wheel page is left to read it from), and refuses a name
+that is neither shipped nor pinned.
 
 **A pin keeps its bundle styled.** A pinned tree's UI bundle ships no stylesheet:
 its Tailwind utilities resolve against the dashboard's sheet, which compiles only
@@ -8485,7 +8491,9 @@ commit, so a wheel-copy change that lands after that event is not caught until t
 next one. Whoever approves a pin PR therefore edits its body (or pushes) right before
 approving, which re-runs the check against the current tip. The comparison reads
 trees only (`git diff-tree`), so the named commit must be in the head's or the base
-tip's history, and an unreadable one fails closed.
+tip's history, and an unreadable one fails closed. A row whose app has no non-test
+wheel-copy file at the base tip needs no line (`git_wheel_copy_ships`): with the copy
+deleted there is nothing left for the pin to fall behind.
 
 **Who owns the pinned repositories.** The first-party app repositories a pin
 names live under `KiroCrewCaptain`, the Kiro Crew team's GitHub bot account, and
@@ -8501,7 +8509,9 @@ is no record and the name is marked `adopted` (uninstalled after adoption). A us
 app shadowing the name is not released: it keeps today's stand-down behaviour. A pinned name with
 no record and no marker is a fresh install and is NOT released:
 `register_builtin_apps` registers the built-in as today, and that record then
-adopts through STAGE and APPLY exactly like an upgrading host's. A record that cannot be read, a path occupied by something
+adopts through STAGE and APPLY exactly like an upgrading host's. Once the wheel copy
+is gone there is nothing to register, so such a host has no record and the app is an
+ordinary registry install. A record that cannot be read, a path occupied by something
 else, or a swap in flight (`_update_in_progress`) keeps today's behaviour. It can
 only remove first-party status, never grant it. It gates:
 
@@ -8614,6 +8624,50 @@ newer Kiro Crew is needed (`needs_newer_sdk`, or a `host_*` ledger reason), a
 restart switches it (a `staged` ledger for the pin commit, the only state APPLY
 consumes), it is on hold (`blocked`), or it switches in the background. Only the
 `staged` wording mentions a restart.
+
+**A pin row with no wheel copy.** A release may delete a pinned app's wheel copy and
+keep its pin row; core, its tests and `adoption_pin.py` treat that as a normal state,
+and the row alone carries the adoption. An adopted record is unaffected: it already
+runs the pinned tree from the data home, and STAGE skips it. A builtin-owned record
+(a host that never adopted) has no shipped code left to run and holds no first-party
+status (`is_builtin_app`, `builtin_app_names`), but its name is pinned, so it is not
+an orphan and nothing cleans up its `data/` (a retired-builtin uninstall refuses with
+`not_orphaned`). STAGE and APPLY run for it as for any builtin-owned record, so the
+restart after a staged fetch swaps it in place, keeping `data/`, `.app_secret`, the
+approved grants and `enabled`; E9 compares against the record's own `app.json` copy.
+D12 compares no version. Dropping the row as well makes a still-pending record an
+orphan. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`, which deletes the
+fixture app's wheel package and keeps its row.
+
+Every other core path that reads the wheel copy to decide a limit or a grant finds
+none. The table names each, what it does then, and which way it fails. Rows 1 to 9
+are open blockers for deleting the copies of the apps they name, and none is handled
+yet; row 6 fails OPEN, so dev-fleet's copy must not be deleted before it is fixed.
+Row 10 blocks nothing. Rows 1 to 6 and 9 are pinned by
+`test_no_wheel_copy_a_security_limit_reads_is_deleted` (`test/test_builtin_adoption_pins.py`,
+deriving from `test/wheel_copy_limit_sources.py`): it pins, per limit and one name per
+line, the pinned apps whose wheel copy supplies its input, read from the files and keys
+these readers read, and compares the derived set with that list exactly. Deleting one
+of those copies fails CI until its limit has a non-wheel source and that PR removes the
+app's line; a copy that starts supplying a limit adds one. Because the apps are named, a
+deletion cannot pass by another copy gaining the same key, and two deletions for the
+same limit edit different lines, so they merge into the right set or conflict as text
+instead of turning `main` red. Rows 7, 8 and 10 are not pinned: row 7 is the record
+every copy rewrites, not a file only some copies supply; row 8 reads no wheel file;
+row 10 is no limit.
+
+| # | Read of the wheel copy | With no wheel copy | Direction | Apps it blocks |
+|---|---|---|---|---|
+| 1 | E10's stdio server ceiling (`builtin_adoption_apply._shipped_manifest` into `builtin_adoption_mcp.adopted_mcp_servers_refusal`; `adoption_pin.py` asks the same) | a pinned tree that declares `mcpServers` is refused `pinned_feature_unsupported`, a never-retried code, so a host that never adopted never adopts, and `adoption_pin.py verify` refuses the row | fail-closed, permanent | auto-improvement, mochi |
+| 2 | the own-server grant (`builtin_adoption_gate.adopted_app_own_mcp_servers`, with the wheel agent map `execution.builtin_app_agents`) | grants nothing: an adopted app's calls to its own servers ask, and an unattended run is refused when its card expires | fail-closed | auto-improvement, mochi |
+| 3 | the `agentTools` ceiling (`app_agent_tools._adopted_first_party_apps`, `_within_wheel_copy`) | an adopted app's tools are not listed, and a call is refused as `unknown_tool` (`dashboard/handlers/app_agent_tools.py`, `mcp_tools/app_tools.py`) | fail-closed | design-tweak, dev-fleet, issue-radar, ops-mission-control |
+| 4 | the gate's `app-own-tools` row (`own_agent_tools.gate_grants`: the wheel agent map and the wheel `agentTools`) | approves nothing, so the app's own agent's calls to its own tools ask | fail-closed | the apps of row 3 |
+| 5 | the built-in seam providers (`seams._load_builtin_seams` imports `builtins/<package>/seams.py` only) | design-critique's worker slot mode leaves `chat_handlers._CREATABLE_MODES` (read once at import): `POST /api/chat/slots` refuses the mode unless the app may hide sessions, and a send that recreates the slot drops it to `""`. aws-control's `crew_runtime`, `aws_account_policy` and `transfer_staging` answer None, so their core callers degrade or refuse | breaks (fail-closed) | design-critique, aws-control |
+| 6 | the built-in host grants (`builtin_host_grants.builtin_host_grants` imports `builtins/<package>/host_grants.py` only) | dev-fleet's two pod-token mint routes leave `kiro_relay.limits`' relay credential set, so a relayed caller is **no longer refused** there; its five `/pod/*` routes leave the strict internal set and refuse the internal-secret caller; its BUILD rlimit, `KIROCREW_DEVFLEET_*` forwarding and `dev_fleet` config key go | **fail-open** (relay refusal); fail-closed (strict paths) | dev-fleet |
+| 7 | the record's `app.json` copy and approved grants, which `register_builtin_apps` rewrites from the wheel at every start | both stay as the host's last release left them, and E9 compares the pin with that copy: a host last booted on a release whose copy lacks a grant the pin declares gets `permission_widening` at every pass, which no later pass can clear | fail-closed, permanent | spec-builder, dev-fleet |
+| 8 | not a wheel read: `registry_pipeline/install._adoption_pending` with `builtin_adoption.pending_install_refusal` | when STAGE is refused (rows 1 and 7), the builtin-owned record runs no code and an App Store install is refused `adoption_pending` with a message saying the app "stays a built-in app", which no longer holds: a dead end | fail-closed, no way out | the apps of rows 1 and 7 |
+| 9 | the built-in leg of `credential_masks` (`_builtin_manifests`) and `agent_readonly_dirs` | the built-in declarations go; the installed leg (the record's `app.json`) stays, so an adopted record keeps its masks and read-only dirs | narrows to the installed declaration | md-notebook, meetings, spec-builder |
+| 10 | auto-research's `stopped_loop_tombstone`, the one other provider the same loader imports | its adopted tree registers the provider itself from `on_startup`, for the life of the gateway process. Only a process where that hook never ran (the app disabled from boot until the stop, or a never-adopted host before APPLY) has none: `_keeps_stopped_loop` then answers False, so the stop removes the loop's row like any other legacy loop's, and after the next enable the watchdog cannot tell that campaign worker's deliberate finish from an unreachable session. No security impact | fails toward the ordinary path; not a deletion blocker | none |
 
 **STAGE** (`builtin_adoption_apply.staging_pass`, kicked by
 `_kick_builtin_adoption_staging` after the listener serves) never mutates a record.

@@ -261,6 +261,16 @@ class World:
         return io.BytesIO(self.archive if self.archive_body is None else self.archive_body)
 
 
+def drop_wheel_copy(world: World) -> None:
+    """Delete the fixture app's wheel package and keep its pin row.
+
+    That is what a release ships once it deletes a pinned app's wheel copy. The wheel
+    root stays, empty, as the one manifest source.
+    """
+    shutil.rmtree(world.wheel)
+    exec_mod.invalidate_shipped_builtin_apps()
+
+
 def write_builtin_record(
     *,
     enabled: bool = True,
