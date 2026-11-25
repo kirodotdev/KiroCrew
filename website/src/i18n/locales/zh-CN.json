@@ -20704,7 +20704,8 @@
         "section_label": "更新日志",
         "newer_title": "比你的版本更新",
         "badge_installed": "已安装",
-        "read_all_notes": "阅读全部说明"
+        "read_all_notes": "阅读全部说明",
+        "lts_note": "此安装属于 LTS 版本线。LTS 有独立版本号，只从 LTS 渠道更新，因此版本号更高的开源版本属于另一条版本线，并不是它的更新。此构建不包含 LTS 版本的发布说明。"
       },
       "reportProblemCard": {
         "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",

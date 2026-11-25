@@ -21830,7 +21830,8 @@
         "section_label": "Notes de version",
         "newer_title": "Plus récentes que la tienne",
         "badge_installed": "Installée",
-        "read_all_notes": "Lire toutes les notes"
+        "read_all_notes": "Lire toutes les notes",
+        "lts_note": "Cette installation suit la ligne LTS. LTS a ses propres numéros de version et ne se met à jour que depuis le canal LTS. Les versions open source aux numéros plus élevés forment une autre ligne et ne sont pas des mises à jour pour elle. Cette build ne contient aucune note de version LTS."
       },
       "reportProblemCard": {
         "blurb": "Quelque chose ne fonctionne pas ? Envoyez-nous un rapport de diagnostic — les secrets sont d’abord masqués dans les journaux.",

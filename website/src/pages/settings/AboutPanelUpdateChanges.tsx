@@ -9,7 +9,8 @@ import { archiveNotes, changeEntries, notesSince, type ArchiveRelease } from './
 /** How many changes the list names before it folds the rest into a count. */
 export const UPDATE_CHANGES_SHOWN = 5
 
-const RELEASES_URL = 'https://github.com/kirodotdev/KiroCrew/releases'
+const REPO_URL = 'https://github.com/kirodotdev/KiroCrew'
+const RELEASES_URL = `${REPO_URL}/releases`
 
 /**
  * "What you'd get": the changes an available update brings, under its Update
@@ -25,12 +26,17 @@ const RELEASES_URL = 'https://github.com/kirodotdev/KiroCrew/releases'
  * case, and offers to run the check that brings them; `checked` says that check
  * ran and found no changelog lines.
  */
-export function AboutPanelUpdateChanges({ notes: carried, version, runningVersion, bytesAreStable = false, sinceBuild: carriedSinceBuild = false, checked = false, onLoad, loading = false }: {
+export function AboutPanelUpdateChanges({ notes: carried, version, runningVersion, bytesAreStable = false, desktopLts = false, sinceBuild: carriedSinceBuild = false, checked = false, onLoad, loading = false }: {
   notes: string
   version: string
   /** Desktop build and lane membership; absent for gateway-relative archive notes. */
   runningVersion?: string
   bytesAreStable?: boolean
+  /**
+   * A desktop update on the LTS line (its updater follows `lts`). The desktop's
+   * own line, not the gateway's: an open-source app can talk to an LTS gateway.
+   */
+  desktopLts?: boolean
   /**
    * The notes span every release since the running build (a checkout's
    * `CHANGELOG.md` diff). False for notes that are one release's section only,
@@ -49,7 +55,7 @@ export function AboutPanelUpdateChanges({ notes: carried, version, runningVersio
   const carries = carried.trim() !== ''
   const { data: archive } = useQuery({
     queryKey: ['releases'],
-    queryFn: () => api.releases() as Promise<{ releases: ArchiveRelease[] }>,
+    queryFn: () => api.releases() as Promise<{ releases: ArchiveRelease[]; edition?: 'oss' | 'lts' }>,
     enabled: !carries,
   })
   const fallback = useMemo(() => {
@@ -62,7 +68,14 @@ export function AboutPanelUpdateChanges({ notes: carried, version, runningVersio
   const titleId = useId()
   const hasNotes = notes.trim() !== ''
   // Only a bare release has a tag of that exact name; a nightly stamp has none.
-  const releaseUrl = /^[0-9]+(\.[0-9]+)*$/.test(version) ? `${RELEASES_URL}/tag/v${version}` : RELEASES_URL
+  // An LTS version is tagged `lts-v<version>` with no GitHub release, and the
+  // `v<version>` of the same number is an open-source release, not this update.
+  const bare = /^[0-9]+(\.[0-9]+)*$/.test(version)
+  // A gateway update is on the gateway's line, which its release list names.
+  const ltsLine = runningVersion === undefined ? archive?.edition === 'lts' : desktopLts
+  const releaseUrl = ltsLine
+    ? bare ? `${REPO_URL}/commits/lts-v${version}` : `${REPO_URL}/tags`
+    : bare ? `${RELEASES_URL}/tag/v${version}` : RELEASES_URL
   if (!hasNotes && onLoad) {
     return (
       <button
