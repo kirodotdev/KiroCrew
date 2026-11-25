@@ -1303,7 +1303,12 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     or tar (the top frame, or a payload frame that names a git/tar word or an
     expansion); otherwise each such frame keeps the lowered reading, so an ordinary
     line of that shape (`echo "a;b"; npm start; cat <<EOF` with an `eof` body line)
-    is allowed. Payloads that differ only in case (`bash -c 'git log
+    is allowed. Shell names that differ only in case (`S` and `s`) are one
+    variable once lowered, so the lowered walk can give `$S` the value of `s` and
+    find a frame bash never runs. For such a line the floor first reads a copy with
+    those names renamed apart (`_case_distinct_names`; the all-uppercase spelling
+    keeps its name), with every fail-closed on, and then the merged line with only
+    this frame-count fail-closed off. Payloads that differ only in case (`bash -c 'git log
     --format=%H' && bash -c 'git log --format=%h'`) are one lowered frame but two
     written ones; that is not a disagreement, so the floor reads the lowered frame
     once per written spelling and every spelling's option words are read. Identical

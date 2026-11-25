@@ -1,0 +1,7 @@
++157
+The git/tar-to-self floor reads a command lowered, so two shell names that differ
+only in case (`S` and `s`) became one variable and the lowered reading could give
+`$S` the value of `s`. The two readings then disagreed on frame count and a line
+with no git or tar in it was refused. argv_floor_tar.py gains a helper that renames
+such names apart; the floor reads that copy with every fail-closed on and then the
+merged reading with only the frame-count fail-closed off.

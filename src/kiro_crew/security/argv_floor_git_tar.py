@@ -96,9 +96,11 @@ from .argv_floor_ssh import (
 from .argv_floor_ssh_operand import _GIT_WORD
 from .argv_floor_tar import (
     _GLOB_WORDS,
+    _NAME_MERGED_READ,
     _RAW_COMMAND,
     _READ_MEMO,
     _TAR_READ_VALUE_OPTS,
+    _case_distinct_names,
     _glob_host_is_self,
     _tar_archive_targets_self,
     _tar_bundle_archive_slot,
@@ -1482,10 +1484,94 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
     written when *raw_text* is that command), again under both splits, so a quote
     inside a body cannot pair across its closing line with the text after it. Every
     reading only ADDS refusals: a newly over-refused shape is the worst case, never
-    a newly allowed one.
+    a newly allowed one. A line with names that differ only in case is read once
+    with them renamed apart and once merged (``argv_floor_tar._NAME_MERGED_READ``).
     """
     if _READ_MEMO.get() is not None:
         return _git_tar_read(text_lower)
+    cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+    distinct = _case_distinct_names(cased) if cased else None
+    if distinct is None or not _rename_can_follow(text_lower):
+        # No case-colliding names, or a binding/indirect reference the rename
+        # cannot follow (``_rename_can_follow``): read as on main, with the
+        # frame-count fail-closed fully on.
+        return _typed_git_tar_read(text_lower, raw_text)
+    if _typed_git_tar_read(distinct.lower(), distinct):
+        return True
+    merged = _NAME_MERGED_READ.set(True)
+    try:
+        return _typed_git_tar_read(text_lower, raw_text)
+    finally:
+        _NAME_MERGED_READ.reset(merged)
+
+
+#: Command verbs (basename, lowered) with which the rename in ``_case_distinct_names``
+#: cannot stand for the command: each binds or reads a variable by a BARE
+#: name the rename does not rewrite (``read s``), or runs an opaque payload that may
+#: (``bash -c`` / ``eval`` / a wrapper). The rename rewrites only ``$name`` / ``${name``
+#: / ``name=`` sites, so with any of these present the renamed copy is not faithful.
+_RENAME_UNSAFE_VERBS = frozenset(
+    {
+        "read", "readarray", "mapfile", "for", "select", "getopts", "let",
+        "declare", "typeset", "local", "export", "readonly", "unset",
+        "eval", "source", ".",
+        "bash", "sh", "dash", "zsh", "ksh", "mksh", "ash", "busybox",
+        "env", "xargs", "command", "builtin", "exec", "sudo", "doas", "su",
+        "runuser", "chroot", "unshare", "nsenter", "flock", "timeout", "nice",
+        "nohup", "stdbuf", "setsid", "watch", "entr", "parallel",
+    }
+)  # fmt: skip
+
+#: Expansion / assignment forms whose variable NAME the rename cannot follow:
+#: arithmetic (``(( ``/``$((``) reads and writes bare names, ``${!`` is an indirect
+#: reference whose target is a value, and ``name[idx]=`` is an array assignment the
+#: ``name=`` site regex does not match.
+_RENAME_UNSAFE_FORM_RE = re.compile(r"\$?\(\(|\$\{!|[A-Za-z_]\w*\[[^\]]*\]\+?=")
+
+
+def _rename_can_follow(text_lower: str) -> bool:
+    """True if the case-name rename faithfully stands for *text_lower* -- i.e. every
+    name is used only at a ``$name`` / ``${name`` / ``name=`` site the rename rewrites.
+
+    FAIL CLOSED: a command the floor's lexer cannot read, a binding/wrapper verb
+    (``_RENAME_UNSAFE_VERBS``) or an indirect/arithmetic/array form
+    (``_RENAME_UNSAFE_FORM_RE``) returns False, so the caller keeps the full
+    frame-count guard (its behaviour on main) rather than clear the line on the
+    renamed read. Read from the floor's own top-level frame, so a here-document
+    body and quoted text are already neutralised and are not mistaken for a command.
+    """
+    from .argv_rules import _program_index, _split_commands
+
+    # Mask quoted and here-document text first, exactly as ``_git_tar_read`` does,
+    # so a parenthesis or a ``[...]=`` inside a body (a Playwright script's
+    # ``(() => ...)``) is neutralised and not read as arithmetic or an assignment.
+    text_lower = _mask_quoted_separators(_ssh_floor_unmasked_text(text_lower))
+    try:
+        frames = _shell_normalizer._shell_payload_walk(text_lower)
+    except Exception:
+        return False
+    if not frames:
+        return False
+    source, tokens = frames[0]
+    if _RENAME_UNSAFE_FORM_RE.search(source):
+        return False
+    for command in _split_commands(tokens):
+        found = _program_index(command, None)
+        if found is None:
+            continue
+        verb = _shell_normalizer._program_basename(command[found]).lower()
+        if verb in _RENAME_UNSAFE_VERBS:
+            return False
+        if verb == "printf" and any(
+            arg == "-v" or (arg[:1] == "-" and arg[:2] != "--" and "v" in arg)
+            for arg in command[found + 1 :]
+        ):
+            return False
+    return True
+
+
+def _typed_git_tar_read(text_lower: str, raw_text: "str | None") -> bool:
+    """``_is_git_tar_to_self``'s outermost read of one spelling of the command."""
     raw = _RAW_COMMAND.set(text_lower if raw_text is None else raw_text)
     try:
         for glue in (False, True):
@@ -1716,7 +1802,11 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         unpaired = [] if top_paired else [(0, frame_keys[0][0])]
         unpaired += [(i, k[0]) for i, k in enumerate(frame_keys) if i and k not in spellings]
         unpaired += [(1, k[0]) for k in spellings if k not in lowered_keys]
-        if any(not i or not _frame_cannot_run_git_tar(s) for i, s in unpaired) and _signal():
+        if (
+            not _NAME_MERGED_READ.get()
+            and any(not i or not _frame_cannot_run_git_tar(s) for i, s in unpaired)
+            and _signal()
+        ):
             return True
         spellings[frame_keys[0]] = [cased_walk[0][0] if top_paired else None]
         if sum(len(spellings.get(k, [None])) for k in frame_keys) > replay_left:
