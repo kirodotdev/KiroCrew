@@ -21,10 +21,14 @@ import { api } from '../api/client'
 
 export const CREW_POLL_CAP = 2
 export const CREW_POLL_MAX_MS = 60_000
+/** How many more closed workers one "Show more" asks for (the route picks the first page). */
+export const CREW_CLOSED_PAGE = 200
 
 let inFlight = 0
 const waiters: Array<() => void> = []
 const lastMs = new Map<string, number>()
+/** How many closed workers each root's reads ask for, once the person asked for older ones. */
+const closedLimits = new Map<string, number>()
 
 /** Take a slot, in arrival order. A freed slot is handed straight to the first waiter. */
 const acquire = (): Promise<void> => {
@@ -47,11 +51,17 @@ export async function readCrewWorkers(root: string) {
   await acquire()
   const t0 = Date.now()
   try {
-    return await api.crewWorkers(root)
+    return await api.crewWorkers(root, closedLimits.get(root))
   } finally {
     release()
     noteReadMs(root, Date.now() - t0)
   }
+}
+
+/** Every later read of this root's list asks for `CREW_CLOSED_PAGE` more closed workers
+ *  than the `listed` ones its last answer carried. */
+export function showOlderCrewWorkers(root: string, listed: number) {
+  closedLimits.set(root, listed + CREW_CLOSED_PAGE)
 }
 
 /** The wait before the next re-read of this root's list (`baseMs` when answers are fast). */
@@ -67,4 +77,5 @@ export function resetCrewWorkersPoll() {
   inFlight = 0
   waiters.length = 0
   lastMs.clear()
+  closedLimits.clear()
 }

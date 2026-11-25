@@ -31,7 +31,7 @@ import { CrewStatusDot } from '../../../components/crew/CrewModeMarks'
 import CrewApprovalCards, { crewApprovalRequests } from '../../../components/crew/CrewApprovalCards'
 import { crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, mergeCrewWorkers, searchCrewWorkers } from '../../../lib/crewWorkers'
 import { fmtRelativeTime } from '../sessionOrder'
-import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
+import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewShowOlder, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 import { useCrewMode } from '../../../hooks/usePreviewFlag'
@@ -40,11 +40,12 @@ import { conductorModeRunState, type ConductorModeRunState } from '../../../lib/
 
 export interface ConductorModeCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
-export function conductorModeCounts(workers: readonly CrewWorker[], approvals: number, questions: number): ConductorModeCounts {
+/** `closedOmitted`: the closed workers the list answer left out, all done. */
+export function conductorModeCounts(workers: readonly CrewWorker[], approvals: number, questions: number, closedOmitted = 0): ConductorModeCounts {
   const g = workers.map(crewWorkerGroup)
   return {
-    total: workers.length,
-    done: g.filter(x => x === 'done').length,
+    total: workers.length + closedOmitted,
+    done: g.filter(x => x === 'done').length + closedOmitted,
     running: g.filter(x => x === 'working').length,
     approvals,
     questions,
@@ -824,7 +825,8 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   // The same pending-question record the chat's own card reads.
   const pendingQuestion = useAppSelector(st => pendingQuestionFor(st.chat.pendingQuestions, root))
   const questionCount = pendingQuestion?.questions?.length ? 1 : 0
-  const c = conductorModeCounts(workers, approvals.length, questionCount)
+  const closedOmitted = listed.data?.closed_omitted ?? 0
+  const c = conductorModeCounts(workers, approvals.length, questionCount, closedOmitted)
   const waitingNames = [...new Set(approvals.map(a => a.title))]
   // Same query key and read as the side panel's Summary tab, so one cache serves both.
   const summary = useQuery({ queryKey: ['session-summary', root], queryFn: () => api.sessionSummary(root), enabled: !!root, staleTime: 30_000, retry: false })
@@ -864,6 +866,8 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const unfinishedTops = tree.filter(n => !n.allDone)
   const finishedTops = tree.filter(n => n.allDone)
   const finishedCount = finishedTops.reduce((s, n) => s + n.size, 0)
+  // The closed members the answer left out are finished, but a search never read them.
+  const finishedOmitted = searching ? 0 : closedOmitted
   // Only a top-level row can have a crew when any row has one.
   const gutter = tree.some(n => n.kids.length > 0)
   const [foldChoices, setFoldChoices] = useState(readCrewBoardExpanded)
@@ -1141,16 +1145,17 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
           <ul className="space-y-1.5">
             {unfinished.map(memberRow)}
           </ul>
-          {finishedTops.length > 0 && (
+          {(finishedTops.length > 0 || finishedOmitted > 0) && (
             <details className="group" data-testid="conductor-mode-finished" open={searching || finishedOpen}
               onToggle={e => { if (!searching) setFinishedOpen((e.currentTarget as HTMLDetailsElement).open) }}>
               <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] text-muted hover:text-text py-1">
                 <ChevronRight size={14} className="transition-transform group-open:rotate-90" aria-hidden="true" />
-                {i18nT('components.crewMode.conductor_mode_finished', { n: finishedCount })}
+                {i18nT('components.crewMode.conductor_mode_finished', { n: finishedCount + finishedOmitted })}
               </summary>
               <ul className="space-y-1.5 mt-1">
                 {finished.map(memberRow)}
               </ul>
+              <CrewShowOlder root={root} omitted={closedOmitted} />
             </details>
           )}
         </div>

@@ -114,7 +114,9 @@ function themeConsentSha(colorTheme?: string): string | null {
   return stored
 }
 
-type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }
+/** `closed_omitted`: the root's closed workers the answer left out, older than every
+ *  closed one it lists (it lists the newest `closed_limit`, 200 unless asked). */
+type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause; closed_omitted?: number }
 /** The last answer and ETag of each root's worker list, for If-None-Match. */
 const crewWorkersEtags = new Map<string, { etag: string; data: CrewWorkersAnswer }>()
 
@@ -229,11 +231,13 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: async (root: string): Promise<CrewWorkersAnswer> => {
+    crewWorkers: async (root: string, closedLimit?: number): Promise<CrewWorkersAnswer> => {
       // Revalidate with the last ETag (sent as received, weak `W/` prefix included:
       // If-None-Match compares weakly). A 304 means unchanged: keep the cached list.
+      // The tag is a digest of the body, so another `closed_limit` matches only an identical list.
       const hit = crewWorkersEtags.get(root)
-      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers', hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
+      const query = closedLimit === undefined ? '' : '?closed_limit=' + closedLimit
+      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers' + query, hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
       if (r.status === 304 && hit) return hit.data
       const data: CrewWorkersAnswer = await j(r)
       const etag = r.headers?.get('etag')

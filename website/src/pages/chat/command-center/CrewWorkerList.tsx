@@ -6,6 +6,7 @@ import { crewBoardQueryKey } from '../../../api/crewBoard'
 import { refreshDashboardReads } from '../../../api/dashboardRefresh'
 import type { ChatSlot, CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Btn } from '../../../components/ui'
 import { SearchFilterBar } from '../../../components/SearchFilterBar'
 import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
 import { useAppDispatch, useAppSelector, type RootState } from '../../../store'
@@ -15,7 +16,7 @@ import { openPanelView } from '../../../hooks/usePanelTabs'
 import { ChevronLeft } from 'lucide-react'
 import { useCrewBack } from '../../../components/crew/useCrewBack'
 import { crewRouteNotServed, liveCrewWorkers, mergeCrewWorkers } from '../../../lib/crewWorkers'
-import { crewWorkersGapMs, readCrewWorkers } from '../../../lib/crewWorkersPoll'
+import { CREW_CLOSED_PAGE, crewWorkersGapMs, readCrewWorkers, showOlderCrewWorkers } from '../../../lib/crewWorkersPoll'
 import { crewModeRoot, crewRootOf, runsCrewMode } from '../../../lib/crewMode'
 import ConductorModeCrewPanel from './ConductorModeCrewPanel'
 
@@ -194,6 +195,8 @@ export function useCrewWorkerSummary(root: string): {
   /** The last list a read gave, kept through a failed poll (the cache's data),
    *  with the open live rows the store carries on its own. */
   lastWorkers: CrewWorker[] | undefined
+  /** Closed workers the latest read left out (older than every closed one in it). */
+  closedOmitted: number
 } {
   useCrewWorkersPush(root, true)
   const query = useQuery({
@@ -210,7 +213,7 @@ export function useCrewWorkerSummary(root: string): {
   // A route the gateway does not serve is no data, not a failed read: the row
   // shows what the live rows say and raises no notice.
   const failed = query.isError && !routeNotServed(query.error)
-  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers, paused: !!query.data?.paused }
+  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers, paused: !!query.data?.paused, closedOmitted: query.data?.closed_omitted ?? 0 }
 }
 
 /** Open one of a root's sessions -- a worker, or the root itself -- in the main
@@ -268,6 +271,22 @@ export async function reopenCrewSession(
   } catch {
     return { ok: false, activated: false, key }
   }
+}
+
+/** "Show N more" under a Done group the list answer cut short (`closed_omitted`):
+ *  every later read of the root's list carries one more page of older closed workers. */
+export function CrewShowOlder({ root, omitted }: { root: string; omitted: number }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  if (omitted <= 0) return null
+  const more = () => {
+    const answer = queryClient.getQueryData<{ workers?: CrewWorker[] }>(crewWorkersQueryKey(root))
+    showOlderCrewWorkers(root, (answer?.workers ?? []).filter(w => w.status === 'closed').length)
+    refreshDashboardReads(queryClient, crewWorkersQueryKey(root))
+  }
+  return <Btn type="button" data-testid="crew-show-older" className="mt-1 text-[12px]" onClick={more}>
+    {t('pages.settings.releases.show_more', { count: Math.min(CREW_CLOSED_PAGE, omitted) })}
+  </Btn>
 }
 
 /** The List's search box (from `CREW_WORKER_SEARCH_MIN` crew members up). */
