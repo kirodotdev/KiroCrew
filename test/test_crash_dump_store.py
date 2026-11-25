@@ -1759,3 +1759,19 @@ def test_open_dump_file_header_names_its_build(
         dump_file.write("Thread 0x1234 (most recent call first):\n")
         dump_file.flush()
         assert not crash_dump_store._is_header_only(dump_file.path)
+
+
+def test_open_dump_file_header_survives_an_undecodable_install_path(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path byte that is not UTF-8 is escaped, so the strict header write still lands."""
+    from kiro_crew import install_liveness
+
+    monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", Path("/opt/kiro-\udcff/kiro_crew"))
+    identity = install_liveness._read_build_identity()
+    assert identity[1] == "/opt/kiro-\\udcff/kiro_crew"
+    monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", identity)
+    with opened_dump_file(dumps_dir) as dump_file:
+        lines = dump_file.path.read_text(encoding="utf-8").splitlines()
+        assert lines[0].endswith("install=/opt/kiro-\\udcff/kiro_crew")
+        assert len(lines) == crash_dump_store._HEADER_LINES

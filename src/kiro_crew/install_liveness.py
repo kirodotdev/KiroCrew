@@ -43,8 +43,14 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent
 
 
 def _one_line(value: str) -> str:
-    """*value* with any line break turned into a space, so it fits one record line."""
-    return " ".join(value.splitlines()) or "unknown"
+    """*value* as one line that always encodes as UTF-8.
+
+    A line break becomes a space, so the value cannot add a record line. An
+    undecodable path byte (a ``surrogateescape`` character) is backslash-escaped,
+    so the dump header's strict UTF-8 write cannot fail on it.
+    """
+    text = value.encode("utf-8", "backslashreplace").decode("utf-8")
+    return " ".join(text.splitlines()) or "unknown"
 
 
 def _read_build_identity() -> tuple[str, str]:
