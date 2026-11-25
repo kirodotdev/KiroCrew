@@ -4,11 +4,14 @@
 // foreign port owner. resolveGatewayConflict offers a stop only once it is
 // proven to be this data folder's Kiro Crew gateway.
 
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 const assert = require("node:assert");
 
 const { createHolderDecision } = require("../runtime/gateway/holder-decision");
+const { createPortHolders } = require("../runtime/gateway/port-holders");
 
 const OLD_EXE = "C:\\Users\\u\\AppData\\Local\\Old Kiro Crew\\resources\\backend-dist\\python.exe";
 const OLD_COMMAND = `"${OLD_EXE}" "${OLD_EXE}" -m kiro_crew gateway --no-open --port 5476`;
@@ -22,6 +25,7 @@ function windowsHolder({
   pids = [4242],
   health = { app: "kirocrew", version: "0.11.0" },
   commandAfterDialog = null,
+  snapshotGatewayPortPids = async () => pids,
 } = {}) {
   const dialogs = [];
   const stops = [];
@@ -49,7 +53,7 @@ function windowsHolder({
       holders?.push({ pid: 4242, command: OLD_COMMAND });
       return "foreign";
     },
-    snapshotGatewayPortPids: async () => pids,
+    snapshotGatewayPortPids,
     probeLockHolderPid: async (options) => { probes.push(options); return lock; },
     fetchHealthInfo: async () => health,
     fetchGatewayReadiness: async () => "ready",
@@ -91,6 +95,55 @@ test("a gateway of the other release family is offered no Use it", async () => {
   const { decision, dialogs } = windowsHolder({ response: 1, health: { app: "kirocrew", version: "0.12.0-nightly.1" } });
   assert.strictEqual(await decision.resolveGatewayConflict(), "abort");
   assert.deepStrictEqual(dialogs[0].buttons, ["Stop it and restart", "Quit"]);
+});
+
+// The real Windows snapshot over a scripted netstat: `failures` runs fail before
+// one names pid 4242 on the port.
+function netstatSnapshot(failures) {
+  let runs = 0;
+  const holders = createPortHolders({
+    fs, os, path,
+    execFile(file, _args, _options, callback) {
+      if (!String(file).toLowerCase().includes("netstat")) {
+        callback(new Error(`unexpected command: ${file}`));
+        return;
+      }
+      runs += 1;
+      if (runs <= failures) callback(new Error("netstat unavailable"), "");
+      else callback(null, "  TCP    127.0.0.1:5476         0.0.0.0:0              LISTENING       4242\r\n", "");
+    },
+    processObj: { resourcesPath: "", env: {} },
+    dirname: "/virtual/electron",
+    isWindows: true,
+    log: () => {},
+    getSpawnedExecutablePaths: () => [],
+    sleep: async () => {},
+    isPortBindable: async () => true,
+  });
+  return { snapshotGatewayPortPids: holders.snapshotGatewayPortPids, runs: () => runs };
+}
+
+test("one failed netstat run still proves this home's gateway and offers the dialog", async () => {
+  const netstat = netstatSnapshot(1);
+  const { decision, dialogs, stops } = windowsHolder({
+    response: 0,
+    snapshotGatewayPortPids: netstat.snapshotGatewayPortPids,
+  });
+  assert.strictEqual(await decision.resolveGatewayConflict(), "spawn");
+  assert.strictEqual(dialogs.length, 1, "the second netstat attempt named the listener");
+  assert.deepStrictEqual(dialogs[0].buttons, ["Stop it and restart", "Use it", "Quit"]);
+  assert.deepStrictEqual(stops, [{ pid: 4242, trustsProven: true, trustsOther: false }]);
+});
+
+test("a netstat that never answers leaves the holder foreign with no dialog", async () => {
+  const netstat = netstatSnapshot(Infinity);
+  const { decision, dialogs, stops } = windowsHolder({
+    snapshotGatewayPortPids: netstat.snapshotGatewayPortPids,
+  });
+  assert.deepStrictEqual(await decision.resolveGatewayConflict(), FOREIGN_HOLDER);
+  assert.strictEqual(dialogs.length, 0);
+  assert.deepStrictEqual(stops, []);
+  assert.strictEqual(netstat.runs(), 2, "bounded: two attempts, then unknown");
 });
 
 test("a holder that is not this home's lock holder stays foreign with no dialog", async () => {

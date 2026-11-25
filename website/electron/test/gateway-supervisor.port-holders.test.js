@@ -446,7 +446,9 @@ test("win32 still offers the manual quit when one snapshot netstat run fails", a
   assert.strictEqual(spawnCalls.length, 0);
   assert.ok(!logs.some((line) => line.includes("could not capture the incumbent PID")));
   assert.ok(logs.some((line) => line.includes("netstat probe 1/2 on :5476 failed")));
-  assert.deepStrictEqual(quits, []);
+  // Cancel ends the launch by quitting the app. A refused probe ends it on an
+  // error with nothing quit (the test above), so this tells the two apart.
+  assert.deepStrictEqual(quits, ["quit"]);
 });
 
 test("linux refuses the respawn too, where unverifiedIncumbent is false by design", async () => {
