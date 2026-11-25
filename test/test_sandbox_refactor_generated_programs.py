@@ -129,6 +129,8 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     # kiro-cli's MCP registry rides the agents tree's field; its own tests pin that, and
     # pinning it off here keeps these goldens to the output they were taken from.
     monkeypatch.setattr(sandbox, "_resolved_kiro_mcp_registry_targets", lambda: [])
+    # So do kiro-cli's permission rule files while their fence is on.
+    monkeypatch.setattr(sandbox, "_resolved_kiro_permission_rule_targets", lambda: [])
     monkeypatch.setattr(sandbox, "carveout_chain_has_planted_link", lambda _path: False)
     # The seal-parent walk stops inside the pinned root, so no golden names this machine.
     walk = sandbox._literal_ancestor_guards

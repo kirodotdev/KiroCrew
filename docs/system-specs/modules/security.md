@@ -2873,7 +2873,13 @@ may edit these files as it always could, and the owner's switch is the control, 
 Security → Safety switches. While the setting is on,
 `security.paths._permission_rule_rows` adds `_KIRO_PERMISSION_RULE_LEAVES` (the two user files
 and the whole workspace folder) to the write tier, both for the file-edit gate and in
-`write_protected_home_paths()`. The gate reads the setting at each check (the live config
+`write_protected_home_paths()`. While it is on, the sandbox also seals the two user files
+read-only (`sandbox_seals._resolved_kiro_permission_rule_targets`, the MCP registry's
+spellings), so a sandboxed shell cannot write them either; a spawn whose `settings` folder holds
+neither file first gets a `permissions.yaml` of `rules: []` (`_materialize_kiro_permission_rules`)
+so the Linux seal has a file to bind, and a folder with either file, or a link at either name, is
+left alone. The seal is read through `_permission_rule_rows` at each spawn, so it is on and off
+with the file fence. The workspace folder is not sealed. The gate reads the setting at each check (the live config
 snapshot, else a load), so no restart is needed; a config file that cannot be parsed keeps the
 fence on because the owner's choice cannot be established. A malformed `mcp` section is
 repaired to defaults as on main, so the other `mcp.*` settings behave exactly as before.
@@ -2915,8 +2921,9 @@ every dashboard session already reads; that view holds saved values, so each row
 the inverse toggle "Ask me before running tools set to auto-approve in a tool server's settings"
 (on means the key is `false`), so on is the stricter position for both. What each switch covers is exactly what the
 paragraphs above state, and the card's help text says the same: the protect fence refuses
-the agent's file-edit tools only (a shell command can still write the rule files, which have
-no OS sandbox seal; that caveat is a line of its own under the protect toggle), and turning
+the agent's file-edit tools (the sandbox seal on the two user files is not named in the card;
+the card's caveat that a shell command can still write the rule files is a line of its own under
+the protect toggle), and turning
 `mcp.honour_auto_approve` off drops only `autoApprove`
 lists on MCP server entries, so a kiro-cli permission rule with `effect: allow`, and an
 "Always allow" tool grant made on the MCP Servers page or an approval card, still runs
