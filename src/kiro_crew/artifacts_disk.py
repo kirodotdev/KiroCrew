@@ -430,7 +430,7 @@ def _artifact_dir(self: ArtifactStore, slug: str) -> Path:
 def _artifact_dir_in(root: Path, slug: str) -> Path:
     """The directory of *slug* under store *root*: the one rule every store read and
     write locates an artifact by (``_artifact_dir`` for a store, and
-    ``artifacts.read_stored_artifact`` for a read that builds none)."""
+    ``artifacts.read_stored_record`` for a read that builds none)."""
     adir = (root / slug).resolve(strict=False)
     # Defense in depth: ensure resolved path is still under root.
     if root.resolve(strict=False) not in adir.parents and adir != root.resolve(strict=False):
@@ -563,7 +563,8 @@ def _read_store_text(path: Path) -> str:
     :func:`_fence_refuses` for which gate answers, and why). The opened
     descriptor is checked again so a replacement at the final name cannot
     redirect the read after that first decision. It reads no store state, so a
-    read that builds no store (``artifacts.read_stored_artifact``) reads through it too.
+    read that builds no store (``artifacts.read_stored_record``, for ``current.html``)
+    reads through it too.
     """
     resolved = Path(os.path.realpath(path))
     if reason := _fence_refusal(resolved, "read"):

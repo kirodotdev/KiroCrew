@@ -334,14 +334,16 @@ def _usable_root(root: Path) -> Path:
     return resolved
 
 
-#: What :func:`read_stored_artifact` (and ``ArtifactStore.get``) can raise for a record
-#: that is not there or cannot be read: a store refusal or a missing record
-#: (``ArtifactError``), a failed read (``OSError``), and a ``meta.json`` that
-#: ``records.decode_meta`` cannot decode: ``ValueError`` (not JSON, or a ``version``
-#: that is no finite number), ``TypeError`` (a ``version`` that is ``null``, a list or
-#: an object) or ``RecursionError`` (nested past the JSON decoder's limit). It covers
-#: :func:`read_stored_record` too, whose link refusal is an ``ArtifactError``, whose
-#: size cap and bad UTF-8 are ``ValueError``s, and which decodes nothing.
+#: What :func:`read_stored_record` and ``ArtifactStore.get`` can raise for a record that
+#: is not there or cannot be read: a store refusal or a missing record
+#: (``ArtifactError``, which is also :func:`read_stored_record`'s refusal of a link at
+#: ``meta.json``'s name), a failed read (``OSError``), a ``meta.json`` that is not
+#: UTF-8 or not JSON (``ValueError``, as is :func:`read_stored_record`'s size cap), one
+#: nested past the JSON decoder's limit (``RecursionError``), and the failures of
+#: ``records.decode_meta`` on the document: ``ValueError`` (a ``version`` that is no
+#: finite number) or ``TypeError`` (a ``version`` that is ``null``, a list or an
+#: object). A caller that decodes the document :func:`read_stored_record` returns
+#: catches the same tuple around that decode.
 STORED_READ_FAILURES: tuple[type[Exception], ...] = (
     ArtifactError,
     OSError,
@@ -349,37 +351,6 @@ STORED_READ_FAILURES: tuple[type[Exception], ...] = (
     TypeError,
     RecursionError,
 )
-
-
-def read_stored_artifact(root: Path, slug: str) -> Artifact:
-    """Artifact *slug* of the store at *root* with its stored current content, writing nothing.
-
-    The read-only form of ``ArtifactStore(root).get(slug)``: the same slug check, root
-    refusal, per-root lock, directory rule (``artifacts_disk._artifact_dir_in``) and
-    fenced, descriptor-pinned reads (``artifacts_disk._read_store_text``) of
-    ``meta.json`` (decoded by ``records.decode_meta``) and ``current.html``, so it
-    raises what ``get`` raises for the same record (:data:`STORED_READ_FAILURES`). It
-    writes nothing ``get`` would: no store directory is created, a record with no event
-    log is not backfilled (its ``events`` read as stored), and no content token is
-    assigned. ``content`` is always the store's own copy, which is what ``get`` serves
-    for any record that is not a live pointer; a live pointer
-    (``ArtifactStore._is_live_pointer``) is served by ``get`` from its ``source_path``,
-    which this never opens, so a caller asks the rule of the record returned.
-    ``live_dirty`` and ``source_missing`` are left at their defaults.
-    """
-    root = root.expanduser()
-    resolved = _usable_root(root)
-    slug = _validate_slug(slug)
-    with _lock_for_root(resolved):
-        adir = _artifacts_disk._artifact_dir_in(root, slug)
-        meta_path = adir / "meta.json"
-        if not meta_path.exists():
-            raise ArtifactNotFoundError(f"artifact not found: {slug}")
-        meta = _records.decode_meta(
-            json.loads(_artifacts_disk._read_store_text(meta_path)), meta_path
-        )
-        meta.content = _artifacts_disk._read_store_text(adir / "current.html")
-        return meta
 
 
 @dataclass(frozen=True)
@@ -397,15 +368,22 @@ class StoredRecord:
 def read_stored_record(root: Path, slug: str, *, max_meta_bytes: int) -> StoredRecord:
     """Artifact *slug* of the store at *root* as its raw ``meta.json`` document, writing nothing.
 
-    :func:`read_stored_artifact`'s read for a caller that judges the raw document
-    itself: the same slug check, root refusal, per-root lock, directory rule and
-    fenced, descriptor-pinned reads, and it writes nothing. ``meta.json`` is read
-    ONCE, refused when its final name is a link (``ArtifactError``) or it holds more
-    than *max_meta_bytes* bytes (``ValueError``), and returned as the object
-    ``json.loads`` gives, NOT decoded: the caller decodes that same object
-    (``records.decode_meta(document, meta_path)``), so the document it judges and the
-    record it decodes come from one read. ``content`` is the stored ``current.html``,
-    read as :func:`read_stored_artifact` reads it. What it raises is in
+    For a caller that must not write the store it reads and judges the raw document
+    itself. It shares ``ArtifactStore(root).get(slug)``'s read: the same slug check,
+    root refusal (``_usable_root``), per-root lock, directory rule
+    (``artifacts_disk._artifact_dir_in``) and fenced, descriptor-pinned reads, with
+    ``current.html`` read as ``get`` reads it (``artifacts_disk._read_store_text``).
+    It does not do what ``get`` does beyond that read: it builds no store, so no store
+    directory is created; a record with no event log is not backfilled; no content
+    token is assigned; nothing is decoded; and ``meta.json`` is opened as named
+    (``artifacts_disk._read_store_text_at_most``), so a link at its final name is
+    refused (``ArtifactError``) instead of followed. ``meta.json`` is read ONCE, and
+    one holding more than *max_meta_bytes* bytes is a ``ValueError``; the object
+    ``json.loads`` gives is returned NOT decoded, so the caller decodes that same
+    object (``records.decode_meta(document, meta_path)``) and the document it judges
+    and the record it decodes come from one read. ``content`` is always the store's
+    own ``current.html``: a live pointer's ``source_path`` (``get``'s current read for
+    one, ``ArtifactStore._is_live_pointer``) is never opened. What it raises is in
     :data:`STORED_READ_FAILURES`.
     """
     root = root.expanduser()

@@ -354,25 +354,26 @@ The store is thread-safe. A module-level singleton is available via
 `get_default_store()`; pass an explicit `root` to `ArtifactStore(root=...)`
 for isolated test instances.
 
-`read_stored_artifact(root, slug)` is the read-only form of `get`'s current read, for
-a caller that must not write the store it reads (the instance export reads a source
-install's package through it). It builds no store, so it creates no directory, and
-it does not backfill a record with no event log or assign a content token; otherwise
-it takes the same slug check, root refusal, per-root lock, directory rule and fenced,
-descriptor-pinned reads as `get`, so for a record that is no live pointer and has its
-event log it answers what `get` answers, and it raises what `get` raises
-(`STORED_READ_FAILURES`: `ArtifactError`, `OSError`, and the `ValueError`, `TypeError`
-or `RecursionError` of a `meta.json` that does not decode). Its `content` is always the
-store's own `current.html`: a live pointer's `source_path` is never opened, so the
-caller asks `ArtifactStore._is_live_pointer` of the record it gets back.
-
-`read_stored_record(root, slug, max_meta_bytes=...)` is the same read for a caller that
-judges a record's raw `meta.json` itself (the instance export, applying the import's
-staged-gate metadata rule to a source package). It returns a `StoredRecord`: the
-document `json.loads` gave, not decoded, the `meta.json` path, and the stored
-`current.html`. `meta.json` is read once, opened as named so a link at it is refused
-(`ArtifactError`), and one over `max_meta_bytes` is a `ValueError`; everything it
-raises is in `STORED_READ_FAILURES`, and it writes nothing either.
+`read_stored_record(root, slug, max_meta_bytes=...)` is the read-only form of `get`'s
+current read, for a caller that must not write the store it reads and judges a
+record's raw `meta.json` itself (the instance export, applying the import's
+staged-gate metadata rule to a source install's package). It returns a
+`StoredRecord`: the document `json.loads` gave, not decoded, the `meta.json` path, and
+the stored `current.html`. It takes the same slug check, root refusal, per-root lock,
+directory rule and fenced, descriptor-pinned reads as `get`. It builds no store, so it
+creates no directory, and it does not backfill a record with no event log, assign a
+content token or decode anything: the caller decodes the one document it returned
+(`records.decode_meta(document, meta_path)`), so what it judges and what it decodes
+come from one read, and for a record that is no live pointer and has its event log
+that decoded record with the returned content is what `get` answers. `meta.json` is
+read once and opened as named, so a link at it is refused (`ArtifactError`) where
+`get` follows it, and one over `max_meta_bytes` is a `ValueError`. Everything the read
+raises, and everything `decode_meta` raises on its document, is in
+`STORED_READ_FAILURES` (`ArtifactError`, `OSError`, and the `ValueError`, `TypeError`
+or `RecursionError` of a `meta.json` that does not read or decode), which also holds
+everything `get` raises for the same record. Its `content` is always the store's own `current.html`: a
+live pointer's `source_path` is never opened, so the caller asks
+`ArtifactStore._is_live_pointer` of the record it decodes.
 
 #### Code ownership
 
@@ -388,7 +389,7 @@ and are imported from their owner.
 
 | Owner | Responsibility |
 |---|---|
-| `kiro_crew.artifacts` | `ArtifactStore` itself: construction and the shared per-root lock, the change listener, `get` and `read_image_bytes`, `list`, and the per-record metadata verbs (pin, webapp expiry, `delete`, impressions, publication, fork metadata and folder), with the member bindings of the owners below. Also the `slug_is_well_formed` predicate, `read_stored_artifact` and `read_stored_record` (with `STORED_READ_FAILURES`), the `get_default_store` / `get_default_folder_store` singletons, and the re-export of every moved name |
+| `kiro_crew.artifacts` | `ArtifactStore` itself: construction and the shared per-root lock, the change listener, `get` and `read_image_bytes`, `list`, and the per-record metadata verbs (pin, webapp expiry, `delete`, impressions, publication, fork metadata and folder), with the member bindings of the owners below. Also the `slug_is_well_formed` predicate, `read_stored_record` (with `StoredRecord` and `STORED_READ_FAILURES`), the `get_default_store` / `get_default_folder_store` singletons, and the re-export of every moved name |
 | `kiro_crew.artifacts_disk` | How a store keeps artifacts on disk: the directory layout (`_artifact_dir`, whose rule is `_artifact_dir_in`) and slug claiming, the fenced file IO (`_read_text`, whose body is `_read_store_text`, / `_write_text` / `_read_bytes` / `_write_bytes`) and its pinned, durable primitives, the meta / version / image-asset writes, the lifecycle event append, version listing and pruning, the meta scan and the pinned `rmtree`. Also the caps (`MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`, `MAX_EVENTS_PER_ARTIFACT`, `MAX_AUTO_WIDGET_ARTIFACTS`), the clock (`_now_iso`), the content token and the content check |
 | `kiro_crew.artifacts_source_link` | The live `source_path` pointer: its allowed roots, the descriptor-pinned read and the write-back, and `relocate` |
 | `kiro_crew.artifacts_writes` | Content writes: `create`, `create_image`, `update` and `settle_blank`, and the `kirocrew.artifact.created` counter |
