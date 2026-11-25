@@ -7,6 +7,7 @@ import BrowserLiveCard from '../pages/chat/BrowserLiveCard'
 import { browserLiveStore } from '../hooks/useBrowserLive'
 import { askUi } from '../pages/chat/quickAsk/askUi'
 import { SHEET_PIN_MIN_PX } from '../pages/chat/quickAsk/QuickAskSheet'
+import { SAVED_SHOW_MS } from '../pages/chat/quickAsk/QuickAskVault'
 import { recall, remember } from '../pages/chat/quickAsk/remember'
 import { readQuickAsk } from '../pages/chat/quickAsk/types'
 import { installInitialResizeObserver } from './initialResizeObserver'
@@ -14,9 +15,9 @@ import { installInitialResizeObserver } from './initialResizeObserver'
 /**
  * The sign-in sheet's Secrets vault part: matching logins offered by name and
  * filled only on a click, which sends the NAME (the gateway fills the values);
- * with no match an off-by-default "Save to vault" box; a save that did not land
- * said by the card after the sheet is gone; and with no vault part from the
- * gateway, the plain sheet.
+ * a typed Fill keeps the sheet open ("Signing in…") and, once the gateway says
+ * the sign-in landed, asks "Save this login?"; a save that did not land said by
+ * the card after the sheet is gone; and with no vault part, the plain sheet.
  */
 
 const S = 'slot:qav'
@@ -31,7 +32,7 @@ const creds = (vault: unknown) => ({
 const ev = (ask: unknown) => ({ session_key: S, turn_id: 't1', state: 'live', url: `${ORIGIN}/login`, title: 'Sign in', browser: 'kiro_chromium', headless: true, ask })
 
 type Writes = NonNullable<Parameters<typeof browserLiveStore.__setWritesForTests>[0]>
-let writes: Writes & { answer: ReturnType<typeof vi.fn> }
+let writes: Writes & { answer: ReturnType<typeof vi.fn>; saveOffer: ReturnType<typeof vi.fn> }
 let restore: ReturnType<typeof browserLiveStore.__setWritesForTests>
 
 class FakeIO {
@@ -54,6 +55,7 @@ beforeEach(() => {
     claim: vi.fn(async () => ({ ok: true })),
     input: vi.fn(async () => ({ ok: true, sent: 1 })),
     answer: vi.fn(async () => ({ ok: true, outcome: 'filled' })),
+    saveOffer: vi.fn(async () => ({ ok: true, saved: true })),
   }
   restore = browserLiveStore.__setWritesForTests(writes)
   vi.stubGlobal('IntersectionObserver', FakeIO)
@@ -69,6 +71,7 @@ afterEach(() => {
   browserLiveStore.__resetForTests()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 function show(ask: unknown) {
@@ -77,6 +80,21 @@ function show(ask: unknown) {
 }
 
 const lg = (name: string, username = '') => ({ name, username })
+const OFFER = { id: 'o1', site: 'github.com', username: 'octocat' }
+
+/** Type a login into the open sheet and press Fill. */
+function typeAndFill(username: string, password: string) {
+  fireEvent.input(screen.getByTestId('quick-ask-username'), { target: { value: username } })
+  fireEvent.input(screen.getByTestId('quick-ask-password'), { target: { value: password } })
+  fireEvent.click(screen.getByTestId('quick-ask-primary'))
+}
+
+/** The answer stays in flight until the test settles it, as while the gateway watches the sign-in. */
+function answerLater() {
+  let settle: (v: unknown) => void = () => {}
+  writes.answer.mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+  return (v: unknown) => act(async () => { settle(v) })
+}
 const labels = () => screen.getAllByTestId('quick-ask-vault-login').map(b => b.textContent)
 
 describe('quick ask: logins from the vault', () => {
@@ -124,18 +142,14 @@ describe('quick ask: logins from the vault', () => {
     }
   })
 
-  it('Other account opens the fields and an unticked Save to Secrets store, and can save a second account', async () => {
+  it('Other account opens the fields with no save box, and a typed Fill sends only the values', async () => {
     show(creds({ items: [lg('GitHub', 'alice')] }))
     expect(screen.queryByTestId('quick-ask-primary')).toBeNull()
     fireEvent.click(screen.getByTestId('quick-ask-other-account'))
-    const box = screen.getByTestId('quick-ask-save-to-vault') as HTMLInputElement
-    expect(box.checked).toBe(false)
-    fireEvent.click(box)
-    fireEvent.input(screen.getByTestId('quick-ask-username'), { target: { value: 'bob' } })
-    fireEvent.input(screen.getByTestId('quick-ask-password'), { target: { value: 'pw-2' } })
-    fireEvent.click(screen.getByTestId('quick-ask-primary'))
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    typeAndFill('bob', 'pw-2')
     await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(1))
-    expect(writes.answer).toHaveBeenCalledWith({ session_key: S, ask_id: 'v1', action: 'fill', values: { username: 'bob', password: 'pw-2' }, save: true })
+    expect(writes.answer).toHaveBeenCalledWith({ session_key: S, ask_id: 'v1', action: 'fill', values: { username: 'bob', password: 'pw-2' } })
   })
 
   it('counts logins past the gateway cap once all are shown', () => {
@@ -145,47 +159,101 @@ describe('quick ask: logins from the vault', () => {
     expect(screen.getByTestId('quick-ask-vault-more')).toHaveTextContent(t('vault_more', { count: 2 }))
   })
 
-  it('with no match, Save to Secrets store is off until ticked, then rides on the typed answer', async () => {
+  it('a typed Fill keeps the sheet open: Signing in, then Save this login?, then Saved, then closed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const settle = answerLater()
     show(creds({ items: [] }))
-    expect(screen.queryByTestId('quick-ask-vault-login')).toBeNull()
-    const box = screen.getByTestId('quick-ask-save-to-vault') as HTMLInputElement
-    expect(box.checked).toBe(false)
-    fireEvent.click(box)
-    fireEvent.input(screen.getByTestId('quick-ask-username'), { target: { value: 'octocat' } })
-    fireEvent.input(screen.getByTestId('quick-ask-password'), { target: { value: 'pw-1' } })
-    fireEvent.click(screen.getByTestId('quick-ask-primary'))
-    await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(1))
-    expect(writes.answer).toHaveBeenCalledWith({ session_key: S, ask_id: 'v1', action: 'fill', values: { username: 'octocat', password: 'pw-1' }, save: true })
+    typeAndFill('octocat', 'pw-1')
+    expect(await screen.findByTestId('quick-ask-held-signing')).toHaveTextContent(t('signing_in'))
+    // The agent's ask ends while the gateway watches the sign-in: the sheet stays.
+    act(() => browserLiveStore.applyEvent(ev(null)))
+    expect(screen.getByTestId('quick-ask-held-signing')).toBeInTheDocument()
+    await settle({ ok: true, outcome: 'filled', save_offer: OFFER })
+    const sheet = screen.getByTestId('quick-ask-sheet')
+    expect(sheet).toHaveTextContent(t('save_offer_title'))
+    expect(screen.getByTestId('quick-ask-held-login')).toHaveTextContent('github.com')
+    expect(screen.getByTestId('quick-ask-held-login')).toHaveTextContent('octocat')
+    expect(sheet).not.toHaveTextContent('pw-1')
+    // Save is the primary button and has focus; Not now sits beside it.
+    expect(screen.getByTestId('quick-ask-held-save')).toHaveAttribute('data-primary')
+    expect(document.activeElement).toBe(screen.getByTestId('quick-ask-held-save'))
+    expect(screen.getByTestId('quick-ask-held-not-now')).toHaveTextContent(t('not_now'))
+    fireEvent.click(screen.getByTestId('quick-ask-held-save'))
+    expect(await screen.findByTestId('quick-ask-held-saved')).toHaveTextContent(t('save_offer_saved'))
+    expect(writes.saveOffer).toHaveBeenCalledWith({ session_key: S, offer_id: 'o1', action: 'save' })
+    act(() => { vi.advanceTimersByTime(SAVED_SHOW_MS) })
+    await waitFor(() => expect(screen.queryByTestId('quick-ask-sheet')).toBeNull())
+    expect(screen.queryByTestId('quick-ask-vault-unsaved')).toBeNull()
   })
 
-  it('a save that did not land is said on the card once the ask is gone, until dismissed', async () => {
-    writes.answer.mockResolvedValueOnce({ ok: true, outcome: 'filled', saved: false })
+  it('the question stays when the agent finishes its turn first, until answered', async () => {
+    writes.answer.mockResolvedValueOnce({ ok: true, outcome: 'filled', save_offer: OFFER })
     show(creds({ items: [] }))
-    fireEvent.click(screen.getByTestId('quick-ask-save-to-vault'))
-    fireEvent.input(screen.getByTestId('quick-ask-password'), { target: { value: 'pw-1' } })
-    fireEvent.click(screen.getByTestId('quick-ask-primary'))
+    typeAndFill('octocat', 'pw-1')
+    await screen.findByTestId('quick-ask-held-offer')
+    act(() => browserLiveStore.applyEvent({ ...ev(null), state: 'done' }))
+    expect(screen.getByTestId('quick-ask-held-offer')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('quick-ask-held-not-now'))
+    await waitFor(() => expect(screen.queryByTestId('quick-ask-held-offer')).toBeNull())
+    expect(screen.getByTestId('browser-live-card')).toHaveAttribute('data-state', 'done')
+  })
+
+  it.each(['click', 'escape'])('Not now (%s) closes the question and the gateway drops the login', async how => {
+    writes.answer.mockResolvedValueOnce({ ok: true, outcome: 'filled', save_offer: OFFER })
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    await screen.findByTestId('quick-ask-held-offer')
+    if (how === 'click') fireEvent.click(screen.getByTestId('quick-ask-held-not-now'))
+    else fireEvent.keyDown(screen.getByTestId('quick-ask-sheet'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('quick-ask-held-offer')).toBeNull())
+    expect(writes.saveOffer).toHaveBeenCalledWith({ session_key: S, offer_id: 'o1', action: 'drop' })
+    expect(writes.saveOffer).toHaveBeenCalledTimes(1)
+  })
+
+  it('a sign-in that did not land closes the sheet with no question', async () => {
+    const settle = answerLater()
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    await screen.findByTestId('quick-ask-held-signing')
+    await settle({ ok: true, outcome: 'filled' })
+    expect(screen.queryByTestId('quick-ask-sheet')).toBeNull()
+    expect(writes.saveOffer).not.toHaveBeenCalled()
+  })
+
+  it('an answer the gateway refused brings the sheet back with its error', async () => {
+    writes.answer.mockResolvedValueOnce({ ok: false, error: 'origin_changed' })
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    expect((await screen.findByTestId('quick-ask-error')).textContent).not.toBe('')
+    expect(screen.queryByTestId('quick-ask-held-signing')).toBeNull()
+    expect(screen.getByTestId('quick-ask-password')).toBeInTheDocument()
+  })
+
+  it('a picked vault login is not held and never asked about', async () => {
+    const settle = answerLater()
+    show(creds({ items: [lg('GitHub', 'alice')] }))
+    fireEvent.click(screen.getByTestId('quick-ask-vault-login'))
     await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('quick-ask-held-signing')).toBeNull()
+    await settle({ ok: true, outcome: 'filled' })
+    expect(screen.queryByTestId('quick-ask-sheet')).toBeNull()
+  })
+
+  it('a save that did not land is said on the card once the sheet is gone, until dismissed', async () => {
+    writes.answer.mockResolvedValueOnce({ ok: true, outcome: 'filled', save_offer: OFFER })
+    writes.saveOffer.mockRejectedValueOnce(new Error('409'))
+    show(creds({ items: [] }))
+    typeAndFill('octocat', 'pw-1')
+    fireEvent.click(await screen.findByTestId('quick-ask-held-save'))
     act(() => browserLiveStore.applyEvent(ev(null)))
     const notice = await screen.findByTestId('quick-ask-vault-unsaved')
     expect(notice).toHaveTextContent(t('error_vault_not_saved'))
+    expect(screen.queryByTestId('quick-ask-sheet')).toBeNull()
     // The turn ends and the card folds to its finished row: the notice stays.
     act(() => browserLiveStore.applyEvent({ ...ev(null), state: 'done' }))
     expect(screen.getByTestId('quick-ask-vault-unsaved')).toHaveTextContent(t('error_vault_not_saved'))
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     await waitFor(() => expect(screen.queryByTestId('quick-ask-vault-unsaved')).toBeNull())
-  })
-
-  it('a save that did not land is said even when the turn ended before the answer returned', async () => {
-    let finish: (v: { ok: true; outcome: string; saved: false }) => void = () => {}
-    writes.answer.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    show(creds({ items: [] }))
-    fireEvent.click(screen.getByTestId('quick-ask-save-to-vault'))
-    fireEvent.input(screen.getByTestId('quick-ask-password'), { target: { value: 'pw-1' } })
-    fireEvent.click(screen.getByTestId('quick-ask-primary'))
-    await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(1))
-    act(() => browserLiveStore.applyEvent({ ...ev(null), state: 'done' }))
-    await act(async () => { finish({ ok: true, outcome: 'filled', saved: false }) })
-    expect(await screen.findByTestId('quick-ask-vault-unsaved')).toHaveTextContent(t('error_vault_not_saved'))
   })
 
   it('a login the gateway cannot use says so in plain words, and the sheet stays', async () => {
@@ -253,17 +321,10 @@ describe('quick ask: logins from the vault', () => {
     expect(screen.getByTestId('quick-ask-vault-more-row').parentElement).toBe(screen.getByTestId('quick-ask-other-account').parentElement)
   })
 
-  it('1: offers one save box: Save to Secrets store, never Remember beside it', () => {
+  it('1: with the vault part the sheet has no save box and no Remember box', () => {
     show(creds({ items: [] }))
-    expect(screen.getByTestId('quick-ask-save-to-vault')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).toBeNull()
     expect(screen.queryByTestId('quick-ask-remember')).toBeNull()
-  })
-
-  it('says where Save to Secrets store keeps the login, beside the box', () => {
-    show(creds({ items: [] }))
-    const box = screen.getByTestId('quick-ask-save-to-vault').closest('label')?.parentElement
-    expect(box?.querySelector(`[aria-label="${i18next.t('components.infoTip.more_information')}"]`)).not.toBeNull()
-    expect(t('save_to_vault_tip')).toMatch(/Secrets/)
   })
 
   it('2: keeps a remembered username: chip on no match, untouched by a fill', async () => {
@@ -294,14 +355,16 @@ describe('quick ask: logins from the vault', () => {
     act(() => browserLiveStore.applyEvent(ev(null)))
     show({ ...creds(undefined), id: 'v2', kind: 'text', fields: [{ role: 'text', input: 'email', label: 'email', rect }] })
     expect(screen.getByTestId('quick-ask-remember')).toBeInTheDocument()
-    expect(screen.queryByTestId('quick-ask-save-to-vault')).toBeNull()
   })
 
-  it('with no vault part from the gateway the sheet is the plain one', () => {
+  it('with no vault part from the gateway the sheet is the plain one, and a Fill is not held', async () => {
+    const settle = answerLater()
     show(creds(undefined))
     expect(screen.queryByTestId('quick-ask-vault-login')).toBeNull()
     expect(screen.queryByTestId('quick-ask-other-account')).toBeNull()
-    expect(screen.queryByTestId('quick-ask-save-to-vault')).toBeNull()
-    expect(screen.getByTestId('quick-ask-password')).toBeInTheDocument()
+    typeAndFill('octocat', 'pw-1')
+    await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('quick-ask-held-signing')).toBeNull()
+    await settle({ ok: true, outcome: 'filled' })
   })
 })

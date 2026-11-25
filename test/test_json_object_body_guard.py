@@ -239,6 +239,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "qa.ANSWER_BODY_MAX",
         _BOUNDED_EXPLICIT,
     ),
+    # Save or Not now on a held quick-ask login: a session key, an offer id and one
+    # word, so the route caps the body at 1 KiB.
+    "handlers/browser_ask.py::api_browser_ask_save_offer": (
+        "SAVE_OFFER_BODY_MAX",
+        _BOUNDED_EXPLICIT,
+    ),
     # Both mediated-secret routes (the capability claim and the request) admit through
     # ``_admit``. A mediated request carries the agent's own body, headers and query, so
     # it gets the 1 MiB cap the MCP stub refuses past before sending, read before decode.

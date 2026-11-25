@@ -7,10 +7,14 @@ outcome words. Only the card adds:
   the card shows each one by its username, and the person's click on one fills its username
   and password through the same bound, re-verified write a typed answer takes
   (``quick_ask.fill`` / ``quick_ask.sign_in``).
-* The person types (none matched, or "Other account" beside a match), and may tick "Save to Secrets store" (off
-  by default). After a fill that landed, the typed username and password are
-  stored as a NEW login item named after the host, with ``urls`` = the bound
-  origin, under a free name (an existing item is never overwritten).
+* The person types (none matched, or "Other account" beside a match). When the
+  typed username is not one the card offered, the answer route watches the tab
+  after the fill (:func:`wait_signed_in`); once the sign-in landed, the same
+  sheet asks "Save this login?". The typed username and password wait for that
+  answer in gateway memory only (:func:`hold_offer`), never on disk, and are
+  dropped on "Not now", a newer offer or :data:`SAVE_OFFER_TTL_S`. "Save"
+  stores them as a NEW login item named after the host, with ``urls`` = the
+  bound origin, under a free name (an existing item is never overwritten).
 
 Matching is by BASE DOMAIN, as 1Password's and Bitwarden's defaults do: a
 stored URL matches when its host and the ask's host have the same registrable
@@ -26,8 +30,9 @@ offered only logins stored for http (no downgrade); an http login on an
 https page is fine.
 
 The lookup, the read and the save all run in the gateway. What leaves this
-module: each offered login's entry name and username to the owner's card, and
-the username and password to the page. The
+module: each offered login's entry name and username to the owner's card (and
+a held offer's site and typed username), and the username and password to the
+page. The
 answer route (``dashboard/handlers/browser_ask.py``) writes one SEL row per
 vault fill and per save with the item name and the origin. The usernames reach
 only the owner-only live event (the card). Never a password there, and never a
@@ -37,9 +42,11 @@ the tool result or anything else the agent reads.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import ipaddress
 import logging
+import secrets
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
@@ -60,6 +67,13 @@ NAME_MAX = 120
 #: SEL operations.
 OP_FILL = "browser_ask_vault_fill"
 OP_SAVE = "browser_ask_vault_save"
+
+#: How long the sheet's "Signing in…" watches the tab for the sign-in to land.
+LAND_WAIT_S = 30.0
+#: How long the bound site must show no password box before the sign-in counts as landed.
+LAND_QUIET_S = 2.0
+#: How long a typed login waits in gateway memory for the person's Save or Not now.
+SAVE_OFFER_TTL_S = 120.0
 
 
 def _vault() -> SecretVault:
@@ -155,8 +169,8 @@ def offer(origin: str) -> tuple[list[tuple[str, str]], int] | None:
     two accounts on one site differ; the password never leaves the vault here.
 
     ``None`` when the vault cannot be read, so the card is the plain one (no
-    list, no save choice). ``([], 0)``: nothing matches, the
-    card offers to save what the person types. The cut is counted, never silent:
+    list, no save question). ``([], 0)``: nothing matches, and a typed
+    sign-in that lands is offered for saving. The cut is counted, never silent:
     the card says how many it does not show. Blocking.
     """
     if not origin:
@@ -256,13 +270,123 @@ async def save_login(origin: str, values: dict[str, str], reserved: Callable[[st
     return name
 
 
+# ---- asking to save after the sign-in landed ----------------------------------
+
+
+async def _top(probe: qa.PageProbe) -> tuple[str, str, str] | None:
+    try:
+        return await probe.top_frame()
+    except qa.AskError:
+        return None
+
+
+async def wait_signed_in(
+    probe: qa.PageProbe, ask: qa.QuickAsk, frames: Any, stop: Callable[[], bool]
+) -> bool:
+    """Whether a typed sign-in landed, watched for up to :data:`LAND_WAIT_S`. Reads only.
+
+    Landed: the tab left the bound site, or the bound site has shown no password
+    box for :data:`LAND_QUIET_S`. Not landed: a new document shows a password box
+    again (the site asked again, as after a wrong password), the time ran out,
+    or *stop* says the tab or the ask moved on.
+    """
+    loop = asyncio.get_running_loop()
+    end = loop.time() + LAND_WAIT_S
+    base = await _top(probe)
+    clear_since: float | None = None
+    while not stop():
+        top = await _top(probe)
+        now = loop.time()
+        if top is not None and top[2]:
+            if top[2] != ask.top_origin:
+                return True
+            shown = await qa.password_shown(probe, ask, frames)
+            if shown is False:
+                clear_since = now if clear_since is None else clear_since
+                if now - clear_since >= LAND_QUIET_S:
+                    return True
+            elif shown:
+                clear_since = None
+                if base is not None and top != base:
+                    return False
+        if now >= end:
+            return False
+        await asyncio.sleep(qa.STEP_POLL_S)
+    return False
+
+
+class SaveOffer:
+    """A typed login held in memory until the person answers "Save this login?"."""
+
+    __slots__ = ("id", "origin", "timer", "values")
+
+    def __init__(self, origin: str, values: dict[str, str]) -> None:
+        self.id = secrets.token_urlsafe(12)
+        self.origin = origin
+        self.values = {"username": values.get("username", ""), "password": values["password"]}
+        self.timer: asyncio.TimerHandle | None = None
+
+    def clear(self) -> None:
+        self.values.clear()
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+
+
+#: One held offer per chat session, keyed by its live session key.
+_offers: dict[str, SaveOffer] = {}
+
+
+def drop_offer(session_key: str) -> None:
+    """Forget the session's held offer, if any."""
+    held = _offers.pop(session_key, None)
+    if held is not None:
+        held.clear()
+
+
+def _expire(session_key: str, held: SaveOffer) -> None:
+    if _offers.get(session_key) is held:
+        drop_offer(session_key)
+
+
+def hold_offer(session_key: str, origin: str, values: dict[str, str]) -> dict[str, str]:
+    """Hold a copy of *values* for :data:`SAVE_OFFER_TTL_S`; what the sheet shows:
+    ``{id, site, username}``. A newer offer for the session drops the older one."""
+    drop_offer(session_key)
+    held = SaveOffer(origin, values)
+    held.timer = asyncio.get_running_loop().call_later(SAVE_OFFER_TTL_S, _expire, session_key, held)
+    _offers[session_key] = held
+    return {"id": held.id, "site": item_name_for(origin), "username": held.values["username"]}
+
+
+def take_offer(session_key: str, offer_id: str) -> SaveOffer | None:
+    """The held offer *offer_id*, removed and its timer stopped; ``None`` when it is
+    gone or another one. The caller clears it when done."""
+    held = _offers.get(session_key)
+    if held is None or not secrets.compare_digest(held.id.encode(), offer_id.encode()):
+        return None
+    del _offers[session_key]
+    if held.timer is not None:
+        held.timer.cancel()
+        held.timer = None
+    return held
+
+
 __all__ = [
+    "LAND_QUIET_S",
+    "LAND_WAIT_S",
     "OP_FILL",
     "OP_SAVE",
+    "SAVE_OFFER_TTL_S",
+    "SaveOffer",
+    "drop_offer",
+    "hold_offer",
     "item_name_for",
     "login_values",
     "offer",
     "save_login",
     "shape",
+    "take_offer",
     "url_matches",
+    "wait_signed_in",
 ]

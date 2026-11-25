@@ -67,6 +67,10 @@ export function createBrowserLiveEndpoints({ get, post, j }: ClientTransport) {
        *  `stale` when the page moved on, and fills nothing. */
       browserAskAnswer: (body: { session_key: string; ask_id: string; action: QuickAskAction; values?: QuickAskValues } & QuickAskVaultChoice) =>
         post('/api/browser/ask/answer', body).then(j) as Promise<unknown>,
+      /** Save or Not now on a held typed login (`save_offer` on the answer). Owner-only.
+       *  409 `stale` once the gateway let go of it. */
+      browserAskSaveOffer: (body: { session_key: string; offer_id: string; action: 'save' | 'drop' }) =>
+        post('/api/browser/ask/save-offer', body).then(j) as Promise<unknown>,
       /** Fold a reopened view back to its done line. */
       browserLiveClose: (sessionKey: string) =>
         post('/api/browser/live/close', { session_key: sessionKey }).then(j) as Promise<BrowserLiveOk>,

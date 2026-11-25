@@ -1,5 +1,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 
+import type { QuickAsk, QuickAskSaveOffer } from './types'
+
 /**
  * Which surface shows an ask's sheet, and whether the person folded it away.
  *
@@ -23,6 +25,7 @@ class AskUi {
   private collapsed = new Set<string>()
   private answered = new Set<string>()
   private unsaved = new Set<string>()
+  private held = new Map<string, HeldSheet>()
   private listeners = new Set<Listener>()
   private version = 0
 
@@ -64,17 +67,42 @@ class AskUi {
   isAnswered(askId: string): boolean { return this.answered.has(askId) }
 
   /**
-   * A sign-in the person asked to save landed, but the save did not: the sheet
-   * is gone with the ask, so the session's live surfaces say so until dismissed.
+   * A sign-in landed and the person said Save, but the save did not land: the
+   * sheet is gone, so the session's live surfaces say so until dismissed.
    */
   markUnsaved(sessionKey: string): void { this.unsaved.add(sessionKey); this.notify() }
   dismissUnsaved(sessionKey: string): void { if (this.unsaved.delete(sessionKey)) this.notify() }
   isUnsaved(sessionKey: string): boolean { return this.unsaved.has(sessionKey) }
 
+  /**
+   * After a typed Fill the sign-in sheet stays open past its ask, on the surface
+   * that sent it (`holder`): "Signing in…", then "Save this login?" once the
+   * gateway says the sign-in landed, then "Saved to Secrets store" for a moment.
+   */
+  holdSheet(sessionKey: string, holder: string, ask: QuickAsk): void { this.held.set(sessionKey, { holder, ask, phase: 'signing' }); this.notify() }
+  offerInSheet(sessionKey: string, askId: string, offer: QuickAskSaveOffer): boolean {
+    const h = this.held.get(sessionKey)
+    if (!h || h.ask.id !== askId) return false
+    this.held.set(sessionKey, { ...h, phase: 'offer', offer }); this.notify()
+    return true
+  }
+  markHeldSaved(sessionKey: string): void {
+    const h = this.held.get(sessionKey)
+    if (h) { this.held.set(sessionKey, { ...h, phase: 'saved' }); this.notify() }
+  }
+  releaseSheet(sessionKey: string, askId?: string): void {
+    const h = this.held.get(sessionKey)
+    if (h && (askId === undefined || h.ask.id === askId)) { this.held.delete(sessionKey); this.notify() }
+  }
+  heldSheet(sessionKey: string): HeldSheet | null { return this.held.get(sessionKey) ?? null }
+
   __resetForTests(): void {
-    this.surfaces.clear(); this.claimed.clear(); this.collapsed.clear(); this.answered.clear(); this.unsaved.clear(); this.notify()
+    this.surfaces.clear(); this.claimed.clear(); this.collapsed.clear(); this.answered.clear(); this.unsaved.clear(); this.held.clear(); this.notify()
   }
 }
+
+/** A sign-in sheet kept open after its typed Fill (see `AskUi.holdSheet`). */
+export interface HeldSheet { holder: string; ask: QuickAsk; phase: 'signing' | 'offer' | 'saved'; offer?: QuickAskSaveOffer }
 
 export const askUi = new AskUi()
 

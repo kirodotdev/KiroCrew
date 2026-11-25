@@ -4,22 +4,29 @@ The page, hub and routes are the ones ``test_browser_quick_ask`` drives; the
 vault is a real :class:`SecretVault` under the test's ``KIROCREW_HOME``. The bar
 is the quick ask's own: a value reaches only the bound element, and nothing the
 agent can read carries it, or the username. Here also: a login is offered only
-for its exact origin, filled only on the person's pick, and a typed login is
-stored only when the person ticked save, never over an existing item.
+for its site, filled only on the person's pick, and a typed login is held in
+memory only after the sign-in landed, stored only on the person's Save, and
+never over an existing item.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
+from test_browser_live_routes import _app, _post
 from test_browser_quick_ask import _home  # noqa: F401 - the autouse hub/home reset
 from test_browser_quick_ask import CANARY, CREDS, KEY, FakePage, _answer, _asked, _login, _poll
 
 from kiro_crew.browser_harness import live_hub as lh
+from kiro_crew.browser_harness import quick_ask as qa
 from kiro_crew.browser_harness import vault_fill
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers import browser_ask
@@ -29,6 +36,8 @@ from kiro_crew.secrets.items import decode_item
 
 ORIGIN = "https://github.com"
 USER = "octo-user-CANARY"
+#: The real landing watch; the shared fixture stubs it out for every other test.
+REAL_WAIT = vault_fill.wait_signed_in
 
 
 @pytest.fixture
@@ -195,21 +204,63 @@ async def test_only_an_offered_login_still_matching_now_is_filled() -> None:
     assert page.inserts == [] and not ask.outcome
 
 
+@pytest.fixture
+def landed(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[bool]]:
+    """The landing watch answers what the test sets; each call is counted."""
+    said = [True]
+
+    async def _watch(*_a: Any, **_k: Any) -> bool:
+        return said[0]
+
+    monkeypatch.setattr(vault_fill, "wait_signed_in", _watch)
+    yield said
+    for held in list(vault_fill._offers):
+        vault_fill.drop_offer(held)
+
+
+async def _save_offer(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    app, _wire = _app()
+    async with TestClient(TestServer(app)) as client:
+        return await _post(client, "/api/browser/ask/save-offer", {"session_key": KEY, **body})
+
+
+def _files_holding(root: Path, needle: str) -> list[Path]:
+    return [p for p in root.rglob("*") if p.is_file() and needle.encode() in p.read_bytes()]
+
+
 @pytest.mark.asyncio
-async def test_typed_values_are_saved_only_when_ticked_and_never_over_an_item(
-    rows: list[dict[str, Any]],
+async def test_a_typed_sign_in_that_landed_waits_in_memory_until_save(
+    rows: list[dict[str, Any]], landed: list[bool], tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.DEBUG)
     await _store("github.com", ["https://example.com"], password="kept")
     page = FakePage()
     _login(page)
-    hub, _rec, ask = await _asked(page, dict(CREDS))
-    assert lh.live_event(hub.get(KEY))["ask"]["vault"] == {"items": []}  # type: ignore[arg-type]
+    _hub, rec, ask = await _asked(page, dict(CREDS))
     typed = {"username": USER, "password": CANARY}
+    status, out, wire = await _answer({"ask_id": ask.id, "action": "fill", "values": typed})
+    assert status == 200 and out["outcome"] == "filled"
+    offer = out["save_offer"]
+    assert (offer["site"], offer["username"]) == ("github.com", USER)
+    # Asked, not saved: the login is in gateway memory only, never on disk.
+    assert sorted(_logins()) == ["github.com"]
+    assert _files_holding(tmp_path, CANARY) == []
+    polled = await _poll(ask.id)
+    assert polled == {"done": True, "outcome": "filled"}
+    for surface in (
+        json.dumps(out),
+        json.dumps(polled),
+        caplog.text,
+        json.dumps(rows, default=str),
+        json.dumps([e for _k, e in rec.events]),
+        json.dumps(wire.events, default=str),
+    ):
+        assert CANARY not in surface
 
-    status, out, _ = await _answer(
-        {"ask_id": ask.id, "action": "fill", "values": typed, "save": True}
+    assert await _save_offer({"offer_id": offer["id"], "action": "save"}) == (
+        200,
+        {"ok": True, "saved": True},
     )
-    assert (status, out) == (200, {"ok": True, "outcome": "filled", "saved": True})
     logins = _logins()
     assert logins["github.com"]["password"] == "kept"
     assert logins["github.com (2)"] == {
@@ -221,11 +272,99 @@ async def test_typed_values_are_saved_only_when_ticked_and_never_over_an_item(
     saves = [r for r in rows if r["operation"] == vault_fill.OP_SAVE]
     assert len(saves) == 1 and "item=github.com (2)" in saves[0]["resources"]
     assert CANARY not in json.dumps(rows) and USER not in json.dumps(rows)
+    # Answered once: the held login is gone.
+    status, out = await _save_offer({"offer_id": offer["id"], "action": "save"})
+    assert (status, out["error"]) == (409, "stale")
+    assert vault_fill._offers == {}
+
+
+@pytest.mark.asyncio
+async def test_not_now_and_the_timeout_drop_the_held_login(landed: list[bool]) -> None:
+    page = FakePage()
+    _login(page)
+    _hub, _rec, ask = await _asked(page, dict(CREDS))
+    typed = {"username": USER, "password": CANARY}
+    _status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": typed})
+    held = vault_fill._offers[KEY]
+    assert await _save_offer({"offer_id": out["save_offer"]["id"], "action": "drop"}) == (
+        200,
+        {"ok": True, "saved": False},
+    )
+    assert _logins() == {} and held.values == {} and vault_fill._offers == {}
+
+    # Unanswered: the timer armed for SAVE_OFFER_TTL_S drops it.
+    shown = vault_fill.hold_offer(KEY, ORIGIN, typed)
+    held = vault_fill._offers[KEY]
+    assert held.timer is not None
+    left = held.timer.when() - asyncio.get_running_loop().time()
+    assert 0 < left <= vault_fill.SAVE_OFFER_TTL_S
+    vault_fill._expire(KEY, held)
+    assert held.values == {} and vault_fill._offers == {}
+    status, out = await _save_offer({"offer_id": shown["id"], "action": "save"})
+    assert (status, out["error"]) == (409, "stale")
+    assert _logins() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_newer_offer_drops_the_older_one(landed: list[bool]) -> None:
+    first = vault_fill.hold_offer(KEY, ORIGIN, {"username": "a", "password": "pw-a"})
+    old = vault_fill._offers[KEY]
+    vault_fill.hold_offer(KEY, ORIGIN, {"username": "b", "password": "pw-b"})
+    assert old.values == {} and old.timer is None
+    status, out = await _save_offer({"offer_id": first["id"], "action": "save"})
+    assert (status, out["error"]) == (409, "stale")
+
+
+@pytest.mark.asyncio
+async def test_a_sign_in_that_did_not_land_offers_nothing(landed: list[bool]) -> None:
+    landed[0] = False
+    page = FakePage()
+    _login(page)
+    _hub, _rec, ask = await _asked(page, dict(CREDS))
+    typed = {"username": USER, "password": CANARY}
+    status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": typed})
+    assert (status, out) == (200, {"ok": True, "outcome": "filled"})
+    assert vault_fill._offers == {} and _logins() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_login_the_vault_holds_is_not_offered_and_another_account_is(
+    landed: list[bool],
+) -> None:
+    await _store("GitHub", [ORIGIN])
+    page = FakePage()
+    _login(page)
+    _hub, _rec, ask = await _asked(page, dict(CREDS))
+    status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "vault_item": "GitHub"})
+    assert (status, out) == (200, {"ok": True, "outcome": "filled"})
+
+    lh.reset_live_hub()
+    page = FakePage()
+    _login(page)
+    _hub, _rec, ask = await _asked(page, dict(CREDS))
+    typed = {"username": USER, "password": "pw-typed-again"}
+    status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": typed})
+    assert (status, out) == (200, {"ok": True, "outcome": "filled"})
+
+    lh.reset_live_hub()
+    page = FakePage()
+    _login(page)
+    _hub, _rec, ask = await _asked(page, dict(CREDS))
+    other = {"username": "second-user", "password": "pw-second"}
+    status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": other})
+    assert out["save_offer"]["username"] == "second-user"
+    assert await _save_offer({"offer_id": out["save_offer"]["id"], "action": "save"}) == (
+        200,
+        {"ok": True, "saved": True},
+    )
+    logins = _logins()
+    assert logins["GitHub"]["password"] == CANARY  # the match is untouched
+    assert logins["github.com"]["username"] == "second-user"
 
 
 @pytest.mark.asyncio
 async def test_a_save_never_takes_a_name_the_secrets_route_reserves(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, landed: list[bool]
 ) -> None:
     from kiro_crew.dashboard.handlers import secrets as secrets_mod
 
@@ -236,11 +375,98 @@ async def test_a_save_never_takes_a_name_the_secrets_route_reserves(
     _login(page)
     _hub, _rec, ask = await _asked(page, dict(CREDS))
     typed = {"username": USER, "password": CANARY}
-    status, out, _ = await _answer(
-        {"ask_id": ask.id, "action": "fill", "values": typed, "save": True}
+    _status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": typed})
+    assert await _save_offer({"offer_id": out["save_offer"]["id"], "action": "save"}) == (
+        200,
+        {"ok": True, "saved": True},
     )
-    assert (status, out) == (200, {"ok": True, "outcome": "filled", "saved": True})
     assert sorted(_logins()) == ["github.com (2)"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"offer_id": "x", "action": "never"},
+        {"offer_id": 7, "action": "save"},
+        {"action": "save"},
+        {"offer_id": "x", "action": "save", "session_key": "chat-2"},
+    ],
+)
+async def test_the_save_offer_route_refuses_a_bad_body(body: dict[str, Any]) -> None:
+    status, out = await _save_offer(body)
+    assert status in (400, 404) and out["ok"] is False
+
+
+# ---- the landing watch ---------------------------------------------------------
+
+
+class _Tab:
+    """``top_frame`` answers, one per read; the last one repeats."""
+
+    def __init__(self, *tops: tuple[str, str, str]) -> None:
+        self.tops = list(tops)
+
+    async def top_frame(self) -> tuple[str, str, str]:
+        return self.tops.pop(0) if len(self.tops) > 1 else self.tops[0]
+
+
+DOC = ("F1", "L1", ORIGIN)
+
+
+@pytest.fixture
+def shown(monkeypatch: pytest.MonkeyPatch) -> list[bool | None]:
+    """What the bound site shows per read (a password box, none, unreadable)."""
+    out: list[bool | None] = []
+
+    async def _shown(*_a: Any) -> bool | None:
+        return out.pop(0) if len(out) > 1 else out[0]
+
+    monkeypatch.setattr(qa, "password_shown", _shown)
+    monkeypatch.setattr(qa, "STEP_POLL_S", 0.0)
+    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 0.0)
+    return out
+
+
+async def _watch(tab: _Tab, stop: bool = False) -> bool:
+    ask = SimpleNamespace(top_origin=ORIGIN)
+    return await REAL_WAIT(tab, ask, None, lambda: stop)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_the_watch_lands_when_the_password_box_goes(shown: list[bool | None]) -> None:
+    shown[:] = [True, None, False]
+    assert await _watch(_Tab(DOC, DOC, ("F1", "L2", ORIGIN))) is True
+
+
+@pytest.mark.asyncio
+async def test_the_watch_lands_when_the_tab_leaves_the_site(shown: list[bool | None]) -> None:
+    shown[:] = [True]
+    assert await _watch(_Tab(DOC, DOC, ("F1", "L2", "https://app.example.com"))) is True
+
+
+@pytest.mark.asyncio
+async def test_a_new_page_asking_for_the_password_again_has_not_landed(
+    shown: list[bool | None],
+) -> None:
+    shown[:] = [True]
+    assert await _watch(_Tab(DOC, DOC, ("F1", "L2", ORIGIN))) is False
+
+
+@pytest.mark.asyncio
+async def test_the_watch_gives_up_at_its_bound_and_on_stop(
+    shown: list[bool | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown[:] = [True]
+    monkeypatch.setattr(vault_fill, "LAND_WAIT_S", 0.0)
+    assert await _watch(_Tab(DOC)) is False
+    # No password box, but not for LAND_QUIET_S yet when time is up.
+    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 3600.0)
+    shown[:] = [False]
+    assert await _watch(_Tab(DOC)) is False
+    shown[:] = [False]
+    monkeypatch.setattr(vault_fill, "LAND_QUIET_S", 0.0)
+    assert await _watch(_Tab(DOC), stop=True) is False
 
 
 @pytest.mark.asyncio
@@ -251,28 +477,3 @@ async def test_no_free_name_writes_nothing() -> None:
             "github.com", "login", {"password": "pw"}, lambda _name: True
         )
     assert vault.list_items() == []
-
-
-@pytest.mark.asyncio
-async def test_an_untick_saves_nothing_and_another_account_saves_beside_a_match() -> None:
-    page = FakePage()
-    _login(page)
-    _hub, _rec, ask = await _asked(page, dict(CREDS))
-    typed = {"username": USER, "password": CANARY}
-    status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": typed})
-    assert (status, out) == (200, {"ok": True, "outcome": "filled"})
-    assert _logins() == {}
-
-    await _store("GitHub", [ORIGIN])
-    lh.reset_live_hub()
-    page = FakePage()
-    _login(page)
-    _hub, _rec, ask = await _asked(page, dict(CREDS))
-    other = {"username": "second-user", "password": "pw-second"}
-    status, out, _ = await _answer(
-        {"ask_id": ask.id, "action": "fill", "values": other, "save": True}
-    )
-    assert (status, out) == (200, {"ok": True, "outcome": "filled", "saved": True})
-    logins = _logins()
-    assert logins["GitHub"]["password"] == CANARY  # the match is untouched
-    assert logins["github.com"]["username"] == "second-user"

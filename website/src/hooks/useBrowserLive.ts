@@ -347,6 +347,7 @@ class BrowserLiveStore {
     reopen: (k: string, turnId: string) => api.browserLiveReopen(k, turnId) as Promise<unknown>,
     close: (k: string) => api.browserLiveClose(k) as Promise<unknown>,
     answer: (body: Parameters<typeof api.browserAskAnswer>[0]) => api.browserAskAnswer(body) as Promise<unknown>,
+    saveOffer: (body: Parameters<typeof api.browserAskSaveOffer>[0]) => api.browserAskSaveOffer(body) as Promise<unknown>,
     /**
      * A hand-back note no agent op took, sent as the person's message to the slot.
      * Same flags as the composer it replaces (`useChatPaneSend`): `responsive`, so a
@@ -841,14 +842,25 @@ class BrowserLiveStore {
    * the record, not the error text, not a log. A refusal resolves with the
    * gateway's `error` code (or `send_failed`), never throws.
    */
+  /** Save or Not now on a held typed login; true only when Save stored it. */
+  async answerSaveOffer(sessionKey: string, offerId: string, action: 'save' | 'drop'): Promise<boolean> {
+    try {
+      const r = (await this.writes.saveOffer({ session_key: sessionKey, offer_id: offerId, action })) as { ok?: unknown; saved?: unknown } | null
+      return r?.ok === true && r.saved === true
+    } catch { return false }
+  }
+
   async answerAsk(sessionKey: string, askId: string, action: QuickAskAction, values?: QuickAskValues, vault?: QuickAskVaultChoice): Promise<QuickAskAnswer> {
     try {
       const r = await this.writes.answer({ session_key: sessionKey, ask_id: askId, action, ...(values ? { values } : {}), ...(vault ?? {}) })
-      const d = (r ?? {}) as { ok?: unknown; outcome?: unknown; error?: unknown; saved?: unknown }
+      const d = (r ?? {}) as { ok?: unknown; outcome?: unknown; error?: unknown; save_offer?: unknown }
+      const offer = (d.save_offer && typeof d.save_offer === 'object' ? d.save_offer : {}) as { id?: unknown; site?: unknown; username?: unknown }
       return {
         ok: d.ok === true,
         ...(typeof d.outcome === 'string' ? { outcome: d.outcome } : {}),
-        ...(typeof d.saved === 'boolean' ? { saved: d.saved } : {}),
+        ...(typeof offer.id === 'string' && offer.id && typeof offer.site === 'string'
+          ? { saveOffer: { id: offer.id, site: offer.site, username: typeof offer.username === 'string' ? offer.username : '' } }
+          : {}),
         ...(d.ok === true ? {} : { error: typeof d.error === 'string' && d.error ? d.error : 'send_failed' }),
       }
     } catch (e) {

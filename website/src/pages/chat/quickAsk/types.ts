@@ -75,10 +75,12 @@ export type QuickAskUsername = 'required' | 'optional' | 'none'
 export type QuickAskAction = 'fill' | 'decline' | 'take_over' | 'done' | 'confirm' | 'cancel'
 export interface QuickAskValues { username?: string; password?: string; text?: string; otp?: string }
 export type QuickAskError = 'origin_changed' | 'stale' | 'not_owner' | 'too_large' | 'bad_action' | 'no_field' | 'too_long' | 'vault_unusable'
-/** `saved`: present when the answer asked to save the typed login; whether it was. */
-export interface QuickAskAnswer { ok: boolean; outcome?: string; error?: QuickAskError | string; saved?: boolean }
-/** A credentials answer's vault part: fill from a picked login, or save the typed one. */
-export interface QuickAskVaultChoice { vault_item?: string; save?: true }
+/** `saveOffer`: a typed sign-in landed and the gateway holds it in memory until the person answers. */
+export interface QuickAskAnswer { ok: boolean; outcome?: string; error?: QuickAskError | string; saveOffer?: QuickAskSaveOffer }
+/** What the sheet's "Save this login?" shows: never the password, which stays in the gateway. */
+export interface QuickAskSaveOffer { id: string; site: string; username: string }
+/** A credentials answer's vault part: fill from a picked login. */
+export interface QuickAskVaultChoice { vault_item?: string }
 
 const KINDS: ReadonlySet<string> = new Set(['credentials', 'text', 'otp', 'human_check', 'confirm'])
 const ROLES: ReadonlySet<string> = new Set(['username', 'password', 'text', 'otp', 'widget', 'action', 'region'])

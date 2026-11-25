@@ -34,6 +34,14 @@ export function useQuickAsk(sessionKey: string, ask: QuickAsk | null, priority: 
   const instanceId = useId()
   const isMobile = useIsMobile()
   const view = useAskSurface(instanceId, ask?.id ?? null, priority)
+  // A sign-in sheet kept open after its typed Fill stays on the surface that sent it, past its ask.
+  const held = askUi.heldSheet(sessionKey)
+  if (held && held.holder === instanceId) {
+    const sheet = <QuickAskSheet key={held.ask.id} ask={held.ask} sessionKey={sessionKey} holder={instanceId} mode={isMobile ? 'bottom' : 'overlay'} onCollapse={() => askUi.releaseSheet(sessionKey, held.ask.id)} />
+    return isMobile
+      ? { frameOverlay: null, askSlot: sheet, zoom: null, scoped: false }
+      : { frameOverlay: sheet, askSlot: null, zoom: null, scoped: false }
+  }
   if (!ask || view === 'none') return NONE
   if (takesOver(ask) && ask.phase === 'taken_over') {
     return { frameOverlay: null, askSlot: <QuickAskTakeoverBar key={ask.id} ask={ask} sessionKey={sessionKey} />, zoom: zoomStyle(ask), scoped: true }
@@ -43,7 +51,7 @@ export function useQuickAsk(sessionKey: string, ask: QuickAsk | null, priority: 
     return { frameOverlay: ring, askSlot: <QuickAskInline ask={ask} onOpen={() => askUi.open(instanceId, ask.id)} />, zoom: null, scoped: false }
   }
   const collapse = () => askUi.collapse(ask.id)
-  const sheet = <QuickAskSheet key={ask.id} ask={ask} sessionKey={sessionKey} mode={isMobile ? 'bottom' : 'overlay'} onCollapse={collapse} />
+  const sheet = <QuickAskSheet key={ask.id} ask={ask} sessionKey={sessionKey} holder={instanceId} mode={isMobile ? 'bottom' : 'overlay'} onCollapse={collapse} />
   return isMobile
     ? { frameOverlay: ring, askSlot: sheet, zoom: null, scoped: false }
     : { frameOverlay: sheet, askSlot: null, zoom: null, scoped: false }

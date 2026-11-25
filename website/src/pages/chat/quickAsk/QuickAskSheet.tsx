@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode, type RefObject } from 'react'
 import { EyeOff, Lock, Unlock, X } from 'lucide-react'
 
 import { Btn } from '../../../components/ui'
@@ -15,7 +15,7 @@ import {
   answerErrorText, askIcon, askTitle, isSignInTakeover, labelWord, OriginLine, originHost, otpDigits, QuickAskTargetRing, ReasonLine, textLabel,
 } from './QuickAskParts'
 import { recall, remember, type RememberKey } from './remember'
-import { ExpandRow, OTHER_ACCOUNT_ICON, SaveToVaultBox, useVaultPart, VaultLogins } from './QuickAskVault'
+import { ExpandRow, foldHeldSheet, HeldSaveBody, OTHER_ACCOUNT_ICON, useVaultPart, VaultLogins } from './QuickAskVault'
 import type { QuickAsk, QuickAskAction, QuickAskField, QuickAskValues, QuickAskVaultChoice } from './types'
 
 /**
@@ -31,13 +31,21 @@ import type { QuickAsk, QuickAskAction, QuickAskField, QuickAskValues, QuickAskV
  * the values are read once, the inputs are emptied at once, and the values go
  * into the single answer POST. Unmounting (an ask replaced, the sheet folded,
  * the card scrolled away) empties them too.
+ *
+ * A typed sign-in with the vault part keeps this sheet open past its ask, on
+ * the surface that sent it (`holder`): see `askUi.holdSheet` and `HeldSaveBody`.
  */
-export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
+export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse, holder }: {
   ask: QuickAsk
   sessionKey: string
   mode: 'overlay' | 'bottom'
   onCollapse: () => void
+  /** The surface this sheet is drawn on, so a typed Fill can keep it open there. */
+  holder?: string
 }) {
+  useSyncExternalStore(askUi.subscribe, askUi.snapshot, askUi.snapshot)
+  const heldNow = askUi.heldSheet(sessionKey)
+  const held = heldNow && heldNow.ask.id === ask.id ? heldNow : null
   // Bottom mode leaves the card's animated (transformed) box through the
   // overlay root; inside the big view's own dialog it stays put, or the
   // dialog's focus trap and pointer lock would shut it out.
@@ -89,9 +97,18 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
   const send = async (action: QuickAskAction, values?: QuickAskValues, vault?: QuickAskVaultChoice): Promise<boolean> => {
     setBusy(true)
     setError('')
+    // A typed login with the vault part: the sheet stays open while the gateway
+    // watches the sign-in, then asks whether to save it.
+    const hold = !!holder && action === 'fill' && !!values?.password && !vault?.vault_item && !!ask.vault
+    if (hold) askUi.holdSheet(sessionKey, holder, ask)
     const r = await browserLiveStore.answerAsk(sessionKey, ask.id, action, values, vault)
-    // The sheet goes with the ask; a save that did not land is said by the card.
-    if (r.ok && vault?.save && r.saved === false) askUi.markUnsaved(sessionKey)
+    if (r.saveOffer && !askUi.offerInSheet(sessionKey, ask.id, r.saveOffer)) {
+      // The person closed the sheet while it was signing in: nobody asks, so the gateway lets go.
+      void browserLiveStore.answerSaveOffer(sessionKey, r.saveOffer.id, 'drop')
+    } else if (hold && !r.saveOffer) {
+      if (r.ok) askUi.markAnswered(ask.id)
+      askUi.releaseSheet(sessionKey, ask.id)
+    }
     if (!alive.current) return r.ok
     // take_over stays busy: the gateway's next event moves the ask to taken_over.
     if (!r.ok || action !== 'take_over') setBusy(false)
@@ -104,8 +121,10 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
   // Esc folds, Tab stays inside. Keys typed here are the sheet's: the page's
   // shortcuts (and the big view's replay keys) must not act on them, so the
   // listener stops them here; React's own handlers on ancestors never see them.
-  const collapseRef = useRef(onCollapse)
-  collapseRef.current = onCollapse
+  // Past the ask (a held sheet), Esc and the backdrop close it: Not now on the question.
+  const fold = () => { if (held) foldHeldSheet(sessionKey, held); else onCollapse() }
+  const collapseRef = useRef(fold)
+  collapseRef.current = fold
   // A Tab or Escape the IME owns is choosing a candidate, not leaving the field.
   const imeLatch = useDocumentImeLatch()
   useEffect(() => {
@@ -146,6 +165,11 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
         : 'max-h-[90dvh] w-full overflow-y-auto rounded-t-2xl border-t border-border-strong bg-bg-elevated px-[max(20px,var(--safe-area-x))] pt-2 shadow-2xl focus:outline-none'}
     >
       {mode === 'bottom' && <div aria-hidden="true" className="mx-auto mb-3 h-1 w-10 rounded-full bg-border-strong" />}
+      {held ? (
+        <div className="pb-[max(20px,env(safe-area-inset-bottom))]">
+          <HeldSaveBody sessionKey={sessionKey} held={held} titleId={titleId} />
+        </div>
+      ) : (<>
       <div className="flex items-start gap-3">
         <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-subtle text-accent">
           <Icon size={20} aria-hidden="true" />
@@ -173,13 +197,14 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
           pinned answer row leaves no strip for the fields to show through. */}
       <p className="mt-3 pb-[max(20px,env(safe-area-inset-bottom))] text-center text-[11px] text-muted">{i18nT('pages.chat.quickAsk.kiro_paused')}</p>
       {edges.bottom && !rowPinned && <MoreBelowFade className="sticky bottom-0 -mt-6" />}
+      </>)}
     </div>
   )
 
   if (mode === 'overlay') {
     return (
       <div className="absolute inset-0 z-20" data-testid="quick-ask-overlay">
-        <QuickAskTargetRing ask={ask} dim />
+        {!held && <QuickAskTargetRing ask={ask} dim />}
         {/* Right-aligned so the ringed element on the page tends to stay in sight. */}
         <div className="absolute inset-0 flex items-center justify-end overflow-hidden p-3">{panel}</div>
       </div>
@@ -188,7 +213,7 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
   const bottom = (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/50" data-testid="quick-ask-bottom">
       {/* The backdrop folds the sheet like Esc; it is not a control of its own. */}
-      <Clickable aria-hidden="true" tabIndex={-1} className="flex-1" onClick={onCollapse} />
+      <Clickable aria-hidden="true" tabIndex={-1} className="flex-1" onClick={fold} />
       {panel}
     </div>
   )
@@ -357,7 +382,6 @@ function CredentialsBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; se
   const rem = useRemember(ask.origin, hasUser ? 'username' : null)
   const [userEmpty, setUserEmpty] = useState(true)
   const vault = useVaultPart(ask)
-  const [save, setSave] = useState(false)
   // A vault match offers its rows; typing another account opens behind "Other account".
   const matched = !!vault && vault.items.length > 0
   const [other, setOther] = useState(false)
@@ -369,7 +393,7 @@ function CredentialsBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; se
     const username = hasUser ? take(userRef).trim() : ''
     const password = take(passRef)
     setUserEmpty(true)
-    const ok = await send('fill', { ...(username ? { username } : {}), password }, save ? { save: true } : undefined)
+    const ok = await send('fill', { ...(username ? { username } : {}), password })
     // With the vault part the Remember box is not shown, so nothing here is
     // kept or forgotten: a username remembered earlier stays as it was.
     if (ok && !vault) rem.commit(username)
@@ -398,7 +422,6 @@ function CredentialsBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; se
         </Field>
       )}
       {rem.enabled && !vault && <RememberBox host={originHost(ask.origin)} on={rem.on} setOn={rem.setOn} />}
-      {vault && typing && <SaveToVaultBox on={save} setOn={setSave} />}
       <SecretHint />
       <Actions primary={typing ? i18nT('pages.chat.quickAsk.fill_in_page') : undefined} busy={busy} onDecline={() => { void send('decline') }} />
     </form>
@@ -422,7 +445,6 @@ function SignInBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; send: S
   const site = ask.top_origin ? i18nT('pages.chat.quickAsk.origin_inside', { origin: ask.origin, top: ask.top_origin }) : ask.origin
   const userLabel = mode === 'required' ? i18nT('pages.chat.quickAsk.label_email_or_phone') : i18nT('pages.chat.quickAsk.label_email_or_phone_optional')
   const vault = useVaultPart(ask)
-  const [save, setSave] = useState(false)
   const matched = !!vault && vault.items.length > 0
   const [other, setOther] = useState(false)
   const typing = !matched || other
@@ -433,7 +455,7 @@ function SignInBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; send: S
     if (!passRef.current?.value) { passRef.current?.focus(); return }
     const username = mode === 'none' ? '' : take(userRef).trim()
     const password = take(passRef)
-    void send('fill', { ...(username ? { username } : {}), password }, save ? { save: true } : undefined)
+    void send('fill', { ...(username ? { username } : {}), password })
   }
   return (
     <form onSubmit={submit} className="flex flex-col gap-2" noValidate aria-busy={busy} data-testid="quick-ask-sign-in">
@@ -463,9 +485,8 @@ function SignInBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; send: S
           )}
         </Field>
       )}
-      {vault && typing && <SaveToVaultBox on={save} setOn={setSave} />}
-      {/* "Never saved" stays true only while the save box is not ticked. */}
-      <SecretHint extra={save ? undefined : i18nT('pages.chat.quickAsk.sign_in_not_saved', { host: originHost(ask.origin) })} />
+      {/* "Never saved" holds only with no vault part: with one, the sheet asks after the sign-in. */}
+      <SecretHint extra={vault ? undefined : i18nT('pages.chat.quickAsk.sign_in_not_saved', { host: originHost(ask.origin) })} />
       <Actions primary={!typing ? undefined : busy ? i18nT('pages.chat.quickAsk.signing_in') : i18nT('pages.chat.quickAsk.sign_in')} busy={busy} onDecline={() => { void send('decline') }} />
       <p className="mt-1 text-center text-[12px] text-muted">
         {i18nT('pages.chat.quickAsk.take_over_instead_hint')}{' '}
