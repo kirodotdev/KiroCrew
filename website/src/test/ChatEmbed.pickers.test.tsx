@@ -108,6 +108,7 @@ describe('ChatEmbed pickers with the grants', () => {
     await waitFor(() => expect(within(list).getByText('/compact')).toBeInTheDocument())
     expect(within(list).queryByText('/side')).toBeNull()
     expect(within(list).queryByText('/onboarding')).toBeNull()
+    expect(within(list).queryByText('/fork-temporary')).toBeNull()
     expect(mockGet).toHaveBeenCalledWith(EMBED_SLASH_COMMANDS_PATH, expect.objectContaining({ signal: expect.anything() }))
     expect(dashboardApi.slashCommands).not.toHaveBeenCalled()
   })

@@ -229,7 +229,7 @@ shared `mentionTokenRegex`), skipping any spot where a still-picked token
 that extends it begins (`@report final.pdf` survives removing `@report`); a
 folder's token stays text. The `/` menu leaves out
 the commands the main chat runs in the browser (`/side`, `/btw`, `/fork`,
-`/onboarding`, `/kb`). The embed's `@` rows use `FilePickerMenu`'s `pathTail`
+`/fork-temporary`, `/onboarding`, `/kb`). The embed's `@` rows use `FilePickerMenu`'s `pathTail`
 (`ComposerPickerMenus` `filePathTail`): each row shows its root-relative
 folder cut from the start, so same-named results stay apart in the narrow
 menu. Both menus are opt-in and fail closed per path: a host that declares

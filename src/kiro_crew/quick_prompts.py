@@ -231,7 +231,7 @@ _USER_TOKEN_RE = re.compile(r"/[a-z][a-z0-9-]*")
 # pins this set against every source.
 _RESERVED_TOKENS = frozenset(QUICK_PROMPTS) | frozenset("""
     /agent /agents /bg /bot /bots /btw /cancel /changelog /chat /clear /code /commands
-    /compact /context /cron /crons /dashboard /editor /exit /experiment /fork /goal
+    /compact /context /cron /crons /dashboard /editor /exit /experiment /fork /fork-temporary /goal
     /help /hooks /incognito /init /issue /kb /kirocrew /link /logdump /mcp
     /model /models /new /onboarding /paste /ping /prompts /q /queue /quit
     /reply /reset /review /security-review /session /sessions /side /spawn

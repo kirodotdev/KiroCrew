@@ -3,7 +3,8 @@
  * fork ran keeps the view and the prompt waits unsent in the fork's stored
  * draft, a second Enter makes no second fork, and a refused fork opens nothing. The plain
  * path (fork, open, send) runs through ChatPage in
- * ChatPageAutoSendSidRewrite.test.tsx.
+ * ChatPageAutoSendSidRewrite.test.tsx. `/fork-temporary` is the same command
+ * asking for a temporary fork.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createTestStore } from './helpers'
@@ -130,6 +131,66 @@ describe('/fork slash command', () => {
   })
 
   it.each(['/fork', '/fork hello', '/fork\nhello'])('still treats %j as a fork', raw => {
+    expect(isInterceptedSlashCommand(raw)).toBe(true)
+  })
+
+  it('asks for no memory mode, so the fork keeps its source\'s', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: FORK, title: FORK, messages: 2 })
+    expect(await interceptSlashCommand('/fork hello', ORIGIN, store.dispatch, { sendToFork: () => true })).toEqual({ intercepted: true })
+    expect(mocks.forkChatSlot).toHaveBeenCalledExactlyOnceWith(ORIGIN, undefined, undefined, undefined, undefined)
+  })
+})
+
+describe('/fork-temporary slash command', () => {
+  it('forks the whole conversation into a temporary session, opens it and sends the prompt there', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: FORK, title: FORK, messages: 2, memory_mode: 'temporary' })
+    const sendToFork = vi.fn().mockReturnValue(true)
+    expect(await interceptSlashCommand('/fork-temporary hello', ORIGIN, store.dispatch, { sendToFork })).toEqual({ intercepted: true })
+    expect(mocks.forkChatSlot).toHaveBeenCalledExactlyOnceWith(ORIGIN, undefined, undefined, undefined, undefined, undefined, 'temporary')
+    expect(store.getState().chat.activeSlot).toBe(FORK)
+    expect(store.getState().dashboard.slots.find(s => s.key === FORK)?.memory_mode).toBe('temporary')
+    expect(sendToFork).toHaveBeenCalledExactlyOnceWith(FORK, 'hello')
+  })
+
+  it('only forks when it carries no prompt', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: FORK, title: FORK, messages: 2, memory_mode: 'temporary' })
+    const sendToFork = vi.fn().mockReturnValue(true)
+    expect(await interceptSlashCommand('/fork-temporary', ORIGIN, store.dispatch, { sendToFork })).toEqual({ intercepted: true })
+    expect(mocks.forkChatSlot).toHaveBeenCalledExactlyOnceWith(ORIGIN, undefined, undefined, undefined, undefined, undefined, 'temporary')
+    expect(store.getState().chat.activeSlot).toBe(FORK)
+    expect(sendToFork).not.toHaveBeenCalled()
+  })
+
+  it('names itself when a host that hides Fork refuses it', async () => {
+    const res = await interceptSlashCommand('/fork-temporary hello', ORIGIN, store.dispatch, { forkUnavailable: true })
+    expect(res).toEqual({
+      intercepted: true,
+      failed: true,
+      stage: 'fork',
+      error: i18nT('pages.chatPage.command_not_available_here', { command: '/fork-temporary' }),
+    })
+    expect(mocks.forkChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('reports a refused fork and opens nothing', async () => {
+    mocks.forkChatSlot.mockRejectedValue(new ApiError(409, 'slot cap reached (20)', '{"error":"slot cap reached (20)","code":"slot_cap_reached"}'))
+    const sendToFork = vi.fn()
+    expect(await interceptSlashCommand('/fork-temporary hello', ORIGIN, store.dispatch, { sendToFork })).toEqual({
+      intercepted: true, failed: true, stage: 'fork',
+      error: i18nT('pages.chatPage.fork_failed_error', { error: 'slot cap reached (20)' }),
+    })
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+    expect(sendToFork).not.toHaveBeenCalled()
+  })
+
+  // A whole word, as `/fork` is: a longer name is text for the agent.
+  it.each(['/fork-temporaryx', '/fork-temporary-x', '/fork-temp', '/fork-temporarily hello'])('sends %j to the agent instead of forking', async raw => {
+    expect(isInterceptedSlashCommand(raw)).toBe(false)
+    expect(await interceptSlashCommand(raw, ORIGIN, store.dispatch, {})).toEqual({ intercepted: false })
+    expect(mocks.forkChatSlot).not.toHaveBeenCalled()
+  })
+
+  it.each(['/fork-temporary', '/fork-temporary hello', '/fork-temporary\nhello'])('treats %j as a temporary fork', raw => {
     expect(isInterceptedSlashCommand(raw)).toBe(true)
   })
 })

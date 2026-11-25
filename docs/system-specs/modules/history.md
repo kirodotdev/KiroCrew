@@ -1642,7 +1642,9 @@ no longer destroy older turns.
   persistent chat offers both, an incognito chat only "Fork as temporary", and
   a temporary chat neither. Each sends the `direction="head"` request with
   `memory_mode`, and the new chat shows the usual incognito or temporary badge
-  from the response's `memory_mode`.
+  from the response's `memory_mode`. `/fork-temporary <prompt>` in the Chat
+  page composer is `/fork` with `memory_mode: "temporary"`: the whole
+  conversation, from a chat in any mode (a temporary chat keeps its own).
 - **Pinned forks**: a dashboard fork of a pinned session is pinned too, so it
   stays beside its parent in the pinned group. `dashboard.fork_inherits_pin`
   (default true) gates this; when it is false the fork starts unpinned. Agent

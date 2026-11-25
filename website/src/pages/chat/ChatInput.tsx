@@ -10,6 +10,7 @@ import type { AppDispatch, RootState } from '../../store'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
 import { forkFailureMessageForCode } from '../../utils/forkFailure'
+import type { PrivateForkMemoryMode } from '../../utils/forkMemoryModes'
 import { restoreToComposer } from '../../utils/composerRestore'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { errMessage } from '../../utils/thunkError'
@@ -90,8 +91,9 @@ export function agentSwitchTarget(trimmed: string): string | null {
 
 // `/fork <prompt>`: the session menu's Fork (the whole conversation, copied
 // into a new session) from the keyboard, with the prompt as the fork's first
-// message. A bare `/fork` only forks.
-const FORK_RE = /^\/fork(?:\s+([\s\S]+))?$/
+// message. A bare `/fork` only forks. `/fork-temporary` is the same fork, made
+// a temporary session: the reply menu's "Fork as temporary" from the keyboard.
+const FORK_RE = /^\/fork(-temporary)?(?:\s+([\s\S]+))?$/
 
 /** Sessions with a `/fork` still being made: a second Enter before the fork
  *  opens is not a second fork. */
@@ -115,8 +117,8 @@ export function isInterceptedSlashCommand(raw: string): boolean {
  *  does, then sends `prompt` there. A session the user opened while the fork
  *  ran keeps the view (`forkMayOpen`), and the prompt then waits unsent in the
  *  fork's own stored draft: a send carries what the composer on screen has
- *  staged. */
-async function forkFromCommand(slot: string, prompt: string, dispatch: AppDispatch, sendToFork: SlashInterceptOptions['sendToFork']): Promise<SlashInterceptResult> {
+ *  staged. `memoryMode` asks for a more private fork than its source. */
+async function forkFromCommand(slot: string, prompt: string, dispatch: AppDispatch, sendToFork: SlashInterceptOptions['sendToFork'], memoryMode?: PrivateForkMemoryMode): Promise<SlashInterceptResult> {
   const state = () => dispatch((_: AppDispatch, getState: () => RootState) => getState())
   // Pending until the fork is active or failed, so the chat page does not open
   // another session meanwhile; released once, before the fork's transcript
@@ -133,7 +135,7 @@ async function forkFromCommand(slot: string, prompt: string, dispatch: AppDispat
   const origin = captureForkOrigin(state())
   forking.add(slot)
   try {
-    const result = await dispatch(forkSlot({ slot })).unwrap()
+    const result = await dispatch(forkSlot({ slot, memoryMode })).unwrap()
     if (!result.ok) return refused(result.code, result.error ?? '')
     if (forkMayOpen(state(), origin)) {
       const switching = dispatch(switchSlot({ key: result.key, requestSeq: origin.seq }))
@@ -192,10 +194,10 @@ export async function interceptSlashCommand(
   }
   const fork = trimmed.match(FORK_RE)
   if (fork) {
-    if (opts.forkUnavailable) return { intercepted: true, failed: true, stage: 'fork', error: i18nT('pages.chatPage.command_not_available_here', { command: '/fork' }) }
+    if (opts.forkUnavailable) return { intercepted: true, failed: true, stage: 'fork', error: i18nT('pages.chatPage.command_not_available_here', { command: fork[1] ? '/fork-temporary' : '/fork' }) }
     if (!slot) return { intercepted: true, failed: true, stage: 'fork', error: i18nT('components.sessionGridView.no_session_to_fork_yet') }
     if (forking.has(slot)) return { intercepted: true, failed: true, unconfirmed: true }
-    return forkFromCommand(slot, fork[1]?.trim() ?? '', dispatch, opts.sendToFork)
+    return forkFromCommand(slot, fork[2]?.trim() ?? '', dispatch, opts.sendToFork, fork[1] ? 'temporary' : undefined)
   }
   const match = trimmed.match(SIDE_RE)
   if (!match) {

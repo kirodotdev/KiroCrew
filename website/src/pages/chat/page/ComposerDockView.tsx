@@ -95,8 +95,8 @@ function StableChatInput(props: React.ComponentProps<typeof ChatInput>) {
   return <ChatInput {...useStableCallbackProps(props)} value={value} />
 }
 
-/** The `/` menu of a composer that refuses `/fork` leaves it out. */
-const FORK_HIDDEN: readonly string[] = ['/fork']
+/** The `/` menu of a composer that refuses `/fork` leaves it and `/fork-temporary` out. */
+const FORK_HIDDEN: readonly string[] = ['/fork', '/fork-temporary']
 
 interface ComposerDockViewProps {
   embedded?: boolean

@@ -191,7 +191,9 @@ A fork can be more private than the chat it comes from: a reply's **More** menu
 offers **Fork as incognito** and **Fork as temporary**, listing only the modes
 stricter than the chat's own. The new chat keeps the conversation up to that
 reply, and nothing done in it reaches memory or lessons. A fork is never less
-private than its chat.
+private than its chat. From the keyboard, `/fork-temporary <prompt>` in the Chat
+page's message box forks the whole conversation into a temporary chat and sends
+the prompt there.
 
 For new dashboard chats, choose the default under **Settings → Chat → Sessions →
 Default Memory Mode**. The choice is stored as

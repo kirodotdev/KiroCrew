@@ -26,7 +26,7 @@ import type { AppApi } from './scopedApi'
  *  and its knowledge prefix). The embed has no side chat, no onboarding, no
  *  knowledge picker and no main chat to open a fork in, so its menu does not
  *  offer them. Exported for tests. */
-export const EMBED_HIDDEN_COMMANDS: readonly string[] = ['/btw', '/fork', '/kb', '/onboarding', '/side']
+export const EMBED_HIDDEN_COMMANDS: readonly string[] = ['/btw', '/fork', '/fork-temporary', '/kb', '/onboarding', '/side']
 
 export function useEmbedPickers({ api, appName, slotKey, agent, draft, setDraft, textareaRef, stage, removeFile: removeStaged }: {
   api: AppApi

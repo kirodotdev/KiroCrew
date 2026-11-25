@@ -183,6 +183,15 @@ describe('ChatPane client-only slash commands', () => {
     expect(box.value).toBe('/fork try it')
   })
 
+  it('/fork-temporary is refused on the pane under its own name, and the text stays', async () => {
+    renderPane({ openSideChat: () => true })
+    const box = await typeAndSend('/fork-temporary try it')
+    expect(await screen.findByText(i18nT('pages.chatPage.command_not_available_here', { command: '/fork-temporary' }))).toBeTruthy()
+    expect(api.forkChatSlot).not.toHaveBeenCalled()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(box.value).toBe('/fork-temporary try it')
+  })
+
   it('/onboarding replays the tour locally instead of being sent', async () => {
     const seen = vi.fn()
     window.addEventListener('mc-start-import', seen)
@@ -262,8 +271,8 @@ describe('ChatPane client-only slash commands', () => {
   })
 
   it.each([
-    ['with a host Side Chat', true, ['/side', '/btw'], ['/kb', '/fork']],
-    ['without a host Side Chat', false, [], ['/kb', '/fork', '/side', '/btw']],
+    ['with a host Side Chat', true, ['/side', '/btw'], ['/kb', '/fork', '/fork-temporary']],
+    ['without a host Side Chat', false, [], ['/kb', '/fork', '/fork-temporary', '/side', '/btw']],
   ])('the slash menu leaves out what the pane refuses (%s)', async (_label, side, shown, hidden) => {
     renderPane(side ? { openSideChat: () => true } : {})
     const box = (await screen.findAllByRole('textbox'))[0]

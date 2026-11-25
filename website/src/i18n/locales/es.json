@@ -9958,6 +9958,7 @@
       "desc_exit": "Salir de la sesión de chat",
       "desc_experiment": "Activar o desactivar las funciones experimentales",
       "desc_fork": "Continuar en una copia de esta conversación",
+      "desc_fork_temporary": "Bifurcar como chat temporal",
       "desc_help": "Mostrar los comandos disponibles",
       "desc_hooks": "Ver los hooks de contexto configurados",
       "desc_issue": "Informar de un problema o error",

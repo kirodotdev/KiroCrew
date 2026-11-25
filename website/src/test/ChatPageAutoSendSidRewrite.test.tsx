@@ -211,6 +211,22 @@ describe('an in-window auto-send hand-off to a named session', { timeout: 20_000
     expect(store.getState().chat.activeSlot).toBe('slot-fork')
   })
 
+  it('sends a typed /fork-temporary prompt once, in the temporary fork it opens', async () => {
+    forkChatSlot.mockResolvedValue({ ok: true, key: 'slot-fork', title: 'slot-fork', messages: 0, memory_mode: 'temporary' })
+    const store = makeStore()
+    await renderPage(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '/fork-temporary run the report' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(nav.search).toContain('sid=slot-fork'))
+    expect(forkChatSlot).toHaveBeenCalledWith('slot-a', undefined, undefined, undefined, undefined, undefined, 'temporary')
+    expect(sendChat.mock.calls[0][0]).toBe('run the report')
+    expect(sendChat.mock.calls[0][1]).toBe('slot-fork')
+    expect(store.getState().chat.activeSlot).toBe('slot-fork')
+    expect(store.getState().dashboard.slots.find(s => s.key === 'slot-fork')?.memory_mode).toBe('temporary')
+  })
+
   it('sends nothing from a page left before its /fork lands and keeps the prompt for the fork', async () => {
     let land!: () => void
     forkChatSlot.mockReturnValue(new Promise(r => { land = () => r({ ok: true, key: 'slot-fork', title: 'slot-fork', messages: 0 }) }))

@@ -37,8 +37,8 @@ import type { useChatPaneDraft } from './useChatPaneDraft'
  */
 
 /** Client-only commands the pane never runs: it has no knowledge picker, and
- *  `/fork` opens its fork in the main chat. */
-const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb', '/fork']
+ *  `/fork` and `/fork-temporary` open their fork in the main chat. */
+const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb', '/fork', '/fork-temporary']
 
 /** Delay before the post-send bottom pin, so the optimistic bubble's commit has
  *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
@@ -153,9 +153,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   // `/onboarding`) and the knowledge-fetch prefixes (`/kb`, `@kb`): the same
   // matchers and the same `interceptSlashCommand` ChatPage.send runs, so the
   // pane never posts them to the agent as text. The pane has no knowledge
-  // picker, `/fork` opens its fork in the main chat, and a host may give it no
-  // Side Chat (`openSideChat` omitted); those commands are refused here with
-  // the composer kept. Returns true when
+  // picker, `/fork` and `/fork-temporary` open their fork in the main chat,
+  // and a host may give it no Side Chat (`openSideChat` omitted); those
+  // commands are refused here with the composer kept. Returns true when
   // the composer text was a command (handled or refused), so the caller must
   // not send it.
   // Commands the pane refuses (see interceptPaneSlash), kept out of its menu
