@@ -4,8 +4,11 @@
 * crafted request while off -- every gate raises the typed refusal; only an
   exact ``True`` turns it on.
 * disabled during live execution -- the config watcher closes every connector
-  socket, without touching files.
-* while it stays off -- nothing is scheduled and shutdown closes nothing.
+  socket and revokes the local grants, without touching files.
+* re-enable -- revokes whatever was saved, then starts the local controller;
+  revoked consent stays revoked.
+* while it stays off -- nothing is scheduled, startup creates no controller,
+  and shutdown stops nothing.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.connected_computers import broker as broker_mod
+from kiro_crew.connected_computers import controller as controller_mod
 from kiro_crew.connected_computers import disable, flag
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
@@ -46,12 +50,51 @@ class _FakeBroker:
         return 1
 
 
+class _FakeController:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    @property
+    def started(self) -> int:
+        return self.calls.count("start")
+
+    @property
+    def offs(self) -> int:
+        return self.calls.count("off")
+
+    def start(self) -> None:
+        self.calls.append("start")
+
+    async def reconcile(self) -> None:
+        self.calls.append("reconcile")
+
+    async def off(self) -> list[Any]:
+        self.calls.append("off")
+        return []
+
+
 @pytest.fixture
 def fakes(monkeypatch):
+    monkeypatch.setattr(disable, "_STARTUP_TASK", None)
     monkeypatch.setattr(disable, "_TASKS", set())
-    b = _FakeBroker()
+    monkeypatch.setattr(
+        disable, "local_switch", lambda cfg=None: flag.local_switch(cfg) if cfg else True
+    )
+    b, c = _FakeBroker(), _FakeController()
     monkeypatch.setattr(broker_mod, "get_broker", lambda: b)
-    return b
+    monkeypatch.setattr(controller_mod, "get_controller", lambda: c)
+    return b, c
+
+
+@pytest.fixture
+def snapshot(monkeypatch):
+    from kiro_crew.config import live
+
+    def use(previews: Any) -> None:
+        cfg = None if previews is None else _cfg(previews)
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+    return use
 
 
 class TestFreshInstallIsOff:
@@ -88,57 +131,145 @@ class TestCraftedRequestWhileOff:
         assert flag.remote_enabled(_cfg({flag.PREVIEW_NAME: True})) is False
 
     def test_unreadable_config_reads_as_off(self, monkeypatch):
-        monkeypatch.setattr(flag, "_config", lambda cfg: None)
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(live, "snapshot", lambda: None)
+
+        def unreadable():
+            raise OSError("config unavailable")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", unreadable)
         assert flag.preview_on() is False
+        assert flag.local_switch() is None
 
 
 async def _drain() -> None:
     await asyncio.wait_for(asyncio.gather(*list(disable._TASKS)), FALLBACK_TIMEOUT_SECS)
 
 
-async def test_disabled_during_live_execution_stops_sockets(fakes):
-    b = fakes
+async def test_disabled_during_live_execution_stops_sockets_and_grants(fakes):
+    b, c = fakes
     disable.apply(_Change(_cfg({flag.PREVIEW_NAME: True}), _cfg({})))
     await _drain()
     assert len(b.closed) == 1
+    assert c.calls == ["off"]
 
 
 async def test_unrelated_config_change_does_nothing(fakes):
-    b = fakes
+    b, c = fakes
     disable.apply(_Change(_cfg({}), _cfg({flag.PREVIEW_NAME: True}), touched=False))
     assert disable._TASKS == set()
-    assert b.closed == []
+    assert (b.closed, c.calls) == ([], [])
 
 
 @pytest.mark.parametrize("value", [False, True])
 async def test_unchanged_value_does_nothing(fakes, value):
-    b = fakes
+    b, c = fakes
     previews = {flag.PREVIEW_NAME: value}
     disable.apply(_Change(_cfg(previews), _cfg(dict(previews))))
     assert disable._TASKS == set()
-    assert b.closed == []
+    assert (b.closed, c.calls) == ([], [])
 
 
 async def test_another_preview_toggled_while_off_schedules_nothing(fakes):
     """Flag-off parity: a gateway that never turned this on does no new work."""
-    b = fakes
+    b, c = fakes
     disable.apply(_Change(_cfg({"crew_mode": False}), _cfg({"crew_mode": True})))
     assert disable._TASKS == set()
-    assert b.closed == []
+    assert (b.closed, c.calls) == ([], [])
 
 
-async def test_turning_it_on_starts_nothing_on_the_remote(fakes):
-    b = fakes
+async def test_reenable_revokes_saved_shares_before_it_starts(fakes):
+    """A share left by an Off this gateway never saw does not come back on."""
+    b, c = fakes
     disable.apply(_Change(_cfg({}), _cfg({flag.PREVIEW_NAME: True})))
+    await _drain()
+    assert c.calls == ["off", "start"]
+    assert b.closed == []
+
+
+async def test_reenable_does_nothing_when_the_switch_reads_off_again(monkeypatch, fakes):
+    _b, c = fakes
+    monkeypatch.setattr(
+        disable,
+        "local_switch",
+        lambda cfg=None: flag.local_switch(cfg) if cfg is not None else None,
+    )
+    disable.apply(_Change(_cfg({}), _cfg({flag.PREVIEW_NAME: True})))
+    await _drain()
+    assert c.calls == []
+
+
+@pytest.mark.parametrize("previews", [None, {}, {flag.PREVIEW_NAME: False}])
+async def test_startup_while_off_creates_no_controller_and_reads_nothing(
+    monkeypatch, fakes, snapshot, previews
+):
+    """Flag-off parity: no controller, no vault read, no task at startup."""
+    _b, c = fakes
+
+    def no_read() -> bool:
+        raise AssertionError("startup with the switch off reads nothing more")
+
+    def no_controller() -> Any:
+        raise AssertionError("startup with the switch off creates no controller")
+
+    monkeypatch.setattr(disable, "local_switch", no_read)
+    monkeypatch.setattr(controller_mod, "get_controller", no_controller)
+    snapshot(previews)
+    disable.start_if_enabled()
+    assert disable._STARTUP_TASK is None
     assert disable._TASKS == set()
-    assert b.closed == []
+    assert c.calls == []
 
 
-async def test_shutdown_with_no_broker_closes_nothing(monkeypatch, fakes):
-    b = fakes
+async def test_startup_while_on_starts_and_keeps_saved_shares(fakes, snapshot):
+    """A gateway restart with sharing on keeps its grants: nothing is revoked."""
+    _b, c = fakes
+    snapshot({flag.PREVIEW_NAME: True})
+    disable.start_if_enabled()
+    await _drain()
+    assert c.calls == ["start"]
+
+
+async def test_failed_startup_blocks_reenable(monkeypatch, fakes, snapshot):
+    _b, c = fakes
+
+    def failed_start() -> None:
+        raise OSError("vault unavailable")
+
+    monkeypatch.setattr(c, "start", failed_start)
+    snapshot({flag.PREVIEW_NAME: True})
+    disable.start_if_enabled()
+    await _drain()
+    await disable._start_local()
+    assert c.calls == []
+
+
+async def test_shutdown_while_off_stops_nothing(monkeypatch, fakes):
+    b, c = fakes
     monkeypatch.setattr(broker_mod, "_BROKER", None)
+    monkeypatch.setattr(controller_mod, "_CONTROLLER", None)
     await asyncio.wait_for(disable.shutdown(), FALLBACK_TIMEOUT_SECS)
-    assert b.closed == []
+    assert (b.closed, c.calls) == ([], [])
+
+
+async def test_shutdown_joins_startup_before_stopping_controller(monkeypatch, fakes, snapshot):
+    _b, c = fakes
+    stopped = []
+
+    async def stop_controller():
+        assert c.started == 1
+        stopped.append(True)
+
+    monkeypatch.setattr(c, "shutdown", stop_controller, raising=False)
+    monkeypatch.setattr(controller_mod, "_CONTROLLER", c)
+    monkeypatch.setattr(broker_mod, "_BROKER", None)
+    snapshot({flag.PREVIEW_NAME: True})
+    disable.start_if_enabled()
+    await asyncio.wait_for(disable.shutdown(), FALLBACK_TIMEOUT_SECS)
+    assert stopped == [True]
+    assert c.offs == 0
 
 
 class TestRemoteRefusalNamesTheMissingGate:
@@ -329,4 +460,82 @@ def test_lts_config_hook_treats_stored_preview_changes_as_off(monkeypatch, fakes
     disable.apply(_Change(off, on))
     disable.apply(_Change(on, off))
     assert disable._TASKS == set()
-    assert fakes.closed == []
+    broker, controller = fakes
+    assert broker.closed == []
+    assert controller.calls == []
+
+
+class TestConnectorWaitsWhileTheRemoteIsOff:
+    """A remote switched off answers 503: the local grant waits, never ends (flag re-enable).
+
+    No upgrade status ends a grant: a relay on the forwarded port can answer
+    401/403 as easily as 503. Only the gateway's authenticated ``refusal`` does
+    (``test_connected_computers_protected``).
+    """
+
+    class _Handshake(Exception):
+        def __init__(self, status: int) -> None:
+            super().__init__(status)
+            self.status = status
+
+    def test_flag_a_switched_off_remote_is_recognised(self):
+        exc = self._Handshake(controller_mod.REMOTE_OFF_STATUS)
+        assert controller_mod._is_remote_off(exc) is True
+
+    @pytest.mark.parametrize("status", [401, 403, 500])
+    def test_b11_an_upgrade_status_is_not_the_remote_off_answer(self, status):
+        assert controller_mod._is_remote_off(self._Handshake(status)) is False
+
+    def test_b11_no_status_based_refusal_remains(self):
+        assert not hasattr(controller_mod, "_is_auth_refusal")
+        assert controller_mod._is_remote_off(OSError("unreachable")) is False
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_shared_crew_excludes_every_connected_computer_entry(monkeypatch, unreadable):
+    from kiro_crew.config import live
+    from kiro_crew.shared_crew import preview
+
+    def shared():
+        if unreadable:
+            raise OSError("shared state unavailable")
+        return True
+
+    cfg = _cfg({flag.PREVIEW_NAME: True})
+    monkeypatch.setattr(preview, "preview_enabled", shared)
+    monkeypatch.setattr(live, "snapshot", lambda: cfg)
+    assert flag.preview_on(cfg) is False
+    assert flag.live_preview_on() is False
+    assert flag.local_enabled(cfg) is False
+    assert flag.remote_enabled(cfg) is False
+    assert flag.local_switch(cfg) is (None if unreadable else False)
+    for gate in (flag.require_local, flag.require_remote):
+        with pytest.raises(flag.ConnectedComputersDisabled):
+            gate(cfg)
+
+
+@pytest.mark.parametrize("unreadable", ["dashboard", "base", "overlay"])
+async def test_authoritative_off_after_unknown_stops_sockets_and_revokes_grants(fakes, unreadable):
+    broker, controller = fakes
+    old = _cfg({flag.PREVIEW_NAME: True})
+    if unreadable == "dashboard":
+        old._read_degraded_sections = frozenset({"dashboard"})
+    else:
+        setattr(old, "_base_unreadable" if unreadable == "base" else "_overlay_unreadable", True)
+    assert flag.local_switch(old) is None
+    new = _cfg({flag.PREVIEW_NAME: False})
+    assert flag.local_switch(new) is False
+    disable.apply(_Change(old, new))
+    await _drain()
+    assert len(broker.closed) == 1
+    assert controller.calls == ["off"]
+
+
+async def test_unknown_to_on_recovery_does_not_invent_a_revoking_transition(fakes):
+    broker, controller = fakes
+    old = _cfg({})
+    old._base_unreadable = True
+    disable.apply(_Change(old, _cfg({flag.PREVIEW_NAME: True})))
+    await _drain()
+    assert broker.closed == []
+    assert controller.calls == ["start", "reconcile"]

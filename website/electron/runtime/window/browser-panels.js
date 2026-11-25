@@ -15,6 +15,11 @@ const { openExternalSafely } = require("../../external-scheme");
  * cookie jar, and a panel's view is created only by an explicit open.
  */
 
+// A hidden page that keeps taking focus gets a hand-back each time, so the
+// launch log, which rotates only when a gateway is spawned, takes each trigger's
+// line at most once a minute per panel.
+const LAUNCH_LOG_REPEAT_MS = 60_000;
+
 /**
  * Give `win` its panel registry. Sets the window properties the rest of the
  * shell reads (`_mcBrowserPanel`, `_mcBrowserPanels`, `_mcDestroyBrowserPanel`)
@@ -27,6 +32,7 @@ function attachBrowserPanels(win, view, {
   WebContentsView,
   shell,
   partition: BROWSER_PARTITION,
+  log: launchLog,
 }) {
   const browserPanels = new Map();
 
@@ -37,6 +43,8 @@ function attachBrowserPanels(win, view, {
     if (existing || !create) return existing || null;
 
     const entry = { id };
+    // When each hand-back line (one fixed text per trigger) last reached the launch log.
+    const launchLoggedAt = new Map();
     entry.manager = createBrowserViewManager({
       createView: () => new WebContentsView({
         webPreferences: {
@@ -64,8 +72,17 @@ function attachBrowserPanels(win, view, {
       // one, so a background load never brings the window forward.
       hostActive: () => !win.isDestroyed() && win.isFocused(),
       // One line per hand-back, naming the view that held focus and the
-      // trigger, so a recurrence of the deaf-composer symptom is decisive.
-      log: (message) => console.warn(message),
+      // trigger, so a recurrence of the deaf-composer symptom is decisive. The
+      // launch log carries it too: gateway-launch.log is what users attach.
+      log: (message) => {
+        console.warn(message);
+        const now = Date.now();
+        const last = launchLoggedAt.get(message);
+        if (last === undefined || now - last >= LAUNCH_LOG_REPEAT_MS) {
+          launchLoggedAt.set(message, now);
+          launchLog(message);
+        }
+      },
       addView: (child) => win.contentView.addChildView(child),
       removeView: (child) => win.contentView.removeChildView(child),
       // Chrome the embedded page needs but the module must not import Electron

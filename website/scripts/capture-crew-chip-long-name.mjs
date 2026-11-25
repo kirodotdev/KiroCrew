@@ -15,7 +15,7 @@
  *  - the crew's name box ends inside the chip's content box
  *  - the chip ends before the switcher trigger starts
  *  - the name is ellipsised (its text is wider than its box), and the chip's
- *    `title` still carries the full name
+ *    `aria-label`, which its hover hint shows, still carries the full name
  * and before reproduces the defect at every width (the name runs past the chip).
  *
  * Usage: npm run build && node scripts/capture-crew-chip-long-name.mjs [outDir]
@@ -110,7 +110,7 @@ async function shot(width, state) {
   await page.waitForSelector(CHIP, { timeout: 10000 })
   await pick(page, /Cloud Crew With/)
   await page.waitForFunction(
-    (long) => window.visibleCrewChip()?.getAttribute('title')?.startsWith(long),
+    (long) => window.visibleCrewChip()?.getAttribute('aria-label')?.startsWith(long),
     LONG, { timeout: 10000 })
   await page.waitForFunction(
     () => /\d/.test(window.visibleCrewChip()?.closest('.instance-tab-bar, .instance-tab-bar-inline')
@@ -129,7 +129,7 @@ async function shot(width, state) {
     const innerRight = cr.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth)
     const or = own.getBoundingClientRect()
     return {
-      title: chip.getAttribute('title') ?? '',
+      label: chip.getAttribute('aria-label') ?? '',
       ownRight: +or.right.toFixed(1),
       innerRight: +innerRight.toFixed(1),
       chipRight: +cr.right.toFixed(1),
@@ -159,7 +159,7 @@ for (const width of WIDTHS) {
     fail(`${width}px: the chip ends at ${after.chipRight}, over the trigger at ${after.triggerLeft}`)
   }
   if (!after.ellipsised) fail(`${width}px: the long name is not ellipsised`)
-  if (!after.title.includes(LONG)) fail(`${width}px: the chip's title lost the full name`)
+  if (!after.label.includes(LONG)) fail(`${width}px: the chip's label lost the full name`)
 }
 
 await browser.close()

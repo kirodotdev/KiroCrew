@@ -16,7 +16,8 @@ remain:
    out of the quotes or trigger command substitution. ``ssm_target`` is never
    embedded in a shell string (only passed as an ``aws`` CLI argument), but is
    still charset-bound to its known shapes — an EC2/SSM-managed-instance id, or
-   an ECS task target for the Fargate lane.
+   an ECS task target for the Fargate lane. An ``asg:``/``param:`` resolver is
+   bound by its own shape and only ever looked up, never dialled.
 
 Validation lives here, with the tunnel manager, rather than in the registry:
 the registry does a light early-reject charset check, but this is the
@@ -77,6 +78,17 @@ _ECS_TARGET_RE = re.compile(
 # pattern and the predicate, so the derivation cannot drift from either.
 _LONGEST_ECS_TARGET = f"ecs:{'c' * 255}_{'0' * 32}_{'0' * 32}-{'9' * 20}"
 _MAX_SSM_TARGET_LEN = len(_LONGEST_ECS_TARGET)
+# ssm_target, ssm method only: a RESOLVER, which says where to find the instance
+# id instead of being one -- ``asg:<group>`` (the one InService instance of an
+# Auto Scaling group) or ``param:<name>`` (an SSM parameter whose value is the
+# id). It is never dialled: the tunnel manager looks it up with the row's own
+# profile and region each time it builds a forward, and the id it gets back goes
+# through validate_ssm_target like a typed one, so ssm_target_matches admits
+# neither shape. The group and parameter names reach ``aws`` as discrete argv
+# values, so each is charset-bound and cannot begin with ``-``; the length caps
+# are AWS's own (255 for a group name, 1011 for a parameter name).
+_ASG_RESOLVER_RE = re.compile(r"^asg:(?P<name>[A-Za-z0-9][A-Za-z0-9._-]{0,254})\Z")
+_PARAM_RESOLVER_RE = re.compile(r"^param:(?P<name>[A-Za-z0-9_./][A-Za-z0-9_./-]{0,1010})\Z")
 # ssm_run_as: Unix username shape, matching the charset cloud.ssm.run_command
 # validates at the SSM chokepoint. Defaults to the launcher-provisioned AL2023
 # user; other AMIs (e.g. Ubuntu) need their own.
@@ -109,6 +121,16 @@ class SshValidationError(ValueError):
 
 class SsmValidationError(ValueError):
     """Raised when an ssm_target, aws_profile, or aws_region fails validation."""
+
+
+class SsmTargetUnresolvedError(SsmValidationError):
+    """Raised when a resolver ``ssm_target`` names no single instance right now.
+
+    A subclass of :class:`SsmValidationError`, so every caller that refuses an
+    invalid target refuses this one too and dials nothing. Unlike an invalid
+    target it can clear by itself (a rolling replacement ends with one InService
+    instance), so self-heal retries it instead of standing down.
+    """
 
 
 class UnsupportedConnectionMethodError(SshValidationError):
@@ -213,6 +235,21 @@ def split_ecs_target(target: str) -> tuple[str, str, str] | None:
     if match is None:
         return None
     return match.group("cluster"), match.group("task"), match.group("runtime")
+
+
+def split_ssm_resolver(target: str) -> tuple[str, str] | None:
+    """The ``(kind, name)`` of a resolver ``ssm_target``, or None.
+
+    *kind* is ``"asg"`` or ``"param"``. None for anything else, as with
+    :func:`split_ecs_target`, so no caller takes a name out of a value that is not
+    a well-formed resolver. The value is read as stored: surrounding whitespace is
+    refused, not trimmed.
+    """
+    for kind, pattern in (("asg", _ASG_RESOLVER_RE), ("param", _PARAM_RESOLVER_RE)):
+        match = pattern.match(target)
+        if match is not None:
+            return kind, match.group("name")
+    return None
 
 
 def validate_ssm_target(ssm_target: str) -> str:

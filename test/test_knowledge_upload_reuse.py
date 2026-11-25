@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -205,8 +206,11 @@ async def test_a_row_deleted_in_the_gap_is_not_recreated(store, monkeypatch):
 
     def _delete_then_schedule(coro, **kwargs):
         # A user delete lands after the response's lookup and before the task runs.
-        store.db.execute("DELETE FROM sources WHERE id = ?", (existing,))
-        store.db.commit()
+        # The upload's own hand-off only: on CPython 3.14 the HTTP server and client
+        # schedule their tasks through this same function, ahead of the lookup.
+        if sys._getframe(1).f_globals["__name__"].startswith("kiro_crew."):
+            store.db.execute("DELETE FROM sources WHERE id = ?", (existing,))
+            store.db.commit()
         return original_create_task(coro, **kwargs)
 
     monkeypatch.setattr(kn.asyncio, "create_task", _delete_then_schedule)

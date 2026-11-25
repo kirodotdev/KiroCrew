@@ -50,6 +50,10 @@ _DOES_NOT_FLUSH: dict[tuple[str, str], str] = {
     ("dashboard/chat_turn/agent_started.py", "_on_agent_turn"): (
         f"a turn the agent started between prompts: {_AUTOMATIC}"
     ),
+    ("dashboard/crew_api_responses.py", "_run"): (
+        "a session made for this one request and removed when it returns: it is born "
+        "with no hold and nothing restores one into it"
+    ),
     ("dashboard/chat_turn/queue_cycle.py", "_run_pending_synthesis"): (
         f"sub-agent result synthesis: {_AUTOMATIC}"
     ),

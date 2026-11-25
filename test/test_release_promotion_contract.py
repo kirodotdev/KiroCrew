@@ -20,9 +20,15 @@ one lane disagreeing with the rest of the release.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
+
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -893,3 +899,55 @@ def test_release_assets_upload_one_at_a_time() -> None:
     assert create["with"]["fail_on_unmatched_files"] is True
     # Serial uploads of several GB need more than the old 20 minutes.
     assert job["timeout-minutes"] >= 60
+
+
+def test_promotion_bundle_picks_the_pure_wheel_beside_platform_wheels(tmp_path: Path) -> None:
+    """The bundle's wheel lookup still finds exactly one wheel once platform wheels exist.
+
+    build-platform-wheels uploads a ``cli-wheel-<platform>`` artifact per platform next
+    to the pure ``cli-wheel`` one, so an unscoped ``*.whl`` lookup found five wheels and
+    failed the record-promotion job of every RC that built them.
+    """
+    # The step runs under bash on ubuntu-latest and uses mapfile, a bash 4+ builtin;
+    # macOS /bin/bash is 3.2, so a host without a bash 4+ skips rather than fails.
+    bash = None if os.name == "nt" else shutil.which("bash")
+    if bash is None:
+        pytest.skip("needs bash")
+    has_mapfile = subprocess.run(
+        [bash, "-c", "type -t mapfile"],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+    if has_mapfile.stdout.strip() != "builtin":
+        pytest.skip(
+            "needs a bash providing mapfile (bash 4+), as the step's ubuntu-latest runner has"
+        )
+
+    run = _step(RELEASE, "record-promotion", "Assemble canonical promotion bundle")["run"]
+    lines = run.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("one() {"))
+    end = next(i for i, line in enumerate(lines) if line.startswith("WHEEL=$(one wheel"))
+    probe = "\n".join(lines[start : end + 1]) + '\nprintf "%s" "$WHEEL"\n'
+
+    artifacts = tmp_path / "artifacts"
+    pure = artifacts / "cli-wheel" / "kirocrew-1.0.0rc1-py3-none-any.whl"
+    pure.parent.mkdir(parents=True)
+    pure.write_bytes(b"")
+    for tag in ("manylinux_2_28_x86_64", "macosx_11_0_arm64"):
+        platform = artifacts / f"cli-wheel-{tag}" / f"kirocrew-1.0.0rc1-py3-none-{tag}.whl"
+        platform.parent.mkdir(parents=True)
+        platform.write_bytes(b"")
+
+    result = subprocess.run(
+        [bash, "-c", "set -euo pipefail\n" + probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "artifacts/cli-wheel/kirocrew-1.0.0rc1-py3-none-any.whl"

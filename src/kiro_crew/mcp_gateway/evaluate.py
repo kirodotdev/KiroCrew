@@ -25,7 +25,7 @@ from typing import Any
 
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.mcp_discovery import PROBE_MAX_CONCURRENCY
+from kiro_crew.mcp_discovery import PROBE_MAX_CONCURRENCY, same_process_lock
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, runs_install_code
 from kiro_crew.mcp_gateway.preflight import PreflightResult, preflight
 from kiro_crew.mcp_gateway.stub import binary_fingerprint
@@ -329,7 +329,11 @@ async def _evaluate_pass(
     sem = asyncio.Semaphore(_PROBE_FAN_OUT)
 
     async def _measure(server: Any) -> tuple[Any, Any]:
-        async with sem:
+        # Names that start the same process are measured one after another, and
+        # never while a probe of one of them runs: a server that allows one copy
+        # refuses the second, and that reads as "could not measure". Taken before
+        # the slot, as ``probe_all`` does, so a waiting name holds no slot.
+        async with same_process_lock(server), sem:
             try:
                 return server, await preflight(server)
             except Exception:

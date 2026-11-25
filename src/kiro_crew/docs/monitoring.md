@@ -2,8 +2,10 @@
 
 Use a pull-request monitor when you want Kiro Crew to keep checking a GitHub,
 GitLab, Azure DevOps, or Bitbucket Cloud pull request without spending a model
-turn on every poll. Kiro Crew wakes the owning conversation only when a new
-revision needs action.
+turn on every poll. Kiro Crew wakes the owning conversation when a new revision
+needs action, and once when a pull request that is still pending finishes its
+checks green outside draft or, on GitHub, hears from a person other than its
+author.
 
 ## Before you start
 
@@ -60,10 +62,12 @@ Kiro Crew probes and compares provider facts before it invokes the conversation:
 | Observation | Agent turns |
 |---|---:|
 | No material change | 0 |
-| Checks still pending | 0 |
+| Checks still pending, and no person wrote | 0 |
 | Provider retry | 0 |
 | Review-ready success or terminal blocker | 0 |
 | New actionable fingerprint | At most 1 |
+| Checks finish green while the pull request waits for review | 1 |
+| A person other than the author comments, or reviews with text, while the pull request is pending, not blocked on its author (GitHub) | 1 |
 
 An actionable wake includes a compact summary. The agent can then fetch only the
 logs, comments, or diff needed for that change. Kiro Crew retains accepted

@@ -39,7 +39,10 @@ def _governance_denial(
 
     *own_scopes* is ``gate_decision``'s: the scopes a proven non-shell call is
     judged in (``GateFacts.governance_own_scopes``), or ``()``. *shell_command* is
-    ``gate_decision``'s too: a shell call's recovered command, or ``""``.
+    ``gate_decision``'s too: a shell call's recovered command, or ``""``. A shell
+    call ``gate_decision`` permits is then asked ``command_chain_refusal`` on the
+    same ceiling and profile, so ``command_chains: each`` judges each command of
+    its chain whatever its title carries.
 
     *spawn_target* is the agent a backend-stated sub-agent spawn will start (set
     only from KAS's own ``_meta.kiro.consent``; see ``AcpEvent.spawn_target``).
@@ -82,7 +85,7 @@ def _governance_denial(
 
     ceiling = getattr(ctx, "governance", None)
     try:
-        from kiro_crew.platform.governance import gate_decision
+        from kiro_crew.platform.governance import command_chain_refusal, gate_decision
         from kiro_crew.platform.governance_profiles import resolve_active_scope
 
         profile = resolve_active_scope(session_key, agent=agent, app=app)
@@ -103,6 +106,8 @@ def _governance_denial(
             own_scopes=own_scopes,
             shell_command=shell_command,
         )
+        if decision.permitted and shell_command:
+            decision = command_chain_refusal(ceiling, profile, shell_command) or decision
         if not decision.permitted:
             # The denied identity when the decision names one -- with the title,
             # the trusted tool name and the MCP reference all in one query, the

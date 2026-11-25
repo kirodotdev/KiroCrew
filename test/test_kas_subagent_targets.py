@@ -20,7 +20,8 @@ from session_handle_helpers import bare_session_handle
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.acp.harness.kas import KasHarness
-from kiro_crew.acp.kas_subagent_targets import mounts_subagent_tool
+from kiro_crew.acp.kas_subagent_targets import ENGINE_WIDE_AGENTS, mounts_subagent_tool
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_NAMES
 
 #: Shaped like a kiro-cli or AIM spec: ``allowedTools`` and ``toolsSettings``, no
 #: ``permissions`` block, which KAS's own loader skips as a CLI-only profile.
@@ -190,6 +191,36 @@ async def test_a_target_whose_limits_only_the_gate_applies_is_not_registered(age
     assert "guarded (Kiro Crew applies its shell" in extras.withheld_credentials_notice
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "registered"),
+    [(True, False), (False, True), (None, True)],
+    ids=["on", "off", "never-set"],
+)
+async def test_a_deny_by_default_target_beside_a_shell_grant_follows_the_preview(
+    agents_dir, monkeypatch, stored, registered
+):
+    # With the `kas_subagents` preview on, the shell in `allowedTools` does not lift
+    # the allowlist, so only the gate holds it and the target cannot be registered.
+    # Off or never set, the grant lifts it and the target carries no limit of the gate's.
+    from test_kas_deny_by_default import _set_switch
+
+    _set_switch(monkeypatch, stored)
+    _write(agents_dir, _delegator("guarded"))
+    guarded = {
+        "tools": ["execute_bash"],
+        "allowedTools": ["execute_bash"],
+        "toolsSettings": {"shell": {"denyByDefault": True, "allowedCommands": ["ls"]}},
+    }
+    _write(agents_dir, {**_SLACK, "name": "guarded", **guarded})
+
+    extras = await _extras()
+
+    assert ("guarded" in _ids(extras)) is registered
+    notice = extras.withheld_credentials_notice or ""
+    assert ("guarded (Kiro Crew applies its shell" in notice) is not registered
+
+
 _REFUSED_DENY = {"capability": "subagent", "match": ["guarded"], "effect": "deny"}
 
 
@@ -250,7 +281,9 @@ async def test_a_name_with_no_spec_adds_no_deny(agents_dir):
     extras = await _extras()
 
     rules = extras.custom_agents[0]["permissions"]["rules"]
-    assert not any(r.get("capability") == "subagent" and r.get("match") != ["*"] for r in rules)
+    # Beside the list's own rule, only the deny every parent carries for Kiro Crew's own agents.
+    kept = (["*"], sorted(OWNED_KIRO_AGENT_NAMES))
+    assert not any(r.get("capability") == "subagent" and r.get("match") not in kept for r in rules)
 
 
 @pytest.mark.asyncio
@@ -1362,7 +1395,16 @@ async def test_with_no_list_an_agent_with_every_built_in_keeps_the_engines_agent
     extras = await _extras()
 
     [parent] = extras.custom_agents
-    assert _subagent_denies(parent) == []
+    # Every parent also carries the deny on Kiro Crew's own agents, which names none
+    # of the engine's bundled agents; the engine's agents stay reachable.
+    own_agents = {
+        "capability": "subagent",
+        "match": sorted(OWNED_KIRO_AGENT_NAMES),
+        "effect": "deny",
+    }
+    rest = [r for r in _subagent_denies(parent) if r != own_agents]
+    assert rest == []
+    assert not any(set(r["match"]) & set(ENGINE_WIDE_AGENTS) for r in _subagent_denies(parent))
     assert "general-task-execution" not in extras.withheld_credentials_notice
 
 

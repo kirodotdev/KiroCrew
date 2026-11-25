@@ -26,7 +26,7 @@ from pathlib import Path
 
 from kiro_crew.platform_compat import trusted_system_bin
 from kiro_crew.service import apparmor, selinux
-from kiro_crew.service.common import SERVICE_NAME, kirocrew_bin
+from kiro_crew.service.common import SERVICE_NAME, kirocrew_bin, service_attach_path
 from kiro_crew.service.linux_systemctl import (
     ServiceInstallError,
     _privilege_prefix,
@@ -418,6 +418,11 @@ def install(*, headless: bool = False) -> apparmor.ProfileOutcome:
             f"{(enable_res.stderr or enable_res.stdout).strip()}"
         )
 
+    # Clear the unit's failed state and start counter first (best-effort): an
+    # install that repairs a unit which just crash-looped would otherwise hit
+    # `StartLimitBurst` and fail with "Start request repeated too quickly".
+    _systemctl("reset-failed", f"{SERVICE_NAME}.service")
+
     # Use restart (not start) so re-running install picks up a unit-file
     # change without manual intervention.
     restart_res = _systemctl("restart", f"{SERVICE_NAME}.service")
@@ -480,8 +485,10 @@ def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcom
     NOT fatal: running without the profile is the status quo, while aborting
     an install over a hardening step is a regression.
 
-    Attaches the profile to ``kirocrew_bin()``, the path ``render_unit()`` uses
-    for ``ExecStart``, instead of ``AppArmorProfile=`` (see ``apparmor.py``).
+    Attaches the profile to ``service_attach_path(kirocrew_bin())``: the script
+    ``ExecStart`` runs, or, when ``ExecStart`` starts the Toolbox launcher, the
+    version script that launcher execs. Not ``AppArmorProfile=`` (see
+    ``apparmor.py``).
 
     ``expected_uid`` is the uid of the account the SERVICE runs as, not the
     installer's (which may be root under ``sudo``). When it is ``None`` the
@@ -512,7 +519,7 @@ def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcom
         _sudo_capture,
         os.getuid(),
         os.getgid(),
-        exec_path=kirocrew_bin(),
+        exec_path=service_attach_path(kirocrew_bin()),
         expected_uid=expected_uid,
     )
 

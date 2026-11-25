@@ -1,9 +1,13 @@
-"""``GET /v1/models``: the agents and Bots a Crew API caller can name as ``model``."""
+"""``GET /v1/models``: the agents and Bots the caller's grant allows.
+
+The owner gets the full catalog. An app credential gets an empty list until a route
+lets an app run a Bot in its grant or an agent.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Final
 
 from aiohttp import web
 
@@ -12,8 +16,10 @@ from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
 from kiro_crew.dashboard.crew_api_owner import owner_route
+from kiro_crew.dashboard.crew_api_scopes import CREDENTIAL_KEY
 from kiro_crew.dashboard.handlers.agent_templates import _masked_row
 from kiro_crew.dashboard.handlers.agents import _roster_mask
+from kiro_crew.dashboard.local_authorization import LocalCredential
 from kiro_crew.executors import discovery_executor
 
 
@@ -53,10 +59,28 @@ async def usable_models_off_loop() -> list[dict[str, Any]]:
     return await asyncio.get_running_loop().run_in_executor(discovery_executor(), usable_models)
 
 
+def models_for_grant(credential: LocalCredential) -> list[dict[str, Any]]:
+    """List only what the verified grant allows, without reading the owner catalog.
+
+    Add the grant's Bots or an agent an app may run here when a route runs them.
+    """
+    # shortcut: no route lets an app run a Bot in its grant or an agent; add the
+    # allowed rows here when one does.
+    return []
+
+
 async def _list_models(request: web.Request) -> web.Response:
-    return web.json_response({"object": "list", "data": await usable_models_off_loop()})
+    credential = request.get(CREDENTIAL_KEY)
+    rows = (
+        models_for_grant(credential) if credential is not None else await usable_models_off_loop()
+    )
+    return web.json_response({"object": "list", "data": rows})
 
 
-#: GET /v1/models. Served by the owner gate today, like the Owner tier: the gate
-#: refuses every other caller before the catalog is read.
-api_models = owner_route(_list_models, OWNER_ONLY_PUBLIC_ROUTES["/v1/models"])
+ROUTE_KEY: Final = ("GET", "/v1/models")
+
+#: GET /v1/models serves a verified app credential with no required scope. Its
+#: list is empty until a route lets an app run a Bot in its grant or an agent;
+#: the owner catalog is never read for it. Every other caller passes the
+#: owner gate before the catalog is read.
+api_models = owner_route(_list_models, OWNER_ONLY_PUBLIC_ROUTES[ROUTE_KEY[1]], app_route=ROUTE_KEY)

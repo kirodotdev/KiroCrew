@@ -1,6 +1,6 @@
 /**
  * The rail's "Connect your phone" owner (`components/mobileConnect.tsx`): only
- * kinds this build can draw count, the dialog is the lazy modal, and any
+ * kinds this build can draw count, the dialog's body is the lazy chunk, and any
  * navigation — or a refresh that leaves nothing drawable — closes it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -12,7 +12,7 @@ import { ApiError } from '../api/apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from '../api/refreshOnce'
 
 vi.mock('../components/MobileConnectModal', () => ({
-  default: ({ kinds, onClose }: { kinds: string[]; onClose: () => void }) => (
+  MobileConnectBody: ({ kinds, onClose }: { kinds: string[]; onClose: () => void }) => (
     <button type="button" data-testid="mobile-connect-modal" onClick={onClose}>{kinds.join(',')}</button>
   ),
 }))

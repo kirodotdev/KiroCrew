@@ -57,7 +57,7 @@ import { applyLockedControls } from '../utils/editionLocks'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
-function Harness() {
+function Harness({ onOpenHistorySearch }: { onOpenHistorySearch?: () => void }) {
   const tabsCtl = usePanelTabs('slot-a')
   panelController = tabsCtl
   return (
@@ -66,17 +66,18 @@ function Harness() {
       slot="slot-a"
       onFileSave={async () => {}}
       onClose={() => {}}
+      onOpenHistorySearch={onOpenHistorySearch}
     />
   )
 }
 
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
 
-function renderPanel(queryClient = newClient(), store = createTestStore()) {
+function renderPanel(queryClient = newClient(), store = createTestStore(), onOpenHistorySearch?: () => void) {
   return render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
-        <Harness />
+        <Harness onOpenHistorySearch={onOpenHistorySearch} />
       </Provider>
     </QueryClientProvider>,
   )
@@ -139,6 +140,22 @@ describe('side panel + menu (shadcn dropdown)', () => {
     await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Workflows' })).toBeNull())
     act(() => { store.dispatch(sseWorkflowEvent({ run_id: 'live-1', session_key: 'dashboard:slot-a', type: 'run_started' })) })
     expect(screen.getByRole('menuitem', { name: 'Workflows' })).toBeTruthy()
+  })
+
+  it("offers Search while the host has a chat to search, and opens that chat's search", () => {
+    const openSearch = vi.fn()
+    renderPanel(newClient(), createTestStore(), openSearch)
+    openMenu()
+    act(() => { fireEvent.click(screen.getByRole('menuitem', { name: 'Search' })) })
+    expect(openSearch).toHaveBeenCalledTimes(1)
+    // The host draws the search; the strip gains no tab of its own for it.
+    expect(screen.queryByRole('tab', { name: /Search/ })).toBeNull()
+  })
+
+  it('offers no Search where there is no chat to search', () => {
+    renderPanel()
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Search' })).toBeNull()
   })
 
   it('dismisses on Escape', () => {
@@ -245,14 +262,14 @@ describe('side panel Crew tab in a build without conductor mode (LTS)', () => {
 
 describe('newMenuSections', () => {
   const DIAGNOSTICS = new Set(['logs', 'context', 'crewlog'] as const)
-  const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean }) =>
+  const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean; crewMode?: boolean; searchAvailable?: boolean }) =>
     newMenuSections({ summaryEnabled: true, hasWorkflowRuns: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
     // view added to NEW_MENU_LABEL_KEY without being placed in a group — or
     // placed in two — fails here instead of quietly vanishing from the menu.
-    const flat = kinds({ terminalEnabled: true, crewMode: true }).flat()
+    const flat = kinds({ terminalEnabled: true, crewMode: true, searchAvailable: true }).flat()
     const pinned = ['changes', 'files', 'artifacts']
     const catalogued = Object.keys(NEW_MENU_LABEL_KEY).filter(k => !pinned.includes(k))
     expect([...flat].sort()).toEqual([...catalogued].sort())

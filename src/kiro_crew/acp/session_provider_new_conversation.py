@@ -18,6 +18,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpError, AcpProcessDied
+from kiro_crew.acp.session_provider_shared import teardown_confirmed
 from kiro_crew.acp.types import ACP_BACKENDS_SESSION_EVICTION
 
 if TYPE_CHECKING:
@@ -129,6 +130,7 @@ async def new_conversation(
                 prior_model,
                 exc_info=True,
             )
+            _new_destroy_failed = False
             try:
                 await new_handle.destroy()
             except Exception:
@@ -137,6 +139,23 @@ async def new_conversation(
                     "re-apply failure also failed",
                     exc_info=True,
                 )
+                _new_destroy_failed = True
+            # A destroy that raised or returned with the close unconfirmed
+            # (``teardown_confirmed``) leaves the rejected session possibly resident.
+            new_sid = getattr(new_handle, "session_id", None)
+            if _new_destroy_failed or not teardown_confirmed(self._runtime, new_sid, killed=False):
+                # The rejected replacement session may still be resident on KAS.
+                # Register it so the pending-close drain loop can close it.
+                try:
+                    from kiro_crew.bot_chat_app_tools import note_unconfirmed_close
+
+                    note_unconfirmed_close(self._session_key, self._runtime, new_sid)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "new_conversation: note_unconfirmed_close failed for rejected replacement %s",
+                        new_sid,
+                        exc_info=True,
+                    )
             raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
     elif isinstance(inherited := getattr(old, "inherited_model", ""), str) and inherited:
         # An unpinned KAS session inherits kiro-cli's chat.defaultModel; the
@@ -179,7 +198,24 @@ async def new_conversation(
     self.reclaim()
     # Best-effort teardown of the old session on the shared process so its
     # context doesn't linger (RSS growth). Never let cleanup mask success.
+    _destroy_failed = False
     try:
         await old.destroy()
     except Exception:
         logger.debug("new_conversation: old session destroy failed", exc_info=True)
+        _destroy_failed = True
+    # A destroy that raised or returned with the close unconfirmed
+    # (``teardown_confirmed``, the judge every Bot-chat teardown uses) is
+    # registered for retry, so a later trust revocation finds and closes it.
+    old_sid = getattr(old, "session_id", None)
+    if _destroy_failed or not teardown_confirmed(self._runtime, old_sid, killed=False):
+        try:
+            from kiro_crew.bot_chat_app_tools import note_unconfirmed_close
+
+            note_unconfirmed_close(self._session_key, self._runtime, old_sid)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "new_conversation: note_unconfirmed_close failed for replaced session %s",
+                old_sid,
+                exc_info=True,
+            )

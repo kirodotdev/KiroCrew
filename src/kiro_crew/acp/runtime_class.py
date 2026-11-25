@@ -10,7 +10,7 @@ and reprs name.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -34,6 +34,7 @@ from kiro_crew.acp.client import CLIENT_NAME
 from kiro_crew.acp.frame_payload_sharing import RepeatedPayloads
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
+from kiro_crew.acp.kas_mcp_lazy_sign_in import LazySignInFlows
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
@@ -279,6 +280,7 @@ class AcpRuntime:
     _reader_loop = _rt_reader._reader_loop
     _route_owned_child_frame = _rt_reader._route_owned_child_frame
     _notification_aliases = _rt_reader._notification_aliases
+    _follow_shared_model_picker = _rt_reader._follow_shared_model_picker
     # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
     _close_remote_workspace = _rt_remote._close_remote_workspace
     set_remote_workspace = _rt_remote.set_remote_workspace
@@ -406,6 +408,10 @@ class AcpRuntime:
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
         self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
+        # Per MCP OAuth client (url, client id), the digest (never the value) of the
+        # last secret this process's engine took through ``setClientSecret``
+        # (``kas_client_secret``). Reset at each handshake.
+        self._mcp_prereg_sent: dict[tuple[str, str], str] = {}
         # Set for a remote session: built-in file/shell tools give way to the workspace server.
         self._remote_workspace: Any = None
         # First answered credential callback per runtime is logged at INFO as a
@@ -505,6 +511,8 @@ class AcpRuntime:
         # frame arrives (``_fold_mcp_frame``); the session's handle holds the
         # same object.
         self._session_mcp_reports: dict[str, McpSessionReport] = {}
+        # The session each mid-session MCP sign-in's link went to (kas_mcp_lazy_sign_in).
+        self._mcp_lazy_sign_in_flows: LazySignInFlows = OrderedDict()
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
         # or the successor of a recycled ``_bg`` runtime). Re-validated at spawn
@@ -695,6 +703,10 @@ class AcpRuntime:
         # descendant survived. Consumers use it to decide whether a work
         # directory is safe to reclaim.
         self._process_tree_confirmed_dead = False
+        # The PIDs the last kill could not show gone, re-checked by a later evict.
+        self._unreaped_pids: tuple[int, ...] = ()
+        # The Windows tree cleanup a kill left pending, retired once drained.
+        self._windows_cleanup_receipt: object | None = None
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own

@@ -51,7 +51,6 @@ describe('useRunInTerminalConfig', () => {
 describe('useAppPanelReveal', () => {
   function setup(activeSlot: string | null) {
     const dispatch = vi.fn()
-    const close = vi.fn()
     const openApp = vi.fn()
     const payload = { title: 'Board' }
     const boundStore = {
@@ -61,16 +60,15 @@ describe('useAppPanelReveal', () => {
       dispatch: dispatch as never,
       activeSlot,
       boundStore: boundStore as never,
-      search: { close } as never,
       tabsCtlRef: { current: { openApp } } as never,
     }))
-    return { result, dispatch, close, openApp }
+    return { result, dispatch, openApp }
   }
 
-  it('closes the find pane, opens the activity panel, and re-opens the app tab for the active slot', () => {
-    const { result, dispatch, close, openApp } = setup('slot-a')
+  // The history search is not this reveal's to end: its tab stays behind the app tab.
+  it('opens the activity panel and re-opens the app tab for the active slot', () => {
+    const { result, dispatch, openApp } = setup('slot-a')
     result.current.revealAppInPanel('call-1')
-    expect(close).toHaveBeenCalledTimes(1)
     expect(dispatch).toHaveBeenCalledWith(openActivityPanel())
     expect(openApp).toHaveBeenCalledTimes(1)
     const [id, title, slotKey] = openApp.mock.calls[0]

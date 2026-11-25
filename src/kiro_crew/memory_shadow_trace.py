@@ -97,19 +97,36 @@ def observing(memory_config: object = None) -> bool:
     """Whether any memory stage flag is on (``shadow``, ``enforce`` or ``propose``).
 
     Reads the live config when *memory_config* is ``None``; ``False`` when it is
-    unreadable, so an outcome receipt is never written on a guess.
+    unreadable, so an outcome receipt is never written on a guess. A load that
+    could not read a config file or the ``memory`` section, and whose readable flags
+    are all off, says so in one INFO line. It asks that read's own flags, not
+    ``degraded_sections``, which keeps every earlier read's failure for the life of
+    the process.
     """
     from kiro_crew.memory_shadow_report import STAGES
 
+    guessed = False
     if memory_config is None:
         try:
             from kiro_crew.config.loader import KiroCrewConfig
 
-            memory_config = KiroCrewConfig.load().memory
+            config = KiroCrewConfig.load()
+            guessed = (
+                config._base_unreadable
+                or config._overlay_unreadable
+                or "memory" in (config._read_degraded_sections or ())
+            )
+            memory_config = config.memory
         except Exception:
             logger.debug("Could not read the memory stage flags", exc_info=True)
             return False
-    return any(s.mode_from(getattr(memory_config, s.name, None)) != "off" for s in STAGES)
+    on = any(s.mode_from(getattr(memory_config, s.name, None)) != "off" for s in STAGES)
+    if guessed and not on:
+        logger.info(
+            "memory shadow trace: no receipt recorded; this config load could not "
+            "read a config file or the memory section"
+        )
+    return on
 
 
 def recall_ids(payload: object, lessons: Iterable[object] = ()) -> list[str]:

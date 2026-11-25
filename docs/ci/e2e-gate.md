@@ -794,6 +794,42 @@ above, and the `e2e-boot-matrix` job sets it. An unmet PRECONDITION (the package
 fake ACP backend missing, `kiro_crew.testing` not importable) is a graceful
 `pytest.skip` on a local run and a `pytest.fail` on the job.
 
+## The Crew API contract cases
+
+`test/e2e/test_crew_api_contract.py` calls each Crew API operation on a real
+gateway and holds the answer to the spec
+(`docs/request-for-change/assets/crew-api/` and the error table in
+`docs/request-for-change/rfc-crew-api.md`): the status, the `X-Request-Id`,
+`Crew-API-Version` and `WWW-Authenticate` headers, the body's schema, and the
+error's row in the table. The Linux leg of `e2e-boot-matrix` runs it after the
+boot tests, with the same `KIROCREW_E2E` and `KIROCREW_E2E_REQUIRE` markers. Its
+canary is "some passed and none skipped", not a count, because the count grows
+with every operation.
+
+One gateway serves the whole module, booted by the boot matrix's own `_booted`
+(the packaged fake ACP backend is the engine). A case is a row, not a boot, so
+the module costs one boot however many operations it covers. The callers are
+the machine owner (a session minted through `/api/token/local`), an app the
+owner approved through local authorization, a call with no credential and a
+call with a credential the gateway did not sign.
+
+To cover an operation, add
+`test/e2e/crew_api_contract_cases/<operationId>.py` with a `CASES` list. A case
+that needs something on the gateway first (a grant, a grant request nobody
+answered) names a `before` step, which runs on the booted gateway ahead of its
+call. `test/test_crew_api_contract_coverage.py` runs with the unit tests, boots
+nothing, and fails when an operation the spec marks `x-crew-status: available`
+has no such file, or when a case asks for a status or an error code the spec
+does not document. The first check reads that mark alone: while no operation in
+the spec carries it, the test skips and says so, and a served route without
+cases is not reported. A case that fails because the gateway and the spec disagree
+is not rewritten to the gateway's answer: one of the two is fixed, or the
+difference is named in `test/e2e/crew_api_contract_differences.py`.
+
+The fake backend answers the turns, so the cases hold the gateway's side of
+`POST /v1/responses` (what it accepts, refuses and the shape it answers in), not
+what a signed-in engine says.
+
 ## Real-`kiro-cli` opt-in smoke
 
 `test/e2e/test_real_kiro_smoke.py` is the one test in this gate that uses the
@@ -1224,7 +1260,8 @@ and in the boot canary above.
 
 `nightly.yml`'s `process-leak-invariant` job (`Process Leak Invariant + Chaos
 (Linux)`) runs `test/e2e/test_process_leak_invariant.py` and
-`test/e2e/test_process_chaos.py` on `ubuntu-latest`. It is not a PR gate.
+`test/e2e/test_process_chaos.py` on `kirocrew-linux-4-core` in this repository
+(`ubuntu-latest` in a fork). It is not a PR gate.
 
 - **A real `systemd --user` session.** The suites need a usable `systemd --user`
   scope backend. The job creates one the same way `pod-scenarios` does

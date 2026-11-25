@@ -20,6 +20,18 @@ change BOTH constants below in one commit. The publish script prints the
 digest. ``test/test_kas_pin.py`` refuses a pin whose version or digest is not
 well-formed, and the installer refuses a manifest whose bytes do not hash to it.
 
+Before that commit, compare the trigger alias table of the engine you are pinning
+with ``_KAS_TRIGGER_CANONICAL`` in ``agent_materialization/kiro_hooks.py``, without
+regard to case. The table is kiro-agent's ``trigger-names.ts``; a built engine
+carries it as the one frozen object in ``@kiro/agent/dist/server/acp-server.js``
+that holds ``PostFileSave:"PostFileSave"``. Open an issue for any difference no
+open issue already tracks and no ``docs/decisions/`` entry settles, naming the
+``@kiro/agent`` engine version you read: a spelling Kiro Crew lacks is a spec hook
+it refuses, and a new row is more than a table edit. Unless the change that adds
+it guards it, a hook that newly loads shifts the number of every hook after it in
+``agent_sdk/spec_hooks.py``; the row also moves the table's digest pin, and a new
+trigger changes the trigger counts in the docs.
+
 ``KIROCREW_KAS_VERSION`` overrides the version the harness looks for (a
 developer testing another engine installed with ``kirocrew kas install
 --version X``). It is read from the gateway's own environment, never from
@@ -65,10 +77,11 @@ KAS_PIN_ENGINE_RELEASE = KAS_PIN_VERSION.split("-node", 1)[0]
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
 KAS_PIN_MANIFEST_SHA256 = "58600c49bdd758709982051b11043f0f91194b9fe0dfa1cfd34d086ea341d95e"
 
-#: The pin a linux-x64 host below the nodejs.org glibc floor (2.28; Amazon Linux 2
-#: ships 2.26) runs instead: the same engine and Node release, republished with the
-#: Amazon Linux 2 builds of Node and onnxruntime from ``packaging/kas-al2/`` on
-#: linux-x64. It is derived from :data:`KAS_PIN_VERSION`, so both pins always name
+#: The pin a Linux host below the nodejs.org glibc floor (2.28; Amazon Linux 2
+#: ships 2.26) runs instead, on each architecture it records a lower floor for in
+#: :data:`KAS_PIN_GLIBC_FLOORS`: the same engine and Node release, republished with
+#: the Amazon Linux 2 builds of Node and onnxruntime from ``packaging/kas-al2/``
+#: for those architectures. It is derived from :data:`KAS_PIN_VERSION`, so both pins always name
 #: one engine release and one Node release; moving the pin means publishing both.
 KAS_PIN_AL2_VERSION = f"{KAS_PIN_VERSION}-al2"
 
@@ -133,24 +146,35 @@ def engine_checks_auto_approvals(version: str | None) -> bool:
 
 
 def host_pin_version(system: str | None = None, machine: str | None = None) -> str:
-    """The pin this host runs: :data:`KAS_PIN_AL2_VERSION` on a linux-x64 host whose
-    glibc is readable and below the nodejs.org floor, else :data:`KAS_PIN_VERSION`.
+    """The pin this host runs: :data:`KAS_PIN_AL2_VERSION` on a Linux host whose
+    glibc is readable and below the nodejs.org floor, when that pin records a lower
+    floor for the host's Node key in :data:`KAS_PIN_GLIBC_FLOORS`; else
+    :data:`KAS_PIN_VERSION`.
 
-    Re-read on every call, so a host that moves to glibc 2.28+ moves to the normal
-    pin on its next install check, and one that never drops below 2.28 never picks
-    the AL2 pin. An unreadable glibc keeps the normal pin. *system* and *machine*
-    default to this host's.
+    The AL2 pin's floors say which architectures it carries AL2 builds for, so an
+    architecture moves to it only in the commit that pins a release with those
+    builds. Re-read on every call, so a host that moves to glibc 2.28+ moves to the
+    normal pin on its next install check, and one that never drops below 2.28 never
+    picks the AL2 pin. An unreadable glibc, or an architecture with no Node key,
+    keeps the normal pin. *system* and *machine* default to this host's.
     """
     import platform  # noqa: PLC0415
 
     from kiro_crew import constants  # noqa: PLC0415
+    from kiro_crew.acp import kas_bundle  # noqa: PLC0415 - kas_bundle imports this module
 
-    if (system or platform.system()).lower() != "linux":
+    system = system or platform.system()
+    if system.lower() != "linux":
         return KAS_PIN_VERSION
-    if (machine or platform.machine()).lower() not in ("x86_64", "amd64"):
+    try:
+        key = kas_bundle.host_node_key(system, machine)
+    except kas_bundle.KasHostUnsupported:
+        return KAS_PIN_VERSION
+    official = constants._OFFICIAL_NODE_GLIBC_FLOOR
+    if kas_bundle._glibc_floor(key, KAS_PIN_AL2_VERSION) >= official:
         return KAS_PIN_VERSION
     glibc = constants._host_glibc_version()
-    if glibc is not None and glibc < constants._OFFICIAL_NODE_GLIBC_FLOOR:
+    if glibc is not None and glibc < official:
         return KAS_PIN_AL2_VERSION
     return KAS_PIN_VERSION
 

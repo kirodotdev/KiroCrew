@@ -1,4 +1,4 @@
-import type { RefObject, Dispatch, SetStateAction, ReactNode } from 'react'
+import { useState, type RefObject, type Dispatch, type SetStateAction, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import type { ChatNavigationData } from '../../../hooks/useChatNavigation'
 import type { UseVirtualChatReturn, VirtualItem } from '../../../hooks/virtualizer/types'
@@ -26,6 +26,9 @@ import { preparingCaption } from '../../../components/chat/preparingCaption'
 import PreparingReplyBubble from '../../../components/chat/PreparingReplyBubble'
 import type { ChatConfig } from '../ChatSettings'
 import TurnBlock from '../TurnBlock'
+import type { ThinkingTipRowFn } from '../ThinkingTip'
+import { lazyRetry } from '../../../components/lazyRetry'
+import { i18nT } from '../../../i18n/t'
 
 /**
  * Height of the transcript's tail spacer, in px.
@@ -38,9 +41,22 @@ import TurnBlock from '../TurnBlock'
  */
 const TRANSCRIPT_TAIL_SPACER_PX = 16
 
+// The exploratory tip hooks, loaded after the first paint so they stay out of
+// the dashboard's first load (ThinkingTip.tsx); until then the footer shows no
+// tip. No hand-off: this sits above the chat composer, whose draft is unsaved
+// local state the hand-off's navigation would discard.
+const ThinkingTipController = lazyRetry(async () => ({ default: (await import('../ThinkingTip')).ThinkingTipController }), {
+  layout: 'inline',
+  title: () => i18nT('pages.chat.thinkingTip.load_failed'),
+  scope: 'thinking-tip-controller',
+  askAgent: false,
+})
+
 interface ChatTranscriptViewProps {
   embedded?: boolean
   popout?: boolean
+  /** The composer under this transcript is a crew worker's steer-only one, with no Steer / Queue menu. */
+  steerOnly?: boolean
   activeSlot: string | null
   appToolCallIds: ReadonlySet<string>
   titleInTopbar: boolean
@@ -90,6 +106,8 @@ interface ChatTranscriptViewProps {
   footerSentHere?: boolean
   /** `allToolCallsReturned` over the active slot's tool log, for the footer's stall notice. */
   footerToolsReturned?: boolean
+  /** Drawn after the rows, above the footer: ChatPage's live card of the running turn's KAS engine sub-agents. */
+  liveFoot?: ReactNode
   toggleAct: () => void
   renderedDisplayItems: DisplayItem[]
   stableMsgKey: (m: ChatMessage) => string
@@ -101,6 +119,8 @@ interface ChatTranscriptViewProps {
   chatNav: ChatNavigationData
   navigateToTurn: (displayIndex: number, opts?: { instant?: boolean; }) => void
   turnStepAnnouncement: string
+  /** Text for the transcript's one live region; see TranscriptScrollShell's `announcement`. */
+  announcement?: string
   renderFarmItem: (i: number) => React.ReactNode
   renderMessage: (i: number, m: ChatMessage) => ReactNode
   renderTurnItem: (it: TurnItem, _j: number) => JSX.Element | null
@@ -110,16 +130,32 @@ interface ChatTranscriptViewProps {
  * The transcript column: the welcome hero, or the turn minimap and the scroll shell with its rows, the earlier-messages bar, the measurement farm, the footer, the pulse survey and the tail spacer; and the restore skeleton.
  */
 export default function ChatTranscriptView({
-  embedded, popout, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
+  embedded, popout, steerOnly = false, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
-  onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, footerToolsReturned = false, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
-  spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
+  onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, footerToolsReturned = false, liveFoot, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
+  spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, announcement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
   // This pane shows the chat's transcript once it has loaded rows; a bell note
   // for a cron run is read against that (#23564). Not while the restore gate
   // hides the rows behind the skeleton: loaded is not yet visible.
   // The scroller is what the on-screen backstop probes.
   useMarkTranscriptShown(activeSlot, !slotLoading && !virt.restoreGate && !isWelcomeState && renderedDisplayItems.length > 0, () => scrollerRef.current)
+  // Exploratory tips beside "Thinking…" (ThinkingTip.tsx): the dashboard chat
+  // on a desktop or a phone. Embedded and popped-out chats and temporary
+  // sessions show none.
+  const [thinkingTipRow, setThinkingTipRow] = useState<ThinkingTipRowFn | null>(null)
+  const thinkingTipController = (
+    <ThinkingTipController
+      running={slotRunning}
+      slotKey={activeSlot}
+      localKey={currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null}
+      blocked={!!embedded || !!popout || currentSlot?.memory_mode === 'temporary'}
+      turnId={currentSlot?.turn != null ? `${currentSlot.turn_gen ?? ''}:${currentSlot.turn}` : null}
+      projectDir={projectDir}
+      splitSend={!steerOnly}
+      onChange={setThinkingTipRow}
+    />
+  )
   return (
     <RunInTerminalOriginSlot.Provider value={activeSlot}>
     <ChatProjectDirCtx.Provider value={projectDir}>
@@ -187,6 +223,7 @@ export default function ChatTranscriptView({
         virt={virt}
         loadingOlder={loadingOlder}
         spinnerNearTop={spinnerNearTop}
+        announcement={announcement}
         // The strip of the scroller the floating dock covers, plus
         // DOCK_CLEARANCE_PX, alongside TRANSCRIPT_TAIL_SPACER_PX. Unlike
         // the tail spacer this one also applies to a transcript short
@@ -231,8 +268,10 @@ export default function ChatTranscriptView({
           renderItem={renderFarmItem}
           scrollerEl={() => scrollerRef.current}
         />
+        {liveFoot}
         {/* Footer */}
-        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
+        {thinkingTipController}
+        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} thinkingTipRow={thinkingTipRow} />
         {/* The warm catch-up being prepared outside a turn: the gateway's
             caption inside a reply bubble, where the welcome then lands. */}
         <PreparingReplyBubble caption={preparingCaption(currentSlot)} shown={!!currentSlot?.preparing && !slotRunning} testId="chat-preparing-catch-up" />

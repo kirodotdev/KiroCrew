@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -56,6 +56,10 @@ _HEADERS = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
 # the expected case, not evidence the login failed. Any poll that gets an answer clears
 # the count, so only a sustained outage crosses it.
 MAX_POLL_TRANSPORT_FAILURES = 3
+
+# How long an approved company sign-in that lists several Kiro profiles waits for
+# the user to pick one, capped by the approved token's own expiry.
+PROFILE_CHOICE_WAIT = timedelta(minutes=10)
 
 
 def _load_relay_viewer_cps_url() -> str:
@@ -114,6 +118,10 @@ async def _off_loop(func: Callable[[], str]) -> str:
 
 class UnknownLoginError(Exception):
     """The login_id does not match any pending device authorization."""
+
+
+class UnknownProfileError(Exception):
+    """A profile pick named an ARN the waiting sign-in did not offer."""
 
 
 class SignedOutDuringLoginError(Exception):
@@ -221,7 +229,10 @@ class _PendingOidcLogin:
     Carries the dynamically-registered client because the token poll needs its
     credentials, and the identity/provider pair because they decide both the store
     entry and KAS's governance classification. ``resolve_profile`` marks the IdC
-    path, whose token is unusable until a profile ARN is attached.
+    path, whose token is unusable until a profile ARN is attached. ``held_token`` is
+    set when that path lists several profiles: the approved token then waits here,
+    with the ``profiles`` offered, until a poll picks one or ``choice_deadline``
+    passes.
     """
 
     client: builder_id.RegisteredClient
@@ -237,6 +248,30 @@ class _PendingOidcLogin:
     start_url: str = ""
     # Same budget as _PendingLogin.transport_failures, for the SSO-OIDC poll.
     transport_failures: int = 0
+    # Out of the repr: KasToken's own repr prints the token.
+    held_token: KasToken | None = field(default=None, repr=False)
+    profiles: list[control_plane.KiroProfile] = field(default_factory=list)
+    selected: str = ""
+    choice_deadline: datetime | None = None
+
+
+def _choice_answer(pending: _PendingOidcLogin) -> dict[str, Any]:
+    """The ``choose_profile`` poll answer: the profiles offered, token-free."""
+    return {
+        "status": "choose_profile",
+        "profiles": [
+            {"arn": p.arn, "name": p.profile_name, "region": _profile_region(p.arn)}
+            for p in pending.profiles
+        ],
+        "selected": pending.selected,
+    }
+
+
+def _profile_region(arn: str) -> str:
+    try:
+        return control_plane.profile_region(arn)
+    except control_plane.ControlPlaneError:
+        return ""
 
 
 def _idc_lookup_context(pending: _PendingOidcLogin) -> str:
@@ -317,6 +352,8 @@ def _social_from_login_option(login_option: str) -> SocialProvider | None:
 def _expires_at(entry: _PendingKind) -> datetime:
     if isinstance(entry, _PendingLoopbackLogin):
         return entry.expires_at
+    if isinstance(entry, _PendingOidcLogin) and entry.choice_deadline is not None:
+        return entry.choice_deadline
     return entry.auth.expires_at
 
 
@@ -608,11 +645,15 @@ class KasLoginService:
             "expires_at": expires_at.astimezone(timezone.utc).isoformat(),
         }
 
-    async def poll_device(self, login_id: str) -> dict[str, Any]:
+    async def poll_device(self, login_id: str, profile_arn: str | None = None) -> dict[str, Any]:
         """One non-blocking poll of a pending login.
 
         The caller loops, not us: {status: pending|authorized|expired|error},
         plus provider on authorized. Raises UnknownLoginError for a stale/foreign id.
+        A company sign-in that lists several profiles answers ``choose_profile``
+        and waits; a poll naming one of them as *profile_arn* stores it, and one
+        naming any other raises UnknownProfileError. *profile_arn* is ignored for
+        a login that is not waiting for a pick.
         """
         async with self._lock:
             pending = self._pending.get(login_id)
@@ -627,6 +668,10 @@ class KasLoginService:
             return {"status": "expired"}
 
         if isinstance(pending, _PendingOidcLogin):
+            held = pending.held_token
+            if held is not None:
+                # The device code is already redeemed: never poll it again.
+                return await self._pick_profile(login_id, pending, held, profile_arn)
             return await self._poll_oidc(login_id, pending)
 
         session = await self._http()
@@ -804,15 +849,53 @@ class KasLoginService:
                 await self._forget(login_id)
                 return {"status": "error", "code": "no_kiro_profile"}
             if len(profiles) > 1:
-                # Multi-profile selection UX is a documented follow-up; until then
-                # the first profile wins, and the choice is visible in the log.
-                logger.info(
-                    "IdC login has %d profiles; using %r",
-                    len(profiles),
-                    profiles[0].profile_name,
-                )
+                return await self._wait_for_pick(login_id, pending, token, profiles)
             token.profile_arn = profiles[0].arn
         return await self._persist_and_finish(login_id, token)
+
+    async def _wait_for_pick(
+        self,
+        login_id: str,
+        pending: _PendingOidcLogin,
+        token: KasToken,
+        profiles: list[control_plane.KiroProfile],
+    ) -> dict[str, Any]:
+        """Hold an approved token that lists several profiles until the user picks one.
+
+        ``selected`` is the profile this sign-in slot is signed in with now when it
+        is offered, else the first. Nothing is stored here.
+        """
+        current = await asyncio.to_thread(self._stored_profile_arn, pending.identity)
+        arns = [profile.arn for profile in profiles]
+        deadline = min(datetime.now(timezone.utc) + PROFILE_CHOICE_WAIT, token.expires_at)
+        async with self._lock:
+            # A cancel or sign-out during the listing wins: nothing is held.
+            if self._pending.get(login_id) is not pending:
+                raise UnknownLoginError(login_id)
+            pending.held_token = token
+            pending.profiles = profiles
+            pending.selected = current if current in arns else arns[0]
+            pending.choice_deadline = deadline
+        logger.info("IdC login lists %d Kiro profiles; asking which to use", len(profiles))
+        return _choice_answer(pending)
+
+    def _stored_profile_arn(self, identity: str) -> str:
+        """The profile ARN *identity*'s stored sign-in carries; ``""`` when none or unreadable."""
+        try:
+            stored = self._store.load(identity)
+        except TokenStoreError:
+            return ""
+        return (stored.profile_arn if stored else None) or ""
+
+    async def _pick_profile(
+        self, login_id: str, pending: _PendingOidcLogin, held: KasToken, profile_arn: str | None
+    ) -> dict[str, Any]:
+        """Answer a poll of a login waiting for a profile pick; store the pick if named."""
+        if not profile_arn:
+            return _choice_answer(pending)
+        if all(profile.arn != profile_arn for profile in pending.profiles):
+            raise UnknownProfileError(profile_arn)
+        return await self._persist_and_finish(login_id, replace(held, profile_arn=profile_arn))
 
     async def _persist_and_finish(self, login_id: str, token: KasToken) -> dict[str, Any]:
         """Save an approved token; the shared terminal step of every poll flavor.

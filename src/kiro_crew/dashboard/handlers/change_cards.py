@@ -174,6 +174,10 @@ async def _settle(request: web.Request) -> None:
 
 
 async def _settle_app(app: web.Application) -> None:
+    await _settle_state(app["state"])
+
+
+async def _settle_state(state: Any) -> None:
     """Expire / prune, persist, then broadcast what changed. Raises :class:`CardError`.
 
     Persist-before-you-publish, for reads too: when the write fails, every
@@ -183,7 +187,6 @@ async def _settle_app(app: web.Application) -> None:
     follow from the clock and the open conversations, so the next settlement
     whose write succeeds derives them again and announces them then.
     """
-    state = app["state"]
     store = card_store_for(state)
     await store.warm()
     # Retirement cancels a proposal nobody can confirm, so it must fire ONLY on
@@ -265,9 +268,9 @@ async def _publish_committed(request: web.Request, rec: dict[str, Any]) -> CardE
     return None
 
 
-async def _expire_made(request: web.Request, slot_key: str, kind: str, params: Any) -> None:
+async def _expire_made(state: Any, slot_key: str, kind: str, params: Any) -> None:
     """Expire, save, then publish the slot's cards waiting on a change already made; best effort."""
-    store = _store(request)
+    store = card_store_for(state)
     try:
         await store.warm()
         expired = store.expire_made(slot_key, kind, params)
@@ -280,7 +283,7 @@ async def _expire_made(request: web.Request, slot_key: str, kind: str, params: A
             store.restore(rec, snap)
         return
     for rec, _snap in expired:
-        await _broadcast(request.app["state"], store.public(rec))
+        await _broadcast(state, store.public(rec))
 
 
 #: What the card says when its route was cut off (it raised, or the gateway
@@ -591,77 +594,37 @@ async def propose_for_caller(
     the undo, run when the card is then not published, so nothing is claimed for a
     card nobody saw.
     """
+    from kiro_crew.dashboard.handlers.change_cards_propose import propose_in_slot
+
     try:
-        # An app's kind and an app's card key are never a chat caller's: see
-        # propose_app_card.
-        if kind in catalog.APP_ONLY_KINDS or slot_key.startswith(
-            (APP_SLOT_PREFIX, OWNER_SLOT_PREFIX)
-        ):
-            raise CardError(403, "app_only", "only the owner can propose this change")
-        params = catalog.validate_params(kind, params)
-        params = await cards.resolve_params(kind, params)
-        cards.check_param_text(params)
-        reason = cards.clean_reason(reason)
-        state = request.app["state"]
-        preview, before, context = await cards.build(kind, params, state=state, app=request.app)
-        await _settle(request)
-    except (CardError, catalog.CardCatalogError) as exc:
-        if isinstance(exc, catalog.CardCatalogError) and exc.code == "no_change":
-            await _expire_made(request, slot_key, kind, params)
-        return _refusal(exc)
-    undo_claim: Callable[[], Awaitable[None]] | None = None
-    try:
-        if claim is not None:
-            undo_claim = await claim()
-        rec = _store(request).propose(
-            slot_key=slot_key,
-            session_key=sk,
+        body = await propose_in_slot(
+            request.app["state"],
+            slot_key,
+            sk,
             kind=kind,
             params=params,
             reason=reason,
-            preview=preview,
-            before=before,
-            context=context,
+            app=request.app,
+            claim=claim,
         )
     except (CardError, catalog.CardCatalogError) as exc:
-        if undo_claim is not None:
-            await undo_claim()
-        if isinstance(exc, CardError) and exc.code == "duplicate_card":
-            exc = await _show_waiting_card_again(request, slot_key, kind, params, exc)
         return _refusal(exc)
-    store = _store(request)
-    try:
-        await store.flush(strict=True)
-    except CardError as exc:
-        # Never shown, never in the transcript: the proposal did not happen.
-        store.discard(rec["id"])
-        if undo_claim is not None:
-            await undo_claim()
-        return _refusal(CardError(exc.status, exc.code, "the change card could not be saved"))
-    public = store.public(rec)
-    # The card is part of the conversation from here on: its row lands at this
-    # point of the transcript, before the frame that makes it live.
-    await chat_cards.load_conversation_window(request.app["state"], public)
-    chat_cards.record_change_proposed(request.app["state"], public)
-    delivered = await _broadcast(request.app["state"], public)
-    _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
-    return web.json_response({**public, "delivered_clients": delivered})
+    return web.json_response(body)
 
 
 async def _show_waiting_card_again(
-    request: web.Request, slot_key: str, kind: str, params: dict[str, Any], exc: CardError
+    state: Any, slot_key: str, kind: str, params: dict[str, Any], exc: CardError
 ) -> CardError:
     """Draw the pending card a repeated proposal names again at the end of the chat.
 
     The repeat is still refused; its text says where the card now is only once the
     row was written. A card being applied stays where it is.
     """
-    store = _store(request)
+    store = card_store_for(state)
     same = store.open_duplicate(slot_key, kind, params)
     if same is None or same["status"] != cards.STATUS_PENDING:
         return exc
     public = store.public(same)
-    state = request.app["state"]
     await chat_cards.load_conversation_window(state, public)
     if not chat_cards.record_change_shown_again(state, public):
         return exc
@@ -1508,6 +1471,11 @@ _REQ_CARD_BEFORE = "card_step_before"
 _REQ_CARD_STEP_RAN = "card_step_ran"
 
 
+def is_admitted_card_step(request: web.Request) -> bool:
+    """Whether *request* is a card step the owner confirmed and the plan matched."""
+    return request.get(_REQ_CARD_STEP_RAN) is True
+
+
 def _note_card_step(request: web.Request, card_id: str, resp_status: int) -> None:
     """Tell the crewmate thread that raised the card what this step settled. Never raises.
 
@@ -1773,7 +1741,7 @@ async def _run_card_step(
         # disk before any tab hears of it, or the poll is answered 503 and re-run.
         return refused
     if op == catalog.OP_APPLY and rec["status"] == cards.STATUS_APPLIED:
-        await _expire_made(request, rec["slot_key"], rec["kind"], rec["params"])
+        await _expire_made(request.app["state"], rec["slot_key"], rec["kind"], rec["params"])
     return resp
 
 

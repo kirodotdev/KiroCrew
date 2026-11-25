@@ -41,7 +41,7 @@ const NO_SESSION_KEY = [
   'agentTemplateDelete', 'agentDetail', 'agentPatch', 'agentFork',
   'agentPublish', 'agentReset', 'defaultMcpSetAdd', 'defaultMcpSetRemove',
   'agentResolvedModel', 'members',
-  'memberActivity', 'memberProjections', 'memberBriefing',
+  'memberHeldLimits', 'memberActivity', 'memberProjections', 'memberBriefing',
   'teams.list', 'appearances.list', 'appearances.detail', 'uploadCrewAvatar',
   'models', 'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands',
   'chatSlotAutocompact', 'chatSlotTurnTimeout', 'chatSlotsFollowDefaultCount', 'recentProjects', 'favoriteProjects', 'browseDirs', 'browseDrives',

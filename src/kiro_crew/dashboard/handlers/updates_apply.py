@@ -38,6 +38,7 @@ from kiro_crew.platform_compat import (
     reexec_python_module,
 )
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
+from kiro_crew.restart_admission import REASON_PAUSE_HELD
 from kiro_crew.restart_session_close import close_sessions_for_restart
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import (  # noqa: F401 - pinned by test_updates_handlers_facade.py
@@ -112,7 +113,11 @@ async def _resolve_restart_target(
 
 @update_ownership.owning(update_ownership.Step.RESTART)
 async def _restart_gateway(
-    state: DashboardState, *, resolver: Callable[[], str] | None = None, force: bool = False
+    state: DashboardState,
+    *,
+    resolver: Callable[[], str] | None = None,
+    force: bool = False,
+    admission_held: bool = False,
 ) -> bool:
     """Save state, close sessions, and exec the selected gateway entry point once.
 
@@ -121,6 +126,9 @@ async def _restart_gateway(
     refuses while work is in flight: a refused restart returns ``False`` with
     admission reopened and the reason on the update progress stream. ``force``
     skips only that judgement, for a restart the person confirmed explicitly.
+    ``admission_held`` says the caller already took that admission (a committed
+    ``restart --when-idle`` answer): it is not asked for again, and it is
+    reopened like a taken one when the restart stops before it commits.
 
     Restart is a process-wide transition.  Two callers must never both drain
     sessions and race separate successors for the same listener/lock, so the
@@ -135,9 +143,13 @@ async def _restart_gateway(
     """
     if state._gateway_restart_in_progress:
         logger.info("Gateway restart already in progress; coalescing duplicate request")
+        if admission_held:
+            # The restart under way did not take this admission, and nothing
+            # else will reopen it.
+            await _release_admission(state)
         return False
     state._gateway_restart_in_progress = True
-    admitted = False
+    admitted = admission_held
     committed = False
     try:
         state.push_update_progress("restarting", "Restarting server…")
@@ -148,7 +160,7 @@ async def _restart_gateway(
         # Unwired only where no orchestrator runs (a bare dashboard state), which
         # has no channel work to cut.
         admit = getattr(state, "_restart_admission", None)
-        if callable(admit):
+        if callable(admit) and not admission_held:
             admission = admit(force=force)
             if inspect.isawaitable(admission):
                 admission = await admission
@@ -202,7 +214,9 @@ async def _restart_gateway(
         # flight is filed cancelled, its marker cleared and its owner told.
         await stop_cron_before_restart(getattr(state, "crons", None))
         committed = True
-        # A planned restart: the turns close_all() cuts resume on the next boot.
+        # A planned restart: record the chats with a running turn that close_all()
+        # is about to cut, so the next start tries to resume them, and wait for
+        # Owner approval records still being written.
         # Imported at module load, before an apply can remove this tree; that
         # also preloads it for the gateway's update restart.
         step("recording running chats")
@@ -281,15 +295,18 @@ async def _restart_gateway(
         if admitted and not committed:
             # Refused or cancelled before the point of no return: the gateway
             # keeps serving, so the pause the admission took must not outlive it.
-            release = getattr(state, "_restart_release", None)
-            if callable(release):
-                try:
-                    await release()
-                except Exception:
-                    logger.warning(
-                        "Could not reopen turn admission after a stopped restart", exc_info=True
-                    )
+            await _release_admission(state)
         state._gateway_restart_in_progress = False
+
+
+async def _release_admission(state: DashboardState) -> None:
+    """Reopen the turn admission a restart held, for a restart that stopped short; never raises."""
+    release = getattr(state, "_restart_release", None)
+    if callable(release):
+        try:
+            await release()
+        except Exception:
+            logger.warning("Could not reopen turn admission after a stopped restart", exc_info=True)
 
 
 #: How often a client that was told "deferred" asks again.
@@ -607,6 +624,9 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
         if census is not None and isinstance(census.busy, int) and census.busy > 0:
             counts = census.payload()
             logger.info("Restart refused while work is in flight: %s", counts)
+            # Named for this answer only: the owner gate above admits the owner and
+            # a Shared Crew teammate, who both list every slot and cron job already.
+            holders, holders_more = census.named_holders()
             return web.json_response(
                 {
                     "ok": False,
@@ -622,11 +642,47 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
                     "busy": counts["busy"],
                     "quiet_remaining_secs": counts["quiet_remaining_secs"],
                     "settle_remaining_secs": counts["settle_remaining_secs"],
+                    "holders": holders,
+                    "holders_more": holders_more,
                     "force_available": True,
                 },
                 status=409,
             )
 
+    return await _start_gateway_restart(state, force=force)
+
+
+async def _start_gateway_restart(
+    state: DashboardState,
+    *,
+    force: bool,
+    holds_admission: Callable[[], bool] | None = None,
+    hand_over_admission: Callable[[], None] | None = None,
+    join_running: bool = False,
+) -> web.Response:
+    """Answer a restart request: refuse it before the 200, or start the one restart task.
+
+    Shared by ``POST /api/restart`` and the restart mode of
+    ``POST /api/restart/when-idle``. Answers ``409 {"ok": false, "error", "code"}``
+    for a refusal that needs no side effect, ``200 {"ok": true, "status":
+    "restarting", "already_in_progress": true}`` while a restart task runs, and
+    ``200 {"ok": true, "status": "restarting"}`` once it starts the task, which
+    calls :func:`_restart_gateway` after the response has flushed.
+
+    *holds_admission* is read after the last await: ``True`` means the caller
+    already holds turn admission closed for this restart (a committed idle
+    answer), so the restart takes it over instead of asking again. It is then not
+    forced, and the preflight's ``pause_held_elsewhere``, which is that very
+    pause, does not refuse it. *hand_over_admission* runs once the task exists,
+    and only then: a request this refuses leaves what the caller holds as it was.
+
+    *join_running* answers ``already_in_progress`` BEFORE the preflight while a
+    restart runs: its task is live, or another route holds the process-wide
+    claim (``_gateway_restart_in_progress``). That restart took the pause the
+    preflight would read as held elsewhere, and a caller told 409 there would
+    start a second gateway beside one that is about to exec. ``POST /api/restart``
+    leaves it off and keeps its own answer order.
+    """
     # Refuse a restart that cannot run BEFORE the 200, while the client still
     # holds the request: after it, a refusal reaches the user only as a
     # progress step, which a restart control waiting for the reload never
@@ -637,14 +693,22 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
         code, sentence = refusal
         return web.json_response({"ok": False, "error": sentence, "code": code}, status=409)
 
+    joining = _restart_running(state) if join_running else False
+    if joining:
+        # After the last await, so no restart can start between this read and the answer.
+        return web.json_response({"ok": True, "status": "restarting", "already_in_progress": True})
+
+    held = holds_admission is not None and holds_admission()
     # The admission refusals that need no side effect (the gateway is shutting
     # down, another update step holds turn admission) also answer before the 200.
     # A refusal after the pause, drain or fence still reaches the user only as a
-    # progress step.
+    # progress step. A held admission is the very pause the preflight reads as
+    # held elsewhere, so only its other refusals apply then.
     preflight = getattr(state, "_restart_preflight", None)
     if callable(preflight):
         early = preflight()
-        if getattr(early, "admitted", None) is False:
+        refused = getattr(early, "admitted", None) is False
+        if refused and not (held and early.reason == REASON_PAUSE_HELD):
             return web.json_response(
                 {"ok": False, "error": early.detail(), "code": early.reason}, status=409
             )
@@ -665,7 +729,10 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
         # Let the response flush before the process image is replaced.
         await asyncio.sleep(0.25)
         try:
-            await _restart_gateway(state, force=force)
+            if held:
+                await _restart_gateway(state, admission_held=True)
+            else:
+                await _restart_gateway(state, force=force)
         except Exception:
             logger.exception("Gateway restart failed")
             state.push_update_progress("failed", "Restart failed — check logs")
@@ -680,4 +747,14 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
             state._gateway_restart_task = None
 
     task.add_done_callback(_restart_done)
+    if held and hand_over_admission is not None:
+        hand_over_admission()
     return web.json_response({"ok": True, "status": "restarting"})
+
+
+def _restart_running(state: DashboardState) -> bool:
+    """Whether a restart runs now: this route's task, or any route's process-wide claim."""
+    existing = getattr(state, "_gateway_restart_task", None)
+    if existing is not None and not existing.done():
+        return True
+    return getattr(state, "_gateway_restart_in_progress", False) is True

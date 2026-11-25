@@ -147,16 +147,22 @@ def _own_listing_row(entry: dict[str, Any]) -> dict[str, Any]:
     """A deep copy of listing row *entry*, or its bare row when it cannot be copied.
 
     Every row a listing hands back goes through here, so a row an index nests past
-    the recursion limit shows bare instead of failing the whole listing.
+    ``user_json.MAX_DOCUMENT_NESTING`` shows bare instead of failing the whole listing.
+    The depth is measured before the copy, so the copy never runs near the
+    recursion limit, where a finalizer the collector runs mid-copy would fail.
     """
     import copy  # local: see ``_join_manifest_fetch``
 
-    try:
-        return copy.deepcopy(entry)
-    except _UNCOPYABLE_ROW_ERRORS:
-        bare = _bare_listing_row(entry)
-        logger.warning("store listing shows %r bare: its row cannot be copied", bare.get("name"))
-        return bare
+    from kiro_crew.user_json import exceeds_nesting  # local, like ``copy``
+
+    if not exceeds_nesting(entry):
+        try:
+            return copy.deepcopy(entry)
+        except _UNCOPYABLE_ROW_ERRORS:
+            pass
+    bare = _bare_listing_row(entry)
+    logger.warning("store listing shows %r bare: its row cannot be copied", bare.get("name"))
+    return bare
 
 
 def _waiter_listing_row(entry: dict[str, Any], merged: dict[str, Any]) -> dict[str, Any]:

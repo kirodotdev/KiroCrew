@@ -171,7 +171,11 @@ export function filterInteractiveModels(
   const kept = new Set(activeModels.filter(Boolean))
   const keptKeys = new Set([...kept].map(hiddenModelKey).filter(Boolean))
   const isKept = (name: string) => kept.has(name) || keptKeys.has(hiddenModelKey(name))
-  const visible = models.filter(model => model.name === 'auto' || isKept(model.name) || !isHidden(model.name))
+  // Two hidden lists, same rule: the account's (the engine's `hiddenByAccount`
+  // mark) and Crew's own. `auto` and an active pin are always offered.
+  const visible = models.filter(
+    model => model.name === 'auto' || isKept(model.name) || !(isHidden(model.name) || model.hiddenByAccount === true),
+  )
   if (!groupEffortPairs) return visible
 
   const seen = new Set<string>()

@@ -7933,7 +7933,7 @@
 4 test/test_work_ledger_undelivered.py
 5 test/test_work_ledger_wake_delivery.py
 5 test/test_work_ledger_watch_board_reads.py
-1 test/test_work_ledger_watch_outlives_closed_items.py
+1 test/test_work_ledger_watch_ends_when_finished.py
 7 test/test_work_rebuild_own_cell.py
 4 test/test_work_root.py
 2 test/test_work_unit_order_reset.py

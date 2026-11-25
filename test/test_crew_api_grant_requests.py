@@ -18,6 +18,9 @@ from jsonschema import Draft202012Validator
 from test_local_authorization import ASK, ISSUER, REDIRECT, VERIFIER, Clock
 from test_shared_crew_teammate_owner_access import ANA, GUEST_USER, _publish
 
+from kiro_crew.config.loader import KiroCrewAgentConfig
+from kiro_crew.crew_teams import TEAM_MEMBERS_MAX
+from kiro_crew.dashboard import crew_api_grant_requests as grant_requests
 from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.routes import crew_api
 from kiro_crew.dashboard.routes import local_authorization as oauth_routes
@@ -502,3 +505,465 @@ def test_the_owner_view_keeps_the_stores_statuses_to_the_contracts_four():
     stored = {"pending", "approved", "denied", "code_issued", "exchanged"}
     shown = {la._OWNER_STATUS.get(status, status) for status in stored}
     assert shown == {"pending", "approved", "denied"}
+
+
+GRANTS = "/v1/crew/owner/grants"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_lists_the_grants_that_work_now(client, clock):
+    empty = await client.get(GRANTS, headers=AS_OWNER)
+    assert empty.status == 200
+    assert await empty.json() == {
+        "object": "list",
+        "data": [],
+        "first_id": None,
+        "last_id": None,
+        "has_more": False,
+    }
+    _, first = await _approved_tokens(client, clock, ["conversations:read"])
+    clock.now += 10
+    _, second = await _approved_tokens(client, clock)
+    # Asked and approved, never redeemed: not a grant.
+    waiting = await _ask(client)
+    await client.post(_decision(waiting), json={"decision": "approve"}, headers=AS_OWNER)
+
+    listed = await client.get(GRANTS, headers=AS_OWNER)
+    body = await listed.json()
+    assert listed.status == 200
+    _valid("GrantList", body)
+    assert listed.headers["X-Request-Id"].startswith("req_")
+    assert listed.headers["Crew-API-Version"]
+    assert [g["id"] for g in body["data"]] == [first["grant_id"], second["grant_id"]]
+    assert (body["first_id"], body["last_id"], body["has_more"]) == (
+        first["grant_id"],
+        second["grant_id"],
+        False,
+    )
+    row = body["data"][0]
+    assert row == {
+        "id": first["grant_id"],
+        "object": "grant",
+        "kind": "local",
+        "namespace": "default",
+        "client_id": ASK["client_id"],
+        "app": {"name": row["app"]["name"], "icon_url": None},
+        "scopes": ["conversations:read"],
+        "bots": {"mode": "selected", "ids": []},
+        "status": "active",
+        "created_at": row["created_at"],
+        "expires_at": row["created_at"] + la.REFRESH_MAX_SECS,
+    }
+    # No token, code or digest is in the answer.
+    text = json.dumps(body)
+    for secret in (first["access_token"], first["refresh_token"], VERIFIER):
+        assert secret not in text
+
+    paged = await client.get(GRANTS, params={"limit": "1"}, headers=AS_OWNER)
+    page = await paged.json()
+    assert [g["id"] for g in page["data"]] == [first["grant_id"]] and page["has_more"] is True
+    rest = await client.get(GRANTS, params={"after": first["grant_id"]}, headers=AS_OWNER)
+    assert [g["id"] for g in (await rest.json())["data"]] == [second["grant_id"]]
+
+    # A revoked grant is not listed, under any status.
+    await client.delete(_grant(first["grant_id"]), headers=AS_OWNER)
+    for params in ({}, {"status": "active"}):
+        after = await (await client.get(GRANTS, params=params, headers=AS_OWNER)).json()
+        assert [g["id"] for g in after["data"]] == [second["grant_id"]]
+    for status in ("revoked", "paused", "throttled"):
+        other = await client.get(GRANTS, params={"status": status}, headers=AS_OWNER)
+        assert other.status == 200 and (await other.json())["data"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"status": "gone"},
+        {"limit": "0"},
+        {"limit": "101"},
+        {"limit": "1e1"},
+        {"limit": "٣"},
+        {"after": "grt_nope"},
+    ],
+)
+async def test_a_bad_grants_query_is_400(client, clock, params):
+    await _approved_tokens(client, clock)
+    refused = await client.get(GRANTS, params=params, headers=AS_OWNER)
+    body = await refused.json()
+    assert refused.status == 400
+    _valid("Error", body)
+    assert body["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "caller",
+    [AS_APP, {"X-Test-User": "123456789"}, {}, {"X-Test-Teammate": "relay"}],
+    ids=["app-token", "another-user", "no-credential", "teammate"],
+)
+async def test_only_the_host_owner_lists_grants(client, clock, monkeypatch, caller):
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+    _, tokens = await _approved_tokens(client, clock)
+    denial_audit = Mock(spec=["log_api_access"])
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: denial_audit)
+    # The store is not read for a refused caller.
+    monkeypatch.setattr(client.store, "grants", Mock(side_effect=AssertionError("read")))
+    refused = await client.get(GRANTS, headers=caller)
+    body = await refused.json()
+    assert refused.status == 403
+    _valid("Error", body)
+    assert (body["error"]["type"], body["error"]["code"]) == ("permission_error", "owner_only")
+    assert set(body) == {"error"} and tokens["grant_id"] not in json.dumps(body)
+    rows = [call.kwargs for call in denial_audit.log_api_access.call_args_list]
+    assert rows and all(row["outcome"] == "denied" for row in rows)
+    if "X-Test-Teammate" in caller:
+        assert [row["operation"] for row in rows] == ["crew_api.grants.list"]
+
+
+@pytest.mark.asyncio
+async def test_grants_that_cannot_be_read_are_503(client, clock, monkeypatch):
+    await _approved_tokens(client, clock)
+    monkeypatch.setattr(client.store, "_load", Mock(side_effect=OSError("disk")))
+    unreadable = await client.get(GRANTS, headers=AS_OWNER)
+    body = await unreadable.json()
+    assert unreadable.status == 503
+    assert body["error"]["code"] == "instance_unavailable"
+
+
+# ── the Bots an app asks for, and the Bots the owner gives ───────────────────
+
+BOTS_ASK = {**ASK, "bots": ["scout", "planner"]}
+
+
+@pytest.fixture
+def bots(monkeypatch) -> list[str]:
+    """The Bots this Kiro Crew has, as the decision reads them."""
+    existing = ["scout", "planner", "writer"]
+
+    async def _existing() -> set[str]:
+        return set(existing)
+
+    monkeypatch.setattr(grant_requests, "_existing_bots", _existing)
+    return existing
+
+
+async def _ask_for_bots(client) -> str:
+    asked = await client.get(
+        "/oauth/authorize", params=BOTS_ASK, headers={"Accept": "application/json"}
+    )
+    assert asked.status == 202
+    return str((await asked.json())["request_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("names", [["scout", "planner"], ["dr. eggbot", "助手"]])
+async def test_the_owner_reads_the_bots_asked_for_and_gives_fewer(client, clock, bots, names):
+    bots.extend(names)
+    ask = {**ASK, "bots": names}
+    asked = await client.get("/oauth/authorize", params=ask, headers={"Accept": "application/json"})
+    assert asked.status == 202
+    request_id = (await asked.json())["request_id"]
+    listed = (await (await client.get(LIST, headers=AS_OWNER)).json())["data"]
+    assert listed[0]["requested_bots"] == names
+    _valid("GrantRequest", listed[0])
+
+    given = names if names[0] == "dr. eggbot" else names[1:]
+    decision = {"decision": "approve", "bots": given}
+    _valid("GrantRequestDecision", decision)
+    answered = await client.post(_decision(request_id), json=decision, headers=AS_OWNER)
+    body = await answered.json()
+    assert answered.status == 200
+    assert body["granted_bots"] == given
+    _valid("GrantRequest", body)
+    read = await (await client.get(_one(request_id), headers=AS_OWNER)).json()
+    assert (read["requested_bots"], read["granted_bots"]) == (names, given)
+
+    clock.now += la.POLL_INTERVAL_SECS
+    sent = await client.get(
+        "/oauth/authorize", params={**ask, "request_id": request_id}, allow_redirects=False
+    )
+    code = parse_qs(urlsplit(sent.headers["Location"]).query)["code"][0]
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": ASK["client_id"],
+        "code": code,
+        "redirect_uri": REDIRECT,
+        "code_verifier": VERIFIER,
+    }
+    tokens = await (await client.post("/oauth/token", data=form)).json()
+    grants = (await (await client.get(GRANTS, headers=AS_OWNER)).json())["data"]
+    assert [(g["id"], g["bots"]) for g in grants] == [
+        (tokens["grant_id"], {"mode": "selected", "ids": given})
+    ]
+    _valid("Grant", grants[0])
+
+
+@pytest.mark.asyncio
+async def test_an_approval_that_names_no_bot_gives_none(client, bots):
+    request_id = await _ask_for_bots(client)
+    answered = await client.post(
+        _decision(request_id), json={"decision": "approve"}, headers=AS_OWNER
+    )
+    assert answered.status == 200
+    assert (await answered.json())["granted_bots"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "given",
+    [
+        ["writer"],  # a Bot of this Kiro Crew that the app did not ask for
+        ["scout", "scout"],
+        "scout",
+        [1],
+    ],
+)
+async def test_a_bot_not_asked_for_or_given_twice_is_refused(client, bots, given):
+    request_id = await _ask_for_bots(client)
+    answered = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": given}, headers=AS_OWNER
+    )
+    assert answered.status == 400
+    assert (await answered.json())["error"]["code"] == "invalid_request"
+    assert [r["status"] for r in client.store.pending()] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_a_bot_this_kiro_crew_does_not_have_is_refused_at_the_decision(client, bots):
+    request_id = await _ask_for_bots(client)
+    bots.remove("planner")
+    answered = await client.post(
+        _decision(request_id),
+        json={"decision": "approve", "bots": ["scout", "planner"]},
+        headers=AS_OWNER,
+    )
+    assert answered.status == 400
+    assert (await answered.json())["error"]["code"] == "invalid_request"
+    assert [r["status"] for r in client.store.pending()] == ["pending"]
+    # The Bots that do exist can still be given.
+    answered = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": ["scout"]}, headers=AS_OWNER
+    )
+    assert (answered.status, (await answered.json())["granted_bots"]) == (200, ["scout"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("known_name", "unknown_name"),
+    [("scout", "no-such-bot"), ("dr. eggbot", "no such bot"), ("助手", "不存在")],
+)
+async def test_asking_never_says_whether_a_bot_exists(
+    client, clock, bots, monkeypatch, known_name, unknown_name
+):
+    """The answer to the app is the same for a Bot this Kiro Crew has and one it lacks."""
+    bots.append(known_name)
+    assert unknown_name not in bots
+    roster = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(grant_requests, "_existing_bots", roster)
+    monkeypatch.setattr(
+        "aiohttp.web_response.rfc822_formatted_time", lambda: "Tue, 24 Nov 2026 00:00:00 GMT"
+    )
+    monkeypatch.setattr(la.secrets, "token_urlsafe", lambda n: "A" * 16)
+    monkeypatch.setattr(la.secrets, "choice", lambda alphabet: alphabet[0])
+    answers = []
+    for index, name in enumerate((known_name, unknown_name)):
+        store = la.LocalAuthorization(
+            client.store._path.with_name(f"s{index}.json"), b"k" * 32, clock
+        )
+        monkeypatch.setattr(la, "gateway_local_authorization", lambda store=store: store)
+        asked = await client.get(
+            "/oauth/authorize",
+            params={**ASK, "bots": name},
+            headers={"Accept": "application/json"},
+        )
+        answers.append((asked.status, await asked.read(), sorted(asked.headers.items())))
+        clock.now += la.POLL_INTERVAL_SECS
+        again = await client.get(
+            "/oauth/authorize",
+            params={**ASK, "bots": name, "request_id": "greq_" + "A" * 16},
+            headers={"Accept": "application/json"},
+        )
+        answers.append((again.status, await again.read(), sorted(again.headers.items())))
+        clock.now -= la.POLL_INTERVAL_SECS
+    known, known_again, unknown, unknown_again = answers
+    assert known[0] == known_again[0] == 202
+    assert known == unknown and known_again == unknown_again
+    roster.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_decision_exceeding_the_body_limit_is_refused(client, bots):
+    request_id = await _ask_for_bots(client)
+    padded = {"decision": "approve", "bots": ["scout"] * 1000}
+    answered = await client.post(_decision(request_id), json=padded, headers=AS_OWNER)
+    assert answered.status == 400
+    assert (await answered.json())["error"]["message"] == (
+        "the body is missing its length or too large"
+    )
+    assert [r["status"] for r in client.store.pending()] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_a_roster_that_cannot_be_read_gives_no_bot(client, monkeypatch):
+    async def _unreadable() -> set[str]:
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(grant_requests, "_existing_bots", _unreadable)
+    request_id = await _ask_for_bots(client)
+    answered = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": ["scout"]}, headers=AS_OWNER
+    )
+    assert answered.status == 503
+    assert [r["status"] for r in client.store.pending()] == ["pending"]
+    # A decision that gives no Bot does not read the roster.
+    answered = await client.post(
+        _decision(request_id), json={"decision": "approve"}, headers=AS_OWNER
+    )
+    assert answered.status == 200
+
+
+@pytest.mark.asyncio
+async def test_a_denial_reads_no_roster_and_gives_no_bot(client, monkeypatch):
+    monkeypatch.setattr(grant_requests, "_existing_bots", Mock(side_effect=AssertionError))
+    request_id = await _ask_for_bots(client)
+    answered = await client.post(
+        _decision(request_id), json={"decision": "deny", "bots": ["scout"]}, headers=AS_OWNER
+    )
+    body = await answered.json()
+    assert (answered.status, body["status"]) == (200, "denied")
+    assert "granted_bots" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "given",
+    [
+        ["sco\x1bt"],
+        ["x" * (la.MEMBER_NAME_MAX_CHARS + 1)],
+        [str(i) for i in range(TEAM_MEMBERS_MAX + 1)],
+    ],
+)
+async def test_malformed_decision_bots_are_refused_before_the_roster(client, monkeypatch, given):
+    request_id = await _ask_for_bots(client)
+    roster = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(grant_requests, "_existing_bots", roster)
+    body = {"decision": "approve", "bots": given}
+    # Short names keep the cap-plus-one case below the independent body limit.
+    assert len(json.dumps(body).encode("utf-8")) <= grant_requests._BODY_MAX
+    answered = await client.post(_decision(request_id), json=body, headers=AS_OWNER)
+    assert answered.status == 400
+    error = (await answered.json())["error"]
+    assert error["code"] == "invalid_request"
+    assert error["message"] == "bots is malformed"
+    assert [r["status"] for r in client.store.pending()] == ["pending"]
+    roster.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answered", [False, True])
+@pytest.mark.parametrize("given", [["scout"], ["sco\x1bt"], ["scout", "scout"]])
+async def test_decision_checks_request_before_bots_or_roster(client, monkeypatch, answered, given):
+    request_id = "greq_missing"
+    if answered:
+        request_id = await _ask_for_bots(client)
+        client.store.decide(request_id, False, caller=OWNER)
+    roster = Mock(side_effect=OSError("roster unavailable"))
+    monkeypatch.setattr(grant_requests, "_existing_bots", roster)
+    response = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": given}, headers=AS_OWNER
+    )
+    assert response.status == (409 if answered else 404)
+    assert (await response.json())["error"]["code"] == (
+        "grant_request_already_resolved" if answered else "not_found"
+    )
+    roster.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("section", ["*", "agents"])
+async def test_a_degraded_config_cannot_confirm_the_default_bot(client, monkeypatch, section):
+    config = grant_requests.KiroCrewConfig(
+        agents={"default": KiroCrewAgentConfig()},
+        _degraded_sections=frozenset({section}),
+    )
+    monkeypatch.setattr(grant_requests.KiroCrewConfig, "load", lambda: config)
+    _, view = client.store.authorize(ASK, ["default"])
+    before = client.store._path.read_bytes()
+    response = await client.post(
+        _decision(view["request_id"]),
+        json={"decision": "approve", "bots": ["default"]},
+        headers=AS_OWNER,
+    )
+    assert response.status == 503
+    assert (await response.json())["error"]["code"] == "instance_unavailable"
+    assert client.store._path.read_bytes() == before
+    assert client.store.request(view["request_id"])["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_config_confirms_only_dispatchable_bots(monkeypatch):
+    config = grant_requests.KiroCrewConfig(
+        agents={name: KiroCrewAgentConfig() for name in ("default", "助手", "bad\x1bname")}
+    )
+    monkeypatch.setattr(grant_requests.KiroCrewConfig, "load", lambda: config)
+    assert await grant_requests._existing_bots() == {"default", "助手"}
+
+
+@pytest.mark.asyncio
+async def test_an_expired_answered_request_is_not_found_while_its_grant_lives(
+    client, clock, monkeypatch
+):
+    request_id, tokens = await _approved_tokens(client, clock)
+    clock.now = client.store.request(request_id)["expires_at"]
+    assert client.store.request(request_id)["status"] == "approved"
+    assert client.store.grants()[0]["grant_id"] == tokens["grant_id"]
+    roster = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(grant_requests, "_existing_bots", roster)
+    response = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": ["scout"]}, headers=AS_OWNER
+    )
+    assert response.status == 404
+    assert (await response.json())["error"]["code"] == "not_found"
+    with pytest.raises(la.UnknownRequest):
+        client.store.decide(request_id, True, caller=OWNER)
+    roster.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_unrequested_missing_bot_is_refused_before_reading_the_roster(client, monkeypatch):
+    request_id = await _ask_for_bots(client)
+    roster = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(grant_requests, "_existing_bots", roster)
+    response = await client.post(
+        _decision(request_id),
+        json={"decision": "approve", "bots": ["missing"]},
+        headers=AS_OWNER,
+    )
+    assert response.status == 400
+    error = (await response.json())["error"]
+    assert error["code"] == "invalid_request"
+    assert error["message"] == "bots must be a subset of the requested bots"
+    assert client.store.request(request_id)["status"] == "pending"
+    roster.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_bots_is_refused_but_omitting_bots_gives_none(client, monkeypatch):
+    request_id = await _ask_for_bots(client)
+    roster = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(grant_requests, "_existing_bots", roster)
+    response = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": None}, headers=AS_OWNER
+    )
+    assert response.status == 400
+    error = (await response.json())["error"]
+    assert error["code"] == "invalid_request"
+    assert error["message"] == "bots must be a list of strings"
+    assert client.store.request(request_id)["status"] == "pending"
+    response = await client.post(
+        _decision(request_id), json={"decision": "approve"}, headers=AS_OWNER
+    )
+    assert response.status == 200
+    assert (await response.json())["granted_bots"] == []
+    roster.assert_not_called()

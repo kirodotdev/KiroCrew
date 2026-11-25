@@ -77,13 +77,14 @@ function Chip({ item, onRemove }: { item: PendingAttachment; onRemove: () => voi
         //
         // `open_image` is the name the three other `openLightbox` controls use, so a
         // screen-reader user hears one operation named one way; `preview` belongs to
-        // the separate `api.previewFile` control. The `<action>: <name>` shape is the
-        // sibling Remove button's, and the file name is what tells two images in the
-        // same chip row apart.
+        // the separate `api.previewFile` control. Like the sibling Remove button, the
+        // name is one catalog sentence with the file name as `{{name}}`, so a
+        // verb-final language can put the name first; the file name is what tells
+        // two images in the same chip row apart.
         <button
           type="button"
           onClick={() => openLightbox(item.path)}
-          aria-label={`${i18nT('apps.mochi.chatPanel.open_image')}: ${item.name}`}
+          aria-label={i18nT('apps.mochi.chatPanel.open_image_named', { name: item.name })}
           style={{
             display: 'block',
             width: 40,
@@ -122,7 +123,7 @@ function Chip({ item, onRemove }: { item: PendingAttachment; onRemove: () => voi
       )}
       <button
         onClick={onRemove}
-        aria-label={`${i18nT('components.chatInput.remove')}: ${item.name}`}
+        aria-label={i18nT('apps.mochi.chatPanel.remove_named', { name: item.name })}
         style={{
           position: item.isImage ? 'absolute' : 'static',
           top: item.isImage ? 1 : undefined,

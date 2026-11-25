@@ -315,6 +315,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
   // The per-creator session limit ChatPanel's Sessions page mounts.
   'SessionsPerCreatorSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The all-bots Sessions list switch ChatPanel's Sessions page mounts.
+  'ShowAllBotsSessionsRow.tsx': { tab: 'chat', params: { sub: 'sessions' } },
   // The per-app session mutes NotificationsPanel's Sources page mounts. Each row
   // is labelled with the app's own name, a dynamic label the extractor skips;
   // mapped so a static control added to it lands on the Sources deep link.

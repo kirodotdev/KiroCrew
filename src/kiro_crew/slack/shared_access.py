@@ -10,10 +10,14 @@ controls stay with :func:`kiro_crew.slack.handler.is_owner`.
 list is the only one that admits anybody, so turning the switch on never admits a
 stale allowlist entry.
 
-A listed id counts only once Slack has confirmed it (:func:`check`): a person
-(not a bot), not deactivated, in the bot's own workspace (``auth.test``) and not
-the owner. The list and the switch are read live on every call, so a removal or a
-switch-off applies to the next event. A confirmation is kept for
+A listed id counts once :func:`check` passes it. By default
+(``slack.shared_access.verify_with_slack`` off) that needs only a well-formed id
+that is not the owner's: Slack is not asked, so a bot, a deactivated account or a
+person in another workspace on the list is admitted too. With the flag on, Slack
+must confirm it (``auth.test`` and ``users.info``, which needs ``users:read``): a
+person, not deactivated, in the bot's own workspace. The list and both switches
+are read live on every call, so a removal or a switch-off applies to the next
+event. A confirmation is kept for
 :data:`CONFIRMED_TTL_SECS` and then asked again; a refusal for
 :data:`REFUSED_TTL_SECS`.
 """
@@ -43,6 +47,8 @@ REASON_BOT = "bot_user"
 REASON_DEACTIVATED = "deactivated"
 REASON_OTHER_TEAM = "other_workspace"
 REASON_UNVERIFIABLE = "unverifiable"
+#: Admitted on the owner's list alone: ``verify_with_slack`` is off, Slack was not asked.
+REASON_LISTED = "listed"
 #: No owner id is saved: nothing can tell the owner's own id apart from anyone else's.
 REASON_OWNER_UNSET = "owner_unset"
 #: An add by email: Slack has nobody with that email in the bot's workspace.
@@ -107,6 +113,12 @@ def _settings(cfg: Any) -> tuple[bool, list[str]]:
     return enabled, list(ids) if isinstance(ids, list) else []
 
 
+def verify_with_slack(cfg: Any) -> bool:
+    """Whether listed ids must be confirmed by Slack (``slack.shared_access.verify_with_slack``)."""
+    shared = getattr(getattr(cfg, "slack", None), "shared_access", None)
+    return getattr(shared, "verify_with_slack", False) is True
+
+
 def listed(cfg: Any, user_id: str) -> bool:
     """Whether the switch is on and *user_id* is on the list (not yet confirmed)."""
     enabled, ids = _settings(cfg)
@@ -131,6 +143,8 @@ def is_shared_user(cfg: Any, user_id: str, *, owner: bool) -> bool:
     verdict = _verdicts.get(user_id)
     if verdict is None or not verdict.ok or _stale(verdict):
         return False
+    if not _fits(verdict, verify=verify_with_slack(cfg)):
+        return False
     _ever_shared.add(user_id)
     return True
 
@@ -141,12 +155,16 @@ def still_confirmed(cfg: Any, user_id: str, *, owner: bool) -> bool:
     :func:`is_shared_user` without its expiry, for a check made where nothing primes
     the answer (a code channel's session judged mid-turn, long after the person's
     message). The list is read live, so the owner removing them, or switching shared
-    access off, ends it at once; a refusal from Slack does too.
+    access off, ends it at once; a refusal from Slack does too, and so does turning
+    ``verify_with_slack`` on while only a list-only answer is held.
     """
     if owner or not listed(cfg, user_id):
         return False
     verdict = _verdicts.get(user_id)
-    return verdict is not None and verdict.ok
+    if verdict is None or not verdict.ok:
+        return False
+    # A Slack-confirmed answer holds in both modes; a list-only one only while Slack is not asked.
+    return not (verify_with_slack(cfg) and verdict.reason == REASON_LISTED)
 
 
 def was_shared(user_id: str) -> bool:
@@ -164,6 +182,10 @@ def _stale(verdict: Verdict | None) -> bool:
         return True
     ttl = CONFIRMED_TTL_SECS if verdict.ok else REFUSED_TTL_SECS
     return clock() - verdict.checked_at >= ttl
+
+
+#: The answers :func:`check` gives without asking Slack.
+_UNASKED_REASONS = frozenset({REASON_LISTED, REASON_MALFORMED, REASON_OWNER})
 
 
 def is_owner_id(user_id: str, owner_id: str) -> bool:
@@ -208,11 +230,25 @@ async def find_by_email(client: Any, email: str) -> tuple[str, str]:
     return user_id, ""
 
 
-async def check(client: Any, user_id: str, *, owner_id: str) -> Verdict:
-    """Ask Slack whether *user_id* may be a shared user. Never raises.
+def _fits(verdict: Verdict, *, verify: bool) -> bool:
+    """Whether *verdict* is an answer :func:`check` gives under *verify*.
 
-    ``users.info`` names the person and their workspace; ``auth.test`` names the
-    bot's. A failed call is :data:`REASON_UNVERIFIABLE`, never a pass.
+    A cached answer from before the owner flipped ``verify_with_slack`` is asked
+    again: a list-only pass never stands once Slack must confirm, and a Slack
+    refusal never stands once it need not.
+    """
+    if verify:
+        return verdict.reason != REASON_LISTED
+    return verdict.reason in _UNASKED_REASONS
+
+
+async def check(client: Any, user_id: str, *, owner_id: str, verify: bool) -> Verdict:
+    """Whether *user_id* may be a shared user. Never raises.
+
+    With *verify* off the owner's list is trusted: a well-formed id that is not
+    the owner's passes as :data:`REASON_LISTED` and Slack is not called. With it
+    on, ``users.info`` names the person and their workspace and ``auth.test`` names
+    the bot's. A failed call is :data:`REASON_UNVERIFIABLE`, never a pass.
     """
     now = clock()
 
@@ -223,6 +259,8 @@ async def check(client: Any, user_id: str, *, owner_id: str) -> Verdict:
         return _no(REASON_MALFORMED)
     if is_owner_id(user_id, owner_id):
         return _no(REASON_OWNER)
+    if not verify:
+        return Verdict(user_id, True, REASON_LISTED, "", now)
     if client is None:
         return _no(REASON_UNVERIFIABLE)
     try:
@@ -238,7 +276,11 @@ async def check(client: Any, user_id: str, *, owner_id: str) -> Verdict:
                 error = ""
         if error == "user_not_found":
             return _no(REASON_NOT_FOUND)
-        logger.warning("shared access: could not check a Slack user (%s)", type(exc).__name__)
+        logger.warning(
+            "shared access: could not check a Slack user (%s: %s)",
+            type(exc).__name__,
+            error or "no Slack error code",
+        )
         return _no(REASON_UNVERIFIABLE)
     user = info.get("user") if hasattr(info, "get") else None
     if not isinstance(user, dict):
@@ -261,7 +303,7 @@ async def check(client: Any, user_id: str, *, owner_id: str) -> Verdict:
 SHARED_OWNER_ONLY_TEXT = "Blocked: Only the bot owner can do that."
 
 #: The buttons a shared user may press: tool approvals (the handler admits only
-#: the requester's own prompt and never their Trust), the review-mode draft of
+#: the requester's own prompt, Trust on it included), the review-mode draft of
 #: their own turn (the handler admits only the requester or the owner), question
 #: cards (an answer is a new message, as if typed; refused in a code channel but the
 #: one they opened), Approve / Reject on a helper agent's card in a code channel (the
@@ -331,8 +373,8 @@ def shared_command_refused(user_id: str, text: str, *, modifiers: bool = True) -
 def shared_action_permitted(action_id: str) -> bool:
     """Whether a shared user may press the button *action_id* at all.
 
-    Trust is let through to its handler only so the refusal is answered there,
-    where the pending prompt is known; a shared user never grants Trust.
+    A tool-approval press (Trust included) is let through to its handler, which
+    knows the pending prompt and admits only the person whose turn posted it.
     """
     return action_id in _SHARED_ACTIONS or action_id.startswith(_SHARED_ACTION_PREFIXES)
 
@@ -350,8 +392,10 @@ async def prime_shared_user(user_id: str, orch: Any = None) -> None:
         logger.warning("shared access: check of a listed user failed", exc_info=True)
 
 
-async def lookup(client: Any, user_id: str, *, owner_id: str, refresh: bool = False) -> Verdict:
-    """Slack's answer for *user_id*, from the cache while it is fresh.
+async def lookup(
+    client: Any, user_id: str, *, owner_id: str, verify: bool, refresh: bool = False
+) -> Verdict:
+    """The answer for *user_id* under *verify*, from the cache while it is fresh.
 
     The settings page reads it to show each person's name; an add passes
     ``refresh=True`` so the id is checked now. The answer is kept for the gate too.
@@ -361,10 +405,10 @@ async def lookup(client: Any, user_id: str, *, owner_id: str, refresh: bool = Fa
     # (or another one was) is the owner's now, and never counts as someone shared with.
     if is_owner_id(user_id, owner_id):
         return Verdict(user_id, False, REASON_OWNER, cached.name if cached else "", clock())
-    if not refresh and not _stale(cached) and cached is not None:
+    if not refresh and not _stale(cached) and cached is not None and _fits(cached, verify=verify):
         return cached
     generation = _generation
-    verdict = await check(client, user_id, owner_id=owner_id)
+    verdict = await check(client, user_id, owner_id=owner_id, verify=verify)
     # Kept for the gate only when *client* is the bot the gateway runs on: an answer
     # from other credentials (a token saved but not yet live) names another
     # workspace, so the gateway checks the id with its own client instead.
@@ -392,10 +436,12 @@ async def prime(cfg: Any, user_id: str, *, owner_id: str) -> None:
     """
     if not user_id or user_id == owner_id or not listed(cfg, user_id):
         return
-    if not _stale(_verdicts.get(user_id)):
+    verify = verify_with_slack(cfg)
+    cached = _verdicts.get(user_id)
+    if cached is not None and not _stale(cached) and _fits(cached, verify=verify):
         return
     generation = _generation
-    verdict = await check(_client, user_id, owner_id=owner_id)
+    verdict = await check(_client, user_id, owner_id=owner_id, verify=verify)
     # Re-read: the list may have changed while Slack answered, and a reinstall
     # (reconnect) since the lookup began voids its answer.
     if listed(cfg, user_id) and generation == _generation:

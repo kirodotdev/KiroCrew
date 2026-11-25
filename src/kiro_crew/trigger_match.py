@@ -17,6 +17,12 @@ Grammar, from the skills loader that established it:
 * A phrase's score is the fraction of ITS words present in the text, so a
   specific multi-word phrase must be matched more completely than a generic
   one-word phrase to reach the same score. An entry's score is its best phrase.
+* Chinese, Japanese and Thai are written without spaces, so a run of those
+  characters is one word that may hold many. A phrase word in one of them is
+  present when it occurs inside such a run of the text; a run also ends where
+  another script's letters start, so ``review`` is a word of "帮我review一下".
+  A trigger word that joins scripts, like ``Q3报告``, still counts once, and is
+  present when each of its runs is.
 * Matching ignores case. A positive phrase prefixed with ``=`` is the one
   exception: its words must appear exactly as written, so ``=Word`` fires on
   "open it in Word" but not on "reply with the word pong". It is for a name
@@ -42,14 +48,30 @@ from collections.abc import Iterable
 #: suppress a genuine match.
 MIN_TRIGGER_OVERLAP = 0.7
 
+#: Scripts written without spaces between words. Their punctuation and symbols
+#: (、。「」, ・, ゛, ฿) are left out, so they still separate words.
+_UNSPACED = (
+    "\u0e00-\u0e3e\u0e40-\u0e4e\u0e50-\u0e59"  # Thai
+    "\u3005-\u3007"  # the Japanese iteration marks 々 〆 〇
+    "\u3040-\u309a\u309d-\u309f\u30a1-\u30fa\u30fc-\u30ff"  # hiragana, katakana
+    "\u31f0-\u31ff\uff66-\uff9f"  # more kana
+    "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0003ffff"  # CJK ideographs
+)
+_UNSPACED_RE = re.compile(f"[{_UNSPACED}]")
+
 #: Compiled once. Both consumers call this per trigger PHRASE inside a
 #: per-message loop over every visible skill, so the pattern cache lookup an
 #: uncompiled ``re.findall`` pays is measurable there rather than theoretical.
-_WORD_RE = re.compile(r"\w+")
+#: A word is a run of unspaced-script characters or a run of other word
+#: characters; outside those scripts this is exactly ``\w+``.
+_WORD_RE = re.compile(f"[{_UNSPACED}]+|[^\\W{_UNSPACED}]+")
+
+#: A phrase word may span scripts; it counts once, present when each :data:`_WORD_RE` run is.
+_PHRASE_WORD_RE = re.compile(f"[\\w{_UNSPACED}]+")
 
 
 #: Marks a case-exact phrase in a trigger list, and its words in :func:`words_of`'s
-#: set. It never occurs inside a ``\w+`` word, so the two forms cannot collide.
+#: set. It never occurs inside a :data:`_WORD_RE` word, so the two forms cannot collide.
 _EXACT = "="
 
 
@@ -61,6 +83,18 @@ def words_of(text: str) -> set[str]:
     """
     exact = {_EXACT + word for word in _WORD_RE.findall(text)}
     return set(_WORD_RE.findall(text.lower())) | exact
+
+
+def _present(word: str, text_words: set[str]) -> bool:
+    """Whether one run of a phrase word (either form) is in the text's word set.
+
+    An unspaced-script word may sit inside a longer run of the text. Those
+    scripts have no case, so the ``=`` form needs no separate lookup there.
+    """
+    if word in text_words:
+        return True
+    bare = word.removeprefix(_EXACT)
+    return bool(_UNSPACED_RE.match(bare)) and any(bare in run for run in text_words)
 
 
 def trigger_score(triggers: str, text_words: set[str]) -> tuple[float, bool]:
@@ -80,16 +114,22 @@ def trigger_score(triggers: str, text_words: set[str]) -> tuple[float, bool]:
             continue
         if phrase.startswith("!"):
             neg = set(_WORD_RE.findall(phrase[1:]))
-            if neg and neg <= text_words:
+            if neg and all(_present(word, text_words) for word in neg):
                 negated = True
             continue
         if written.startswith(_EXACT):
-            phrase_words = {_EXACT + word for word in _WORD_RE.findall(written[1:])}
+            phrase_words = {
+                tuple(_EXACT + run for run in _WORD_RE.findall(word))
+                for word in _PHRASE_WORD_RE.findall(written[1:])
+            }
         else:
-            phrase_words = set(_WORD_RE.findall(phrase))
+            phrase_words = {
+                tuple(_WORD_RE.findall(word)) for word in _PHRASE_WORD_RE.findall(phrase)
+            }
         if not phrase_words:
             continue
-        best = max(best, len(phrase_words & text_words) / len(phrase_words))
+        present = sum(all(_present(run, text_words) for run in runs) for runs in phrase_words)
+        best = max(best, present / len(phrase_words))
     return best, negated
 
 

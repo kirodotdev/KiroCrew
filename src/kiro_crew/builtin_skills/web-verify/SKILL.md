@@ -1,7 +1,7 @@
 ---
 name: web-verify
 description: Use after a user-visible UI edit to verify your OWN change on an isolated loopback server. Capture, read and show real screenshots. Backends: the `browser` MCP tool (live in chat; origin must be listed), agent-browser (pixel diff, a11y), or scripted Playwright. Not web-preview or web-browse.
-triggers: verify the ui, check my change, does it look right, screenshot my change, verify front-end, visual check, self-verify, look at the change, prove the ui works, screenshots for the pr, agent-browser, playwright screenshot
+triggers: verify the ui, check my change, screenshot my change, verify front-end, visual check, self-verify, pr screenshots, agent-browser, playwright screenshot
 ---
 
 # Web Verify: look at your own front-end change

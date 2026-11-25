@@ -18,8 +18,9 @@ from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
+from kiro_crew.dashboard.turn_dispatch import tool_approval_timeout_secs
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
-from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
+from kiro_crew.messaging.approval import adoptable_reservation
 from kiro_crew.messaging.approval_scan import _BACKTICK_PAIR_RE, bounded_scan
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 from kiro_crew.preview_text import drop_format_chars
@@ -28,8 +29,10 @@ logger = logging.getLogger("kiro_crew.discord.renderer")
 
 
 # Interactive approval wait; deny-by-default when it elapses with no press.
-# Owned by messaging.approval so every channel's window is the same one.
-_APPROVAL_TIMEOUT_S = APPROVAL_TIMEOUT_S
+# ``None`` reads ``agent.tool_approval_timeout_secs`` at each wait through the
+# resolver Slack uses, so the window follows the operator's setting and stays
+# inside the turn. A test pins a number here instead.
+_APPROVAL_TIMEOUT_S: float | None = None
 
 #: A redaction pass the renderer hands in: its display-form or its source-form scan.
 _Scan = Callable[[str], str]
@@ -396,7 +399,20 @@ class DiscordApprovalDecider:
         fut: "asyncio.Future[bool]" = reserved if reserved is not None else loop.create_future()
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
-            answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
+            # Read at the wait, not at import, so a changed setting reaches the next
+            # prompt. Off the loop: the resolver loads config.json, a file read on a
+            # cache miss. The thread gets a copy of this context, so the turn-ceiling
+            # bound still applies. The resolver's remaining-budget cut needs a running
+            # loop and is skipped there, but Discord turns publish no turn deadline,
+            # so on the loop it would find nothing to cut by either. A press during
+            # the hop resolves ``fut``, already registered, and the wait below
+            # returns at once.
+            window = (
+                _APPROVAL_TIMEOUT_S
+                if _APPROVAL_TIMEOUT_S is not None
+                else await asyncio.to_thread(tool_approval_timeout_secs)
+            )
+            answer = bool(await asyncio.wait_for(fut, window))
             if not answer and k in DiscordApprovalDecider._UNDELIVERED:
                 self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
                 return False

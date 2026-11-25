@@ -171,20 +171,28 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
         return None
 
 
-def _csv_delimiter(text: str) -> str:
+def _csv_delimiter(text: str, *, partial: bool) -> str:
     """``;`` when the ``.csv`` *text* is plainly semicolon-separated, else ``,``.
 
     The first record, read with the comma rules ``digest_text`` uses, decides first: two or
     more fields keep ``,``. Only a one-field record lets ``;`` apply, and then the typing
     sample (the first :data:`MAX_TYPED_ROWS` data records, blank lines apart) must read as
     the same two or more cells in every record with ``;``, so a quoted ``;`` never counts.
+    When *partial* and the read stopped inside a quoted field, the last record of *text* is cut
+    short, so it is left out of that check when the sample reached it.
     """
     try:
         first = next((r for r in csv.reader(io.StringIO(text, newline="")) if r), [])
         if len(first) > 1:
             return ","
-        reader = csv.reader(io.StringIO(text, newline=""), delimiter=";")
+        sample = io.StringIO(text, newline="")
+        reader = csv.reader(sample, delimiter=";")
         rows = [row for row in itertools.islice(reader, MAX_TYPED_ROWS + 1) if row]
+        if partial and sample.tell() == len(text):
+            # A quote put after the text closes the quoted field the read stopped inside, if
+            # any; after a complete record it opens a record of one empty field.
+            *_, last = csv.reader(io.StringIO(text + '"', newline=""), delimiter=";")
+            rows = rows if last == [""] else rows[:-1]
     except csv.Error:
         return ","
     width = len(rows[0]) if rows else 0
@@ -260,7 +268,7 @@ def digest_file(path: Path) -> str | None:
         # cell never reaches the prompt.
         text = data.decode("utf-8-sig", errors="replace")
         if path.suffix.lower() == ".csv":
-            delimiter = _csv_delimiter(text)
+            delimiter = _csv_delimiter(text, partial=partial)
         return digest_text(path.name, text, delimiter, partial=partial)
     except Exception:
         logger.debug("sheet digest: could not digest %s", path.name, exc_info=True)

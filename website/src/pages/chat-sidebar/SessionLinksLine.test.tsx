@@ -78,6 +78,38 @@ describe('SessionStatusLinksLine (#38200)', () => {
     expect(screen.getByTestId('session-links-count')).toHaveAccessibleName('Show 2 linked items')
   })
 
+  it('starts open with defaultOpen, folds on a click, and keeps that pick when the default changes', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const line = (defaultOpen: boolean) => (
+      <QueryClientProvider client={qc}>
+        <SessionStatusLinksLine status={<div>s</div>} slotKey="s1" links={[gh(1)]} defaultOpen={defaultOpen}
+          connected isActive={false} onActivateSlot={() => {}} />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(line(true))
+    const count = screen.getByTestId('session-links-count')
+    expect(count).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('session-links-expanded')).toBeInTheDocument()
+    fireEvent.click(count)
+    expect(count).toHaveAttribute('aria-expanded', 'false')
+    rerender(line(true))
+    expect(count).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('follows a default change on a row nobody pressed', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const line = (defaultOpen: boolean) => (
+      <QueryClientProvider client={qc}>
+        <SessionStatusLinksLine status={<div>s</div>} slotKey="s1" links={[gh(1)]} defaultOpen={defaultOpen}
+          connected isActive={false} onActivateSlot={() => {}} />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(line(false))
+    expect(screen.queryByTestId('session-links-expanded')).toBeNull()
+    rerender(line(true))
+    expect(screen.getByTestId('session-links-count')).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('has no red dot when nothing failed', () => {
     renderLine([gh(1, { ci: 'passed' })])
     expect(screen.queryByTestId('session-links-failed')).toBeNull()

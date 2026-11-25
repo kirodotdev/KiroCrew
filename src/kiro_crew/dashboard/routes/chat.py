@@ -14,6 +14,7 @@ from aiohttp import web
 from kiro_crew.dashboard import (
     chat,
     chat_follow_default,
+    chat_history_search,
     chat_threads,
     handlers,
     limit_continue,
@@ -144,6 +145,14 @@ def register(app: web.Application) -> None:
     # the tunnel's send, so it is not a pure read of the disk.
     app.router.add_get("/api/chat/slots/{slot}/export", session_export.api_chat_slot_export)
     app.router.add_get("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary)
+    # The chat's history search window: bounded reads that never touch the
+    # chat's own loaded window (``chat_history_search``).
+    app.router.add_get(
+        "/api/chat/slots/{slot}/history/search", chat_history_search.api_chat_slot_history_search
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/history/around", chat_history_search.api_chat_slot_history_around
+    )
     # Remote dispatch (Feature Preview): a hub reads and steers the work item this
     # crew's slot was born bound to. 404 with the preview off.
     app.router.add_get("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_get)

@@ -654,7 +654,11 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     flag in-process (start/stop the broker), no gateway restart.
 
     Reloads config so it acts on the value the handler just wrote.
-    Returns ``{enabled, running, ping_ok}``.
+    Returns ``{enabled, running, ping_ok, restart_required}``.
+    ``restart_required`` is true while a marked server (``stub_servers``) is
+    not in the set the broker serves. That server is served from the next
+    gateway start, so sharing that is not live for it is waiting for that
+    restart, not failing.
 
     The flag governs backend SHARING, not the broker's existence: a routed
     server needs its stub either way. So turning sharing off restarts the
@@ -675,6 +679,8 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
 
     self._cfg = KiroCrewConfig.load()
     serving = self._mcp_stub_servers_started
+    configured = frozenset(self._cfg.mcp_gateway.stub_servers)
+    restart_required = bool(configured - serving)
     # The same lock as the app-install overlay refresh: a refresh that read the
     # old broker's inputs must not publish over the overlays this restart writes.
     lock = getattr(self, "_mcp_overlay_refresh_lock", None)
@@ -708,13 +714,18 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     # pending change taking effect early on an unrelated sharing edit. When
     # the two agree the refresh is a no-op for the overlay, so the guard only
     # ever suppresses the disagreeing case.
-    if self.sessions is not None and frozenset(self._cfg.mcp_gateway.stub_servers) == serving:
+    if self.sessions is not None and configured == serving:
         await self.sessions.refresh_defaults()
-    if mgr is None:
-        return {"enabled": enabled, "running": False, "ping_ok": False}
-    running = bool(mgr.is_running)
-    ping_ok = bool(running and await mgr.ping())
-    return {"enabled": enabled, "running": running, "ping_ok": ping_ok}
+    running = ping_ok = False
+    if mgr is not None:
+        running = bool(mgr.is_running)
+        ping_ok = bool(running and await mgr.ping())
+    return {
+        "enabled": enabled,
+        "running": running,
+        "ping_ok": ping_ok,
+        "restart_required": restart_required,
+    }
 
 
 async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = False) -> dict:
@@ -800,6 +811,10 @@ async def _refresh_mcp_overlays(
     The refresh never writes launch approvals: a probe that makes any launch
     decision the approval store does not already hold also reports a restart as
     needed, so that decision is made, recorded and audited by the next start.
+
+    An applied answer also names the stub set the running broker serves
+    (``serving_stub_servers``, read under the lock), which a stub change saved
+    since start does not reach.
     """
     from kiro_crew.mcp_gateway.overlay_refresh import changes_a_launch_decision, rewrite_policy
     from kiro_crew.mcp_gateway.rewriter import take_pass_inputs as rewriter_take_pass_inputs
@@ -840,7 +855,8 @@ async def _refresh_mcp_overlays(
         if register is not None and not await register():
             return {"applied": False, "restart_required": False}
         inputs = getattr(self, "_mcp_rewrite_inputs", None)
-        if self._mcp_gateway_manager is None or not self._mcp_stub_servers_started or not inputs:
+        serving = self._mcp_stub_servers_started
+        if self._mcp_gateway_manager is None or not serving or not inputs:
             return {"applied": False, "restart_required": False}
         applied, reason = await asyncio.get_running_loop().run_in_executor(
             maintenance_executor(),
@@ -853,7 +869,8 @@ async def _refresh_mcp_overlays(
         logger.warning(
             "mcp-gateway: overlays left unchanged until the next gateway restart: %s", reason
         )
-    return {"applied": applied, "restart_required": not applied}
+        return {"applied": False, "restart_required": True}
+    return {"applied": True, "restart_required": False, "serving_stub_servers": sorted(serving)}
 
 
 def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:

@@ -25,7 +25,11 @@ _DESCRIPTION = (
     "code tool, or one given '.', a relative path or the project path), false if it "
     "does not; Kiro Crew also checks the entry itself, and a server that uses the "
     "folder keeps one copy per chat. The card shows the change and the user applies "
-    "it. The card adds no tool approval. "
+    "it. To also add it to kiro-cli's own list (~/.kiro/settings/mcp.json, read by "
+    "kiro-cli and other Kiro tools), set target 'kiro-cli'. To add it only to this chat's "
+    "folder (its .kiro/settings/mcp.json or .mcp.json, which you cannot edit either), set "
+    "target 'project'; that is refused when this chat would not load the file. "
+    "The card adds no tool approval. "
     "Use this instead of starting a server's program from the shell. Only "
     "a message the user sent in the dashboard can raise the card: a schedule, a "
     "subagent, a messaging channel or a patrol wake is refused with the reason. "
@@ -77,6 +81,16 @@ def schemas() -> list[dict[str, Any]]:
                             "Required with an entry (source 'custom' or action "
                             "'change'): does the server read or write files in the "
                             "chat's folder?"
+                        ),
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["crew", "kiro-cli", "project"],
+                        "description": (
+                            "For action 'add' with source 'custom': 'kiro-cli' also adds "
+                            "it to ~/.kiro/settings/mcp.json; 'project' adds it only to "
+                            "this chat's folder (.kiro/settings/mcp.json, for a Kiro "
+                            "agent with includeMcpJson on). Default 'crew'."
                         ),
                     },
                     "reason": {"type": "string", "maxLength": 500},

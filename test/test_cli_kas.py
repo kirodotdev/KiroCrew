@@ -100,7 +100,7 @@ def cfg(monkeypatch):
 @pytest.fixture
 def host(monkeypatch):
     monkeypatch.setattr(kas_bundle, "host_platform_key", lambda: "linux-x64")
-    monkeypatch.setattr(kas_bundle, "host_node_key", lambda: "linux-x64")
+    monkeypatch.setattr(kas_bundle, "host_node_key", lambda *a: "linux-x64")
 
 
 @pytest.fixture

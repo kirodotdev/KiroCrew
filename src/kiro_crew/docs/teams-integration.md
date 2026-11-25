@@ -49,7 +49,8 @@ Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
 
   This is the whole of the `teams` extra. Installing the dependency directly is
   the form that works on every layout: Kiro Crew is not published on PyPI, so
-  `pip install "kirocrew[teams]"` cannot resolve, and the direct-URL form below
+  `pip install "kirocrew[teams]"` would fetch an unrelated PyPI project of that
+  name, and the direct-URL form below
   reinstalls Kiro Crew itself rather than just adding the dependency.
 
   If the channel is enabled without it, Kiro Crew logs an actionable error and

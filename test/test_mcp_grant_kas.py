@@ -17,6 +17,8 @@ from kiro_crew.secrets import SecretVault
 from kiro_crew.testing.links import make_dir_link
 
 _FIGMA = "https://mcp.figma.com/mcp"
+#: Where the ``kiro-path-tokens`` key shape was copied from.
+_PATH_TOKENS_SOURCE = "kiro-team/kiro-agent 66107e986181, first in 0.66.121"
 # sha256("https://mcp.figma.com/mcp|"): the input ``calculateConnectionHash`` in
 # @kiro/agent's acp-server.js (KAS 2.36.0 and 2.37.1) builds for a url entry with
 # no headers and no oauth, digested with node's crypto. A KAS upgrade that changes
@@ -66,6 +68,38 @@ async def test_a_stored_tokens_entry_is_present(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_path_tokens_entry_is_a_sign_in_and_disconnect_removes_it(tmp_path, monkeypatch):
+    """KAS 0.66.121 stores a Kiro-callback-path browser sign-in as ``kiro-path-tokens``.
+
+    ``credential-storage-manager.ts`` keys it ``kiro.mcp.<connectionHash>.kiro-path-tokens``
+    with the same connection hash as ``tokens``, so the hash here is unchanged.
+    Source: ``_PATH_TOKENS_SOURCE``.
+    """
+    from kiro_crew.connections import mint_kas
+
+    digest = mcp_grant_kas.kas_connection_hash(_FIGMA)
+    store = kss.McpGrantStore(tmp_path)
+    await store.store(f"kiro.mcp.{digest}.kiro-path-client", "{}")
+    await store.store(f"kiro.mcp.{digest}.kiro-path-tokens", "{}")
+    root = mcp_grant_kas.grant_store_root(tmp_path)
+    assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is True
+
+    monkeypatch.setattr(mint_kas, "data_home", lambda: tmp_path)
+    assert mint_kas.forget_kas_sign_in(_FIGMA) is True
+    assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is False
+    assert SecretVault(root).list_names() == []
+
+
+@pytest.mark.asyncio
+async def test_forget_kas_grant_removes_a_path_tokens_entry(tmp_path):
+    digest = mcp_grant_kas.kas_connection_hash(_FIGMA)
+    await kss.McpGrantStore(tmp_path).store(f"kiro.mcp.{digest}.kiro-path-tokens", "{}")
+    root = mcp_grant_kas.grant_store_root(tmp_path)
+    await mcp_grant_kas.forget_kas_grant(_FIGMA, store_root=root)
+    assert SecretVault(root).list_names() == []
+
+
+@pytest.mark.asyncio
 async def test_a_client_entry_alone_is_not_a_sign_in(tmp_path):
     name = f"kiro.mcp.{mcp_grant_kas.kas_connection_hash(_FIGMA)}.client"
     await kss.McpGrantStore(tmp_path).store(name, "{}")
@@ -86,6 +120,32 @@ async def test_the_check_never_reads_the_key_or_decrypts(tmp_path, monkeypatch):
 
     root = mcp_grant_kas.grant_store_root(tmp_path)
     assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tokens", "kiro-path-tokens"])
+async def test_the_fingerprint_names_this_sign_in_and_changes_with_a_new_one(
+    tmp_path, monkeypatch, kind
+):
+    """The change card's "is it the same grant" read, for a vault-held sign-in."""
+    root = mcp_grant_kas.grant_store_root(tmp_path)
+    assert mcp_grant_kas.kas_grant_fingerprint(_FIGMA, store_root=root) is None
+    name = f"kiro.mcp.{mcp_grant_kas.kas_connection_hash(_FIGMA)}.{kind}"
+    store = kss.McpGrantStore(tmp_path)
+    await store.store(name, "{}")
+    first = mcp_grant_kas.kas_grant_fingerprint(_FIGMA, store_root=root)
+    await store.store(name, "{}")  # signed in again: same value, fresh ciphertext
+
+    def _refuse(*a: object, **kw: object) -> Any:
+        raise AssertionError("the fingerprint touched the vault key")
+
+    monkeypatch.setattr(SecretVault, "_get_or_create_key", _refuse)
+    monkeypatch.setattr(SecretVault, "_decrypt_entry", _refuse)
+    second = mcp_grant_kas.kas_grant_fingerprint(_FIGMA, store_root=root)
+
+    assert isinstance(first, str) and isinstance(second, str)
+    assert first != second
+    assert mcp_grant_kas.kas_grant_fingerprint("https://other.example/mcp", store_root=root) is None
 
 
 def test_no_vault_yet_is_a_definite_absence(tmp_path):
@@ -164,15 +224,15 @@ def _audit_calls(monkeypatch: pytest.MonkeyPatch, recorded: bool = True) -> list
 async def test_persistence_off_skips_the_vault_and_audit(monkeypatch):
     monkeypatch.setattr(mcp_grant_kas, "persistence_enabled", lambda: False)
     presence = Mock(return_value=True)
-    list_names = Mock()
+    load_entries = Mock()
     monkeypatch.setattr(mcp_grant_kas, "kas_grant_presence", presence)
-    monkeypatch.setattr(SecretVault, "list_names", list_names)
+    monkeypatch.setattr(SecretVault, "_load_entries", load_entries)
     seen = _audit_calls(monkeypatch)
 
     assert await mcp_grant_kas.kas_grant_observed(_FIGMA) is False
 
     presence.assert_not_called()
-    list_names.assert_not_called()
+    load_entries.assert_not_called()
     assert seen == []
 
 

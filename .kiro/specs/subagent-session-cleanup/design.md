@@ -1,6 +1,6 @@
 # Design Document: Subagent Session Cleanup
 
-Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks. The ClaudeCodeProvider and Bedrock sections describe providers that are not shipped; ACP is the only provider. The shipped `_is_safe_path` (`src/kiro_crew/providers/cleanup.py`) refuses the root directory itself.
+Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks. The ClaudeCodeProvider and Bedrock sections describe providers that are not shipped; ACP is the only provider. The shipped `_is_safe_path` (`src/kiro_crew/providers/cleanup.py`) refuses the root directory itself. On main, `AcpProvider.cleanup_session` (`src/kiro_crew/providers/acp_lifecycle.py`) picks the store by ACP backend: a KAS session goes to `AcpSessionProvider.cleanup_session` (`_kiro/session/delete`); Claude, Codex and OpenCode sessions delete their own stores; only a Kiro CLI session unlinks the two flat files `~/.kiro/sessions/cli/{session_id}.json` and `.jsonl` (`_delete_kiro_session_files`). The `AcpProvider` listing below shows only that Kiro CLI path.
 
 ## Overview
 

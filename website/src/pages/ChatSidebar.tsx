@@ -359,12 +359,15 @@ function ChatSidebarBody({
     pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
     orderState: pinnedOrderState,
   } = usePinnedSessionOrder({ localSlots, sortKey })
+  // While a drag is in flight the row model keeps the filtered list it had when the
+  // drag started, so the lanes hold still under the pointer.
+  const [dragFrozen, setDragFrozen] = useState(false)
   // The manual order (sort "Manual"): the unpinned rows' places, the drop that
   // writes them in any sort, and the "Sorted by hand" undo it offers.
   const {
     manualRank, drawnIndex, drawnOrder, reorderManual, pickSort, manualOrderError, setManualOrderError,
     offer: manualSortOffer, undo: undoManualSort, dismiss: dismissManualSort, bar: manualSortBar,
-  } = useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey })
+  } = useManualSessionOrder({ localSlots, pinned, running: runningSet, sortKey, setSortKey, frozen: dragFrozen })
 
   const {
     staleCollapseMs, setStaleCollapseMs, staleExpanded, setStaleExpanded, setStaleRecentlyMoved,
@@ -379,6 +382,8 @@ function ChatSidebarBody({
   const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
   // Settings → Display → Sidebar. Only a literal `false` hides the per-row dot.
   const showUnreadDot = mcCfg?.dashboard?.show_unread_dot !== false
+  // Same page. Only a literal `true` starts each row's linked-items strip open.
+  const expandLinkedItems = mcCfg?.dashboard?.expand_linked_items === true
 
   const {
     folderSortRead, folderSortMode, folderCompare: folderModeCompare, folderReorderable: folderModeReorderable,
@@ -469,10 +474,7 @@ function ChatSidebarBody({
   // The drawn folder order: the mode's order, with unread folders first when the
   // person turned that on. While it is on, a sibling drag would be judged against
   // an order that is not the stored one, so reordering (and its hint) is off.
-  // While a drag is in flight the row model keeps the filtered list it had when the
-  // drag started, so the lanes hold still under the pointer.
-  const [dragFrozen, setDragFrozen] = useState(false)
-  // Its native counterpart: the board card in flight, which no DndContext sees.
+  // The native counterpart of `dragFrozen`: the board card in flight, which no DndContext sees.
   const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
   const liveUnreadLatest = useMemo(
     () => (foldersUnreadFirst ? unreadFolderLatest(folders, localSlots, slotFolders, unreadSet) : null),
@@ -942,13 +944,13 @@ function ChatSidebarBody({
   const guideView = useGuide()?.view
   const guideOnRowControl = guideStepOnRowControl(guideView?.ownedHere && !guideView.needsEnter ? guideView.step : null)
   const rowShell: RowShell = useMemo(() => ({
-    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
+    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot, expandLinkedItems,
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu,
     // not the overlay cluster.
     isMobile: isMobile || isTouchDevice,
     dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort, manualReorderOff, guideOnRowControl,
   }), [
-    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
+    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot, expandLinkedItems,
     isMobile, isTouchDevice, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex,
     manualSort, manualReorderOff, guideOnRowControl,
   ])

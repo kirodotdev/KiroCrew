@@ -168,6 +168,10 @@ class CronJob:
     last_run_ts: float | None = None
     last_status: str | None = None  # "ok" | "error"
     last_error: str | None = None
+    # Which model failure ``last_error`` is, read from the error's own transport
+    # tags, never from its text: "throttle", "capacity" (the model was unavailable
+    # on the backend), or "" for any other failure and for a run that succeeded.
+    last_error_kind: str = ""
     created_ts: float = 0.0
     delete_after_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was
@@ -199,8 +203,9 @@ class CronJob:
     refusal_cannot_clear: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run did
     # nothing a person would look for in the run history (a gateway job's quiet
-    # tick, which woke no one), so the run writes no history row. Reset at the
-    # start of every run.
+    # tick, which woke no one, or a wait for the host sign-in that its notice
+    # already reports), so the run writes no history row. Reset at the start of
+    # every run.
     quiet_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was a
     # script's Skip(), so its history row is marked idle and the Logs tab can
@@ -331,6 +336,9 @@ class CronJob:
     # one run alone. The store refuses it with ``persistent_session=True``, whose
     # one tab already holds every run. ``hide_in_chat`` still wins.
     new_chat_per_run: bool = False
+    # True → a reminder: each run delivers ``message`` to the user as written and
+    # starts no agent turn, so no tool runs (``cron_reminder``).
+    notify_only: bool = False
     # ``fresh`` → the first run after the person closed the job's tab reopens it
     # empty: the rows stay in ``cron:<id>`` below the tab's display floor
     # (``cron_inject.start_fresh_cron_tab``). ``resume`` shows them again.

@@ -16,6 +16,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+from time import gmtime, strftime
 
 import pytest
 from conftest_floor_home import _tmp_root_prefix_for_run
@@ -333,6 +334,37 @@ def _tmp_residue_report(
         "after it -- NOT an rmtree in tearDown, which unittest skips entirely when "
         "setUp raises.\n" + hint
     )
+
+
+#: How many leaves the repository root residue report lists under each new entry.
+_ROOT_RESIDUE_LEAVES_SHOWN = 10
+
+
+def _root_residue_leaves(entry: pathlib.Path) -> list[str]:
+    """Up to ten leaves of a repository-root residue *entry*, each with its UTC mtime.
+
+    The entry's name rarely says who wrote it, and a leaf usually does: a ``tmp_path``
+    mirrored under the entry carries the test's own directory name, and the time places
+    the write in the job log. A leaf is a file, or a folder with nothing in it.
+    """
+    leaves = [str(entry)]
+    if entry.is_dir() and not entry.is_symlink():
+        leaves = []
+        for folder, subfolders, files in os.walk(entry):
+            subfolders.sort()
+            leaves += [os.path.join(folder, name) for name in sorted(files)]
+            if not subfolders and not files:
+                leaves.append(folder)
+            if len(leaves) >= _ROOT_RESIDUE_LEAVES_SHOWN:
+                break
+    shown = []
+    for leaf in leaves[:_ROOT_RESIDUE_LEAVES_SHOWN]:
+        try:
+            when = strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(os.lstat(leaf).st_mtime))
+        except OSError:
+            when = "gone"
+        shown.append(f"{os.path.relpath(leaf, entry.parent)}  {when}")
+    return shown
 
 
 if _TMP_PER_TEST:

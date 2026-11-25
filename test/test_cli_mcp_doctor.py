@@ -333,6 +333,37 @@ class TestDoctorMcpTools:
         ]
         assert resources and "(hooks.confirm_tools)" in resources[0]
 
+    def test_an_auto_deny_tools_withhold_is_not_reported_as_a_ceiling(self, tmp_path, capsys):
+        """The operator's own ``hooks.auto_deny_tools`` names itself as the cause."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=["@kirocrew-core"],
+            allowed=["@kirocrew-core"],
+            servers={"kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]}},
+        )
+        sel_mock = MagicMock()
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=None),
+            patch("kiro_crew.cli_doctor.may_skip_gate_now", return_value=False),
+            patch("kiro_crew.cli_doctor.withheld_by_confirm_tools", return_value=False),
+            patch("kiro_crew.cli_doctor.withheld_by_auto_deny_tools", return_value=True),
+            patch("kiro_crew.cli_doctor.sel", sel_mock),
+            self._mock_probe({}),
+        ):
+            _doctor_mcp_tools(agent_path, [])
+        out = capsys.readouterr().out
+        assert "@kirocrew-core: 🔒 auto-approve withheld by hooks.auto_deny_tools" in out
+        assert "security policy" not in out
+        resources = [
+            c.kwargs.get("resources", "")
+            for c in sel_mock.return_value.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "mcp_auto_approve_withheld"
+        ]
+        assert resources and "(hooks.auto_deny_tools)" in resources[0]
+
     def test_declined_home_names_confirm_tools_as_the_cause(self, tmp_path, capsys):
         from kiro_crew.cli_doctor import _doctor_mcp_tools
 

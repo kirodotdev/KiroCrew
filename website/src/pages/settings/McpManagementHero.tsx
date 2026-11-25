@@ -9,7 +9,7 @@
  * when both figures came back; nothing here estimates one.
  */
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, ExternalLink, Info, RefreshCw, Share2 } from 'lucide-react'
+import { AlertTriangle, Check, ExternalLink, Info, Loader2, RefreshCw, Share2 } from 'lucide-react'
 import type { McpGatewayFootprint, McpManagedServer } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -556,8 +556,14 @@ export function ReviewApprovalsDialog({
                         aria-describedby={changedHint ? nameId : `${nameId} ${reasonId}`}
                         onClick={() => void approve(item)}
                       >
-                        <Check size={14} aria-hidden="true" />
-                        {i18nT('pages.mcpManagement.approve_button')}
+                        {st.kind === 'approving' ? (
+                          <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Check size={14} aria-hidden="true" />
+                        )}
+                        {/* An approval restarts the shared servers and resets open
+                            chats, which takes seconds: say it is under way. */}
+                        {i18nT(st.kind === 'approving' ? 'pages.mcpManagement.review_sharing' : 'pages.mcpManagement.approve_button')}
                       </Btn>
                     </div>
                   </div>

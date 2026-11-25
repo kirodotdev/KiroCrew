@@ -107,6 +107,33 @@ def is_ssm_request(request: web.Request) -> bool:
     return read(SSM_REQUEST_KEY) is True or isinstance(read(SSM_GUEST_REQUEST_KEY), SsmGuest)
 
 
+#: Request key the entry gate sets on a request that arrived on the entry port
+#: (``dashboard.entry_gate``). A proxy in front connects from loopback, so the tests
+#: that would take it for this machine's own user, or for one client, read it through
+#: :func:`is_entry_request`: :func:`is_direct_local_request`,
+#: :func:`is_host_forwarded_request` and :func:`is_proxied_request` here, the
+#: forwarded tailnet checks in ``dashboard.tailnet``, and the address pin in
+#: ``dashboard.token_auth``. Other loopback tests read the peer address alone (the
+#: missing ``Origin`` and ``Host`` carve-outs, ``X-Forwarded-Proto`` in
+#: :func:`is_https_request`, token auth's internal-path branch). On the entry port the
+#: gate refuses a ``Host`` that does not name loopback, a local credential header and
+#: any path outside the Crew API, and requires a bearer token, so a caller behind the
+#: proxy still needs a valid token whatever those tests answer.
+ENTRY_REQUEST_KEY = "auth_entry"
+
+
+def is_entry_request(request: web.Request) -> bool:
+    """Whether *request* arrived on the entry port.
+
+    The port is for a reverse proxy that forwards callers on other machines. A
+    request is an entry request because of the socket it arrived on, never because
+    of a header, so it is never direct local and always forwarded, whatever
+    forwarding headers the proxy added or left out.
+    """
+    read = getattr(request, "get", None)
+    return read is not None and read(ENTRY_REQUEST_KEY) is True
+
+
 def is_direct_local_request(request: web.Request) -> bool:
     """Return ``True`` only for a request made directly from this machine.
 
@@ -118,7 +145,8 @@ def is_direct_local_request(request: web.Request) -> bool:
     to localhost directly never does. So: loopback peer AND no forwarding
     headers ⇒ direct local. Anything else is treated as remote (fail-closed
     for the secret-reveal and config-write gates). A request the SSM listener
-    admitted is never direct local (:func:`is_ssm_request`).
+    admitted is never direct local (:func:`is_ssm_request`), nor is one that
+    arrived on the entry port (:func:`is_entry_request`).
 
     Known limits: an SSH port-forward (``ssh -L``), socat relay, or a proxy
     that strips all forwarding headers is indistinguishable from a local
@@ -131,7 +159,9 @@ def is_direct_local_request(request: web.Request) -> bool:
     headers. Hosted/multi-user deployments should force read-only via a
     server-side policy regardless of request origin.
     """
-    if is_ssm_request(request) or not is_loopback(request.remote or ""):
+    if is_ssm_request(request) or is_entry_request(request):
+        return False
+    if not is_loopback(request.remote or ""):
         return False
     return not any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
@@ -157,7 +187,9 @@ def is_host_forwarded_request(request: web.Request) -> bool:
     For app web origins only. The secret-reveal and config-write gates keep
     :func:`is_direct_local_request`.
     """
-    if is_ssm_request(request) or any(h in request.headers for h in _PROXY_FORWARD_HEADERS):
+    if is_ssm_request(request) or is_entry_request(request):
+        return False
+    if any(h in request.headers for h in _PROXY_FORWARD_HEADERS):
         return False
     transport = request.transport
     sockname = transport.get_extra_info("sockname") if transport is not None else None
@@ -206,8 +238,11 @@ def is_proxied_request(request: web.Request) -> bool:
 
     A request the Kiro relay delivered is proxied by construction: every person
     on the relay reaches this gateway through the one relay client, so it answers
-    ``True`` whatever headers the person's client sent.
+    ``True`` whatever headers the person's client sent. So is a request that arrived
+    on the entry port: every caller behind the proxy presents the proxy's address.
     """
+    if is_entry_request(request):
+        return True
     # Imported here, not at module level: the relay package reads the prefix from
     # ``relay_headers``, which imports aiohttp, and this module is on the slim MCP
     # entry's import path (``port_resolution``), which must not load aiohttp.

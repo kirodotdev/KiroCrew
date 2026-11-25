@@ -522,7 +522,7 @@ class TestListServers:
             return s
 
         monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", fake_probe)
-        monkeypatch.setattr("kiro_crew.mcp_discovery._spawn_excluded", lambda: set())
+        monkeypatch.setattr("kiro_crew.mcp_discovery._spawn_excluded", lambda _servers: set())
         from kiro_crew.mcp_discovery import probe_all
 
         rows = {s.name: s for s in await probe_all()}

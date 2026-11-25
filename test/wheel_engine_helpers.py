@@ -51,7 +51,11 @@ def _stub_children(
     monkeypatch: pytest.MonkeyPatch,
     answer: "Callable[[list[str]], tuple[int, bytes, bytes]]" = lambda _argv: (0, b"", b""),
 ) -> list[tuple[list[str], dict[str, object]]]:
-    """Replace the one build-child seam; return the ``(argv, kwargs)`` it saw."""
+    """Replace the one build-child seam; return the ``(argv, kwargs)`` it saw.
+
+    Also pins the extras an apply carries to none, so a full apply never reads
+    the extras installed in the test runner's own environment.
+    """
     seen: list[tuple[list[str], dict[str, object]]] = []
 
     def fake(
@@ -61,4 +65,5 @@ def _stub_children(
         return answer(list(argv))
 
     monkeypatch.setattr(wheel_engine, "_spawn_build_child", fake)
+    monkeypatch.setattr(wheel_engine, "_carried_extras", lambda: ())
     return seen

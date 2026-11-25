@@ -46,6 +46,19 @@ from kiro_crew.session_pid_tracking import (
 logger = logging.getLogger("kiro_crew.session_pid")
 
 
+def _trusted_ps() -> str:
+    """The ``ps`` these sweeps run, from the system directories and never ``PATH``.
+
+    The gateway's ``PATH`` can lead with a directory the agent can write
+    (``~/.local/bin``), so a bare ``"ps"`` would run a file planted there,
+    outside the sandbox. With no system ``ps`` this answers ``/bin/ps``, a path
+    the lookup just found absent, so the spawn raises the same
+    ``FileNotFoundError`` a missing bare ``ps`` did and every caller's handling
+    is unchanged.
+    """
+    return platform_compat.trusted_system_bin("ps") or "/bin/ps"
+
+
 # ── Untracked orphan MCP sweep (defense-in-depth) ──────────
 # Catches MCP subtrees Kiro Crew spawned that escaped PID-file tracking.
 # Split into find + kill so the caller can re-verify active PIDs between phases.
@@ -252,7 +265,7 @@ def _our_orphan_pids() -> list[int]:
         else:
             result = []
             out = subprocess.check_output(
-                ["ps", "-o", "pid=,ppid=", "-U", str(my_uid)],
+                [_trusted_ps(), "-o", "pid=,ppid=", "-U", str(my_uid)],
                 stderr=subprocess.DEVNULL,
                 timeout=5,
             )
@@ -995,7 +1008,7 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
                 # whitespace-free, so split(None, 1) cleanly separates the
                 # two fields.
                 ps_out = subprocess.check_output(
-                    ["ps", "-o", "etime=", "-o", "command=", "-p", str(pid)],
+                    [_trusted_ps(), "-o", "etime=", "-o", "command=", "-p", str(pid)],
                     stderr=subprocess.DEVNULL,
                     timeout=2,
                 )

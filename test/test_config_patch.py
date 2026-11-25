@@ -768,7 +768,16 @@ class TestSessionSortRoundTrip:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "key",
-        ["date-desc", "date-asc", "created-desc", "created-asc", "name-asc", "name-desc", "manual"],
+        [
+            "date-desc",
+            "date-asc",
+            "created-desc",
+            "created-asc",
+            "name-asc",
+            "name-desc",
+            "manual",
+            "active-then-date",
+        ],
     )
     async def test_every_key_round_trips_through_the_config_file(self, tmp_config, key) -> None:
         from kiro_crew.config.loader import KiroCrewConfig

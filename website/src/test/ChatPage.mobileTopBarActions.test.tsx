@@ -116,6 +116,7 @@ function props(over: Partial<Props> = {}): Props {
     enterSplit: vi.fn(),
     mobileNewSessionItem: undefined,
     dispatch: vi.fn() as never,
+    onOpenSearch: vi.fn(),
     ...over,
   }
 }
@@ -268,6 +269,14 @@ describe('trailing ⋯ menu', () => {
     await openMore()
     fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('pages.chatPage.enter_split_view') }))
     expect(p.enterSplit).toHaveBeenCalledWith('slot-a')
+  })
+
+  it("opens the chat's history search from a Search row", async () => {
+    const p = props()
+    render(<MobileTopBar {...p} />)
+    await openMore()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Search' }))
+    expect(p.onOpenSearch).toHaveBeenCalledTimes(1)
   })
 
   it('enters split view with the new pane below', async () => {

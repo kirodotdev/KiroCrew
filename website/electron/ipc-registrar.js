@@ -8,6 +8,7 @@ const {
 const {
   DEFAULT_GLOBAL_HOTKEY,
   createSummonHandler,
+  parseRecordedHotkey,
   bindGlobalHotkey: bindStoredGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
@@ -886,11 +887,34 @@ function createIpcRegistrar({
     // The shortcuts UI reports what is ACTUALLY bound beside what was asked
     // for. Registration may have fallen back to the default or degraded to no
     // shortcut at all.
-    ipcMain.handle("global-hotkey:get", () => ({
+    const globalHotkeyInfo = () => ({
       accelerator: currentGlobalHotkey(),
       requested: requestedGlobalHotkey(),
       default: DEFAULT_GLOBAL_HOTKEY,
-    }));
+    });
+    ipcMain.handle("global-hotkey:get", globalHotkeyInfo);
+
+    // The Settings recorder stores a summon shortcut ("" turns it off) and binds
+    // it at once. It is grabbed from every program on THIS machine, so only the
+    // local dashboard may set it, and only a chord the recorder can produce
+    // (parseRecordedHotkey): never a bare key. Requests run one at a time in
+    // arrival order, gate probe included, so a Clear is never overtaken by the
+    // recording sent before it. Resolves like `global-hotkey:get`, after the bind.
+    let hotkeySetQueue = Promise.resolve();
+    ipcMain.handle("global-hotkey:set", (event, value) => {
+      const result = hotkeySetQueue.then(async () => {
+        await assertLocalDashboard(event, "global-hotkey:set");
+        const accelerator = parseRecordedHotkey(value);
+        if (accelerator === null) {
+          throw new Error("global-hotkey:set: not a shortcut the recorder can produce");
+        }
+        store.set("globalHotkey", accelerator);
+        bindGlobalHotkey();
+        return globalHotkeyInfo();
+      });
+      hotkeySetQueue = result.catch(() => {});
+      return result;
+    });
 
     // The theme accent and splash art are written under userData for the next
     // launch's first paint, so only the main window's dashboard reports them

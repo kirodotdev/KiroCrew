@@ -1,10 +1,13 @@
 """A creator's later approval-mode change reaches the sessions it created.
 
 ``session_create`` and ``session_fork`` copy the creator's posture (``_trust`` /
-``_trust_reads``) once, at birth. A conductor a person turns to Trust after it
-dispatched its workers must not leave each worker asking on prompts the conductor
-itself would auto-approve. This walks the creation tree below a slot whose own mode
-just changed and works out what each descendant should hold.
+``_trust_reads``) once, at birth. A Bot's worker takes its Profile's mode instead
+(``crewmate_approval``) when it is created or revived, and when the Bot's thread
+forks it while the Bot's ``worker_conducts`` switch is on. A conductor a person
+turns to Trust after it dispatched its workers must not leave each worker asking
+on prompts the conductor itself would auto-approve. This walks the creation tree
+below a slot whose own mode just changed and works out what each descendant should
+hold.
 
 The rules:
 

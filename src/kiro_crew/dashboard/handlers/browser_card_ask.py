@@ -4,18 +4,24 @@ The owner's ruling ("改成这三个每次都弹卡": these three ask on a card 
 must hold whatever the agent's spec auto-approves, and ``upload``, which hands a
 page files from this computer, asks the same way, except on a site the person
 trusted for reading, clicking, typing and uploading: that "act" grant covers
-``upload`` on its host (:func:`upload_grant_host`). The default spec grants the
+``upload`` on its host (:func:`site_grant_host`). A later ruling ("YOLO和trust情况下
+browser 用JS不需要approval") lifts the card from ``js`` alone when the chat trusts
+all tools or YOLO reaches it (:func:`trusts_all_tools`), or when that "act" grant
+covers the current tab's host; ``cdp`` and ``http_get`` still ask every time. The default spec grants the
 whole ``@kirocrew-core`` server in ``allowedTools``, so the host never raises a
 permission request for a ``browser`` call and no approval surface sees it. This
 check runs in the op route instead (:func:`kiro_crew.dashboard.handlers.browser_ops.run_browser_op`),
 which every call reaches:
 
-* an ``upload`` on a host the caller's slot holds a live "act" site grant for runs
-  without a card (:func:`upload_grant_host`): the op route hands that host to the
-  op, which reads the tab's real address once it is bound and refuses
-  ``trust_scope_changed`` off that host, and refuses files under the strict
-  sandbox's hidden folders. A "read" grant, "Trust all tools" and an app's slot
-  never cover it;
+* an ``upload``, or a ``js`` with no ``target_id``, on a host the caller's slot
+  holds a live "act" site grant for runs without a card (:func:`site_grant_host`):
+  the op route reads the tab's real address once it is bound and refuses
+  ``trust_scope_changed`` off that host, and an upload refuses files under the
+  strict sandbox's hidden folders. A "read" grant and an app's slot never cover
+  either, and "Trust all tools" never covers ``upload``;
+* a ``js`` on a person's dashboard slot that trusts all tools, or that a live YOLO
+  reaches, runs without a card (:func:`trusts_all_tools`); the own-tab fence still
+  holds it to the caller's tabs;
 * a call with no answered card opens one on the caller's own dashboard slot, a
   blocking agent ask (``/api/agent-ask/*``) with two choices, Allow and Deny, and
   answers ``needs_approval`` with its ``ask_id``; the ``browser`` tool parks on
@@ -68,9 +74,10 @@ _UPLOAD_FIELD = "browser_upload_groups"
 SHOWN_MAX = 500
 
 NOBODY_TEXT = (
-    "js, cdp, http_get and upload ask the user on a card (upload not on a site they "
-    "trusted for reading, clicking, typing and uploading), and this session has no "
-    "dashboard window that can show one, so the step was not run"
+    "js, cdp, http_get and upload ask the user on a card (js and upload not on a site "
+    "they trusted for reading, clicking, typing and uploading, js not when they trust "
+    "all tools), and this session has no dashboard window that can show one, so the "
+    "step was not run"
 )
 DENIED_TEXT = "the user did not allow this step on its card, so it was not run"
 
@@ -150,6 +157,12 @@ def card_notice(op: str) -> str:
             f"This step {OPS[op]}. It asks each time, even if you trust all tools, unless "
             "you trusted this site for reading, clicking, typing and uploading in the "
             "Trust menu."
+        )
+    if op == "js":
+        return (
+            f"This step {OPS[op]}. It asks each time unless you trust all tools, YOLO is "
+            "on, or you trusted this site for reading, clicking, typing and uploading in "
+            "the Trust menu."
         )
     return f"This step {OPS[op]}. It asks every time, even if you trust all tools."
 
@@ -273,33 +286,88 @@ def approved_upload(state: Any, approval: str) -> tuple[list[Any], int] | None:
     return groups if isinstance(groups, tuple) else None
 
 
-def upload_grant_host(state: Any, session_key: str, op: str) -> str:
-    """The host whose live "act" site grant covers this ``upload``, or ``""``.
+def _person_slot(state: Any, session_key: str) -> Any:
+    """The caller's own dashboard slot, or ``None`` (no slot, or an app's slot)."""
+    from kiro_crew.dashboard.handlers.ask_question import _slot_key_from_session
+
+    if not session_key.startswith("dashboard:"):
+        return None
+    slots = getattr(state, "_slots", None)
+    slot = slots.get(_slot_key_from_session(session_key)) if isinstance(slots, dict) else None
+    return None if slot is None or getattr(slot, "_app", None) else slot
+
+
+def _card_turn(session_key: str, slot: Any, request: Any) -> bool:
+    """Whether a Dashboard card's turn runs on this chat, or did when *request* arrived.
+
+    Its words are a page's: the permission path gives such a turn no auto-approval
+    (``tool_approval``'s ``_card_turn``), so neither does a ``js`` card here. The
+    arrival mark holds once the turn is stopped while this request still waits.
+    """
+    from kiro_crew.dashboard import card_send
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+    return card_send.card_turn_seen(request, session_key) or card_send.card_turn_seen(
+        request, effective_session_key(slot)
+    )
+
+
+def trusts_all_tools(state: Any, session_key: str, op: str, request: Any = None) -> bool:
+    """Whether this ``js`` runs with no card: its slot trusts all tools, or YOLO reaches it.
+
+    Read through the same two checks the permission path decides by
+    (``tool_approval._slot_is_trusted``, ``is_yolo_active`` with ``yolo_reaches``), so
+    the card lifts exactly where the chat's other tool calls run unasked. Only a
+    person's dashboard slot, and never in a Dashboard card's turn: an app's slot and a
+    card's turn keep the card.
+    """
+    if op != "js":
+        return False
+    slot = _person_slot(state, session_key)
+    if slot is None:
+        return False
+    from kiro_crew.dashboard.chat_runner import _slot_is_trusted
+
+    yolo = getattr(state, "is_yolo_active", None)
+    reaches = getattr(state, "yolo_reaches", None)
+    trusted = _slot_is_trusted(slot) or bool(
+        callable(yolo) and yolo() and callable(reaches) and reaches(slot)
+    )
+    return trusted and not _card_turn(session_key, slot, request)
+
+
+def site_grant_host(
+    state: Any, session_key: str, op: str, args: dict[str, Any], request: Any = None
+) -> str:
+    """The host whose live "act" site grant covers this ``upload`` or ``js``, or ``""``.
 
     The host is the page the live hub last saw the chat on. The op route passes it
-    down to the op itself, which re-reads the bound tab's real address before the
-    files go (``browser_host_trust.recheck``), so a page that moved in between gets
-    nothing. An app's slot never gets one: its ``browserSites`` does not cover
-    ``upload``, and neither does a person's grant held on that slot. A call the op
-    then finds reaching a folder the strict sandbox hides answers ``needs_card``, and
-    the route puts it on the card after all, where the person decides.
+    down, and re-reads the bound tab's real address before the op runs
+    (``browser_host_trust.recheck``), so a page that moved in between gets nothing. A
+    ``js`` that names a ``target_id`` is not covered: that tab or frame may be on
+    another site, and a ``js`` that :func:`trusts_all_tools` covers takes no host,
+    so the host check never narrows a session-wide trust. An app's slot never gets one: its ``browserSites`` covers neither
+    op, and neither does a person's grant held on that slot, nor in a Dashboard
+    card's turn. An upload the op then
+    finds reaching a folder the strict sandbox hides answers ``needs_card``, and the
+    route puts it on the card after all, where the person decides.
     """
     from kiro_crew import browser_host_trust as trust
     from kiro_crew.browser_harness.live_hub import get_live_hub
-    from kiro_crew.browser_harness.op_classes import CLASS_ACT
-    from kiro_crew.dashboard.handlers.ask_question import _slot_key_from_session
+    from kiro_crew.browser_harness.op_classes import CLASS_ACT, host_trust_class
 
-    if op != "upload" or not session_key.startswith("dashboard:"):
+    if op not in ("upload", "js") or host_trust_class(op, args) != CLASS_ACT:
         return ""
-    slots = getattr(state, "_slots", None)
-    slot = slots.get(_slot_key_from_session(session_key)) if isinstance(slots, dict) else None
-    if slot is None or getattr(slot, "_app", None):
+    if trusts_all_tools(state, session_key, op, request):
+        return ""
+    slot = _person_slot(state, session_key)
+    if slot is None:
         return ""
     sess = get_live_hub().get(trust.browser_session_key(session_key))
     host = trust.page_host(getattr(sess, "url", "") if sess is not None else "")
     if not host or not trust.site_grant_covers(trust.trust_key(host, CLASS_ACT), slot):
         return ""
-    return host
+    return "" if _card_turn(session_key, slot, request) else host
 
 
 async def gate(
@@ -309,12 +377,19 @@ async def gate(
     args: dict[str, Any],
     approval: str,
     read_allowed: Callable[[str], bool] = lambda _path: True,
+    request: Any = None,
 ) -> dict[str, Any] | None:
-    """``None`` when *op* may run now; else the route's answer (a card to wait on, or a refusal)."""
+    """``None`` when *op* may run now; else the route's answer (a card to wait on, or a refusal).
+
+    *request* is the op route's request, whose arrival-time card mark
+    (``card_send.card_turn_seen``) keeps a card's turn on the card.
+    """
     if op not in OPS:
         return None
     if approval:
         return take_approval(state, session_key, op, args, approval)
+    if trusts_all_tools(state, session_key, op, request):
+        return None
     return await open_card(state, session_key, op, args, read_allowed)
 
 
@@ -327,6 +402,7 @@ __all__ = [
     "card_questions",
     "gate",
     "open_card",
+    "site_grant_host",
     "take_approval",
-    "upload_grant_host",
+    "trusts_all_tools",
 ]

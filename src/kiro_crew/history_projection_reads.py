@@ -378,37 +378,13 @@ class TranscriptReadProjection:
         the corpus once per page and archives change only on a rotation, so the
         multi-MB parse must not repeat per scroll step.
         """
-        facade = _history_facade()
-        adir = facade._archive_dir(self._log._dir)
-        stem = facade._safe_key(key) + facade.ARCHIVE_SEGMENT_DELIMITER
+        from kiro_crew.history_archive_text import rotated_segment_paths
 
-        def _seg_order(p: Path) -> tuple[str, int]:
-            # Same-second segments carry ``-N`` suffixes; lexicographic order
-            # puts ``-10`` before ``-2``, so split the numeric part out.
-            rest = p.name[len(stem) : -len(".jsonl")]
-            stamp, dash, suffix = rest.partition("-")
-            # The stamp itself contains one dash (YYYYMMDD-HHMMSS): re-join,
-            # then look for a SECOND dash carrying the collision counter.
-            if dash:
-                stamp2, dash2, suffix2 = suffix.partition("-")
-                stamp = f"{stamp}-{stamp2}"
-                suffix = suffix2 if dash2 else ""
-            try:
-                n = int(suffix) if suffix else 0
-            except ValueError:
-                n = 0
-            return (stamp, n)
-
-        try:
-            segs = sorted(facade.archive_segments_of(adir, facade._safe_key(key)), key=_seg_order)
-        except OSError as exc:
-            # `return []` here is indistinguishable from "this session never
-            # rotated", and that is the one answer this function must not guess.
-            # An unreadable archive DIRECTORY hides an unknown number of rows, so
-            # every index above them moves and the reader is told their older
-            # history does not exist. Raise and let the handlers answer with the
-            # retryable 503 they already have.
-            raise OSError(f"rotated archive for {key} could not be enumerated") from exc
+        # Raises when the archive DIRECTORY cannot be listed: `return []` there is
+        # indistinguishable from "this session never rotated", and an unreadable
+        # archive hides an unknown number of rows, so every index above them would
+        # move. The handlers answer that with the retryable 503 they already have.
+        segs = rotated_segment_paths(self._log._dir, key)
         if not segs:
             return []
         sig: list[tuple[str, int, int]] = []
@@ -886,6 +862,34 @@ class TranscriptReadProjection:
                     messages.append(message)
                 logical_row += 1
         return messages
+
+    def read_rows_from(self, key: str, start: int) -> tuple[list[dict], int] | None:
+        """``(rows[start:], row_count)`` of *key*'s own file, without parsing the rows before *start*.
+
+        Served from the message cache when it holds this revision, otherwise
+        through the sparse row index, which decodes from the checkpoint at or
+        before *start*. The caller holds the transcript lock, so the file
+        cannot change between the index and the range read. None when the
+        index cannot frame the file the way the full reader does, or when any
+        ``OSError`` (a missing file included) interrupts the stat, the index or
+        the range read; the caller then reads the whole file, which retries a
+        transient error and reads a missing file as empty.
+        """
+        from kiro_crew.jsonl_util import UnreadableRecord
+
+        path = self._log._path(key)
+        try:
+            identity = self._log._cache_identity(path.stat())
+        except OSError:
+            return None
+        cached = self._log._msg_cache.get(key)
+        if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
+            return list(cached[2][start:]), len(cached[2])
+        try:
+            index = self._row_index(key)
+            return self._read_message_range(key, start, index.row_count, index), index.row_count
+        except (UnreadableRecord, UnicodeDecodeError, OSError):
+            return None
 
     def _read_messages_chained_page_once(
         self,

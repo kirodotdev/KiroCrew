@@ -11,7 +11,8 @@
  * A run is wheel events with no gap longer than {@link SWIPE_GESTURE_IDLE_MS}.
  * Its owner is decided by its FIRST event and held for the whole run (a
  * waiting reveal excepted, below), as the browser latches a scroll's axis:
- * - vertical-first, or a pinch (`ctrlKey`), is never ours;
+ * - vertical-first, or a pinch (`ctrlKey`), is never ours, nor is any run
+ *   while the page is pinch-zoomed in (it pans the zoomed view);
  * - horizontal-first over something that can still scroll that way (a code
  *   block, a wide table, a sideways list) belongs to that scroller;
  * - horizontal-first in a direction `wants` declines is left to the browser
@@ -74,6 +75,7 @@ import { fingerSign, hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackp
 import { naturalScrolling, REVERSE_TRACKPAD_SWIPE_KEY, subscribeScrollTouch } from '../lib/scrollTouch'
 import { SYNC_EVENT } from './usePersistedBool'
 import { isModalLayer } from './modalLayer'
+import { pinchZoomed } from './useVisualViewport'
 
 export type TrackpadSwipeDir = 'left' | 'right'
 
@@ -692,7 +694,8 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       const path = typeof e.composedPath === 'function' ? e.composedPath() : []
       // A run that starts inside a modal layer is the layer's: the page behind
       // it must not move (a swipe over the What's New dialog opened the panel).
-      const owned = inModalLayer(path.length ? path : e.target, root)
+      // A pinch-zoomed page is the browser's too: the swipe pans the zoomed view.
+      const owned = pinchZoomed() || inModalLayer(path.length ? path : e.target, root)
         || (e.deltaX !== 0 && canScrollX(path.length ? path : e.target, e.deltaX, root))
       // The event's own time, not the time it is handled: wheels queued behind a
       // slow frame arrive in a burst, and handling time would read that frame
@@ -721,7 +724,11 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
      *  where the srcdoc is built with `relayWheel`): any other iframe under the
      *  root is never told anything. */
     const frames = () => Array.from(root.querySelectorAll<HTMLIFrameElement>('iframe[data-wheel-relay]'))
-    if (optsRef.current.acceptFrame) for (const f of frames()) arm(f, true)
+    // A pinch-zoomed page leaves every wheel to the browser, so a frame is armed
+    // only at normal zoom: an armed frame cancels the wheels it relays, and a
+    // cancelled wheel would pan nothing. A frame cannot see the pinch itself.
+    let zoomed = pinchZoomed()
+    if (optsRef.current.acceptFrame) for (const f of frames()) arm(f, !zoomed)
     const onMessage = (event: MessageEvent) => {
       const d = event.data as { type?: unknown; dx?: unknown; dy?: unknown; mode?: unknown; t?: unknown; inv?: unknown } | null
       if (!d || (d.type !== FRAME_WHEEL_MESSAGE && d.type !== FRAME_WHEEL_HELLO)) return
@@ -731,7 +738,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       if (d.type === FRAME_WHEEL_HELLO) {
         // A frame that loaded while this host listens: arm it.
         const hello = frames().find((f) => f.contentWindow === event.source)
-        if (hello && optsRef.current.acceptFrame) arm(hello, true)
+        if (hello && optsRef.current.acceptFrame) arm(hello, !pinchZoomed())
         return
       }
       const { acceptFrame } = optsRef.current
@@ -744,7 +751,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // own time, not the message's: it decides run gaps and the release speed.
       // `inv` is the frame's own wheel's webkitDirectionInvertedFromDevice.
       const sign = fingerSign(d.inv, naturalScrolling())
-      run({ dx: sign * d.dx, dy: d.dy, mode, ctrl: false, owned: false, at: relayedWheelTime(d.t, event.timeStamp), fromFrame: true })
+      run({ dx: sign * d.dx, dy: d.dy, mode, ctrl: false, owned: pinchZoomed(), at: relayedWheelTime(d.t, event.timeStamp), fromFrame: true })
     }
     let liftFrame: number | undefined
     let pendingLift: (() => void) | undefined
@@ -787,8 +794,16 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
     const onSwitch = (e: Event) => {
       const key = e.type === 'storage' ? (e as StorageEvent).key : (e as CustomEvent<{ key?: unknown }>).detail?.key
       if (key !== REVERSE_TRACKPAD_SWIPE_KEY || !optsRef.current.acceptFrame) return
-      for (const f of frames()) arm(f, true)
+      for (const f of frames()) arm(f, !pinchZoomed())
     }
+    const onZoom = () => {
+      const now = pinchZoomed()
+      if (now === zoomed) return
+      zoomed = now
+      if (optsRef.current.acceptFrame) for (const f of frames()) arm(f, !zoomed)
+    }
+    const viewport = window.visualViewport
+    viewport?.addEventListener('resize', onZoom)
     window.addEventListener('storage', onSwitch)
     window.addEventListener(SYNC_EVENT, onSwitch)
     return () => {
@@ -798,6 +813,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       window.removeEventListener('message', onMessage)
       window.removeEventListener('storage', onSwitch)
       window.removeEventListener(SYNC_EVENT, onSwitch)
+      viewport?.removeEventListener('resize', onZoom)
       window.clearTimeout(quiet)
       if (quietFrame !== undefined) cancelAnimationFrame(quietFrame)
       // No longer listening: frames stop relaying and cancelling.

@@ -230,7 +230,7 @@ def _establish_app_readonly_dirs(established: list[str] | None = None) -> list[s
     created (``mount(2)`` cannot seal an absent path, and an agent could otherwise
     create it and write inside it), must then not be a link, and is
     appended to *established* so the launcher requires it and carries its identity. The
-    staged spelling only exists while an update holds the data aside, so it is never
+    staged spelling only exists while the lifecycle holds the data aside, so it is never
     created, and neither is a spelling at or beneath a declared credential mask, which
     names a file. Returns the paths created. Never removes or truncates anything.
     """

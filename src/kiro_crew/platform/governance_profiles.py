@@ -386,6 +386,16 @@ def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
     publish (the warm unreadable-profile arm) must not move a token senders compare
     against.
 
+    Nor does a reload whose snapshot EQUALS the one it replaces. The fingerprint also
+    misses on changes that decide nothing: the empty ``profiles`` directory the first
+    sandboxed spawn creates where none was (``sandbox_precreate``), a ``chmod`` that
+    only moves a file's ctime, a rewrite with the same bytes. Each reloads to the same
+    answer, and bumping for it reads as a profile move to every consumer: the gateway's
+    profile watch then rebuilds the agent config on a governance change that never
+    happened, and the rebuild replaces files the sandbox pins. Equality is the
+    dataclass's field-by-field compare, so a value that compares by identity reads as
+    a change and bumps, the direction this token already errs in.
+
     Atomic on purpose: a reader could otherwise observe the NEW snapshot under the OLD
     generation and re-confirm an authority already replaced. A reader taking neither
     lock can still interleave, so this pairing is what senders compare tokens under
@@ -395,8 +405,10 @@ def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
     """
     global _PROFILE_GENERATION
     with _PROFILE_GENERATION_LOCK:
+        moved = snap != store._snap
         store._snap = snap
-        _PROFILE_GENERATION += 1
+        if moved:
+            _PROFILE_GENERATION += 1
 
 
 def poll_profiles_fresh() -> None:
@@ -1185,8 +1197,8 @@ def assert_profile_floor(ceiling: "object") -> None:
 
     Implements Validation rules 3 & 7 and the Combined-order "app/profile ≥
     ceiling for every control? no → ABORT fail-closed" step: a profile whose
-    ordinal (approval_mode / sandbox.min_level) is LOOSER than the policy mark
-    raises ``PlatformCompositionError``, rather than being silently re-tightened
+    ordinal (approval_mode / sandbox.min_level / command_chains) is LOOSER than the
+    policy mark raises ``PlatformCompositionError``, rather than being silently re-tightened
     only at runtime.  No-op when no ceiling is present (standalone, ungoverned).
 
     This is the half that answers "would this host run correctly UNDER this
@@ -1266,13 +1278,16 @@ def governance_permits(
     source and audit path — no chokepoint re-implements resolution.  Wired
     chokepoints today: the PreToolUse host gate (``tools``/``mcp``/``commands``,
     plus ``filesystem.read``/``filesystem.write``/``network.egress`` via the
-    tool kind + real args — see ``governance.classify_tool_args``); cron command
-    authoring (``commands``) and the cron on/off gate (``capabilities.cron``);
+    tool kind + real args — see ``governance.classify_tool_args``); the cron on/off
+    gate (``capabilities.cron``);
     sub-agent spawn (``capabilities.spawn``); outbound messaging
     (``capabilities.messaging``) and per-transport ``channels``; durable memory
     writes (``capabilities.memory_writes``); script-hook execution
     (``capabilities.script_hooks``); app activation (``apps``); and the sandbox
-    ordinal floor (``sandbox.min_level`` via ``governance_floor_ordinal``).  Only
+    ordinal floor (``sandbox.min_level`` via ``governance_floor_ordinal``).  The cron
+    ``command`` body (``mcp_cron_vet._vet_command_governance``) resolves the same
+    ceiling ∩ profile itself, because one snapshot answers both its ``commands``
+    question and ``command_chain_refusal``.  Only
     the *live* ``approval_mode`` clamp remains reserved (the ordinal is still
     boot-floor-checked) — see ``docs/system-specs/modules/governance.md`` →
     "Still-reserved in v1".

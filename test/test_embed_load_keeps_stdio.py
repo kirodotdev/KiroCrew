@@ -351,6 +351,12 @@ _ALLOWED_REDIRECTS: dict[str, tuple[int, str]] = {
         "a detached gateway's descriptors 1 and 2 already point at gateway.log and"
         " follow it across a rename; the null device only once the log cannot be written",
     ),
+    "connected_computers/desktop_host.py": (
+        1,
+        "dedicated desktop-host CLI child: stdout is duplicated for JSON-line replies,"
+        " then fd 1 goes to stderr before controller startup so incidental prints"
+        " cannot corrupt the protocol; never called by the gateway",
+    ),
     "connections/l1_smoke.py": (1, "stdout is already dead; rebound so shutdown can flush"),
     "consolidation_write_child.py": (4, "first statements of a child's entry point"),
     "crew_log/slot_backfill_child.py": (2, "first statements of a child's entry point"),

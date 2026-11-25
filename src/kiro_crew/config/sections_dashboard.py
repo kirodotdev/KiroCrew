@@ -27,6 +27,12 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The values ``dashboard.default_approval_mode`` takes: the mode a plain chat the
+# owner starts from the dashboard opens on (``dashboard.chat_default_mode``).
+# ``trust`` is deliberately absent (rfc-default-approval-mode section 6), and
+# ``yolo`` is process-wide, never one chat's start mode.
+DEFAULT_APPROVAL_MODES: tuple[str, ...] = ("normal", "trust_reads")
+
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
@@ -56,6 +62,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # and every permissions.browser verb.
     "app_browser_sdk",
     "artifact_deploy",
+    "bot_chat_app_tools",
     "bridge_approvals",
     "chat_runtime_sharing",
     # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
@@ -69,6 +76,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
+    # Has server behavior: kiro_crew.acp.kas_engine_subagents.kas_subagents_preview_on
+    # mounts the engine's sub-agent tool on a KAS chat's default agent.
+    "kas_subagents",
     "remote_crew_chat",
     "session_environments",
     "session_harness",
@@ -230,6 +240,33 @@ class DashboardConfig:
         metadata=_meta(
             "Dashboard URL",
             "Public URL for the dashboard (used in Slack links).",
+            restart=True,
+        ),
+    )
+    entry_port: int = field(
+        default=0,
+        metadata=_meta(
+            "Entry Port",
+            "Off at 0. From 1024 to 65535: also listen at this port on both loopback "
+            "addresses (127.0.0.1 and ::1; the bind address is not configurable), "
+            "for a reverse proxy on this computer that forwards callers on other "
+            "machines. The port serves the Crew API only, reads no cookie, never "
+            "treats a request as a direct local request (it always counts as "
+            "forwarded by the proxy) and refuses Owner routes. "
+            "The proxy must send a Host naming 127.0.0.1, [::1] or localhost; a "
+            "request to a Crew API route with any other Host is refused with 400. "
+            "A computer with no IPv6 loopback serves 127.0.0.1 alone. An integer that is "
+            "neither 0 nor 1024 to 65535, or that equals the gateway's own port or "
+            "dashboard.shared_crew.ssm_port while the SSM listener is on, stops the "
+            "start of the regular or headless kirocrew gateway (EntryPortError), as "
+            "does a port that cannot be bound. The "
+            "API-only server (--slack-only) does not check the value: it logs a "
+            "warning and starts. "
+            'Shared config validation replaces wrong-typed values (8443.5, "abc", '
+            "true, null) with 0, so the entry port stays off, and logs "
+            "Config: type mismatch at 'dashboard.entry_port': ...; using default. "
+            'Legacy numeric handling coerces "8443" and 8443.0 to integer 8443, '
+            "so the port opens if it can be bound.",
             restart=True,
         ),
     )
@@ -490,7 +527,9 @@ class DashboardConfig:
         default=15,
         metadata=_meta(
             "MCP Probe Timeout",
-            "Seconds to wait for MCP server handshake during probe (5-120).",
+            "Seconds to wait for an MCP server to answer during a probe (5-120). "
+            "A server that runs on this computer gets four times as long, up to "
+            "120 seconds, because the probe has to start it first.",
         ),
     )
     loop_stall_exit_after_secs: int | None = field(
@@ -557,6 +596,18 @@ class DashboardConfig:
             "'temporary' neither reads nor writes. Explicit per-session choices "
             "still win.",
             enum=["persistent", "incognito", "temporary"],
+        ),
+    )
+    default_approval_mode: str = field(
+        default="normal",
+        metadata=_meta(
+            "New chats start on",
+            "Approval mode a plain chat you start from the dashboard opens on: "
+            "'normal' asks before each tool; 'trust_reads' runs read-only tools "
+            "and read-only shell commands without asking. Crewmates, channels, "
+            "schedules and agents keep their own settings, and the approval-modes "
+            "policy can hold a chat on 'normal'.",
+            enum=list(DEFAULT_APPROVAL_MODES),
         ),
     )
     new_chat_crew_mode: bool = field(
@@ -649,6 +700,14 @@ class DashboardConfig:
             "Tail-only Fork",
             "When forking, keep only the messages after the chosen point. The "
             "earlier messages are dropped.",
+        ),
+    )
+    fork_inherits_pin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Pin forks of pinned sessions",
+            "A fork of a pinned session is pinned too, so it stays beside the "
+            "original. When off, forks start unpinned.",
         ),
     )
     auto_open_browser: bool = field(
@@ -758,6 +817,18 @@ class DashboardConfig:
             "closed, and show it each time the panel opens. A panel opened for "
             "something specific, such as a file, still shows that. Works only "
             "while session summaries are on.",
+        ),
+    )
+    # Off by default: the sessions a live Bot thread dispatched are listed in that
+    # Bot's side panel and left out of the person's own session lists
+    # (``crew_mode.list_view`` and the dashboard's ``crewModeView``). On lists every
+    # Bot's sessions there too, under each Bot's own folder.
+    show_bot_sessions_in_list: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show all bots in my Sessions",
+            "List the sessions your bots open in your Sessions list, each in its "
+            "bot's folder. While on, no bot's own switch applies.",
         ),
     )
     auto_open_conductor_board: bool = field(
@@ -1088,6 +1159,15 @@ class DashboardConfig:
             "are not affected.",
         ),
     )
+    expand_linked_items: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show Linked Items Expanded",
+            "Start each session card with its linked pull requests and issues "
+            "shown under it. Pressing the count on a card still folds or opens "
+            "that card.",
+        ),
+    )
     command_bar_enabled: bool = field(
         default=True,
         metadata=_meta(
@@ -1135,10 +1215,11 @@ class DashboardConfig:
             "Sidebar Session Order",
             "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last "
             "activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / "
-            "'name-desc' by title, 'manual' in the order the user drags them into. A "
-            "view preference only; pinned sessions keep their own order. Stored here "
-            "(not only in the browser) so the choice follows the user across browsers "
-            "and the desktop app.",
+            "'name-desc' by title, 'manual' in the order the user drags them into, "
+            "'active-then-date' with running sessions first and then the rest, each "
+            "part by last activity, newest first. A view preference only; pinned "
+            "sessions keep their own order. Stored here (not only in the browser) so "
+            "the choice follows the user across browsers and the desktop app.",
             enum=[
                 "date-desc",
                 "date-asc",
@@ -1147,6 +1228,7 @@ class DashboardConfig:
                 "name-asc",
                 "name-desc",
                 "manual",
+                "active-then-date",
             ],
         ),
     )

@@ -1216,6 +1216,7 @@ async def _dispatch_events(
                 # before surfacing it (parity with other text surfaces).
                 summary = redact_text(str(params.get("summary", "") or ""))
                 if status_type == "failed":
+                    summary = compaction_failure_detail(params)
                     if owns_frame:
                         # Arm the bounded post-failure wait (the budget check
                         # at the loop top) and carry the notification's own
@@ -1223,7 +1224,16 @@ async def _dispatch_events(
                         # "unknown error".
                         self._compaction_failed_at = time.monotonic()
                         self.last_compaction_transient = compaction_failure_is_transient(params)
-                    summary = compaction_failure_detail(params)
+                        # The record a notice the dashboard hides still leaves.
+                        logger.warning(
+                            "Compaction failed on session %s: %s",
+                            self._session_id,
+                            (
+                                summary
+                                if self._runtime.recording_allowed
+                                else "reason not logged outside persistent memory"
+                            ),
+                        )
                 yield AcpEvent(
                     kind=EVENT_COMPACTION_STATUS,
                     text=status_type,

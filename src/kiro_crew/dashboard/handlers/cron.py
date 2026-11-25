@@ -202,6 +202,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _restore_dismissed_source_links,
     )
     from kiro_crew.dashboard.cron_inject import (  # noqa: F401
+        apply_cron_source_links_off,
         apply_cron_turn_timeout,
         chat_folder_exists,
         chat_folder_move_refuses_store,
@@ -233,8 +234,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _probe_persisted_session,
         _redact_memory_field,
         guard_owner_surface_routes,
+        owner_surface_guard,
         read_bounded_json,
         require_owner_dashboard_request,
+        require_owner_for_dashboard_caller,
         resolve_lesson_memory_store,
     )
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
@@ -242,6 +245,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
         app_holds_gateway_key,
+    )
+    from kiro_crew.dashboard.slot_persistence.metadata_values import (  # noqa: F401
+        _mark_source_links_off_unread,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,

@@ -20,7 +20,8 @@
  *    people who have written in its DM thread (`TeamParticipantChips`),
  *    and at its right end the goal mark (a named `Goal` glyph) while the
  *    member holds a goal;
- *  - the status line under the name: a `Stopped` chip when the thread's newest
+ *  - the status line under the name: an `Agent missing` chip when the agent
+ *    file the member runs on is gone, a `Stopped` chip when the thread's newest
  *    event is a Stop press, then the last-message preview, which is what
  *    truncates. On watch (an active monitor loop or the heartbeat) is the ring
  *    on the face, with an sr-only word so the state is still spoken;
@@ -28,7 +29,7 @@
  *    or a question, leading the `ok` unread dot, each a named image plus an
  *    `aria-hidden` word, so colour alone never carries a state.
  */
-import { Goal, Square } from 'lucide-react'
+import { Goal, Square, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -141,6 +142,17 @@ export default function CrewmateRowBody({
           )}
           {signals.patrolling && (
             <span className="sr-only" data-testid={`${testIdPrefix}-loop-label`}>{watchLabel}</span>
+          )}
+          {/* Leads the line: until the file is back nothing else on the row can
+              happen. A word beside the glyph, so colour alone never says it. */}
+          {m.agent_missing && (
+            <span
+              className="inline-flex items-center gap-0.5 shrink-0 font-medium text-warn"
+              data-testid={`${testIdPrefix}-agent-missing`}
+            >
+              <TriangleAlert size={10} className="lucide-inline" aria-hidden="true" />
+              {t('pages.membersPage.agent_missing')}
+            </span>
           )}
           {m.last_message_stopped && (
             <span

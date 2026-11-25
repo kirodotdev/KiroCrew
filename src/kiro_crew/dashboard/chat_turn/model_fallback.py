@@ -804,7 +804,7 @@ async def _reassert_explicit_auto(slot: _ChatSlot, client: Any) -> None:
     # circular import: chat_handlers imports chat_turn, and binds slot_model's names.
     from kiro_crew.dashboard.chat_handlers import _wire_model_id
 
-    if getattr(client, "is_kas_backend", False) is not True:
+    if not capabilities_of(client).model_auto_switches_in_place:
         return
     running = provider_raw_model(client.client)
     if not running or running == "auto" or _wire_model_id(client, "auto") != "auto":

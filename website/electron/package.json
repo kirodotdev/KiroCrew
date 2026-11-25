@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -151,6 +151,7 @@
     "files": [
       "main.js",
       "gateway-supervisor.js",
+      "boot-reveal.js",
       "shell-bundle-watch.js",
       "runtime/gateway/launch-preflight.js",
       "runtime/gateway/port-holders.js",
@@ -180,6 +181,7 @@
       "badge.js",
       "native-theme.js",
       "zoom.js",
+      "text-size.js",
       "instance-guard.js",
       "singleton-lock.js",
       "linux-desktop-integration.js",
@@ -238,6 +240,7 @@
       "local-token.js",
       "local-gateway.js",
       "close-action.js",
+      "close-hide-notice.js",
       "tray-icon.js",
       "minimize-to-tray.js",
       "wsl-detection.js",

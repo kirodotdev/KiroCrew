@@ -55,7 +55,10 @@ spent on a transient error with no qualifying prior activity. Each surface
 tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
 requires no result text or tool activity, `dashboard/chat_runner.py` requires
 no emitted or thought activity, and `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry`
-requires no activity.
+requires no activity. On all three, Kiro's per-user rate limit
+(`AcpError.user_rate_limit`) never starts the walk: every model spends the same
+allowance, so a swap cannot clear it and the error surfaces as its own, with no
+line saying the model was throttled.
 
 After activity, the dashboard and the sub-agent first spend their one continue
 on the same model. When the error after that continue is a capacity or throttle
@@ -513,8 +516,15 @@ reason each already captures; a caller that saw no terminal passes `None` and th
 line reads as answered. While Crew's own fallback marker is set, a promotion is
 worded as a move for this turn, because Crew restores its primary next run.
 Crew's refusal retry is dashboard-only, so there is no
-refusal card to suppress on those surfaces. Native Slack inbound runs through
-the dashboard's `_run_chat` and gets the dashboard behavior. The standalone
+refusal card to suppress on those surfaces. Native Slack inbound runs its own
+turn loop (`slack/handler_runtime/turn.py:_run_turn`), which reads only the V2
+refusal hop (`cause: refused`, not a promotion): `_AnswerStream.on_model_fallback`
+drops the refused model's streamed text, and `_deliver_answer` forces the final
+seal to overwrite the live message and prefixes the line through
+`annotate_model_fallback`. When no later hop answered (a `refusal` terminal with
+no text), the refused text is put back under the line, so the reply is never
+empty. A throttle or capacity hop keeps its partial text and prints no line
+there. The standalone
 channel transports (Telegram, WhatsApp, Discord, Webex, Slack transport mode,
 and the autonudge wake turn) run through `messaging/driver.TurnDriver`, which
 prints no fallback line, the engine's or Crew's own; the session's model state

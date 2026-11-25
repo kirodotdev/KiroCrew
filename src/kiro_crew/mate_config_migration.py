@@ -1278,12 +1278,14 @@ def migrate_existing_crewmates(
     del work_dir
     report = MigrationReport()
     repair_partial_platform_servers()
+    from kiro_crew.mate_held_rescope import rescope_held_limits
     from kiro_crew.mate_mount_repair import restore_withheld_mounts
     from kiro_crew.mate_policy_repair import restore_dropped_policy
 
     # Before the moves, so only a Bot an earlier start moved is read.
     restore_withheld_mounts(cfg)
     restore_dropped_policy(cfg)
+    rescope_held_limits()
     try:
         cfg = cfg or KiroCrewConfig.load()
         paths_mod.mate_agents_dir().mkdir(parents=True, exist_ok=True)

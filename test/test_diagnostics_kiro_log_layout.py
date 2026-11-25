@@ -56,6 +56,8 @@ def _isolate_bundle(monkeypatch, home: Path) -> None:
     monkeypatch.setattr(agent_scratch, "config_dir", lambda: home)
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.37.1")
     monkeypatch.setattr(release_channel, "distribution_version", lambda: None, raising=False)
     monkeypatch.setattr(release_channel, "recorded_channel", lambda: None, raising=False)

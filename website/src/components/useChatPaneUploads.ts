@@ -5,7 +5,6 @@ import { api } from '../api/client'
 import { classifyDrop } from '../utils/dropClassify'
 import { spliceDirTokens, servedUploadMb, VIDEO_EXT } from '../utils/fileTokens'
 import {
-  cancelComposerUploads,
   holdComposerSend,
   registerComposerUpload,
   composerUploadSlot,
@@ -13,21 +12,21 @@ import {
   reportComposerUploadProgress,
   unregisterComposerUpload,
   useComposerSendHeld,
-  useComposerUploadCount,
 } from '../utils/composerSendHolds'
 import { holdSlotUploadFailure, onSlotUploadFailureHeld, takeSlotUploadFailure } from '../utils/slotUploadFailures'
+import { runQueuedUpload } from '../utils/uploadQueue'
 import { i18nT } from '../i18n/t'
 
 /**
- * `ChatPane`'s attachment uploads: the upload mutation (its result follows the
- * slot the files were picked in, not the screen), cancel, the count and size
+ * `ChatPane`'s attachment uploads: the upload mutation, one request per file
+ * (its result follows the slot the file was picked in, not the screen), the count and size
  * pre-checks, folder drops, and the per-slot upload notices: a refusal hint and
  * a failure banner keyed by slot. A failure for a slot not on screen is held
  * for it (`slotUploadFailures`) and enters its banner when it is shown.
  */
 
-/** Variables of the composer upload mutation: the files, the slot they were
- *  picked in, and the AbortController that can end the request. */
+/** Variables of the composer upload mutation: one file (as a one-file set),
+ *  the slot it was picked in, and the AbortController that can end its request. */
 type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
 
 export function useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError }: {
@@ -89,25 +88,27 @@ export function useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, 
   // must follow the files' slot, not the screen: completed paths enter that
   // slot's arrivals inbox, while failures reach its banner, held for it when off screen.
   //
-  // The variables also carry the request's own AbortController. It is
-  // registered per slot in the shared composerSendHolds registry, not kept on
-  // this pane: the hold below outlives the pane, so a pane remounted mid-upload
-  // must be able to cancel a request it did not start, or a hung request leaves
-  // its Send dead. The registry holds EVERY live one, since paste, a drop and a
-  // Sketch insert all reach `uploadFiles` ungated and two can be in flight.
+  // A set of files is sent as one request per file, each its own mutation
+  // run with its own AbortController, Send hold and progress. The controller
+  // is registered per slot, with the file's name, in the shared
+  // composerSendHolds registry, not kept on this pane: the hold outlives the
+  // pane, so a remounted pane still shows the upload's chip and its cancel, or
+  // a hung request would leave its Send dead. The callbacks below are the
+  // mutation's own options, so they run for every request, not only the last.
   //
   // Shared per-slot holds survive a pane remount. Mutation callbacks still
   // release their hold after the pane that started the upload unmounts.
   const sendHeld = useComposerSendHeld(slotKey)
-  const uploadCount = useComposerUploadCount(slotKey)
   const uploadMutation = useMutation({
     // 'always', not the default 'online': an offline browser would PAUSE the
     // mutation before mutationFn, so onSettled (the only release of the shared
     // hold below) would never run and the slot's Send would stay dead. Running
     // it lets the fetch fail fast and the hold clear through the usual path.
     networkMode: 'always',
-    mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal,
-      (loaded, total) => reportComposerUploadProgress(controller, loaded, total)),
+    // Through the shared in-flight limit: a file waiting its turn has sent
+    // nothing, and a cancel while it waits drops it unsent (an AbortError).
+    mutationFn: ({ files, controller }: UploadVars) => runQueuedUpload(controller.signal, () => api.uploadFiles(files, controller.signal,
+      (loaded, total) => reportComposerUploadProgress(controller, loaded, total))),
     // api.uploadFiles does NOT throw on a server refusal (unsupported type,
     // signature mismatch, over-cap): it resolves with { paths: [], error }.
     // So a refusal lands here in onSuccess, not onError — surface res.error
@@ -137,10 +138,6 @@ export function useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, 
       finishComposerAttachment(landing, data && !data.error ? data.paths ?? [] : [])
     },
   })
-  /** Abort every upload in flight for this pane's slot, whichever host started it. */
-  const cancelUpload = useCallback(() => {
-    cancelComposerUploads(slotKeyRef.current)
-  }, [slotKeyRef])
   // Returns true when a client-side pre-check refused the files and set its own
   // hint (too many, or one over the cap), so a caller that also wants to show a
   // hint (a mixed drop carrying a refused folder) does not overwrite it.
@@ -167,11 +164,16 @@ export function useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, 
     // banner if one is refused. The copy stays true once the upload finishes.
     // No hand-off: same unsaved composer draft.
     if (maxMb === null && dashCfgError) setUploadError(i18nT('pages.chatPage.upload_limit_unavailable'))
-    const controller = new AbortController()
+    // Every hold is taken here, before any request starts, so Send stays held
+    // until the last file of the set settles.
     const forSlot = slotKeyRef.current
-    holdComposerSend(forSlot)
-    registerComposerUpload(forSlot, controller)
-    uploadMutation.mutate({ files, forSlot, controller })
+    const runs = files.map(file => {
+      const controller = new AbortController()
+      holdComposerSend(forSlot)
+      registerComposerUpload(forSlot, controller, file.name)
+      return { files: [file], forSlot, controller }
+    })
+    for (const vars of runs) uploadMutation.mutate(vars)
     // The files were sent (a server-side refusal surfaces through the mutation,
     // not a local pre-check hint), so no local-refusal hint was set.
     return false
@@ -211,7 +213,7 @@ export function useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, 
   const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
 
   return {
-    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadCount, uploadMutation,
-    cancelUpload, uploadFiles, dragOver, dropTargetProps,
+    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadMutation,
+    uploadFiles, dragOver, dropTargetProps,
   }
 }

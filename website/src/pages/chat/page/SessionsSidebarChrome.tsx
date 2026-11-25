@@ -109,6 +109,8 @@ interface SessionsSidebarChromeProps {
   topbarSessionsToggle: JSX.Element
   onPromote: () => void
   promoting: boolean
+  /** Opens the chat's history search, from the phone bar's ⋯ menu. */
+  onOpenSearch: () => void
   /** Split View's "show this session in that pane"; unset outside it. */
   showSessionInPane?: (leafId: string, slot: string) => void
 }
@@ -138,7 +140,7 @@ export default function SessionsSidebarChrome({
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
   winW, closeSidebar, containerH, drawerDragging, drawerMounted, drawerPanelRef, drawerScrim, drawerScrimRef, drawerX, expandFrom, expandSidebar, flyout, flyoutEligible, flyoutSurfaceRef,
-  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting,
+  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting, onOpenSearch,
   showSessionInPane,
 }: SessionsSidebarChromeProps) {
   const sessionsPane = (
@@ -396,6 +398,7 @@ export default function SessionsSidebarChrome({
         mobileNewSessionItem={mobileNewSessionItem}
         onPromote={onPromote}
         promoting={promoting}
+        onOpenSearch={onOpenSearch}
         dispatch={dispatch}
       />
 

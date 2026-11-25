@@ -685,10 +685,10 @@ describe('NotificationBanner: stack and interaction', () => {
   })
 
   it('leaves the cards alone when a focused surface already handled the Escape', () => {
-    // The composer's Escape-to-stop and dictation-discard both preventDefault
+    // The composer's optimize-cancel and dictation-discard both preventDefault
     // the Escape they claim, before it bubbles to document. The banner must
-    // read that and keep its card, so one Escape in the composer stops the
-    // turn (or discards the dictation) without also dismissing a card (#22315).
+    // read that and keep its card, so one Escape in the composer cancels the
+    // optimize (or discards the dictation) without also dismissing a card.
     renderBanner()
     arrive(mkN({ title: 'First' }))
     const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })

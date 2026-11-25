@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
     from kiro_crew.platform.interfaces import (
         BrowserCredentialTarget,
+        CredentialFreshness,
         ImportSource,
         InboundToken,
         McpScope,
@@ -283,6 +284,11 @@ class DefaultIdentityProvider:
         # rotated-credential file path(s) here.
         return []
 
+    def credential_freshness(self) -> Optional[CredentialFreshness]:
+        # The public edition's tools sign in on their own, so no host sign-in
+        # can hold a scheduled run. A companion reads its host credential here.
+        return None
+
 
 class DefaultAgentIdentityProvider:
     """Disabled agent-identity seam — standalone has no workload or Gateway.
@@ -359,6 +365,9 @@ class DefaultMcpToolingProvider:
 
     def kas_relayed_env_references(self) -> FrozenSet[str]:
         return frozenset()
+
+    def custom_agent_servers(self) -> Tuple[str, ...]:
+        return ()
 
 
 class DefaultAgentCatalogProvider:

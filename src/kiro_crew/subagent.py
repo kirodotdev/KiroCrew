@@ -343,8 +343,10 @@ from kiro_crew.subagent_parts.host_memory import (  # noqa: F401
 from kiro_crew.subagent_parts.manager import SubagentManager
 from kiro_crew.subagent_parts.model_choice import (  # noqa: F401
     PINNED_RUNTIME_NOTE,
+    _apply_shared_start_model,
     _effort_channel,
     _effort_judged_at_session_start,
+    _pinned_model_shares,
     _resolved_model_of,
     _route_unpinned_start,
     _spawn_effective_model,
@@ -419,6 +421,8 @@ from kiro_crew.subagent_parts.run_output import (  # noqa: F401
 )
 from kiro_crew.subagent_parts.run_record import (  # noqa: F401
     _NEUTRAL_REAP_REASONS,
+    CREW_OWN_TOOLS,
+    CREW_TOOLS_WITHHELD_NOTE,
     AnnounceCallback,
     SubagentInfo,
     _BareStateView,

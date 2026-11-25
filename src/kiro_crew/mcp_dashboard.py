@@ -939,10 +939,9 @@ def run_mcp_server() -> None:
     # An enforced harness hands this server a one-time pickup in place of the secret
     # it withholds (``agent_ipc_client``); redeem it before the first request, as
     # ``kirocrew-core`` does, since listing the tools already reads the tool policy.
-    from kiro_crew.agent_ipc_client import redeem_at_startup
-    from kiro_crew.port_resolution import resolve_client_port_src
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
 
-    redeem_at_startup(lambda: resolve_client_port_src(None)[0])
+    redeem_server_pickup()
     run_mcp_stdio_loop(
         SERVER_NAME,
         SERVER_VERSION,

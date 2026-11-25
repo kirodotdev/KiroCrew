@@ -12,6 +12,7 @@ import { queueRead, queuedReads } from '../../lib/readOutbox'
 import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 import { UNREAD_ON_ATTENTION_KEY } from '../unreadOnAttention'
 import { useSlotListSync } from './slotList'
+import { holdChatTranscriptMount } from '../../lib/mountedChatTranscript'
 import type { StreamBuffers } from './streamBuffers'
 
 const EPOCH = '2026-11-13T08:00:00+00:00'
@@ -82,6 +83,32 @@ describe('applyServerReads', () => {
       apply([row('old', { last_read_ts: null, read_epoch: READ, unread_ts: BEFORE }), row('new', { last_read_ts: null, read_epoch: READ, unread_ts: AFTER })])
       expect(unread()).toEqual(['new'])
     })
+  })
+
+  it('badges the retained active slot off the chat routes', () => {
+    const oldPath = window.location.pathname
+    try {
+      window.history.pushState({}, '', '/apps/notes')
+      store.dispatch(setActiveSlot('kept'))
+      apply([row('kept')])
+      expect(unread()).toContain('kept')
+    } finally {
+      window.history.pushState({}, '', oldPath || '/')
+    }
+  })
+
+  it('skips the active slot off the chat routes while a transcript shows it', () => {
+    const oldPath = window.location.pathname
+    const release = holdChatTranscriptMount()
+    try {
+      window.history.pushState({}, '', '/apps/notes')
+      store.dispatch(setActiveSlot('kept'))
+      apply([row('kept')])
+      expect(unread()).not.toContain('kept')
+    } finally {
+      release()
+      window.history.pushState({}, '', oldPath || '/')
+    }
   })
 
   it('skips the slot on screen, a muted slot, a crewmate thread, a running turn and a note after the turn under the attention setting', () => {

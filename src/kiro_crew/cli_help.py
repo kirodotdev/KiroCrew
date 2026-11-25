@@ -43,6 +43,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("restart", "Restart a running gateway (service-aware)"),
             ("stop", "Stop a running gateway"),
             ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
+            ("mcp", "Reload one MCP server's running processes without a restart"),
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
             ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
@@ -109,6 +110,10 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("cloud", "Run Kiro Crew on your own AWS EC2 instance"),
             ("tailnet", "Publish this dashboard on your tailnet (Tailscale)"),
             ("remote-control", "Turn personal Remote Control on or off, or see whether it is on"),
+            (
+                "connected-computer",
+                "Share a folder on this computer with a remote gateway (feature preview)",
+            ),
             ("snapshot", "Create a portable backup of Kiro Crew state"),
             ("restore", "Restore Kiro Crew state from a snapshot"),
         ),

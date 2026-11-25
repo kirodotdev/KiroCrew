@@ -436,6 +436,227 @@ async def test_a_report_names_the_worker_servers_its_session_could_not_use(dispa
     assert "not a missing capability" in prompt and "jira" not in prompt
 
 
+def _sign_in_setup(monkeypatch, *, mounted=("notion", "tracker"), link=True):
+    """A Bot whose worker spec mounts *mounted*, and a dashboard link with no token."""
+    from kiro_crew import mate_capability_catalog as catalog_mod
+    from kiro_crew.slack.code_channels.board import links
+
+    spec = {"mcpServers": {n: {} for n in [*mounted, "jira"]}, "tools": [f"@{n}" for n in mounted]}
+    monkeypatch.setattr(catalog_mod, "worker_spec", lambda member: spec)
+    monkeypatch.setattr(
+        links,
+        "link_builder",
+        lambda: (lambda key: f"https://crew.example/chat?sid={key}" if link else ""),
+    )
+
+
+_WAITING = {"awaiting_auth": ["notion"], "ready": []}
+_SIGN_IN = "A person has to sign in before your worker can use these MCP servers"
+
+
+@pytest.mark.asyncio
+async def test_a_worker_waiting_for_a_sign_in_tells_its_bot_where_the_owner_signs_in(
+    dispatched, monkeypatch
+):
+    """The Bot's reply is all its Slack thread or Discord DM sees, so the wake names the chat.
+
+    ``jira`` waits too but is not mounted (the worker lacks it). ``tracker`` failed
+    on a credential, which may need a key a chat sign-in does not start, and
+    ``wiki`` failed to start: neither is named for a sign-in. A 51-character plain
+    name is given whole, since the owner sends it verbatim.
+    """
+    long_name = "company-production-documentation-integration-notion"
+    _sign_in_setup(monkeypatch, mounted=("notion", "tracker", "wiki", long_name))
+    mate, worker = _crewmate(), _worker()
+    worker.mcp_report = {
+        "failed": ["tracker", "wiki"],
+        "failures": {"tracker": "Authentication expired", "wiki": "spawn ENOENT"},
+        "awaiting_auth": ["notion", "jira", long_name],
+    }
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "I could not read the Notion page.")
+    await _settle(state)
+
+    [(key, prompt)] = dispatched
+    assert key == "member-atlas"
+    line = next(line for line in prompt.splitlines() if line.startswith(_SIGN_IN))
+    assert f"MCP servers: notion, {long_name}." in line
+    assert "https://crew.example/chat?sid=chat-worker-1" in line
+    assert '"Sign in to notion"' in line
+    assert "tracker" not in line and "wiki" not in line and "jira" not in line
+    assert "token" not in line.replace("code or token", "")
+
+
+@pytest.mark.asyncio
+async def test_a_signed_in_server_puts_no_sign_in_line_in_the_report(dispatched, monkeypatch):
+    _sign_in_setup(monkeypatch)
+    mate, worker = _crewmate(), _worker()
+    worker.mcp_report = {"ready": ["notion", "tracker"]}
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "Done.")
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert _SIGN_IN not in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_sign_in_is_named_once_per_bot_until_a_worker_reports_it_ready(
+    dispatched, monkeypatch
+):
+    """Repeated worker turns, and a second worker, do not repeat it; a later sign-out does."""
+    _sign_in_setup(monkeypatch)
+    mate, worker = _crewmate(), _worker()
+    second = _worker()
+    second.key = "chat-worker-2"
+    state = _State(mate, worker, second)
+
+    worker.mcp_report = dict(_WAITING)
+    wakes.note_turn_end(state, worker, "Blocked on notion.")
+    await _settle(state)
+    wakes.note_turn_end(state, worker, "Still blocked on notion.")
+    await _settle(state)
+    second.mcp_report = dict(_WAITING)
+    wakes.note_turn_end(state, second, "Blocked on notion too.")
+    await _settle(state)
+    worker.mcp_report = {"ready": ["notion"]}
+    wakes.note_turn_end(state, worker, "Signed in, page read.")
+    await _settle(state)
+    second.mcp_report = dict(_WAITING)
+    wakes.note_turn_end(state, second, "Notion asks again.")
+    await _settle(state)
+
+    named = [_SIGN_IN in prompt for _key, prompt in dispatched]
+    assert named == [True, False, False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_two_workers_waiting_on_one_server_name_it_once_in_one_wake(dispatched, monkeypatch):
+    _sign_in_setup(monkeypatch)
+    mate, worker = _crewmate(), _worker()
+    second = _worker()
+    second.key = "chat-worker-2"
+    mate.task = asyncio.get_running_loop().create_future()
+    state = _State(mate, worker, second)
+
+    worker.mcp_report = dict(_WAITING)
+    second.mcp_report = dict(_WAITING)
+    wakes.note_turn_end(state, worker, "Blocked on notion.")
+    wakes.note_turn_end(state, second, "Blocked on notion.")
+    mate.task.set_result(None)
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert prompt.count(_SIGN_IN) == 1
+
+
+@pytest.mark.asyncio
+async def test_with_no_dashboard_origin_the_sign_in_names_the_worker_session(
+    dispatched, monkeypatch
+):
+    _sign_in_setup(monkeypatch, link=False)
+    mate, worker = _crewmate(), _worker()
+    worker.mcp_report = dict(_WAITING)
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "Blocked on notion.")
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert "the worker's chat (chat-worker-1) in the Kiro Crew dashboard" in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_name_the_owner_cannot_send_verbatim_is_not_offered_for_a_sign_in(
+    dispatched, monkeypatch
+):
+    odd = "notion<prod>"
+    _sign_in_setup(monkeypatch, mounted=(odd,))
+    mate, worker = _crewmate(), _worker()
+    worker.mcp_report = {"awaiting_auth": [odd]}
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "Blocked.")
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert _SIGN_IN not in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_report_with_no_chat_here_gets_no_sign_in_line_and_tells_nothing(
+    dispatched, monkeypatch
+):
+    """A scheduled run's report has no chat to sign in from; a later worker's still names it."""
+    _sign_in_setup(monkeypatch)
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    wakes._record_report(
+        state, mate.key, "cron:job-1:run-1", "your scheduled job", "Blocked.", dict(_WAITING)
+    )
+    await _settle(state)
+    worker.mcp_report = dict(_WAITING)
+    wakes.note_turn_end(state, worker, "Blocked on notion.")
+    await _settle(state)
+
+    assert [_SIGN_IN in prompt for _key, prompt in dispatched] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_changes_during_the_link_read_is_read_again(dispatched, monkeypatch):
+    """A worker that signs in while the link is built gets no stale line, and nothing is told."""
+    _sign_in_setup(monkeypatch)
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+    real = wakes._sign_in_where
+    calls = []
+
+    def signs_in_meanwhile(keys):
+        calls.append(keys)
+        if len(calls) == 1:
+            wakes._record_report(
+                state,
+                mate.key,
+                worker.key,
+                worker.display_title,
+                "Signed in.",
+                {"ready": ["notion"]},
+            )
+        return real(keys)
+
+    monkeypatch.setattr(wakes, "_sign_in_where", signs_in_meanwhile)
+    worker.mcp_report = dict(_WAITING)
+    wakes.note_turn_end(state, worker, "Blocked on notion.")
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert _SIGN_IN not in prompt and "Signed in." in prompt
+    assert not wakes._sign_in_told(state).get(mate.key)
+
+
+def test_the_sign_in_link_carries_no_click_token(monkeypatch):
+    """The wake's reply is mirrored to threads other people read: no credential rides it."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config import loader
+
+    cfg = SimpleNamespace(
+        dashboard=SimpleNamespace(url="http://127.0.0.1:6776"),
+        slack=SimpleNamespace(use_tunnel_url=False),
+    )
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+
+    where = wakes._sign_in_where(["chat-worker-1"])
+
+    assert where == {
+        "chat-worker-1": "the worker's chat in the Kiro Crew dashboard at "
+        "http://127.0.0.1:6776/chat?sid=chat-worker-1"
+    }
+
+
 def test_a_worker_gap_is_asked_for_on_the_users_next_turn():
     """``request_capabilities`` is refused on a wake turn, so the note waits for the user."""
     from kiro_crew.dashboard.handlers import member_self

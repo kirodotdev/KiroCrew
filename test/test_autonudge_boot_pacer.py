@@ -152,10 +152,17 @@ def test_a_host_that_stays_critical_still_releases_each_loop_after_the_longest_h
 
 
 @pytest.mark.parametrize(
-    ("probed", "expected"),
-    [("ample", "ample"), ("tight", "tight"), ("critical", "critical"), (None, "unknown")],
+    ("reported", "probed", "expected"),
+    [
+        ("ample", "ample", "ample"),
+        ("tight", "tight", "tight"),
+        ("critical", "critical", "critical"),
+        # A container limit out of view reports unknown; the pacing still reads ample.
+        ("unknown", "ample", "ample"),
+        (None, None, "unknown"),
+    ],
 )
-def test_the_host_posture_is_the_memory_probe_alone(monkeypatch, probed, expected):
+def test_the_host_posture_is_the_memory_probe_alone(monkeypatch, reported, probed, expected):
     """The gateway's disk sample is not read, so a full temp disk holds nothing back."""
     from types import SimpleNamespace
 
@@ -166,7 +173,7 @@ def test_the_host_posture_is_the_memory_probe_alone(monkeypatch, probed, expecte
     def _probe(cfg=None):
         if probed is None:
             raise OSError("probe failed")
-        return SimpleNamespace(posture=probed)
+        return SimpleNamespace(posture=reported, decision_posture=probed)
 
     monkeypatch.setattr(resource_status, "probe", _probe)
     monkeypatch.setattr(resource_pressure, "_current_posture", ("critical", "temp disk 1% free"))

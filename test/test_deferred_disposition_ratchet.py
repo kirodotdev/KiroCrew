@@ -145,7 +145,12 @@ SCRIPTS = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts"
 
 
 def test_the_disposition_rule_is_mechanically_enforced() -> None:
-    contract = (SCRIPTS / "_review_contract.py").read_text(encoding="utf-8")
+    # The marker grammar lives in the contract's owner module _review_rounds.py,
+    # which the contract re-exports, so the two files are read as one.
+    contract = "".join(
+        (SCRIPTS / name).read_text(encoding="utf-8")
+        for name in ("_review_contract.py", "_review_rounds.py")
+    )
     status = (SCRIPTS / "pr_status.py").read_text(encoding="utf-8")
     findings = (SCRIPTS / "pr_findings.py").read_text(encoding="utf-8")
     verdict = (SCRIPTS / "pr_status_verdict.py").read_text(encoding="utf-8")

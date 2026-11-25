@@ -453,7 +453,12 @@ def _field_freshness(
     source_spec = spec.get("source") if isinstance(spec, Mapping) else None
     agentic = isinstance(source_spec, Mapping) and source_spec.get("agentic") is True
     row_path = _custom_row_path(spec) if isinstance(spec, Mapping) else ""
-    source = SOURCE_AGENTIC if agentic else SOURCE_RECORD if row_path else SOURCE_FOLD
+    if agentic:
+        source = SOURCE_AGENTIC
+    elif row_path:
+        source = SOURCE_RECORD
+    else:
+        source = SOURCE_FOLD
     fields = getattr(read, "fields", {}) or {}
     if name not in fields:
         return freshness(source=source, missing=True, now=now)

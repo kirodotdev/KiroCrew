@@ -197,9 +197,44 @@ class TestApplyAgentMcpPolicy:
         assert out["mcpServers"]["srv"]["autoApprove"] == ["a"]
         assert out["mcpServers"]["srv"]["command"] == "srv-cmd"
         assert "@srv" in out["tools"]
-        # allowedTools too: a server only in `tools` still prompts per call,
-        # which for an unattended agent resolves to "rejected".
-        assert "@srv" in out["allowedTools"]
+        # Only the tool the grant auto-approves is auto-approved; the rest ask.
+        assert "@srv/a" in out["allowedTools"]
+        assert "@srv" not in out["allowedTools"]
+
+    def test_an_auto_approved_tool_survives_the_registration_strip(self, monkeypatch):
+        # Registration's last pass strips an app map's server autoApprove, so the
+        # user's "Auto-approved" choice must already be in allowedTools.
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.bridges_agents import _strip_ungoverned_auto_approve
+
+        monkeypatch.setattr(
+            bridges, "_global_mcp_specs", lambda: {"srv": {"command": "srv-cmd", "args": []}}
+        )
+        out = _apply_agent_mcp_policy(
+            {"name": CHAT_AGENT, "tools": [], "allowedTools": []},
+            CHAT_AGENT,
+            self._policy(servers={"srv": {"autoApprove": ["a", "b*"], "disabledTools": []}}),
+        )
+        stripped = _strip_ungoverned_auto_approve(out["mcpServers"], honour_owner_written=False)
+
+        assert not stripped["srv"].get("autoApprove")
+        assert [r for r in out["allowedTools"] if r.startswith("@srv")] == ["@srv/a"]
+
+    def test_grant_keeps_needs_approval_tools_asking(self, monkeypatch):
+        # A tool the user left under "Needs approval" (absent from the grant's
+        # autoApprove) must not be auto-approved by any allowedTools entry.
+        from kiro_crew.apps import bridges
+
+        monkeypatch.setattr(
+            bridges, "_global_mcp_specs", lambda: {"srv": {"command": "srv-cmd", "args": []}}
+        )
+        out = _apply_agent_mcp_policy(
+            {"name": CHAT_AGENT, "tools": ["fs_read"], "allowedTools": []},
+            CHAT_AGENT,
+            self._policy(servers={"srv": {"autoApprove": [], "disabledTools": []}}),
+        )
+        assert "@srv" in out["tools"]
+        assert not [r for r in out["allowedTools"] if r == "@srv" or r.startswith("@srv/")]
 
     def test_mountonly_grant_mounts_but_is_not_auto_approved(self, monkeypatch):
         # A mountOnly grant (the built-in core/cron floor) must MOUNT the server

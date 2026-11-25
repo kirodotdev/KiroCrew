@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { isPermissionRefusal } from '../../../api/apiError'
 import { crewBoardQueryKey } from '../../../api/crewBoard'
 import { refreshDashboardReads } from '../../../api/dashboardRefresh'
 import type { ChatSlot, CrewWorker } from '../../../types'
@@ -57,6 +58,17 @@ const routeNotServed = crewRouteNotServed
  *  this slow timer only catches what no push carries, such as a write to a closed
  *  sub-conductor's ledger. */
 export const CREW_WORKERS_FALLBACK_POLL_MS = 60_000
+
+/** A failed read is asked again this soon, so its notice goes when the gateway
+ *  answers instead of a minute later. A permission refusal answers the same
+ *  every time and keeps the slow timer. */
+export const CREW_WORKERS_FAILED_POLL_MS = 10_000
+
+/** The wait before the next timed re-read of *root*'s list. */
+export function crewWorkersPollMs(root: string, state: { status: string; error?: unknown }): number {
+  const failed = state.status === 'error' && !isPermissionRefusal(state.error)
+  return crewWorkersGapMs(root, failed ? CREW_WORKERS_FAILED_POLL_MS : CREW_WORKERS_FALLBACK_POLL_MS)
+}
 
 /** A burst of pushes (a lead opening six workers) is one re-read after this long. */
 export const CREW_WORKERS_PUSH_COALESCE_MS = 250
@@ -160,7 +172,7 @@ export function useCrewWorkers(root: string, active: boolean) {
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => readCrewWorkers(root),
     enabled: active && !!root,
-    refetchInterval: query => (active && !routeNotServed(query.state.error) ? crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS) : false),
+    refetchInterval: query => (active && !routeNotServed(query.state.error) ? crewWorkersPollMs(root, query.state) : false),
   })
 }
 
@@ -188,7 +200,7 @@ export function useCrewWorkerSummary(root: string): {
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => readCrewWorkers(root),
     enabled: !!root,
-    refetchInterval: query => (routeNotServed(query.state.error) ? false : crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS)),
+    refetchInterval: query => (routeNotServed(query.state.error) ? false : crewWorkersPollMs(root, query.state)),
   })
   const live = useLiveCrewWorkers(root)
   // A closed root's list is read from saved data and names the root's saved title.

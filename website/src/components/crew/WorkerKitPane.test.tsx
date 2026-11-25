@@ -551,4 +551,44 @@ describe('WorkerKitPane', () => {
     fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
     expect(await screen.findByTestId('worker-kit-error')).toHaveTextContent('Only the owner can do this.')
   })
+
+  const refusal = (detail: string) => new ApiError(409, 'template_restrictions_uncarried', JSON.stringify({
+    error: 'template_restrictions_uncarried', code: 'template_restrictions_uncarried', detail,
+  }))
+
+  it('adds an agent without a write fallbackAction the bot refuses, asking for the same on Add', async () => {
+    mockKit.preview
+      .mockRejectedValueOnce(refusal('toolsSettings.write.fallbackAction'))
+      .mockResolvedValueOnce({
+        ...PREVIEW,
+        changes: [...PREVIEW.changes, { section: 'toolsSettings', id: 'write', change: 'added' }],
+        left_out: ['toolsSettings.write.fallbackAction'],
+      })
+    renderPane()
+    await screen.findByRole('option', { name: 'release-bot' })
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    const offer = await screen.findByTestId('worker-kit-without-fallback')
+    expect(screen.getByTestId('worker-kit-add-without-fallback')).toHaveTextContent('Add without auto-run writes')
+    expect(offer).toHaveTextContent('Writes outside its allowed folders will ask first, unless this bot\'s approval mode skips asking.')
+    expect(offer).toHaveTextContent('Or set toolsSettings.write.fallbackAction to deny in the agent\'s file')
+    expect(screen.getByTestId('worker-kit-retry')).toHaveTextContent('Try again after editing')
+    fireEvent.click(screen.getByTestId('worker-kit-add-without-fallback'))
+    await screen.findByTestId('worker-kit-changes')
+    expect(mockKit.preview).toHaveBeenLastCalledWith('pixel', { template: 'release-bot', without_write_fallback: true })
+    expect(screen.getByTestId('worker-kit-left-out')).toHaveTextContent('outside its allowed folders')
+    expect(screen.getAllByTestId('worker-kit-change-name').map(n => n.textContent)).toContain('write (without auto-run writes)')
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    await waitFor(() => expect(mockKit.apply).toHaveBeenLastCalledWith('pixel', {
+      template: 'release-bot', revision: 'rev-1', without_write_fallback: true,
+    }))
+  })
+
+  it('offers no add-without for a refusal about any other setting', async () => {
+    mockKit.preview.mockRejectedValueOnce(refusal('toolsSettings.web_fetch.trusted'))
+    renderPane()
+    await screen.findByRole('option', { name: 'release-bot' })
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    expect(await screen.findByTestId('worker-kit-retry')).toHaveTextContent(/^Try again$/)
+    expect(screen.queryByTestId('worker-kit-without-fallback')).toBeNull()
+  })
 })

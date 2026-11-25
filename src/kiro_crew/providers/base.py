@@ -19,6 +19,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_ELICITATION_REQUEST,
+    EVENT_MODEL_FALLBACK,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -629,6 +630,15 @@ class LLMProvider(ABC):
         session's settings file, ``"project"`` when the project's own file does.
         May read a file: call it off the event loop. Default: ``""``, nothing
         withheld.
+        """
+        return ""
+
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Why those tools are withheld, as one clause, or ``""`` when they are not.
+
+        A fact any reader may get, a model's prompt included. *with_fix* appends
+        what the person can do, for a surface only a person reads. May read a
+        file: call it off the event loop. Default: ``""``, nothing withheld.
         """
         return ""
 

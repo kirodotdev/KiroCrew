@@ -8,6 +8,7 @@ without starting a server.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -112,6 +113,57 @@ def test_a_linked_launch_directory_is_refused(home, tmp_path, capsys):
     leaf.symlink_to(real, target_is_directory=True)
     _write(home, json.dumps(_doc()).encode())
     assert "launch directory is a link" in _refused(home, capsys)
+
+
+def _failing_open(monkeypatch, path: Path, error: type[OSError], times: int | None) -> list[str]:
+    """Make the launcher's open of *path* raise *error* *times* times (``None``: always)."""
+    real_open, tries = os.open, []
+    code = errno.ENOENT if error is FileNotFoundError else errno.EACCES
+
+    def _open(name, flags, *args, **kwargs):
+        if os.fspath(name) == str(path):
+            tries.append(name)
+            if times is None or len(tries) <= times:
+                raise error(code, os.strerror(code))
+        return real_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(kas_env_shim.os, "open", _open)
+    return tries
+
+
+def test_a_windows_open_that_meets_a_replace_reads_the_snapshot_a_moment_later(
+    home, monkeypatch, capsys
+):
+    """Windows refuses an open while the gateway replaces the shared snapshot,
+    which it rewrites on every projection there; the launcher tries again."""
+    path = _write(home, json.dumps(_doc()).encode())
+    tries = _failing_open(monkeypatch, path, PermissionError, times=1)
+    monkeypatch.setattr(kas_env_shim.os, "name", "nt")
+    try:
+        argv, env = kas_env_shim.resolve_launch(list(REF), _environ(home))
+    except SystemExit:
+        pytest.fail(f"the launcher refused: {capsys.readouterr().err}")
+    assert argv == ["server-bin", "--flag"] and env["TOKEN_FOR_TEST"] == "value"
+    assert len(tries) == 2
+
+
+@pytest.mark.parametrize(
+    ("os_name", "error", "reason", "retried"),
+    [
+        ("nt", PermissionError, "cannot be opened (Permission denied)", True),
+        ("posix", PermissionError, "cannot be opened (Permission denied)", False),
+        ("nt", FileNotFoundError, "launch snapshot is missing", False),
+    ],
+    ids=["windows-held-past-the-budget", "posix-at-once", "windows-missing-at-once"],
+)
+def test_an_open_that_keeps_failing_is_refused_with_its_reason(
+    home, monkeypatch, capsys, os_name, error, reason, retried
+):
+    path = _write(home, json.dumps(_doc()).encode())
+    tries = _failing_open(monkeypatch, path, error, times=None)
+    monkeypatch.setattr(kas_env_shim.os, "name", os_name)
+    assert reason in _refused(home, capsys)
+    assert len(tries) == (kas_env_shim._OPEN_ATTEMPTS if retried else 1)
 
 
 _LAUNCH = (["server-bin", "--flag"], {"TOKEN_FOR_TEST": "value"})

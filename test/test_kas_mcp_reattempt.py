@@ -1,4 +1,4 @@
-"""Re-attempt of an MCP server that failed to start for want of a credential.
+"""Re-attempt of an MCP server that failed to start for want of a credential or of time.
 
 A stdio MCP server whose signer resolves credentials lazily fails its first
 ``initialize`` when the session starts before a credential exists, and the engine
@@ -6,8 +6,9 @@ never initializes it again. On KAS, Crew asks the engine to connect it again wit
 ``_kiro/mcp/resetServer`` and ``startOAuth`` false, at a turn start, at most
 ``MAX_ATTEMPTS`` times per server per session. These tests pin which failures
 qualify, the budget and its bound on names, and that a re-attempt never shares
-the consent-URL slot with an OAuth sign-in. A server whose process exited, which
-KAS still lists connected while its calls fail "Not connected", shares the budget.
+the consent-URL slot with an OAuth sign-in. A server whose start ran out of time,
+and one whose process exited, which KAS still lists connected while its calls fail
+"Not connected", share the budget.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_KAS_MCP_STATUS, JsonRpcM
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _NO_CREDS = "JSON-RPC error: -32603 No AWS credentials available"
+#: KAS's own error for a server that did not answer ``initialize`` within its ``timeout``.
+_START_TIMED_OUT = "MCP server 'aws' connection timed out after 20000ms"
 
 
 # ── which failures qualify ────────────────────────────────────────────────────
@@ -150,6 +153,32 @@ def test_a_credential_failure_is_re_attempted_at_most_the_budget():
         handle._note_mcp_sign_in_status(_status(_failed()), offer=False)
     assert begun == [("s1", "aws")] * MAX_ATTEMPTS
     assert handle._mcp_reattempt_counts == {"aws": MAX_ATTEMPTS}
+
+
+def test_a_start_that_ran_out_of_time_is_re_attempted_until_it_connects():
+    begun: list = []
+    handle = _handle(begun)
+    handle._note_mcp_sign_in_status(_status(_failed(error=_START_TIMED_OUT)), offer=False)
+    assert handle._mcp_reattempt_waiting == {"aws"}
+    handle._reattempt_failed_mcp_servers()
+    handle._note_mcp_sign_in_status(_status(_failed(error=_START_TIMED_OUT)), offer=False)
+    handle._reattempt_failed_mcp_servers()
+    assert begun == [("s1", "aws")] * 2
+    handle._note_mcp_sign_in_status(_status({"name": "aws", "status": "connecting"}), offer=False)
+    handle._note_mcp_sign_in_status(_status({"name": "aws", "status": "connected"}), offer=False)
+    assert handle._mcp_reattempt_waiting == set()
+    assert handle._mcp_sign_in_completed == {"aws"}
+    handle._reattempt_failed_mcp_servers()
+    assert begun == [("s1", "aws")] * 2
+
+
+def test_a_start_that_never_finishes_in_time_spends_only_the_budget():
+    begun: list = []
+    handle = _handle(begun)
+    for _ in range(MAX_ATTEMPTS + 2):
+        handle._note_mcp_sign_in_status(_status(_failed(error=_START_TIMED_OUT)), offer=False)
+        handle._reattempt_failed_mcp_servers()
+    assert begun == [("s1", "aws")] * MAX_ATTEMPTS
 
 
 def test_a_refused_start_spends_no_attempt():
@@ -339,7 +368,8 @@ def test_an_unregistered_session_starts_nothing():
 
 
 @pytest.mark.asyncio
-async def test_the_turn_start_re_attempts_a_waiting_server():
+@pytest.mark.parametrize("error", [_NO_CREDS, _START_TIMED_OUT], ids=["credential", "timed_out"])
+async def test_the_turn_start_re_attempts_a_waiting_server(error):
     runtime = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
     runtime._initialized = True
     queue: asyncio.Queue = asyncio.Queue()
@@ -353,7 +383,7 @@ async def test_the_turn_start_re_attempts_a_waiting_server():
     runtime.begin_mcp_sign_in = lambda *_: False
     runtime.begin_mcp_reattempt = lambda sid, name: begun.append((sid, name)) or True
     handle = AcpSessionHandle("s1", queue, runtime)
-    queue.put_nowait(_status(_failed()))  # read by the pre-turn drain
+    queue.put_nowait(_status(_failed(error=error)))  # read by the pre-turn drain
     with pytest.raises(_Written):
         async for _event in handle.prompt("hi", timeout=5):
             pass

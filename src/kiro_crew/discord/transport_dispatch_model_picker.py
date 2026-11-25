@@ -12,8 +12,8 @@ method: the class binds it by name, so it reads and writes the dispatcher's own
 state on the instance, and a patch of the method on the class or on an instance
 reaches every caller.
 
-Instance fields read (a call on one included): ``_model_pickers``, ``_model_pref``,
-``client``, ``sessions``.
+Instance fields read (a call on one included): ``_allowed_threads``, ``_model_pickers``,
+``_model_pref``, ``client``, ``sessions``.
 
 Instance fields assigned, or whose mapping is changed: ``_model_pickers``,
 ``_model_pref``.
@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from kiro_crew.discord.renderer import build_model_components
+from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.discord.transport_dispatch import DiscordDispatcher, ReplyFn
@@ -91,6 +93,21 @@ def _model_choices(self: DiscordDispatcher, session_key: str) -> tuple[tuple[str
     return tuple(rows[:_MODEL_PICKER_LIMIT])
 
 
+#: The argument that names the Auto row, whose model id is "".
+AUTO_MODEL_ARG = "auto"
+
+
+def _named_model(choices: tuple[tuple[str, str], ...], arg: str) -> tuple[str, str] | None:
+    """The ``(model_id, label)`` row *arg* names exactly, or None."""
+    wanted = " ".join(arg.split()).casefold()
+    if not wanted:
+        return None
+    for model_id, label in choices:
+        if wanted == (model_id or AUTO_MODEL_ARG).casefold() or wanted == label.casefold():
+            return model_id, label
+    return None
+
+
 def _prune_model_pickers(self: DiscordDispatcher, now: float) -> None:
     """Drop expired pickers, then the oldest ones past the retention cap."""
     for token, picker in list(self._model_pickers.items()):
@@ -109,13 +126,15 @@ async def _handle_model(
     arg: str,
     *,
     reply: ReplyFn | None = None,
+    user_id: str = "",
 ) -> None:
-    """Post the model buttons (or say there is nothing to pick yet).
+    """Switch to the model *arg* names, or post the model buttons.
 
-    Deliberately button-only: a free-text model id means guessing at names
-    the user has no way to enumerate, and a typo lands as a rejected
-    ``set_model`` mid-conversation. Any argument is treated as "show me the
-    list" rather than parsed.
+    *arg* is applied only when it names a row of this session's advertised list
+    exactly (its id or its label, case aside; ``auto`` for the Auto row), which
+    is what a `/model` type-ahead pick sends. Anything else is a guess at a name
+    the user had no way to enumerate, so it shows the list instead of reaching
+    ``set_model`` as a rejected id mid-conversation.
 
     ``reply`` is the slash command's private sink, so `/model` posts a picker
     only its caller sees. A press edits either kind through its own
@@ -128,6 +147,36 @@ async def _handle_model(
         await say("No model list available yet — send a message first, then `!model`.")
         return
 
+    picked = _named_model(choices, arg)
+    if picked is not None:
+        model_id, label = picked
+        # Admission ran before routing's awaits, so it is read again before the
+        # switch, in the button press's order: the ceiling, then the rosters
+        # LAST with no await between them and the switch.
+        if not await channel_inbound_permitted("discord") or (
+            not self._authorized(user_id)
+            or (scope_id.startswith("thread:") and channel_id not in self._allowed_threads)
+        ):
+            logger.info("discord !model switch dropped: authorization withdrawn")
+            sel().log_api_access(
+                caller=user_id or "unknown",
+                operation="discord.set_model",
+                outcome="denied",
+                source="discord",
+                resources=f"channel={channel_id};roster=withdrawn",
+            )
+            return
+        outcome = await self._apply_model(scope_id, session_key, model_id)
+        sel().log_api_access(
+            caller=user_id or "unknown",
+            operation="discord.set_model",
+            outcome="allowed",
+            source="discord",
+            resources=f"model={label}",
+        )
+        await say(outcome)
+        return
+
     current = self._model_pref.get(scope_id, "")
     current_label = next(
         (label for mid, label in choices if mid == current),
@@ -135,9 +184,10 @@ async def _handle_model(
     )
     header = f"Current model: **{current_label}**\nPick one:"
     if arg.strip():
-        # An argument is not an id to apply — say so once, then show the list
-        # anyway so the message is still a step forward.
-        header = f"`!model` takes no argument — pick from the list.\n\n{header}"
+        # Not a model this session offers — say so once, then show the list
+        # anyway so the message is still a step forward. The argument is not
+        # echoed: it is free text, and the list names every valid one.
+        header = f"That is not a model this conversation offers — pick from the list.\n\n{header}"
     message_id = await say(header, components=build_model_components(choices, current))
     if message_id is None:
         return

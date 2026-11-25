@@ -30,3 +30,17 @@ def discards_mcp_oauth(provider: object) -> bool:
         provider, "kas_relay_engine_version"
     )
     return engine_discards_oauth(engine)
+
+
+def sends_mcp_client_secret(provider: object) -> bool:
+    """Whether *provider*'s engine announced ``mcpOAuthClientSecret``, so Crew sends a
+    confidential MCP client's block without its secret and the secret through
+    ``_kiro/mcp/oauth/setClientSecret``. *provider* is a session handle, or carries
+    one as ``client``.
+    """
+    from kiro_crew.acp.kas_engine_features import MCP_OAUTH_CLIENT_SECRET, advertised_by
+
+    if MCP_OAUTH_CLIENT_SECRET in advertised_by(provider):
+        return True
+    client = getattr(provider, "client", None)
+    return client is not None and MCP_OAUTH_CLIENT_SECRET in advertised_by(client)

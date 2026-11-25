@@ -1,10 +1,11 @@
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
-import { SHORTCUT_GROUPS, ShortcutGroupRows, KeyCapSequence, GlobalHotkeyRow, PANEL_TOGGLE_LABEL_KEY, groupShortcuts, shortcutGroupLabel, shortcutsHelpText, useShortcutPrefs } from '../../components/ShortcutsModal'
+import { SHORTCUT_GROUPS, ShortcutGroupRows, KeyCapSequence, GlobalHotkeyRow, GlobalHotkeyNotice, PANEL_TOGGLE_LABEL_KEY, groupShortcuts, shortcutGroupLabel, shortcutsHelpText, useShortcutPrefs } from '../../components/ShortcutsModal'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsButtonGroup } from '../../components/settings'
 import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../../hooks/usePanelToggleShortcuts'
-import { useGlobalHotkey } from '../../hooks/useGlobalHotkey'
-import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
+import { canRecordGlobalHotkey, useGlobalHotkey, useGlobalHotkeyRecorder } from '../../hooks/useGlobalHotkey'
+import { chordReachable, formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
+import { formatAcceleratorKeys, type GlobalHotkeyInfo } from '../../lib/globalHotkey'
 import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
 import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
@@ -12,6 +13,32 @@ import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
+/**
+ * The button every shortcut editor here records with: the bound chord's caps,
+ * or the record prompt when nothing is bound and while recording (then with a
+ * pulsing dot). Clicking starts recording, or cancels it while recording.
+ */
+function RecordButton({ recording, caps, onClick }: { recording: boolean; caps: string[]; onClick: () => void }) {
+  return (
+    <Btn
+      onClick={onClick}
+      aria-label={i18nT('pages.settings.shortcutsPanel.record_prompt')}
+      className={recording ? 'border-accent text-accent' : ''}
+    >
+      {recording ? (
+        <span className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
+          {i18nT('pages.settings.shortcutsPanel.record_prompt')}
+        </span>
+      ) : caps.length > 0 ? (
+        <span className="flex items-center gap-1"><KeyCapSequence caps={caps} plus /></span>
+      ) : (
+        i18nT('pages.settings.shortcutsPanel.record_prompt')
+      )}
+    </Btn>
+  )
+}
+
 /**
  * Editor for the Search Everywhere activation shortcut. A preset picker
  * (double-Shift / ⌘K·Ctrl+K / custom) backed by {@link useQuickSearchShortcut},
@@ -24,7 +51,7 @@ function SearchEverywhereConfig() {
   // While recording, surface `custom` as the active preset even though nothing
   // is persisted yet, so the picker reflects the pending choice.
   const activeMode = recording ? 'custom' : config.mode
-  const customCaps = config.mode === 'custom' && config.custom ? formatChordKeys(config.custom) : []
+  const customCaps = config.mode === 'custom' && config.custom && chordReachable(config.custom) ? formatChordKeys(config.custom) : []
 
   return (
     <>
@@ -40,22 +67,7 @@ function SearchEverywhereConfig() {
       />
       {activeMode === 'custom' && (
         <div className="flex items-center gap-2 flex-wrap">
-          <Btn
-            onClick={recording ? cancelRecording : startRecording}
-            aria-label={i18nT('pages.settings.shortcutsPanel.record_prompt')}
-            className={recording ? 'border-accent text-accent' : ''}
-          >
-            {recording ? (
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
-                {i18nT('pages.settings.shortcutsPanel.record_prompt')}
-              </span>
-            ) : customCaps.length > 0 ? (
-              <span className="flex items-center gap-1"><KeyCapSequence caps={customCaps} plus /></span>
-            ) : (
-              i18nT('pages.settings.shortcutsPanel.record_prompt')
-            )}
-          </Btn>
+          <RecordButton recording={recording} caps={customCaps} onClick={recording ? cancelRecording : startRecording} />
           <span className="text-[12px] text-muted">{i18nT('pages.settings.shortcutsPanel.custom_hint')}</span>
         </div>
       )}
@@ -78,7 +90,7 @@ function PanelToggleConfig() {
       {PANEL_TOGGLE_IDS.filter(id => !TERMINAL_PANEL_TOGGLE_IDS.has(id) || terminalEnabled).map(id => {
         const chord = bindings[id]
         const recording = recordingId === id
-        const caps = chord ? formatChordKeys(chord) : []
+        const caps = chord && chordReachable(chord) ? formatChordKeys(chord) : []
         return (
           <div key={id}>
             <div className="flex items-center justify-between gap-2">
@@ -87,22 +99,7 @@ function PanelToggleConfig() {
                   i18n render gate never sees them joined into one string. */}
               <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
               <span className="flex items-center gap-2">
-                <Btn
-                  onClick={recording ? cancelRecording : () => startRecording(id)}
-                  aria-label={i18nT('pages.settings.shortcutsPanel.record_prompt')}
-                  className={recording ? 'border-accent text-accent' : ''}
-                >
-                  {recording ? (
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
-                      {i18nT('pages.settings.shortcutsPanel.record_prompt')}
-                    </span>
-                  ) : caps.length > 0 ? (
-                    <span className="flex items-center gap-1"><KeyCapSequence caps={caps} plus /></span>
-                  ) : (
-                    i18nT('pages.settings.shortcutsPanel.record_prompt')
-                  )}
-                </Btn>
+                <RecordButton recording={recording} caps={caps} onClick={recording ? cancelRecording : () => startRecording(id)} />
                 {chord && !recording && (
                   <Btn onClick={() => clear(id)} aria-label={i18nT('pages.settings.shortcutsPanel.clear_shortcut')}>
                     {i18nT('pages.settings.shortcutsPanel.clear_shortcut')}
@@ -124,6 +121,56 @@ function PanelToggleConfig() {
         )
       })}
       <div className="text-[12px] text-muted">{i18nT('pages.settings.shortcutsPanel.custom_hint')}</div>
+    </>
+  )
+}
+
+/**
+ * Editor for the desktop shell's system-wide summon hotkey: record a chord or
+ * clear it to turn the hotkey off, like the panel toggles above. The shell
+ * binds the change at once (no restart) and the button shows what is ACTUALLY
+ * bound, with {@link GlobalHotkeyNotice} when that is not what was recorded.
+ * A window that cannot set the hotkey (connected to a remote host, or an older
+ * shell) keeps the read-only row and the config-file hint.
+ */
+function SummonHotkeyConfig({ hotkey }: { hotkey: GlobalHotkeyInfo }) {
+  const { recording, startRecording, cancelRecording, clear, failed } = useGlobalHotkeyRecorder()
+  if (!canRecordGlobalHotkey()) {
+    return (
+      <>
+        <GlobalHotkeyRow />
+        <div className="text-[12px] text-muted">{i18nT(hotkey.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
+      </>
+    )
+  }
+  const { accelerator, requested } = hotkey
+  return (
+    <>
+      {/* One card row for the controls and their notices, so the card draws no divider between them. */}
+      <div>
+      <div className="flex items-center justify-between gap-2">
+        {/* Block elements for the label and the tag: separate catalog units, as in PanelToggleConfig. */}
+        <div className="text-[13px] text-text">{i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}</div>
+        <span className="flex items-center gap-2">
+          {/* The shell holds this chord, so "Enable shortcuts" above does not turn it off. */}
+          {accelerator && !recording && (
+            <div className="text-muted text-[10px] uppercase tracking-wider">{i18nT('components.shortcutsModal.always_works')}</div>
+          )}
+          <RecordButton recording={recording} caps={formatAcceleratorKeys(accelerator, IS_MAC)} onClick={recording ? cancelRecording : startRecording} />
+          {/* `requested` too: a chord that could not be bound is still stored, and Clear is how to drop it. */}
+          {(accelerator || requested) && !recording && (
+            <Btn onClick={clear} aria-label={i18nT('pages.settings.shortcutsPanel.clear_shortcut')}>
+              {i18nT('pages.settings.shortcutsPanel.clear_shortcut')}
+            </Btn>
+          )}
+        </span>
+      </div>
+      <GlobalHotkeyNotice hotkey={hotkey} className="pt-1" />
+      {failed && (
+        <ErrorNotice variant="inline" message={i18nT('components.shortcutsModal.global_hotkey_save_failed')} askAgent testId="global-hotkey-save-error" className="pt-1" />
+      )}
+      </div>
+      <div className="text-[12px] text-muted">{i18nT(recording ? 'pages.settings.shortcutsPanel.custom_hint' : 'components.shortcutsModal.global_hotkey_hint_record')}</div>
     </>
   )
 }
@@ -190,8 +237,7 @@ export function ShortcutsPanel() {
         <div>
           <SettingsSection title={i18nT('components.shortcutsModal.desktop_app')} />
           <SettingsCard>
-            <GlobalHotkeyRow />
-            <div className="text-[12px] text-muted">{i18nT(globalHotkey.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
+            <SummonHotkeyConfig hotkey={globalHotkey} />
           </SettingsCard>
         </div>
       )}

@@ -529,7 +529,7 @@ class TestTheKasWorkerStubSetIsOneLookup:
             "injection_server_names",
             lambda overlay, agent, **kw: frozenset({"by-name"}),
         )
-        monkeypatch.setattr(kas_mod, "mate_worker_projection", lambda spec, d, key: spec)
+        monkeypatch.setattr(kas_mod, "mate_worker_projection", lambda spec, d, key, **_kw: spec)
         for name in ("a", WORKER):
             _write(tmp_path / f"{name}.json", {"name": name, "prompt": "p", "tools": []})
         subtracted: list[frozenset] = []
@@ -574,7 +574,7 @@ class TestTheKasWorkerStubSetIsOneLookup:
         monkeypatch.setattr(
             kas_mod,
             "mate_worker_projection",
-            lambda spec, d, key: {**spec, "mcpServers": mounted},
+            lambda spec, d, key, **_kw: {**spec, "mcpServers": mounted},
         )
         _write(tmp_path / f"{WORKER}.json", {"name": WORKER, "prompt": "p", "tools": []})
         monkeypatch.setattr(

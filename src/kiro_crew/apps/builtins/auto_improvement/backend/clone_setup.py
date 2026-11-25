@@ -76,12 +76,11 @@ _GIT_SUMMARY_LINES = 2
 
 
 def _git_stderr_summary(stderr: str | None) -> str:
-    """git's last diagnostic stderr lines, with the access-rights advisory removed.
+    """git's diagnosis from stderr, advisory removed; callers redact it before bounding it.
 
-    Blank lines, the advisory block and the clone progress line are dropped, then
-    the last ``_GIT_SUMMARY_LINES`` remaining lines are joined with a space. A
-    stream that holds nothing but those falls back to its last line. Callers redact
-    the result before bounding it, so the bound can never cut a credential mid-match.
+    Blank lines, the advisory block and the clone progress line are dropped. A first
+    ``fatal:`` line outside the last ``_GIT_SUMMARY_LINES`` left is returned alone (a failed
+    checkout ends on a recovery hint); else those are space-joined, or the raw last line kept.
     """
     lines = [ln.strip() for ln in (stderr or "").strip().splitlines()]
     kept = [
@@ -89,9 +88,9 @@ def _git_stderr_summary(stderr: str | None) -> str:
         for ln in lines
         if ln and not _GIT_ADVISORY.match(ln) and not _GIT_CLONE_PROGRESS.match(ln)
     ]
-    if not kept:
-        return lines[-1] if lines else ""
-    return " ".join(kept[-_GIT_SUMMARY_LINES:])
+    tail = kept[-_GIT_SUMMARY_LINES:] or lines[-1:]
+    fatal = next((ln for ln in kept if ln.startswith("fatal:") and ln not in tail), "")
+    return fatal or " ".join(tail)
 
 
 def _git_cwd(repo: Path | str) -> str:
@@ -1095,11 +1094,11 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
     # parent (the scratch root, created above) is named as ``cwd``; the operand is made
     # absolute so it is not re-resolved against that cwd.
     dest_where = _git_cwd(dest)
-    # The credential helper belongs to the target's forge: `glab` holds GitLab logins,
-    # `gh` GitHub ones. Global/system git config is disabled above, so this one helper
-    # is the only way a private https clone authenticates. The glab helper runs under
-    # the same host pin as every other glab child, so an ambient gitlab.com token never
-    # answers a self-managed host's credential request.
+    # The credential helper belongs to the target's forge (`glab` for GitLab, `gh` for
+    # GitHub) and, with global/system git config disabled, is a private clone's only login;
+    # glab runs host-pinned so an ambient gitlab.com token never answers a self-managed host.
+    # The isolation also drops a user's `core.longpaths`, so on Windows the clone writes it
+    # into its own config, which the checkout and every later git call in the clone honour.
     clone_env = _git_env(network_protocol=protocol)
     if spec.provider == PROVIDER_GITLAB:
         helper = "credential.helper=!glab auth git-credential"
@@ -1114,6 +1113,7 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
                 "-c",
                 helper,
                 "clone",
+                *(["--config", "core.longpaths=true"] if IS_WINDOWS else []),
                 "--origin",
                 "origin",
                 spec.clone_url,
@@ -1136,10 +1136,10 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
     if proc.returncode != 0:
         detail = _git_stderr_summary(proc.stderr)
         rmtree_force(dest)
-        # Redact BEFORE the bound (here and at every sibling site below): the slice
-        # can cut a credential in the echoed remote URL mid-match, leaving a fragment
-        # no downstream redaction pass recognises.
-        return {}, f"git clone failed: {redact_via_context(detail)[:200]}"
+        # Redact BEFORE the bound (here and at every sibling site below): a slice can cut
+        # a credential in the echoed URL mid-match. 500, not 200: a checkout fatal names a
+        # tracked path, which alone can pass Windows' 260-character path limit.
+        return {}, f"git clone failed: {redact_via_context(detail)[:500]}"
     try:
         safe = _repository_is_safe(dest)
     except IsolationProbeError:

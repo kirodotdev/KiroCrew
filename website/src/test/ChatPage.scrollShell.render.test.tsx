@@ -22,7 +22,7 @@ initI18n('en')
 
 const ref = () => ({ current: null as HTMLDivElement | null })
 
-function mount(loadingOlder: boolean) {
+function mount(loadingOlder: boolean, announcement?: string) {
   const scrollerRef = ref()
   const virt = { topSentinelRef: ref(), bottomSentinelRef: ref(), offsetBefore: 123, offsetAfter: 456 }
   const utils = render(
@@ -31,6 +31,7 @@ function mount(loadingOlder: boolean) {
       onScroll={() => {}}
       virt={virt}
       loadingOlder={loadingOlder}
+      announcement={announcement}
       scrollerStyle={{ paddingBottom: 16 }}
       aboveRows={<div data-testid="slot-above" />}
       belowRows={<div data-testid="slot-below" />}
@@ -42,6 +43,38 @@ function mount(loadingOlder: boolean) {
 }
 
 describe('TranscriptScrollShell DOM contract', () => {
+  it('leaves the scroller itself off the accessibility live-region path', () => {
+    // The rows under the scroller are virtualized, so scrolling inserts and
+    // removes DOM inside it. A live region here announces those insertions as
+    // if they were new messages, which is the re-announcement bug; the one
+    // live region is the sr-only child asserted below.
+    const { scrollerRef } = mount(false, 'The build passed.')
+    const scroller = scrollerRef.current!
+    expect(scroller.getAttribute('aria-live')).toBeNull()
+    expect(scroller.getAttribute('role')).toBeNull()
+    expect(scroller.querySelectorAll('[aria-live]')).toHaveLength(1)
+  })
+
+  it('speaks the announcement from one stable region ahead of every row', () => {
+    const { scrollerRef, unmount } = mount(false, 'The build passed.')
+    const scroller = scrollerRef.current!
+    const region = scroller.querySelector('[aria-live]') as HTMLElement
+    expect(region.getAttribute('aria-live')).toBe('polite')
+    expect(region.getAttribute('aria-atomic')).toBe('true')
+    expect(region.className).toContain('sr-only')
+    expect(region.textContent).toBe('The build passed.')
+    // FIRST child: ahead of the header spacer and every windowed row, so the
+    // virtualizer can never unmount it and make it repeat itself.
+    expect(Array.from(scroller.children).indexOf(region)).toBe(0)
+    unmount()
+
+    // Silent by default — a host that has nothing settled to say says nothing.
+    const quiet = mount(false)
+    const quietRegion = quiet.scrollerRef.current!.querySelector('[aria-live]') as HTMLElement
+    expect(quietRegion).toBeTruthy()
+    expect(quietRegion.textContent).toBe('')
+  })
+
   it('renders the skeleton in order: header spacer, aboveRows, top sentinel, top spacer, rows, bottom spacer, bottom sentinel, trailing wrapper (belowRows)', () => {
     const { scrollerRef, virt } = mount(false)
     const scroller = scrollerRef.current!

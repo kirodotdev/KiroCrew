@@ -1,13 +1,13 @@
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { Fragment, useEffect, useRef, useState, useMemo } from 'react'
 import { X, Keyboard } from 'lucide-react'
-import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, isMacPlatform, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
 import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../hooks/usePanelToggleShortcuts'
-import { useGlobalHotkey } from '../hooks/useGlobalHotkey'
-import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
+import { canRecordGlobalHotkey, useGlobalHotkey } from '../hooks/useGlobalHotkey'
+import { chordReachable, formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
 import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
-import { formatAcceleratorKeys } from '../lib/globalHotkey'
+import { formatAcceleratorKeys, type GlobalHotkeyInfo } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
@@ -88,8 +88,6 @@ export function groupShortcuts(group: string, macCtrl: boolean): ShortcutDef[] {
   const out: ShortcutDef[] = []
   for (const s of DEFAULT_SHORTCUTS.filter(s => s.group === group)) {
     if (!tabIndents && (s.id === 'list-indent' || s.id === 'list-outdent')) continue
-    // With a second Escape required, one Esc no longer stops the turn.
-    if (chatCfg.doubleEscapeToStop && s.id === 'stop-turn') continue
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
       out.push({ ...s, ctrl: false, alt: true })
@@ -124,8 +122,16 @@ export interface SecondaryChord {
 }
 
 export function displayChords(def: ShortcutDef): { primary: string[]; secondary: SecondaryChord[]; reservedInBrowser: boolean } {
+  const mac = isMacPlatform()
+  const aliases = (def.aliases ?? [])
+    .filter(a => chordReachable(a, mac))
+    .map(a => ({ caps: formatChordCaps(a, def.id) }))
+  // A chord no key of the user's layout can type is not advertised, so its alias
+  // leads: on Dvorak no key is `/`, and the shortcuts reference is Option/Alt+K.
+  if (!chordReachable(def, mac)) {
+    return { primary: aliases[0]?.caps ?? [], secondary: aliases.slice(1), reservedInBrowser: false }
+  }
   const primary = formatShortcut(def).split(' + ')
-  const aliases = (def.aliases ?? []).map(a => ({ caps: formatChordCaps(a, def.id) }))
   const reservedInBrowser = !!def.browserReserved && !isElectron
   if (reservedInBrowser && aliases.length > 0) {
     // No tooltip: the explainer renders inline directly under the last demoted
@@ -172,9 +178,9 @@ export function ShortcutGroupRows({ entries, hintClass }: { entries: readonly Sh
  * second line while the short label stays on one. There it is also capped at
  * 55% of the row. At every width, a combo never breaks: its keys stay together
  * and the caps line breaks only between combos ("or" and a tag), never between
- * "Alt" and "S".
+ * "Alt" and "S". `tag` is a short muted note after the primary chord.
  */
-export function ShortcutRow({ label, keys, secondary, status }: { label: string; keys: string[]; secondary?: readonly SecondaryChord[]; status?: string }) {
+export function ShortcutRow({ label, keys, secondary, status, tag }: { label: string; keys: string[]; secondary?: readonly SecondaryChord[]; status?: string; tag?: string }) {
   return (
     <div className="flex flex-col items-stretch justify-between gap-1 py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors sm:flex-row sm:items-center sm:gap-3">
       <span className="w-full text-[13px] text-text sm:w-auto sm:shrink-0 sm:max-w-[55%]">{label}</span>
@@ -189,6 +195,8 @@ export function ShortcutRow({ label, keys, secondary, status }: { label: string;
               {keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
             </span>
           )}
+        {/* A div for the same reason as the secondary tag below. */}
+        {tag && <div className="text-muted text-[10px] uppercase tracking-wider ml-1">{tag}</div>}
         {secondary?.map((sc, j) => (
           <span key={j} className="flex items-center gap-1 flex-wrap justify-start sm:justify-end opacity-60">
             <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
@@ -327,7 +335,7 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
                 catalog units; a block label ends the inline text run so the i18n
                 render gate never sees them joined into one string. */}
             <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
-            {chord
+            {chord && chordReachable(chord)
               ? <span className="flex items-center gap-1"><KeyCapSequence caps={formatChordKeys(chord)} plus /></span>
               : <div className="text-muted text-[11px]">{i18nT('components.shortcutsModal.unset')}</div>}
           </div>
@@ -342,20 +350,17 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
  * DEFAULT_SHORTCUTS because it is not a renderer chord at all: the desktop
  * shell's main process registers it OS-wide (electron/global-hotkey.js) and it
  * works while the app is in the background. Renders the accelerator as
- * ACTUALLY bound, plus a one-line notice when that is not what the stored
- * preference asked for. {@link useGlobalHotkey} returns null in a plain
- * browser, which hides the row. `onHandoff` lets an overlay host (the shortcuts
- * modal) close itself once the notice hands off to the chat underneath it.
+ * ACTUALLY bound, plus {@link GlobalHotkeyNotice} when that is not what the
+ * stored preference asked for. A bound chord carries the "always works" tag:
+ * the shell holds it, so the "Enable shortcuts" switch does not turn it off.
+ * {@link useGlobalHotkey} returns null in a plain browser, which hides the row.
+ * `onHandoff` lets an overlay host (the shortcuts modal) close itself once the
+ * notice hands off to the chat underneath it.
  */
 export function GlobalHotkeyRow({ onHandoff }: { onHandoff?: () => void } = {}) {
   const hotkey = useGlobalHotkey()
   if (!hotkey) return null
-  const { accelerator, requested } = hotkey
-  // A requested chord other than the bound one fell back to the default, or
-  // nothing could be registered. An older shell sends no `requested`.
-  const notice = requested && requested !== accelerator
-    ? i18nT(accelerator ? 'components.shortcutsModal.global_hotkey_fell_back' : 'components.shortcutsModal.global_hotkey_unavailable')
-    : null
+  const { accelerator } = hotkey
   return (
     <>
       {/* Unbound shows "Off" rather than hiding: a hidden switch cannot be turned back on. */}
@@ -363,10 +368,34 @@ export function GlobalHotkeyRow({ onHandoff }: { onHandoff?: () => void } = {}) 
         label={i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}
         keys={formatAcceleratorKeys(accelerator, IS_MAC)}
         status={accelerator ? undefined : i18nT('components.shortcutsModal.global_hotkey_off')}
+        tag={accelerator ? i18nT('components.shortcutsModal.always_works') : undefined}
       />
-      {notice && <ErrorNotice variant="inline" message={notice} askAgent onHandoff={onHandoff} testId="global-hotkey-notice" className="px-2" />}
+      <GlobalHotkeyNotice hotkey={hotkey} onHandoff={onHandoff} className="px-2" />
     </>
   )
+}
+
+/**
+ * One line under the summon-hotkey row when the bound chord is not the one the
+ * stored preference asked for: it fell back to the default, or nothing could be
+ * registered. Shared by the reference row above and the recorder in Settings →
+ * Shortcuts. An older shell sends no `requested`, so it never shows there.
+ */
+export function GlobalHotkeyNotice({ hotkey, onHandoff, className }: { hotkey: GlobalHotkeyInfo; onHandoff?: () => void; className?: string }) {
+  const { accelerator, requested } = hotkey
+  if (!requested || requested === accelerator) return null
+  const message = i18nT(accelerator ? 'components.shortcutsModal.global_hotkey_fell_back' : 'components.shortcutsModal.global_hotkey_unavailable')
+  return <ErrorNotice variant="inline" message={message} askAgent onHandoff={onHandoff} testId="global-hotkey-notice" className={className} />
+}
+
+/**
+ * The help line under the summon-hotkey row in the shortcuts modal. A window
+ * that can record the hotkey points at Settings → Shortcuts; elsewhere (a window
+ * on a remote host, an older shell) the desktop config file is the way.
+ */
+function globalHotkeyModalHint(hotkey: GlobalHotkeyInfo | null): string {
+  if (canRecordGlobalHotkey()) return i18nT('components.shortcutsModal.global_hotkey_hint_settings')
+  return i18nT(hotkey?.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')
 }
 
 function matchesQuery(text: string, query: string, queryWithoutPlus: string): boolean {
@@ -465,7 +494,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     return activeIds.filter(id => {
       const label = i18nT(PANEL_TOGGLE_LABEL_KEY[id]).toLowerCase()
       const chord = panelBindings[id]
-      const chordStr = chord ? formatChordKeys(chord).join(' ').toLowerCase() : ''
+      const chordStr = chord && chordReachable(chord) ? formatChordKeys(chord).join(' ').toLowerCase() : ''
       return (
         matchesQuery(label, normalizedQuery, queryWithoutPlus) ||
         matchesQuery(chordStr, normalizedQuery, queryWithoutPlus)
@@ -566,7 +595,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
                 <div className="grid gap-1">
                   <GlobalHotkeyRow onHandoff={onClose} />
                 </div>
-                <div className="text-[11px] text-muted mt-1 px-2">{i18nT(globalHotkey?.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
+                <div className="text-[11px] text-muted mt-1 px-2">{globalHotkeyModalHint(globalHotkey)}</div>
               </div>
             )}
           </>

@@ -10,11 +10,13 @@ use this module and keep their own isolation.
 
 A PLAIN module, not a ``conftest.py``: each suite imports what it uses by name.
 
-Each of those ten suites imports the four autouse fixtures, so they apply to every
+Each of those ten suites imports the five autouse fixtures, so they apply to every
 test in it (their docstrings' "this module" and "here" mean the importing suite).
 They are what keeps a service test off the host running it: ``SUDO_USER`` cleared,
 the system scope's overrides file and both scopes' unit files pointed under
-``tmp_path``, and ``restart()``'s settle window walked on a fake clock. The suites
+``tmp_path``, a POSIX ``$PATH`` on Windows, and ``restart()``'s settle window walked
+on a fake clock. The SELinux and launchd-domain suites import
+``_posix_installer_path`` alone. The suites
 that run the real ``install()`` also import ``_booted_with_systemd``, which answers
 its first question, whether systemd booted this host, from ``tmp_path`` too.
 
@@ -158,6 +160,32 @@ def _restart_settle_without_waiting(_floor_monkeypatch):
     from kiro_crew.service import linux as svc_linux
 
     _floor_monkeypatch.setattr(svc_linux, "time", _FakeClock(), raising=False)
+
+
+# The installer's ``$PATH`` as a Linux or macOS shell hands it over.
+POSIX_INSTALLER_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def pin_posix_installer_path(monkeypatch) -> None:
+    """On Windows, give ``service_path`` a POSIX ``$PATH`` instead of the host's.
+
+    ``service_path`` renders a systemd unit or a launchd plist, so it splits
+    ``$PATH`` on ``:``. A Windows ``PATH`` split that way yields fragments such
+    as ``\\\\ghcup\\bin;C`` (from the hosted runner's ``C:\\\\ghcup\\bin``), and
+    each fragment is resolved: a UNC path, so an SMB connection the rootdir
+    floor refuses (testing-conventions D10, D13). A POSIX host's ``PATH``
+    already has the shape the product reads, so it is left alone there.
+    """
+    if os.name == "nt":
+        monkeypatch.setenv("PATH", POSIX_INSTALLER_PATH)
+
+
+@pytest.fixture(autouse=True)
+def _posix_installer_path(_floor_monkeypatch):
+    """Every unit or plist rendered here reads a POSIX ``$PATH``
+    (:func:`pin_posix_installer_path`); a test that checks ``PATH`` handling
+    sets its own."""
+    pin_posix_installer_path(_floor_monkeypatch)
 
 
 _UNIT = f"{SERVICE_NAME}.service"

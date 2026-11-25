@@ -19,6 +19,7 @@ from aiohttp import web
 from kiro_crew.cron import CronPauseNotSaved, CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
+    apply_cron_source_links_off,
     apply_cron_turn_timeout,
     chat_folder_exists,
     chat_folder_refuses_store,
@@ -49,10 +50,11 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _refuse_foreign_app_job,
 )
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
+from kiro_crew.dashboard.slot_persistence.metadata_values import _mark_source_links_off_unread
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
-from ._shared import guard_owner_surface_routes, read_bounded_json
+from ._shared import guard_owner_surface_routes, owner_surface_guard, read_bounded_json
 
 
 async def _run_target_missing(state: DashboardState, job_id: str) -> web.Response:
@@ -240,6 +242,8 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # The tab's own turn time limit is unread for the same reason:
                 # its saves carry the on-disk value until the read below lands.
                 mark_turn_timeout_unread(state, slot)
+                # So is its chips-off switch.
+                _mark_source_links_off_unread(slot)
                 # The folder the closed tab was filed in, set before the read below
                 # so a flush during it keeps it; dropped when gone or refusing the store.
                 store = str(getattr(slot, "memory_store", "") or "")
@@ -261,6 +265,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                         # another transcript takes nothing from this one.
                         if slot.linked_session_key == session_key:
                             apply_cron_turn_timeout(slot, _meta)
+                            apply_cron_source_links_off(slot, _meta)
         else:
             # No session log — fall back to notification body.
             notif = next(
@@ -484,5 +489,16 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
 
 
 # Every api_* handler in this module is an owner surface, so a private member's
-# internal call is refused before it runs.
-guard_owner_surface_routes(globals(), member_scoped=frozenset())
+# internal call is refused before it runs, and so is a dashboard session that is
+# neither the owner nor a teammate: a run's summary, trace and error are the owner's.
+# The writes ask the owner gate in their bodies, so a refusal keeps its own audit
+# name (``crons.run``, ``crons.ack``, ``crons.cancel``).
+guard_owner_surface_routes(
+    globals(),
+    member_scoped=frozenset(),
+    resource_scoped={
+        name: owner_surface_guard(name)
+        for name in ("api_cron_run", "api_cron_ack", "api_cron_cancel")
+    },
+    dashboard_owner_only=True,
+)

@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
+from named_cases_helpers import named_cases
 
 from kiro_crew.security import is_denied
 
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
 
-@pytest.mark.parametrize(
+_LIVE_BACKTICK_IN_A_MESSAGE_VALUE = named_cases(
+    "test_a_live_backtick_in_a_message_value_is_denied",
     "cmd",
     [
         # An escaped backtick next to a live one, inside double quotes.
@@ -43,11 +45,9 @@ pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
         "gh-escaped-pair-then-backslash-lf",
     ],
 )
-def test_a_live_backtick_in_a_message_value_is_denied(cmd):
-    assert is_denied(cmd) is not None, repr(cmd)
 
-
-@pytest.mark.parametrize(
+_LIVE_BACKTICK_IN_AN_INTERPRETER_PAYLOAD = named_cases(
+    "test_a_live_backtick_in_an_interpreter_payload_is_denied",
     "cmd",
     [
         # A ``ruby -e`` argument is not a stored message value: ruby's ``%Q{}`` turns
@@ -58,11 +58,9 @@ def test_a_live_backtick_in_a_message_value_is_denied(cmd):
     ],
     ids=["ruby-e-reconstructs-live-backtick"],
 )
-def test_a_live_backtick_in_an_interpreter_payload_is_denied(cmd):
-    assert is_denied(cmd) is not None, repr(cmd)
 
-
-@pytest.mark.parametrize(
+_SPLIT_SELF_RESTART_IN_AN_EXECUTABLE_PAYLOAD = named_cases(
+    "test_a_split_self_restart_in_an_executable_payload_is_denied",
     "cmd",
     [
         # These are executable payloads, not stored message values. ``bash -c`` and
@@ -80,7 +78,17 @@ def test_a_live_backtick_in_an_interpreter_payload_is_denied(cmd):
         "echo-subst-split-name",
     ],
 )
-def test_a_split_self_restart_in_an_executable_payload_is_denied(cmd):
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        *_LIVE_BACKTICK_IN_A_MESSAGE_VALUE,
+        *_LIVE_BACKTICK_IN_AN_INTERPRETER_PAYLOAD,
+        *_SPLIT_SELF_RESTART_IN_AN_EXECUTABLE_PAYLOAD,
+    ],
+)
+def test_a_self_restart_bash_runs_is_denied(cmd):
     assert is_denied(cmd) is not None, repr(cmd)
 
 

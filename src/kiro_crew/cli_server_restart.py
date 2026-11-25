@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat, update_next_start
 from kiro_crew.cli_server_peer import (
@@ -63,6 +64,14 @@ from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+#: What :func:`_poll_until_serving` saw: the outcome, the child's exit status (for
+#: :data:`_POLL_EXITED`) and the whole seconds it waited (for :data:`_POLL_EXPIRED`;
+#: longer than the budget while a boot-time update apply ran).
+_PollResult = tuple[str, "int | None", int]
 
 
 def _wait_for_pids_exit(pids: list[int], timeout: float) -> list[int]:
@@ -147,6 +156,11 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
     if shutdown_acknowledged:
         return [holder.pid]
     _refuse_lock_holder("gateway_restart", port, holder.pid)
+
+
+def _parent_pid() -> int:
+    """This process's parent pid; named so a test stands in for the real parent."""
+    return os.getppid()
 
 
 def _own_console_script() -> str | None:
@@ -618,35 +632,90 @@ def _wait_gateway_ready(
 
     One "still starting" line is printed on the first check after
     :data:`_RESTART_READY_SOFT_CHECKPOINT` seconds, if the deadline is still
-    ahead, so a slow boot does not look hung.
+    ahead, so a slow boot does not look hung. The loop itself, the checkpoint
+    line and the boot-time update-apply extension are :func:`_poll_until_serving`,
+    which the in-place restart waits on too; this waiter adds the probe and the
+    child's exit status.
+    """
+    # The verdict between UNCONFIRMED and TIMEOUT is the last probe's answer.
+    answered = False
+
+    def serving() -> bool:
+        nonlocal answered
+        answered = _probe_gateway_ready(port) == 200
+        return answered and _replacement_is_serving(port, prior_pid)
+
+    outcome, exit_status, _waited = _poll_until_serving(
+        serving,
+        budget=timeout,
+        extension=timeout,
+        apply_pid=lambda: proc.pid,
+        exited=proc.poll,
+    )
+    if outcome == _POLL_EXITED:
+        return _READY_DIED, exit_status
+    if outcome == _POLL_SERVED:
+        return _READY_OK, None
+    return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
+
+
+#: Outcomes of :func:`_poll_until_serving`.
+_POLL_SERVED = "served"
+_POLL_EXITED = "exited"
+_POLL_EXPIRED = "expired"
+
+
+def _poll_until_serving(
+    serving: Callable[[], bool],
+    *,
+    budget: float,
+    extension: float,
+    apply_pid: Callable[[], int | None],
+    exited: Callable[[], int | None] | None = None,
+) -> _PollResult:
+    """The one readiness poll both restart paths wait on.
+
+    Each pass asks *exited* first (a status ends the wait as :data:`_POLL_EXITED`),
+    then *serving* (``True`` ends it as :data:`_POLL_SERVED`). The deadline is
+    checked only after that, so a zero *budget* still asks once. At the deadline
+    *exited* is asked again, so a child that died during the last probe is not
+    reported as still running. One "still starting" line is printed on the first
+    pass after :data:`_RESTART_READY_SOFT_CHECKPOINT` seconds while the deadline
+    is still ahead.
+
+    A boot-time update apply binds nothing, so a long one reads as a hang. While
+    the process *apply_pid* names reports applying, the deadline moves to the end
+    of the apply bound plus *extension* (the readiness window that follows it),
+    with one line saying so. The clock and the sleep are this module's ``time``,
+    read at call time, so a test that drives it through the facade drives both
+    waiters.
     """
     start = time.monotonic()
-    deadline = start + timeout
+    deadline = start + budget
     checkpoint = start + _RESTART_READY_SOFT_CHECKPOINT
     checkpoint_printed = False
     applying_printed = False
     while True:
-        status = proc.poll()
-        if status is not None:
-            return _READY_DIED, status
-        answered = _probe_gateway_ready(port) == 200
-        if answered and _replacement_is_serving(port, prior_pid):
-            return _READY_OK, None
+        if exited is not None:
+            status = exited()
+            if status is not None:
+                return _POLL_EXITED, status, 0
+        if serving():
+            return _POLL_SERVED, None, 0
         now = time.monotonic()
         if not checkpoint_printed and checkpoint <= now < deadline:
             _print_still_starting(now - start)
             checkpoint_printed = True
         if now >= deadline:
-            status = proc.poll()
-            if status is not None:
-                return _READY_DIED, status
-            # A boot-time apply binds nothing, so a long one reads as a hang. While
-            # the replacement itself reports applying, wait out the apply bound
-            # plus the readiness window that follows it.
-            applying = update_next_start.applying_started(proc.pid)
+            if exited is not None:
+                status = exited()
+                if status is not None:
+                    return _POLL_EXITED, status, 0
+            pid = apply_pid()
+            applying = update_next_start.applying_started(pid) if pid is not None else None
             if applying is not None:
                 left = max(0.0, update_next_start.APPLY_BOUND_SECS - (time.time() - applying))
-                extended = now + left + timeout
+                extended = now + left + extension
                 if extended > deadline:
                     if not applying_printed:
                         _print_applying_update(extended - now)
@@ -654,7 +723,8 @@ def _wait_gateway_ready(
                     deadline = extended
                     time.sleep(_RESTART_READY_POLL_INTERVAL)
                     continue
-            return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
+            # The seconds waited: a slow last pass ends the wait past the deadline.
+            return _POLL_EXPIRED, None, int(now - start)
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
@@ -924,7 +994,14 @@ def _restart(cli_port: int | None = None) -> None:
        cannot see a service gateway bound to a unix socket, would misreport the
        outcome, and would spawn an unmanaged gateway beside an installed unit.
        An installed service that is stopped, with no gateway running, is refused.
-    2. Otherwise, SIGTERM the foreground gateway via the existing
+    2. Otherwise, on POSIX, ask the foreground gateway to restart itself in
+       place (:mod:`kiro_crew.cli_restart_in_place`). The gateway decides: a
+       supervised one re-execs with the same pid, so its supervisor keeps its
+       child, and this waits for the new generation to serve. Every other
+       gateway refuses, and a gateway that refuses or cannot answer falls
+       through to the next step without a word (a 409 prints its reason); one
+       that accepted and does not come back is reported, never replaced.
+    3. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
        detached replacement and **verify it is serving** before reporting
        success: a spawn only proves a pid was created, so the replacement is
@@ -937,6 +1014,7 @@ def _restart(cli_port: int | None = None) -> None:
     short-circuiting through it would target the wrong gateway.
     """
     from kiro_crew.cli_restart_headless import live_gateway_headless
+    from kiro_crew.cli_restart_in_place import restart_in_place
     from kiro_crew.dashboard.headless import print_client_access
 
     port = resolve_client_port(cli_port)
@@ -1091,6 +1169,12 @@ def _restart(cli_port: int | None = None) -> None:
     # the way a restart that reads no mode restarts it, with one warning line:
     # an ordinary gateway never loses its restart to this read.
     headless = live_gateway_headless(port)
+    # A supervised POSIX gateway restarts itself in place: it keeps its pid, so
+    # its supervisor keeps its child. The gateway decides, and every other one
+    # refuses, which falls through silently to the stop and spawn below. The exec
+    # reuses its own argv, so the mode read above matters only to that path.
+    if restart_in_place(port, headless=headless):
+        return
     if headless is None:
         headless = False
         print(

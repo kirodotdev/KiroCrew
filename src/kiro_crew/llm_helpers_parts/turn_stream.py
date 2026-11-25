@@ -54,8 +54,8 @@ from kiro_crew.llm_helpers_parts.model_fallback import (
     ActiveModelLine,
     FallbackState,
     advance_fallback_candidate,
-    first_advertised_fallback,
     probe_fallback_restore,
+    reactive_model_candidate,
 )
 from kiro_crew.llm_helpers_parts.tool_approval import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.llm_helpers_parts.turn_results import parse_llm_json
@@ -593,6 +593,9 @@ async def stream_and_collect(
             # ``not result_text``: a tool call can complete an EXTERNAL
             # MUTATION before any text streams. Any fired tool across ANY
             # attempt disables every original-prompt replay for this call.
+            #
+            # Kiro's per-user rate limit is shared by every model: a swap cannot
+            # clear it, so it surfaces as its own error instead.
             if (
                 retry_transient
                 and not result_text
@@ -600,6 +603,7 @@ async def stream_and_collect(
                 and _fb_state is not None
                 and acp_error_is_transient(exc)
                 and transient_attempts >= _TRANSIENT_RETRIES
+                and getattr(exc, "user_rate_limit", False) is not True
             ):
                 if _fb_state.should_retry_active():
                     # Final attempt on the current candidate — the shared
@@ -658,15 +662,8 @@ async def stream_and_collect(
             # turn where the user picked a model must surface the rejection, not
             # swap underneath them (AGENTS.md), so the default is off.
             rejected = getattr(exc, "rejected_model", None)
-            advertised = getattr(exc, "advertised", None) or []
-            if (
-                model_fallback
-                and not result_text
-                and rejected
-                and advertised
-                and not _model_fallback_attempted
-            ):
-                fallback = first_advertised_fallback(advertised, rejected)
+            if model_fallback and not result_text and rejected and not _model_fallback_attempted:
+                fallback = reactive_model_candidate(exc, rejected)
                 if fallback:
                     _model_fallback_attempted = True
                     set_model_fn = getattr(provider, "set_model", None)

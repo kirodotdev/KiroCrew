@@ -2,10 +2,13 @@
 
 The backend fills a history that ends on a tool result with a placeholder assistant
 message, and the model repeats it as the first text of a later turn. A team-channel
-agent's post, ``kirocrew chat``'s printed reply, a task-runner step's result and a
-sub-agent's result stream each prompt through ``alternation_echo.drop_echo``, so none
-of them carries it. Each loop test drives the loop's real code, with its provider and
-the session plumbing around it scripted.
+agent's post, ``kirocrew chat``'s printed reply, a task-runner step's result, a
+sub-agent's result, an eval scenario turn's response and a webhook hook turn's result
+stream each prompt through ``alternation_echo.drop_echo``, so none of them carries it.
+So does the native Slack turn, and the channel turn driver streams each timed-out call's
+continuation through it: both hold only a turn's first text themselves, so a
+continuation that opens with it after earlier text drops it too. Each loop test drives
+the loop's real code, with its provider and the session plumbing around it scripted.
 
 Mutation: hand one loop its prompt stream unwrapped and that loop's case goes red.
 """
@@ -20,13 +23,21 @@ import pytest
 from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _idle_tab_drains_head_as_turn,
 )
+from slack_handler_helpers import FakeProvider, FakeSessionManager
 from subagent_stop_reason_helpers import _manager, _mock_sessions, _spawn_and_wait
 
+from conftest import MockSlackClient
 from kiro_crew import channel as channel_mod
 from kiro_crew import cli_chat, task_executor
 from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
 from kiro_crew.context import ContextBuilder
+from kiro_crew.dashboard.handlers import hooks as hooks_handlers
+from kiro_crew.eval.runner import EvalRunner
+from kiro_crew.eval.scenario import Turn
 from kiro_crew.hooks import HookManager
+from kiro_crew.messaging import TransportCapabilities, TurnDriver
+from kiro_crew.messaging.alternation_echo import OPENER
+from kiro_crew.messaging.renderer import SilentRenderer
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
@@ -34,6 +45,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_CALL,
     LLMEvent,
 )
+from kiro_crew.slack.handler import handle_message
 from kiro_crew.task_models import Project, Task
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
@@ -56,6 +68,10 @@ def _text(text: str) -> LLMEvent:
 
 _TOOL = LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="Read a file")
 _END = LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+#: A prompt that ends because the call's own silence timer ran out.
+_STALLED = LLMEvent(
+    kind=EVENT_COMPLETE, stop_reason=STOP_REASON_TOOL_STALL, title="Read a file", text=_SILENCE
+)
 #: The field case: the placeholder, token by token, then the model's own words.
 _ECHO_THEN_WORDS = [
     _text(PLACEHOLDER[:30]),
@@ -184,12 +200,54 @@ async def _subagent_result(provider: _Scripted, _tmp_path) -> str:
     return info.result
 
 
+async def _eval_response(provider: _Scripted, _tmp_path) -> str:
+    runner = EvalRunner(provider_factory=lambda key, **kw: provider)
+    return (await runner._run_turn(provider, Turn(user="go"), "eval-s")).agent_response
+
+
+async def _hook_result(provider: _Scripted, _tmp_path) -> str:
+    # ``is_new=False`` skips the context build; the stream loop is the one a turn on an
+    # adopted live session runs.
+    state = MagicMock()
+    state.sessions.get_or_create = AsyncMock(return_value=(provider, False, False))
+    with patch("kiro_crew.context.session_store_for_turn", AsyncMock(return_value="")):
+        return await hooks_handlers._run_hook_inner(state, "hook:echo", "hi", None)
+
+
 _LOOPS = {
     "channel-post": _channel_post,
     "cli-chat": _cli_reply,
     "task-step": _step_result,
     "subagent": _subagent_result,
+    "eval-turn": _eval_response,
+    "hook-turn": _hook_result,
 }
+
+
+async def _driver_reply(provider: _Scripted, _tmp_path) -> str:
+    return await TurnDriver(provider, SilentRenderer(TransportCapabilities())).run("hi")
+
+
+class _SlackProvider(FakeProvider):
+    """The Slack fake's session surface, answering each prompt from *scripted*."""
+
+    def __init__(self, scripted: _Scripted) -> None:
+        super().__init__()
+        self._scripted = scripted
+
+    def stream(self, message, timeout=120.0):
+        return self._scripted.stream(message)
+
+
+async def _slack_sent(provider: _Scripted, _tmp_path) -> str:
+    slack = MockSlackClient()
+    sessions = FakeSessionManager(_SlackProvider(provider))
+    await handle_message(slack, sessions, "C1", "q?", None, "m1", "U1")
+    return repr(slack.actions)
+
+
+#: The loops that hold a turn's first text themselves, and everything each sent.
+_FIRST_TEXT_HOLDERS = {"channel-driver": _driver_reply, "slack-native": _slack_sent}
 
 
 @pytest.mark.asyncio
@@ -204,9 +262,16 @@ async def test_a_turn_that_opens_with_the_placeholder_delivers_only_the_words_af
 @pytest.mark.asyncio
 async def test_a_timed_out_call_s_continuation_drops_the_placeholder_it_opens_with(tmp_path):
     """The continuation is a new prompt on a session whose history ends on the call."""
-    stalled = LLMEvent(
-        kind=EVENT_COMPLETE, stop_reason=STOP_REASON_TOOL_STALL, title="Read a file", text=_SILENCE
-    )
-    provider = _Scripted([_text("Checking. "), _TOOL, stalled], _ECHO_THEN_WORDS)
+    provider = _Scripted([_text("Checking. "), _TOOL, _STALLED], _ECHO_THEN_WORDS)
     assert (await _channel_post(provider, tmp_path)).strip() == "Checking. Here it is."
     assert len(provider.prompts) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop", list(_FIRST_TEXT_HOLDERS))
+async def test_a_continuation_after_the_turn_s_first_text_drops_the_placeholder_too(loop, tmp_path):
+    provider = _Scripted([_text("Checking. "), _TOOL, _STALLED], _ECHO_THEN_WORDS)
+    sent = await _FIRST_TEXT_HOLDERS[loop](provider, tmp_path)
+    assert len(provider.prompts) == 2
+    assert "Checking." in sent and "Here it is." in sent
+    assert OPENER not in sent

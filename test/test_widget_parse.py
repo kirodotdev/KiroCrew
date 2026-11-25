@@ -261,3 +261,22 @@ class TestMaskInlineCode:
 
     def test_double_backtick_run_matched_by_equal_length(self):
         assert mask_inline_code("``a`b``") == "       "
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        'lead <mcwidget title="A">one</mcwidget> tail',
+        'lead\n<mcwidget title="A">\n<b>x</b>\n</mcwidget>\ntail',
+        'lead\n<mcwidget title="A">\n```\n</mcwidget>\n```\n</mcwidget> tail',
+        'lead\n<mcwidget title="A">\nnever closed',
+    ],
+)
+def test_a_widget_span_covers_the_tag_through_its_close(raw):
+    (widget,) = parse_widgets(raw)
+    start, end = widget.span
+
+    assert raw[start:].startswith("<mcwidget")
+    assert widget.truncated or raw[:end].endswith("</mcwidget>")
+    assert raw[:start].startswith("lead") and "<mcwidget" not in raw[:start]
+    assert "<mcwidget" not in raw[end:] and "</mcwidget>" not in raw[end:]

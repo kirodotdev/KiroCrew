@@ -64,9 +64,11 @@ def test_the_harness_helper_ops_are_listed_and_act(fake: RawBrowser) -> None:
     for op in op_classes.HARNESS_HELPER_OPS:
         assert op in ops.OPS
         assert not op_classes.reads_only(op, {})
-        # A site grant covers pressing and typing on one host's pages; these reach
-        # past that (any script, the whole browser, a fetch), so each always asks.
-        assert op_classes.host_trust_class(op, {}) == ""
+        # A site grant covers pressing and typing on one host's pages; cdp and
+        # http_get reach past that (the whole browser, a fetch), so each always asks.
+        # js in the current tab acts on that page alone, so an act grant covers it.
+        expected = op_classes.CLASS_ACT if op == "js" else ""
+        assert op_classes.host_trust_class(op, {}) == expected
 
 
 def test_js_returns_the_value_on_the_current_tab(fake: RawBrowser, audits: list) -> None:
@@ -324,7 +326,7 @@ def test_http_get_is_gated_and_no_site_grant_covers_it() -> None:
     assert browser_sites.browser_call_url(params) == (True, "https://api.example.org/x")
     assert browser_tool._gated_url("http_get", params["args"]) == "https://api.example.org/x"
     assert browser_host_trust.call_scope(params, "https://other.example.com/") == ("", "")
-    js = {"op": "js", "args": {"expression": "1"}}
+    js = {"op": "js", "args": {"expression": "1", "target_id": "T2"}}
     assert browser_host_trust.call_scope(js, "https://other.example.com/") == ("", "")
 
 

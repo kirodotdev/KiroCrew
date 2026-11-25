@@ -1420,6 +1420,85 @@ class TestBgSessionDashboardBranch:
             await await_until(task, what="the cancelled warm task")
         assert task not in orch._background_tasks
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("bound", "entry_lines"),
+        [
+            pytest.param(
+                8443,
+                "   Entry port: 127.0.0.1:8443\n"
+                "   On the entry port the proxy must send a Host that names 127.0.0.1, [::1] or"
+                " localhost\n",
+                id="bound",
+            ),
+            pytest.param(None, "   Entry port: off\n", id="off"),
+        ],
+    )
+    async def test_a_headless_start_prints_the_bound_entry_port(self, capsys, bound, entry_lines):
+        """The headless start names the port the gateway bound, whatever the config says."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard import entry_gate
+
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+        orch._headless = True
+        # Another value than the bound one: the line must not come from here.
+        orch._cfg.dashboard.entry_port = 9000
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = AsyncMock()
+
+        app = web.Application()
+        ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
+        if bound is not None:
+            ref.gate = entry_gate.EntryGate(port=bound)
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+            orch._dashboard_runner = SimpleNamespace(app=app)
+
+        orch._init_dashboard = _init_dash
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            await finished(orch.run(), "the gateway boot")
+
+        assert (
+            "👻 Headless: API on http://127.0.0.1:6779/v1\n"
+            f"{entry_lines}"
+            "   Credential for a Crew API client: kirocrew token --bearer --port 6779\n"
+        ) in capsys.readouterr().out
+
     @pytest.mark.parametrize(
         "tty", [pytest.param(False, id="service_log"), pytest.param(True, id="terminal")]
     )

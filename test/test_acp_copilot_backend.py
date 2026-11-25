@@ -587,15 +587,14 @@ async def test_a_config_write_failure_is_worded_for_the_person(tmp_path, monkeyp
     async def _resolve(_backend):
         return ("copilot", ["copilot", "--acp"], "copilot", "copilot")
 
-    async def _prepare() -> None:
-        return None
-
     def _full(_document):
         raise OSError("No space left on device")
 
     monkeypatch.setattr(launch_mod, "resolve_self_served_launch", _resolve)
+    # A host whose sandbox floor passes: the floor runs before the launch file write.
+    monkeypatch.setattr(launch_mod, "_run_preflight_bounded", AsyncMock(return_value=()))
     monkeypatch.setattr(copilot_mod, "write_copilot_mcp_config", _full)
-    client._prepare_session_mcp = _prepare  # type: ignore[method-assign]
+    client._prepare_session_mcp = AsyncMock()  # type: ignore[method-assign]
     client._session_mcp_servers = lambda: [_stdio("crew", sys.executable, T="t")]  # type: ignore
     ctx = SpawnContext.__new__(SpawnContext)
     object.__setattr__(ctx, "session", client)
@@ -766,33 +765,31 @@ async def test_the_launch_config_goes_when_initialize_answers_or_fails(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_a_refused_spawn_removes_the_config_it_wrote(tmp_path, monkeypatch) -> None:
+async def test_a_refused_spawn_removes_a_config_left_by_an_earlier_spawn(
+    tmp_path, monkeypatch
+) -> None:
     from kiro_crew.acp import launch as launch_mod
     from kiro_crew.acp.harness.base import SpawnContext
 
     monkeypatch.setattr(copilot_mod, "config_dir", lambda: tmp_path)
     client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
-
-    async def _resolve(_backend):
-        return ("copilot", ["copilot", "--acp"], "copilot", "copilot")
-
-    async def _prepare() -> None:
-        return None
+    # The floor refuses before this spawn writes anything, so the file at stake is
+    # one an earlier spawn of the session left; it carries a session credential.
+    stale = tmp_path / "copilot-mcp-stale.json"
+    stale.write_text("{}")
+    client._copilot_mcp_config_path = str(stale)
 
     async def _refuse(*_a, **_k):
         raise AcpToolGateUnroutable("no sandbox")
 
-    monkeypatch.setattr(launch_mod, "resolve_self_served_launch", _resolve)
     monkeypatch.setattr(launch_mod, "_run_preflight_bounded", _refuse)
-    client._prepare_session_mcp = _prepare  # type: ignore[method-assign]
-    client._session_mcp_servers = lambda: [_stdio("crew", sys.executable, T="t")]  # type: ignore
     ctx = SpawnContext.__new__(SpawnContext)
     object.__setattr__(ctx, "session", client)
     object.__setattr__(ctx, "sandbox_mode", "auto")
 
     with pytest.raises(AcpToolGateUnroutable):
         await copilot_mod.CopilotLaunch().resolve_spawn(ctx)
-    assert list((tmp_path / "auth-store-staging").glob("copilot-mcp-*.json")) == []
+    assert not stale.exists()
     assert client._copilot_mcp_config_path == ""
 
 

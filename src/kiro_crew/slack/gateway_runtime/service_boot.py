@@ -755,10 +755,16 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line
-    # use the real bound port.
+    # use the real bound port. It is the port the gateway reserved
+    # (``served_port``), not the runner's first address: the runner holds other
+    # listeners too, in an order a rebind changes.
     if dashboard_port == 0 and self._dashboard_runner is not None:
+        app = getattr(self._dashboard_runner, "app", None)
+        served = app.get("served_port") if app is not None else None
         addresses = self._dashboard_runner.addresses
-        if addresses:
+        if isinstance(served, int) and served:
+            self._dashboard_port = served
+        elif addresses:
             self._dashboard_port = addresses[0][1]
     if self.slack and self.dashboard_state:
         self.dashboard_state.slack_client = self.slack
@@ -1246,7 +1252,7 @@ async def run(self: GatewayOrchestrator) -> None:
     if not self._test_mode:
         from kiro_crew.apps.session_consent import reconcile_after_ready
 
-        _consent_task = asyncio.create_task(reconcile_after_ready())
+        _consent_task = asyncio.create_task(reconcile_after_ready(self.dashboard_state))
         self._background_tasks.add(_consent_task)
         _consent_task.add_done_callback(self._background_tasks.discard)
 
@@ -1558,9 +1564,13 @@ async def run(self: GatewayOrchestrator) -> None:
     if self._headless:
         # No page to open and no sign-in link to print: the address and how to get
         # a credential, which is never printed here.
+        from kiro_crew.dashboard.entry_gate import bound_port
         from kiro_crew.dashboard.headless import print_client_access
 
-        print_client_access(self._dashboard_port)
+        # The port the gateway bound, not a second read of the config.
+        print_client_access(
+            self._dashboard_port, bound_port(getattr(self._dashboard_runner, "app", None))
+        )
     elif not self._no_dashboard:
         try:
             host = resolve_dashboard_host(self._local_only, self._configured_host)
@@ -1637,7 +1647,7 @@ async def run(self: GatewayOrchestrator) -> None:
     # would pay a deepcopy plus a full nested-dataclass rebuild for one scalar.
     _probe_t = self._cfg.dashboard.mcp_probe_timeout_secs + 15
     try:
-        await asyncio.wait_for(_bg_mcp_probe(self.sessions), timeout=_probe_t)
+        await asyncio.wait_for(_bg_mcp_probe(self.dashboard_state), timeout=_probe_t)
     except asyncio.TimeoutError:
         print("👻 MCP probe timed out — continuing without full probe")
 

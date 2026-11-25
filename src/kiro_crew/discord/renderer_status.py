@@ -221,7 +221,12 @@ def _with_turn_footer(self: DiscordRenderer, text: str) -> str:
     Dropped rather than truncated when the segment leaves no room: a clipped
     answer costs the user more than a missing timing line. ``_limit()``
     already holds back headroom below the platform cap for exactly this.
+
+    With ``discord.show_timing_footer`` off, *text* comes back unchanged. The
+    headroom stays held, so a long reply splits at the same places either way.
     """
+    if not self._show_timing_footer:
+        return text
     footer = f"-# {format_turn_status(max(0.0, self._now() - self._t0), self._context_pct())}"
     if len(text) + len(footer) + 2 > DISCORD_MAX_TEXT:
         return text

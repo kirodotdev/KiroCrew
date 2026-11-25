@@ -479,7 +479,7 @@ def _propose_env(monkeypatch: Any, *, flush_fails: bool) -> list[str]:
     async def build(*_a: Any, **_kw: Any) -> tuple[str, dict, dict]:
         return "preview", {}, {}
 
-    async def settle(_request: Any) -> None:
+    async def settle(_state: Any) -> None:
         return None
 
     async def resolve(_kind: str, params: Any) -> Any:
@@ -491,8 +491,10 @@ def _propose_env(monkeypatch: Any, *, flush_fails: bool) -> list[str]:
     monkeypatch.setattr(cards, "check_param_text", lambda _p: None)
     monkeypatch.setattr(cards, "clean_reason", lambda r: r)
     monkeypatch.setattr(cards, "build", build)
-    monkeypatch.setattr(routes, "_settle", settle)
-    monkeypatch.setattr(routes, "_store", lambda _r: store)
+    # The propose body (``change_cards_propose.propose_in_slot``) settles and reads
+    # the store by the dashboard state, not by the request.
+    monkeypatch.setattr(routes, "_settle_state", settle)
+    monkeypatch.setattr(routes, "card_store_for", lambda _s: store)
     return calls
 
 

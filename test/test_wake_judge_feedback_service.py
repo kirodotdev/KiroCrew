@@ -490,7 +490,9 @@ class TestTurnCompleteLabelling:
         # original job and everything here is an observation beside it.
         service, loop = self._service(tmp_path, [_delivered(1.0, "d1")])
         armed: list = []
-        service._arm_from_deadline = lambda target: armed.append(target.id)  # type: ignore[assignment]
+        service._arm_from_deadline = (  # type: ignore[assignment]
+            lambda target, after_turn=False: armed.append(target.id)
+        )
         try:
             service.notify_turn_complete("chat-1", tool_calls=1, reply_text="")
         finally:
@@ -500,7 +502,9 @@ class TestTurnCompleteLabelling:
     def test_a_ruined_history_does_not_stop_the_rearm(self, tmp_path):
         service, loop = self._service(tmp_path, [object()])  # type: ignore[list-item]
         armed: list = []
-        service._arm_from_deadline = lambda target: armed.append(target.id)  # type: ignore[assignment]
+        service._arm_from_deadline = (  # type: ignore[assignment]
+            lambda target, after_turn=False: armed.append(target.id)
+        )
         try:
             service.notify_turn_complete("chat-1", tool_calls=0, reply_text="")
         finally:
@@ -511,7 +515,9 @@ class TestTurnCompleteLabelling:
         service, loop = self._service(tmp_path, [_delivered(1.0, "d1")])
         armed: list = []
         published: list = []
-        service._arm_from_deadline = lambda target: armed.append(target.id)  # type: ignore[assignment]
+        service._arm_from_deadline = (  # type: ignore[assignment]
+            lambda target, after_turn=False: armed.append(target.id)
+        )
 
         async def _reject(_loop) -> bool:
             return False

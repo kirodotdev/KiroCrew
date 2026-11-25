@@ -166,8 +166,10 @@ def dispatch(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> None:
 
 async def drain() -> None:
     """Wait for dispatched clicks (tests, shutdown)."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    # Only the running tasks: a finished one leaves the set on a later loop pass,
+    # and gathering only finished tasks never yields (3.12+), so this would spin.
+    while pending := [task for task in _tasks if not task.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> str:

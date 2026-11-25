@@ -196,6 +196,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
+    "agent.role_models.optimizer": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+        "validate_fn": _validate_role_model,
+    },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
     # to the backend's availability-aware routing; a concrete id is tried first
     # with "auto" as the final fallthrough; "" disables the feature. Same
@@ -224,6 +230,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.role_efforts.background": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.role_efforts.subagent": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.role_efforts.subagent_light": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
+    "agent.role_efforts.optimizer": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
     # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
     # every value here still ends: the timed ones are capped at the SafetyOverride
@@ -390,6 +397,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # The per-row unread dot on sidebar session cards (Settings → Display →
     # Sidebar). Default on; only a literal `false` hides it.
     "dashboard.show_unread_dot": {"type": "bool"},
+    # Session cards start with their linked pull requests and issues open
+    # (Settings → Display, Session Cards). Default off; only a literal `true` opens it.
+    "dashboard.expand_linked_items": {"type": "bool"},
     # The quick-search shortcut opens the Command Bar launcher (Settings ->
     # Display -> View). Default on; only a literal `false` opens the search
     # palette instead.

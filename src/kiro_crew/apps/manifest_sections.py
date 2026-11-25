@@ -384,6 +384,10 @@ class UIConfig:
     frameSources: list[str] = field(default_factory=list)  # noqa: N815
     #: ``frameSources`` present but not a list of strings. Not serialized.
     bad_frame_sources: bool = False
+    # ESM module, under the same ``ui/`` base as ``entry``, whose default export the
+    # dashboard mounts on every load once the owner approves it
+    # (``apps.startup_modules``). Empty means undeclared.
+    startup: str = ""
 
     # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
     # ``website/src/components/AppLoadingFallback.tsx``.
@@ -416,6 +420,9 @@ class UIConfig:
             # Emitted only when declared, so a manifest without it keeps producing
             # the identical dict (and the identical signed payload).
             d["loading"] = loading
+        if self.startup:
+            # Only when declared, for the same signed-payload reason as `loading`.
+            d["startup"] = self.startup
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -459,6 +466,8 @@ class UIConfig:
             loading_logo=cls._parse_loading_logo(data.get("loading")),
             frameSources=list(raw_frames) if frames_ok else [],
             bad_frame_sources=not frames_ok,
+            # A non-string (a hand-edited `null` or number) reads as undeclared.
+            startup=data["startup"] if isinstance(data.get("startup"), str) else "",
         )
 
     @classmethod
@@ -615,7 +624,9 @@ def _granted_list(value: Any) -> list[str]:
 
 
 #: The entries ``permissions.bots`` may hold; ``apps.bot_grants`` grants only these.
-BOT_SCOPE_NAMES = ("read", "wake")
+#: ``"tools"`` is read only behind the ``bot_chat_app_tools`` preview
+#: (``kiro_crew.bot_chat_app_tools``).
+BOT_SCOPE_NAMES = ("read", "wake", "tools")
 
 
 def _bot_scopes(value: Any) -> list[str]:
@@ -733,7 +744,9 @@ class Permissions:
     webhookSource: bool = False  # noqa: N815
     #: Bot scopes (``apps.bot_grants``): ``"read"`` lists the Bots the owner ticked
     #: for this app with their status and goals, ``"wake"`` sends one of them the
-    #: gateway's fixed wake line. Any other entry is dropped. A staged grant family,
+    #: gateway's fixed wake line, ``"tools"`` mounts the MCP servers the app offers in
+    #: ``contributes.botChatServers`` on that Bot's own chat (``bot_chat_app_tools``).
+    #: Any other entry is dropped. A staged grant family,
     #: so an update that adds a scope waits for the owner.
     bots: list[str] = field(default_factory=list)
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use

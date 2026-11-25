@@ -26,7 +26,7 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 272 | 42 | 167 | 13 | 27 | 23 |
+| **All features** | 272 | 42 | 166 | 13 | 27 | 24 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
@@ -57,13 +57,13 @@ under `scenarios/` says how the lane checks it.
 | Remote crews & cloud launch (`remote-instances`) | 4 | 0 | 1 | 0 | 1 | 2 |
 | Popouts & embeds (`popout`) | 6 | 0 | 4 | 2 | 0 | 0 |
 | Authentication & sign-in (`auth`) | 3 | 2 | 0 | 0 | 0 | 1 |
-| Onboarding (`onboarding`) | 4 | 0 | 4 | 0 | 0 | 0 |
+| Onboarding (`onboarding`) | 4 | 0 | 3 | 0 | 0 | 1 |
 | Settings (`settings`) | 49 | 12 | 29 | 4 | 0 | 4 |
 | Themes (`themes`) | 3 | 0 | 2 | 0 | 1 | 0 |
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 11 | 0 | 11 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 161 · P3 64. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -358,7 +358,6 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 | P2 | `onboarding-changelog-modal-after-update` | As a user, I want to see what's new after an update, so that I learn about new features. | `/chat` | minimal | nightly | 3 |
 | P2 | `onboarding-first-run-wizard` | As a first-time user, I want a guided setup covering import review and customization, so that the dashboard is set up and I understand the product before my first chat. | `/` | onboarding-fresh | nightly | 6 |
 | P2 | `standalone-mobile-connect` | As a user, I want to pair my phone to this gateway via governed methods and a QR code, so that I can chat on the go. | `/chat` | minimal | nightly | 3 |
-| P2 | `standalone-startup-feature-video` | As a returning user, I want one short clip introducing a new feature on the first launch after it ships, so that I discover what changed. | `/chat` | minimal | nightly | 2 |
 
 ## Settings (`settings`)
 
@@ -509,6 +508,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | excluded | `chat-remote-bound-session` | remote-instances | Remote-bound session | This is not a missing credential but a missing second live Kiro Crew instance plus a network tunnel, which the Xvfb+fake-ACP, no-network target cannot provide. Only the flag-gated menu entry is renderable (cover that in… |
 | excluded | `standalone-cloud-launch` | remote-instances | Cloud launch | Kept excluded rather than needs-secret: beyond real AWS credentials it provisions billable infrastructure and exposes Stop/Delete-by-tag lifecycle, so it must not run even with secrets. Only the lane selector and IAM po… |
 | excluded | `kas-auth-chat-error-row-sign-in-link` | auth | An auth-required turn renders a 'Sign in to Kiro' error row deep-linking to the card | Excluded: the fake ACP backend cannot emit the AcpAuthRequired vocabulary (only [[ERROR]]), so the row and its deep link are unreachable on the target. Closing that harness gap (an auth-required sentinel) is the prerequ… |
+| excluded | `standalone-startup-feature-video` | onboarding | Explore feature video card | Excluded: a clip needs dashboard.feature_videos_enabled, its media on disk and a manifest signed with the offline release key, and the built-in list ships no media, so the card never renders on the target. |
 | excluded | `settings-about-check-for-updates` | settings | Check for updates and install | Network-dependent and restarts the application; not pixel-testable. |
 | excluded | `settings-browser-install-engine` | settings | Install the browser engine from Settings | Network download and host mutation; not pixel-testable deterministically. |
 | excluded | `settings-ui-prefs-backup` | settings | UI preference host backup | Cross-cutting mechanism with no UI of its own; verified through the settings rows it backs, not pixels. |

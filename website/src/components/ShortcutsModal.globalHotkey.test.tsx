@@ -18,7 +18,9 @@ vi.mock('../lib/electron', async (importOriginal) => ({
 
 import ShortcutsModal, { GlobalHotkeyRow } from './ShortcutsModal'
 
-type BridgeWindow = Window & { electronAPI?: { getGlobalHotkey?: () => Promise<unknown> } }
+type BridgeWindow = Window & {
+  electronAPI?: { getGlobalHotkey?: () => Promise<unknown>; setGlobalHotkey?: (accelerator: string) => Promise<unknown> }
+}
 
 afterEach(() => {
   delete (window as BridgeWindow).electronAPI
@@ -42,6 +44,34 @@ describe('GlobalHotkeyRow', () => {
     expect(await screen.findByText(/Show or focus/)).toBeInTheDocument()
     if (notice) expect(screen.getByText(notice)).toBeInTheDocument()
     else expect(screen.queryByText(/Couldn't register/)).toBeNull()
+  })
+
+  it.each([
+    ['a bound hotkey', { accelerator: 'Alt+Shift+K', requested: 'Alt+Shift+K' }, true],
+    ['a hotkey that fell back to the default', { accelerator: 'Alt+Shift+K', requested: 'Ctrl+Shift+J' }, true],
+    ['a hotkey that is off', { accelerator: '', requested: '' }, false],
+  ])('tags %s as always working only while a chord is bound', async (_case, info, tagged) => {
+    // The shell holds the chord, so the "Enable shortcuts" switch does not turn it off.
+    ;(window as BridgeWindow).electronAPI = {
+      getGlobalHotkey: async () => ({ ...info, default: 'Alt+Shift+K' }),
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><GlobalHotkeyRow /></QueryClientProvider>)
+    expect(await screen.findByText(/Show or focus/)).toBeInTheDocument()
+    expect(screen.queryAllByText('always works')).toHaveLength(tagged ? 1 : 0)
+  })
+
+  it.each([
+    ['a window that can record the hotkey', true, /in Settings → Shortcuts/, /desktop config file/],
+    ['a window on a remote host or an older shell', false, /desktop config file/, /in Settings → Shortcuts/],
+  ])('the modal hint for %s names the way to change it', async (_case, canRecord, shown, hidden) => {
+    ;(window as BridgeWindow).electronAPI = {
+      getGlobalHotkey: async () => ({ accelerator: '', requested: '', default: 'Alt+Shift+K' }),
+      ...(canRecord ? { setGlobalHotkey: async () => ({}) } : {}),
+    }
+    renderWithProviders(<ShortcutsModal onClose={() => {}} />)
+    expect(await screen.findByText(shown)).toBeInTheDocument()
+    expect(screen.queryByText(hidden)).toBeNull()
   })
 
   it('closes the shortcuts modal when the notice hands off to the chat', async () => {

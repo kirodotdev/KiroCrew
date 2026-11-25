@@ -6,7 +6,6 @@ import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
 import { isRelayCrewPane, isRelayCrewWindow, offlineCover, offlineReason } from '../utils/offlineReason'
 import { useHostOfflineCover } from './useHostOfflineCover'
-import { localCovered, prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -16,9 +15,6 @@ import { appPopoutRouteOf } from '../utils/appPopoutRoute'
 import type { NavIntent } from '../utils/popoutController'
 import {
   applyNavIntentInMain,
-  chatDeepLinkSlot,
-  isAppDetailPath,
-  isMembersPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -29,6 +25,8 @@ import { useDashboardHealthProbe } from '../hooks/useDashboardHealthProbe'
 import { useGatewayConnecting } from '../hooks/useConnected'
 import { useConfigAutolinkRules } from '../hooks/useConfigAutolinkRules'
 import { usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
+import { useInternalNavHandler } from '../hooks/useInternalNavHandler'
+import { useOpenInAppPath } from './nav/openInAppPath'
 import { useTheme } from '../hooks/useTheme'
 import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { useShellBranding } from './branding'
@@ -62,9 +60,9 @@ import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
-import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
-import { useCrewAddressLink, useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
+import { useFullScreenExitHint } from './platform/fullScreenExitHint'
+import { useCrewAddressLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import AppIcon from '../components/AppIcon'
@@ -91,6 +89,8 @@ import { useConfigPendingCount } from '../pages/settings/configPendingQuery'
 import { resolveSlotOverlays, type SlotOwners } from '../apps/overlaySlots'
 import { isChatRoute, useRouteActiveModel } from './nav/routeActive'
 import { appPathname } from '../lib/basePath'
+import { useAppNavHidden } from '../lib/appNavHidden'
+import { BUILTIN_SURFACE_NAV } from '../surfaces/surfaceData'
 import { slotRowByKey } from '../store/slotIndex'
 
 /** Mobile nav drawer travel: its 220px width + the 8px mx-2 inset + border. */
@@ -898,6 +898,10 @@ export function useAppShell() {
   }, [connected, refreshAppNav])
 
   const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
+  // Settings > Display > View > "Show Discover in the sidebar": off puts
+  // Discover's nav id in this browser's sidebar hidden set. While it is off the
+  // rails draw no Discover row and its updates badge rides the Library row.
+  const discoverInRail = !useAppNavHidden().has(BUILTIN_SURFACE_NAV.apps.navId)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
@@ -940,68 +944,20 @@ export function useAppShell() {
   // Native app-menu navigation (Settings…, About) and the Crew Companion's "Open
   // session" CTA: the Electron main process sends an in-app path; route to it.
   // The bridge hands over plain absolute app paths only (see
-  // `subscribeNativeNavigate`).
-  //
-  // A session deep link takes the same route a popout's nav intent does — select
-  // the session, then navigate — rather than a bare navigate. `?sid=` is read by
-  // ChatPage only while it MOUNTS, so from an already-open /chat a bare navigate
-  // would surface the dashboard with the previous session still on screen: the
-  // window comes forward and the notification appears to have opened nothing.
-  //
+  // `subscribeNativeNavigate`). An in-app link (`utils/internalNav`) opens
+  // through the same function (`useOpenInAppPath`).
   // A crew link (`kirocrew://chat?crew=`) switches panes and connects only from
-  // HERE; the same route on the dashboard's own address only opens the crew window.
-  const openCrewLink = useCrewDeepLink()
+  // `openInAppPath`; the same route on the dashboard's own address only opens the crew window.
   useCrewAddressLink()
   usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
-  useEffect(() => {
-    return subscribeNativeNavigate(path => {
-      if (openCrewLink(path)) return
-      const slotKey = chatDeepLinkSlot(path)
-      if (slotKey) {
-        // The session lives in the local Crew. Over a Remote Crew pane, bring
-        // the local Crew forward first (as the notification banner does), so
-        // the leave prompt and the switched session are both on screen.
-        if (localCovered(appStore.getState())) dispatch(setActiveId(null))
-        applyNavIntentInMain(
-          // `path` is deliberately dropped in favour of the bare route: a
-          // NavIntent carries no query string, and ChatPage writes `?sid=` back
-          // into the URL itself once the session is active.
-          { path: '/chat', slotKey },
-          {
-            navigate,
-            switchSlot: (key) => { dispatch(switchSlot({ key, announceOnMissing: true })) },
-            mayLeave: mayLeaveForNavigation,
-          },
-        )
-        return
-      }
-      // A Remote Crew add link (`kirocrew://remote-crew/add`) only fills in the
-      // local Crew's add form; the user still presses Add. Like an app link it
-      // brings the local Crew forward first. The values travel in the store and
-      // the route is the bare page, so the dashboard's own URL never carries them.
-      const addCrew = remoteCrewAddFromPath(path)
-      if (addCrew) {
-        if (localCovered(appStore.getState())) dispatch(setActiveId(null))
-        if (!mayLeaveForNavigation()) return
-        dispatch(prefillCrewAddForm(addCrew))
-        navigate(REMOTE_CREW_SETTINGS_PATH)
-        return
-      }
-      // An app detail or Bots page link names an app or Bot in the local Crew. Over a
-      // Remote Crew pane a bare navigate would route the hidden local pane, so
-      // bring the local Crew forward first, as a session link does: the leave
-      // prompt then sits over the draft it is asking about.
-      if ((isAppDetailPath(path) || isMembersPath(path)) && localCovered(appStore.getState())) {
-        dispatch(setActiveId(null))
-      }
-      // Same leave check as every other in-app exit: a native menu entry
-      // replaces the page on screen just like a sidebar click does.
-      if (!mayLeaveForNavigation()) return
-      navigate(path)
-    })
-  }, [navigate, dispatch, mayLeaveForNavigation, appStore, openCrewLink])
+  const openInAppPath = useOpenInAppPath()
+  useEffect(() => subscribeNativeNavigate(openInAppPath), [openInAppPath])
+  // Popout and embed windows install no in-app link navigator: a dashboard path
+  // there keeps its previous behavior.
+  useInternalNavHandler(!isPopout && !isEmbed, openInAppPath)
   // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
+  useFullScreenExitHint()
 
   useEffect(() => {
     dispatch(fetchSlots()).then(action => {
@@ -1166,7 +1122,7 @@ export function useAppShell() {
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
     mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
-    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,

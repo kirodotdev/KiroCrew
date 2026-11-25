@@ -15,6 +15,7 @@ import asyncio
 import errno
 import functools
 import importlib
+import json
 import logging
 import os
 import socket
@@ -1007,6 +1008,95 @@ class TestStartDashboardWiring:
                 )
             runner.cleanup.assert_awaited_once_with()
             sweep.assert_awaited_once_with()
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("which", ["primary", "entry"])
+    async def test_a_listener_closed_before_its_guard_was_armed_stops_the_start(
+        self, tmp_path: Path, monkeypatch, which: str
+    ) -> None:
+        """The start publishes nothing and releases what it holds.
+
+        The gateway's own listener exits with status 69; an entry listener stops the
+        start as an entry port that cannot be bound does.
+        """
+        from kiro_crew.dashboard import entry_gate
+        from kiro_crew.dashboard.listener_guard import LISTENER_LOST_EXIT_CODE
+
+        reserved_socket = _fake_reserved_socket()
+        runner = SimpleNamespace(setup=AsyncMock(), cleanup=AsyncMock())
+        sweep = AsyncMock()
+        published = MagicMock()
+        states: list[Any] = []
+        monkeypatch.setattr(srv, "build_hardened_runner", MagicMock(return_value=runner))
+        monkeypatch.setattr(srv, "_stop_spawned_backends", sweep)
+        monkeypatch.setattr(srv, "_write_instance_credentials", published)
+        monkeypatch.setattr(srv, "_kick_crewmate_prune", published)
+        order: list[str] = []
+        runner.cleanup.side_effect = lambda: order.append("cleanup")
+
+        def _guard(name: str) -> SimpleNamespace:
+            return SimpleNamespace(stop=lambda: order.append(name))
+
+        def _closed(state: Any) -> str:
+            # The guards a Windows start would have armed by now, oldest first.
+            state._listener_guard = _guard("primary")
+            state._entry_listener_guards = [_guard("entry 127.0.0.1"), _guard("entry ::1")]
+            states.append(state)
+            return which
+
+        monkeypatch.setattr(srv, "_listener_closed_before_arming", _closed)
+        expected = SystemExit if which == "primary" else entry_gate.EntryPortError
+
+        try:
+            with pytest.raises(expected) as stopped:
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                )
+            if which == "primary":
+                assert stopped.value.code == LISTENER_LOST_EXIT_CODE == 69
+            assert len(states) == 1
+            # Every guard is stopped, newest first, before the cleanup's first await.
+            assert order == ["entry ::1", "entry 127.0.0.1", "primary", "cleanup"]
+            published.assert_not_called()
+            assert states[0]._listener_bound_port == 0
+            runner.cleanup.assert_awaited_once_with()
+            sweep.assert_awaited_once_with()
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_entry_port_stops_the_start_before_any_backend_or_serve(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A dashboard.entry_port that can never be served stops the boot first.
+
+        The gateway's own port is the wrong value here, a refusal on every platform.
+        """
+        from kiro_crew.dashboard import entry_gate
+
+        reserved_socket = _fake_reserved_socket()
+        (tmp_path / "config.json").write_text(
+            json.dumps({"dashboard": {"entry_port": reserved_socket.getsockname()[1]}})
+        )
+        build_runner = MagicMock()
+        monkeypatch.setattr(srv, "build_hardened_runner", build_runner)
+        spawn = MagicMock(return_value=[])
+        try:
+            with pytest.raises(entry_gate.EntryPortError):
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                    backend_start_side_effect=spawn,
+                )
+            spawn.assert_not_called()
+            build_runner.assert_not_called()
             reserved_socket.close.assert_called_once_with()
         finally:
             await _cancel_stray_tasks()

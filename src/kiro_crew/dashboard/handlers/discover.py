@@ -269,7 +269,9 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     local_keys = {s["key"] for s in all_skills}
 
     if featured:
-        search_response = _featured_response(registry, provider_filter, limit)
+        search_response = await asyncio.to_thread(
+            _featured_response, registry, provider_filter, limit
+        )
     else:
         search_response = await registry.search_with_outcomes(
             query, provider=provider_filter, limit=limit
@@ -321,7 +323,7 @@ async def api_skills_discover(request: web.Request) -> web.Response:
             }
         )
 
-    active_providers = registry.available_provider_names
+    active_providers = await asyncio.to_thread(lambda: registry.available_provider_names)
     provider_outcomes = []
     for outcome in search_response.provider_outcomes:
         entry = {
@@ -515,7 +517,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
-    if provider is None or not provider_available(provider):
+    if provider is None or not await asyncio.to_thread(provider_available, provider):
         return web.json_response(
             {
                 "error": f"Provider '{provider_name}' is not available",
@@ -963,7 +965,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
-    if provider is None or not provider_available(provider):
+    if provider is None or not await asyncio.to_thread(provider_available, provider):
         return web.json_response(
             {
                 "error": f"Provider '{provider_name}' is not available",

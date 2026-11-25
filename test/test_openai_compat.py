@@ -220,6 +220,9 @@ def _make_slot():
     slot.is_closing = False
     slot.event = asyncio.Event()
     slot._pending = []
+    slot._pending_consumers = 0
+    slot._stream_epoch = 0
+    slot._stream_handoffs = {}
 
     def drain():
         out = slot._pending[:]
@@ -355,6 +358,38 @@ class TestApiCompletionsBlocking:
         assert data["model"] == "vanellope"
         assert data["choices"][0]["message"]["content"] == "hey there"
         assert data["choices"][0]["finish_reason"] == "stop"
+
+    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "stream"])
+    async def test_a_reader_releases_its_epoch_when_it_leaves(self, stream):
+        slot = _make_slot()
+        # Another reader is attached, so leaving does not clear everyone's entries.
+        slot._pending_consumers = 2
+        state = _make_state(slot)
+        body = {
+            "id": "test-slot",
+            "model": "vanellope",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        }
+        request = _make_request(body, state)
+        resp = MagicMock()
+        resp.prepare = AsyncMock()
+        resp.write = AsyncMock()
+
+        async def fake_run_chat(s, sl, prompt, **_kwargs):
+            slot._pending.append({"role": "assistant", "content": "hey"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=resp),
+        ):
+            await api_completions(request)
+
+        assert slot._stream_epoch == 1
+        # Left in place, this entry would keep a later turn's reply for nobody.
+        assert 1 not in slot._stream_handoffs
 
     async def test_turn_start_pushes_the_slot_list(self):
         """The started turn is pushed while it holds the slot, so the

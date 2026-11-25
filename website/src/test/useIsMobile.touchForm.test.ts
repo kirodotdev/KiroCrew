@@ -228,7 +228,7 @@ describe('the Touch screen layout choice on a touch-first device', () => {
 describe('md: and up are the desktop form (tailwind-theme.css)', () => {
   it('each breakpoint variant from md up is off while <html> is marked phone', () => {
     const css = readFileSync(join(__dirname, '..', 'tailwind-theme.css'), 'utf8')
-    for (const [name, rem] of [['md', '48rem'], ['lg', '64rem'], ['xl', '80rem'], ['2xl', '96rem']]) {
+    for (const [name, rem] of [['md', '768px'], ['lg', '1024px'], ['xl', '1280px'], ['2xl', '1536px']]) {
       const re = new RegExp(`@custom-variant ${name} \\{\\s*@media \\(width >= ${rem}\\) \\{ &:where\\(:root:not\\(\\[data-layout-form="phone"\\]\\) \\*\\) \\{ @slot; \\} \\}`)
       expect(css, `${name}: keyed on the form`).toMatch(re)
     }

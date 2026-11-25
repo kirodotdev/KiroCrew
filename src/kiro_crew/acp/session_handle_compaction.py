@@ -12,7 +12,7 @@ Instance fields written: ``_between_turn_credits``, ``_codex_compaction_pending`
 
 Instance fields read: ``_cancelled``, ``_compaction_terminal_seen``,
 ``_kas_compact_turn``, ``_last_stop_reason``, ``_model``, ``_native_compaction_states``, ``_queue``,
-``_resolved_model_id``, ``_runtime``, ``_turn_done``, ``last_prompt_stats``.
+``_resolved_model_id``, ``_runtime``, ``_session_id``, ``_turn_done``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -283,13 +283,24 @@ async def wait_for_compaction(
                     # Redact backend-echoed summary before it reaches callers
                     # (compact() surfaces this to the dashboard).
                     summary = redact_text(str(params.get("summary", "") or ""))
-                    if s_type == "failed" and not summary:
-                        # kiro-cli leaves `summary` empty on failure, so the
-                        # manual /compact notice would say nothing — carry
-                        # the notification's own reason, read by the same
-                        # extractor the dispatch loop uses for the streaming
-                        # notice. Mirrors AcpClient.wait_for_compaction.
-                        summary = compaction_failure_detail(params)
+                    if s_type == "failed":
+                        if not summary:
+                            # kiro-cli leaves `summary` empty on failure, so the
+                            # manual /compact notice would say nothing — carry
+                            # the notification's own reason, read by the same
+                            # extractor the dispatch loop uses for the streaming
+                            # notice. Mirrors AcpClient.wait_for_compaction.
+                            summary = compaction_failure_detail(params)
+                        # The same record the prompt dispatch loop writes.
+                        logger.warning(
+                            "Compaction failed on session %s: %s",
+                            self._session_id,
+                            (
+                                summary
+                                if self._runtime.recording_allowed
+                                else "reason not logged outside persistent memory"
+                            ),
+                        )
                     return {"type": s_type, "summary": summary}
                 continue
             # Track metadata if it arrives (also consumes it).

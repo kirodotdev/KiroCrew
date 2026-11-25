@@ -23,7 +23,7 @@ import type { ChatTag } from '../../types'
 import type { GuideStepPlan } from '../../guide/guideActions'
 import type { PaletteBoost } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
-import { compareBySort, compareManual, comparePinnedThenSort, lastActivityEpoch, slotActivityTs, type SortKey } from '../chat/sessionOrder'
+import { compareBySort, compareManual, comparePinnedThenSort, lastActivityEpoch, slotActivityTs, staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
@@ -221,6 +221,8 @@ export interface RowShell {
   recentTintCount: number
   /** `dashboard.show_unread_dot`: false hides the per-row unread dot. Absent reads as shown. */
   showUnreadDot?: boolean
+  /** `dashboard.expand_linked_items`: true starts each row's linked-items strip open. Absent reads as folded. */
+  expandLinkedItems?: boolean
   /** "Group by kind" splits the list (`./kindSections`): the unpinned rows are then
    *  no manual-order targets, like a ranked search, since the drawn order is the
    *  sections' and a place between two rows would not be the one the order saves.
@@ -515,6 +517,7 @@ function makeLaneOrder(
   pinnedRank: ReadonlyMap<string, number>,
   isPinned: SidebarRows['isPinned'],
   manualRank: ReadonlyMap<string, number>,
+  isRunning: SidebarRows['isRunning'],
 ): SidebarRows['laneOrder'] {
   // Search relevance, not the sort: pinning is a reachability promise for browsing,
   // not a ranking hint inside explicit search results. A peer row is never ranked,
@@ -546,7 +549,7 @@ function makeLaneOrder(
       if ((aLocal === null) !== (bLocal === null)) return aLocal === null ? 1 : -1
       return compareManual(a, b, slot => (localKeyOf(slot) === null ? undefined : manualRank.get(slot.key)))
     }
-    return compareBySort(a, b, sortKey)
+    return compareBySort(a, b, sortKey, isRunning)
   }
 }
 
@@ -846,7 +849,7 @@ function makeFolderTree(filteredSlots: Slot[], allSlots: Slot[], folderOf: Sideb
 
 function makeStaleSplit(listNarrowed: boolean, sortKey: SortKey, clock: () => number): SidebarRows['staleSplit'] {
   return (list, stale) => {
-    const active = !listNarrowed && sortKey === 'date-desc'
+    const active = !listNarrowed && staleCollapseApplies(sortKey)
     return splitStaleSlots(list, active ? stale.collapseMs : 0, clock(), slot => lastActivityEpoch(slot) * 1000, stale.isExempt)
   }
 }
@@ -900,8 +903,9 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const isPinned = isPinnedMemo.value
   const isRunning = isRunningMemo.value
 
-  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank], () =>
-    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank))
+  // The running set re-sorts only `active-then-date`, the one sort that reads it.
+  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank, sortKey === 'active-then-date' ? running : null], () =>
+    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank, isRunning))
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
   const isRowStatusHidden = reuse(prev?.isRowStatusHidden, [status.hidden, statusMatches.value], () =>

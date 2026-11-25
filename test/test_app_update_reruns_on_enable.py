@@ -1,6 +1,6 @@
 """An update of an enabled app runs its ``setup.onEnable`` again, in the new tree.
 
-An update replaces the installed folder with a fresh copy that never carries
+An update replaces the installed folder's files with a fresh copy that never carries
 ``node_modules`` or ``.venv``, and keeps the app enabled, so whatever ``onEnable``
 installed there is gone unless the script runs again. Every route that updates an
 installed app (both branches of ``POST /api/apps/{name}/update``, an adopted record

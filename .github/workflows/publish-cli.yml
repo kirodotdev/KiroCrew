@@ -557,10 +557,14 @@ jobs:
           PYREQ: ${{ steps.manifest.outputs.python_requires }}
         run: |
           set -euo pipefail
-          # PEP 503 static "simple" index per channel, so pip/uv can install
-          # natively (verified invocation; --index-url alone would cut off PyPI
-          # and fail on dependencies):
-          #   pip install --pre kirocrew --extra-index-url ${CDN_BASE}/feed/<channel>/simple/
+          # PEP 503 static "simple" index per channel, so uv can install natively
+          # with this index listed first (docs/guides/install.md, "Installing a
+          # published wheel with pip"):
+          #   uv tool install --config-file kirocrew-uv.toml kirocrew
+          # Do not hand pip this index beside PyPI (--extra-index-url): pip takes
+          # the highest version from either index, and a different project named
+          # kirocrew is on PyPI. --index-url alone would cut off PyPI and fail on
+          # dependencies.
           # pip verifies the #sha256= fragment on each link, giving the same
           # fail-closed integrity as the feed. Lives under feed/ because that
           # prefix is CI-writable and CloudFront serves it no-cache.

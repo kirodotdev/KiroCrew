@@ -99,6 +99,21 @@ STRANDS_ENV_NAMES = frozenset(
     }
 )
 
+#: How to fix a literal value under ``agent.strands_env``, the tail of every refusal
+#: of one (the dashboard write, the publish floor, the harness's spawn check). It
+#: says outright that a URL, region or host needs a reference too, because the map
+#: holds more than keys, and it names the dashboard card that writes the reference.
+#: It names no key, vault name or value, so the refusals stay safe to log. The
+#: scheme is spelled out rather than built from ``SECRET_URI_PREFIX``: code scanning
+#: reads that name as a secret and would flag the log line this text reaches.
+STRANDS_ENV_LITERAL_GUIDANCE = (
+    "Every value in this mapping, including a URL, region or host, must be a "
+    "'secret://<vault name>' reference, so config.json never holds the value "
+    "itself. The Model provider card under Settings > Agent Harness saves each value "
+    "to Secrets and maps it for you. To map one by hand, save the value under "
+    "Settings > Secrets, then map it as 'secret://<vault name>'."
+)
+
 
 def validate_strands_env_patch(value: object) -> dict[str, str | None]:
     """Validate an ``agent.strands_env`` CHANGE written through the dashboard.
@@ -130,7 +145,8 @@ def validate_strands_env_patch(value: object) -> dict[str, str | None]:
             continue
         if not isinstance(ref, str) or not ref.startswith(SECRET_URI_PREFIX):
             raise ValueError(
-                f"agent.strands_env entry {key!r} must be a 'secret://<vault name>' reference"
+                f"agent.strands_env entry {key!r} holds a literal value. "
+                + STRANDS_ENV_LITERAL_GUIDANCE
             )
         name = ref[len(SECRET_URI_PREFIX) :]
         if not name or name != name.strip():

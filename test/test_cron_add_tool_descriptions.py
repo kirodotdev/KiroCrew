@@ -44,3 +44,19 @@ def test_the_description_says_a_bots_scheduled_turn_cannot_message_sessions():
     assert "runs on its worker" in text
     assert "cannot message other sessions" in text
     assert "worker report" in text
+
+
+def test_the_script_description_says_session_calls_reach_only_sessions_the_cron_created():
+    """The gateway refuses a script cron's session calls on a slot another creator made."""
+    text = _cron_add_properties()["script"]["description"]
+    assert "reach only sessions this cron created" in text
+    assert "another creator made" in text
+    assert "not_creator" in text
+
+
+def test_send_to_session_docstring_names_the_not_creator_refusal():
+    from kiro_crew.cron_script_context import ScriptContext
+
+    doc = ScriptContext.send_to_session.__doc__ or ""
+    assert "another creator made" in doc
+    assert "not_creator" in doc

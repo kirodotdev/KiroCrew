@@ -891,6 +891,9 @@ class _DeleteRequest:
         self.match_info = {"agent_id": agent_id}
         self.query: dict[str, str] = {}
         self._extra = {} if app is None else {"app": app}
+        if app == "":
+            # The owner's own dashboard session: the local owner, no owner set.
+            self._extra.update(user="local-app", is_dashboard_user=True)
 
     def __contains__(self, key: str) -> bool:
         return key in self._extra

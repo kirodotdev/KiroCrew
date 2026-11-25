@@ -85,8 +85,14 @@ export const focusPopout = controller.focusPopout
  * the app's main dashboard page instead.
  */
 export const returnSelfToMain = controller.returnSelfToMain
-/** Register THIS window as the live pop-out for `route` (responder role). Returns cleanup. */
+/**
+ * Register THIS window as the live pop-out for `route` (responder role).
+ * `onNavigate` gets the app-space path of each {@link navigatePopout} for it.
+ * Returns cleanup.
+ */
 export const registerPopout = controller.registerPopout
+/** Ask the pop-out window of `route` to show the app-space `path` (its `onNavigate`). */
+export const navigatePopout = controller.navigatePopout
 /**
  * From inside an app pop-out: forward a navigation that LEAVES the app (a "go
  * to chat" button, a link to another page) to a main dashboard window instead

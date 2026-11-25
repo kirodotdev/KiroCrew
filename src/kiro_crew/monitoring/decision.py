@@ -7,6 +7,7 @@ import json
 
 from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring import models
+from kiro_crew.monitoring.also_wake import also_wake_waiting
 
 # A skip that made no API call is not evidence about the target: the counters
 # refuse to charge it, and the retirement PREDICTION here must refuse to spend it.
@@ -202,7 +203,12 @@ def _fold_stall_streak(
     :func:`monitor_stall_reason` relies on. A subject whose checks flap never
     builds a streak and is retired by its runtime budget, with an honest reason.
     """
-    if decision is not _STALL_COUNTED_DECISION or not _verdict_is_settled(entries):
+    # An extra still open, or owing its wake, means the watch is still waiting.
+    if (
+        decision is not _STALL_COUNTED_DECISION
+        or not _verdict_is_settled(entries)
+        or also_wake_waiting(state)
+    ):
         state.stall_digest = ""
         state.stall_streak = 0
         state.stall_started_at = 0.0
@@ -255,6 +261,22 @@ def _decide_effect(
         return _coalesce_actionable(state, observation, now=now)
     # Any non-actionable outcome settles the subject, so no window stays open.
     _close_window(state, now=now)
+    if (
+        observation.status is MonitorObservationStatus.PENDING
+        and observation.conditions
+        and (
+            observation.supplemental_provider_error is None
+            or observation.supplemental_provider_error in _RETRYABLE_PROVIDER_ERRORS
+        )
+    ):
+        # A pending subject names a condition only on the one tick an edge happened
+        # (the provider derives it from the previous reading), so the next tick no
+        # longer carries it: holding it for the floor or a supplemental retry would
+        # lose it, and it needs no mask because it does not repeat. Only presence
+        # is read here, not a condition's fields. The window stays closed, so a
+        # failure on the next tick still wakes at once. A permanent supplemental
+        # failure still stops the watch below.
+        return MonitorDecision.WAKE_ACTIONABLE
     if observation.supplemental_provider_error is not None:
         return _supplemental_provider_error_decision(
             state, state.budgets, observation.supplemental_provider_error

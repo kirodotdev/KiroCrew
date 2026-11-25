@@ -362,7 +362,7 @@ class TestCliChat:
         provider = await _repl_once(monkeypatch, cfg, "builder")
         # The turn ran, and 50% sits below the global, so nothing restarted.
         cli_chat._send_and_print.assert_awaited_once_with(
-            provider, "hello", interactive=True, gate=None
+            provider, "hello", interactive=True, gate=None, new_session=True
         )
         provider.compact.assert_not_awaited()
         provider.shutdown.assert_not_awaited()

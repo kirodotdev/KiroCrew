@@ -8,6 +8,7 @@ the stale loaded unit ``service status`` names.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -23,15 +24,18 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _fake_systemctl,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
 )
 
+from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.service.common import (
     RESTART_NOT_UP,
     RESTART_REFUSED,
     RESTART_UNCONFIRMED,
     SERVICE_NAME,
     Platform,
+    systemd_quote,
 )
 
 
@@ -1074,6 +1078,112 @@ class TestLinuxStatusNamesAStaleLoadedUnit:
             for user_scope in (False, True):
                 rendered = svc_linux.render_unit(user_scope=user_scope).splitlines()
                 assert f"RestartPreventExitStatus={svc_linux.LIVE_HOLDER_EXIT_CODE}" in rendered
+
+
+@pytest.mark.skipif(not IS_POSIX, reason="the managed venv layout is POSIX-only")
+class TestLinuxStatusNamesAUnitStartingTheInstallerVenv:
+    """``service status`` names a LOADED ``ExecStart`` program in the legacy
+    ``crew-venv`` once ``crew-venv-current`` names a tree an in-app update
+    installed, with the command that points the unit through the link."""
+
+    @pytest.fixture(autouse=True)
+    def _not_root(self, _floor_monkeypatch, tmp_path):
+        from kiro_crew.service import linux as svc_linux
+
+        _floor_monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        _floor_monkeypatch.setenv("USER", "tester")
+        _floor_monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "system" / _UNIT)
+        user_unit = tmp_path / ".config" / "systemd" / "user" / _UNIT
+        _floor_monkeypatch.setattr(svc_linux, "user_unit_file_path", lambda: user_unit)
+
+    @staticmethod
+    def _status(program, *, user=False):
+        """``status()`` with one scope's unit loaded, starting *program*: the system
+        unit, or with *user* the per-user unit at ``user_unit_file_path()``."""
+        from kiro_crew.service import linux as svc_linux
+
+        if user:
+            fragment = str(svc_linux.user_unit_file_path())
+            fake = _fake_systemctl(system=None, user=_RUNNING, user_fragment=fragment)
+        else:
+            fake = _fake_systemctl(system=_RUNNING, user=None)
+
+        def run(argv, *a, **k):
+            tokens = list(argv)
+            if "show" in tokens and "ExecStart" in tokens and ("--user" in tokens) == user:
+                body = (
+                    f"ExecStart={{ path={program} ; argv[]={program} gateway "
+                    "--no-open ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; "
+                    "pid=0 ; code=(null) ; status=0/0 }\n"
+                )
+                return subprocess.CompletedProcess(tokens, 0, body, "")
+            return fake(argv, *a, **k)
+
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            return svc_linux.status()
+
+    def test_a_unit_starting_the_legacy_tree_is_named_once_an_update_moved_the_link(
+        self, _floor_monkeypatch, tmp_path
+    ):
+        legacy, update = tmp_path / "crew-venv", tmp_path / "crew-venv-2.0"
+        for tree in (legacy, update):
+            (tree / "bin").mkdir(parents=True)
+            (tree / "bin" / "kirocrew").write_text("", encoding="utf-8")
+        link = tmp_path / "crew-venv-current"
+        link.symlink_to(legacy)
+        _floor_monkeypatch.setenv("KIROCREW_VENV", str(legacy))
+        program, stable = legacy / "bin" / "kirocrew", link / "bin" / "kirocrew"
+        phrase = "which in-app updates never change"
+
+        assert phrase not in self._status(program)
+        link.unlink()
+        link.symlink_to(update)
+        named = [line for line in self._status(program).splitlines() if phrase in line]
+        assert len(named) == 1, named
+        assert f"`{program}`" in named[0] and "`crew-venv-2.0`" in named[0], named
+        assert f"`{stable} service install`" in named[0], named
+        assert phrase not in self._status(stable)
+
+    def test_the_printed_command_keeps_a_path_with_a_space_one_word(
+        self, _floor_monkeypatch, tmp_path
+    ):
+        home = tmp_path / "Kiro Crew"
+        legacy, update = home / "crew-venv", home / "crew-venv-2.0"
+        for tree in (legacy, update):
+            (tree / "bin").mkdir(parents=True)
+            (tree / "bin" / "kirocrew").write_text("", encoding="utf-8")
+        link = home / "crew-venv-current"
+        link.symlink_to(update)
+        _floor_monkeypatch.setenv("KIROCREW_VENV", str(legacy))
+        program, stable = legacy / "bin" / "kirocrew", link / "bin" / "kirocrew"
+        phrase = "which in-app updates never change"
+
+        named = [line for line in self._status(program).splitlines() if phrase in line]
+        assert len(named) == 1, named
+        commands = [c for c in named[0].split("`")[1::2] if c.endswith(" service install")]
+        assert len(commands) == 1, named
+        assert shlex.split(commands[0]) == [str(stable), "service", "install"], named
+
+    def test_the_per_user_remedy_quotes_the_path_the_way_systemd_reads_it(
+        self, _floor_monkeypatch, tmp_path
+    ):
+        home = tmp_path / "100%"
+        legacy, update = home / "crew-venv", home / "crew-venv-2.0"
+        for tree in (legacy, update):
+            (tree / "bin").mkdir(parents=True)
+            (tree / "bin" / "kirocrew").write_text("", encoding="utf-8")
+        link = home / "crew-venv-current"
+        link.symlink_to(update)
+        _floor_monkeypatch.setenv("KIROCREW_VENV", str(legacy))
+        program, stable = legacy / "bin" / "kirocrew", link / "bin" / "kirocrew"
+        phrase = "which in-app updates never change"
+
+        rendered = self._status(program, user=True)
+        named = [line for line in rendered.splitlines() if phrase in line]
+        assert len(named) == 1, named
+        value = named[0].rpartition(" at `")[2].partition("`")[0]
+        assert value == systemd_quote(str(stable)), named
+        assert "%%" in value, named
 
 
 class TestLinuxStatusNamesALoadedStartLimitOtherThanTheUnits:

@@ -599,11 +599,15 @@ def main() -> None:
 
     cli_parser_agent.register_knowledge_parser(sub)
     cli_parser_admin.register_secrets_parser(sub)
+    from kiro_crew.connected_computers.cli import register_parser as register_connected_computer
+
+    register_connected_computer(sub)
     cli_parser_admin.register_pod_parser(sub)
     cli_parser_gateway.register_update_parser(sub)
     cli_parser_gateway.register_stop_parser(sub)
     cli_parser_gateway.register_restart_parser(sub)
     cli_parser_gateway.register_gateway_pid_parser(sub)
+    cli_parser_gateway.register_mcp_parser(sub)
     cli_parser_gateway.register_service_parser(sub)
     cli_parser_gateway.register_sandbox_parser(sub)
     cli_parser_gateway.register_kas_parser(sub)
@@ -1267,6 +1271,12 @@ def main() -> None:
         from kiro_crew.cli_server import _gateway_pid
 
         _gateway_pid(args.port)
+    elif args.command == "mcp":
+        from kiro_crew.cli_commands_mcp import mcp_cmd
+
+        rc = mcp_cmd(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 
@@ -1289,6 +1299,10 @@ def main() -> None:
         from kiro_crew.cli_server import _token
 
         _token(args)
+    elif args.command == "connected-computer":
+        from kiro_crew.connected_computers.cli import run as connected_computer_cmd
+
+        sys.exit(connected_computer_cmd(args))
     elif args.command == "open":
         from kiro_crew.cli_open import cmd_open
 

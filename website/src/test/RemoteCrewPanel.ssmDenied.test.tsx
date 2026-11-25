@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { __resetErrorJournalForTests, __resetNavSeamForTests, consumeChatHandoff, installSoftNavigate } from '../utils/errorReport'
 
@@ -103,7 +103,7 @@ describe('RemoteCrewPanel: an SSM connect IAM refused (row 52)', () => {
       new ApiError(502, RAW, JSON.stringify({ error: RAW, error_code: 'ssm_start_session_denied', code: 'instance_connect_failed' })),
     )
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await u.click(await screen.findByRole('button', { name: /^Connect$/i }))
     const summary = await screen.findByText(/Connect to s1 failed: This AWS role isn't allowed/)
     const notice = summary.closest('[role="alert"]') as HTMLElement

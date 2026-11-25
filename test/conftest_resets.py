@@ -40,14 +40,20 @@ def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
     ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
     while it is critical. A runner short of memory would then stall every test that
     starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
-    pacing passes its own reader to ``BootPacer``.
+    pacing passes its own reader to ``BootPacer``. Every tick also asks
+    ``memory_hold.read_admission`` and is held while memory is critical, so that
+    reader admits here too; a test about the hold sets its own.
     """
-    from kiro_crew.autonudge_service import boot_pacer
+    from kiro_crew.autonudge_service import boot_pacer, memory_hold
 
     async def _ample() -> str:
         return "ample"
 
+    async def _admitted() -> tuple[bool, str]:
+        return True, ""
+
     _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+    _floor_monkeypatch.setattr(memory_hold, "read_admission", _admitted)
 
 
 @per_test_guard
@@ -1203,9 +1209,10 @@ def _disarm_agent_slice_memory_high():
 def _reset_crewmate_worker_slots():
     """A test that registers a session key as a crewmate worker must not leak it.
 
-    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS`` and
-    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` are process-wide in
-    ``kiro_crew.members_parts.member_sessions``.
+    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS``,
+    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` and ``_SESSION_BACKEND_PICKS`` are
+    process-wide in ``kiro_crew.members_parts.member_sessions``, and so is the
+    thread-born mark in ``kiro_crew.members_parts.worker_conducts``.
     ``note_crewmate_worker_session`` mutates them directly (not through a
     monkeypatch), so a test that calls ``resolve_session_agent_bindings`` or
     ``note_worker_session`` with a worker execution silently contaminates every
@@ -1222,6 +1229,10 @@ def _reset_crewmate_worker_slots():
             module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
             module._SESSION_BACKEND_PICKS.clear()
+        marks = sys.modules.get("kiro_crew.members_parts.worker_conducts")
+        if marks is not None:
+            marks._THREAD_BORN_WORKER_SLOTS.clear()
+            marks._LOGGED_PLAIN.clear()
 
     clear()
     try:
@@ -1391,6 +1402,30 @@ def _reset_persisted_truncation_reports():
 
 
 @per_test_guard
+def _reset_kas_parent_notes():
+    """Start each test with no noted sub-agent run parents.
+
+    Every manager run notes the session that started it, keyed by run key. Tests
+    reuse run keys, so a parent one test noted would join the next test's run and
+    hold it to an unrelated agent's denies. The directory noted for a parent goes
+    with it: it would anchor the next test's limits in a folder of this one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.kas_parent_limits")
+        if module is not None:
+            module._NOTED.clear()
+            module._NOTED_DIRS.clear()
+            module._INCOMPLETE.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_chromium_opt_in_record():
     """Start each test with no browser pid already opted in to page content.
 
@@ -1420,6 +1455,8 @@ def _reset_code_channel_owner_only_notices():
     clock, and tests reuse both ids, so a notice one test sent could silence the
     next test's. ``routing._opening`` lets a channel's unmentioned messages through
     while it is opened, so one a test left would admit the next test's.
+    ``publishing._pr_status_held`` holds a channel whose ``pr_status`` Slack
+    refused, for the process, so a refusal one test planted would mute the next.
     """
 
     def clear():
@@ -1429,6 +1466,9 @@ def _reset_code_channel_owner_only_notices():
         routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
         if routing is not None:
             routing._opening.clear()
+        publishing = sys.modules.get("kiro_crew.slack.code_channels.workspace.publishing")
+        if publishing is not None:
+            publishing._pr_status_held.clear()
 
     clear()
     try:

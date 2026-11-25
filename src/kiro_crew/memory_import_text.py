@@ -34,7 +34,7 @@ _BULLETS = ("- ", "* ", "+ ", "\u2022 ")
 
 
 def _fact_from_line(raw: str) -> str:
-    """The fact a line states, or ``""`` for a blank, heading, fence or label line."""
+    """The fact a line states, or ``""`` for a blank, heading, fence, label or separator line."""
     line = raw.strip()
     if line.startswith(("#", "```", "---")) or line.endswith(":"):
         return ""
@@ -47,7 +47,9 @@ def _fact_from_line(raw: str) -> str:
         head, _, rest = line.partition(" ")
         if head[:-1].isdigit() and head[-1:] in (".", ")"):
             line = rest.strip()
-    return line
+    # A rule (``***``), a setext underline (``=====``) or a table divider (``|---|---|``)
+    # holds no letter or digit and states nothing.
+    return line if any(ch.isalnum() for ch in line) else ""
 
 
 def normalize(fact: str) -> str:

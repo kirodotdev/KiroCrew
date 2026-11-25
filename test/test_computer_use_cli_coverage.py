@@ -90,8 +90,30 @@ class TestBuildDoctorReport:
         )
         assert cu_cli.build_doctor_report()["enabled"] is True
 
+    def test_a_bom_saved_enable_is_reported_as_enabled(self, home, monkeypatch):
+        monkeypatch.setattr(
+            acp_driver, "agent_spec_mcp_refs", lambda agent, *, backends=None: (True, [])
+        )
+        (home / "computer_use.json").write_bytes(b'\xef\xbb\xbf{"enabled": true}')
+        report = cu_cli.build_doctor_report()
+        assert report["enabled"] is True
+        assert not any("computer_use.json" in m for m in report["errors"])
+
+    def test_an_unparseable_state_file_is_named_in_errors(self, home):
+        (home / "computer_use.json").write_text('{"enabled": tr', encoding="utf-8")
+        report = cu_cli.build_doctor_report()
+        assert report["enabled"] is False
+        assert any("computer_use.json could not be parsed" in m for m in report["errors"])
+
+    def test_the_doctor_names_a_bad_keystone_without_a_warning_line(self, home, caplog):
+        (home / "computer_use.json").write_text('{"enabled": tr', encoding="utf-8")
+        with caplog.at_level("WARNING", logger=cu_enable_state.logger.name):
+            report = cu_cli.build_doctor_report()
+        assert [m for m in report["errors"] if "computer_use.json" in m]
+        assert not [r for r in caplog.records if r.name == cu_enable_state.logger.name]
+
     def test_a_state_read_failure_is_recorded_and_not_raised(self, home, monkeypatch):
-        def broken() -> bool:
+        def broken(*_args, **_kwargs) -> bool:
             raise OSError("disk gone")
 
         monkeypatch.setattr(cu_enable_state, "is_enabled", broken)

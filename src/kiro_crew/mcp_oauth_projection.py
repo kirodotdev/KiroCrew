@@ -30,6 +30,9 @@ _MANAGED = frozenset(KIROCREW_BIN_MCP_SERVERS)
 #: is ``clientMetadataUrl``: without a ``clientId`` it changes the engine's grant key.
 OAUTH_WIRE_KEYS = ("clientId", "redirectUri")
 OAUTH_SCOPES_KEY = "oauthScopes"
+#: A confidential client's secret. Never in the block Crew sends; an engine that
+#: takes it gets it through ``_kiro/mcp/oauth/setClientSecret``.
+CLIENT_SECRET_KEY = "clientSecret"
 
 
 def registry_withheld(name: str, entry: dict[str, Any], registry_mode: bool) -> bool:
@@ -39,7 +42,7 @@ def registry_withheld(name: str, entry: dict[str, Any], registry_mode: bool) -> 
 
 def names_client_secret(oauth: Any) -> bool:
     """Whether an ``oauth`` block names a ``clientSecret``, so KAS never receives it."""
-    return isinstance(oauth, Mapping) and bool(oauth.get("clientSecret"))
+    return isinstance(oauth, Mapping) and bool(oauth.get(CLIENT_SECRET_KEY))
 
 
 def wire_scopes(value: Any) -> list[str] | None:
@@ -63,10 +66,27 @@ def wire_oauth(oauth: Any) -> tuple[dict[str, str], list[str] | None]:
     return kept, wire_scopes(oauth.get(OAUTH_SCOPES_KEY))
 
 
-def oauth_withheld(oauth: Any) -> bool:
+def sends_with_secret(oauth: Any) -> bool:
+    """Whether a confidential *oauth* block can reach an engine that takes its
+    secret through ``setClientSecret``: the secret is a string and the block keeps
+    a ``clientId`` without it (the engine keys the secret by url and client id)."""
+    if not names_client_secret(oauth) or not isinstance(oauth[CLIENT_SECRET_KEY], str):
+        return False
+    public = {k: v for k, v in oauth.items() if k != CLIENT_SECRET_KEY}
+    return bool(wire_oauth(public)[0].get("clientId"))
+
+
+def oauth_withheld(oauth: Any, *, sends_secret: bool = False) -> bool:
     """Whether a set ``oauth`` block reaches no engine: :func:`wire_oauth` sends
     nothing from it (a ``clientSecret``, only a ``clientMetadataUrl``, only
-    unknown keys)."""
+    unknown keys).
+
+    With *sends_secret* (an engine that takes the secret through
+    ``setClientSecret``), a confidential block that keeps a ``clientId`` is sent
+    without its secret, so it is not withheld.
+    """
+    if sends_secret and names_client_secret(oauth):
+        return not sends_with_secret(oauth)
     return bool(oauth) and wire_oauth(oauth) == ({}, None)
 
 
@@ -75,12 +95,13 @@ def servers_with_discarded_oauth(
     registry_governed: Callable[[], bool],
     *,
     withheld_only: bool = False,
+    sends_secret: bool = False,
 ) -> list[str]:
     """Names of *spec*'s declared MCP servers whose ``oauth`` block KAS discards.
 
     With *withheld_only*, only the blocks :func:`oauth_withheld` names count: the
     projection sends nothing from those on any engine, while an engine that keeps
-    the block receives the others.
+    the block receives the others. *sends_secret* is handed to :func:`oauth_withheld`.
 
     An entry the projection never declares (muted, or withheld by the registry
     filter) is skipped: it does not run at all, so naming its sign-in would
@@ -96,7 +117,7 @@ def servers_with_discarded_oauth(
         and name
         and isinstance(entry, dict)
         and entry.get("oauth")
-        and (not withheld_only or oauth_withheld(entry["oauth"]))
+        and (not withheld_only or oauth_withheld(entry["oauth"], sends_secret=sends_secret))
         and not mcp_entry_is_muted(entry)
     ]
     if not with_oauth:

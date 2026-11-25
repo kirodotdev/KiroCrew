@@ -135,8 +135,8 @@ gracefully rather than failing the turn.
 - [Blocked commands and credential access](blocked-commands.md): why a command was
   refused, what the agent is told to do instead, and how to check your AWS or SSO
   credential setup
-- [Tool approvals](tool-approvals.md): auto-approve one MCP tool on KAS so it stops
-  asking, and the settings that look like they would but do not
+- [Tool approvals](tool-approvals.md): stop one MCP tool asking with Always allow,
+  and the settings that look like they would but do not
 - [Security model](security-model.md): the defense-in-depth layers, what each one
   protects against, where they deliberately stop, and whether the defaults fit a
   corporate host or only an isolated one

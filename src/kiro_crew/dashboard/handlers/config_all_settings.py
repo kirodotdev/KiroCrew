@@ -38,7 +38,7 @@ WHY_OWNED = "owned"  # another step changes it together with other settings
 WHY_MARKER = "marker"  # Kiro Crew sets it itself as a step is finished
 WHY_ALIAS = "alias"  # read from another setting, so a write here changes nothing
 WHY_TEXT = "text"  # free text such as a path, address or command
-WHY_LOCKED = "locked"  # an organization's policy sets it
+WHY_LOCKED = "locked"  # this edition sets it; no policy term reaches it
 WHY_COMPOUND = "compound"  # several values that must change together
 
 #: Keys the page shows but never changes, each with the reason it shows. A key
@@ -76,6 +76,9 @@ READONLY_REASONS: dict[str, str] = {
     "skills.generate_scripts": WHY_SAFETY,
     "skills.approval_required": WHY_SAFETY,
     "dashboard.terminal.shell": WHY_SAFETY,
+    # Reads, a new chat runs read-only commands without asking; `PUT
+    # /api/dashboard/config` writes it with its own enum check.
+    "dashboard.default_approval_mode": WHY_SAFETY,
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
@@ -123,6 +126,9 @@ READONLY_REASONS: dict[str, str] = {
     "dashboard.shared_crew.containment_enabled": WHY_REACH,
     "dashboard.shared_crew.hard_limits": WHY_REACH,
     "dashboard.shared_crew.ssm_port": WHY_REACH,
+    # A second loopback listener for a reverse proxy that forwards other machines
+    # (dashboard/entry_gate.py); the config file or `kirocrew config set` writes it.
+    "dashboard.entry_port": WHY_REACH,
     # Outbound activity reports.
     "wakatime.enabled": WHY_SHARE,
     "wakatime.send_heartbeats": WHY_SHARE,

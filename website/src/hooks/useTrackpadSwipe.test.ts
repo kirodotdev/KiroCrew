@@ -447,6 +447,88 @@ describe('useTrackpadSwipe: the quiet check after a run', () => {
   })
 })
 
+describe('useTrackpadSwipe: a pinch-zoomed page', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+
+  /** Mounts the hook on a fresh root; returns a wheel that says whether the page took it. */
+  const mountRoot = (onDragStart: () => void) => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+    }))
+    return (dx: number, at: number) => {
+      const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: 0, bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'timeStamp', { value: at })
+      act(() => { root.dispatchEvent(ev) })
+      return ev.defaultPrevented
+    }
+  }
+
+  it('leaves a sideways swipe to the browser while zoomed in, so it pans the view', () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 2 }))
+    const onDragStart = vi.fn()
+    const wheel = mountRoot(onDragStart)
+    for (let i = 0; i < 6; i++) expect(wheel(20, 1 + i * 16)).toBe(false)
+    expect(onDragStart).not.toHaveBeenCalled()
+  })
+
+  /** A relaying frame under a fresh root whose hook accepts frames. */
+  const mountWithFrame = (onDragStart: () => void) => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const post = vi.fn()
+    const frame = document.createElement('iframe')
+    frame.setAttribute('data-wheel-relay', '')
+    // The test DOM gives every frame a null `contentWindow`: stand one in.
+    Object.defineProperty(frame, 'contentWindow', { value: { postMessage: post } })
+    root.appendChild(frame)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+      acceptFrame: () => true,
+    }))
+    const relay = (dx: number, t: number) => {
+      const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx, dy: 0, mode: 0, inv: null, t } })
+      Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+      act(() => { window.dispatchEvent(ev) })
+    }
+    return { post, relay }
+  }
+
+  it("never drags from a frame's relayed run while zoomed in", () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 2 }))
+    const onDragStart = vi.fn()
+    const { post, relay } = mountWithFrame(onDragStart)
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: false, natural: null }, '*')
+    for (let i = 0; i < 6; i++) relay(20, 1 + i * 16)
+    expect(onDragStart).not.toHaveBeenCalled()
+  })
+
+  it('disarms its frames when the page zooms in, and arms them again when it zooms back out', () => {
+    const viewport = Object.assign(new EventTarget(), { scale: 1 })
+    vi.stubGlobal('visualViewport', viewport)
+    const { post } = mountWithFrame(() => {})
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: null }, '*')
+    viewport.scale = 2
+    act(() => { viewport.dispatchEvent(new Event('resize')) })
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: false, natural: null }, '*')
+    viewport.scale = 1
+    act(() => { viewport.dispatchEvent(new Event('resize')) })
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: null }, '*')
+  })
+
+  it('still takes the same swipe at normal zoom', () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 1 }))
+    const onDragStart = vi.fn()
+    const wheel = mountRoot(onDragStart)
+    for (let i = 0; i < 6; i++) wheel(20, 1 + i * 16)
+    expect(onDragStart).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('createTrackpadSwipeReader with the finger phases', () => {
   it('fingers down: a pause past the gap keeps the drag, and the lift ends it', () => {
     let down = true

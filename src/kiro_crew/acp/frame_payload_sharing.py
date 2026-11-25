@@ -8,7 +8,10 @@ the same catalogs. On one long-running gateway, 14,862 tool entries held 52 MiB
 with only 1,382 different ones among them.
 
 :class:`RepeatedPayloads` swaps a list a new frame carries for an equal list the
-runtime already holds, before the frame is queued. Only the lists are shared:
+runtime already holds, before the frame is queued. A list is held for sharing only
+when it matches in type as well as value: Python reads ``True``, ``1`` and ``1.0``
+as equal, and a reader of a tool schema sees three different JSON types. Only the
+lists are shared:
 every frame, its order, the queue's length and each field a reader compares stay
 exactly as the engine sent them, so nothing that reads the queue can tell. No
 reader of these lists writes to them (``absorb_config_options`` stores the list
@@ -26,6 +29,48 @@ _SERVER_LISTS = ("tools", "prompts", "resources", "resourceTemplates")
 #: The most server names whose lists are kept; past it, a new name is not shared.
 #: Far more than a host runs, so it only bounds what a misbehaving engine can grow.
 MAX_SERVERS = 512
+_MISSING = object()
+
+
+def _same_in_type(held: Any, value: Any) -> bool:
+    """Whether *held* and *value* are equal and every value has the same type.
+
+    The engine's frames are untrusted, so a deeply nested schema must not decide how
+    much stack the walk uses: it keeps its own stack of pairs and never recurses.
+    """
+    pending = [(held, value)]
+    while pending:
+        left, right = pending.pop()
+        if left is right:
+            continue
+        kind = type(left)
+        if kind is not type(right):
+            return False
+        if isinstance(left, dict):
+            if len(left) != len(right):
+                return False
+            for key, item in left.items():
+                other = right.get(key, _MISSING)
+                if other is _MISSING:
+                    return False
+                pending.append((item, other))
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                return False
+            pending.extend(zip(left, right))
+        elif left != right:
+            return False
+    return True
+
+
+def _matches(held: list[Any], value: list[Any]) -> bool:
+    """Whether a new list can stand in for the held one without a reader noticing."""
+    try:
+        if held != value:
+            return False
+    except RecursionError:
+        pass  # too deep for the built-in comparison; the walk below decides
+    return _same_in_type(held, value)
 
 
 class RepeatedPayloads:
@@ -69,14 +114,14 @@ class RepeatedPayloads:
             if not isinstance(value, list) or not value:
                 continue
             held = lists.get(field)
-            if held is not None and held == value:
+            if held is not None and _matches(held, value):
                 entry[field] = held
             else:
                 lists[field] = value
 
     def _shared_options(self, options: list[Any]) -> list[Any]:
         held = self._config_options
-        if held is not None and held == options:
+        if held is not None and _matches(held, options):
             return held
         self._config_options = options
         return options

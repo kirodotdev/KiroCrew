@@ -1266,8 +1266,30 @@ class TestGateWithheldServers:
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
         src = inspect.getsource(acp_driver.agent_spec_mcp_refs)
-        assert "drop_gate_withheld(" in src
+        assert "drop_gate_withheld(" in src and "drop_opted_out(" in src
         assert src.index("drop_gate_withheld(") < src.index("unresolved_server_refs(")
+
+
+class TestServersTheSpecExcludesWhole:
+    """A ref to a server the spec itself withholds whole names what it asked for."""
+
+    _SPEC = {"tools": ["@kirocrew-core", "@glean"], "excludedTools": ["@kirocrew-core"]}
+
+    @pytest.mark.parametrize(
+        "backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
+    )
+    def test_it_is_not_reported_on_any_backend(self, backend):
+        found = warn_unresolved_server_refs(
+            self._SPEC, [], backend=backend, agent="a", gateway_enabled=False
+        )
+        assert found == ["@glean"]
+
+    def test_a_per_tool_exclusion_keeps_its_ref_reported(self):
+        spec = {"tools": ["@kirocrew-core"], "excludedTools": ["@kirocrew-core/spawn_run"]}
+        found = warn_unresolved_server_refs(
+            spec, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+        )
+        assert found == ["@kirocrew-core"]
 
 
 class TestServersTheSpecMountsFromMcpJson:

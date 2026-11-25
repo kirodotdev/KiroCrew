@@ -16,8 +16,11 @@ from kiro_crew.apps.builtin_host_grants import (
 
 # Strict internal API paths — exact paths that ONLY internal processes
 # (mcp-core, doctor, cron) call, never the browser. Access requires loopback
-# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied and
-# there is no cookie fall-through (see token_auth.token_auth_middleware).
+# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied. A
+# loopback request with no secret falls through to cookie auth, which admits only
+# the owner's or a teammate's dashboard session (an app token stays under its own
+# scope); every other dashboard session is refused 403 ``owner_only`` (see
+# token_auth.token_auth_middleware).
 #
 # Module-level and shared by BOTH ``start_dashboard`` and ``start_api_server``
 # so the two entrypoints can never drift: the ``--slack-only`` headless server

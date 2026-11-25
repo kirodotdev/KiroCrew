@@ -458,3 +458,18 @@ async def test_client_retry_cannot_discard_an_incompletely_drained_windows_tree(
         await client.ensure_ready()
     assert client._process is original
     spawn.assert_not_awaited()
+
+
+def test_a_reset_left_by_a_pending_drain_keeps_its_cleanup_receipt(monkeypatch, tmp_path):
+    """The reset returns before recording survivors, so the pending cleanup state
+    itself is kept as the receipt a Bot-chat close retry waits on."""
+    from kiro_crew.acp.client import AcpClient
+
+    client = AcpClient(work_dir=tmp_path)
+    receipt = pc._PendingWindowsTreeCleanup()
+    client._process = SimpleNamespace(returncode=None, _windows_cleanup_state=receipt)
+    client._pid = 123
+    monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    client._reset_state()
+    assert client._windows_cleanup_receipt is receipt
+    assert client._unreaped_pids == ()

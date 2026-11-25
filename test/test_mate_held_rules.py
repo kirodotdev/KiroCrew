@@ -660,6 +660,76 @@ def test_undoing_a_hold_clears_only_the_identity_it_was_recorded_for(ledger):
     assert "zxc" not in json.loads(ledger.read_text())["held_rules"]
 
 
+_SHELL = [{"text": "deny shell", "capability": "shell"}]
+
+
+def test_a_release_clears_only_the_bots_own_entry_and_its_hold_ends(ledger):
+    other = {"member_id": "abc", "rules": _SHELL}
+    ledger.write_text(
+        json.dumps({"held_rules": {"zxc": {"member_id": "zxc", "rules": _SHELL}, "abc": other}})
+    )
+    spec = {"allowedTools": ["execute_bash"], "tools": ["execute_bash"]}
+    assert mate_held_rules.strip_held_approvals(dict(spec), "zxc", "zxc")["allowedTools"] == []
+
+    assert mate_held_rules.held_rules_of("zxc", "zxc") == _SHELL
+    assert mate_held_rules.release_held("zxc", "zxc", _SHELL) is True
+
+    assert json.loads(ledger.read_text())["held_rules"] == {"abc": other}
+    assert mate_held_rules.strip_held_approvals(dict(spec), "zxc", "zxc") == spec
+    assert mate_held_rules.held_rules_of("zxc", "zxc") == []
+
+
+def test_a_release_of_a_list_that_changed_writes_nothing(ledger):
+    entry = {"member_id": "zxc", "rules": [*_SHELL, {"text": "t", "capability": "fs_read"}]}
+    ledger.write_text(json.dumps({"held_rules": {"zxc": entry}}))
+    before = ledger.read_bytes()
+
+    assert mate_held_rules.release_held("zxc", "zxc", _SHELL) is False
+    assert mate_held_rules.release_held("zxc", "other", entry["rules"]) is False
+    assert mate_held_rules.release_held("zxc", "zxc", []) is False
+    assert ledger.read_bytes() == before
+
+
+def test_an_entry_recorded_with_no_member_id_is_listed_and_released(ledger):
+    _hold(ledger, "shell")
+    rules = mate_held_rules.held_rules_of("zxc", "zxc")
+    assert mate_held_rules.held_for(_event("execute"), agent="zxc")
+
+    assert rules == json.loads(ledger.read_text())["held_rules"]["zxc"]["rules"]
+    assert mate_held_rules.release_held("zxc", "zxc", rules) is True
+    assert mate_held_rules.held_for(_event("execute"), agent="zxc") == []
+
+
+def test_a_release_removes_only_the_asks_its_hold_wrote(ledger, monkeypatch):
+    """The hold's asks outrank an allow, so a Bot that kept them would still ask."""
+    shell_ask = {"capability": "shell", "effect": "ask"}
+    write_ask = {"capability": "fs_write", "effect": "ask"}
+    read_ask = {"capability": "fs_read", "effect": "ask"}
+    deny = {"capability": "shell", "effect": "deny", "match": ["rm *"]}
+    rules = [{"text": "deny shell", "capability": "shell"}, {"text": "t", "capability": "fs_write"}]
+    held = {"zxc": {"member_id": "zxc", "rules": rules}}
+    ledger.write_text(json.dumps({"threads": {"zxc": {"from": "old"}}, "held_rules": held}))
+    monkeypatch.setattr(
+        "kiro_crew.mate_mount_repair._old_agent",
+        lambda source: {"permissions": {"rules": [write_ask]}},
+    )
+    bot = ledger.parent / "agents" / "zxc.json"
+    bot.write_text(json.dumps({"permissions": {"rules": [shell_ask, write_ask, deny, read_ask]}}))
+
+    assert mate_held_rules.release_held("zxc", "zxc", rules) is True
+
+    assert json.loads(bot.read_text())["permissions"]["rules"] == [write_ask, deny, read_ask]
+    assert "zxc" not in json.loads(ledger.read_text())["held_rules"]
+
+
+def test_held_rules_of_an_unreadable_record_is_none(ledger):
+    ledger.write_text('{"held_rules": {"zxc"', encoding="utf-8")
+
+    assert mate_held_rules.held_rules_of("zxc", "zxc") is None
+    with pytest.raises(Exception, match="unreadable"):
+        mate_held_rules.release_held("zxc", "zxc", _SHELL)
+
+
 def test_a_repair_records_no_hold_for_a_bot_file_another_gateway_keeps(ledger):
     """The other gateway's Bot of the same name keeps the hold it has."""
     from kiro_crew import mate_restriction_carry
@@ -769,7 +839,14 @@ def test_clearing_one_bots_hold_does_not_erase_a_write_made_meanwhile(ledger, ot
 
 
 @pytest.mark.parametrize(
-    "write", [_hold_b, _check_b, _move_b, lambda: mate_held_rules.drop_held("a", "")]
+    "write",
+    [
+        _hold_b,
+        _check_b,
+        _move_b,
+        lambda: mate_held_rules.drop_held("a", ""),
+        lambda: mate_held_rules.release_held("a", "", _SHELL),
+    ],
 )
 def test_every_ledger_write_holds_the_file_lock_another_gateway_takes(ledger, monkeypatch, write):
     """Two gateways with their own data homes can share one Kiro home and its ledger,

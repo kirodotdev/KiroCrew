@@ -520,7 +520,6 @@ async def test_apps_a_release_installed_authenticate_on_the_first_start(
         await _check_self_managed_app(gw, server, version="1.0.0")
 
 
-@pytest.mark.xfail(strict=True, reason="GH #39593")
 @pytest.mark.asyncio
 async def test_a_self_managed_app_the_release_registered_authenticates_on_its_next_launch(
     gateway_boot, integration_home, tmp_path

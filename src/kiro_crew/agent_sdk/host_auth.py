@@ -1176,7 +1176,8 @@ def bedrock_auth_remedy(backend: str) -> str:
             "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
             "profiles: pick Bedrock under Settings > Agent Harness > Strands > Model "
             "provider and save its AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) and "
-            "AWS_REGION there, then start a new chat."
+            "AWS_REGION there, then start a new chat. A Bedrock Mantle model also needs "
+            "the key's IAM identity to allow bedrock-mantle:CallWithBearerToken."
         )
     return ""
 

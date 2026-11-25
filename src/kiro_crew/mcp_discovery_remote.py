@@ -40,6 +40,11 @@ from kiro_crew.mcp_grant_kas import kas_grant_observed
 
 logger = logging.getLogger("kiro_crew.mcp_discovery")
 
+#: A probe's error for ``headers`` that are not a map of header names to values.
+_HEADERS_NOT_A_MAP_ERROR = (
+    'headers must be an object of header names to values, like {"Authorization": "Bearer ..."}'
+)
+
 
 async def _read_jsonrpc_response(resp: aiohttp.ClientResponse) -> dict:
     """Parse a JSON-RPC response from either JSON or SSE content-type.
@@ -368,6 +373,20 @@ async def _probe_remote(
     server.auth_challenge = False
     server.auth_grant_present = None
     server.auth_crew_held = False
+    # ``headers`` maps header names to values. A hand-edited entry can hold a
+    # string such as ``"Authorization: Bearer ..."`` or a list there instead,
+    # and the request below reads it by name, so without this the error would be
+    # Python's own attribute message, which names nothing the person wrote. Not
+    # contacted: the server would be asked without the credential the entry
+    # meant to send. An EMPTY one (``""``, ``[]``, ``null``) declares no headers
+    # and probes like an entry without any, the rule a stdio ``env`` follows.
+    if server.headers and not isinstance(server.headers, Mapping):
+        server.sent_headers, server.resolved_header_values = None, []
+        server.status = "error"
+        server.error = _HEADERS_NOT_A_MAP_ERROR
+        logger.warning("MCP probe failed [%s]: headers is not an object", server.name)
+        _cache_probe(server)
+        return server
     refusal = remote_header_secret_ref_error(server.headers)
     if refusal:
         # Not contacted: the header would reach the server as the literal
@@ -424,7 +443,7 @@ async def _probe_remote(
         # the row because redaction must key on the values that actually left
         # the process (see McpServerInfo.redaction_headers).
         server.sent_headers, server.resolved_header_values = _expand_header_placeholders(
-            server.headers
+            server.headers or {}
         )
         hdrs = {
             **server.sent_headers,
@@ -491,6 +510,8 @@ async def _probe_remote(
                     return await _probe_remote(server, protocol_version=fallback)
                 if data.get("error"):
                     server.status = "error"
+                    # Answered, not unreachable: see the stdio probe's rule.
+                    server.probe_mode = "refused"
                     err = data["error"]
                     server.error = (
                         err.get("message", "unknown error") if isinstance(err, dict) else str(err)
@@ -535,6 +556,7 @@ async def _probe_remote(
                 if data.get("error"):
                     err = data["error"]
                     server.status = "error"
+                    server.probe_mode = "refused"
                     server.error = "tools/list: " + (
                         err.get("message", "unknown error") if isinstance(err, dict) else str(err)
                     )

@@ -16,6 +16,7 @@ import { vi } from 'vitest'
  */
 export const PREVIEW_STRIP_H = 81
 const SESSION_REF_STRIP_H = 43
+export const UPLOAD_STRIP_H = 47
 
 let byTestid: Record<string, number> = {}
 let observed: { cb: ResizeObserverCallback; target: Element; observer: ResizeObserver }[] = []
@@ -32,7 +33,7 @@ let observed: { cb: ResizeObserverCallback; target: Element; observer: ResizeObs
 export function setStripHeight(testid: string, height: number): void {
   byTestid[testid] = height
   for (const { cb, target, observer } of observed) {
-    if (target.firstElementChild?.getAttribute('data-testid') === testid) {
+    if ((target.getAttribute('data-testid') ?? target.firstElementChild?.getAttribute('data-testid')) === testid) {
       cb([{ target } as unknown as ResizeObserverEntry], observer)
     }
   }
@@ -48,19 +49,20 @@ function rect(height: number): DOMRect {
 /**
  * Stub layout for the strip wrappers and install a ResizeObserver.
  *
- * Matches on the wrapper's OWN first child rather than a descendant query, so
- * an ancestor that merely contains a strip (the input area, the wrapper) still
- * measures 0 and cannot be mistaken for the strip itself.
+ * Matches the strip root's test id or the wrapper's OWN first child rather than
+ * a descendant query, so an ancestor that merely contains a strip (the input
+ * area, the wrapper) measures 0 and cannot be mistaken for the strip itself.
  */
 export function stubStripHeights(): void {
   byTestid = {
     'preview-strip': PREVIEW_STRIP_H,
     'session-ref-strip': SESSION_REF_STRIP_H,
+    'composer-upload-strip': UPLOAD_STRIP_H,
   }
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
     this: HTMLElement,
   ) {
-    const testid = this.firstElementChild?.getAttribute('data-testid') ?? ''
+    const testid = this.getAttribute('data-testid') ?? this.firstElementChild?.getAttribute('data-testid') ?? ''
     return rect(byTestid[testid] ?? 0)
   })
   observed = []

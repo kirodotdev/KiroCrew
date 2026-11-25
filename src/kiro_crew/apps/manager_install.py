@@ -11,6 +11,8 @@ as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import os
 import shutil
@@ -18,7 +20,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from kiro_crew.apps import (
     agent_readonly_dirs,
@@ -43,7 +45,6 @@ from kiro_crew.apps.manager_records import (
     _restore_approved_grants,
     _session_control_widening,
     _tree_swap,
-    _update_retired_tree_prefix,
     _UpdateMarker,
     _write_approved_grants,
     _write_installed,
@@ -58,12 +59,27 @@ from kiro_crew.apps.manager_tree import (
     InstalledTreeRefused,
     _check_path_safety,
     _copy_app_tree,
+    _lstat_pinned,
+    _min_version_refusal_code,
+    _move_in_new_entries,
+    _move_into,
+    _move_out_old_entries,
+    _new_pinned_dir,
     _owned_data_dir,
+    _pin,
+    _pinned_app_dir,
     _remove_any_shape,
+    _remove_in,
+    _remove_tree,
+    _rename_pinned,
     _reserved_name_code,
+    _restore_old_entries,
     _temp_data_name_obstruction,
+    _update_trees,
     _validate_source_path,
+    copy_app_tree_as_installed,
     gateway_data_dir_obstruction,
+    preserved_data_awaits,
 )
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.point_grants import grant_source
@@ -71,13 +87,16 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.sel import sel
 
+if TYPE_CHECKING:
+    from kiro_crew.apps.backend_runtime.provisioning import _PinnedDir
+
 logger = logging.getLogger("kiro_crew.apps.manager")
 
 
 # Per-app lifecycle locks, shared by every async entry point (registry
 # install, dashboard install/update/uninstall routes).  Once the blocking
 # copy runs off-loop, two concurrent operations on the same app could
-# otherwise race the installed-check against the copy — and update/uninstall
+# otherwise race the installed-check against the copy — and install/uninstall
 # use shared move-aside names (``.{name}-data-tmp``), so an interleaving can
 # destroy preserved user data.  Different apps proceed in parallel.
 _LIFECYCLE_LOCKS: dict[str, LoopBoundLock] = {}
@@ -521,9 +540,20 @@ def install_app(
     # The approved set is put back as it was rather than removed. An installed app
     # was refused above, so no prior record exists to lose, but an approved set can
     # outlive its record, and that set is restored byte for byte.
-    prior_grants_text = _approved_grants_snapshot(name)
+    try:
+        prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
+            error_code="app_install_approvals_unreadable",
+        )
     try:
         _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
+        if not manifest.ui.startup:
+            protected_app_state.write_startup_text(name, None)
         _write_installed(name, meta)
 
         # Generate and write app secret for token-based auth (App Kit §5.1)
@@ -535,6 +565,7 @@ def install_app(
         try:
             (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
             _restore_approved_grants(name, prior_grants_text)
+            protected_app_state.write_startup_text(name, prior_startup_text)
         except OSError as undo_exc:
             logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
         # The record's write asked for a refresh that may have read it; ask again.
@@ -558,12 +589,24 @@ def install_app(
         resources=f"name={name!r} version={manifest.version}",
     )
 
+    from kiro_crew.apps.startup_modules import withdrawal_notice
+
+    startup_notice = (
+        withdrawal_notice(name, "install")
+        if prior_startup_text is not None and not manifest.ui.startup
+        else ""
+    )
     refresh_app_config_keys()
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
+    from kiro_crew.apps.builtin_shadow import shadowed_builtin_notice
+
+    shadow_notice = shadowed_builtin_notice(name, meta)
     return AppResult(
         ok=True,
         name=name,
-        message=f"installed {name} v{manifest.version}",
+        message=f"installed {name} v{manifest.version}"
+        + startup_notice
+        + (f"; {shadow_notice}" if shadow_notice else ""),
         notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 
@@ -617,7 +660,14 @@ def update_app(
 
     errors = _validate_source_path(source)
     if errors:
-        return AppResult(ok=False, error="; ".join(errors))
+        # The coded refusal lets the dashboard name the app and say what to do;
+        # the joined errors stay as the detail. A new version that only needs a
+        # newer Kiro Crew keeps the min-version code: its maker has nothing to fix.
+        # Any other error wins, since that one still needs the maker.
+        code = "app_update_invalid"
+        if len(errors) == 1:
+            code = _min_version_refusal_code(source) or code
+        return AppResult(ok=False, error="; ".join(errors), error_code=code)
 
     manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
     name = manifest.name
@@ -768,28 +818,22 @@ def update_app(
             sourceUrl=_adoption.repository,
             sourceCommit=_adoption.commit,
         )
-    # Preserve data directory and app secret
+    # The data directory and app secret stay where they are; only the app's other
+    # root entries are replaced.
     data_dir = dest / "data"
     secret_file = dest / ".app_secret"
     tmp_data = dest.parent / f".{name}-data-tmp"
     tmp_secret = dest.parent / f".{name}-secret-tmp"
-    retired = dest.parent / (
-        f"{_update_retired_tree_prefix(name)}{os.getpid()}-{os.urandom(4).hex()}"
-    )
-    preserved_data = False
-    preserved_secret = False
+    trees = _update_trees(name, f"{os.getpid()}-{os.urandom(4).hex()}")
+    staging, moving_out, retired = trees
+    moved_in: list[str] = []
 
-    # BEFORE the transaction opens: what stands at `data` must be something the
-    # gateway can move aside and put back whole -- a real directory. A LINK is
-    # not: the move below relocates the link itself to `.{name}-data-tmp` beside
-    # the app directory, where a relative target does not resolve, so nothing
-    # would be put back and the directory it named would be retired -- and
-    # deleted -- with the old tree on this function's own success path. A FILE
-    # is not either: `_owned_data_dir` is false for it, so the move skips it, the
-    # old tree carrying it is retired, the post-copy ask below inspects only the
-    # NEW tree, and the file is deleted with the retired tree while app_data_dir
-    # creates an empty directory in its place -- silently, with ok=True. The
-    # install refuses to create either shape (gateway_data_dir_obstruction); one
+    # BEFORE the transaction opens: what stands at `data` must be a real
+    # directory. A LINK is not: the update keeps the link itself, and an in-tree
+    # directory it names is retired -- and deleted -- with the old entries on
+    # this function's own success path. A FILE is not either: app_data_dir
+    # cannot create the data directory beside it. The install refuses to create
+    # either shape (gateway_data_dir_obstruction); one
     # that predates the refusal, or that the app's own runtime made, is refused
     # here by that same predicate -- the one question every entry point asks
     # before it mutates -- whole, with the old tree and record untouched. The
@@ -820,16 +864,14 @@ def update_app(
         return AppResult(ok=False, name=name, error=tmp_obstruction)
 
     # BEFORE the transaction opens, too: the installed `.app_secret` must be a
-    # regular file or absent. A LINK cannot be preserved: the move below
-    # relocates the link to `.<name>-secret-tmp` beside the app directory,
-    # where a relative in-tree target does not resolve; `tmp_secret.is_file()`
-    # then fails and the secret is lost on the update's success path. Refuse
-    # before anything moves, matching the `data`-link pre-transaction shape.
+    # regular file or absent. A LINK cannot be preserved: the update replaces
+    # the app files an in-tree target names, and the secret is lost on the
+    # update's success path. Refuse before anything moves, matching the
+    # `data`-link pre-transaction shape.
     if is_link_or_junction(secret_file):
         secret_link_refusal = (
-            "`.app_secret` in the app directory is a link; moving it aside for "
-            "the update places it outside its tree where a relative target does not "
-            "resolve and the secret is lost. Replace the link with a regular "
+            "`.app_secret` in the app directory is a link; the update replaces "
+            "the app files it can point into and the secret is lost. Replace the link with a regular "
             "`.app_secret` file holding the same secret, then retry the update."
         )
         sel().log_api_access(
@@ -841,10 +883,11 @@ def update_app(
         )
         return AppResult(ok=False, name=name, error=secret_link_refusal)
 
-    # BEFORE the transaction opens, too: data in two places. An update whose
-    # move-aside or rollback stopped part-way leaves `data/` partial and
-    # `.<name>-data-tmp` holding what it moved, maybe the only complete copy.
-    # Nothing here tells that from an older copy, so neither is deleted.
+    # BEFORE the transaction opens, too: data in two places. An install over kept
+    # data, a keep-data uninstall or an update of the earlier shape stopped part-way
+    # leaves `data/` partial and `.<name>-data-tmp` holding what it moved, maybe the
+    # only complete copy. Nothing here tells that from an older copy, so neither is
+    # deleted.
     if _owned_data_dir(tmp_data) and _owned_data_dir(data_dir):
         two_places = (
             f"{tmp_data} holds a copy of this app's data left by an earlier "
@@ -869,16 +912,41 @@ def update_app(
     # read refuses the update with nothing changed and no marker left behind.
     try:
         prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
     except (OSError, ValueError) as exc:
         return AppResult(
-            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
         )
     prior_owner_disabled = protected_app_state.owner_disabled(name)
+
+    # BEFORE the transaction opens, too: the app directory is held for the whole
+    # swap, so every listing and rename below names the directory checked here.
+    # A link at it, or at an ancestor since it was made canonical, refuses the update with
+    # nothing moved.
+    try:
+        dest_pin = _pin(_pinned_app_dir(name))
+    except OSError as exc:
+        pin_refusal = f"the app directory of {name!r} cannot be held for the update: {exc}"
+        sel().log_api_access(
+            caller="app_update",
+            operation="app_dir_pin",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=pin_refusal,
+        )
+        return AppResult(ok=False, name=name, error=pin_refusal)
     try:
         update_marker = _UpdateMarker.hold(name)
     except OSError as exc:
+        dest_pin.close()
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
-    with _tree_swap(name), update_marker:
+    new_pin: _PinnedDir | None = None
+    out_pin: _PinnedDir | None = None
+    pins = contextlib.ExitStack()
+    pins.callback(dest_pin.close)
+    with pins, _tree_swap(name), update_marker:
         previous_ui: Path | None = None
         ui_recorded = False
         try:
@@ -888,33 +956,27 @@ def update_app(
                 # ``_write_installed`` to compare against. The rollback below
                 # puts the prior state back.
                 protected_app_state.set_owner_disabled(name, True)
-            # The old manifest leaves with the old tree below while the data waits aside:
-            # its credential masks and read-only directories must stand in their records
-            # first (apps.credential_masks, apps.agent_readonly_dirs).
+            # The old manifest leaves the app directory below: its credential masks
+            # and read-only directories must stand in their records first
+            # (apps.credential_masks, apps.agent_readonly_dirs).
             credential_masks.remember_declaration(name)
             agent_readonly_dirs.remember_declaration(name)
-            if _owned_data_dir(data_dir):
-                shutil.move(str(data_dir), str(tmp_data))
-                preserved_data = True
-            if secret_file.is_file():
-                shutil.move(str(secret_file), str(tmp_secret))
-                preserved_secret = True
+            # ``data`` and ``.app_secret`` never move, so a running agent's fences on
+            # them hold. The source-owned record never reaches the live tree.
+            copy_app_tree_as_installed(source, staging, data_preserved=preserved_data_awaits(name))
+            new_pin = pins.enter_context(contextlib.closing(_pin(staging)))
+            _remove_in(new_pin, INSTALLED_META_FILENAME)
+            out_pin = pins.enter_context(contextlib.closing(_new_pinned_dir(moving_out)))
+            _move_out_old_entries(dest_pin, out_pin)
+            _rename_pinned(out_pin, retired)
+            _move_in_new_entries(new_pin, dest_pin, moved_in)
 
-            # Keep the complete old tree until the replacement and its metadata are
-            # durable. Source-owned installed.json never reaches the live tree.
-            os.replace(dest, retired)
-            _copy_app_tree(source, dest)
-            # ``.app_secret`` is the gateway's whether or not one is preserved: the
-            # copied entry goes, unfollowed, before the preserved file moves back
-            # (see install_app; the same removal the preview copy applies).
-            _remove_any_shape(dest / ".app_secret")
-
-            if _owned_data_dir(tmp_data):
-                restored = dest / "data"
-                _remove_any_shape(restored)
-                shutil.move(str(tmp_data), str(restored))
-            if tmp_secret.is_file():
-                shutil.move(str(tmp_secret), str(dest / ".app_secret"))
+            # What a crashed sibling operation left at the temp names goes back.
+            if _owned_data_dir(tmp_data) and _lstat_pinned(dest_pin, "data") is None:
+                _move_into(tmp_data, dest_pin, "data")
+            if tmp_secret.is_file() and _lstat_pinned(dest_pin, ".app_secret") is None:
+                _move_into(tmp_secret, dest_pin, ".app_secret")
+            dest_pin.verify()
             # Before the record: a root `data` that is not a directory (nothing
             # preserved was put back over it) would fail app_data_dir() below, after
             # the new metadata was durable -- refused here instead, and the rollback
@@ -927,29 +989,18 @@ def update_app(
             previous_ui = protected_app_ui.record(name, source / "ui", source, allow_hardlinks=True)
             ui_recorded = True
             _write_approved_grants(name, approved_grants)
+            if not manifest.ui.startup:
+                protected_app_state.write_startup_text(name, None)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
             rollback_error = ""
             try:
-                if retired.is_dir():
-                    restored_data = dest / "data"
-                    restored_secret = dest / ".app_secret"
-                    if preserved_data and not _owned_data_dir(tmp_data) and restored_data.is_dir():
-                        shutil.move(str(restored_data), str(tmp_data))
-                    if preserved_secret and not tmp_secret.is_file() and restored_secret.is_file():
-                        shutil.move(str(restored_secret), str(tmp_secret))
-                    _remove_any_shape(dest)
-                    os.replace(retired, dest)
-                if _owned_data_dir(tmp_data):
-                    restored = dest / "data"
-                    _remove_any_shape(restored)
-                    shutil.move(str(tmp_data), str(restored))
-                if tmp_secret.is_file():
-                    restored_secret = dest / ".app_secret"
-                    _remove_any_shape(restored_secret)
-                    shutil.move(str(tmp_secret), str(restored_secret))
+                if not _restore_old_entries(name, trees, moved_in, dest_pin, out_pin, new_pin):
+                    raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(dest))
                 _restore_approved_grants(name, prior_grants_text)
+                protected_app_state.write_startup_text(name, prior_startup_text)
                 protected_app_state.set_owner_disabled(name, prior_owner_disabled)
+                dest_pin.verify()
                 _write_installed(name, existing)
             except (OSError, shutil.Error, ValueError) as rollback_exc:
                 rollback_error = f"; rollback failed: {rollback_exc}"
@@ -968,10 +1019,9 @@ def update_app(
                 error=f"failed to update app files: {exc}{rollback_error}",
             )
 
-        try:
-            _remove_any_shape(retired)
-        except OSError:
-            logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
+        assert out_pin is not None and new_pin is not None  # bound by the swap above
+        _remove_tree(out_pin)
+        _remove_tree(new_pin)
         protected_app_ui.discard(previous_ui)
 
     # Ensure data directory exists
@@ -994,6 +1044,13 @@ def update_app(
         manifest.version,
         source,
     )
+    from kiro_crew.apps.startup_modules import withdrawal_notice
+
+    startup_notice = (
+        withdrawal_notice(name, "update")
+        if prior_startup_text is not None and not manifest.ui.startup
+        else ""
+    )
     if session_control_widening is not None:
         sel().log_api_access(
             caller="app_update",
@@ -1008,7 +1065,7 @@ def update_app(
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
                 f"disabled because this version newly requests {session_control_widening.words}"
-                " -- review it on the app page and enable again"
+                " -- review it on the app page and enable again" + startup_notice
             ),
             notice="session_approval_reconsent",
         )
@@ -1026,11 +1083,11 @@ def update_app(
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
                 "this version requests new permissions, which stay off until you "
-                "approve them on the app page"
+                "approve them on the app page" + startup_notice
             ),
         )
     return AppResult(
         ok=True,
         name=name,
-        message=f"updated {name} v{old_version} -> v{manifest.version}",
+        message=f"updated {name} v{old_version} -> v{manifest.version}" + startup_notice,
     )

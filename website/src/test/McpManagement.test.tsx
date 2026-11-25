@@ -1010,6 +1010,52 @@ describe('stub every server the evidence allows', () => {
     expect(await screen.findByText(M('sharing_not_live'), { exact: false }, { timeout: 5000 })).toBeTruthy()
   })
 
+  it('asks for a restart, not reports a fault, when the marked server is shared only from the next start', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false, stub: ['good-mcp'] }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [{ ...server({ name: 'good-mcp', stub: true, in_allowlist: true }), recommendation: declared }],
+    } as never)
+    const enable = vi
+      .spyOn(api, 'mcpGatewayEnable')
+      .mockResolvedValue({ ok: true, enabled: true, running: false, ping_ok: false, restart_required: true } as never)
+
+    mount()
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
+    await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(sharing)
+    fireEvent.click(await screen.findByRole('button', { name: M('confirm_turn_on') }, { timeout: 5000 }))
+
+    await waitFor(() => expect(enable).toHaveBeenCalledWith(true), { timeout: 5000 })
+    // Both notices are set by the same answer, so once one shows the other would too.
+    expect(await screen.findByText(M('stub_restart_required'), undefined, { timeout: 5000 })).toBeTruthy()
+    expect(screen.queryByText(M('sharing_not_live'), { exact: false })).toBeNull()
+  })
+
+  it('asks for a restart, not reports a fault, when turning sharing on shares a server nobody marked yet', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [{ ...server({ name: 'good-mcp' }), recommendation: declared }],
+    } as never)
+    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(preview('good-mcp') as never)
+    // Nothing was marked yet, so no broker runs and the enable itself needs no restart.
+    vi.spyOn(api, 'mcpGatewayEnable').mockResolvedValue(
+      { ok: true, enabled: true, running: false, ping_ok: false, restart_required: false } as never,
+    )
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
+      ok: true, name: 'good-mcp', stub: true, stubbed: ['good-mcp'], skipped: [], applied: false, restart_required: true,
+    } as never)
+
+    mount()
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
+    await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(sharing)
+    fireEvent.click(await screen.findByRole('button', { name: M('confirm_turn_on') }, { timeout: 5000 }))
+
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('good-mcp', true, 'good-mcp-cmd:good-mcp-env', true), { timeout: 5000 })
+    expect(await screen.findByText(M('stub_restart_required'), undefined, { timeout: 5000 })).toBeTruthy()
+    expect(screen.queryByText(M('sharing_not_live'), { exact: false })).toBeNull()
+  })
+
   it('shows the live pass position instead of a counter frozen at zero', async () => {
     // The wait runs for up to four minutes. A hardcoded 0 read as a stalled pass
     // on exactly the fresh install this control serves, so the poll's readings

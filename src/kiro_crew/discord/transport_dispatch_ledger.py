@@ -23,18 +23,30 @@ Instance fields assigned, or whose mapping is changed: none.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
+from kiro_crew.messaging import privacy_mode
 from kiro_crew.messaging.dispatch import TurnRecord
-from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
+from kiro_crew.messaging.upload_gate import (
+    session_blocks_reads,
+    session_is_restricted,
+    uploads_restricted,
+)
 from kiro_crew.security import redact, redact_local_paths
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 
+logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 
-async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
+
+async def _record_turn(
+    self: DiscordDispatcher, record: TurnRecord, images: Sequence[str] = ()
+) -> None:
     """Write one exchange to the live dashboard window and the transcript.
 
     The pipeline's ``record`` adapter: it decides WHEN this runs, and this
@@ -58,6 +70,12 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     that raised, the error it died with, after the partial reply the user
     already saw. That error takes the same redaction and cap as the member-memory
     refusal and the dashboard runner's own terminal-error row's role and class.
+
+    *images* are the pictures the turn downloaded for the message. Each is copied
+    into the session's attachments store before either writer, so the row names
+    the copy instead of the temp file the turn deletes; the live window needs the
+    same text, because it rewrites its rows on disk on every save. A store that
+    fails leaves the row as it came in.
     """
     if await self._session_restricted(record.session_key):
         return
@@ -71,8 +89,16 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     key = record.session_key
     reply = record.reply_text if record.reply_text.strip() else ""
     dashboard_state = getattr(self._session_resume, "dashboard_state", None)
+    user_text = record.user_text
+    if images and self.conv_log is not None:
+        try:
+            user_text = await asyncio.to_thread(
+                self.conv_log.store_ingested_images, key, user_text, images
+            )
+        except Exception:
+            logger.warning("discord: keeping pictures failed session=%s", key, exc_info=True)
     # Both copies need the SAME body, both halves; own hop.
-    safe_text = await asyncio.to_thread(_redact_at_write_boundary, "user", record.user_text)
+    safe_text = await asyncio.to_thread(_redact_at_write_boundary, "user", user_text)
     safe_reply = await asyncio.to_thread(_redact_at_write_boundary, "assistant", reply)
     mirror_mids = project_channel_turn_live(dashboard_state, key, safe_text, safe_reply)
     extra_row: tuple[str, str, str, str | None] | None = None
@@ -132,6 +158,25 @@ async def _session_restricted(self: DiscordDispatcher, session_key: str) -> bool
         session_key,
         persisted_probe=_probe_persisted_session,
         unknown_denies=False,
+    )
+
+
+async def _blocks_memory_reads(self: DiscordDispatcher, session_key: str) -> bool:
+    """True when this session's prompt must take NO memory or lessons.
+
+    The read half of :meth:`_session_restricted` and the pipeline's
+    ``blocks_reads`` adapter: only ``temporary`` (``!temporary``, or a resumed
+    temporary dashboard session) blocks reads, while ``incognito`` still reads.
+    Same shared predicate Telegram asks
+    (:func:`kiro_crew.messaging.upload_gate.session_blocks_reads`); the probe is
+    injected and imported here for the reason given on :meth:`_session_restricted`.
+    """
+    from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+    return await session_blocks_reads(
+        getattr(self._session_resume, "dashboard_state", None),
+        session_key,
+        persisted_probe=_probe_persisted_session,
     )
 
 
@@ -199,8 +244,13 @@ def _persist_turn(
     is ``""``), and is tested for truth here exactly as
     ``project_channel_turn_live`` tests it, so the live window and the disk
     can never disagree about whether an assistant row exists.
+
+    A ``!temporary`` / ``!incognito`` conversation writes nothing here either:
+    ``_record_turn`` already asked the dashboard-aware ``_session_restricted``
+    (which restores the durable mode first), and this sync check is the second
+    gate, as on Telegram's ``_persist_turn``, so no new caller can skip it.
     """
-    if self.conv_log is None:
+    if self.conv_log is None or privacy_mode.is_restricted(session_key):
         return
     if mirror_mids is not None:
         user_mid, assistant_mid = mirror_mids

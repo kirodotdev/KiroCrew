@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time as _time
 from datetime import datetime
 from pathlib import Path
@@ -166,11 +167,45 @@ def _archive_lines(
         candidate.name,
         reason,
     )
-    _cleanup_old_archives(base=base)
+    _start_cleanup(base)
     return candidate
 
 
 _last_cleanup: float = 0.0
+
+#: Name of the thread :func:`_start_cleanup` runs the retention sweep on.
+ARCHIVE_RETENTION_THREAD = "kirocrew-archive-retention"
+_cleanup_thread: threading.Thread | None = None
+_cleanup_thread_guard = threading.Lock()
+
+
+def _start_cleanup(base: Path | None) -> None:
+    """Run :func:`_cleanup_old_archives` on its own thread when it is due.
+
+    ``_archive_lines`` runs under the archived chat's transcript lock, and the
+    sweep takes each expired chat's lock in turn (see
+    ``history_archive_text.remove_expired_segments``). Run inline, a writer
+    holding chat A that waits for chat B while chat B's rotation sweeps A would
+    deadlock, so the sweep starts here holding no lock. One sweep runs at a
+    time; the hourly throttle keeps this off the hot path.
+    """
+    global _cleanup_thread
+    if _time.time() - _last_cleanup < 3600:
+        return
+    with _cleanup_thread_guard:
+        if _cleanup_thread is not None and _cleanup_thread.is_alive():
+            return
+        _cleanup_thread = threading.Thread(
+            target=_cleanup_quietly, args=(base,), name=ARCHIVE_RETENTION_THREAD, daemon=True
+        )
+        _cleanup_thread.start()
+
+
+def _cleanup_quietly(base: Path | None) -> None:
+    try:
+        _cleanup_old_archives(base=base)
+    except Exception:
+        logger.warning("The archive retention sweep failed", exc_info=True)
 
 
 def _resolve_retention_days() -> int:
@@ -230,25 +265,41 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     # archived, so returning here would leave that half uncollected until the
     # first archive ever written.
     if adir.exists():
+        expired: dict[str, list[Path]] = {}
         for p in adir.glob("*.jsonl"):
             try:
                 if p.stat().st_mtime < cutoff:
-                    p.unlink()
-                    removed += 1
+                    stem = p.name.rpartition(ARCHIVE_SEGMENT_DELIMITER)[0]
+                    expired.setdefault(stem, []).append(p)
             except OSError:
                 pass
+        if expired:
+            removed = _remove_expired_segments(adir.parent, expired, cutoff)
     if removed:
         logger.info("Cleaned %d expired archive files (>%dd)", removed, retention_days)
     _cleanup_expired_crew_logs(retention_days, now)
     return removed
 
 
+def _remove_expired_segments(
+    sessions_dir: Path, expired: dict[str, list[Path]], cutoff: float
+) -> int:
+    """Delete *expired* segments with their search rows; 0 when that step fails."""
+    try:
+        from kiro_crew.history_archive_text import remove_expired_segments
+
+        return remove_expired_segments(sessions_dir, expired, cutoff)
+    except Exception:
+        logger.warning("Expired archive segments could not be removed", exc_info=True)
+        return 0
+
+
 def _cleanup_expired_crew_logs(retention_days: int, now: float) -> None:
     """Expire closed the sessions' logs, best-effort, never at the transcript's cost.
 
-    Runs off the event loop: the only caller, ``_cleanup_old_archives``, is
-    reached from ``_archive_lines`` in the dashboard's flush executor thread or
-    the shutdown save, inside the archive cleanup's hourly throttle.
+    Runs off the event loop: the only caller, ``_cleanup_old_archives``, runs on
+    the thread ``_archive_lines`` starts (:func:`_start_cleanup`), inside the
+    archive cleanup's hourly throttle.
 
     Imported lazily so a launch without ``KIROCREW_CREW_LOG`` skips the import.
     Failures are swallowed because this is the transcript archive path: an

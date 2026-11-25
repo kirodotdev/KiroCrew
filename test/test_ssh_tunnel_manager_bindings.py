@@ -142,7 +142,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_token_refresh_loop": ("function", True, "eebcbb982c22", "ssh_tunnel_manager_tokens"),
     "_track_recovery": ("function", False, "9feb5e629104", "ssh_tunnel_manager_self_heal"),
     "_update_then_restart": ("function", True, "9243d16c3e1e", "ssh_tunnel_manager_remote_ops"),
+    "_with_dialled_target": ("function", False, "61b04e077a5f", "ssh_tunnel_manager_transport"),
     "_with_parent": ("function", True, "1d092f289575", "ssh_tunnel_manager_transport"),
+    "_with_resolved_target": ("function", True, "61b04e077a5f", "ssh_tunnel_manager_transport"),
     "apply_config": ("function", False, "d2f0f43ef2a5", "ssh_tunnel_manager_lifecycle"),
     "connect": ("function", True, "c390b489e467", "ssh_tunnel_manager_lifecycle"),
     "diagnose": ("function", True, "0f4ffeaa2f07", "ssh_tunnel_manager_remote_ops"),
@@ -513,7 +515,9 @@ def test_a_moved_class_annotations_still_resolve(name: str) -> None:
     namespace, which is the facade's: every name they spell is bound there."""
     cls = getattr(stm, name)
     hints = typing.get_type_hints(cls)
-    assert set(hints) == set(vars(cls).get("__annotations__", {}))
+    # The class's own annotations: ``inspect.get_annotations`` reads the namespace
+    # entry where there is one and evaluates CPython 3.14's deferred ones.
+    assert set(hints) == set(inspect.get_annotations(cls))
 
 
 def test_the_status_annotations_name_the_state_class() -> None:

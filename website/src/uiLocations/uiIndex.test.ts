@@ -35,7 +35,7 @@ import AddJobSplitButton from '../components/AddJobSplitButton'
 import { Glass } from '../components/Glass'
 import HeaderControl from '../pages/members/HeaderControl'
 import { MemoryModeChip } from '../components/MemoryModeChip'
-import { Btn, IconButton, SendBtn } from '../components/ui'
+import { Btn, IconButton, SendBtn, Toggle } from '../components/ui'
 import Clickable from '../components/Clickable'
 import SegmentedControl from '../components/SegmentedControl'
 import SimpleSelect from '../components/SimpleSelect'
@@ -301,7 +301,9 @@ const FORWARDING_PROVEN = [
   'TipClickable',
   // Proven in src/test/sidePanelLeadingTab.test.tsx: a `segments` entry's
   // marker lands, registered, on that leading tab's chip and on no other.
-  'SidePanel',
+  'SidePanel',  // Proven below: Toggle puts the marker, registered, on its role="switch"
+  // button, beside the auto tier's own data-ui-auto.
+  'Toggle',
 ]
 
 describe('a marker must register the element it sits on', () => {
@@ -345,6 +347,20 @@ describe('the custom components real markers sit on forward them', () => {
     ))
     expect(r.container.querySelector(`button[${UI_LOCATION_ATTR}="artifacts.new"]`)?.textContent).toBe('New')
     expect(r.container.querySelector(`button[${UI_LOCATION_ATTR}="schedule.create-first"]`)?.textContent).toBe('Create')
+    expect(unregisteredMarkers()).toEqual([])
+    r.unmount()
+  })
+
+  it('Toggle puts the marker on its switch, with or without an auto-tier stamp', () => {
+    const h = React.createElement
+    const r = render(h(React.Fragment, null,
+      h(Toggle, { checked: false, onChange: () => {}, label: 'Show Ada in my Sessions', ...uiLocation('members.bot-sessions-switch') }),
+      h(Toggle, { checked: true, onChange: () => {}, label: 'Other', 'data-ui-auto': 'auto:fixture' }),
+    ))
+    const marked = r.container.querySelectorAll(`[${UI_LOCATION_ATTR}]`)
+    expect(marked).toHaveLength(1)
+    expect(marked[0].getAttribute('role')).toBe('switch')
+    expect(marked[0].getAttribute('aria-label')).toBe('Show Ada in my Sessions')
     expect(unregisteredMarkers()).toEqual([])
     r.unmount()
   })
@@ -628,14 +644,52 @@ describe('index assembly', () => {
 
   it('carries curated search terms from a descriptor and from SEARCH_TERMS, in locale order', () => {
     const descriptors = { ...baseInputs().descriptors, 'chat.older': { ...baseInputs().descriptors['chat.older'], terms: { 'zh-CN': ['历史对话'], en: ['old chats'] } } }
-    const { index, errors } = build({ descriptors, searchTerms: { 'page.chat': { en: ['chats'] }, 'setting:chat.a-setting': { en: ['  a knob '] } } })
+    const { index, errors } = build({
+      descriptors,
+      searchTerms: { 'page.chat': { en: ['chats'] }, 'setting:chat.a-setting': { 'zh-CN': ['一个开关'] } },
+      settingKeywords: { 'chat.a-setting': ['  a knob '] },
+    })
     expect(errors).toEqual([])
     const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
     expect(byId['chat.older'].terms).toEqual({ en: ['old chats'], 'zh-CN': ['历史对话'] })
     expect(Object.keys(byId['chat.older'].terms!)).toEqual(['en', 'zh-CN'])
     expect(byId['page.chat'].terms).toEqual({ en: ['chats'] })
-    expect(byId['setting:chat.a-setting'].terms).toEqual({ en: ['a knob'] })
+    expect(byId['setting:chat.a-setting'].terms).toEqual({ en: ['a knob'], 'zh-CN': ['一个开关'] })
     expect(byId['chat.toggle'].terms).toBeUndefined()
+  })
+
+  it("leaves out a palette word that is one word, repeats a spelling or the setting's label, or is another location's name or term", () => {
+    const descriptors = { ...baseInputs().descriptors, 'chat.older': { ...baseInputs().descriptors['chat.older'], terms: { en: ['old chats'] } } }
+    const { index, errors } = build({
+      descriptors,
+      settingKeywords: { 'chat.a-setting': ['auto update', 'auto-update', 'A setting', 'Settings', 'old chats', 'per-app', 'a knob'] },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    expect(byId['setting:chat.a-setting'].terms).toEqual({ en: ['auto update', 'a knob'] })
+  })
+
+  it("leaves out a palette word that is a run of words inside another location's label, unless GUIDE_ONE_WORD_TERMS names it", () => {
+    const { index, errors } = build({
+      // 'all sessions' sits in a label too long for find_ui to answer it with
+      // (2 of 6 words), so it stays.
+      catalogs: { en: { ...EN, 'k.older': 'Show older sessions', 'k.toggle': 'Show the list of all sessions' }, 'zh-CN': ZH },
+      settingKeywords: { 'chat.a-setting': ['older sessions', 'older', 'sessions older', 'all sessions', 'a knob'] },
+      guideOneWords: { 'chat.a-setting': ['older'] },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    expect(byId['setting:chat.a-setting'].terms).toEqual({ en: ['older', 'sessions older', 'all sessions', 'a knob'] })
+  })
+
+  it('keeps a one-word palette word that GUIDE_ONE_WORD_TERMS names for the setting', () => {
+    const { index, errors } = build({
+      settingKeywords: { 'chat.a-setting': ['colors', 'apps', 'a knob'] },
+      guideOneWords: { 'chat.a-setting': ['Colors'] },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    expect(byId['setting:chat.a-setting'].terms).toEqual({ en: ['colors', 'a knob'] })
   })
 
   const termCases: [string, Record<string, unknown>, RegExp][] = [
@@ -647,6 +701,10 @@ describe('index assembly', () => {
     ['a repeated term', { searchTerms: { 'page.chat': { en: ['Chats', 'chats!'] } } }, /listed twice/],
     ['a term that only repeats the label', { searchTerms: { 'page.chat': { 'zh-CN': ['会话'] } } }, /only repeats the zh-CN label/],
     ['an overlong term', { searchTerms: { 'page.chat': { en: ['x'.repeat(61)] } } }, /longer than 60/],
+    ["a setting's English in the overlay", { searchTerms: { 'setting:chat.a-setting': { en: ['a knob'] } } }, /English words live in settingsKeywords\.ts/],
+    ['palette words for an unknown setting', { settingKeywords: { 'chat.nope': ['x'] } }, /settingsKeywords\.ts names unknown setting 'chat\.nope'/],
+    ['a guide one-word term not in the palette list', { settingKeywords: { 'chat.a-setting': ['a knob'] }, guideOneWords: { 'chat.a-setting': ['colors'] } }, /GUIDE_ONE_WORD_TERMS 'chat\.a-setting': 'colors' is not in its SETTINGS_KEYWORDS list/],
+    ['a guide one-word term for an unknown setting', { guideOneWords: { 'chat.nope': ['x'] } }, /GUIDE_ONE_WORD_TERMS names unknown setting 'chat\.nope'/],
   ]
   for (const [name, over, re] of termCases) {
     it(`fails on search terms with ${name}`, () => {

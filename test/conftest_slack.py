@@ -65,20 +65,48 @@ def _reset_code_channel_audience():
 
 
 @per_test_guard
+def _reset_code_channel_senders():
+    """Forget the dispatch exemption's Slack-author records and Stop marks.
+
+    ``code_channel_exemption`` keeps, per slot key, who drove the conversation from Slack
+    and which slots a Conductor thread's Stop fenced. Tests reuse slot keys, so a mark one
+    test left would refuse the next one's dispatch. Looked up in ``sys.modules`` so a run
+    that never imported it pays nothing.
+    """
+
+    def forget() -> None:
+        module = sys.modules.get("kiro_crew.dashboard.session_control_parts.code_channel_exemption")
+        if module is not None:
+            module.forget_senders()
+
+    forget()
+    try:
+        yield
+    finally:
+        forget()
+
+
+@per_test_guard
 def _reset_thread_board():
     """Forget the Conductor-thread board's refresh state (its running refreshes, the
     rooms asked to run again and the newest binding each trigger carried).
 
     ``kiro_crew.slack.code_channels.board.thread_board`` keeps them process-global,
     keyed by room, and tests reuse channel and anchor ids, so one left over would
-    coalesce the next test's refresh into a finished one. Looked up in
-    ``sys.modules`` so a run that never imported it pays nothing.
+    coalesce the next test's refresh into a finished one. The publisher's rooms whose
+    old board Slack would not delete (``_move_refused``) are keyed the same way, and
+    one left over would keep the next test's board from moving. Looked up in
+    ``sys.modules`` so a run that never imported them pays nothing.
     """
 
     def clear() -> None:
         module = sys.modules.get("kiro_crew.slack.code_channels.board.thread_board")
         if module is not None:
             module.reset_for_tests()
+        publisher = sys.modules.get("kiro_crew.slack.code_channels.board.publisher")
+        refused = getattr(publisher, "_move_refused", None)
+        if refused is not None:
+            refused.clear()
 
     clear()
     try:

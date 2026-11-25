@@ -12,11 +12,13 @@ cgroup layout decides nothing.
 from __future__ import annotations
 
 from io import StringIO
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import kiro_crew.subagent as subagent
+from kiro_crew import resource_status as rs
 
 _V2_MOUNT = "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"
 _EVENTS = "populated 1\nfrozen 0\n"
@@ -249,3 +251,132 @@ class TestOutOfViewStall:
         _namespaced(cgroup_files, "cpuset cpu pids\n")
         cgroup_files[_PRESSURE] = pressure
         assert subagent.out_of_view_memory_stall_us() is None
+
+
+def _resource_cfg() -> SimpleNamespace:
+    return SimpleNamespace(
+        agent=SimpleNamespace(
+            resource_pressure_gb=4.0,
+            resource_critical_gb=2.0,
+            spawn_min_memory_gb=2.0,
+            subagent_cost_gb=0.5,
+        )
+    )
+
+
+def _out_of_view_memory(files: dict[str, Any], available_gib: float) -> None:
+    _namespaced(files, "cpuset cpu pids\n")
+    available_kib = round(available_gib * 1024 * 1024)
+    files["/proc/meminfo"] = f"MemAvailable: {available_kib} kB\n"
+
+
+@pytest.fixture
+def isolated_resource_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subagent, "_agents_slice_available_gb", lambda: -1.0)
+    monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (-1, -1, -1))
+    monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: None)
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {})
+
+
+class TestOutOfViewReporting:
+    def test_status_and_spawn_floor_name_the_unreadable_container_limit(
+        self,
+        cgroup_files: dict[str, Any],
+        isolated_resource_probe: None,
+    ) -> None:
+        _out_of_view_memory(cgroup_files, 32.0)
+
+        status = rs.probe(_resource_cfg())
+        assert status.available_gb == 32.0
+        assert status.posture == rs.POSTURE_UNKNOWN
+        assert status.decision_posture == rs.POSTURE_AMPLE
+        phrase = "the container's memory limit cannot be read from this cgroup view"
+        assert phrase in "\n".join(status.summary_lines())
+
+        floor = rs.spawn_floor_reading(_resource_cfg())
+        assert not floor.blocked
+        assert phrase in floor.summary_line()
+        assert "host memory" in floor.summary_line()
+        assert "BLOCKED" not in floor.summary_line()
+
+        from kiro_crew.notifications.resource_pressure import (
+            GUARD_PSI_FULL_AVG10,
+            ResourcePressureNotifier,
+        )
+
+        notifier = ResourcePressureNotifier(SimpleNamespace())
+        notifier._view_share = GUARD_PSI_FULL_AVG10
+        assert notifier.guard_trigger(status) == "psi-cgroup"
+
+    @pytest.mark.parametrize(
+        ("available_gib", "reported_posture", "decision_posture", "admitted"),
+        [
+            (32.0, rs.POSTURE_UNKNOWN, rs.POSTURE_AMPLE, True),
+            (3.0, rs.POSTURE_TIGHT, rs.POSTURE_TIGHT, True),
+            (1.0, rs.POSTURE_CRITICAL, rs.POSTURE_CRITICAL, False),
+        ],
+    )
+    def test_only_ample_reports_unknown_without_changing_admission(
+        self,
+        cgroup_files: dict[str, Any],
+        isolated_resource_probe: None,
+        available_gib: float,
+        reported_posture: str,
+        decision_posture: str,
+        admitted: bool,
+    ) -> None:
+        _out_of_view_memory(cgroup_files, available_gib)
+
+        status = rs.probe(_resource_cfg())
+        assert status.posture == reported_posture
+        assert status.decision_posture == decision_posture
+
+        decision = rs.admission_check(_resource_cfg())
+        assert decision.admitted is admitted
+        assert decision.posture == decision_posture
+
+    def test_reporting_unknown_still_closes_a_pressure_episode(
+        self,
+        cgroup_files: dict[str, Any],
+        isolated_resource_probe: None,
+    ) -> None:
+        from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
+
+        pushed: list[Any] = []
+        notifier = ResourcePressureNotifier(SimpleNamespace(push=pushed.append))
+        _out_of_view_memory(cgroup_files, 1.0)
+        notifier.observe(rs.probe(_resource_cfg()), 1.0)
+        assert notifier._episode_since == 1.0
+
+        _out_of_view_memory(cgroup_files, 32.0)
+        recovered = rs.probe(_resource_cfg())
+        assert recovered.posture == rs.POSTURE_UNKNOWN
+        notifier.observe(recovered, 2.0)
+        assert notifier._episode_since is None
+        assert pushed[-1].title == "Host memory pressure resolved"
+
+    def test_reporting_unknown_does_not_hide_disk_posture(
+        self,
+        cgroup_files: dict[str, Any],
+        isolated_resource_probe: None,
+    ) -> None:
+        from kiro_crew.notifications.resource_pressure import combined_posture
+
+        _out_of_view_memory(cgroup_files, 32.0)
+        status = rs.probe(_resource_cfg())
+        combined = combined_posture(status, (rs.POSTURE_CRITICAL, "/tmp 2% free"))
+        assert combined is not None
+        assert combined[0] == rs.POSTURE_CRITICAL
+
+    def test_tasks_only_line_names_the_unreadable_container_limit(
+        self,
+        cgroup_files: dict[str, Any],
+        isolated_resource_probe: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _out_of_view_memory(cgroup_files, 32.0)
+        monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (9, 10, 2))
+
+        line = rs.probe(_resource_cfg()).context_line()
+        assert "container's memory limit cannot be read" in line
+        assert "Host memory is unreadable" not in line

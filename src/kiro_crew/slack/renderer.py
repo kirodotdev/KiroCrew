@@ -98,6 +98,7 @@ from kiro_crew.slack.no_stream_reply import markdown_blocks, post_markdown, seal
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
 from kiro_crew.slack.renderer_stream_debt import StreamDebtNotice
+from kiro_crew.slack.renderer_stream_renewal import StreamRenewal
 from kiro_crew.slack.renderer_thinking import ThinkingReply
 from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _NARRATION_MAX_CHARS,
@@ -108,6 +109,7 @@ from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _reply_construct_open,
 )
 from kiro_crew.slack.step_labels import slack_step_label
+from kiro_crew.slack.stream_window import stream_clock
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
 from kiro_crew.tool_call_title import format_raw_command
 
@@ -512,7 +514,9 @@ class SlackApprovalDecider:
         return dec.session_key
 
 
-class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Renderer):
+class SlackRenderer(
+    ApprovalSessionStatus, StreamDebtNotice, StreamRenewal, ThinkingReply, Renderer
+):
     """Renders abstract output events onto a Slack thread.
 
     Holds (and exposes) the underlying ``SlackClientOps`` so the inline
@@ -569,6 +573,10 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         # in tests and harness-controllable once handle_message drives this.
         self._now = now or time.monotonic
         self._stream_ts: str | None = None
+        # ``stream_clock()`` reading when the live stream was opened; 0 when none is
+        # open. Slack ends a stream 10 minutes after it starts (``stream_window``).
+        self._stream_started_at = 0.0
+        self._renewal: asyncio.Task | None = None  # the ``_renew_stream_if_due`` in flight
         self._use_slack_stream = True  # False => chat.update cursor fallback
         # Set at turn end when this turn's footer carried an OPTIONS control, so
         # the dispatcher can record it against the session and expire it later.
@@ -636,14 +644,16 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         self._task_counter = 0
         self._active_task_id = ""
         self._active_task_title = ""
+        #: The purpose the open card is titled with, which a refined title keeps.
+        self._active_task_purpose = ""
         #: ACP tool_call_id of the task card ``_active_task_id`` is showing, so a
         #: ``tool_result`` can be matched to the card it finalizes. "" when no
         #: card is open or the transport sent no id.
         self._active_tool_call_id = ""
         #: Terminal outcomes seen for THIS turn's tool calls, keyed by ACP
         #: ``tool_call_id`` -> a ``TERMINAL_TOOL_STATUSES`` value. A call's card
-        #: is finalized against this: "completed" is the ✓ card, anything else is
-        #: an error card naming the exact outcome. Entries are consumed as their
+        #: is finalized against this: anything other than "completed" adds the
+        #: exact outcome to the card's details. Entries are consumed as their
         #: card closes.
         self._tool_outcomes: dict[str, str] = {}
         #: Cards already finalized this turn, keyed by ACP ``tool_call_id`` ->
@@ -720,6 +730,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             ts = await self._start_stream_if_threaded()
             if ts:
                 self._stream_ts = ts
+                self._stream_started_at = stream_clock()
                 self._use_slack_stream = True
             else:
                 # No streaming surface — fall back to chat.update on a posted
@@ -784,7 +795,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         new_ts = await self._start_stream_if_threaded(initial_text=_STREAM_CONTINUED)
         if new_ts:
             self._stream_ts = new_ts
+            self._stream_started_at = stream_clock()
         else:
+            self._stream_started_at = 0.0
             self._use_slack_stream = False
         return new_ts
 
@@ -796,6 +809,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         # appended text on this path is FINAL (chat.stopStream does not replace
         # it), which makes an unscanned append unrecoverable.
         text = _display_safe(text)
+        await self._renew_stream_if_due()
         # Best-effort: MUST NOT raise. A raising append is the same event as a
         # refused append — the text is not on the stream — and the refusal
         # path below (rotate, then retry once) already handles it. Letting it
@@ -1004,13 +1018,14 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             self._delivered += part
 
     async def _append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append a task card. Never rotates (native ``_append_task``).
+        """Append a task card. Never rotates on a refusal (native ``_append_task``).
 
         The card is progress decoration and ``_tool_elapsed_updater`` re-sends it
         every 30s for as long as a tool runs, so on a long tool phase it is the
         only caller touching the stream — and rotating on its failure would cost
         the reader the message they are watching and split the answer in two.
-        ``_append_stream`` still rotates for real text.
+        ``_append_stream`` still rotates for real text. An old stream is still
+        renewed first (``_renew_stream_if_due``), before Slack ends it.
 
         Best-effort: MUST NOT raise. Guarded at this single definition,
         covering all call sites (the native handler guards its twin the same
@@ -1020,6 +1035,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         Something went wrong (transport path)" reply on a turn that is still
         live.
         """
+        # Renewed before this card's state is recorded: the renewal redraws the
+        # running step as it last stood, and a renewed step's details start clean.
+        await self._renew_stream_if_due()
         if not self._stream_ts:
             return False
         # Model-authored (a purpose, a narration), so it meets the same display
@@ -1042,7 +1060,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             return False
 
     def _outcome(self, task_id: str, outcome: str) -> str:
-        """An error step's outcome detail, held back while its narration is.
+        """A failed step's outcome detail, held back while its narration is.
 
         A step waiting for the end of its narration gets its details written
         once, narration first; an outcome sent now would land above it. So it
@@ -1059,7 +1077,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         """Send outcomes held for steps whose narration will not come."""
         deferred, self._deferred_outcomes = self._deferred_outcomes, {}
         for task_id, outcome in deferred.items():
-            title, status = self._task_state.get(task_id, ("", "error"))
+            title, status = self._task_state.get(task_id, ("", "complete"))
             await self._append_task(task_id, title, status, details=outcome)
 
     async def on_tool_result(self, tool_call_id: str, tool_status: str) -> None:
@@ -1071,9 +1089,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         A result that arrives for a card ALREADY CLOSED (parallel / out-of-order
         tool use, where the next call opened before this call's result landed)
         is applied immediately: re-emitting that card's ``task_id`` with the
-        ``error`` status replaces it in place, so a late failure is not lost to
-        the ✓ its card was closed with. A terminal status other than
-        "completed" is a call that did not succeed.
+        outcome in its details updates it in place, so a late failure is not
+        lost. A terminal status other than "completed" is a call that did not
+        succeed.
         """
         if not tool_call_id:
             return
@@ -1086,7 +1104,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             task_id, title = self._closed_task_ids[tool_call_id]
             self._tool_outcomes.pop(tool_call_id, None)
             await self._append_task(
-                task_id, title, "error", details=self._outcome(task_id, tool_status)
+                task_id, title, "complete", details=self._outcome(task_id, tool_status)
             )
 
     async def _finalize_active_task(self) -> None:
@@ -1095,11 +1113,10 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         Replaces the three bare ``_append_task(..., "complete")`` calls that
         marked EVERY tool card complete regardless of what the call did. A call
         whose ``on_tool_result`` recorded a non-"completed" terminal status gets
-        an ``error`` card whose detail names the EXACT outcome (``failed`` /
-        ``cancelled`` / ``canceled`` / ``refused``), so a declined or cancelled
-        call is never relabelled as a failure; everything else (a success, or a
-        call whose transport sent no result event) keeps the ✓ card, so
-        behaviour is unchanged wherever no outcome was reported. The card's
+        a detail naming the EXACT outcome (``failed`` / ``cancelled`` /
+        ``canceled`` / ``refused``), so a declined or cancelled call is never
+        relabelled as a failure; everything else (a success, or a call whose
+        transport sent no result event) gets no outcome detail. The card's
         ``task_id`` and final title are remembered under its ``tool_call_id`` so
         a result that lands AFTER this close (out-of-order parallel use) can
         re-emit the card. Idempotent: clears ``_active_task_id`` so a second
@@ -1111,19 +1128,12 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         title = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
         outcome = self._tool_outcomes.pop(self._active_tool_call_id, "") or ""
         succeeded = not outcome or outcome == "completed"
-        if succeeded:
-            await self._append_task(self._active_task_id, title, "complete")
-        else:
-            # Slack's ``task_update`` status is one of error/pending/in_progress/
-            # complete — "error" is the non-✓ card. The detail carries the exact
-            # outcome string, so refused/cancelled read as themselves rather than
-            # as a failure.
-            await self._append_task(
-                self._active_task_id,
-                title,
-                "error",
-                details=self._outcome(self._active_task_id, outcome),
-            )
+        # NEVER ``error``: with ``task_display_mode: "plan"`` Slack titles the
+        # whole plan "Something went wrong" (red) when any one task is
+        # ``error``, on a turn that is still running fine. The detail carries
+        # the exact outcome string, so refused/cancelled read as themselves.
+        details = "" if succeeded else self._outcome(self._active_task_id, outcome)
+        await self._append_task(self._active_task_id, title, "complete", details=details)
         if self._active_tool_call_id:
             self._closed_task_ids[self._active_tool_call_id] = (self._active_task_id, title)
         self._active_task_id = ""
@@ -1177,6 +1187,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         turn's reaction to the error state.
         """
         self._cancel_tool_timer()
+        await self._cancel_renewal()
         await self._cancel_resumes()
         if not self._finalized and self._controller is not None:
             try:
@@ -1464,16 +1475,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         # start a new in-progress task + its 30s elapsed timer.
         await self._ensure_stream()
         tool_name = title.removeprefix("Running: ")
-        # What the thread shows of the step: the derived title and purpose
-        # without env assignments, absolute paths or this host's name. A raw
-        # command is scrubbed whole and then cut to a line, so the cut lands on
-        # what the reader sees rather than on the paths taken out.
-        if self.current_tool_raw_title:
-            label = format_raw_command(
-                slack_step_label(self.current_tool_raw_title, self._label_root)
-            ) or slack_step_label(tool_name, self._label_root)
-        else:
-            label = slack_step_label(tool_name, self._label_root)
+        label = self._step_label(title, self.current_tool_raw_title)
         purpose = slack_step_label(tool_purpose, self._label_root) if tool_purpose else ""
         # Best-effort: MUST NOT raise. Decoration only — a raise
         # escapes to the transport catch-all and fakes a terminal error on a
@@ -1495,6 +1497,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         self._active_task_id = f"tool_{self._task_counter}"
         self._active_tool_call_id = tool_call_id or ""
         self._active_task_title = purpose or label
+        self._active_task_purpose = purpose
         if narration is not None and self.tool_text_held:
             # Its last run is still held by the driver's redactor and arrives
             # with the first text after this call (``on_text_continuation``).
@@ -1552,6 +1555,30 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
                     exc_info=True,
                 )
             self._stream_ts = None
+
+    def _step_label(self, title: str, raw_title: str) -> str:
+        """What the thread shows of a step: the derived title without env
+        assignments, absolute paths or this host's name. A raw command is
+        scrubbed whole and then cut to a line, so the cut lands on what the
+        reader sees rather than on the paths taken out."""
+        tool_name = title.removeprefix("Running: ")
+        if raw_title:
+            return format_raw_command(
+                slack_step_label(raw_title, self._label_root)
+            ) or slack_step_label(tool_name, self._label_root)
+        return slack_step_label(tool_name, self._label_root)
+
+    async def on_tool_title(self, tool_call_id: str, title: str, raw_title: str = "") -> None:
+        # The open step's card takes its call's real title in place (same
+        # task_id). A purpose the card is titled with stays, a closed card keeps
+        # its title, and the step's details keep the title it opened with.
+        if not self._active_task_id or tool_call_id != self._active_tool_call_id:
+            return
+        label = self._step_label(title, raw_title)
+        if self._active_task_purpose or label == self._active_task_title:
+            return
+        self._active_task_title = label
+        await self._append_task(self._active_task_id, label, "in_progress")
 
     async def on_prompt_choice(
         self,

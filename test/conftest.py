@@ -356,6 +356,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
     _reset_kas_machine_fence_config,
+    _reset_kas_parent_notes,
     _reset_live_execution_records,
     _reset_materialized_agents_snapshot,
     _reset_persisted_truncation_reports,
@@ -376,10 +377,34 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
 
 # Per-test resets of process-global kiro_crew.acp state.
 from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _isolate_kas_model_catalog_recording,
     _reset_kas_agent_config_error_reports,
+    _reset_kas_secret_storage_unknown_kind_warnings,
+    _reset_kas_skill_facts,
+)
+from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_bot_chat_app_tools_state,
+)
+from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_computer_use_warning,
+)
+from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_connected_computers_state,
 )
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
+)
+from conftest_resets_managed_env import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_managed_env_shared_client,
+)
+from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_kas_env_left_out_marks,
+    _reset_managed_server_tool_spellings,
+    _reset_mcp_probe_same_process_locks,
+    _reset_mcp_sources_read_snapshot,
+)
+from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_unsaved_relay_instance_ids,
 )
 
 # The in-memory Slack client and the Slack state resets.
@@ -389,6 +414,7 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_slack_thread_state,
     _enterprise_bypass,
     _reset_code_channel_audience,
+    _reset_code_channel_senders,
     _reset_conductor_thread_notices,
     _reset_options_control_state,
     _reset_thread_board,

@@ -34,6 +34,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from typing import Any, NoReturn
 
 from kiro_crew.bounded_read import bounded_read
@@ -54,6 +55,10 @@ _HOME_ENV = "KIROCREW_HOME"
 #: ``EX_CONFIG``: the launch's configuration is unusable.
 _EXIT_REFUSED = 78
 _MAX_SNAPSHOT_BYTES = 1 << 20
+#: The writer's own Windows budget (``atomic_write``'s replace retry), copied so
+#: this launcher stays standard library only.
+_OPEN_ATTEMPTS = 10
+_OPEN_BACKOFF_SECONDS = 0.05
 
 
 def _digest(*parts: str) -> str:
@@ -92,12 +97,28 @@ def _refuse(server: str, reason: str) -> NoReturn:
     raise SystemExit(_EXIT_REFUSED)
 
 
+def _open_snapshot(path: str, flags: int) -> int:
+    """``os.open``, retried on Windows while the gateway replaces the file.
+
+    Windows refuses an open with ``PermissionError`` during a replace, and the
+    gateway rewrites a shared snapshot on every projection there.
+    """
+    for _ in range(_OPEN_ATTEMPTS - 1):
+        try:
+            return os.open(path, flags)
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            time.sleep(_OPEN_BACKOFF_SECONDS)
+    return os.open(path, flags)
+
+
 def _read_snapshot(path: str, server: str) -> dict[str, Any]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
         if stat.S_ISLNK(os.lstat(os.path.dirname(path)).st_mode):
             _refuse(server, "its launch directory is a link")
-        fd = os.open(path, flags)
+        fd = _open_snapshot(path, flags)
     except FileNotFoundError:
         _refuse(
             server,

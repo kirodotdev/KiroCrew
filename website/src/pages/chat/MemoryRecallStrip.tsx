@@ -126,6 +126,12 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
     : record.p !== null
       ? i18nT('pages.chat.decisionStrip.memory_confidence_title')
       : i18nT('pages.chat.decisionStrip.latency_title')
+  // A memory Jev was never asked about stays in `jevKeys` (nobody may drop it), so
+  // it is subtracted here and counted on its own: crediting it to Jev would name a
+  // choice nobody made, the same reason a failed record says "after fallback".
+  const unasked = new Set(record.unaskedKeys)
+  const keptByJev = record.jevKeys.filter(id => !unasked.has(id))
+  const someUnasked = record.unaskedKeys.length > 0
 
   return (
     <div
@@ -175,12 +181,23 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
             {/* On a FAILED record the second count is not Jev's. The decision did not
                 land, the shipped recall was injected, and a line reading "Jev kept: 6"
                 beside "Decision failed" credits an actor that chose nothing. */}
-            {i18nT(
-              record.error
-                ? 'pages.chat.decisionStrip.memory_kept_fallback'
-                : 'pages.chat.decisionStrip.memory_kept',
-              { count: fmtNumber(record.jevKeys.length) },
-            )}
+            {someUnasked
+              ? <>
+                  {i18nT('pages.chat.decisionStrip.memory_kept_of_asked', {
+                    count: fmtNumber(keptByJev.length),
+                    asked: fmtNumber(record.candidates),
+                  })}
+                  {' \u00B7 '}
+                  {i18nT('pages.chat.decisionStrip.memory_not_asked', {
+                    count: fmtNumber(record.unaskedKeys.length),
+                  })}
+                </>
+              : i18nT(
+                  record.error
+                    ? 'pages.chat.decisionStrip.memory_kept_fallback'
+                    : 'pages.chat.decisionStrip.memory_kept',
+                  { count: fmtNumber(record.jevKeys.length) },
+                )}
           </span>
           {scores.length > 0 && (
             <span
@@ -244,8 +261,14 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
                 ? 'pages.chat.decisionStrip.memory_jev_label_fallback'
                 : 'pages.chat.decisionStrip.memory_jev_label',
             )}
-            value={<IdList ids={record.jevKeys} onIdClick={setSelectedMemoryId} />}
+            value={<IdList ids={keptByJev} onIdClick={setSelectedMemoryId} />}
           />
+          {someUnasked && (
+            <Detail
+              label={i18nT('pages.chat.decisionStrip.memory_not_asked_label')}
+              value={<IdList ids={record.unaskedKeys} onIdClick={setSelectedMemoryId} />}
+            />
+          )}
           <Detail
             label={i18nT('pages.chat.decisionStrip.memory_candidates_label')}
             value={fmtNumber(record.candidates)}
@@ -275,10 +298,15 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
           {record.boundedOmitted > 0 && (
             <Detail
               label={i18nT('pages.chat.decisionStrip.memory_bounded_label')}
-              value={i18nT('pages.chat.decisionStrip.memory_bounded_value', {
-                count: fmtNumber(record.boundedOmitted),
-                total: fmtNumber(record.jevKeys.length),
-              })}
+              value={i18nT(
+                someUnasked
+                  ? 'pages.chat.decisionStrip.memory_bounded_value_not_asked'
+                  : 'pages.chat.decisionStrip.memory_bounded_value',
+                {
+                  count: fmtNumber(record.boundedOmitted),
+                  total: fmtNumber(record.jevKeys.length),
+                },
+              )}
             />
           )}
           {/* Hand-off ON: this strip holds no draft input, the host composer's

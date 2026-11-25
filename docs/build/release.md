@@ -228,8 +228,12 @@ code.
      manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
-     release, never blind. A bump is two files in one commit: the version in
-     `packaging/kiro-cli-version`, and in `packaging/kiro-cli-sha256` the
+     release, never blind. That manifest names the newest release only;
+     `index.json` on the same host lists every release with its sha256s, for
+     a pin older than latest. No 3.x release publishes `Kiro CLI.dmg`, the
+     file the macOS bundle stages. A bump is two files in one commit: the
+     version in `packaging/kiro-cli-version`, and in
+     `packaging/kiro-cli-sha256` the
      manifest's `sha256` for each staged artifact (`<version>/Kiro CLI.dmg`,
      `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
      `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`, and the two
@@ -247,7 +251,13 @@ code.
      not a build failure: the pinned artifact stays downloadable under its own
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
-     kiro-cli".
+     kiro-cli". Whether or not you bump the kiro-cli pin, compare the trigger
+     alias table of the engine the newest kiro-cli release runs with
+     Kiro Crew's, as the paragraph after "Bumping:" in
+     `src/kiro_crew/acp/kas_pin.py` describes, and open an issue for any
+     difference no open issue already tracks and no `docs/decisions/` entry
+     settles: that engine can be newer than the pin, and a spelling Kiro Crew
+     lacks is a spec hook it refuses.
    - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
      `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
      redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged
@@ -334,7 +344,7 @@ concurrency group, and their version derivation.
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle. A bare tag verifies the same-commit successful prerelease run, then rebuilds under the bare version by default; `STABLE_PROMOTE_BYTES` opts one base into exact-byte reuse. Then it creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. Its own daily `schedule:` run at 22:00 UTC gates nothing: it is the early warning that files a `scheduled-failure` issue eight hours before the nightly. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
-| `build-platform-wheels.yml` | reusable build | Turns the `cli-wheel` pure wheel into one `py3-none-<tag>` wheel per host the pinned KAS engine runs on, each leg on its own host, and gates each (`scripts/kas_platform_wheel.py verify` + a clean install). Uploads `cli-wheel-<tag>`. Credential-free. |
+| `build-platform-wheels.yml` | reusable build | Turns the `cli-wheel` pure wheel into one `py3-none-<tag>` wheel per host the pinned KAS engine runs on, each leg on its own host, and gates each (`scripts/kas_platform_wheel.py verify` + a clean install + `pip check`). Uploads `cli-wheel-<tag>`. Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
 | `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
@@ -591,16 +601,23 @@ and this job downloads no artifacts to race.
 
 Nothing in the repository publishes to PyPI, and `pip install kirocrew` from
 PyPI is not a supported path. `publish-cli.yml` builds a **private static PEP 503
-index** per channel under `feed/<channel>/simple/` and installs go through it:
+index** per channel under `feed/<channel>/simple/`. The channel index carries
+only `kirocrew`, so an install still needs PyPI for the dependencies, and a
+different project named `kirocrew` is on PyPI. pip pools candidates across every
+index it is given and takes the highest version, so the documented installs never
+hand pip the channel index beside PyPI. They use uv with the channel index first
+(uv's default `first-index` strategy takes `kirocrew` only from it), or install
+the signed wheel by direct URL with `#sha256=`
+([install guide](../guides/install.md#installing-a-published-wheel-with-pip)):
 
 ```bash
-pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/insider/simple/
+# kirocrew-uv.toml: [[index]] url = ".../feed/stable/simple/", ignore-error-codes = [403]
+uv tool install --config-file kirocrew-uv.toml kirocrew
 ```
 
-`--extra-index-url` (not `--index-url`) is deliberate: the channel index carries
-only `kirocrew`, so cutting off PyPI would fail on dependency resolution. pip
-verifies the `#sha256=` fragment on each link, giving the same fail-closed
-integrity as the feed. Because CloudFront with OAC does not resolve directory
+The CDN answers 403 for a package it does not host, which is why the index needs
+`ignore-error-codes`. Each link carries a `#sha256=` fragment that the installer
+verifies, giving the same fail-closed integrity as the feed. Because CloudFront with OAC does not resolve directory
 indexes, the workflow uploads both `.../simple/kirocrew/index.html` and the
 literal trailing-slash key `.../simple/kirocrew/` that pip requests, using
 `s3api put-object` (an `s3 cp` to a trailing-slash destination silently writes a
@@ -639,7 +656,10 @@ wheel and `kirocrew kas install`, which stays the fallback and migration path.
   run once) and `trim_for_shipping`, then writes the wheel. Each leg is also its
   wheel's gate: `verify` fails unless the wheel holds the pinned engine with the
   manifest's digests and a Node for its tag, and a clean install must report
-  `(built into the wheel)` with nothing downloaded. A failed leg fails the
+  `(built into the wheel)` with nothing downloaded and pass the same
+  `python -I -m pip check` the update runs before it promotes a new venv
+  (`pip install` reads only the filename's tag, `pip check` reads the WHEEL
+  headers). A failed leg fails the
   reusable workflow, so the release publishes nothing.
 - **Publish.** `publish-cli.yml` re-runs `verify` over all four (a missing tag
   fails the job), attests them, and for each writes `<prefix>/<wheel>`,
@@ -648,8 +668,8 @@ wheel and `kirocrew kas install`, which stays the fallback and migration path.
   `latest-cli.json`, naming that tag's wheel. `latest-cli.json` itself is never
   changed, because released clients refuse any field they do not know. The
   checksums go to `<prefix>/SHA256SUMS-platform`, and the channel's PEP 503 page
-  lists the platform wheels too, so `pip install kirocrew --extra-index-url ...`
-  takes the platform wheel by tag on its own.
+  lists the platform wheels too, so an install from the channel index takes the
+  platform wheel by tag on its own.
 - **Clients.** `wheel_engine.fetch_verified_manifest` and `cli.sh` read
   `latest-cli.json` first: it names the channel's version. On a host with a tag
   (`wheel_engine_platform.host_wheel_tag`; Linux needs glibc 2.28) they then read
@@ -686,14 +706,16 @@ the same name the fresh path wrote into its own gated artifact. On `release.yml`
 the two single-arch callers are required lanes beside the universal one:
 `record-promotion`, `github-release` and `record-stable-promotion` all wait on
 all three, and the release page carries `KiroCrew-<v>-{universal,arm64,x64}.dmg`
-with the matching `*-mac.zip`. `nightly.yml` splits each of its three calls in
-two with the `stage` input: `sign-and-notarize*` (`stage: prepare`: `sign` and
-`notarize`, nothing public) starts as soon as `build-desktop` is done, and
-`publish-macos*` (`stage: publish`: `blockmap` and `publish`, reading the same
-run's gated artifact) waits for it and for the nightly's publish gates. That
-takes signing and Apple notarization off the back of the macOS test suite.
-`release.yml` and `release-lts.yml` leave `stage` empty and run the four jobs
-as one call.
+with the matching `*-mac.zip`. `nightly.yml` and `release-lts.yml` each split
+their three calls in two with the `stage` input: `sign-and-notarize*`
+(`stage: prepare`: `sign` and `notarize`, nothing public) starts as soon as
+`build-desktop` is done, and `publish-macos*` (`stage: publish`: `blockmap` and
+`publish`, reading the same run's gated artifact) waits for it and for the
+caller's publish gate: the nightly's publish gates on `nightly.yml`,
+`release-candidate-tests` on `release-lts.yml`. That takes signing and Apple
+notarization off the back of the macOS test suite and of the LTS candidate
+suite. Only `release.yml` leaves `stage` empty and runs the four jobs as one
+call.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
    the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
@@ -1710,7 +1732,7 @@ The LTS edition (RFC crew-lts-edition, D11) ships from its own tag, `lts-vX.Y.Z`
 | Version | `lts-vX.Y.Z` maps to `X.Y.Z`; any other tag shape fails |
 | Gate | The backend suite on the tagged commit, and the dependency vulnerability gate |
 | Build | `build-wheel.yml`, `build-desktop.yml`, `build-windows.yml` with `edition: lts` |
-| Sign + publish | `sign-and-notarize.yml` (3 legs), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
+| Sign + publish | `sign-and-notarize.yml` (3 legs, each split in two: `stage: prepare` beside the suite, `stage: publish` behind `release-candidate-tests`), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
 
 It writes only lts paths: `feed/lts/`, `cli/lts/`, `desktop/lts/` and the signing bucket's `lts/` keys. Every published file uses the LTS stem: `KiroCrew-LTS.dmg`, `KiroCrew-LTS-arm64.dmg`, `KiroCrew-LTS-x86_64.AppImage`, `KiroCrew-LTS-Setup.exe`, and the wheel `kirocrew_lts-X.Y.Z-py3-none-any.whl` of the distribution `kirocrew-lts`. The desktop app is a side-by-side `KiroCrew LTS` app, built like nightly (`packaging/build-desktop.sh`): its own product name, Linux package and executable names, npm name, `nsis.guid` and Windows app ID, with the shared macOS bundle id, so no new signing identifier. There is no Docker image and no GitHub release. `cli.sh --channel lts` installs the LTS wheel.
 
