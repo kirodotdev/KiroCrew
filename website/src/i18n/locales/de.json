@@ -6023,6 +6023,11 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} konnte nicht gestartet werden.",
+      "dismiss": "Starthinweis für {{name}} bis zum Neuladen ausblenden",
+      "open_app": "{{name}} öffnen"
+    },
     "crewPrFacts": {
       "read": "gelesen {{time}}"
     },

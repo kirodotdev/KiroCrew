@@ -77,6 +77,7 @@ def is_not_modified(
     etag: str,
     *,
     last_modified: float | None = None,
+    wildcard: bool = True,
 ) -> bool:
     """True when the client already holds the representation *etag* names.
 
@@ -88,6 +89,10 @@ def is_not_modified(
     as a POSIX timestamp. Both sides of that date compare are second-granular:
     HTTP dates carry no sub-second part, so the stored mtime is truncated
     before the compare rather than rounded.
+
+    A caller whose *etag* names more than the representation, such as the
+    approval a file was checked against, passes ``wildcard=False``: ``*``
+    names no tag, so it then counts as modified.
     """
     if "If-None-Match" in request.headers:
         if_none_match = request.if_none_match
@@ -95,7 +100,7 @@ def is_not_modified(
             return False
         wanted = bare_etag_value(etag)
         if len(if_none_match) == 1 and if_none_match[0].value == "*":
-            return True
+            return wildcard
         return any(tag.value == wanted for tag in if_none_match)
     if last_modified is None:
         return False

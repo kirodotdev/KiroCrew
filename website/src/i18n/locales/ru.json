@@ -6367,6 +6367,11 @@
     "viewPr": "Пул-реквест"
   },
   "components": {
+    "startupModules": {
+      "failed": "Не удалось запустить {{name}}.",
+      "dismiss": "Скрыть уведомление о запуске {{name}} до перезагрузки страницы",
+      "open_app": "Открыть {{name}}"
+    },
     "crewPrFacts": {
       "read": "прочитано в {{time}}"
     },

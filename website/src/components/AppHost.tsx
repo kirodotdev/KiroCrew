@@ -96,6 +96,14 @@ export interface AppHostProps {
    *  shell hosts): a bundle that fails to load, or an app that throws, renders
    *  nothing and is reported here instead, and the load placeholder is empty. */
   onFailure?: (error: unknown) => void
+  /** Skip the full-page reload this host does when the app's files are replaced
+   *  (the `mc:app-reload` broadcast and the bundle-replaced-since-import check).
+   *  A startup mount (one per admitted app, present on every route via
+   *  `StartupModules`) sets this: a reload there would reload every open tab at
+   *  once on any app update/sync, and the new bytes are not admitted until the
+   *  owner re-approves anyway. The mount instead remounts or unmounts through
+   *  its key (name, version, entry, digest) and the next `/api/apps` refresh. */
+  suppressReload?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -273,7 +281,7 @@ function ReplacedBundleNotice() {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, onFailure }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, onFailure, suppressReload = false }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
@@ -287,13 +295,14 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   // module (the app's assets are revalidated on each load, and served no-store
   // in dev mode), guaranteeing the latest bytes across the whole graph.
   useEffect(() => {
+    if (suppressReload) return
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { app?: string } | undefined
       if (detail?.app === app.name) window.location.reload()
     }
     window.addEventListener('mc:app-reload', handler)
     return () => window.removeEventListener('mc:app-reload', handler)
-  }, [app.name])
+  }, [app.name, suppressReload])
 
   // The document's CSP is fixed at load. A declared frame origin the gateway
   // admitted later (the app was enabled, trusted or approved since) is refused here
@@ -327,13 +336,21 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   // Read once per bundle this host loads, never per render: a host already
   // showing the app keeps showing it when an unsaved-changes prompt cancels the
   // handler's reload.
+  //
+  // A startup mount (`suppressReload`) never takes this path: its import URL is
+  // the approval-pinned `startup:<digest>/` prefix, so a replacement the owner
+  // re-approves arrives as a new digest -> a new key (StartupModules) -> a fresh
+  // host whose URL imports the new bytes, and the stale-module problem this
+  // guards against cannot arise. Treating it as replaced would strand the
+  // re-approved module behind ReplacedBundleNotice with no reload to clear it.
   const bundleReplaced = useMemo(
-    () => appBundleReplacedSinceImport(app.name),
-    [bundlePath, resetKey] // eslint-disable-line react-hooks/exhaustive-deps
+    () => !suppressReload && appBundleReplacedSinceImport(app.name),
+    [bundlePath, resetKey, suppressReload] // eslint-disable-line react-hooks/exhaustive-deps
   )
   useEffect(() => {
+    if (suppressReload) return
     if (bundleReplaced) window.location.reload()
-  }, [bundleReplaced])
+  }, [bundleReplaced, suppressReload])
 
   // Dynamically import the app bundle. Keyed on resetKey so retry works.
   const LazyApp = useMemo(
@@ -446,7 +463,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey, requestedName, onFailure }: AppHostProps) {
+export default function AppHost({ app, entry, active, sessionKey, requestedName, onFailure, suppressReload }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
@@ -457,5 +474,5 @@ export default function AppHost({ app, entry, active, sessionKey, requestedName,
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} onFailure={onFailure} />
+  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} onFailure={onFailure} suppressReload={suppressReload} />
 }

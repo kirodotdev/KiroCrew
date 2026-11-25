@@ -77,6 +77,11 @@ class TestIfNoneMatch:
         req = _req(**{"If-None-Match": '"stale"'})
         assert is_not_modified(req, strong_content_etag(BODY)) is False
 
+    def test_a_refused_wildcard_is_modified_while_the_named_tag_still_matches(self) -> None:
+        current = strong_content_etag(BODY)
+        assert is_not_modified(_req(**{"If-None-Match": "*"}), current, wildcard=False) is False
+        assert is_not_modified(_req(**{"If-None-Match": current}), current, wildcard=False) is True
+
     def test_a_list_without_ours_is_modified(self) -> None:
         req = _req(**{"If-None-Match": '"a", W/"b"'})
         assert is_not_modified(req, weak_content_etag(BODY)) is False

@@ -6023,6 +6023,11 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} शुरू नहीं हो सका।",
+      "dismiss": "दोबारा लोड करने तक {{name}} के शुरू होने की सूचना हटाओ",
+      "open_app": "{{name}} खोलो"
+    },
     "crewPrFacts": {
       "read": "{{time}} पर पढ़ा"
     },

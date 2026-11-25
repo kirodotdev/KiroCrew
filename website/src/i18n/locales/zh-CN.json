@@ -5851,6 +5851,11 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} 启动失败。",
+      "dismiss": "在重新加载前隐藏 {{name}} 的启动通知",
+      "open_app": "打开 {{name}}"
+    },
     "crewPrFacts": {
       "read": "{{time}} 读取"
     },
