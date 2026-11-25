@@ -18,7 +18,7 @@ import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { templateDisplayName } from './builtFromName'
 import { changeLabel } from './workerKitLabels'
-import { workerKitErrorText } from './workerKitErrors'
+import { refusedWriteFallback, workerKitErrorText } from './workerKitErrors'
 import { groupWorkerKitChanges } from './workerKitGroups'
 import { apiErrorCode } from '../../api/apiError'
 import {
@@ -111,6 +111,11 @@ function UnenforcedDenies({
   )
 }
 
+/** Whether the preview leaves out a setting at the owner's request, so its apply asks for the same. */
+function leftOut(preview: WorkerKitPreview): boolean {
+  return (preview.left_out?.length ?? 0) > 0
+}
+
 export default function WorkerKitPane({
   member,
   name,
@@ -162,13 +167,16 @@ export default function WorkerKitPane({
   // `template` state has not flushed yet when onChange fires. `notice` stays on
   // screen above a successful preview (why it was re-made); a failed preview
   // replaces it with its own error.
-  const runPreview = async (pick: string = template, notice: unknown = null) => {
+  const runPreview = async (pick: string = template, notice: unknown = null, withoutFallback = false) => {
     if (!pick) return
     setBusy(true)
     setErr(notice)
     setPreview(null)
     try {
-      setPreview(await crewWorkerKitApi.preview(member, { template: pick }))
+      setPreview(await crewWorkerKitApi.preview(member, {
+        template: pick,
+        ...(withoutFallback ? { without_write_fallback: true } : {}),
+      }))
     } catch (e) {
       setErr(e)
     } finally {
@@ -189,7 +197,11 @@ export default function WorkerKitPane({
     setBusy(true)
     setErr(null)
     try {
-      await crewWorkerKitApi.apply(member, { template: preview.template, revision: preview.revision })
+      await crewWorkerKitApi.apply(member, {
+        template: preview.template,
+        revision: preview.revision,
+        ...(leftOut(preview) ? { without_write_fallback: true } : {}),
+      })
       const wrote = preview.changes.filter(c => c.change === 'added')
       setDone({
         count: wrote.length,
@@ -209,7 +221,7 @@ export default function WorkerKitPane({
       // makes the fresh preview itself and keeps the reason on screen.
       const code = apiErrorCode(e)
       if (code === 'stale_revision' || code === 'revision_required') {
-        await runPreview(preview.template, e)
+        await runPreview(preview.template, e, leftOut(preview))
         return
       }
       setErr(e)
@@ -248,6 +260,8 @@ export default function WorkerKitPane({
   const adds = preview ? preview.changes.filter(c => c.change === 'added') : []
   const replaces = preview ? preview.changes.some(isReplacement) : false
   const templateName = preview ? templateDisplayName(preview.template) : ''
+  // A refusal the owner can answer by adding the agent without that one setting.
+  const fallbackField = refusedWriteFallback(err)
   const heading = replaces
     ? adds.length === 0
       ? i18nT('crewWorkerKit.preview_replaces', { template: templateName })
@@ -356,13 +370,26 @@ export default function WorkerKitPane({
           {/* A failed preview leaves the picker on the same agent, where
               re-picking it fires no change: Try again and Cancel are the way on. */}
           {template && !preview && !busy && err != null && (
-            <div className="flex items-center gap-2">
-              <Btn onClick={clear} data-testid="worker-kit-retry-cancel">
-                {i18nT('crewWorkerKit.cancel')}
-              </Btn>
-              <Btn primary onClick={() => void runPreview()} data-testid="worker-kit-retry">
-                {i18nT('crewWorkerKit.retry')}
-              </Btn>
+            <div className="flex flex-col gap-1.5">
+              {fallbackField && (
+                <div className="flex flex-col gap-1" data-testid="worker-kit-without-fallback">
+                  <div>
+                    <Btn primary onClick={() => void runPreview(template, null, true)} data-testid="worker-kit-add-without-fallback">
+                      {i18nT('crewWorkerKit.add_without_write_fallback')}
+                    </Btn>
+                  </div>
+                  <p className="m-0 text-[12px] text-text">{i18nT('crewWorkerKit.without_write_fallback_effect')}</p>
+                  <p className="m-0 text-[12px] text-text">{i18nT('crewWorkerKit.write_fallback_edit_file', { field: fallbackField })}</p>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Btn onClick={clear} data-testid="worker-kit-retry-cancel">
+                  {i18nT('crewWorkerKit.cancel')}
+                </Btn>
+                <Btn primary={!fallbackField} onClick={() => void runPreview()} data-testid="worker-kit-retry">
+                  {fallbackField ? i18nT('crewWorkerKit.retry_after_editing') : i18nT('crewWorkerKit.retry')}
+                </Btn>
+              </div>
             </div>
           )}
 
@@ -405,7 +432,10 @@ export default function WorkerKitPane({
                               title={c.id}
                               data-testid="worker-kit-change-name"
                             >
-                              {changeLabel(c)}
+                              {/* A tool whose write fallbackAction the add leaves out says so, not just its name. */}
+                              {c.section === 'toolsSettings' && preview.left_out?.includes(`toolsSettings.${c.id}.fallbackAction`)
+                                ? i18nT('crewWorkerKit.change_without_auto_run', { name: changeLabel(c) })
+                                : changeLabel(c)}
                             </span>
                           )}
                         </li>
@@ -433,6 +463,11 @@ export default function WorkerKitPane({
                   testId="worker-kit-conditional-preview"
                   detail={i18nT('crewWorkerKit.conditional_shapes')}
                 />
+              )}
+              {leftOut(preview) && (
+                <p className="m-0 text-[12px] text-text" data-testid="worker-kit-left-out">
+                  {i18nT('crewWorkerKit.without_write_fallback_effect')}
+                </p>
               )}
               <div className="flex items-center gap-2">
                 <Btn onClick={clear} disabled={busy} data-testid="worker-kit-cancel">
