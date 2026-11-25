@@ -167,6 +167,7 @@ def inject_workflow_result(
     snapshot: dict,
     *,
     on_injected: Optional[Callable[[Any, dict], None]] = None,
+    minted_line: Optional[dict] = None,
 ) -> bool:
     """Inject a terminal run's result into its ORIGINATING chat slot.
 
@@ -180,6 +181,11 @@ def inject_workflow_result(
     dedup re-fire, or a UI-only run). The gateway uses it to auto-run an agent turn
     so the launching agent actually interprets the result — injecting the summary
     alone leaves it as a passive ``assistant`` message the model never acts on.
+
+    ``minted_line`` is set only by :func:`inject_bound_workflow_result` when it has
+    just minted the fallback slot: the linked transcript's metadata line it read,
+    ``{}`` when unread. The fallback slot is titled and filed only by the delivery
+    that minted it, so a re-fire leaves an existing one as it is.
 
     Returns True if injected, False if there was no originating session to route to
     (e.g. a UI-only run). Best-effort — never raises.
@@ -212,9 +218,8 @@ def inject_workflow_result(
                 return False
             # A re-fire reuses its existing fallback slot; only a NEW slot is
             # an allocation, and every allocation tests the live ceiling.
-            if state.get_slot(f"workflow-{run_id}") is None and _fallback_slot_at_cap(
-                state, run_id
-            ):
+            minted = state.get_slot(f"workflow-{run_id}") is None
+            if minted and _fallback_slot_at_cap(state, run_id):
                 return False
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
             if not getattr(slot, "linked_session_key", ""):
@@ -242,53 +247,8 @@ def inject_workflow_result(
                 from kiro_crew.dashboard.transcript_binding import bind_transcript
 
                 bind_transcript(state, slot)
-            # Opt-in per-run title for the fallback slot: a webhook-driven run
-            # whose originating chat is always gone can name its own slot so many
-            # runs of one workflow are told apart. The default holds when the
-            # caller gives none. Clean the title HERE, at the one point every
-            # run path (the three HTTP handlers and the MCP tool) converges on
-            # applying it to a slot, with the same display-text cleaner a
-            # caller-explicit session title gets (redact, single line, bounded).
-            from kiro_crew.dashboard.chat_cards import _clean as _clean_display_text
-            from kiro_crew.workflows.registry import FALLBACK_TITLE_MAX
-
-            fallback_title = _clean_display_text(
-                snapshot.get("fallback_title") or "", FALLBACK_TITLE_MAX
-            )
-            if fallback_title:
-                slot.title = fallback_title
-                # A caller-explicit title is pinned exactly as slot_create pins
-                # one: mark it user-origin and bump the epoch, so a follow-up
-                # turn's background auto-titling stands down instead of silently
-                # replacing the caller's chosen name. The DEFAULT title below is
-                # left un-pinned, keeping today's behaviour for a run that named
-                # no title.
-                slot._titled = True
-                slot._title_origin = "user"
-                slot._title_epoch += 1
-            else:
-                slot.title = f"Workflow: {snapshot.get('name') or run_id}"
-            # Opt-in filing: the folder id was resolved server-side by the run
-            # handler to an EXISTING folder. File the fallback slot under it only
-            # when that folder still exists at delivery (the same existence check
-            # slot_create makes); a folder deleted meanwhile leaves the slot
-            # unfiled, and nothing is recreated. Re-check mate-home ownership
-            # against the slot's REAL store here, where it is known: the run
-            # handler refused on the caller's principal before admission, and
-            # this confirms against the run's own store before filing. A folder
-            # that now sits in another member's home leaves the slot unfiled —
-            # fail-safe, no error — the same decision cron_inject makes.
-            from kiro_crew.dashboard.cron_inject import chat_folder_refuses_store
-
-            fallback_folder_id = (snapshot.get("fallback_folder_id") or "").strip()
-            if (
-                fallback_folder_id
-                and any(f.get("id") == fallback_folder_id for f in getattr(state, "_folders", []))
-                and not chat_folder_refuses_store(
-                    state, fallback_folder_id, getattr(slot, "memory_store", "")
-                )
-            ):
-                slot.folder_id = fallback_folder_id
+            if minted or minted_line is not None:
+                _title_and_file_fallback(state, run_id, snapshot, slot, minted_line or {})
 
         # Dedup: don't double-inject the same result on a re-fire.
         already = any(m.get("content") == msg for m in getattr(slot, "messages", []))
@@ -358,6 +318,78 @@ def inject_workflow_result(
         return False
 
 
+def _title_and_file_fallback(
+    state: DashboardState, run_id: str, snapshot: dict, slot: Any, line: dict
+) -> None:
+    """Title and file a fallback slot on the delivery that minted it.
+
+    *line* is the linked transcript's readable metadata line (``{}`` when unread):
+    the stored title and folder of a chat closed before its run finished. The
+    run's own ``title`` / ``folder`` win; else the stored values, so the slot's
+    first save does not write the defaults over that chat's name and filing; else
+    the default title, unfiled.
+    """
+    # Opt-in per-run title for the fallback slot: a webhook-driven run
+    # whose originating chat is always gone can name its own slot so many
+    # runs of one workflow are told apart. Clean the title HERE, at the one
+    # point every run path (the three HTTP handlers and the MCP tool)
+    # converges on applying it to a slot, with the same display-text cleaner
+    # a caller-explicit session title gets (redact, single line, bounded).
+    from kiro_crew.dashboard.chat_cards import _clean as _clean_display_text
+    from kiro_crew.dashboard.cron_inject import chat_folder_exists, chat_folder_refuses_store
+    from kiro_crew.dashboard.slot_persistence.metadata_values import _rehydrate_slot_title
+    from kiro_crew.workflows.registry import FALLBACK_TITLE_MAX
+
+    fallback_title = _clean_display_text(snapshot.get("fallback_title") or "", FALLBACK_TITLE_MAX)
+    stored_title = line.get("title")
+    if fallback_title:
+        slot.title = fallback_title
+        # A caller-explicit title is pinned exactly as slot_create pins
+        # one: mark it user-origin and bump the epoch, so a follow-up
+        # turn's background auto-titling stands down instead of silently
+        # replacing the caller's chosen name. The DEFAULT title below is
+        # left un-pinned, keeping today's behaviour for a run that named
+        # no title.
+        slot._titled = True
+        slot._title_origin = "user"
+        slot._title_epoch += 1
+    elif isinstance(stored_title, str) and stored_title:
+        _rehydrate_slot_title(slot, stored_title, titled=True, metadata=line)
+    else:
+        slot.title = f"Workflow: {snapshot.get('name') or run_id}"
+    # Opt-in filing: the folder id was resolved server-side by the run
+    # handler to an EXISTING folder. A folder is used only when it still
+    # exists at delivery (nothing is recreated) and is not in another
+    # member's home for the slot's REAL store (the run handler checked the
+    # caller's principal; cron_inject makes the same check). Failing both,
+    # the slot stays unfiled -- fail-safe, no error.
+    store = getattr(slot, "memory_store", "")
+    for folder_id in ((snapshot.get("fallback_folder_id") or "").strip(), line.get("folder_id")):
+        if (
+            isinstance(folder_id, str)
+            and chat_folder_exists(state, folder_id)
+            and not chat_folder_refuses_store(state, folder_id, store)
+        ):
+            slot.folder_id = folder_id
+            return
+
+
+def _seed_line_binding(slot: Any, line: dict, agent_kind: str) -> None:
+    """Give a fresh slot linked to a closed chat that chat's workspace and conductor.
+
+    *line* is the transcript's readable metadata line, ``{}`` when unread.
+    *agent_kind* is the namespace of the agent the slot was given from the run's
+    record. The slot's saves then write the binding back instead of clearing it.
+    """
+    workspace = line.get("workspace")
+    if isinstance(workspace, str) and workspace:
+        slot.workspace = workspace
+    stamp = line.get("crew_mode_agent")
+    if isinstance(stamp, str) and stamp:
+        slot.crew_mode_agent = stamp
+    slot.agent_kind = agent_kind
+
+
 def _seed_turn_timeout(state: DashboardState, slot: Any, meta: Optional[dict]) -> None:
     """Give a fresh slot linked to an existing transcript that transcript's turn time limit.
 
@@ -415,6 +447,7 @@ async def inject_bound_workflow_result(
             return False
         # Capture the live target before awaiting config/metadata I/O. Recheck
         # that same slot after the await rather than selecting another member.
+        minted_line: Optional[dict] = None
         slot = state.get_slot(_slot_key_from_session(origin))
         if slot is not None:
             admitted = await asyncio.to_thread(read_session_execution, origin)
@@ -431,10 +464,11 @@ async def inject_bound_workflow_result(
         else:
             if execution.memory_mode != "persistent":
                 return False
-            agent = execution.template_id
+            agent, agent_kind = execution.template_id, "template"
             if execution.member_id is not None:
                 config = await asyncio.to_thread(KiroCrewConfig.load)
                 agent, _ = member_config_for_id(config, execution.member_id)
+                agent_kind = "member"
             fallback_name = f"workflow-{run_id}"
             slot = state.get_slot(fallback_name)
             if slot is not None and (
@@ -478,6 +512,8 @@ async def inject_bound_workflow_result(
                 )
                 slot.memory_store = execution.store.legacy_name
                 _seed_turn_timeout(state, slot, limit_meta if limit_readable else None)
+                minted_line = limit_meta if limit_readable else {}
+                _seed_line_binding(slot, minted_line, agent_kind)
                 # The chips-off switch comes from the same read, or stays on disk.
                 from kiro_crew.dashboard.slot_persistence.metadata_values import (
                     _mark_source_links_off_unread,
@@ -491,6 +527,8 @@ async def inject_bound_workflow_result(
             on_injected = None
         delivered = dict(snapshot)
         delivered["memory_mode"] = execution.memory_mode
-        return inject_workflow_result(state, run_id, delivered, on_injected=on_injected)
+        return inject_workflow_result(
+            state, run_id, delivered, on_injected=on_injected, minted_line=minted_line
+        )
     except (OSError, ValueError, RuntimeError):
         return False

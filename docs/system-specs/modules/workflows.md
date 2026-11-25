@@ -1848,12 +1848,25 @@ AFTER the run body validates and BEFORE the run starts, through the one
 read-only resolver (`_resolve_chat_folder_id`) — NOTHING is created, and a
 folder that does not exist or is ambiguous rejects the run with a 400 the caller
 sees rather than being silently dropped. The fallback slot is filed under that
-id only if it still exists at delivery; a folder deleted meanwhile leaves the
-slot unfiled. The retained `title`/`folder_id` on the run handle are
+id only if it still exists at delivery; a folder deleted meanwhile is not
+used. The retained `title`/`folder_id` on the run handle are
 length-bounded on every construction path, so a direct POST cannot store an
-unbounded value. With neither argument the default title and unfiled placement
-are unchanged. A live originating session is never titled or filed by these
-arguments, and incognito/temporary runs still get no fallback slot.
+unbounded value. The fallback slot is linked to the originating session's
+transcript, so its saves write that transcript's metadata line: a chat closed
+before its run finished keeps its name and filing: with no `title`, the slot
+takes the line's stored title (restored as a reload restores it), and with no
+`folder` that still exists and accepts the run's store, the line's stored folder
+under the same two checks, both read by `inject_bound_workflow_result` before it
+creates the slot. The default title and unfiled placement apply only when the
+line has none or could not be read, and a usable argument always wins over the stored
+value. From the same read
+the slot takes the line's workspace and Crew Mode conductor; its agent namespace
+(`agent_kind`) is the one of the agent it gets from the run's record (`member`
+for a member's name, else `template`). Only the delivery that creates
+the fallback slot titles and files it: a re-fire into an existing one leaves its
+title and folder as they are. A live originating session is never titled or
+filed by these arguments, and incognito/temporary runs still get no fallback
+slot.
 
 A new fallback slot is a slot allocation, so it tests the same live-session
 ceiling as every other allocator (`live_slot_count() >= MAX_LIVE_SLOTS`, 500).
