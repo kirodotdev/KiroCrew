@@ -289,10 +289,12 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
 
         anchored = ntpath.abspath("/tmp/sub/../pods")
 
-        # A rooted path with no drive is absolute to ``ntpath.isabs`` up to CPython 3.12
-        # and relative to the current drive from 3.13; rooted is what holds on both.
-        assert ntpath.isabs(anchored) is (sys.version_info < (3, 13))
-        assert ntpath.splitroot(anchored)[1] == "\\"
+        # ``ntpath.isabs`` reads a rooted path with no drive as absolute up to CPython
+        # 3.12 and as relative to the current drive from 3.13. Windows adds the drive
+        # here and a POSIX host has none to add; rooted is what holds on every one.
+        drive, root, _ = ntpath.splitroot(anchored)
+        assert ntpath.isabs(anchored) is (bool(drive) or sys.version_info < (3, 13))
+        assert root == "\\"
         assert anchored.endswith(r"\tmp\pods"), f"not normalised under Windows rules: {anchored!r}"
 
     @pytest.mark.skipif(

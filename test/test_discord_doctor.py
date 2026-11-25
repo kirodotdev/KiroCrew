@@ -18,6 +18,7 @@ Three things here are worth more than the line-by-line rendering:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import urllib.error
 from types import SimpleNamespace
@@ -374,8 +375,13 @@ class TestDoctorIntentGrantsWrapper:
         grants = cli_doctor._discord_intent_grants(_TOKEN)
 
         assert grants.known is False
-        # ``asyncio.run`` refuses a non-awaitable with TypeError from CPython 3.14.
-        assert grants.error == ("TypeError" if sys.version_info >= (3, 14) else "ValueError")
+        # The name is the one ``asyncio.run`` raises for a non-awaitable: ValueError up
+        # to CPython 3.13 and TypeError from 3.14, on every platform.
+        with pytest.raises((TypeError, ValueError)) as refused:
+            asyncio.run("not awaitable")  # type: ignore[arg-type]
+        raised = type(refused.value).__name__
+        assert raised == ("TypeError" if sys.version_info >= (3, 14) else "ValueError")
+        assert grants.error == raised
 
 
 # ── The doctor section ────────────────────────────────────────────────────────

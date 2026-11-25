@@ -18,7 +18,6 @@ import functools
 import json
 import os
 import shutil
-import sys
 import tarfile
 
 import pytest
@@ -574,9 +573,15 @@ class TestTheRestagePassFailsClosedOnAnUnreadableDestination(object):
             return _real(path, *args, **kwargs)
 
         monkeypatch.setattr(os, "stat", _fn)
-        if sys.version_info >= (3, 14):
-            # ``Path.lstat`` asks ``os.lstat`` itself from CPython 3.14.
-            monkeypatch.setattr(os, "lstat", functools.partial(_fn, _real=os.lstat))
+        # ``Path.lstat`` asks ``os.lstat`` itself from CPython 3.14 and ``os.stat``
+        # below it; the stand-in goes where this interpreter's ``Path.lstat`` asks.
+        real_lstat = os.lstat
+        asked: list[object] = []
+        with monkeypatch.context() as probe:
+            probe.setattr(os, "lstat", lambda *a, **k: (asked.append(a), real_lstat(*a, **k))[1])
+            home.lstat()
+        if asked:
+            monkeypatch.setattr(os, "lstat", functools.partial(_fn, _real=real_lstat))
         monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: PINNED_TREE_WALK)
         out = tmp_path / "out"
         with pytest.raises(OSError) as caught:
