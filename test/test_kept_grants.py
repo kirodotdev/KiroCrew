@@ -196,6 +196,7 @@ class TestTheUserStopMark:
         ("rc", "stop_ran", "kept"),
         [
             (0, True, True),
+            (0, False, False),  # disabled a stopped unit: no gateway was stopped
             (1, True, True),  # a stop took before another step failed
             (1, False, False),  # disable or every stop refused: still running
             (2, False, False),
@@ -228,6 +229,23 @@ class TestTheUserStopMark:
         assert cli_server._service_cmd(SimpleNamespace(service_action="disable")) == rc
         disable.assert_called_once_with()
         assert mark.exists() == (earlier or kept)
+
+    @pytest.mark.parametrize("earlier", [False, True])
+    def test_an_interrupted_service_disable_takes_its_new_mark_back(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, earlier: bool
+    ) -> None:
+        # Ctrl+C at the sudo prompt: nothing was stopped, the gateway runs on.
+        from kiro_crew import cli_server
+
+        mark = _record_path(home, kept_grants.USER_STOP_FILE)
+        if earlier:
+            assert kept_grants.mark_user_stop("cli")
+        disable = MagicMock(side_effect=KeyboardInterrupt)
+        monkeypatch.setattr(cli_server.service_controller, "disable_service", disable)
+        monkeypatch.setattr(cli_server, "sel", MagicMock())
+        with pytest.raises(KeyboardInterrupt):
+            cli_server._service_cmd(SimpleNamespace(service_action="disable"))
+        assert mark.exists() == earlier
 
     def test_a_gateway_without_a_dashboard_keeps_and_records_yolo_too(self) -> None:
         # The headless server boot runs the same restore, which arms the recorder.

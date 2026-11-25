@@ -101,7 +101,7 @@ class TestLinuxDisableEnable:
     def test_disable_acts_on_a_stopped_user_unit_without_sudo(self) -> None:
         run = _fake_systemctl(system=None, user=_DEAD)
         with _linux(run):
-            assert svc_linux.disable() == ([], [], True)
+            assert svc_linux.disable() == ([], [], False)  # no process: no stop ran
         assert ["systemctl", "--user", "disable", _UNIT] in run.calls
         assert ["systemctl", "--user", "stop", _UNIT] in run.calls
         assert not any(c[0] == "sudo" for c in run.calls), run.calls
@@ -150,7 +150,7 @@ class TestLinuxDisableEnable:
             refused, (line,), _ran = svc_linux.disable()
             rc, stop_ran = controller.disable_service()
         assert refused == []
-        assert stop_ran is True
+        assert stop_ran is False  # the system unit was not running: nothing was stopped
         assert line.startswith("user scope: not reachable from this shell"), line
         out = capsys.readouterr().out
         assert rc == 0

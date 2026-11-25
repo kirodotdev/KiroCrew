@@ -286,7 +286,7 @@ def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str], bool]
     ``None`` only when both scopes answered and neither has our unit.
     Otherwise ``(refused, unreached, ran)``. ``ran`` is True when systemd
     accepted both verbs in at least one scope (for ``disable``: a ``stop``
-    actually ran and took), False when no scope got that far. ``refused`` holds one line per step
+    actually ran and took on a unit that was running), False when no scope got that far. ``refused`` holds one line per step
     that did not take, empty when every step took: a scope stops at its first
     refusal and lists that step and every later one as the command to run by
     hand, and the next scope is still tried. A running unit of ours that is
@@ -347,7 +347,10 @@ def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str], bool]
                     lines += [f"{spelled} {left} {SERVICE_NAME}" for left in verbs[i:]]
                     break
             else:
-                ran = True
+                # A disable "ran a stop" only when the unit had a process to
+                # stop: `systemctl stop` on an inactive unit also exits 0.
+                if verbs[0] != "disable" or state.running:
+                    ran = True
                 # A Type=simple start job succeeds once the process is forked,
                 # so a gateway that exits at once is caught here, as restart does.
                 failed = _confirm_up(user=user) if verbs[1] == "start" else None
