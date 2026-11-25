@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import __version__ as _mc_version
 from kiro_crew import agent as _agent
 from kiro_crew import (  # noqa: F401
+    agent_scratch,
     agent_state,
     dep_sync,
     diagnostics,
