@@ -21306,6 +21306,8 @@
         "retrying_theme_list": "Nuovo tentativo…",
         "show_unread_dot": "Mostra il punto non letto sulle schede delle sessioni",
         "show_unread_dot_save_failed": "Impossibile salvare l’impostazione del punto non letto.",
+        "expand_linked_items": "Mostra espansi gli elementi collegati sulle schede delle sessioni",
+        "expand_linked_items_save_failed": "Impossibile salvare l’impostazione degli elementi collegati.",
         "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate.",
         "font_family_option_custom": "Personalizzato",
         "custom_font_family": "Carattere personalizzato",

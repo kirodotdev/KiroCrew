@@ -1539,6 +1539,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
+        expand_linked_items=section.read("expand_linked_items", _safe_bool),
         command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
         channels_enabled=section.read("channels_enabled", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),

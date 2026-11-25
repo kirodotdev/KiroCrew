@@ -10962,6 +10962,7 @@
         "language": "",
         "recent_tint_count": 0,
         "show_unread_dot": true,
+        "expand_linked_items": false,
         "command_bar_enabled": true,
         "channels_enabled": false,
         "folder_sort": "custom",
@@ -12698,6 +12699,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.expand_linked_items",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show Linked Items Expanded",
+      "help": "Start each sidebar session card with its linked items (pull requests, issues) shown under it. The count on the card still folds or opens each card's list on its own.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.command_bar_enabled",

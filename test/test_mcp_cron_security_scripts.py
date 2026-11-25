@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -181,6 +182,84 @@ BENIGN_SOURCE_BODIES_NAMING_A_FENCED_STORE = [
 @pytest.mark.parametrize("body", BENIGN_SOURCE_BODIES_NAMING_A_FENCED_STORE)
 def test_vet_script_contents_allows_source_that_only_names_a_fenced_store(body):
     assert _vet_script_contents(body) is None, f"should allow: {body[:80]!r}"
+
+
+SINGLE_BACKSLASH_PROTECTED_PATH_BODIES = [
+    ('open(r"D:\\Profiles\\u\\.aws\\credentials")', ".aws"),
+    ("%USERPROFILE%\\.aws\\credentials", ".aws"),
+    ("%USERPROFILE%\\.ssh\\id_rsa", ".ssh"),
+    ("C:\\.aws\\credentials", ".aws"),
+    ("open(r'C:\\Users\\u\\.ssh')", ".ssh"),
+    ('open(r"C:\\Users\\Jane Doe\\.aws\\credentials")', ".aws"),
+    ('open(r"C:\\Users\\Jane\\.kube\\config")', ".kube/config"),
+    ('open(r"C:\\Users\\Jane Doe\\.kube\\config")', ".kube/config"),
+    ("%USERPROFILE%\\.docker\\config.json", ".docker/config.json"),
+]
+
+
+def test_every_multi_component_protected_name_is_refused_in_a_windows_path():
+    """Each entry with a `/` is also refused when a Windows path writes that `/`
+    as one backslash, with or without a space in an earlier segment."""
+    from kiro_crew.mcp_cron_shell_scan import _SENSITIVE_HOME_DIRS
+
+    multi = [d for d in _SENSITIVE_HOME_DIRS if "/" in d]
+    assert multi
+    for name in multi:
+        win = name.replace("/", "\\")
+        for body in (f'open(r"C:\\Users\\Jane Doe\\{win}")', f"%USERPROFILE%\\{win}"):
+            assert _matched_sensitive_name(body) == name, body
+            assert _vet_script_contents(body) is not None, body
+
+
+WINDOWS_PATH_ALLOWED_BODIES = [
+    'open(r"C:\\Users\\Jane Doe\\Documents\\report.txt")',
+    'open(r"C:\\Program Files\\App\\config.json")',
+    'open(r"C:\\Users\\Jane Doe\\.kube-old\\config")',
+    'open("C:\\\\Users\\\\Jane\\\\.kube\\\\config")',
+    'open("C:\\\\Users\\\\Jane Doe\\\\.aws\\\\credentials")',
+]
+
+
+@pytest.mark.parametrize("body", WINDOWS_PATH_ALLOWED_BODIES)
+def test_vet_script_contents_allows_a_benign_or_doubled_backslash_windows_path(body):
+    assert _vet_script_contents(body) is None, f"should allow: {body!r}"
+
+
+@pytest.mark.parametrize("body,name", SINGLE_BACKSLASH_PROTECTED_PATH_BODIES)
+def test_vet_script_contents_refuses_a_single_backslash_protected_path(body, name):
+    err = _vet_script_contents(body)
+    assert err is not None, f"should refuse: {body!r}"
+    assert name in err
+
+
+REGEX_ESCAPE_SCRUBBER_BODIES = [
+    'text = re.sub(r"\\.aws\\b", "[redacted]", text)',
+    'SCRUB = re.compile(r"~/\\.ssh/\\S+")',
+    'SCRUB = re.compile(r"\\.aws/credentials")',
+    'SCRUB = re.compile(r"(?:\\.aws\\b)")',
+    'SCRUB = re.compile(r"\\w\\.ssh\\b")',
+    'SCRUB = re.compile(r"\\S\\.aws\\b")',
+    'SCRUB = re.compile(r"${x}\\.aws\\b")',
+    'SCRUB = re.compile(r"~/.ssh\\b")',
+    'SCRUB = re.compile(r"(?i:\\.aws\\b)")',
+    'SCRUB = re.sub(r"(?s:\\.ssh/\\S+)", "", t)',
+]
+
+
+@pytest.mark.parametrize("body", REGEX_ESCAPE_SCRUBBER_BODIES)
+def test_vet_script_contents_allows_a_regex_escape_before_a_protected_name(body):
+    assert _vet_script_contents(body) is None, f"should allow: {body!r}"
+
+
+def test_windows_path_lead_has_no_unbounded_repeat():
+    """The lead-in runs on a whole script body, so an open-ended `*` or `+` in it
+    makes a long run such as `a:\\a:\\a:\\...` quadratic. Asserted on the pattern
+    text, not on seconds, which read the host."""
+    from kiro_crew.mcp_cron_shell_scan import _CRON_CRED_PATH_RE
+
+    assert re.search(r"(?<!\\)[*+]", _CRON_CRED_PATH_RE.pattern) is None
+    body = "a:\\" * 50_000
+    assert _vet_script_contents(body) is None
 
 
 def test_script_body_is_never_a_shell_gate_subject(monkeypatch):

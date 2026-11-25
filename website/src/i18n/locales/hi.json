@@ -20755,6 +20755,8 @@
         "retrying_theme_list": "फिर कोशिश की जा रही है…",
         "show_unread_dot": "सेशन कार्ड पर अपठित बिंदु दिखाएँ",
         "show_unread_dot_save_failed": "अपठित बिंदु की सेटिंग सहेजी नहीं जा सकी।",
+        "expand_linked_items": "सेशन कार्ड पर लिंक किए गए आइटम खुले दिखाएँ",
+        "expand_linked_items_save_failed": "लिंक किए गए आइटम की सेटिंग सहेजी नहीं जा सकी।",
         "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।",
         "font_family_option_custom": "कस्टम",
         "custom_font_family": "कस्टम फ़ॉन्ट",

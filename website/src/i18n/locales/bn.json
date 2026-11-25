@@ -20755,6 +20755,8 @@
         "retrying_theme_list": "আবার চেষ্টা করা হচ্ছে…",
         "show_unread_dot": "সেশন কার্ডে অপঠিত বিন্দু দেখাও",
         "show_unread_dot_save_failed": "অপঠিত বিন্দুর সেটিং সংরক্ষণ করা যায়নি।",
+        "expand_linked_items": "সেশন কার্ডে লিঙ্ক করা আইটেম খোলা অবস্থায় দেখাও",
+        "expand_linked_items_save_failed": "লিঙ্ক করা আইটেমের সেটিং সংরক্ষণ করা যায়নি।",
         "recent_tint_save_failed": "সাম্প্রতিক সেশন হাইলাইটের সংখ্যা সংরক্ষণ করা যায়নি।",
         "font_family_option_custom": "কাস্টম",
         "custom_font_family": "কাস্টম ফন্ট",
