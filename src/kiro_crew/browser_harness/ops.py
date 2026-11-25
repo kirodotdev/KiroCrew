@@ -52,6 +52,7 @@ from typing import Any
 
 from kiro_crew.browser_harness.budgets import CHANGE_AFTER_S, CHANGE_BEFORE_S
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
+from kiro_crew.browser_harness.nav_guard import guarded_move as _guarded_move
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 from kiro_crew.browser_snapshots import prune as prune_snapshots
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -728,43 +729,6 @@ async def navigate_to(ctx: OpContext, url: str, *, label: str) -> dict[str, Any]
         return refused
     await _arm_console(ctx)
     return {"ok": True, "url": committed["url"], "title": committed.get("title", "")}
-
-
-async def _guarded_move(
-    ctx: OpContext, move: Callable[[], Awaitable[dict[str, Any]]]
-) -> dict[str, Any]:
-    """Run one navigation *move* behind the request-stage gate (``nav_guard``).
-
-    Each document request on the way, every redirect hop included, is judged
-    BEFORE it is sent, so a public page that redirects to a loopback, private or
-    link-local address never reaches it. A refused hop answers ``redirect_refused``
-    whatever the move reported (the browser then reports a blocked load); the tab
-    is moved to ``about:blank``. A guard that cannot be armed refuses the move.
-    """
-    from kiro_crew.browser_harness.nav_guard import GuardUnavailable
-
-    guard = ctx.nav_guard()
-    if guard is None:
-        return await move()
-    try:
-        async with guard:
-            # A move that did not commit (a timeout, an error, a cancel) may leave a
-            # slow response pending: stop it while the guard is armed, so a redirect
-            # it sends later is never followed unjudged.
-            try:
-                result = await move()
-            except BaseException:
-                await guard.stop()
-                raise
-            if not result.get("ok"):
-                await guard.stop()
-    except GuardUnavailable as exc:
-        return refusal("nav_guard_unavailable", f"navigation not started: {exc}")
-    if guard.blocked:
-        refused = await _refuse_committed_url(ctx, guard.blocked[0], before_send=True)
-        if refused is not None:
-            return refused
-    return result
 
 
 async def _refuse_committed_url(
