@@ -269,6 +269,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // shortcuts UI advertises what really works. Resolves
   // { accelerator, default } — accelerator is "" when nothing is bound.
   getGlobalHotkey: () => ipcRenderer.invoke("global-hotkey:get"),
+  // Store and bind a summon hotkey recorded in Settings ("" turns it off);
+  // resolves the same shape as getGlobalHotkey, read after the bind. Withheld
+  // from a window on a remote gateway, where the config file is the way to
+  // change it: the hotkey is grabbed on this machine, not on that host.
+  ...(REMOTE_GATEWAY ? {} : {
+    setGlobalHotkey: (accelerator) =>
+      ipcRenderer.invoke("global-hotkey:set", String(accelerator)),
+  }),
 });
 
 // Local-gateway switch for the Settings > Developer toggle. The choice lives in

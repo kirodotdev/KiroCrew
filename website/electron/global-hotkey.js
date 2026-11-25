@@ -86,6 +86,35 @@ function resolveGlobalHotkey(saved) {
 }
 
 /**
+ * The accelerators the Settings recorder may send: Cmd, Ctrl, Alt and Shift in
+ * that order, then one letter, digit, function key or named key. The renderer's
+ * recorder (acceleratorFromEvent in website/src/lib/globalHotkey.ts) builds
+ * exactly this spelling.
+ */
+const RECORDED_HOTKEY_RE =
+  /^(Cmd\+)?(Ctrl\+)?(Alt\+)?(?:Shift\+)?(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space|Tab|Enter|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
+
+/**
+ * Check a value the Settings recorder sent over IPC. Pure.
+ *
+ * A global accelerator is EXCLUSIVE, so a renderer must not be able to grab a
+ * bare key or a Shift-only chord for the whole system: that would swallow
+ * plain typing in every other program. The config file stays free-form (its
+ * owner is the user); this bound is for the IPC channel only.
+ *
+ * @param {*} value  What the renderer sent.
+ * @returns {string|null} "" to turn the hotkey off, the accelerator when it is
+ *   one the recorder can produce and holds Cmd, Ctrl or Alt, and null
+ *   when the value must be refused.
+ */
+function parseRecordedHotkey(value) {
+  if (value === "") return "";
+  if (typeof value !== "string") return null;
+  const match = RECORDED_HOTKEY_RE.exec(value);
+  return match && (match[1] || match[2] || match[3]) ? value : null;
+}
+
+/**
  * Decide the one-time fresh-install seed for the summon hotkey. Pure.
  *
  * A global accelerator is EXCLUSIVE — while the app holds it, the focused app
@@ -239,6 +268,7 @@ function requestedGlobalHotkey() {
 module.exports = {
   DEFAULT_GLOBAL_HOTKEY,
   resolveGlobalHotkey,
+  parseRecordedHotkey,
   planFreshInstallHotkeySeed,
   createSummonHandler,
   bindGlobalHotkey,
