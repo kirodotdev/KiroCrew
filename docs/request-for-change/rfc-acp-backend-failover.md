@@ -134,9 +134,10 @@ change that adds the consumer.
 
 ### 4. Where it runs
 
-`src/kiro_crew/subagent_parts/backend_failover.py` holds a pure resolver,
+`src/kiro_crew/acp_failover.py` holds a pure resolver,
 `next_failover_backend(*, current, chain, triggers, verdict) -> str | None`,
-with no gateway imports. `_requested_backend` calls it when the chosen backend
+with no gateway imports. `_requested_backend`
+(`dashboard/messaging_api/spawn.py`) calls it, through `_failover_backend`, when the chosen backend
 is unavailable with a configured trigger, and walks forward to the first chain
 member that probes available. The walk advances by index, never revisits a
 member, and is bounded by the chain's length. An exhausted chain returns the
