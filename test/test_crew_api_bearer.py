@@ -408,6 +408,44 @@ async def test_app_scope_uses_the_public_owner_policy(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "refused"),
+    [
+        ("/v1/responses/resp_" + "0123456789abcdef" * 2, (403, "owner_only")),
+        ("/v1/responses/resp_" + "0123456789abcdef" * 2 + "/input_items", (403, "owner_only")),
+        # A path no route answers keeps the answer it has always had.
+        ("/v1/conversations", (401, "invalid_token")),
+    ],
+)
+async def test_app_scope_finds_a_templated_public_owner_route_by_its_pattern(
+    monkeypatch, path, refused
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    import kiro_crew.dashboard.token_auth as ta
+    from kiro_crew.dashboard.routes import crew_api
+
+    monkeypatch.setattr(ta, "_app_api_allowlist", lambda name: ())
+    app = web.Application()
+    crew_api.register(app)
+    token = generate_token("local-app", app="file-explorer")
+    request = _make_request(path=path, headers=_bearer(token))
+    # The route the path matches, as aiohttp resolves it before any middleware runs.
+    request.match_info = await app.router.resolve(make_mocked_request("GET", path))
+    reached: list = []
+
+    async def _handler(req):
+        reached.append(req)
+        return web.Response(text="ok")
+
+    resp = await token_auth_middleware(port=5476)(request, _handler)
+    assert not reached
+    assert (resp.status, json.loads(resp.body)["error"]["code"]) == refused
+    assert ("WWW-Authenticate" in resp.headers) is (resp.status == 401)
+
+
+@pytest.mark.asyncio
 async def test_owner_openapi_routes_refuse_out_of_scope_apps(monkeypatch) -> None:
     from pathlib import Path
 

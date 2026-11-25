@@ -992,7 +992,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/crew_api_responses.py",
         "The reply text and the failure reason of a POST /v1/responses turn, redacted "
         "before the answer leaves. `metadata`, the model name and the names of ignored "
-        "fields go back as the caller sent them.",
+        "fields go back as the caller sent them. The turn's record holds that answer, "
+        "with the same fields as sent, and each input text is redacted here before "
+        "it is written to the record.",
+    ),
+    (
+        "Crew API response read-back",
+        "dashboard/crew_api_response_reads.py",
+        "The reply text, the failure reason and the input texts of a kept POST "
+        "/v1/responses turn, served again by GET /v1/responses/{response_id} and its "
+        "input_items. Each is redacted again with the route's _redact on its way out; "
+        "a record file that is not the one shape the store writes is not served, and "
+        "in that shape every other field is a fixed value or one of the three sent "
+        "back as they are. No stream event is kept: a stream's events are made again "
+        "from the redacted answer, and from the kept text of its deltas only when "
+        "that redaction changes nothing in them, judged joined. `metadata`, the "
+        "model name and the names of ignored fields go back as the owner sent them.",
     ),
     (
         "Crew API response stream",

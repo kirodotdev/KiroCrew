@@ -872,7 +872,7 @@ Content is a string, or a list of content parts: `input_text` (phase 1), `input_
 |---|---|---|---|
 | `type` | `message` | yes |  |
 | `id` | string | yes |  |
-| `role` | `user`, `assistant` | yes |  |
+| `role` | `user`, `assistant`, `developer`, `system` | yes | Proposed amendment, 2026-11-25, waiting for a maintainer's sign-off: `developer` and `system`, the roles an input item can be sent with, so that GET /v1/responses/{response_id}/input_items can list such an item. |
 | `status` | `in_progress`, `completed`, `incomplete` | yes |  |
 | `content` | array of [OutputText](schemas.md#outputtext) or [InputText](schemas.md#inputtext) | yes |  |
 
@@ -1021,7 +1021,7 @@ Reasoning summary (phase 2). Present only when the request carries reasoning.sum
 
 ## Response
 
-Retention: stored responses (with the stream events used to resume), the event index, resolved approvals and uploaded files are all kept 30 days by default; the owner can set `crew_api.retention_days` in the crew settings to 1 to 365 days. Deleting a conversation deletes its responses and events. After the retention period GET returns 404 not_found.
+Retention: stored responses (with the stream events used to resume), the event index, resolved approvals and uploaded files are all kept 30 days by default; the owner can set `crew_api.retention_days` in the crew settings to 1 to 365 days. Deleting a conversation deletes its responses and events. After the retention period GET returns 404 not_found. Proposed amendment, 2026-11-25, waiting for a maintainer's sign-off: the `crew_api.retention_days` setting is not built yet; a response is kept 30 days.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
