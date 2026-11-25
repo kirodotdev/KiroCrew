@@ -55,15 +55,18 @@ appends only what the ledger does not hold; a rerun appends a fresh observation
 of the whole run, and the report reads each run's newest attempt only:
 
     {"kind": "run", "run", "attempt", "source", "fork", "pr", "head", "date",
-     "verdict", "tiers": {tier: files}, "covered": {status letter: rows}}
+     "verdict", "tiers": {tier: files}, "covered": {cause: rows}}
     {"kind": "failure", <the same seven>, "file", "tier", "miss", "rerun_green", "main_red"}
     {"kind": "skip", <the same seven>, "reason"}
 
-`covered` is the verdict's own: how many changed docs and frontend paths, by
-git status letter (`A`, `D`, `M`, `R`), had their readers take the place of a
-fall-back (`scripts/ci_test_data_readers.py`). A verdict written before the
+`covered` is the verdict's own: what let the diff be narrowed where a rule
+would else fall back. A git status letter (`A`, `D`, `M`, `R`) counts the
+changed docs and frontend paths whose readers took the place of a fall-back
+(`scripts/ci_test_data_readers.py`); `added_test` counts the test files the
+diff adds. Any key of letters and underscores is kept as written, so a cause
+the scorer names later needs no change here. A verdict written before the
 scorer had the field reads as none, and so does a run row without it. The
-summary splits the `select` runs and every miss by it, so a status that lets
+summary splits the `select` runs and every miss by it, so a cause that lets
 misses through shows before selection is turned on.
 
 Rows are joined and deduplicated only on values every later pass reads the same:
@@ -243,7 +246,7 @@ _TIMING_FAILURE = re.compile(
 )
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
-_STATUS = re.compile(r"[A-Z]")
+_STATUS = re.compile(r"[A-Za-z_]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
@@ -268,7 +271,7 @@ def _files(value: object) -> set[str] | None:
 
 
 def _covered(value: object) -> dict[str, int] | None:
-    """A `covered` table, `{status letter: rows}` with every count above zero, else None."""
+    """A `covered` table, `{cause: rows}` with every count above zero, else None."""
     if not isinstance(value, dict):
         return None
     for status, rows in value.items():
@@ -1228,7 +1231,7 @@ def _where(row: Row) -> list[object]:
 
 
 def _covered_cell(covered: dict[str, int]) -> str:
-    return " ".join(f"{status}{rows}" for status, rows in sorted(covered.items()))
+    return " ".join(f"{cause}:{rows}" for cause, rows in sorted(covered.items()))
 
 
 def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> str:
@@ -1247,8 +1250,8 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
         f"Runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
         + ".",
-        "Fitted runs by the status of the docs and frontend paths their verdict covered "
-        f"(a run counts under each status it has): none {sum(1 for r in fitted if not r.get('covered'))}"
+        "Fitted runs by what their verdict covered, a status of a docs or frontend path "
+        f"or an added test file (a run counts under each it has): none {sum(1 for r in fitted if not r.get('covered'))}"
         + "".join(f"; {cell(status)}: {n}" for status, n in sorted(by_status.items()))
         + ".",
         "",

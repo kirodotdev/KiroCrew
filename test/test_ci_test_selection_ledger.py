@@ -94,7 +94,7 @@ def test_a_failing_file_the_verdict_would_skip_is_a_diff_caused_miss(
 def test_a_run_and_its_misses_carry_the_statuses_the_verdict_covered(
     gh: FakeGh, tmp_path: Path
 ) -> None:
-    covered = {"M": 2, "A": 1}
+    covered = {"M": 2, "A": 1, "added_test": 3}
     failed_run(gh, 1, 7, ["test/test_a.py"], verdict={**VERDICT, "covered": covered})
     # A verdict written before the scorer had the field: it reads as none covered.
     assert "covered" not in VERDICT
@@ -104,16 +104,17 @@ def test_a_run_and_its_misses_carry_the_statuses_the_verdict_covered(
     assert run_main(tmp_path) == 0
 
     by_run = {row["run"]: row["covered"] for row in rows(tmp_path, "run")}
-    assert by_run == {1: {"A": 1, "M": 2}, 2: {}, 3: {}}
+    assert by_run == {1: {"A": 1, "M": 2, "added_test": 3}, 2: {}, 3: {}}
     assert all(ledger.valid_row(row) for row in rows(tmp_path))
     text = summary(tmp_path)
-    assert "(a run counts under each status it has): none 2; A: 1; M: 1." in text
-    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_a.py | G |  | A1 M2 |" in text
+    assert "(a run counts under each it has): none 2; A: 1; M: 1; added_test: 1." in text
+    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_a.py | G |  | A:1 M:2 added_test:3 |" in text
     assert "| #8 | aaaaaaaaaaaa | 2 | test/test_c.py | G |  |  |" in text
 
 
 @pytest.mark.parametrize(
-    "bad", [[], "M", {"m": 1}, {"MM": 1}, {"M": 0}, {"M": True}, {"M": "1"}, {"M": 1.0}]
+    "bad",
+    [[], "M", {"": 1}, {"M-1": 1}, {"M" * 21: 1}, {"M": 0}, {"M": True}, {"M": "1"}, {"M": 1.0}],
 )
 def test_a_covered_table_of_another_shape_is_no_verdict_and_no_row(bad: object) -> None:
     assert ledger.parse_verdict(json.dumps({**VERDICT, "covered": bad})) is None
