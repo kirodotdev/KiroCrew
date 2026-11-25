@@ -360,6 +360,9 @@ class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
                     os.link(elsewhere, self.legacy)
                 try:
                     self.assertEqual(self.backend.get("webhook", "signing_key"), "")
+                    # A save must not start a root store a later move copies over the moved one.
+                    with self.assertRaises(OSError):
+                        self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
                 finally:
                     self.legacy.unlink()
 

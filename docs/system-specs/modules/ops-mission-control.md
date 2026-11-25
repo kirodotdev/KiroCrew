@@ -772,7 +772,7 @@ only then is the root file replaced by the handover marker (`secrets.MOVED_MARKE
 **The marker decides which file is the store.** The store in `secrets/` counts only while
 the root name holds exactly the marker, as a regular file with one name. Every build masks
 the root name, so only the gateway writes it. A sandbox of an earlier build does not mask
-`data/`, so it can plant `secrets/secrets.json` before the first upgraded start; with no
+`data/`, so it can plant the store file in `secrets/` before the first upgraded start; with no
 marker that file is never read (a webhook signature check, a provider poll) or merged into,
 and the move writes the root store over it. A root store that comes back later (a restored
 backup) replaces the marker, so it is the store again and the next move copies it. An

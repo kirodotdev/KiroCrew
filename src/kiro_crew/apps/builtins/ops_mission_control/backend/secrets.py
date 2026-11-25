@@ -475,10 +475,19 @@ class KeystoneFileBackend:
         """
         try:
             text = path.read_text(encoding="utf-8")
-            # The marker at the root is no store: a first save the move holds back writes
-            # its own over it.
+            # The marker at the root is no store. A sound one is written over only by a first
+            # save held back from an empty moved directory. One with a second name or reached
+            # through a link hands over nothing (:func:`_root_is_marker`); a save on top of it
+            # would start a one-token root store that the next move copies over the moved
+            # store, losing every other token, so the update is refused instead.
             if text == MOVED_MARKER and path == legacy_secrets_path():
-                return {}
+                if _root_is_marker():
+                    return {}
+                raise OSError(
+                    errno.EBUSY,
+                    "the retired secret store name has a second name or is a link; remove "
+                    "the extra name and retry",
+                )
             raw = json.loads(text)
         except FileNotFoundError:
             return {}
