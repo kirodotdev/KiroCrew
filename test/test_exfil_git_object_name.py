@@ -18,13 +18,17 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.cron_script_context import _scanned_tool_args
 from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
 from kiro_crew.security.exfil import _exfil_blob_hit
+from kiro_crew.testing.synthetic_credentials import B64, SAMPLE_AWS_SECRET, synth
 
 # Invented values: the SHA-1 of the empty tree and a 64-hex (SHA-256 / app
 # secret) shaped run.
 SHA1 = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+# A PascalCase package name of the reported length: with ``/mainline`` a 40-char run.
+PKG = "Abcdefghij" * 3 + "k"
 
 
 def _url(query: str) -> str:
@@ -108,3 +112,45 @@ class TestHelperJudgesTheMaximalRun:
         assert _exfil_blob_hit("xoxb-1234567890-abcdefghij")
         assert _exfil_blob_hit("%41" * 21)
         assert _exfil_blob_hit("ssh-rsa AAAA")
+
+
+class TestSlashJoinedNames:
+    """``<package>/<branch>`` before the SHA is kept; a blob split at its own ``/`` is not."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("Type:" + PKG + "/mainline:" + SHA1, id="pascal-package"),
+            pytest.param(
+                "Commit:MyServicePipeline2LambdaStack/release/v2:" + SHA1, id="three-pieces"
+            ),
+        ],
+    )
+    def test_permalink_is_kept_and_sent(self, value: str) -> None:
+        url = _url("changes=" + value)
+        assert not _redacted(url)
+        args = {"url": url}
+        assert _scanned_tool_args("pipelines", "get_change_history", args) is args
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(SAMPLE_AWS_SECRET, id="aws-secret-with-its-own-slashes"),
+            *(
+                pytest.param(
+                    "/".join(synth(40, B64, seed)[i : i + 13] for i in (0, 13, 26)),
+                    id=f"synth-{seed}",
+                )
+                for seed in range(20)
+            ),
+            pytest.param(PKG + "/AKIA" + "ABCDEFGHIJKL1234", id="aws-key-id-piece"),
+            pytest.param(PKG + "/" + "Ab3" * 14, id="piece-is-a-blob"),
+            pytest.param(PKG + "//mainline", id="empty-piece"),
+            pytest.param("kJxQwErTyUiOp/aBcDeFgHiJkLm/QwErTyUiOpAsD", id="mixed-case-pieces"),
+            # Stated residual: an acronym-led name is not PascalCase words, so it still fires.
+            pytest.param("AWSPipelines" + "Abcdefghij" * 2 + "/mainline", id="acronym-led"),
+        ],
+    )
+    def test_value_is_a_blob_hit(self, value: str) -> None:
+        assert _exfil_blob_hit(value)
+        assert _redacted(_url("v=" + value))
