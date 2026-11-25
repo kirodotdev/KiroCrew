@@ -361,6 +361,15 @@ class SessionCapabilities:
     #: included: there the CLI builds that context itself.
     harness_loads_agent_context: bool
 
+    #: Whether the session's MCP report names, in ``sign_in_suspected``, the remote
+    #: servers Crew's credential-free probe found asking for a sign-in, because the
+    #: harness sends no sign-in frame of its own. The dashboard shows one "may need
+    #: a sign-in" row per chat for that list.
+    #:
+    #: True for opencode. False everywhere else, an unknown backend included: there
+    #: no such list is read and no row is shown.
+    reports_mcp_sign_in_suspects: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -410,6 +419,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
         model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
         harness_loads_agent_context=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
+        reports_mcp_sign_in_suspects=backend == ACP_BACKEND_OPENCODE,
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -455,6 +465,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     names_crew_tools_by_fused_name=False,
     model_auto_switches_in_place=False,
     harness_loads_agent_context=False,
+    reports_mcp_sign_in_suspects=False,
     keeps_session_across_compaction=False,
 )
 
