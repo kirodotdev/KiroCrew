@@ -48,8 +48,9 @@ as native media.
 local image, the renderer uploads it and sends the picture instead of printing the
 path. On WeCom a JPG or PNG up to 2 MB arrives as a picture and any other image as
 a file. On Feishu an image in a direct-message reply arrives as an image message
-(a group reply keeps the path). Teams, Webex and WhatsApp send the picture this
-way even though `file_send` has no leg on them.
+(a group reply keeps the path). On Weixin an image up to 10 MB arrives as a
+picture after the reply's text. Teams, Webex, WhatsApp, Feishu and Weixin send the
+picture this way even though `file_send` has no leg on them.
 
 **Tappable choices** is the total number of interactive options one prompt may
 present. Above the cap, the remainder degrades to a numbered list in the message

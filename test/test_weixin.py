@@ -43,14 +43,14 @@ def test_declared_capabilities_match_the_directions_actually_implemented():
     channel-plugin RFC, eventually by the agent's own tool surface), so it is
     wrong in BOTH directions: claiming a capability the transport lacks, and
     denying one it has. Inbound landed (``weixin/media.py`` CDN download +
-    AES-128-ECB decrypt, fed through ``weixin/attachments.py``); outbound still
-    carries text only, because the ``getuploadurl`` + encrypted CDN PUT half is
-    unimplemented. Flip ``files_outbound`` in the change that lands it.
+    AES-128-ECB decrypt, fed through ``weixin/attachments.py``); outbound, the
+    renderer uploads an inline image reference as a picture
+    (``weixin/media_upload.py``).
     """
     from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 
     assert WEIXIN_CAPABILITIES.files_inbound is True
-    assert WEIXIN_CAPABILITIES.files_outbound is False
+    assert WEIXIN_CAPABILITIES.files_outbound is True
 
 
 def test_headers_carry_required_ilink_fields():

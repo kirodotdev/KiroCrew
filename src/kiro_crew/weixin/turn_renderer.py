@@ -5,7 +5,8 @@ NEW chat bubble. So unlike the WeCom renderer (which replaces one bubble via WS
 frames), this renderer BUFFERS the whole turn and emits it once on ``on_done``,
 split into chunks by :mod:`kiro_crew.weixin.renderer_chunks`. While the turn
 runs it holds the native "typing…" indicator on, which is the only progress
-affordance iLink offers.
+affordance iLink offers. A local image reference in the answer
+(``![alt](/abs/path.png)``) is cut out and sent after the text as a picture.
 
 Dependency direction is ``weixin -> messaging`` (allowed).
 """
@@ -14,9 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.messaging.outbound_files import (
+    ExtractLimits,
+    OutboundFile,
+    extract_local_refs_off_loop,
+)
 from kiro_crew.messaging.renderer import (
     Renderer,
     count_redaction_tags,
@@ -24,7 +31,9 @@ from kiro_crew.messaging.renderer import (
     render_options_as_text,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.sel import sel
 from kiro_crew.weixin.client import TYPING_START, TYPING_STOP
+from kiro_crew.weixin.media_upload import MAX_IMAGE_BYTES, upload_image
 from kiro_crew.weixin.renderer import render_chunks
 
 if TYPE_CHECKING:
@@ -38,6 +47,13 @@ _CHUNK_DELAY_S = 0.3
 _TYPING_REFRESH_S = 8.0
 
 _ERROR_TEXT = "⚠️ 出错了，请重试"
+
+#: Inline pictures one answer sends, each within the upload's own cap.
+WEIXIN_UPLOAD_LIMITS = ExtractLimits(max_files=10, max_file_bytes=MAX_IMAGE_BYTES)
+
+# Sent when an extracted picture could not be delivered: extraction already cut its
+# reference out of the answer, so the path comes back as text instead.
+_UPLOAD_FAILED_HEADER = "⚠️ 以下图片未能发送，文件仍在本机："
 
 
 class WeixinRenderer(Renderer):
@@ -60,6 +76,7 @@ class WeixinRenderer(Renderer):
         account_id: str,
         typing_cache: "TypingTicketCache | None" = None,
         session_key: str = "",
+        uploads_allowed: bool = False,
     ) -> None:
         super().__init__(capabilities)
         self._client = client
@@ -68,6 +85,11 @@ class WeixinRenderer(Renderer):
         self._account_id = account_id
         self._typing = typing_cache
         self._session_key = session_key
+        # Pictures go out only when the dispatcher allows them for this session
+        # and the provider's cwd was authorized as the upload root.
+        self._uploads_allowed = uploads_allowed
+        self._upload_root = ""
+        self._scratch_root = ""
         self._buf: list[str] = []
         # Steer chip awaiting the text it heads (see on_steer_consumed).
         self._pending_chip = ""
@@ -153,9 +175,15 @@ class WeixinRenderer(Renderer):
         await self._stop_typing()
         ok = stop_reason != "error"
         body = self.text()
-        if not body:
+        images: list[OutboundFile] = []
+        if self.capabilities.files_outbound and self._uploads_allowed and self._upload_root:
+            body, images = await self._extract_uploads(body)
+        if not body and not images:
             body = "…" if ok else _ERROR_TEXT
-        await self._send(body)
+        # An answer that was nothing but pictures sends only the pictures.
+        if body:
+            await self._send(body)
+        await self._send_images(images, answer_sent=bool(body))
         cred_count, url_count = count_redaction_tags(body)
         if cred_count or url_count:
             # The answer above carries a redaction placeholder, so a follow-up
@@ -184,6 +212,90 @@ class WeixinRenderer(Renderer):
             except Exception:
                 logger.warning("weixin: final send failed during teardown", exc_info=True)
         await self._stop_typing()
+
+    # -- pictures -----------------------------------------------------------
+    def authorize_upload_root(self, root: str, scratch_root: str = "") -> None:
+        """Authorize the provider's resolved cwd as the upload root.
+
+        A non-absolute root disables uploads rather than widening them, and the
+        session's own ``$KIROCREW_SCRATCH`` counts only beside a valid root.
+        """
+        self._upload_root = root if os.path.isabs(root) else ""
+        self._scratch_root = (
+            scratch_root if self._upload_root and os.path.isabs(scratch_root) else ""
+        )
+
+    async def _extract_uploads(self, body: str) -> tuple[str, list[OutboundFile]]:
+        """Pull the answer's local image references out for upload, fail-soft.
+
+        A refused reference keeps its markup, so its path stays visible; an
+        extraction error costs the pictures, never the answer.
+        """
+        try:
+            result = await extract_local_refs_off_loop(
+                body,
+                within_root=self._upload_root,
+                limits=WEIXIN_UPLOAD_LIMITS,
+                scratch_root=self._scratch_root,
+            )
+        except Exception:
+            logger.warning("weixin: outbound image extraction failed", exc_info=True)
+            return body, []
+        if result.rejections:
+            sel().log_api_access(
+                caller=self._session_key or "weixin",
+                operation="weixin_renderer.upload_files",
+                outcome="denied",
+                source="weixin",
+                resources=f"{len(result.rejections)} rejection(s)",
+                # Only the closed reason CODES, never the LLM-authored destination.
+                error=",".join(sorted({item.reason for item in result.rejections})),
+            )
+        if result.files:
+            sel().log_api_access(
+                caller=self._session_key or "weixin",
+                operation="weixin_renderer.upload_files",
+                outcome="allowed",
+                source="weixin",
+                resources=f"{len(result.files)} file(s)",
+            )
+        return result.rewritten_text.strip(), list(result.files)
+
+    async def _send_images(self, images: list[OutboundFile], *, answer_sent: bool) -> None:
+        """Upload and send each extracted picture, one message each, after the text.
+
+        A failed picture puts its path back as text, so the reader is never left
+        with neither. When nothing of the answer landed at all, that report is
+        the answer and its failure raises like any other undelivered reply.
+        """
+        if not images:
+            return
+        ctx_token = self._ctx.get(self._account_id, self._to)
+        failed: list[str] = []
+        for i, image in enumerate(images):
+            if i or answer_sent:
+                await asyncio.sleep(_CHUNK_DELAY_S)
+            try:
+                item = await upload_image(self._client, to_user_id=self._to, data=image.data)
+                await self._client.send_image(
+                    to=self._to,
+                    image_item=item,
+                    context_token=ctx_token,
+                    client_id=uuid.uuid4().hex,
+                )
+            except Exception:
+                logger.warning("weixin: picture %d/%d not sent", i + 1, len(images), exc_info=True)
+                failed.append(image.path)
+        if not failed:
+            return
+        note = "\n".join([_UPLOAD_FAILED_HEADER, *(f"- `{path}`" for path in failed)])
+        if not answer_sent and len(failed) == len(images):
+            await self._send(note)
+            return
+        try:
+            await self._send(note)
+        except Exception:
+            logger.warning("weixin: could not report %d undelivered picture(s)", len(failed))
 
     # -- helpers ------------------------------------------------------------
     def text(self) -> str:
