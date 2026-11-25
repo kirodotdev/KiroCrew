@@ -5298,7 +5298,27 @@ for authorization, started with no tools (`mate_capability_catalog.unusable_line
 `dispatch.worker_unusable`; names
 only, never the failure text, which is the server's own output), and says a gap
 on one of them is not a missing capability, so the conductor tells the user what
-to fix instead of asking to add a server the worker has. A worker turn that ends
+to fix instead of asking to add a server the worker has. A mounted server named
+as waiting for authorization (only that bucket: a failed server with a credential
+reason may need a key or profile a chat sign-in does not start) also gets a
+sign-in line (`mate_capability_catalog.sign_in_line`, `worker_report.sign_in`),
+because a worker's sign-in link or notice shows only in the worker's own
+dashboard chat and the Bot's thread (and the Slack thread or Discord DM mirrored
+from it) shows only the Bot's reply: it tells the conductor to tell the user, in
+that reply, that the owner of the Crew opens the worker's chat and, when it shows
+no sign-in button, sends it a message naming the server. The chat is named by its
+dashboard link (`mate_thread_wakes._sign_in_where`, built off the loop like the
+code channel board's, `board.links.link_builder`: the configured origin or the
+opted-in tunnel, never a click token, since the reply can reach a thread other
+people read), or by its session key when no origin is configured; no sign-in URL
+is ever put in the prompt. Only a worker with a chat on this gateway gets the
+line (a scheduled run's report has none), only a server whose name is already in
+the summary's plain character set (the owner sends it verbatim and it is given
+whole), and the lines are built again when a report changed during the link
+read. Each
+server is named once per Bot thread (`_mate_sign_in_told`, in memory), across
+reports in one wake and across later wakes, until a worker report of that Bot
+lists it as `ready`, which makes a later sign-in news again. A worker turn that ends
 through an applied `nothing_to_do` and
 wrote no reply text (a quiet loop cycle; the turn's `_terminal_directive_applied`
 with an empty `_turn_full_reply_text`, carried as `_TurnOutcome.quiet_end`)
