@@ -16,6 +16,52 @@ from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
+#: How long a start waits for an app agent's OWN app servers (:func:`own_app_servers`).
+#: Longer than the brief wait: the server is the agent's reason to exist (its
+#: prompt is written around those tools) and it starts in a few seconds, so its
+#: first turn waits for it, at most this long, then goes out naming it as still
+#: starting like any other late server.
+APP_SERVER_WAIT_SECS = 10.0
+
+#: The separator between an app's name and its server's in an app MCP server key
+#: (``<app>:<server>``).
+_APP_SERVER_SEP = ":"
+
+
+def own_app_servers(params: dict[str, Any], agent: str, app: str) -> tuple[str, ...]:
+    """The servers of *app*, the app that declares *agent*, among those this start sent.
+
+    An app's servers are registered as ``<app>:<server>``. *app* comes from the
+    app manifests (:func:`owning_app_for_start`), never from the agent's name,
+    which keeps the name the manifest declared. Read from the session array and
+    the agent's own block. No app, no servers.
+    """
+    if not app:
+        return ()
+    servers = params.get("mcpServers")
+    sent = [*(servers if isinstance(servers, list) else []), *_own_servers(params, agent)]
+    prefix = f"{app}{_APP_SERVER_SEP}"
+    return tuple(name for name in roster_names(sent, STATUS_CAP) if name.startswith(prefix))
+
+
+def owning_app_for_start(agent: str) -> str:
+    """The installed app that declares *agent*, or ``""``. Blocking file I/O.
+
+    The ownership lookup the rest of Kiro Crew uses
+    (``apps.manager.owning_app_for_agent``). Never raises: a start whose owner
+    cannot be read waits as any other agent's.
+    """
+    if not agent:
+        return ""
+    try:
+        from kiro_crew.apps.manager import owning_app_for_agent  # circular import
+
+        owner = owning_app_for_agent(agent)
+    except Exception:  # noqa: BLE001 - an unreadable owner only loses the longer wait
+        logger.debug("owning app lookup failed for %s", agent, exc_info=True)
+        return ""
+    return owner.app if owner is not None else ""
+
 
 def person_waits(start_priority: StartPriority, *, focus_resume: bool = False) -> bool:
     """Whether a person is waiting on this session start, or is about to be.
