@@ -218,19 +218,24 @@ def _is_stop_fenced(slot: Any) -> bool:
     return ref is not None and ref() is slot
 
 
-def note_thread_conductor_start(slot: Any, user_id: str) -> bool:
-    """Record the owner as the author of a Conductor thread's first turn.
+def note_thread_conductor_start(slot: Any, user_id: str, binding: Any = None) -> bool:
+    """Record the owner, or *binding*'s opener, as the author of a Conductor thread's
+    first turn.
 
     The start command opens that turn itself, so it is never routed and
     :func:`note_channel_sender` would not see its author; without this the
     conductor's first ``session_create`` is refused as "not on record". Records
-    *user_id* only when it IS the Slack owner (``is_owner``, by identity) and
-    answers whether it did; anyone else records nothing, so their turn refuses.
+    *user_id* only when it IS the Slack owner (``is_owner``, by identity) or the
+    thread's opener (``opener_admitted``), and answers whether it did; anyone else
+    records nothing, so their turn refuses.
     """
     try:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
         from kiro_crew.slack.handler import is_owner
 
-        owner = bool(user_id) and is_owner(user_id)
+        owner = bool(user_id) and (
+            is_owner(user_id) or (binding is not None and opener_admitted(binding, user_id))
+        )
     except Exception:
         logger.debug("Conductor thread owner check failed", exc_info=True)
         return False
