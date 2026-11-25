@@ -10039,6 +10039,7 @@
         "soft_threshold_pct": 80,
         "reactions_enabled": true,
         "show_thinking": false,
+        "show_timing_footer": true,
         "session_folder": ""
       }
     },
@@ -10227,6 +10228,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "discord.show_timing_footer",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Show Timing Footer",
+      "help": "Post the \"Finished in … · ctx …%\" line under each reply. Turn it off for a cleaner chat; choice buttons still post.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "discord.session_folder",

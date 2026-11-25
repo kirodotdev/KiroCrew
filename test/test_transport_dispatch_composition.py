@@ -464,7 +464,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         "(self, record: 'TurnRecord', images: 'Sequence[str]' = ()) -> 'None'",
     ),
-    "_render_config": ("function", False, "(self) -> 'tuple[bool, bool]'"),
+    "_render_config": ("function", False, "(self) -> 'tuple[bool, bool, bool]'"),
     "_resolve_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_routing_turn": (
         "function",

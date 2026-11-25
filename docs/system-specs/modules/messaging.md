@@ -4203,7 +4203,12 @@ without rolling back the completed in-memory rotation.
 
 Every turn closes with a **one-line footer** as Discord subtext (`-#`) on the
 final segment, rendered by the shared `format_turn_status` (see "Turn-status
-surfacing" above): elapsed time plus the context-usage chip. The clock starts when
+surfacing" above): elapsed time plus the context-usage chip. With
+`discord.show_timing_footer` false (read per turn by `_render_config`, like
+Slack's `slack.show_timing_footer`) `_with_turn_footer` returns the text unchanged:
+no footer is posted, the components still ride the last segment, and `_limit()`
+still holds back the footer's headroom, so a long reply splits at the same places
+either way. The clock starts when
 the renderer is constructed rather than at `on_turn_start`, because the cold start
 that spawns and handshakes a session is time the user waited. The usage figure is
 read at turn END from the session provider the dispatcher hands over
@@ -4460,7 +4465,7 @@ byte for byte as it did in one module. New work of an owner's kind goes to that 
 |---|---|
 | `renderer_text.py` | the text transforms applied to model output: the `[OPTIONS:]` and steering-marker strips, the delivered form a cut is graded through, the buried-image-reference check, subtext, the steer-chip neutralizer and the platform-cap slicer |
 | `renderer_components.py` | Discord message components: the button styles and layout limits, `build_option_components` and `build_model_components` (the dispatcher's model picker and spawn-approval prompt build from here too) |
-| `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends |
+| `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends, `agent.tool_approval_timeout_secs` through `dashboard.turn_dispatch.tool_approval_timeout_secs` (as Slack reads it) unless a test pins a number |
 | `renderer_status.py` | the typing indicator, the phase ladder's emoji vocabulary and `_MessageReactionSink`, the reasoning gate, the tool footer and the turn footer |
 | `renderer_live.py` | chunk intake: steer-marker detection (each complete marker is handed to `on_steer_consumed`), the steer chip, table conversion for delivery, the canonical `[OPTIONS:]` take and the segment text |
 | `client_rest.py` | the REST request ladder (`_api_request`): bucket pre-emption, the GLOBAL hold, the 429 and 5xx back-offs, the invalid-request breaker, the route key, `DiscordApiResult` and the shared session |
