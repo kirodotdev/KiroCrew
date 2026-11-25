@@ -1490,8 +1490,11 @@ Updating by hand never restarts a running gateway, so finish with
 - **Git checkout, `cli.sh` managed venv or pipx:** run `kirocrew update`, then
   `kirocrew restart`. On pipx it re-runs the installer, which replaces the pipx
   install.
-- **Plain `pip`:** upgrade with pip in the same environment, from the channel
-  index you installed from (Kiro Crew is not on PyPI; see
+- **`uv tool`:** run `uv tool upgrade kirocrew`, then `kirocrew restart`. The
+  tool keeps the channel index it was installed with.
+- **Plain `pip`:** in the same environment, install the channel's current wheel
+  by URL with its `#sha256=` (Kiro Crew is not on PyPI, and a pip index lookup
+  can pick an unrelated PyPI project of that name; see
   [Installing a published wheel with pip](../../../docs/guides/install.md#installing-a-published-wheel-with-pip)),
   then `kirocrew restart`. Here `kirocrew update` installs a separate copy
   instead of upgrading that environment.
