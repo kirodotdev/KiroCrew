@@ -449,14 +449,16 @@ class LocalAuthorization:
 
     def grants(self) -> list[dict[str, Any]]:
         """The grants that work now, oldest first, without a secret. A revoked grant
-        keeps nothing to show, so it and an expired one are left out."""
+        keeps nothing to show, so it and an expired one are left out. So is one whose
+        refresh has run out: it can mint no token again (the test ``refresh`` applies)."""
         now = self._clock()
         with _LOCK:
             grants = self._load()["grants"]
         live = [
             (grant_id, grant)
             for grant_id, grant in grants.items()
-            if grant["status"] == "active" and grant["expires_at"] > now
+            if grant["status"] == "active"
+            and min(grant["refresh_expires_at"], grant["expires_at"]) > now
         ]
         return [
             {

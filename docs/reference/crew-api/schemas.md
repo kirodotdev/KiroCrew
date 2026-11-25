@@ -621,7 +621,7 @@ Client-side tool. Needs the `client_tools` capability and must match the tool of
 | `monitor` | object | no |  |
 | `kind` | `remote`, `local` | no | remote: issued by the Kiro authorization service; local: local authorization, issued by this gateway. |
 | `namespace` | string | no | Stored on every record of local authorization; one fixed value, `default`, today. |
-| `expires_at` | integer | no | A local grant only: when the grant ends by itself, in Unix seconds. |
+| `expires_at` | integer | no | A local grant only: the latest the grant can last, in Unix seconds. It ends, and leaves the list, earlier when its refresh token runs out unused. |
 
 ## GrantBots
 
@@ -947,19 +947,19 @@ Type: [MessageItem](schemas.md#messageitem) or [FunctionCallItem](schemas.md#fun
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | apr_ and 128 random bits, held in memory for this gateway process. After a restart an old id is 404. |
+| `id` | string | yes | apr_ and 128 random bits. Kept on disk with its state, its times, why it expired and its session, so after a restart an old id is still readable. |
 | `object` | `approval` | yes |  |
 | `namespace` | `default` | yes | Stored on every record; one fixed value today. |
 | `conversation` | string or null | yes | The session the request was raised in. Null for a request with no session, such as a cron job's. It becomes a conv_ id when the conversation operations exist. |
-| `client_id` | string or null | no | The app that owns that session; null for the owner's own. |
+| `client_id` | string or null | no | The app that owns that session; null for the owner's own, and null on every record from before a gateway restart, whoever owned the session (the owner is not kept on disk). |
 | `tool` | string | no |  |
 | `reason` | string | no | Redacted and cut short. |
 | `arguments` | object | no |  |
 | `state` | [OwnerApprovalState](schemas.md#ownerapprovalstate) | yes |  |
 | `created_at` | integer | yes | When the gateway gave the id. |
 | `decided_at` | integer or null | no |  |
-| `expired_reason` | `timeout`, `null` | no | Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting. |
-| `decided_by` | object or null | no | Who answered through this API, never a token. Null while pending and for an ending made elsewhere (the dashboard, a Stop); state still says whether the tool ran. |
+| `expired_reason` | `timeout`, `gateway_restart`, `null` | no | Only with state expired. timeout: nobody answered, the turn was cancelled, or the request stopped waiting. gateway_restart: after a restart, a row still pending on disk reads expired whether its request was still waiting or had ended without its ending being written. |
+| `decided_by` | object or null | no | Who answered through this API, never a token. Null while pending, for an ending made elsewhere (the dashboard, a Stop), and on every record from before a gateway restart (it is not kept on disk). State reflects the saved ending, with a saved pending row reading expired after a restart. |
 
 ## OwnerApprovalDecision
 

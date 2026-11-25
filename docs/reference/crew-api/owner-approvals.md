@@ -15,7 +15,7 @@ List tool approvals.
 | Stability | stable |
 | Callers the API defines | The owner, with the owner's own sign-in. |
 
-Proposed amendment, waiting for a maintainer's sign-off. Lists tool approvals in one state, oldest first, across every session on this Kiro Crew. It covers both places the gateway keeps an approval, a background request (a cron job's, a subagent's) and a chat turn's own tool prompt. The gateway gives a request its apr_ id the first time one of these routes sees it and keeps the id in memory for the life of the gateway process. Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change. Requests that open and end between calls get no id; this list is not an audit trail. The security event log is. The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates, app tokens and loopback internal callers receive 403 owner_only.
+Proposed amendment, waiting for a maintainer's sign-off. Lists tool approvals in one state, oldest first, across every session on this Kiro Crew. It covers both places the gateway keeps an approval, a background request (a cron job's, a subagent's) and a chat turn's own tool prompt. The gateway gives a request its apr_ id the first time one of these routes sees it and keeps the id on disk with its state, its times, why it expired and its session. An id survives a gateway restart. A request that was pending when the gateway process ended, or whose ending was not yet written when the process ended, reads expired with expired_reason gateway_restart afterwards, and is not in the pending list. Requests that open and end between calls get no id; this list is not an audit trail. The security event log is. A record file whose content is not valid is moved aside and the list goes on from an empty record. A record file that cannot be read is left in place and the list answers 503 instance_unavailable. 503 instance_unavailable also when a file whose content is not valid cannot be moved aside, or the record cannot be written before the answer. The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates, app tokens and loopback internal callers receive 403 owner_only.
 
 Query parameters:
 
@@ -61,6 +61,7 @@ Errors. The response body is [Error](schemas.md#error); its `error.code` field h
 | 401 | `invalid_token`, `stale_session_reauth` | 401: invalid_token, stale_session_reauth. For the Owner tier: no quota headers. |
 | 403 | `owner_only` | 403: owner_only. A delegated credential, an embed credential, a local app token and a dashboard session that is not the owner's all get this on the Owner tier; /v1 does not hide routes behind 404. |
 | 500 | `internal_error` | 500: internal_error. For embed-credential endpoints: no quota headers. |
+| 503 | `instance_unavailable` | 503: instance_unavailable. For embed-credential endpoints: no quota headers. |
 
 ## GET /v1/crew/owner/approvals/{approval_id}
 
@@ -73,7 +74,7 @@ Read one tool approval.
 | Stability | stable |
 | Callers the API defines | The owner, with the owner's own sign-in. |
 
-Proposed amendment, waiting for a maintainer's sign-off. Returns one approval by its apr_ id, in whatever state it is, during this gateway process. Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change. The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates, app tokens and loopback internal callers receive 403 owner_only.
+Proposed amendment, waiting for a maintainer's sign-off. Returns one approval by its apr_ id, in whatever state it is. An id survives a gateway restart. An id from before a restart reads with an empty tool, reason and arguments; one that was pending when the gateway process ended, or whose ending was not yet written then, reads expired with expired_reason gateway_restart. An id the gateway never gave, or one lost with a record file whose content was not valid, is 404. A record file that cannot be read is left in place and the route answers 503 instance_unavailable. 503 instance_unavailable also when a file whose content is not valid cannot be moved aside, or the record cannot be written before the answer. The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates, app tokens and loopback internal callers receive 403 owner_only.
 
 Path parameters:
 
@@ -101,19 +102,19 @@ Response body fields (`application/json`), [OwnerApproval](schemas.md#ownerappro
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | apr_ and 128 random bits, held in memory for this gateway process. After a restart an old id is 404. |
+| `id` | string | yes | apr_ and 128 random bits. Kept on disk with its state, its times, why it expired and its session, so after a restart an old id is still readable. |
 | `object` | `approval` | yes |  |
 | `namespace` | `default` | yes | Stored on every record; one fixed value today. |
 | `conversation` | string or null | yes | The session the request was raised in. Null for a request with no session, such as a cron job's. It becomes a conv_ id when the conversation operations exist. |
-| `client_id` | string or null | no | The app that owns that session; null for the owner's own. |
+| `client_id` | string or null | no | The app that owns that session; null for the owner's own, and null on every record from before a gateway restart, whoever owned the session (the owner is not kept on disk). |
 | `tool` | string | no |  |
 | `reason` | string | no | Redacted and cut short. |
 | `arguments` | object | no |  |
 | `state` | [OwnerApprovalState](schemas.md#ownerapprovalstate) | yes |  |
 | `created_at` | integer | yes | When the gateway gave the id. |
 | `decided_at` | integer or null | no |  |
-| `expired_reason` | `timeout`, `null` | no | Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting. |
-| `decided_by` | object or null | no | Who answered through this API, never a token. Null while pending and for an ending made elsewhere (the dashboard, a Stop); state still says whether the tool ran. |
+| `expired_reason` | `timeout`, `gateway_restart`, `null` | no | Only with state expired. timeout: nobody answered, the turn was cancelled, or the request stopped waiting. gateway_restart: after a restart, a row still pending on disk reads expired whether its request was still waiting or had ended without its ending being written. |
+| `decided_by` | object or null | no | Who answered through this API, never a token. Null while pending, for an ending made elsewhere (the dashboard, a Stop), and on every record from before a gateway restart (it is not kept on disk). State reflects the saved ending, with a saved pending row reading expired after a restart. |
 
 Errors. The response body is [Error](schemas.md#error); its `error.code` field holds the code.
 
@@ -123,6 +124,7 @@ Errors. The response body is [Error](schemas.md#error); its `error.code` field h
 | 403 | `owner_only` | 403: owner_only. A delegated credential, an embed credential, a local app token and a dashboard session that is not the owner's all get this on the Owner tier; /v1 does not hide routes behind 404. |
 | 404 | `not_found`, `model_not_found` | 404: not_found, model_not_found. For embed-credential endpoints: no quota headers. |
 | 500 | `internal_error` | 500: internal_error. For embed-credential endpoints: no quota headers. |
+| 503 | `instance_unavailable` | 503: instance_unavailable. For embed-credential endpoints: no quota headers. |
 
 ## POST /v1/crew/owner/approvals/{approval_id}/decision
 
@@ -135,7 +137,7 @@ Answer a tool approval.
 | Stability | stable |
 | Callers the API defines | The owner, with the owner's own sign-in. |
 
-Proposed amendment, waiting for a maintainer's sign-off. Answers one pending approval with allow or deny. The answer goes to the request the id was given to and never to a later request under the same caller id. The first answer wins: any later one, and an answer to an approval that has expired, gets 409 approval_already_resolved. deny refuses that one call and the turn goes on. A security-rule override card takes deny here; allow is 403 approval_requires_dashboard, because only the dashboard shows the rule being overridden. Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change. The route writes an SEL row for each answer and for its 403 approval_requires_dashboard and 409 approval_already_resolved refusals. An audit failure does not change the response. Not in this amendment: allow_always, and an answer from a Shared Crew teammate. The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates, app tokens and loopback internal callers receive 403 owner_only.
+Proposed amendment, waiting for a maintainer's sign-off. Answers one pending approval with allow or deny. The answer goes to the request the id was given to and never to a later request under the same caller id. The first answer wins: any later one, and an answer to an approval that has expired, gets 409 approval_already_resolved. deny refuses that one call and the turn goes on. A security-rule override card takes deny here; allow is 403 approval_requires_dashboard, because only the dashboard shows the rule being overridden. An id from before a gateway restart is still known, and it is never pending, so an answer to it gets 409 approval_already_resolved; an id lost with a record file whose content was not valid is 404. A record file that cannot be read is left in place and the route answers 503 instance_unavailable. 503 instance_unavailable also when a file whose content is not valid cannot be moved aside. A failed record write after the answer reaches the waiting tool is logged and the response stays 200. The route writes an SEL row for each answer and for its 403 approval_requires_dashboard and 409 approval_already_resolved refusals. An audit failure does not change the response. Not in this amendment: allow_always, and an answer from a Shared Crew teammate. The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates, app tokens and loopback internal callers receive 403 owner_only.
 
 Path parameters:
 
@@ -169,19 +171,19 @@ Response body fields (`application/json`), [OwnerApproval](schemas.md#ownerappro
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | apr_ and 128 random bits, held in memory for this gateway process. After a restart an old id is 404. |
+| `id` | string | yes | apr_ and 128 random bits. Kept on disk with its state, its times, why it expired and its session, so after a restart an old id is still readable. |
 | `object` | `approval` | yes |  |
 | `namespace` | `default` | yes | Stored on every record; one fixed value today. |
 | `conversation` | string or null | yes | The session the request was raised in. Null for a request with no session, such as a cron job's. It becomes a conv_ id when the conversation operations exist. |
-| `client_id` | string or null | no | The app that owns that session; null for the owner's own. |
+| `client_id` | string or null | no | The app that owns that session; null for the owner's own, and null on every record from before a gateway restart, whoever owned the session (the owner is not kept on disk). |
 | `tool` | string | no |  |
 | `reason` | string | no | Redacted and cut short. |
 | `arguments` | object | no |  |
 | `state` | [OwnerApprovalState](schemas.md#ownerapprovalstate) | yes |  |
 | `created_at` | integer | yes | When the gateway gave the id. |
 | `decided_at` | integer or null | no |  |
-| `expired_reason` | `timeout`, `null` | no | Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting. |
-| `decided_by` | object or null | no | Who answered through this API, never a token. Null while pending and for an ending made elsewhere (the dashboard, a Stop); state still says whether the tool ran. |
+| `expired_reason` | `timeout`, `gateway_restart`, `null` | no | Only with state expired. timeout: nobody answered, the turn was cancelled, or the request stopped waiting. gateway_restart: after a restart, a row still pending on disk reads expired whether its request was still waiting or had ended without its ending being written. |
+| `decided_by` | object or null | no | Who answered through this API, never a token. Null while pending, for an ending made elsewhere (the dashboard, a Stop), and on every record from before a gateway restart (it is not kept on disk). State reflects the saved ending, with a saved pending row reading expired after a restart. |
 
 Errors. The response body is [Error](schemas.md#error); its `error.code` field holds the code.
 
@@ -193,3 +195,4 @@ Errors. The response body is [Error](schemas.md#error); its `error.code` field h
 | 404 | `not_found`, `model_not_found` | 404: not_found, model_not_found. For embed-credential endpoints: no quota headers. |
 | 409 | `approval_already_resolved` | approval_already_resolved: the approval was already answered, has expired, or its request is gone |
 | 500 | `internal_error` | 500: internal_error. For embed-credential endpoints: no quota headers. |
+| 503 | `instance_unavailable` | 503: instance_unavailable. For embed-credential endpoints: no quota headers. |
