@@ -32,6 +32,13 @@ export type SidePanelFault =
 
 export const SIDE_PANEL_COLUMN_SELECTOR = '[data-testid="side-panel-column"]'
 export const SIDE_PANEL_INLINE_SELECTOR = '[data-testid="side-panel-inline"]'
+const SIDE_PANEL_ROOT_SELECTOR = '[data-testid="side-panel-root"]'
+
+/** The panel inside a column, wherever in it the kept host that each form's
+ *  surface adopts (ChatSidePanels) has put it. */
+export function sidePanelIn(column: Element | null | undefined): HTMLElement | null {
+  return column?.querySelector<HTMLElement>(SIDE_PANEL_ROOT_SELECTOR) ?? null
+}
 
 /** The first ancestor-or-self that hides `el`, or null. Stops at `<html>`. */
 export function hiddenAncestorOf(el: Element | null): Element | null {
@@ -72,7 +79,7 @@ export function findSidePanelFaults({ slot, chatPane, deskSlide, nativeSuspect }
   if (!column) {
     if (!faults.length) faults.push('no-column')
   } else {
-    const panel = column.firstElementChild
+    const panel = sidePanelIn(column)
     const boxes = [column, panel].map(el => el?.getBoundingClientRect())
     if (boxes.some(b => !b || b.width < 1 || b.height < 1)) faults.push('zero-size')
     if (hiddenAncestorOf(column)) faults.push('hidden-ancestor')
@@ -116,7 +123,7 @@ function panelStorage(): Record<string, unknown> {
 /** The fields `diag.js` collected by hand, for the console line. */
 export function sidePanelDiag({ slot, faults }: { slot: HTMLElement | null; faults: SidePanelFault[] }) {
   const column = sidePanelColumn(slot)
-  const panel = column?.firstElementChild ?? null
+  const panel = sidePanelIn(column)
   let hitAtPanelCenter: { el: string | null; inPanel: boolean; under: string | null } | null = null
   if (panel && typeof document.elementFromPoint === 'function') {
     const b = panel.getBoundingClientRect()

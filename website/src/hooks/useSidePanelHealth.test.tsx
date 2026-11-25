@@ -24,6 +24,7 @@ function mountPanel({ w = 460, h = 850 }: { w?: number; h?: number } = {}) {
   const col = document.createElement('div')
   col.setAttribute('data-testid', 'side-panel-column')
   const panel = document.createElement('div')
+  panel.setAttribute('data-testid', 'side-panel-root')
   col.append(panel)
   slot.append(col)
   sized(col, w, h)
@@ -113,6 +114,24 @@ describe('useSidePanelHealth', () => {
 
   it('a bottom-docked panel at zero height counts the same', () => {
     expect(findSidePanelFaults({ slot: (mountPanel({ h: 0 }), slot), chatPane, deskSlide: false, nativeSuspect: false })).toEqual(['zero-size'])
+  })
+
+  it('measures the panel inside the kept host, not the box-less wrappers around it', () => {
+    // ChatSidePanels portals the panel into a kept host the column adopts:
+    // column > AdoptPaneHost slot > host > panel. Both wrappers are
+    // `display: contents`, so they lay out no box and measure 0x0.
+    const col = mountPanel()
+    const panel = col.firstElementChild!
+    const adopted = document.createElement('div')
+    const host = document.createElement('div')
+    adopted.style.display = 'contents'
+    host.style.display = 'contents'
+    sized(adopted, 0, 0)
+    sized(host, 0, 0)
+    host.append(panel)
+    adopted.append(host)
+    col.append(adopted)
+    expect(findSidePanelFaults({ slot, chatPane, deskSlide: false, nativeSuspect: false })).toEqual([])
   })
 
   it('a hidden ancestor while the chat is on screen: closes at once, nothing to heal', () => {

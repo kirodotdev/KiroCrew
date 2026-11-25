@@ -45,7 +45,7 @@ vi.mock('../pages/chat/ChatSettings', async (importOriginal) => {
   return { loadChatConfig: () => ({ contentWidth: 'compact', sidePanelSwipe: real.loadChatConfig().sidePanelSwipe }), CONTENT_WIDTH: { compact: { messages: '800px', input: '816px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }
 })
 vi.mock('../pages/chat/SidePanel', () => ({
-  default: () => <div data-testid="side-panel" />,
+  default: () => <div data-testid="side-panel-root" />,
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
   CHAT_PANE_MIN_W: 320,
@@ -127,7 +127,7 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     const real = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')!
     Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
       configurable: true,
-      get(this: HTMLElement) { return this.dataset.testid === 'side-panel' ? PANEL : real.get!.call(this) },
+      get(this: HTMLElement) { return this.dataset.testid === 'side-panel-root' ? PANEL : real.get!.call(this) },
     })
     onTestFinished(() => { Object.defineProperty(HTMLElement.prototype, 'offsetWidth', real) })
     // A test that waits on the screen between two halves of one swipe must not
@@ -204,7 +204,7 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     swipe(chat(container), 20, 4)
     expect(swipe(chat(container), 20, 5)).toBe(5)
     expect(sliding()).toBe(true)
-    expect(slot.contains(screen.getByTestId('side-panel'))).toBe(true)
+    expect(slot.contains(screen.getByTestId('side-panel-root'))).toBe(true)
     await waitFor(() => expect(spacerW()).toBeCloseTo(100, 0))
     swipe(chat(container), 20, 5)
     await waitFor(() => expect(spacerW()).toBeCloseTo(200, 0))
@@ -213,7 +213,7 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(spacerW()).toBeNull()
-    expect(screen.getByTestId('side-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('side-panel-root')).toBeInTheDocument()
   })
 
   it("a rightward run on the open panel: the column starts at the docked width and gives the chat the panel's width back as it goes", async () => {
@@ -278,17 +278,17 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
   it('a short rightward run on the open panel falls back open, the same panel throughout', async () => {
     const { store, container } = renderChat()
     await openPanel(store)
-    const panel = screen.getByTestId('side-panel')
+    const panel = screen.getByTestId('side-panel-root')
     swipe(chat(container), -4, 5)
     expect(sliding()).toBe(true)
     // The drag never remounts the panel: its tabs (terminals, frames) live on.
-    expect(screen.getByTestId('side-panel')).toBe(panel)
+    expect(screen.getByTestId('side-panel-root')).toBe(panel)
     // A native Browser view cannot follow a position-only move: the column is
     // marked as covering it for the whole drag and settle (useNativeBrowser).
     expect(column()).toHaveAttribute('data-native-overlay')
     await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
     expect(store.getState().chat.activityOpen).toBe(true)
-    expect(screen.getByTestId('side-panel')).toBe(panel)
+    expect(screen.getByTestId('side-panel-root')).toBe(panel)
     // Docked: the mark is gone, so the view shows again at the docked rect.
     expect(column()).not.toHaveAttribute('data-native-overlay')
   })
