@@ -670,8 +670,9 @@ async def _on_subagent_list(turn: _ChatTurn, event) -> None:
     # A co-tenant's roster, fanned out by a shared runtime, is not this turn's.
     turn._turn_native_activity = turn._turn_native_activity or not event.runtime_global
     _rows = event.subagents
+    # Every KAS turn: a dispatch's approval card shows the task (approval_card_fields).
+    remember_dispatch_tasks(turn._engine_dispatch_tasks, _rows)
     if turn_runs_engine_children(turn):
-        remember_dispatch_tasks(turn._engine_dispatch_tasks, _rows)
         _rows = engine_rows(_rows, _native_tracker, engine_turn_key(turn))
     _native_subagent_sync(state, slot, _rows, _native_tracker, _native_card_output)
 

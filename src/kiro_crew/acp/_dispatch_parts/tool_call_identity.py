@@ -133,12 +133,16 @@ def classify_tool_call(update: dict[str, Any]) -> ToolCallIdentity:
     # ``_meta.goose.toolCall``; see _MCP_IDENTITY_META_CHANNELS). A server is set
     # ONLY for MCP-served calls, a tool name for every tool (built-ins included).
     # The kind is the harness's own verdict on the tool, so it stands.
-    meta_server, meta_tool, meta_shell, meta_unreadable = _meta_identity_full(update)
+    meta_server, meta_tool, meta_shell, meta_write, meta_unreadable = _meta_identity_parts(update)
     if meta_shell:
         # The harness named its OWN shell (goose: developer/shell) and sends no
         # ``kind`` on that branch. Harness-authored, so it RESOLVES the call:
         # it is a command, and no MCP server served it.
         return ToolCallIdentity(True, True, "", meta_tool, False)
+    if meta_write:
+        # Its own file write (goose: developer/write, developer/edit), named the
+        # same way: resolved, not a command, and no MCP server served it.
+        return ToolCallIdentity(True, False, "", meta_tool, False)
     if meta_server:
         return ToolCallIdentity(
             kind_resolved,
@@ -636,6 +640,11 @@ class _MetaIdentityChannel(NamedTuple):
     #: server field reads as "an MCP server served this" on a shell command. Matching it
     #: means two things at once: the call is a shell command, and it has no MCP server.
     builtin_shell: tuple[str, str] | None = None
+    #: The ``(server, tool)`` pairs that name the harness's OWN file-writing tools.
+    #: Reported with no server, as :attr:`builtin_shell` is, so the write rows read
+    #: them as built-in writes rather than as a served MCP tool; unlike it, they are
+    #: not commands.
+    builtin_writes: frozenset[tuple[str, str]] = frozenset()
     #: Whether this channel's halves are bounded at retention by the MCP-name
     #: bound Crew's own tool surface admits (``mcp_identity_name``), with a
     #: PRESENT half over it reported as unreadable. True for the KAS spelling,
@@ -714,6 +723,9 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # carries no ``kind`` -- so this pair is the only thing on the wire that says
         # "this is a command".
         builtin_shell=("developer", "shell"),
+        # Its ``write`` and ``edit`` come from the same extension (measured on
+        # 1.50.1): the harness's own file writes, judged by the spec write row.
+        builtin_writes=frozenset({("developer", "write"), ("developer", "edit")}),
     ),
     # Google Antigravity states an MCP call in the tool frame's ``_meta.mcp``
     # object. Both halves are harness-authored; eager MCP tools carry the same
@@ -736,16 +748,24 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
 
 
 def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool, bool]:
-    """``(server, tool, builtin_shell, unreadable)`` from the first meta channel that answers.
+    """``(server, tool, builtin_shell, unreadable)``; see :func:`_meta_identity_parts`."""
+    server, tool, shell, _write, unreadable = _meta_identity_parts(update)
+    return server, tool, shell, unreadable
 
-    ``("", "", False, False)`` when none does. ``unreadable`` is True when the
+
+def _meta_identity_parts(update: dict[str, Any]) -> tuple[str, str, bool, bool, bool]:
+    """``(server, tool, builtin_shell, builtin_write, unreadable)`` from the first meta
+    channel that answers.
+
+    ``("", "", False, False, False)`` when none does. ``unreadable`` is True when the
     answering channel PRESENTED a half the MCP-name bound refused
     (:func:`mcp_identity_unreadable`): the frame names a tool Crew cannot retain,
     which the permission path must refuse rather than read as no identity. Both identity halves come from ONE channel:
     mixing a server from one harness's block with a tool name from another's would be an
     identity no harness asserted.
 
-    A pair matching that channel's :attr:`_MetaIdentityChannel.builtin_shell` is reported
+    A pair matching that channel's :attr:`_MetaIdentityChannel.builtin_shell` (or one of
+    its :attr:`_MetaIdentityChannel.builtin_writes`) is reported
     with an EMPTY server, because the harness named its own extension there and Crew's
     consumers read a non-empty server as "an MCP server served this call". Returning the
     name would make the harness's shell look MCP-served, which is the inverse of what the
@@ -753,7 +773,7 @@ def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool, bool]:
     """
     meta = update.get("_meta")
     if not isinstance(meta, dict):
-        return "", "", False, False
+        return "", "", False, False, False
     for channel in _MCP_IDENTITY_META_CHANNELS:
         block = meta.get(channel.key)
         if not isinstance(block, dict):
@@ -791,14 +811,16 @@ def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool, bool]:
         # harness wrote, and the reduction below is Crew's own normalization of a fused
         # MCP tool name.
         if channel.builtin_shell is not None and (server, tool) == channel.builtin_shell:
-            return "", tool, True, False
+            return "", tool, True, False, False
+        if (server, tool) in channel.builtin_writes:
+            return "", tool, False, True, False
         if channel.strips_server_prefix and server and tool:
             prefix = f"{server}{channel.strips_server_prefix}"
             if tool.startswith(prefix):
                 tool = tool[len(prefix) :]
         if server or tool or unreadable:
-            return server, tool, False, unreadable
-    return "", "", False, False
+            return server, tool, False, False, unreadable
+    return "", "", False, False, False
 
 
 def _meta_identity(update: dict[str, Any]) -> tuple[str, str]:

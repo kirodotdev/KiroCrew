@@ -8,7 +8,7 @@ import {
   acceptSuffix, commandSuffix, commandArgv, unescapeWord,
 } from '../utils/terminalCompletion'
 import type { CompletionMode } from '../utils/terminalCompletion'
-import { sendRawToTerminalSession } from '../utils/terminalRegistry'
+import { dropTerminalDataForThisKey, sendRawToTerminalSession } from '../utils/terminalRegistry'
 import { isMac } from '../utils/platform'
 import { isChordLetter, terminalChord } from '../utils/terminalFullscreen'
 import { getTerminalFont } from '../hooks/useTerminalFont'
@@ -157,6 +157,8 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** When the last IME composition finished — see `IME_GRACE_MS`. */
   const imeEndAt = useRef(0)
+  /** Whether the last keydown outside a composition was a dead key. */
+  const deadKey = useRef(false)
   /**
    * Whether the user has moved the highlight (ArrowUp/ArrowDown) on the CURRENT
    * listing. Enter accepts the highlighted row only after that; otherwise it
@@ -512,6 +514,10 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
     }
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
+      // Firefox sends the key that ends a dead key's composition with its own keyCode; xterm 5.5 then
+      // sends the text composed so far, and the committed text again on `compositionend`. Drop the first.
+      if (!e.isComposing) deadKey.current = e.key === 'Dead'
+      else if (deadKey.current) dropTerminalDataForThisKey(sessionId)
       // An IME candidate is committed with a keydown the browser marks as
       // composing (Chrome reports keyCode 229 for it). Leave that native action
       // alone. Some browsers clear both flags before the committing key arrives,

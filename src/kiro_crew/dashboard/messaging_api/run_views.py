@@ -407,6 +407,11 @@ def _awaiting_spawn_approval(info: object) -> bool:
 
 async def api_spawn_list(request: web.Request) -> web.Response:
     """GET /api/spawn — list all subagents."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.list")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})

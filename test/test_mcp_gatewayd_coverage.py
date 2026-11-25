@@ -1133,7 +1133,9 @@ class TestZombieDiagnostic:
         task = asyncio.create_task(
             gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop)
         )
-        await async_wait_until(lambda: diag.exists(), off_loop=True)
+        await async_wait_until(
+            diag.read_text, off_loop=True, ignoring=(FileNotFoundError, PermissionError)
+        )
         stop.set()
         await await_until(task)
 

@@ -1,5 +1,6 @@
 """The ``!`` text commands and their registered slash forms that reply on their own:
-``!link``, ``!unlink``, ``!compact`` and ``!status``, the reply sink a text command
+``!link``, ``!unlink``, ``!compact`` and ``!status``, the step that applies
+``!temporary`` / ``!incognito`` (``_apply_privacy_mode``), the reply sink a text command
 answers through, and the single-reply command router both surfaces share.
 
 Each command's dispatch stays in ``handle_message``, which owns the resume-binding
@@ -26,7 +27,9 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.discord.commands import parse_command, parse_mid_turn_override
 from kiro_crew.discord.session_resume import ResumeReleaseError
+from kiro_crew.messaging import privacy_mode
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
@@ -140,6 +143,110 @@ async def _handle_unlink(
         # binding mutation does.
         self._session_resume._push_slots()
     await say(released)
+
+
+#: The two privacy modifiers ``parse_command`` names, spelled as ``privacy_mode``'s modes.
+_PRIVACY_COMMANDS = frozenset((privacy_mode.MODE_TEMPORARY, privacy_mode.MODE_INCOGNITO))
+
+
+def is_privacy_message(text: str) -> bool:
+    """Whether *text* leads with ``!temporary`` / ``!incognito``, bare or after ``!queue`` / ``!steer``."""
+    mode, rest = parse_mid_turn_override(text)
+    while mode is not None:  # `!queue !queue !incognito x` too
+        mode, rest = parse_mid_turn_override(rest)
+    return parse_command(rest) in _PRIVACY_COMMANDS
+
+
+#: ``!queue`` / ``!steer`` in front of a modifier: the message would be queued or
+#: steered as plain words with no mode on, so it is refused instead.
+_PRIVACY_PREFIXED_REFUSAL = (
+    "🔒 `!temporary` and `!incognito` can't follow `!queue` or `!steer`. Your message "
+    "was NOT processed. Send `!temporary <msg>` or `!incognito <msg>` on its own."
+)
+
+#: Refused like Telegram's: a resumed dashboard session carries its own memory
+#: mode on its slot, and marking only this channel's tracker would announce a
+#: privacy the slot does not keep.
+_PRIVACY_RESUMED_REFUSAL = (
+    "🔒 Privacy mode can't be changed while a dashboard session is resumed here. "
+    "Your message was NOT processed. Send `!unlink` or `!new` first."
+)
+
+#: A reply is running on the conversation: the modifier would land between that
+#: turn's writes, so it is refused whole rather than half-applied.
+_PRIVACY_BUSY_REFUSAL = (
+    "🔒 A reply is still running, so this conversation was NOT made {mode} and your "
+    "message was NOT processed. Send it again once the reply finishes."
+)
+
+
+async def _apply_privacy_mode(
+    self: DiscordDispatcher, mode: str, session_key: str, user_id: str, say: "ReplyFn"
+) -> bool | None:
+    """Put *session_key* into *mode* through the shared ``privacy_mode``.
+
+    Returns whether the user was told the mode is on (``False``: it already was,
+    and ``apply_mode`` said nothing), or ``None`` when it was refused: the user has
+    then been told the message was NOT processed (by ``apply_mode``, which also
+    audits it, or by :func:`_recorded_mode_refusal`), and the caller must run nothing.
+    """
+    refusal = await self._recorded_mode_refusal(mode, session_key)
+    if refusal is not None:
+        await say(refusal)
+        return None
+    notified: list[str] = []
+
+    async def _notify(note: str) -> None:
+        notified.append(note)
+        await say(note)
+
+    try:
+        applied = await privacy_mode.apply_mode(
+            mode,
+            session_key,
+            source="discord",
+            caller=user_id,
+            sessions=self.sessions,
+            notify=_notify,
+        )
+    except privacy_mode.PrivacyModeRefused:
+        return None
+    # A joined reservation announces through ``notify`` and still answers False.
+    return applied or bool(notified)
+
+
+#: A conversation whose execution record (written when it ran in its dashboard tab)
+#: the mode would tighten: session allocation reads the mode off that record and
+#: refuses any provider started, or starting, under the old one.
+_PRIVACY_RECORDED_SESSION_REFUSAL = (
+    "🔒 This conversation also ran in its dashboard tab, so it can't be made private "
+    "here. Your message was NOT processed. Send `!new`, then the modifier."
+)
+
+
+async def _recorded_mode_refusal(
+    self: DiscordDispatcher, mode: str, session_key: str
+) -> str | None:
+    """The refusal for applying *mode* to a conversation with a looser execution record.
+
+    Session allocation reads the memory mode off the record, which the transcript
+    stamp tightens, and refuses a provider holding another mode: one already open,
+    or one whose cold start read the record before the stamp. So the modifier is
+    refused BEFORE anything is stamped, whatever is live or starting, and nothing is
+    torn down. A Discord-only conversation has no record, and one already at least
+    as strict has nothing to tighten, so both take the mode.
+    """
+    from kiro_crew.execution_context import read_session_execution
+
+    try:
+        execution = await asyncio.to_thread(read_session_execution, session_key)
+    except Exception:
+        # Unreadable: allocation answers it with its own named refusal.
+        logger.debug("discord: execution record unreadable for %s", session_key, exc_info=True)
+        return None
+    if execution is None or execution.with_mode(mode).memory_mode == execution.memory_mode:
+        return None
+    return _PRIVACY_RECORDED_SESSION_REFUSAL
 
 
 async def _handle_compact(

@@ -55,6 +55,29 @@ def _gate_applied_keys(tools_settings: dict[str, Any]) -> set[tuple[str, str]]:
     return applied
 
 
+def deny_by_default_allowlists(tools_settings: Any) -> list[str]:
+    """``"shell"`` and/or ``"write"``: the allowlists *tools_settings* switches to deny by default.
+
+    The shell ``denyByDefault`` and the write ``fallbackAction: "deny"``, read
+    under every kiro-cli alias spelling, folded as Crew's gate folds them. Empty
+    when neither is set or the value is not a mapping.
+    """
+    # circular import: the acp package imports this module through kas_agents.
+    from kiro_crew.acp.kas_permissions import shell_denies_by_default, write_denies_by_default
+
+    if not isinstance(tools_settings, dict):
+        return []
+    tools_settings, _dropped = canonical_tools_settings(tools_settings)
+    return [
+        label
+        for label, denies in (
+            ("shell", shell_denies_by_default(tools_settings)),
+            ("write", write_denies_by_default(tools_settings)),
+        )
+        if denies
+    ]
+
+
 def _unapplied_beside_gate(
     tools_settings: dict[str, Any], applied: set[tuple[str, str]], raw: dict[str, Any]
 ) -> list[str]:

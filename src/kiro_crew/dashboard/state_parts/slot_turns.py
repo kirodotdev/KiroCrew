@@ -317,6 +317,10 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # purge never runs again for that slot, so the rows it declined to drop
     # outlive every consumer and the leak survives its own fix.
     self._pending_release_deferred = False
+    # Which stream reads ``_pending`` now, and, by epoch, what each replaced
+    # stream's turn left for it (``slot_buffers.drain_stale_pending``).
+    self._stream_epoch = 0
+    self._stream_handoffs = {}
     self._queue = []  # [{"id": uuid, "content": str}, ...]
     # Signature of the durable queue value this slot's last committed save
     # wrote (see slot_queue_repository.queue_persist_signature). Drift

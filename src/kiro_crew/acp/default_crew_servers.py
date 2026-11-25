@@ -50,7 +50,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar
 
 from kiro_crew.agent_spec_format import is_app_agent_launch_name, is_native_skill_alias_name
 from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description
@@ -125,17 +125,23 @@ def crew_added_servers(agent: str | None, spec: object) -> tuple[str, ...]:
 def one_pass() -> Iterator[None]:
     """Within the block, read the host state every agent shares once, not once per agent.
 
-    The edition's servers (``extra_mcp_servers()`` and ``mcp.json``) and kiro-cli's
-    skill-view admission are the same for every agent a skill-view preparation or a
-    doctor check walks. Outside a block each call reads them afresh, so nothing a
-    pass read outlives it. A nested block shares the outer one's reads.
+    The edition's servers (``extra_mcp_servers()`` and ``mcp.json``), the installed
+    apps' servers, each app's declared agents and kiro-cli's skill-view admission are
+    the same for every agent a skill-view preparation or a doctor check walks. The
+    apps' declared agents are what :func:`is_custom_agent` reads through
+    ``owning_app_for_agent``, kept by :func:`kiro_crew.build_reuse.one_build`, which
+    this block opens. Outside a block each call reads them afresh, so nothing a pass
+    read outlives it. A nested block shares the outer one's reads.
     """
     if _PASS.get() is not None:
         yield
         return
+    from kiro_crew.build_reuse import one_build
+
     token = _PASS.set({})
     try:
-        yield
+        with one_build():
+            yield
     finally:
         _PASS.reset(token)
 
@@ -219,58 +225,100 @@ def opted_out(spec: dict[str, Any], server: str) -> bool:
     resource or for ``<server>/*``. A per-tool exclusion or deny
     (``@kirocrew-core/spawn_run``) is not an opt-out: the server mounts and the
     spec's own rule keeps that tool off, natively on kiro-cli and KAS. A host that
-    applies neither ``excludedTools`` nor ``permissions`` asks
-    :func:`narrowed_per_tool` instead.
+    applies no per-tool ``excludedTools`` entry nor ``permissions`` asks
+    :func:`narrowed_per_tool` instead, and leaves a server this names out of its
+    array (:func:`withheld_whole`).
 
     The ``permissions`` block is read as written, before KAS's projection parses
     it: a block that projection refuses whole still says the author withholds the
-    server, so the server is not added.
+    server, so the server is not added. Its globs match with no bounds;
+    :func:`withheld_whole` is the bounded batch form the array and report paths use.
     """
-    policy = spec.get("managedToolPolicy")
-    if isinstance(policy, dict):
-        servers = policy.get("excludeServers")
-        if isinstance(servers, list) and server in servers:
-            return True
-    excluded = spec.get("excludedTools")
-    if isinstance(excluded, list):
-        # ``@mcp`` is KAS's own name for every MCP tool, which a v3 agent file may use.
-        if any(e in excluded for e in ("@*", "@mcp", "*", f"@{server}", f"@{server}/*")):
-            return True
-    return _permissions_deny_server(spec.get("permissions"), server)
-
-
-def _permissions_deny_server(permissions: object, server: str) -> bool:
-    """Whether an authored ``permissions`` block denies every tool of *server*.
-
-    A rule counts when its effect is ``deny``, its capability is ``mcp`` or ``all``,
-    it has no non-empty ``exclude``, and its ``match`` is absent or empty (KAS reads
-    both as every resource) or holds a pattern whose server part matches *server* and
-    whose tool part is absent or only ``*``.
-    """
-    rules = permissions.get("rules") if isinstance(permissions, dict) else None
-    if not isinstance(rules, list):
-        return False
     from fnmatch import fnmatchcase
 
-    def covers(pattern: object) -> bool:
-        # Whole server: the server part matches it and the tool part is only `*`s
-        # (absent counts too), so a one-tool pattern such as `<server>/?` does not.
-        if not isinstance(pattern, str):
-            return False
-        server_part, _, tool_part = pattern.partition("/")
-        return fnmatchcase(server, server_part) and not tool_part.strip("*")
+    every, named, globs = _whole_opt_outs(spec)
+    return every or server in named or any(fnmatchcase(server, g) for g in globs)
 
-    for rule in rules:
+
+#: Bounds on the whole-server ``permissions`` globs :func:`withheld_whole` matches
+#: (the array and report paths; :func:`opted_out` has none): how many and how long
+#: (compiling one is not linear in its length), and the judged names' summed length
+#: times the globs' summed length (matching). A spec past any of them, or with a
+#: glob holding a ``[`` (a class costs far more to compile than its length says, and
+#: KAS reads ``[`` literally), withholds every name it judges, failing closed.
+_GLOB_COUNT_CAP = 32
+_GLOB_LENGTH_CAP = 128
+_GLOB_WORK_CAP = 1_000_000
+
+
+def withheld_whole(spec: Any, names: Iterable[str]) -> frozenset[str]:
+    """Which of *names* *spec* withholds whole (:func:`opted_out`).
+
+    For a host that mounts every server of its ``session/new`` array with all its
+    tools: such a server stays out of the array, where kiro-cli and KAS apply the
+    same entries to its tools. The spec is read once and each name is a set lookup,
+    plus glob matching within :data:`_GLOB_COUNT_CAP`, :data:`_GLOB_LENGTH_CAP` and
+    :data:`_GLOB_WORK_CAP`; a glob holding a ``[`` withholds every name.
+    :func:`opted_out` has neither rule. Nothing for a spec that is not an object.
+    """
+    if not isinstance(spec, dict):
+        return frozenset()
+    every, named, globs = _whole_opt_outs(spec)
+    judged = {str(n) for n in names}
+    if (
+        every
+        or any("[" in g for g in globs)
+        or len(globs) > _GLOB_COUNT_CAP
+        or max(map(len, globs), default=0) > _GLOB_LENGTH_CAP
+        or sum(map(len, judged)) * sum(map(len, globs)) > _GLOB_WORK_CAP
+    ):
+        return frozenset(judged)
+    from fnmatch import fnmatchcase
+
+    return frozenset(n for n in judged if n in named or any(fnmatchcase(n, g) for g in globs))
+
+
+def _whole_opt_outs(spec: dict[str, Any]) -> tuple[bool, set[str], set[str]]:
+    """What *spec* withholds whole: (every server, the names, the server globs).
+
+    A ``permissions`` rule counts when its effect is ``deny``, its capability is
+    ``mcp`` or ``all``, it has no non-empty ``exclude``, and its ``match`` is absent
+    or empty (KAS reads both as every resource) or holds a pattern whose server part
+    matches the server and whose tool part is absent or only ``*``.
+    """
+    policy = spec.get("managedToolPolicy")
+    servers = policy.get("excludeServers") if isinstance(policy, dict) else None
+    named = {s for s in servers if isinstance(s, str)} if isinstance(servers, list) else set()
+    excluded = spec.get("excludedTools")
+    entries = {e for e in excluded if isinstance(e, str)} if isinstance(excluded, list) else set()
+    # ``@mcp`` is KAS's own name for every MCP tool, which a v3 agent file may use.
+    every = bool(entries & {"@*", "@mcp", "*"})
+    for entry in entries:
+        if entry.startswith("@"):
+            named.add(entry[1:])
+            if entry.endswith("/*"):
+                named.add(entry[1:-2])
+    permissions = spec.get("permissions")
+    rules = permissions.get("rules") if isinstance(permissions, dict) else None
+    globs: set[str] = set()
+    for rule in rules if isinstance(rules, list) else ():
         if not isinstance(rule, dict) or rule.get("effect") != "deny" or rule.get("exclude"):
             continue
         if rule.get("capability") not in ("mcp", "all"):
             continue
         match = rule.get("match")
         if not match:
-            return True
-        if isinstance(match, list) and any(covers(p) for p in match):
-            return True
-    return False
+            every = True
+            continue
+        for pattern in match if isinstance(match, list) else ():
+            if not isinstance(pattern, str):
+                continue
+            # Whole server: the tool part is only `*`s (absent counts too), so a
+            # one-tool pattern such as `<server>/?` does not count.
+            server_part, _, tool_part = pattern.partition("/")
+            if not tool_part.strip("*"):
+                (globs if any(c in server_part for c in "*?[") else named).add(server_part)
+    return every, named, globs
 
 
 def narrowed_per_tool(spec: dict[str, Any], server: str) -> bool:
@@ -513,8 +561,9 @@ def with_default_crew_servers(
         added = {k: e for k, e in added.items() if not narrowed_per_tool(spec, k)}
     elif spec_grants_tool_search(spec) and agent not in conductor_agents():
         added.update(
-            (key, entry)
-            for key, entry in _app_servers().items()
+            # A copy each: within a pass the read is shared by every agent.
+            (key, copy_json_document(entry))
+            for key, entry in _once("app_servers", _app_servers).items()
             if wanted(key) and not _wildcard_approves(spec, key)
         )
     if per_tool_limits_applied and agent not in conductor_agents():
@@ -571,7 +620,7 @@ def with_default_crew_servers_in_array(
     a spec only a project checkout declares runs as written, as on KAS. The
     template's approved additions merge first, as KAS merges them; the array read's
     own merge after this one then finds each declared and adds nothing. These
-    mirrors mount a server whole and apply no ``excludedTools``, so only Crew's own
+    mirrors mount a server whole and apply no per-tool ``excludedTools``, so only Crew's own
     two servers are added, each only while no ``excludedTools`` entry may reach it.
     They grant no ``allowedTools`` approval, so a withheld approval is not
     recorded: the record would name an approval this host never grants. Blocking.

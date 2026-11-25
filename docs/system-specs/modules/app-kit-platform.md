@@ -1399,11 +1399,15 @@ host agent.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 
-A granted server normally lands in the agent's `allowedTools` (auto-approve):
-the user asked for that server explicitly, and for an unattended app agent a
-prompt resolves to "rejected", so granting it means granting its use.
+A grant mounts the whole server (`@server` in `tools`) but auto-approves only the
+tools its own `autoApprove` names, one literal `@server/<tool>` entry each in
+`allowedTools` (a glob verb is skipped). That entry is the only carrier: the
+registration's last pass strips an app map's server `autoApprove`
+(`honour_owner_written=False`). A tool left out of the list asks before it runs,
+which is what an app's per-tool approval setting promises; for an unattended app
+agent that ask resolves to "rejected". A `mountOnly` grant writes no entry.
 
-**Except where the enterprise ceiling forbids it.** Auto-approve is the one path
+**Each entry is also intersected with the enterprise ceiling.** Auto-approve is the one path
 that never reaches `hooks.on_tool_call`: kiro-cli only sends
 `session/request_permission` for tools it must ask about, and the governance deny
 hangs off that request. Writing a ceiling-denied server into `allowedTools` would
@@ -1416,7 +1420,7 @@ So the grant is intersected with Level 1 POLICY at policy-write time
 
 | Ceiling | Result |
 |---|---|
-| permits | auto-approved, as before |
+| permits | the tools the grant's `autoApprove` names are auto-approved; the rest ask |
 | **denies** | stays in `tools` (the grant is not discarded) but NOT in `allowedTools`, which forces every call through `request_permission`, where the gate denies it |
 | absent (standalone) | unchanged behaviour |
 
@@ -3115,7 +3119,18 @@ owner has approved for each app are stored in
 `member-records/app-grants/<app>.json` (`{"api": [...], "events": [...]}`,
 `apps.protected_app_state`), outside the app's own tree: code in the app's
 sandbox can write `apps/<name>/`, and `member-records/` is masked in every
-sandbox mode. Every
+sandbox mode. The owner's approval of an app's `ui.startup` module is kept
+the same way, in `member-records/app-startup/<app>.json` (`apps.startup_modules`),
+as `{version, entry, digest, files}` with per-file SHA-256 hashes. An uninstall
+snapshots, forgets and on failure restores it with the approved set. An owner install
+or update with no `ui.startup` forgets it in the record-writing transaction and
+restores it if that transaction fails. A committed withdrawal emits SEL
+`app_startup_revoke` (`completed`, with `install dropped ui.startup` or
+`update dropped ui.startup`) through the approval verb's audit helper. The lifecycle
+result's `message`, carried by the HTTP response and printed by the CLI, says that
+startup approval was withdrawn and UI files are served without its checks. Keeping
+`ui.startup` keeps the record; a failed transaction emits no completed withdrawal.
+A direct edit of `app.json` never withdraws this record or bypasses serving checks. Every
 enforcement point -- `token_auth._app_api_allowlist`,
 `ws_event_scope._read_declared_events`, and the hook context's event bus via
 `approved_manifest_permissions` -- grants only entries the live manifest
@@ -4662,7 +4677,36 @@ declared file through `pinned_fs.open_in_pinned_parent`, gates the descriptor on
 descriptor and answers with the same `default-src 'none'; sandbox` policy and `nosniff`.
 It differs in serving the wider `_ALLOWED_EXTENSIONS` set (`.js`/`.json`/`.mjs`/`.css`/`.map` and fonts)
 and in being UNAUTHENTICATED, which is why it streams in `_UI_STREAM_CHUNK` pieces
-instead of buffering.
+instead of buffering for unapproved apps. Every UI file of an app with a startup
+approval is buffered: `startup_modules.approved_module` reads it once from the pinned
+descriptor (at most `_UI_MAX_BYTES`) and compares those bytes' SHA-256 to `files[rel]`.
+The stored `digest` must equal SHA-256 over the map's sorted `rel + NUL` and raw file
+hashes. Both the tree inventory and record map are limited by `_MAX_UI_FILES` (4,096).
+The parser rejects an over-cap map before validating entries or recomputing its digest;
+the approval writer runs that same parser before storing a record. Invalid entries
+name the offending path. App-list admission inventories once, refuses differing path
+sets without file reads, and stops at the first mismatching file or size-cap error.
+No other UI file is opened during serving, and stat metadata is never a cache
+key. The handler sends exactly the checked buffer; its ETag carries the approved
+digest. Verified responses omit `Last-Modified` and require that ETag for a 304;
+a wildcard returns the full verified bytes. All served types, including images and
+fonts, take this check. Startup mounts use `/apps/<name>/ui/startup:<digest>/<entry>`,
+with the digest supplied only on an admitted app-list row; the mount key includes
+name, version and digest. Relative imports inherit the prefix, which requires a
+current approval with that digest, including after revocation or re-approval.
+The route strips a strictly validated prefix before applying the same path,
+extension, containment and descriptor guards. Absolute imports, climbs out of the
+prefix and fetch-and-eval in already-approved code can reach ordinary UI URLs.
+Only ordinary URLs with an absent record leave serving unchecked. Unknown, changed or unavailable
+files, unreadable records, missing `files` or inconsistent maps answer 409 with
+`code`, `reason` and `remedy`, never file bytes. Unsafe app names retain 404 with no
+reflected remedy; refusal logs quote request paths and exceptions. The remedy names
+`kirocrew app startup <name>` to approve the current code and
+`kirocrew app startup <name> --revoke`, which also works without a declared startup
+entry. The app-list reader uses the same parser but treats these faults as no
+approval (`needs-approval`). The eight permits bound concurrent reads, hashes and
+checked buffers; the file-count cap bounds per-entry map validation
+([security](security.md), *App startup-module approvals*).
 
 **Text files go gzip-encoded.** A `_GZIP_EXTENSIONS` file (`.mjs`/`.js`/`.css`/`.json`/
 `.svg`/`.map`) of at least `_GZIP_MIN_BYTES` is sent `Content-Encoding: gzip` when
@@ -4670,7 +4714,8 @@ instead of buffering.
 `gzip` entry decides, `q=0` included, and `*` counts only when gzip is not named, so
 `gzip;q=0, *` gets identity. Each
 streamed chunk passes through one per-request `zlib` compressor off the event loop, so
-memory stays one chunk plus the compressor's state, and the body goes chunked (its
+memory holds one chunk plus the compressor's state and, for approved apps, the checked
+file buffer and its response reader. The body goes chunked (its
 length is not known up front); the `remaining` cap still bounds the bytes read. A file
 that hits EOF short of its validated size (truncated under the descriptor) aborts the
 connection instead of finishing the gzip member, since no `Content-Length` would expose
@@ -5422,7 +5467,9 @@ The boundary:
   `linkPreviewHosts` and `linkPreviewTextPatterns`, in the app's
   `approved-grants.json` beside `api` and `events` (`apps/link_preview_grants.py`).
   Hosts are stored normalized (lowercase, IDNA, no trailing dot) and a public suffix
-  or bare TLD is refused at manifest validation; a pattern's entry is
+  or bare TLD is refused at manifest validation. A provider may list any number of
+  hosts: `claimsHost` matches a link in one set
+  lookup per label of its host, whatever the list's length. A pattern's entry is
   `<id>:<flags without g>:<source>`, so any change to it is a widening. An update
   that widens either family is held back until the owner approves it on the App
   Detail page; narrowing applies at once. A third family, `linkPreviewFullUrl`
@@ -7604,6 +7651,15 @@ folder update would silently drop the app's listing provenance. A marketplace
 app has no update path until one resolves, verifies and re-confirms a new
 version.
 
+`update_app` refuses a new version whose `app.json` fails validation with
+`app_update_invalid`, the validator's errors as `error`, before anything is
+replaced; `install_from_registry` passes a failed result's code through. A new
+version whose only refusal is a `minKiroCrewVersion` above this build gets
+`kirocrew_version_too_old` instead, since updating Kiro Crew clears it. The
+App Store's row update and Update All key off that code to name the app and say
+that only its maker can fix it, with the validator's words on the next line
+(`pages/apps/useAppUpdates.ts`).
+
 Two owner-only routes in `apps/routes_market_install.py` drive those calls.
 `POST /api/apps/market/install` (`{ref, version?, account?, registry?}`) runs `prepare_market_install`
 in the executor and answers `{stagingId, confirm}`; it installs nothing.
@@ -9145,7 +9201,12 @@ host carries no import of a store another program wrote:
 dashboard window and routes it to that session (`/chat?sid=`), or only raises it for
 `""`, and resolves true only when the dashboard is there to show it, so a caller keeps a
 notification it could not act on (`website/electron/dashboard-session.js`, the same
-check the kirocrew:// deep link uses). `openExternal(url)` hands an `https:` link to the
+check the kirocrew:// deep link uses). A window a crew serves (`gatewayChoice`) names a
+session on that crew: the crew comes from the window's own target, never the page, and the
+dashboard gets the crew link's route (`/chat?crew=<id>&crewSid=<key>`, refused before the
+window moves when the key or id fails the crew link's rules), so a crew's key never opens a
+same-named local session; true there means the dashboard has the link, which can still
+refuse it as a crew link is refused. `openExternal(url)` hands an `https:` link to the
 OS browser and nothing else. Both move the user's focus, so each is answered only while
 the user is acting in the sender: the shell saw a mouse or key press start in that window
 within the last 2 s (Electron's `input-event` `mouseDown` or `rawKeyDown`, not a release or

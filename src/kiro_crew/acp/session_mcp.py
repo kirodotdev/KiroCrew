@@ -89,7 +89,11 @@ from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
-from kiro_crew.acp.session_mcp_crewmate import _crewmate_conductor_spec, _crewmate_worker_spec
+from kiro_crew.acp.session_mcp_crewmate import (
+    _crewmate_conductor_spec,
+    _crewmate_worker_spec,
+    crewmate_worker_switch_off_spec,
+)
 from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
@@ -888,9 +892,12 @@ def session_mcp_disabled_servers(spec: Any, settings: Any) -> frozenset[str]:
 
 
 def session_mcp_server_is_disabled(
-    name: str, agent: str | None, *, work_dir: str | Path | None = None
+    name: str, agent: str | None, *, work_dir: str | Path | None = None, session_key: str = ""
 ) -> bool:
     """Whether *name* is switched off WHOLE for a session running as *agent*.
+
+    *session_key* names the session, so a crewmate's worker is answered from the spec
+    built for it, its Bot's file included (``crewmate_worker_switch_off_spec``).
 
     The reading form of :func:`session_mcp_disabled_servers`, for a caller that holds
     no parse of its own to pass in. ``AcpRuntime`` is that caller: it composes the
@@ -911,6 +918,7 @@ def session_mcp_server_is_disabled(
     contract :func:`session_mcp_disabled_tools` keeps.
     """
     spec = _agent_spec_for(agent, work_dir) if agent else None
+    spec = crewmate_worker_switch_off_spec(agent, spec, session_key)
     return name in session_mcp_disabled_servers(spec, _global_settings())
 
 
@@ -957,6 +965,8 @@ class SessionMcpProjection(NamedTuple):
     disabled_servers: frozenset[str]
     #: The ``tools`` allowlist the translated half was filtered by, so a caller
     #: appending elements of its own (pooled stubs) can hold them to the same one.
+    #: Its ``muted`` adds the servers the agent's own exclusions withhold whole, kept
+    #: out of ``disabled_servers``, which KAS's member paths read too.
     allowlist: ToolsAllowlist
     #: The ``agent.DerivedSpecSnapshot`` the spec above was verified against, or
     #: ``None`` for an agent that mirrors nothing. The array IS where an array-backed
@@ -985,6 +995,7 @@ def session_mcp_projection(
     worker_mcp_tool_limits_honoured: bool = False,
     worker_native_tool_limits_honoured: bool = False,
     default_crew_servers: bool = False,
+    session_control_mounted: bool | None = None,
     bot_app_tools_carried: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
@@ -1009,22 +1020,27 @@ def session_mcp_projection(
     a spec that appears between this read and a helper's cannot be translated by
     one helper and ignored by another.
 
+    *session_control_mounted* is whether the start this projection is for mounts
+    session control, for a crewmate's worker whose conducting kit must follow that
+    mount (``mate_worker.worker_session_spec``'s *mounted*); ``None`` reads the switch.
+
     Blocking (parses the spec and the global settings file once each), so callers
     run it off the event loop.
     """
-    spec, snapshot = (
+    own_spec, snapshot = (
         _session_spec_and_snapshot_for(agent, work_dir, default_crew_servers=default_crew_servers)
         if agent
         else (None, None)
     )
     spec = _crewmate_worker_spec(
         agent,
-        spec,
+        own_spec,
         session_key,
         tool_limits_honoured=worker_tool_limits_honoured,
         spec_policy_honoured=spec_policy_honoured,
         mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
         native_tool_limits_honoured=worker_native_tool_limits_honoured,
+        mounted=session_control_mounted,
     )
     # A Bot's own chat gets its app servers only on a host that carries a per-session
     # spec (``ACP_BACKENDS_MATE_WORKER_KIT``, the caller's *bot_app_tools_carried*).
@@ -1035,6 +1051,19 @@ def session_mcp_projection(
         agent, work_dir=work_dir, spec=spec, settings=settings
     )
     disabled_servers = session_mcp_disabled_servers(spec, settings)
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    # The agent's own whole-server exclusions, stubs included. Judged before a crewmate
+    # worker's merge: the worker's limits keep their own path (session_mcp_crewmate).
+    declared = own_spec.get("mcpServers") if isinstance(own_spec, dict) else None
+    withheld = disabled_servers | withheld_whole(
+        own_spec,
+        (
+            *(declared if isinstance(declared, dict) else ()),
+            *CONTROL_PLANE_SERVERS,
+            *stub_server_names,
+        ),
+    )
     spec_tools = spec.get("tools") if isinstance(spec, dict) else None
     return SessionMcpProjection(
         servers=session_mcp_servers(
@@ -1042,12 +1071,12 @@ def session_mcp_projection(
             stub_server_names=stub_server_names,
             work_dir=work_dir,
             spec=spec,
-            muted=disabled_servers,
+            muted=withheld,
         ),
         restricted=session_mcp_restricted_servers(disabled_tools),
         disabled_tools=disabled_tools,
         disabled_servers=disabled_servers,
-        allowlist=_tools_allowlist(spec)._replace(muted=disabled_servers),
+        allowlist=_tools_allowlist(spec)._replace(muted=withheld),
         derived_spec_snapshot=snapshot,
         zero_tools=isinstance(spec_tools, list) and not spec_tools,
         agent_spec=spec,
@@ -1067,7 +1096,8 @@ def session_mcp_servers(
     A server switched off whole (*muted*, :func:`session_mcp_disabled_servers`) is
     never in the array: every element in it is a process the adapter launches, so a
     mute that only labelled the entry would still launch it. Not supplied, the set
-    is read from this call's spec and the global settings file.
+    is read from this call's spec and the global settings file, plus each server the
+    spec's own exclusions withhold whole (``default_crew_servers.withheld_whole``).
 
     Called only for a backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY``; every other
     harness reads the same spec itself and gets an empty array.
@@ -1187,7 +1217,11 @@ def session_mcp_servers(
         servers = {n: e for n, e in servers.items() if allow.grants(n)}
 
     if isinstance(muted, _Unread):
-        muted = session_mcp_disabled_servers(spec, _global_settings())
+        from kiro_crew.acp.default_crew_servers import withheld_whole
+
+        muted = session_mcp_disabled_servers(spec, _global_settings()) | withheld_whole(
+            spec, servers
+        )
     for name in sorted(set(servers) & {str(m) for m in muted}):
         logger.info("session MCP: withholding server %r -- it is switched off whole", name)
         servers.pop(name)

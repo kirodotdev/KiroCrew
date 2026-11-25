@@ -16,10 +16,11 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { pathBasename, decodePathForDisplay } from '../utils/pathBasename'
 import { ChatProjectDirCtx } from './markdown/contexts'
 import { joinProjectRelative } from './markdown/pathReferences'
-import { useCanOpenFile } from './FilePathMenu'
+import { useCanReveal } from './FilePathMenu'
 import TruncatedText from './TruncatedText'
 import { canPickFolderNatively, hasNativeFolderPicker } from '../lib/electron'
 import { isMac } from '../utils/platform'
+import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 
 /** Extract the target file path from unified-diff header lines.
  *
@@ -104,12 +105,16 @@ const basename = pathBasename
 
 /** `path` as the `vscode://file` link the desktop app opens after asking
  *  (`electron/external-scheme.js`). Each segment is percent-encoded, `!'()*`
- *  included, so a space or `(` stays inside that link's path characters. */
+ *  included, so a space or `(` stays inside that link's path characters. A
+ *  drive path goes as `/C:/<path>`, `/`-separated with the drive bare: the
+ *  only drive form that link check takes. */
 export function vscodeFileUrl(path: string, line?: number): string {
-  const encoded = path.split('/')
+  const drive = WINDOWS_ABS_PATH_RE.test(path) ? `/${path.slice(0, 2)}` : ''
+  const rest = drive ? path.slice(2).replace(/\\/g, '/') : path
+  const encoded = rest.split('/')
     .map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
     .join('/')
-  return `vscode://file${encoded}${line === undefined ? '' : `:${line}`}`
+  return `vscode://file${drive}${encoded}${line === undefined ? '' : `:${line}`}`
 }
 
 /** On a click with the platform's primary modifier (Cmd on macOS, Ctrl
@@ -256,9 +261,11 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, l
   )
   const filePath = probeKind === 'file' ? probePath : null
   // Desktop app window only (it has the shell's `folderPickAPI` bridge): the
-  // shell asks before it opens an editor link.
-  const canOpenFile = useCanOpenFile('file')
-  const editorPath = filePath?.startsWith('/') && canOpenFile && hasNativeFolderPicker() ? filePath : null
+  // shell asks before it opens an editor link. A `/`-rooted or drive path; a
+  // `\\` UNC share gets none. The reveal gate, not the default-app row's: that
+  // row's Windows clause is about `/api/reveal`, which this link never calls.
+  const canReveal = useCanReveal()
+  const editorPath = filePath != null && (filePath.startsWith('/') || WINDOWS_ABS_PATH_RE.test(filePath)) && canReveal && hasNativeFolderPicker() ? filePath : null
 
   // Diff layout follows the shared, persisted split preference (toggled from
   // this block's own header); wrap because chat/side-panel columns are

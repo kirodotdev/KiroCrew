@@ -52,8 +52,8 @@ test directory. The scaffold writes all four and prints line 5 for you to paste.
 1. **Name the question the page answers, in one sentence a person would ask.** "How much
    of this goal is settled, and what is waiting on me." Not "a board of metrics". If you
    cannot write the sentence, you do not yet know which fold to read.
-2. **Pick the fold.** Take one of the advertised folds in `FOLDS.md` (not the
-   *(internal)* `class` fold, which `--fold` still accepts). A new fold is the exception and needs
+2. **Pick the fold.** Take one of the advertised folds in `FOLDS.md` (not one of the
+   *(internal)* folds, such as `class`, which `--fold` still accepts). A new fold is the exception and needs
    its own justification section in the pull request body, because a fold is a durable
    projection of the append-only log and every reader pays for it.
 3. **Write the field list.** One token per value: `name:str|unsaid` for text, or

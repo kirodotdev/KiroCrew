@@ -829,6 +829,19 @@ async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeo
         )
 
 
+async def wait_own_app_servers(
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+) -> None:
+    """Best effort: hold a start for an app agent's own app servers, at most *timeout*.
+
+    As :func:`wait_mounted_mcp`, except a server the host already settled
+    (disabled, dropped by a registry) ends the wait for it at once. Never fails
+    the start; runtime death still raises.
+    """
+    if await _drain_until_reported(handle, names, timeout, settled=True):
+        raise AcpRuntimeDead("Runtime exited while waiting for the app's own MCP servers")
+
+
 #: Late servers the first-turn hold names in its log line; the rest are counted.
 _LATE_NAMES_LOGGED = 8
 
@@ -926,7 +939,7 @@ async def hold_untold_first_turn(handle: AcpSessionHandle, prompt_text: str = ""
 
 
 async def _drain_until_reported(
-    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float, *, settled: bool = False
 ) -> bool:
     """Drain init frames until every one of *names* has reported; True if the runtime died.
 
@@ -934,12 +947,15 @@ async def _drain_until_reported(
     name a server whose frame is still queued. The frames that are queued are
     consumed all the same: each may carry a sign-in request or a config update
     this start owes its session. Only the WAIT for more ends once every name
-    has reported.
+    has reported. With *settled*, a name also counts once the report says it
+    never will (``McpSessionReport.still_starting``: host-disabled or dropped
+    by a registry).
     """
     report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        if not report.unreported(names):
+        pending = report.still_starting(names) if settled else report.unreported(names)
+        if not pending:
             if handle._queue.empty():
                 break
             msg = handle._queue.get_nowait()

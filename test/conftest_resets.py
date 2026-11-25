@@ -1209,9 +1209,10 @@ def _disarm_agent_slice_memory_high():
 def _reset_crewmate_worker_slots():
     """A test that registers a session key as a crewmate worker must not leak it.
 
-    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS`` and
-    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` are process-wide in
-    ``kiro_crew.members_parts.member_sessions``.
+    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS``,
+    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` and ``_SESSION_BACKEND_PICKS`` are
+    process-wide in ``kiro_crew.members_parts.member_sessions``, and so is the
+    thread-born mark in ``kiro_crew.members_parts.worker_conducts``.
     ``note_crewmate_worker_session`` mutates them directly (not through a
     monkeypatch), so a test that calls ``resolve_session_agent_bindings`` or
     ``note_worker_session`` with a worker execution silently contaminates every
@@ -1228,6 +1229,10 @@ def _reset_crewmate_worker_slots():
             module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
             module._SESSION_BACKEND_PICKS.clear()
+        marks = sys.modules.get("kiro_crew.members_parts.worker_conducts")
+        if marks is not None:
+            marks._THREAD_BORN_WORKER_SLOTS.clear()
+            marks._LOGGED_PLAIN.clear()
 
     clear()
     try:
@@ -1450,6 +1455,8 @@ def _reset_code_channel_owner_only_notices():
     clock, and tests reuse both ids, so a notice one test sent could silence the
     next test's. ``routing._opening`` lets a channel's unmentioned messages through
     while it is opened, so one a test left would admit the next test's.
+    ``publishing._pr_status_held`` holds a channel whose ``pr_status`` Slack
+    refused, for the process, so a refusal one test planted would mute the next.
     """
 
     def clear():
@@ -1459,6 +1466,9 @@ def _reset_code_channel_owner_only_notices():
         routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
         if routing is not None:
             routing._opening.clear()
+        publishing = sys.modules.get("kiro_crew.slack.code_channels.workspace.publishing")
+        if publishing is not None:
+            publishing._pr_status_held.clear()
 
     clear()
     try:

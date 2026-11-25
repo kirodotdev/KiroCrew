@@ -41,6 +41,7 @@ from kiro_crew.autonudge_service.model import (
     _MutationAdmission,
     _positive_number,
     _TransactionSubmissions,
+    cap_reached,
     credit_held_runtime,
     hold_span,
     is_structured_monitor_loop,
@@ -79,6 +80,10 @@ _OVERDUE_REARM_SECS = 10
 # a timer up to its clock's resolution early (about 16 ms on Windows), and a wake
 # just short of the budget would fire a turn instead of stopping the loop.
 _BUDGET_WAKE_SLACK_SECS = 1.0
+
+# How soon after a turn a prompt loop at its cycle cap wakes, so ``_timer`` stops it;
+# not at once, so an app that ends its own loop just after its last cycle gets there first.
+_CAP_STOP_GRACE_SECS = 120.0
 
 
 # How often the reconciler walks the store looking for an active loop with no
@@ -960,7 +965,7 @@ def _arm_and_announce_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     re-arm SET is announced: resuming an unchanged countdown publishes nothing new.
     """
     cleared = loop.next_due_ts <= 0
-    self._arm_from_deadline(loop)
+    self._arm_from_deadline(loop, after_turn=True)
     if cleared and loop.next_due_ts > 0 and self._loops.get(loop.id) is loop:
         self._emit("updated", loop)
 
@@ -1075,7 +1080,9 @@ def _arm_timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = No
     self._timers[loop.id] = asyncio.create_task(self._timer(loop, delay))
 
 
-def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
+def _arm_from_deadline(
+    self: AutoNudgeService, loop: NudgeLoop, *, after_turn: bool = False
+) -> None:
     """(Re)arm the timer toward the loop's persistent deadline.
 
     Anchored on ``next_due_ts`` so user turns defer a pending fire without pushing the
@@ -1086,8 +1093,10 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     is capped at ``idle_secs`` so a clock jump cannot park the timer past one interval.
 
     ``_timer`` stops a prompt loop on a spent runtime budget only when it wakes, so a
-    budget that runs out before the deadline wakes it then; which arms keep the
-    deadline, and why, is in the monitor-architecture spec ("Runtime bounds").
+    budget that runs out before the deadline wakes it then. The same holds for a spent
+    cycle cap, but only on an arm *after_turn* (a turn's end, or a channel loop's own
+    re-arm): it wakes within ``_CAP_STOP_GRACE_SECS``. Which arms keep the deadline,
+    and why, is in the monitor-architecture spec ("Runtime bounds").
 
     A monitor arms on the same deadline (one user-set clock); the probe gate in
     :meth:`_timer` decides whether its tick spends a turn. A monitor whose
@@ -1147,6 +1156,8 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         left = budget - runtime_elapsed(loop, anchor)
         if left > 0:
             delay = min(delay, left + _BUDGET_WAKE_SLACK_SECS)
+    if after_turn and prompt_loop and not loop.waiting_on_person and cap_reached(loop):
+        delay = min(delay, _CAP_STOP_GRACE_SECS)
     self._arm_timer(loop, delay=delay)
 
 

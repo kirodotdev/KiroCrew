@@ -314,6 +314,24 @@ Profile card and read per request. A config that still holds an old
 `dashboard.crewmate_dynamic_capabilities` key loads unchanged; the key is not
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
+`agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
+bool the owner sets on the Bot's Profile card (**Workers can conduct**) or
+through `PUT /api/agents/{name}` (a non-bool is refused
+with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
+on `GET /api/members`, and read from the Bot's record at each worker's session
+start, never cached on the worker; a save that changes it reloads the Bot's
+workers so each reads it again soon (an idle one at once, a busy one at its turn
+end). On, each worker the Bot's own thread opens may conduct: it gets the
+thread's session-control mount, the conductor's ledger grants and rules, and its
+own `session_create` opens the Bot's worker. While it
+is on, the Bot's `agents.<name>.max_workers` always applies: 0 (no limit) reads
+as `BOT_MAX_WORKERS_CONDUCTING` (4, `config/sections_session.py`), read at each
+create, revive and fork; a limit the owner set is used as is, and with the
+switch off 0 still sets no limit. Owned by
+[crew-mode](crew-mode.md#conductor-and-worker) ("A Bot's worker conducts only
+when its owner says so") and
+[rfc-bot-workers-conduct](../../request-for-change/rfc-bot-workers-conduct.md).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` guides direct work and delegation using a concrete-value
@@ -1670,9 +1688,9 @@ and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
 work goes to the one that owns it: `portability_archive.py` (what an archive holds,
 member names and limits both ways), `portability_templates.py` (agent templates, bundled
 on export and installed on import), `portability_export.py` (what an export reads: the
-walk, the SQLite backups, the session planner and writer, and the installed apps it
-names but leaves out) and `portability_vetting.py`
-(`validate_import_zip` and the staged cron and store checks). A patch of
+walk, the SQLite backups, the session planner and writer, the installed apps it
+names but leaves out, and, on import, the ones of those a machine has not set up) and
+`portability_vetting.py` (`validate_import_zip` and the staged cron and store checks). A patch of
 `portability.<name>` reaches every owner holding the name. The archive builders
 (`create_export_zip`, `stream_export_zip`, `plan_export`) live in `portability_stream.py`,
 which the facade re-exports and which reads these names as `portability.<name>`.
@@ -2064,7 +2082,9 @@ The shared `preview_on` reader first refuses a running Shared Crew preview
 also keeps connected computers off, and `remote_refusal` names the shared-Crew
 restriction before the ordinary disabled reason. It then passes the stored switches through
 `edition_locks.feature_previews`: an LTS build reads this preview as off even
-when its saved value is `true`. This applies to the connector token-auth
+when its saved value is `true`. Shared Crews also read it as off, through the
+same `flag.preview_on` authority, until remote-person ownership is checked.
+This applies to the connector token-auth
 exemption and route, admission checks, picker, local helpers and the config
 watcher's old/new values. The stored configuration is unchanged. Each gateway
 reads its OWN copy, so the remote gateway's switch can never turn the local machine's on, or
@@ -2095,10 +2115,31 @@ the other way round:
 The live watcher applies a change with no restart (`dashboard/server_runtime/config_watch.py`
 calls `connected_computers.disable.apply` whenever `dashboard.feature_previews` is touched):
 turning it off closes every connector socket this gateway serves (the tool server
-stops; nothing is retried or fabricated). The gateway's shutdown closes sockets but keeps records. While the
-switch stays off neither does anything: the hook returns before scheduling work, and
-shutdown finds no broker.
+stops; nothing is retried or fabricated) and revokes every active grant this machine holds (one remote revoke
+queued per pair) and stops each connector with a bound. Turning it back on revokes any
+share still saved (one an Off made while no gateway ran here left behind), then starts the
+local controller; no revoked grant comes back. The gateway's shutdown stops connectors and
+closes sockets but keeps grants and records. While the switch stays off none of this runs:
+the hook returns before scheduling work, startup (`disable.start_if_enabled`) reads only the
+live snapshot and creates no controller, and shutdown finds nothing to stop.
 The frontend key is `mc-preview-connected-computers` (`website/src/utils/previewFlags.ts`).
+For revocation, `flag.local_switch` returns unknown (`None`) if the loaded
+configuration reports a degraded `dashboard` or `dashboard.feature_previews`
+section in `_read_degraded_sections` (this load only), this read's unreadable base
+or overlay flags, or the Shared Crew authority raises. The loader preserves the
+existing sticky `degraded_sections` contract separately; manually constructed
+snapshots without per-read metadata fall back to its relevant section names.
+The live watcher carries per-read metadata when keeping last-valid values during
+a torn read. Unrelated sticky section errors and historical whole-file markers do not
+turn the preview off. The desktop watcher keeps watching and the config
+hook schedules no revoke from an unknown new value. When the new value becomes
+authoritative Off, the hook revokes even if the previous value was unknown.
+An unchanged known-Off snapshot remains a no-op. Unknown-to-On recovery starts
+reconciliation of the saved grants without the revoking off-to-on sweep.
+`preview_on` and
+`local_enabled` still read unknown as off for new work. The full preview decision
+lives only in `local_switch`; `preview_on` is the exact `local_switch(cfg) is True`
+projection, shared by every admission reader.
 Feature Previews reuses the disabled Settings toggle with a short shared-Crew badge
 in `descriptionBadge`, preserving the literal description for settings search,
 reading the owner's running `active` state or the existing `shared_crew_preview`
@@ -3731,7 +3772,10 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, that must rebuild agent artifacts, or that set
 process-wide registry state
-live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` —
+`agents` (→ `dashboard/bot_chat_follow.py::follow_config_change`: a Bot's changed `model` or
+`reasoning_effort` clears its own chat's pick, after the session manager's applier),
+`agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
@@ -3782,6 +3826,14 @@ dashboard notification (`_apply_background_model`).
 A failed heartbeat spec install is held like a conductor spec, so the hourly maintenance
 wake (`retry_held_conductor_specs`) re-runs the rebuild until the heartbeat spec carries
 the new model.
+The guard writes an `agent_home_write` denied row on every rebuild it refuses, and a
+refusal can last the whole process (a linked worktree, a data home beside another
+install's specs). So both appliers rebuild through `_rebuild_specs`: a retry of a value
+whose rebuild was refused first asks `_decline_shared_agent_home(audit=False)` and skips
+the rebuild while the guard still declines, which is one denied row per saved value
+rather than one per watcher tick. The retry itself still runs every tick, so a refusal
+that clears (an unreadable spec that reads again, foreign specs removed) is applied on
+the next one, and a newly saved value is rebuilt and audited at once.
 The `wrote=False` refusal is one case of a general ownership guard: every write through
 the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
@@ -3792,8 +3844,8 @@ handlers answer HTTP 409 `agent_home_not_owned` (listed in learn-cron-dashboard.
 instead of recording a change the file never took. Every admitted or refused shared-home
 write is audited as the SEL `agent_home_write` operation, allowed or denied.
 The provider applier only schedules the switch: `reload_provider_factory` clears
-the session registry and then shuts the retired providers down one at a time,
-which can outlast the applier bound, and a timed-out applier is retried on the
+the session registry and then shuts the retired providers down concurrently,
+each shutdown waiting out its runtime's exit, which can outlast the applier bound, and a timed-out applier is retried on the
 next tick — a retried switch would clear the sessions created with the new
 provider in between. So the switch runs off the cycle as a task tracked in
 `state._background_tasks` (the same shape as a channel reconnect), the applier
@@ -4193,6 +4245,7 @@ class DashboardConfig:
     url: str = ""                  # public URL for the dashboard (used in Slack links); restart=True
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
+    default_approval_mode: str = "normal"  # normal | trust_reads (DEFAULT_APPROVAL_MODES); the approval mode the machine owner's plain New chat opens on. Any other value, a wrong type or an absent key builds "normal". Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum, `invalid_default_approval_mode`). `POST /api/chat/slots` seeds it once, before the new slot's first frame, through `slot_approval_seed.seed_slot_approval` under the SEL caller `chat_default_mode` (`dashboard/chat_default_mode.py`): clamped to the `approval_modes` policy (a refused Reads answers `default_mode_refused: "policy"` and the chat stays on Normal), never ending a YOLO grant. Only a create that asks for it (`start_mode_default: true`, which the browser sends from the person's own New chat entry points: those that pass `crewModeDefault`, plus New Incognito / Temporary, the first message on an empty chat page, a template's Chat button, a milestone's chat, and split view's and a scene's New session, through `createSlot`'s `startModeDefault` or `api.createChatSlot`'s last argument; `website/src/store/chat/newChatStartModeCallsites.test.ts` pins every create site to one kind or the other), unnamed, by the machine owner's own browser session and not a crewmate's chat (`crewmate_approval.crewmate_name_for`), an app's, a cron's, an ephemeral helper's, a work item's or an app page's gets it; a Shared Crew teammate, session_create / session_fork, channels and subagents keep how they start (rfc-default-approval-mode section 3.2). `trust` is not a value: rfc section 6
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system" | "schedule"; empty = unset (frontend falls back to localStorage or "system")
@@ -5496,6 +5549,32 @@ Returns the effective config for a channel:
   "snapshot_dir": ""
 }
 ```
+
+`dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
+proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
+bind address is not configurable. It is for Linux and macOS only for now: on
+Windows a non-zero value stops the start of the regular or the headless
+`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
+while the SSM listener is configured to run, stops that start too
+(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+nor opens the port: it logs a warning and starts.
+The shared config validation replaces a wrong-typed value (for example `8443.5`,
+`"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It
+logs `Config: type mismatch at 'dashboard.entry_port': ...; using default`.
+Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
+float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
+A wrong value stops the start before any app backend is spawned. A port that
+cannot be bound also stops the gateway's start. The port opens in the regular and
+the headless `kirocrew gateway` only. The proxy must send a `Host` that names loopback
+(`127.0.0.1`, `[::1]` or `localhost`); the entry port answers a request to a Crew
+API route with any other `Host` with `400`, and many proxies pass the client's `Host` through unless told otherwise. The
+value is one per data home, so a second gateway started on the same data home
+(another `--port`) finds the entry port held and does not start (`EntryPortError`).
+`PATCH /api/config/kirocrew` does not change the key: `READONLY_REASONS` lists it
+read-only with reason `reach`, as it does `tunnel.enabled`, so it is set in the config
+file or with `kirocrew config set`.
+See [dashboard-token-auth.md](dashboard-token-auth.md) (*Entry port*).
 
 The `dashboard.url` field supplies the browser-facing/reverse-proxy origin and,
 when present, a candidate port; its origin is added to the CSRF/WebSocket allowlist.

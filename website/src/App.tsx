@@ -45,6 +45,8 @@ const GuideLayer = lazy(() => import('./guide/GuideLayer'))
 // App-contributed link previews (`contributes.linkPreviews`): hover detection only;
 // an app's module loads on the first hover of one of its links.
 const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
+// App startup modules (`ui.startup`): each admitted app's component, on every route.
+const StartupModules = lazy(() => import('./components/StartupModules'))
 // App-contributed message actions (`contributes.messageActions`): a More-menu row per
 // approved action; an app's module loads only when its row is clicked.
 const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLayer'))
@@ -424,7 +426,7 @@ export default function App() {
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
     gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
-    sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
@@ -547,18 +549,22 @@ export default function App() {
               <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? 'w-7 h-7'} iconSize={18} />
             </button>
             {advertisedNavItems.filter(n => n.group === 'Main').map(railRow)}
-            <NavItem
-              navId="apps"
-              path="/apps"
-              label={i18nT('nav.discover')}
-              icon={<Compass size={16} />}
-              active={discoverNavActive}
-              collapsed
-              touch
-              replace
-              onClickOverride={discoverNavActive ? onActivate : undefined}
-              badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
-            />
+            {/* Off in Settings > Display > View, Discover leaves this rail too
+                and its updates badge rides Library (see shell/nav/navRail.tsx). */}
+            {discoverInRail && (
+              <NavItem
+                navId="apps"
+                path="/apps"
+                label={i18nT('nav.discover')}
+                icon={<Compass size={16} />}
+                active={discoverNavActive}
+                collapsed
+                touch
+                replace
+                onClickOverride={discoverNavActive ? onActivate : undefined}
+                badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
+              />
+            )}
             <NavItem
               navId="apps-library"
               path="/apps/library"
@@ -569,6 +575,7 @@ export default function App() {
               touch
               replace
               onClickOverride={libraryNavActive ? onActivate : undefined}
+              badge={discoverInRail ? undefined : <NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
             />
           </>}
           apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
@@ -1000,6 +1007,7 @@ export default function App() {
           <GuideProvider>
           <Suspense fallback={null}><GuideLayer /></Suspense>
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
+          <Suspense fallback={null}><StartupModules /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           {/* The shell's own nav read owns the shared app list here. */}

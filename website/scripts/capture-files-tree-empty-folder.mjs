@@ -289,7 +289,22 @@ async function main() {
     if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
     return false
   }
-  await stubDashboardApi(page, { slots, extra })
+  // Every seed this harness needs is the same on each load(), so the stub
+  // carries it: its init script clears storage and writes these on every
+  // navigation.
+  await stubDashboardApi(page, {
+    slots, extra,
+    localStorageEntries: {
+      'mc-active-slot-chat': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      ['mc-panel-tabs:' + SLOT]: bucket([FILES_TAB], 'files'),
+      'mc-files-rail-open': '1',
+      'mc-files-rail-w': '360',
+      'mc-side-panel-width': '820',
+      ['mc-git-panel-opened:' + SLOT + ':' + PROJECT]: '1',
+      'mc-chat-config': JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }),
+    },
+  })
   logPageProblems(page)
 
   const wrote = []
@@ -306,19 +321,6 @@ async function main() {
   }
 
   async function load() {
-    await page.addInitScript(([slot, project, tabsJson]) => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot-chat', slot)
-      localStorage.setItem('mc-activity-open:' + slot, 'true')
-      localStorage.setItem('mc-panel-tabs:' + slot, tabsJson)
-      localStorage.setItem('mc-files-rail-open', '1')
-      localStorage.setItem('mc-files-rail-w', '360')
-      localStorage.setItem('mc-side-panel-width', '820')
-      localStorage.setItem('mc-git-panel-opened:' + slot + ':' + project, '1')
-      localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }))
-    }, [SLOT, PROJECT, bucket([FILES_TAB], 'files')])
     await page.goto(base + '/?sid=' + encodeURIComponent(SLOT), { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
   }

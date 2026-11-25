@@ -122,10 +122,10 @@ describe('Create the Slack app', () => {
     // One numbered list: creating the app is step 1, and the last step says
     // where its Client ID and Client Secret go once sign-in is on.
     expect(tip.textContent).toContain(
-      'Slack signs in through Kiro Crew. To connect it: (1) create the Slack app with the button below (Slack opens with it filled in), (2) turn on Kiro Crew sign-in with the button on this card, (3) in Settings, set chats to run on Kiro Agent, (4) back here, click Set up Slack and paste the app’s Client ID and Client Secret into its form.',
+      'Slack signs in through Kiro Crew. To connect it: (1) create the Slack app with the button below (Slack opens with it filled in), (2) open the Kiro Crew sign-in setting with the button on this card and make sure it is on, (3) in Settings → Agent Harness, choose Kiro Agent, (4) back here, click Set up Slack and paste the app’s Client ID and Client Secret into its form.',
     )
     expect(tip.textContent).not.toContain('Start by creating')
-    expect(within(tip).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings/agent')
+    expect(within(tip).getByRole('link', { name: 'Settings → Agent Harness' }).getAttribute('href')).toBe('/settings/agent')
   })
 
   it('leads the client-not-saved tip with the create step, naming the Set up button', async () => {

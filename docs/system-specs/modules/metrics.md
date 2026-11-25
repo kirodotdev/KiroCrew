@@ -1869,7 +1869,9 @@ formats that imply it: `--short`, `--porcelain`, `--long`, `-z`/`--null`) or any
 output does not count. Commands are read by the shared shell reader
 (`security.shell_commands.read_commands`, the batch guard's own), so quoting is the shell's
 and a here-document body is data; a command with a quote left open, or longer than 16,384
-characters, counts nothing. An incognito or temporary transcript, or one whose line cannot be
+characters, counts nothing. A program word is named the way Windows runs it
+(`program_name.windows_program_name`), so `git.exe`, `Git` and a full Windows path to
+`git.exe` are `git`, and the same holds for `gh` and `glab`. An incognito or temporary transcript, or one whose line cannot be
 read, is refused by the seam (`TranscriptWithheld`) and its row gets no outcome. The scan
 records each delivering row's chain; `usage_outcome.respond_with_session_outcomes` then,
 off the loop, takes the lock stems of every contributing chain in one sorted acquire, enters
@@ -3248,7 +3250,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.app.foreground_time` | counter, unit `s` | `app` and `entity_version` as on `opened`; `surface`: `page` / `popout` / `other`; `duration`: the span's bucket, `le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` / `other` | **owner views only**: the same route (`event=foreground`), once per span the page was visible (Page Visibility, and not behind another Crew's pane: `useLocalCrewHidden`), sent when it ends (hidden, another Crew in front, a zero-size viewport such as a `display:none` remote Crew pane frame, unmount, `pagehide`) with `keepalive`; adds the span's whole seconds, cut to 24 h; a span under 1 s adds nothing. A tab that is killed or crashes before `pagehide` sends nothing for its last span, so this undercounts and never overcounts |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
-| `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json` or is listed in the edition pool's `TipsPool.metric_tip_ids`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
+| `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `exploratory` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json` or is listed in the edition pool's `TipsPool.metric_tip_ids`, an exploratory tip's id when it ships in `data/tips_exploratory.json`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
 | `kirocrew.feature_video.status` | counter | `status`: `seen` / `dismissed` / `other`; `feature`: the video's feature key when it is an Explore feature id, an allowlisted doc or the stem of one, else `other` | `feature_videos.record_status`, after the status is saved |
 | `kirocrew.milestone.*` (`panel_opened`, `starter_clicked`, `reached`, `skipped`, `mark_all_done`, `notice_shown`, `features_completed`) | counter | `group`, `milestone` (catalog keys, tier keys, `all`), `surface`, `send`, `via`; `reached` adds `recommended_by` | the Explore panel and the milestone hooks (`milestones.py`); every value is checked by `milestones.closed_attrs` at the emit site |
 

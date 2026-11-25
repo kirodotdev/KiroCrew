@@ -11,6 +11,7 @@ from __future__ import annotations
 from kiro_crew.acp.kas_engine_subagents import (
     DEFAULT_AGENT,
     SPAWN_SUB_AGENTS_SENTENCE,
+    contract_engine_subagent_mode,
     contract_names_engine_subagents,
     with_engine_sentence,
 )
@@ -18,6 +19,7 @@ from kiro_crew.acp.kas_engine_subagents import (
 __all__ = [
     "DEFAULT_AGENT",
     "SPAWN_SUB_AGENTS_SENTENCE",
+    "contract_engine_subagent_mode",
     "contract_names_engine_subagents",
     "with_engine_sentence",
 ]

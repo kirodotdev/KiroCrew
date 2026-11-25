@@ -48,7 +48,7 @@ conduct, bounded so neither protection is given up:
 channel or DM, kept in the store's ``thread_bindings``) is judged by the same
 clauses, with three differences: its switch is ``slack.thread_conductor``
 (:func:`~kiro_crew.slack.code_channels.binding.thread_conductor_on`, which needs no
-code-channel scope and cannot turn on before the thread runtime is built), not
+code-channel scope and reads off unless the thread runtime is built), not
 the code-channel pair; an ended thread refuses; and its ROOM must be admitted --
 the owner's DM with the app, a private channel Slack confirms is still private,
 or a public channel only while ``slack.thread_conductor_public_channels`` is on
@@ -165,6 +165,8 @@ def note_channel_sender(slot: Any, user_id: str) -> None:
     except TypeError:  # not a dashboard slot: no record, so its turns refuse
         return
     with _senders_lock:
+        if user_id and _stop_fenced.get(key) is not None and _is_owner(user_id):
+            _stop_fenced.pop(key, None)  # the owner wrote again: a new turn may dispatch
         entry = _senders.get(key)
         if entry is None or entry[0]() is not slot:
             entry = (ref, set(), False)
@@ -182,19 +184,58 @@ def note_channel_sender(slot: Any, user_id: str) -> None:
             _senders.popitem(last=False)
 
 
-def note_thread_conductor_start(slot: Any, user_id: str) -> bool:
-    """Record the owner as the author of a Conductor thread's first turn.
+#: Slots whose turn a Conductor thread's Stop fenced: ``key -> slot``. A fenced slot's
+#: channel-origin turns refuse (:func:`_sender_refusal`) until the owner writes again
+#: (:func:`note_channel_sender`). A Stop only removes work: the author record is left
+#: as it is, because the conversation a non-owner drove stays in the model's context.
+_stop_fenced: dict[str, weakref.ref[Any]] = {}
+
+
+def _is_owner(user_id: str) -> bool:
+    try:
+        from kiro_crew.slack.handler import is_owner
+
+        return bool(is_owner(user_id))
+    except Exception:
+        logger.debug("Conductor thread owner check failed", exc_info=True)
+        return False
+
+
+def fence_stopped_turn(slot: Any) -> None:
+    """Refuse *slot*'s channel-origin dispatch until its owner writes in the thread again."""
+    key = str(getattr(slot, "key", "") or "")
+    try:
+        ref = weakref.ref(slot)
+    except TypeError:
+        return
+    with _senders_lock:
+        _stop_fenced[key] = ref
+
+
+def _is_stop_fenced(slot: Any) -> bool:
+    with _senders_lock:
+        ref = _stop_fenced.get(str(getattr(slot, "key", "") or ""))
+    return ref is not None and ref() is slot
+
+
+def note_thread_conductor_start(slot: Any, user_id: str, binding: Any = None) -> bool:
+    """Record the owner, or *binding*'s opener, as the author of a Conductor thread's
+    first turn.
 
     The start command opens that turn itself, so it is never routed and
     :func:`note_channel_sender` would not see its author; without this the
     conductor's first ``session_create`` is refused as "not on record". Records
-    *user_id* only when it IS the Slack owner (``is_owner``, by identity) and
-    answers whether it did; anyone else records nothing, so their turn refuses.
+    *user_id* only when it IS the Slack owner (``is_owner``, by identity) or the
+    thread's opener (``opener_admitted``), and answers whether it did; anyone else
+    records nothing, so their turn refuses.
     """
     try:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
         from kiro_crew.slack.handler import is_owner
 
-        owner = bool(user_id) and is_owner(user_id)
+        owner = bool(user_id) and (
+            is_owner(user_id) or (binding is not None and opener_admitted(binding, user_id))
+        )
     except Exception:
         logger.debug("Conductor thread owner check failed", exc_info=True)
         return False
@@ -217,6 +258,7 @@ def forget_senders() -> None:
     """Drop every record (tests)."""
     with _senders_lock:
         _senders.clear()
+        _stop_fenced.clear()
 
 
 def _turn_carries_channel_text(slot: Any) -> bool:
@@ -241,6 +283,8 @@ def _sender_refusal(slot: Any, binding: Any = None) -> str:
         # wake, or a worker's report. None carries channel text. Another session
         # cannot inject into this slot at all: a mirrored target is refused.
         return ""
+    if _is_stop_fenced(slot):
+        return "the thread was stopped: its owner must write in it again before it dispatches"
     authors, overflowed = _recorded_senders(slot)
     if overflowed:
         return "the channel's session has been driven by more Slack authors than can be vouched for"

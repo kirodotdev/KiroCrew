@@ -14,14 +14,17 @@ superseded-by: []
 
 # RFC: KAS engine sub-agents behind a default-off Feature Preview
 
-- Status: draft. Nothing on main follows it. Acceptance requested from a
-  maintainer. A maintainer records acceptance on this Status line, in the
-  `status` field and in the index row.
-- Implementation: draft
-  [#39781](https://github.com/kirodotdev/KiroCrew/pull/39781), which stays a
-  draft until this design is reviewed. It was read at its pushed head
-  `969c78233a` (two commits, `47b9f42e42` then `969c78233a`). Main was read
-  at `47edb00308`.
+- Status: draft. Acceptance requested from a maintainer. A maintainer records
+  acceptance on this Status line, in the `status` field and in the index row.
+- Implementation:
+  [#39781](https://github.com/kirodotdev/KiroCrew/pull/39781) merged on
+  2026-11-24 (`3dd52e1d7b`). Main now has the `kas_subagents` Feature Preview
+  (`dashboard.feature_previews`, read by
+  `acp/kas_engine_subagents.kas_subagents_preview_on`) and the
+  `kirocrew-helper` agent (`acp/kas_engine_subagent_target.KAS_HELPER_AGENT`).
+  This document was not re-audited against that merge: the marks below
+  describe the draft as it was read at its pushed head `969c78233a` (two
+  commits, `47b9f42e42` then `969c78233a`), with main read at `47edb00308`.
 - Three marks say where each statement was checked. **main**: on main at
   `47edb00308`. **head**: on #39781's pushed head `969c78233a`. **next**:
   decided, not on the pushed head, lands with the next update to #39781. A

@@ -401,10 +401,14 @@ test("LOCAL_ONLY sets pin the exact membership", () => {
     "quit", "togglefullscreen", "zoom",
   ]);
   assert.deepStrictEqual([...LOCAL_ONLY_MENU_IDS].sort(), ["connection-menu"]);
+  // The four `font-size-*` ids fence the content text size tiers. Each one's
+  // click reaches every open dashboard window, all of which are the LOCAL
+  // user's, so the set grows rather than loosens here.
   assert.deepStrictEqual([...LOCAL_ONLY_ITEM_IDS].sort(), [
-    "about", "devtools-toggle", "focus-mode-toggle", "force-reload",
-    "keep-on-top", "reload", "settings", "window-zoom", "zoom-actual",
-    "zoom-in", "zoom-out",
+    "about", "devtools-toggle", "focus-mode-toggle", "font-size-large",
+    "font-size-medium", "font-size-small",
+    "force-reload", "keep-on-top", "reload", "settings", "window-zoom",
+    "zoom-actual", "zoom-in", "zoom-out",
   ]);
 });
 

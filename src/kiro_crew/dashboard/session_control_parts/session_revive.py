@@ -48,8 +48,8 @@ from kiro_crew.dashboard.state import (
     note_new_worker,
     own_worker_member,
     read_worker_execution,
-    worker_cap_refusal,
 )
+from kiro_crew.mate_worker_conducts import effective_worker_cap_refusal, holds_conducting_kit
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -296,8 +296,13 @@ def reconfirm_restored_creators(state: Any) -> int:
 
     Only a slot the restore fenced carries a claim (``_unconfirmed_creator``). A slot
     whose ``_created_by`` was set some other way since is left alone and loses the
-    claim. Returns how many fences were lifted.
+    claim. A lifted fence also gives the slot the thread-born mark the restore would
+    have given it had the tree held the record then (``members.note_worker_lineage``,
+    from the creator the record names). Returns how many fences were lifted.
     """
+    # Circular at runtime: ``members`` imports this module.
+    from kiro_crew.members import note_worker_lineage
+
     lifted = 0
     for slot in list(getattr(state, "_slots", {}).values()):
         claimed = str(getattr(slot, "_unconfirmed_creator", "") or "")
@@ -310,6 +315,7 @@ def reconfirm_restored_creators(state: Any) -> int:
             continue
         slot._created_by = claimed
         slot._unconfirmed_creator = ""
+        note_worker_lineage(slot.key, claimed)
         lifted += 1
         logger.info(
             "session %s: creator %s confirmed by the session tree after restore", slot.key, claimed
@@ -678,6 +684,13 @@ async def revive_session(
                 built._created_by = claimed_creator
             else:
                 built._created_by = UNVERIFIED_CREATOR
+        # The thread-born mark from the same verified creator a restart reads it
+        # from (``metadata_codec._read_created_by``), so a worker the Bot's thread
+        # opened is thread-born again after a revive whether or not the gateway
+        # restarted since it was archived; an unverified claim marks nothing.
+        from kiro_crew.members import note_worker_lineage
+
+        note_worker_lineage(built.key, str(getattr(built, "_created_by", "") or ""))
         # Charge the reviver for this slot under the per-caller cap (see
         # ``creator_slot_count``) without touching its ownership. Set before the
         # ceilings are read so the count includes this slot once published.
@@ -711,7 +724,10 @@ async def revive_session(
             return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
             return ResumeRefusal(cap_reason, "creator_slot_cap_reached", 409)
-        if (worker_reason := worker_cap_refusal(state, revived_execution[0])) is not None:
+        # A conducting worker that revives keeps the bound its own start gave it.
+        caller_conducts = holds_conducting_kit(state, live_caller)
+        worker_reason = effective_worker_cap_refusal(state, revived_execution[0], caller_conducts)
+        if worker_reason is not None:
             return ResumeRefusal(worker_reason, "bot_worker_cap_reached", 409)
         note_new_worker(built.key, revived_execution[0])
         from kiro_crew.dashboard.approval_inheritance import (

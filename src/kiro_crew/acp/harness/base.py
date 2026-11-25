@@ -447,6 +447,16 @@ class SessionExtras:
     entry or file and never sent to the engine. ``""`` on every other host.
     """
 
+    mcp_prereg_clients: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    """Each confidential client's secret by server name, for the request
+    ``kas_client_secret.deliver_prereg_clients`` sends after the session starts.
+
+    KAS only, and only from an engine that announced ``mcpOAuthClientSecret``:
+    the projection sent those servers' ``oauth`` blocks without the secret. Kept
+    out of ``repr`` so a logged payload never carries a value. Empty on every
+    other host.
+    """
+
     withheld_credentials_notice: str = ""
     """The session-start notice naming MCP servers that start without part of
     their declared ``env`` or ``headers``, by server and key name, never a value.
@@ -852,9 +862,14 @@ class HarnessAdapter(LaunchAdapter):
     #: True on a host that prepares each session on its own before ``session/new`` /
     #: ``session/load`` and checks it after (:meth:`prepare_session` and the seams
     #: below). The runtime reads this before awaiting any of them, so a host that
-    #: answers False -- kiro-cli, KAS, codex -- makes no extra call at all
+    #: answers False -- kiro-cli, KAS -- makes no extra call at all
     #: (harness-parity H13).
     per_session_state: bool = False
+
+    #: True on a host that keeps no per-session state but still acts on each session
+    #: in :meth:`after_session_start`, with *state* None (codex titles its helper
+    #: sessions there). False keeps the call off kiro-cli and KAS (H13).
+    checks_stateless_session_start: bool = False
 
     #: True on a host whose adapter can report an inheriting session's model without
     #: passing it on to the agent it runs (claude-agent-acp reports the settings
@@ -919,6 +934,10 @@ class HarnessAdapter(LaunchAdapter):
         agent_version: str = "",
     ) -> None:
         """Check the session that just started, before its first prompt.
+
+        Called where :attr:`per_session_state` or
+        :attr:`checks_stateless_session_start` is True. *state* is what
+        :meth:`prepare_session` returned, or None on a stateless host.
 
         *agent_version* is the ``agentInfo.version`` the process reported at its
         handshake.

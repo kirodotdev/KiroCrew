@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import UserMessage from '../pages/chat/UserMessage'
+import { QUOTED_BTN_CLS } from '../pages/chat/QuotedMark'
 import { prependQuote } from '../chat-core/composer/messageQuote'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(true) }))
@@ -422,5 +423,30 @@ describe('the sent quote card renders its quote as markdown, clamped', () => {
     expect(screen.getByTestId('quote-card-sent').tagName).toBe('DIV')
     fireEvent.click(screen.getByTestId('quote-card-sent-jump'))
     expect(onJump).toHaveBeenCalledWith(quote)
+  })
+})
+
+describe('UserMessage Quote done state', () => {
+  it('the row Quote button shows a check and "Quoted" for two seconds, then turns back', () => {
+    render(<UserMessage content="hi" renderContent={renderContent} messageTs="t1" slotKey="chat-1" onQuoteMessage={() => {}} />)
+    const button = screen.getByTestId('quote-message')
+    fireEvent.click(button)
+    expect(button).toHaveTextContent('Quoted')
+    act(() => { vi.advanceTimersByTime(1999) })
+    expect(button).toHaveTextContent('Quoted')
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(button).not.toHaveTextContent('Quoted')
+  })
+
+  it('draws "Quoted" inside the Quote button, which leaves its square icon cell so the label cannot spill over Copy', () => {
+    render(<UserMessage content="hi" renderContent={renderContent} messageTs="t1" slotKey="chat-1" onQuoteMessage={() => {}} />)
+    const button = screen.getByTestId('quote-message')
+    expect(button.className).not.toContain(QUOTED_BTN_CLS)
+    fireEvent.click(button)
+    expect(button).toContainElement(screen.getByRole('status'))
+    expect(button.className).toContain(QUOTED_BTN_CLS)
+    expect(button.querySelector('.absolute')).toBeNull()
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(button.className).not.toContain(QUOTED_BTN_CLS)
   })
 })

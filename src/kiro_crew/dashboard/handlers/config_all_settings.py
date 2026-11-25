@@ -76,6 +76,9 @@ READONLY_REASONS: dict[str, str] = {
     "skills.generate_scripts": WHY_SAFETY,
     "skills.approval_required": WHY_SAFETY,
     "dashboard.terminal.shell": WHY_SAFETY,
+    # Reads, a new chat runs read-only commands without asking; `PUT
+    # /api/dashboard/config` writes it with its own enum check.
+    "dashboard.default_approval_mode": WHY_SAFETY,
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
@@ -123,6 +126,9 @@ READONLY_REASONS: dict[str, str] = {
     "dashboard.shared_crew.containment_enabled": WHY_REACH,
     "dashboard.shared_crew.hard_limits": WHY_REACH,
     "dashboard.shared_crew.ssm_port": WHY_REACH,
+    # A second loopback listener for a reverse proxy that forwards other machines
+    # (dashboard/entry_gate.py); the config file or `kirocrew config set` writes it.
+    "dashboard.entry_port": WHY_REACH,
     # Outbound activity reports.
     "wakatime.enabled": WHY_SHARE,
     "wakatime.send_heartbeats": WHY_SHARE,

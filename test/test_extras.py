@@ -344,3 +344,82 @@ def test_a_distribution_named_in_several_places_carries_one_specifier() -> None:
     assert shared, "no distribution is named in two places; the guard checks nothing"
     differing = {k: v for k, v in shared.items() if len(set(v.values())) > 1}
     assert not differing, f"one distribution, several specifiers: {differing}"
+
+
+# The note naming what a rebuilt managed-venv tree did not carry
+
+
+def _dist(site: Path, name: str, *requires: str, direct: bool = False) -> None:
+    """An installed distribution *name* in *site*, requiring *requires*."""
+    info = site / f"{name.replace('-', '_')}-1.0.dist-info"
+    info.mkdir(parents=True)
+    lines = "".join(f"Requires-Dist: {r}\n" for r in requires)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n{lines}", encoding="utf-8"
+    )
+    if direct:
+        (info / "direct_url.json").write_text(
+            '{"url": "file:///src/app", "dir_info": {}}', encoding="utf-8"
+        )
+
+
+def _uncarried(previous: Path, new: Path) -> tuple[list[str], list[str]]:
+    assert hasattr(extras, "uncarried"), "kiro_crew.extras names no uncarried packages"
+    return extras.uncarried([previous], [new])
+
+
+def _note(previous: Path, new: Path, python: str) -> str:
+    assert hasattr(extras, "uncarried_note"), "kiro_crew.extras writes no uncarried note"
+    return extras.uncarried_note([previous], [new], python)
+
+
+def test_a_dependency_of_another_installed_package_is_not_named(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "faiss-cpu", "numpy>=1.25; python_version >= '3.10'")
+    _dist(old, "numpy")
+    new.mkdir()
+
+    from_index, direct = _uncarried(old, new)
+
+    assert from_index == ["faiss-cpu"]
+    assert direct == []
+
+
+def test_kiro_crew_and_the_packaging_tools_are_never_named(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    for name in ("kirocrew", "kirocrew-lts", "pip", "setuptools", "wheel"):
+        _dist(old, name)
+    new.mkdir()
+
+    assert _uncarried(old, new) == ([], [])
+    assert _note(old, new, "/venv/bin/python") == ""
+
+
+def test_a_package_kiro_crew_requires_only_under_an_extra_is_named(tmp_path: Path) -> None:
+    """A base requirement is a dependency like any other; an ``extra`` one is not,
+    so a dropped extra's package is named when the new tree lacks it."""
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "kirocrew", "httpx>=0.27", 'lark-oapi<2,>=1.4; extra == "feishu"')
+    _dist(old, "httpx")
+    _dist(old, "lark-oapi")
+    _dist(new, "httpx")
+
+    note = _note(old, new, "/venv/bin/python")
+
+    assert _uncarried(old, new) == (["lark-oapi"], [])
+    assert note.startswith("Note: ")
+    command = extras.pip_install_command_for("lark-oapi", python="/venv/bin/python")
+    assert note.endswith(f"Add lark-oapi back with: {command}")
+
+
+def test_a_package_installed_from_a_path_is_named_without_a_command(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "my-app", direct=True)
+    new.mkdir()
+
+    note = _note(old, new, "/venv/bin/python")
+
+    assert _uncarried(old, new) == ([], ["my-app"])
+    assert "my-app" in note
+    assert "reinstall it from where it came from" in note
+    assert "pip install" not in note

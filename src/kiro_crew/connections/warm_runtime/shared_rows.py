@@ -239,7 +239,11 @@ async def fail_refused_sign_ins() -> list[str]:
         for provider in await _warm_facade()._warm_mint.failed_providers(activation):
             token, row_activation = adopted.get(provider["slug"], ("", 0))
             # A grant still wins: the server can fail its own start after a good exchange,
-            # and the row's watcher reports that grant on its next poll.
+            # and the row's watcher reports that grant on its next poll. kiro-cli's grant
+            # only, as that watcher reads (``mint._mint_watcher``): an adopted row is a
+            # kiro-cli sign-in, since a Connect that signs in on the KAS engine never
+            # adopts a warm row (``api_connections_mint``). A KAS-held sign-in here would
+            # keep a refused row waiting out its TTL for a grant its watcher never sees.
             if row_activation == activation and not await grant_observed(provider["mcp_url"]):
                 candidates[provider["slug"]] = token
     refused: list[str] = []

@@ -212,6 +212,48 @@ def test_a_semicolon_csv_with_a_quoted_multi_line_header_is_read_with_semicolons
         assert "1 data rows; 2 columns: item" in text and "cost (integer)" in text, name
 
 
+_NOTE_ROW = '1;"' + "line\n" * 1000 + '";ok\n'
+
+
+@pytest.mark.parametrize(
+    ("body", "shape"),
+    [
+        # The read stops inside a quoted field: the last record read is cut short.
+        (
+            "id;notes;flag\n" + _NOTE_ROW * 60,
+            "3 columns: id (integer), notes (text), flag (text)",
+        ),
+        # The read stops between records: only the header is left.
+        (
+            "id;notes;flag\n1;" + "x" * 300_000 + ";ok\n",
+            "3 columns: id (empty), notes (empty), flag (empty)",
+        ),
+        # The cut-short record lies past the sample, whose complete last record is kept.
+        (
+            "notes; more\n" + "foo;bar\n" * 199 + "plain\n" + ('"' + "line\n" * 1000 + '"\n') * 60,
+            "1 columns: notes; more (text)",
+        ),
+        # The read stops between records: a quote inside an unquoted field is literal.
+        (
+            'notes; more\nfoo;bar\n6" shelf\n' + "x" * 300_000 + "\n",
+            "1 columns: notes; more (text)",
+        ),
+    ],
+    ids=["inside-a-quoted-field", "after-the-header", "past-the-sample", "a-literal-quote"],
+)
+def test_a_large_semicolon_csv_keeps_its_columns_wherever_the_read_stops(
+    uploads, digest_on, body, shape
+):
+    text = _text(str(_stage(uploads, "eu_notes.csv", body)))
+    assert f"+ data rows (first 256 KiB read); {shape}" in text
+
+
+def test_an_oversized_field_past_the_sample_keeps_the_semicolon_guess():
+    # A record past the typing sample is never parsed, so its oversized field cannot raise.
+    text = "id;notes;flag\n" + "1;n;ok\n" * 200 + '2;"' + "entry," * 23000 + '";ok\n'
+    assert sheet_digest._csv_delimiter(text, partial=True) == ";"
+
+
 def test_a_csv_keeps_its_quote_rules_and_an_ordinary_digest_is_unchanged(uploads, digest_on):
     body = 'k,v\n"a, b","line one\nline two"\nc,d\n'
     text = _text(str(_stage(uploads, "ab_pin.csv", body)))

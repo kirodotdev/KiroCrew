@@ -658,7 +658,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: layer and the factory that built it. The order is a security contract: latency is
 #: outermost, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
-#: layer reads a client-sent relay header, the
+#: layer reads a client-sent relay header, the entry gate (dashboard only, the one
+#: chain beside which the entry port opens) is next so a request on the
+#: entry port is marked before any layer that refuses or routes, the
 #: deny-audit boundary is outer to every barrier that can refuse, the app web origin
 #: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
 #: audit is inner to them, the redaction audience sits right after token auth, the
@@ -671,6 +673,7 @@ _DASHBOARD_CHAIN = (
     ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
+    ("entry_gate_middleware", "entry_gate_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
     ("relay_origin", "_relay_origin_middleware.<locals>."),

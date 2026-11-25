@@ -15,6 +15,7 @@
 // Menu.buildFromTemplate stays in main.js.
 
 const { applyWindowControl } = require("./linux-frame");
+const { TEXT_SIZE_TIERS } = require("./text-size");
 
 function buildMenuTemplate(deps) {
   const {
@@ -28,6 +29,8 @@ function buildMenuTemplate(deps) {
     zoomActualSize,
     zoomIn,
     zoomOut,
+    currentFontSize, // px of the stored tier; decides which radio seeds checked
+    setFontSize,
     alwaysOnTop, // initial checked state for Keep on Top (restored preference)
     toggleAlwaysOnTop,
     toggleFocusMode, // ask the focused dashboard to flip focus mode
@@ -120,6 +123,22 @@ function buildMenuTemplate(deps) {
         { label: "Actual Size", id: "zoom-actual", accelerator: "CmdOrCtrl+0", click: zoomActualSize },
         { label: "Zoom In", id: "zoom-in", accelerator: "CmdOrCtrl+=", click: zoomIn },
         { label: "Zoom Out", id: "zoom-out", accelerator: "CmdOrCtrl+-", click: zoomOut },
+        { type: "separator" },
+        // Flat radio items, never a submenu: `app-menu:execute` addresses an
+        // item by top-level menu id plus a flat index into that menu, with no
+        // path form, so a nested tier could not be dispatched from the custom
+        // titlebar menu at all. Zoom scales everything; these set Chromium's
+        // default font size, which moves only text with no size pinned in CSS.
+        // No accelerators: the ladder has four stops and no conventional chord.
+        ...TEXT_SIZE_TIERS.map((tier) => ({
+          label: tier.label,
+          type: "radio",
+          id: tier.id,
+          // Strict equality, so a stored value off the ladder or of the wrong
+          // type checks nothing rather than guessing a tier.
+          checked: tier.px === currentFontSize,
+          click: () => setFontSize(tier.px),
+        })),
         { type: "separator" },
         { role: "togglefullscreen" },
         // Focus mode hides the dashboard's top bar, which holds its own toggle,

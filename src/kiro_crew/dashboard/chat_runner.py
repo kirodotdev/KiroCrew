@@ -225,6 +225,7 @@ from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     MIRROR_ECHO_OWED_META_KEY,
     _authorize_recipient,
     _mirror_upload_roots,
+    _name_local_attachments,
     _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
@@ -286,6 +287,7 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
     _on_permission_request,
     _operator_confirms_call,
+    _persistable_session_policy,
     _slot_is_trusted,
 )
 from kiro_crew.dashboard.chat_turn.tool_results import _on_child_tool_finished, _on_tool_result
@@ -447,6 +449,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     first_advertised_fallback,
     probe_fallback_restore,
     provider_last_turn_usage,
+    reactive_model_candidate,
     record_interaction_event,
     run_bg_oneliner,
     slot_switch_session_lock,
@@ -972,6 +975,9 @@ async def _run_chat(
     # entry this way; without the switch, a channel's queued "/clear" would be the
     # one queued "/clear" in the system that ran instead of being said.
     _commands_off: bool = False,
+    # The message's ``@prompt`` and ``$skill`` mentions stay text: a chat option
+    # tap's label, or a drained entry stamped ``EXPANSIONS_OFF_META_KEY``.
+    _expansions_off: bool = False,
     # A verbatim recovery replay of a dashboard prompt whose first attempt died
     # before the mirror posted its echo. Set only by the drain, from the entry's
     # ``MIRROR_ECHO_OWED_META_KEY`` stamp, so the replay is echoed once.
@@ -1041,6 +1047,7 @@ async def _run_chat(
         _directive_source_channels=_directive_source_channels,
         _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
+        _expansions_off=_expansions_off,
         _recovery_echo_owed=_recovery_echo_owed,
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
@@ -1506,13 +1513,11 @@ async def _run_chat(
             and isinstance((_rejected_id := getattr(exc, "rejected_model", None)), str)
             and _rejected_id.strip()
             and len(_rejected_id) <= _MAX_MODEL_ID_LEN
-            and model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
             and (
-                _access_fb_candidate := first_advertised_fallback(
-                    getattr(exc, "advertised", None), _rejected_id
-                )
+                model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
+                or getattr(exc, "unentitled", False) is True
             )
-            is not None
+            and (_access_fb_candidate := reactive_model_candidate(exc, _rejected_id)) is not None
             and len(_access_fb_candidate) <= _MAX_MODEL_ID_LEN
         ):
             await _on_acp_model_access(turn, exc, _rejected_id, _access_fb_candidate)

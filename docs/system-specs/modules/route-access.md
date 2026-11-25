@@ -24,6 +24,7 @@ for a `/v1` route those stay the record of what is promised.
 | The test that holds registered routes against the table | `test/test_route_access_labels.py` |
 | Routes that have no entry yet | `.github/route-access-baseline.txt` |
 | The review rule for a new entry | `a-route-declares-its-action-and-tier` in `AUTOSDE.yaml` |
+| The test that holds a Crew API route against its marks in the spec | `test/test_crew_api_status_marks.py` |
 
 ## What a label is
 
@@ -61,6 +62,83 @@ on the gateway boot path, where a label must add no work.
 A new route is `unstable` unless a reviewed contract says otherwise. A `stable` or
 `preview` route has a contract test for its request and response. A `/v1` route's
 tier must agree with what the Crew API RFC and its OpenAPI file say about that route.
+
+## A Crew API route
+
+A route under `/v1` that the Crew API's contract covers is also marked in the Crew API
+spec, in the same change that registers it. The frozen `/v1/chat/completions` is
+outside the contract and has no mark.
+
+1. The operation is in `docs/request-for-change/assets/crew-api/crew-public.yaml`, or
+   in `crew-owner.yaml` for a path under `/v1/crew/owner/`.
+2. The operation carries `x-crew-status: available`. An operation without it is
+   planned.
+3. The operation carries `x-crew-available-to`, the callers the gateway serves the
+   route to: `owner` for an Owner route and for a Public route in
+   `OWNER_ONLY_PUBLIC_ROUTES` (`kiro_crew.dashboard.crew_api_auth`), or the list
+   `owner`, `app` for a route that module's `APP_SERVED_ROUTES` names.
+
+```yaml
+      x-crew-status: available
+      x-crew-available-to: owner
+```
+
+```yaml
+      x-crew-status: available
+      x-crew-available-to:
+      - owner
+      - app
+```
+
+`test/test_crew_api_status_marks.py` reads the registered routes and those two lists,
+and fails when a mark and the gateway disagree: a served route with no operation or
+no mark, a mark on an operation no route serves, or an `x-crew-available-to` that is
+not the callers the lists name. A change that opens a served route to apps changes
+`x-crew-available-to` in the same change.
+
+An available operation whose spec describes more than the gateway serves also carries
+`x-crew-not-served-yet`. Today four operations carry it: `POST /v1/responses`, which the
+test below checks in full, and `GET /v1/models`, for its response headers, which the
+same test file checks; `GET /v1/responses/{response_id}` and its `input_items`, for
+their response headers, which `test/test_crew_api_response_reads.py` checks. Each check
+sends the request as the owner; none sends one with an app credential. No test
+compares the other available operations with their handlers field by field.
+
+```yaml
+      x-crew-not-served-yet:
+        request-body:
+        - background
+        - tool_choice=none
+        request-headers:
+        - Idempotency-Key
+        response-headers:
+        - X-Crew-Quota-Limit
+```
+
+- `request-body` names the request fields the route answers
+  `422 capability_unavailable`, each by its path in the request body: a field
+  (`background`), one value of a field (`tool_choice=none`), or a field of an array
+  item (`input[].content[].type=input_image`). A name covers every path under it.
+- `request-headers` names the request headers the route does not act on.
+- `response-headers` names the response headers the route does not send.
+- Each list is sorted.
+
+`test/test_crew_api_not_served_yet.py` builds one request per field and variant from
+the request schema in the spec, sends each to the route, and fails when a field the
+mark names is served or a field it does not name is refused
+`422 capability_unavailable`. A change that makes `POST /v1/responses` serve a field
+takes its name out of `x-crew-not-served-yet` in the same change; a change that makes
+it refuse one adds the name. The test's failure names the path to add or remove.
+
+The reference pages under `docs/reference/crew-api/` are generated from the spec. A
+change to either spec file regenerates them in the same change:
+
+```bash
+python scripts/generate_crew_api_reference.py
+```
+
+`test/test_crew_api_reference.py` fails while a committed page differs from what the
+spec renders.
 
 ## The baseline
 
@@ -121,3 +199,5 @@ app.router.add_post("/api/widgets/{widget_id}/reset", handlers.api_widget_reset)
 - [ ] The tier is `unstable` unless a contract was reviewed and a contract test is in
       the change.
 - [ ] A baselined route that gained an entry, or was removed, lost its baseline line.
+- [ ] A new Crew API route has its operation in the spec, marked
+      `x-crew-status: available` and `x-crew-available-to`.

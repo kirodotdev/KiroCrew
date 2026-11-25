@@ -89,6 +89,7 @@ def _project_mcp_servers(
     engine_features: frozenset[str] = frozenset(),
     forward_ssh_auth_sock: bool = False,
     scope_muted: frozenset[str] | None = None,
+    prereg_out: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
@@ -97,7 +98,9 @@ def _project_mcp_servers(
     *forward_ssh_auth_sock* is whether the engine's own spawn kept the gateway's
     ssh-agent socket, which alone decides whether a launched server gets it.
     *engine_features* (:mod:`kas_engine_features`) sends ``oauth`` and registry
-    pointers to an engine that announced it accepts them.
+    pointers to an engine that announced it accepts them. *prereg_out*,
+    when given and the engine announced ``mcpOAuthClientSecret``, gets each
+    confidential client's secret by server name (``kas_engine_features.carry_oauth``).
 
     *withheld_out*, when given, maps each declared server Crew did not author that
     lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
@@ -327,7 +330,13 @@ def _project_mcp_servers(
             projected.pop(key, None)
         # Always, whatever the engine announces: 0.66.104 reads the block, and
         # older engines drop it without failing the server (kas_engine_features).
-        engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
+        engine.carry_oauth(
+            projected,
+            agent_id=agent_id,
+            name=name,
+            logger=logger,
+            prereg_out=(prereg_out if engine.MCP_OAUTH_CLIENT_SECRET in engine_features else None),
+        )
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function

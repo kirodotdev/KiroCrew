@@ -56,14 +56,15 @@ def _startup_query_prewarm_applies(
     return execution_context.member_id is None and execution_context.memory_mode != "temporary"
 
 
-def _message_rewritten_before_build(slot: Any, message: str) -> bool:
-    """Whether the turn's text changes between the session claim and the build.
+def _message_rewritten_before_build(message: str) -> bool:
+    """Whether the text the build ranks changes between the session claim and the build.
 
-    An ``@prompt`` expansion replaces it, and drained sub-agent failures or pending
-    context are put in front of it. An embed of the claim-time text would then rank
-    nothing and hold the one inference thread ahead of the embed the build reads.
+    An ``@prompt`` expansion replaces it. Drained sub-agent failures and pending
+    context go in front of it, outside the user's span, so the build still ranks
+    the claim-time text. An embed of replaced text would rank nothing and hold the
+    one inference thread ahead of the embed the build reads.
     """
-    return bool(message.startswith("@") or slot._pending_subagent_failures or slot._pending_context)
+    return message.startswith("@")
 
 
 def _folder_steering_turn(

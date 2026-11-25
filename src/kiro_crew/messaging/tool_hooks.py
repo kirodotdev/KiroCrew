@@ -220,10 +220,17 @@ class ChannelTurnHooks:
             )
         return None, None
 
+    def note_permission_request(self, event: Any) -> None:
+        """Record the id *event*'s permission request names the tool by.
+
+        That id is what the call's PostToolUse matches on: KAS states a built-in's
+        id (``fs_write``) only on the permission request, not on the tool-call frame.
+        """
+        self._name(event, is_shell=False, keep=True)
+
     async def pre_tool_refusal(self, event: Any) -> str | None:
         """Why the PreToolUse hooks refuse *event*'s permission request, or ``None``."""
-        # The id the request names the tool by is what its PostToolUse matches on.
-        self._name(event, is_shell=False, keep=True)
+        self.note_permission_request(event)
         if self.spec.unreadable:
             # deferred: tool_permission imports llm_helpers, which reaches messaging.
             from kiro_crew.tool_permission import SPEC_HOOKS_UNREADABLE

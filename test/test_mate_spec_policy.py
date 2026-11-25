@@ -105,6 +105,45 @@ def test_a_permissions_block_kas_would_refuse_whole_is_refused_by_name():
     assert caught.value.fields == ["permissions (rule 0 carries unknown key(s) tools)"]
 
 
+def test_a_bundle_beside_deny_and_ask_rules_is_left_out_and_the_rules_land():
+    deny = {"capability": "mcp", "match": ["jira/delete_issue"], "effect": "deny"}
+    ask = {"capability": "shell", "match": ["git push *"], "effect": "ask"}
+    spec: dict = {}
+    mate_spec_policy.layer_policy(
+        spec, {"permissions": {"rules": [deny, ask], "policies": ["read-only-shell"]}}
+    )
+    assert spec["permissions"] == {"rules": [deny, ask]}
+
+
+def test_an_allow_beside_a_bundle_is_refused_by_name():
+    """KAS's projection leaves the allow out, so the worker could not keep it."""
+    block = {"rules": [DENY, ALLOW], "policies": ["read-only-shell"]}
+    with pytest.raises(SpecPolicyUncarried) as caught:
+        mate_spec_policy.layer_policy({}, {"permissions": block})
+    assert caught.value.fields == [
+        "permissions (allow rules beside a policies bundle; write them out "
+        "without the bundle, or use allowedTools)"
+    ]
+
+
+def test_an_allow_layered_beside_the_files_own_bundle_is_refused_by_name():
+    """The file's bundle stays in the merged block, so KAS would leave the allow out."""
+    spec = {"permissions": {"policies": ["dev-shell"], "rules": []}}
+    allow = {"capability": "shell", "match": ["git status"], "effect": "allow"}
+    with pytest.raises(SpecPolicyUncarried) as caught:
+        mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [allow]}})
+    assert caught.value.fields == [
+        "permissions (allow rules beside a policies bundle; write them out "
+        "without the bundle, or use allowedTools)"
+    ]
+
+
+def test_a_deny_layered_beside_the_files_own_bundle_lands():
+    spec = {"permissions": {"policies": ["dev-shell"], "rules": []}}
+    mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [DENY]}})
+    assert spec["permissions"] == {"policies": ["dev-shell"], "rules": [DENY]}
+
+
 def test_a_refused_rule_is_numbered_as_the_template_numbers_it():
     """Rules the file already holds do not shift the index the reason names."""
     held = [
@@ -477,7 +516,7 @@ _UNCARRIED_SETTINGS = {
         ),
     ],
     "a_tools_setting_outside_the_allowlist_is_refused_by_name": [
-        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
+        ({"fs_write": {"fallbackAction": "allow"}}, "toolsSettings.fs_write.fallbackAction"),
         ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
         (
             {"use_subagent": {"availableAgents": ["reviewer"]}},
@@ -866,7 +905,7 @@ def test_adding_a_deny_reloads_the_crewmates_idle_worker(home, monkeypatch):
     assert scheduled == ["pixel"]
     reloaded: list[str] = []
 
-    async def reload_if_idle(state, slot):
+    async def reload_if_idle(state, slot, **_kw):
         reloaded.append(slot.key)
         return reload_mod.RELOADED
 

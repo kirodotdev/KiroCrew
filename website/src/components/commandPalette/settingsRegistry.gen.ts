@@ -1642,6 +1642,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.optimize-prompt-effort",
+    "label": "Optimize Prompt Effort",
+    "labelKey": "pages.settings.chatPanel.optimize_prompt_effort",
+    "hint": "The reasoning effort “Optimize prompt” runs at. 'Same as Background' uses your Background Effort under Model. Applies only on reasoning-capable models.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.optimize-prompt-model",
+    "label": "Optimize Prompt Model",
+    "labelKey": "pages.settings.chatPanel.optimize_prompt_model",
+    "hint": "The model “Optimize prompt” runs on. 'Same as Background' runs it on the model your background work uses; pick a model to run only Optimize prompt on it.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.pin-forks-of-pinned-sessions",
     "label": "Pin forks of pinned sessions",
     "labelKey": "pages.settings.chatPanel.pin_forks_of_pinned_sessions",
@@ -1792,18 +1816,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Recall Sent Messages with Arrow Keys",
     "labelKey": "pages.settings.chatPanel.arrow_key_prompt_history",
     "hint": "In an empty message input, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "composer"
-    }
-  },
-  {
-    "id": "chat.require-a-second-escape-to-stop-the-turn",
-    "label": "Require a second Escape to stop the turn",
-    "labelKey": "pages.settings.chatPanel.double_escape_to_stop",
-    "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -3208,6 +3220,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.channels_enabled"
   },
   {
+    "id": "display.show-discover-in-the-sidebar",
+    "label": "Show Discover in the sidebar",
+    "labelKey": "pages.settings.displayPanel.show_discover",
+    "hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.show-search-in-the-top-bar",
     "label": "Show search in the top bar",
     "labelKey": "pages.settings.displayPanel.show_topbar_search",
@@ -4005,7 +4029,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",
-    "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
+    "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when your system requests reduced motion.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1

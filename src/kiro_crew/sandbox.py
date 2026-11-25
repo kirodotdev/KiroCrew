@@ -548,6 +548,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     from kiro_crew.sandbox_seals import (  # noqa: F401
         _CREW_NO_ALIAS_LEAVES,
         _EMPTY_KIRO_MCP_REGISTRY,
+        _MAX_REGISTRY_LINK_HOPS,
         SandboxCeilingUnsealable,
         _delete_file_command,
         _is_link_or_junction,
@@ -561,6 +562,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _refuse_if_dangling_symlink,
         _refuse_if_symlink_leaf,
         _refuse_linked_models_leaf,
+        _registry_chain_end,
         _require_real_dir_nofollow,
         _require_real_file_nofollow,
         _resolved_kiro_mcp_registry_targets,

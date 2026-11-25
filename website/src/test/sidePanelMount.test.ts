@@ -26,12 +26,12 @@ const sidePanelSource = () => readdirSync(CHAT)
   .filter(f => /^(use)?SidePanel\w*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
   .map(f => readSource(join(CHAT, f))).join('\n')
 
-const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false, hasBrowserTab = false) =>
-  ({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen })
+const S = (activityOpen: boolean, hasLiveAppTab: boolean, hasBrowserTab = false) =>
+  ({ activityOpen, hasLiveAppTab, hasBrowserTab })
 
 describe('side panel mount decision', () => {
-  it('keeps dashboard documents and answer drafts mounted when closed or searching', () => {
-    const input = { ...S(false, false, true), hasTaskDashboard: true }
+  it('keeps dashboard documents and answer drafts mounted when closed', () => {
+    const input = { ...S(false, false), hasTaskDashboard: true }
     expect(shouldMountSidePanel(input)).toBe(true)
     expect(isSidePanelHidden(input)).toBe(true)
   })
@@ -121,29 +121,9 @@ describe('side panel mount decision', () => {
     expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden, confirmOpen])')
   })
 
-  describe('find pane claims the dock', () => {
-    it('UNMOUNTS the panel when no app tab is live (unchanged precedence — held pre-fix too)', () => {
-      expect(shouldMountSidePanel(S(true, false, true))).toBe(false)
-      expect(shouldMountSidePanel(S(false, false, true))).toBe(false)
-    })
-
-    it('KEEPS a live app tab mounted and hides it instead — regression guard', () => {
-      // Was a real data-loss bug: `if (searchOpen) return false` ran before the
-      // app-tab check, so pressing Ctrl+F unmounted the panel and destroyed the
-      // drawing. Frame survival must not yield to a transient dock claim.
-      expect(shouldMountSidePanel(S(true, true, true))).toBe(true)
-      expect(isSidePanelHidden(S(true, true, true))).toBe(true)
-      // …and the same while the panel was already closed.
-      expect(shouldMountSidePanel(S(false, true, true))).toBe(true)
-      expect(isSidePanelHidden(S(false, true, true))).toBe(true)
-    })
-  })
-
   it('mounts a live app tab in every combination — the invariant, stated exhaustively', () => {
     for (const activityOpen of [true, false]) {
-      for (const searchOpen of [true, false]) {
-        expect(shouldMountSidePanel(S(activityOpen, true, searchOpen))).toBe(true)
-      }
+      expect(shouldMountSidePanel(S(activityOpen, true))).toBe(true)
     }
   })
 
@@ -153,17 +133,12 @@ describe('side panel mount decision', () => {
     // or the loaded page (and its scroll/history) is lost — same shape as the
     // app-tab invariant above.
     it('STAYS MOUNTED and hidden on close', () => {
-      expect(shouldMountSidePanel(S(false, false, false, true))).toBe(true)
-      expect(isSidePanelHidden(S(false, false, false, true))).toBe(true)
-    })
-
-    it('survives the find pane claiming the dock', () => {
-      expect(shouldMountSidePanel(S(true, false, true, true))).toBe(true)
-      expect(isSidePanelHidden(S(true, false, true, true))).toBe(true)
+      expect(shouldMountSidePanel(S(false, false, true))).toBe(true)
+      expect(isSidePanelHidden(S(false, false, true))).toBe(true)
     })
 
     it('is shown while the panel is open and unobstructed', () => {
-      expect(isSidePanelHidden(S(true, false, false, true))).toBe(false)
+      expect(isSidePanelHidden(S(true, false, true))).toBe(false)
     })
   })
 })

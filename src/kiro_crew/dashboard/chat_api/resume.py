@@ -346,6 +346,11 @@ def _materialise_slot_from_history(
             state._slots.pop(slot.key, None)
             state._restricted_keys.discard(f"dashboard:{slot.key}")
         raise
+    # A slot built here has no creator (RESUME leaves ``created_by`` to a revive that
+    # corroborates it), so it is not thread-born: a mark this process still holds
+    # from before the close is dropped, as a restart drops it, and a revive marks it
+    # again from the creator it verifies (``members.note_worker_lineage``).
+    members_mod.note_worker_lineage(slot.key, "")
     # DELIBERATELY does NOT end construction on success -- the caller ends it at
     # its own tail, after its finalization (import awaits Layer B write/join + a
     # durable save with the slot RETRACTED from ``_slots``). This asymmetry is

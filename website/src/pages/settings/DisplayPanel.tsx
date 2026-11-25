@@ -13,6 +13,7 @@ import { Btn, Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
 import Modal from '../../components/Modal'
 import { useAppSelector, useAppDispatch } from '../../store'
+import { isElectron } from '../../lib/electron'
 import { setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity } from '../../store/dashboardSlice'
 import { useSessionPalette } from '../../hooks/useSessionPalette'
 import { PALETTE_NAMES, INTENSITY_NAMES, paletteSlot } from '../../utils/sessionColors'
@@ -57,6 +58,8 @@ import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { useMinimizeToTray } from '../../hooks/useMinimizeToTray'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { STANDALONE_REOPEN_KEY, isStandaloneDisplay } from '../../lib/standaloneLastRoute'
+import { toggleAppNavHidden, useAppNavHidden } from '../../lib/appNavHidden'
+import { BUILTIN_SURFACE_NAV } from '../../surfaces/surfaceData'
 import { REVERSE_TRACKPAD_SWIPE_KEY, shellNaturalScrolling } from '../../lib/scrollTouch'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { TouchLayoutSetting } from './TouchLayoutSetting'
@@ -167,6 +170,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // "Show search in the top bar", on by default. useAppShell reads the same key
   // to draw the header, and usePersistedBool keeps the two readers in step.
   const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
+  // "Show Discover in the sidebar", on by default: Discover's nav id in this
+  // browser's sidebar hidden set (lib/appNavHidden.ts) means off.
+  const discoverHidden = useAppNavHidden().has(BUILTIN_SURFACE_NAV.apps.navId)
   // "Reopen where I left off", off by default and offered only in the installed
   // app (#29497 decision). lib/standaloneLastRoute.ts reads the same key.
   const [reopenLastPage, setReopenLastPage] = usePersistedBool(STANDALONE_REOPEN_KEY, false)
@@ -885,6 +891,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               on this panel that navigation would discard. */}
           <ErrorNotice message={milestonesError} variant="inline" />
           <TaskRunnerSetting />
+          {/* Per browser, unlike its neighbours: off takes only the Discover row
+              off the rails, and Search Everywhere still lists Discover. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_discover')}
+            hint={i18nT('pages.settings.displayPanel.show_discover_hint')}
+            checked={!discoverHidden}
+            onChange={on => { if (on === discoverHidden) toggleAppNavHidden(BUILTIN_SURFACE_NAV.apps.navId) }}
+          />
           <ChannelsSetting />
         </SettingsCard>
       </SettingsSection>
@@ -981,6 +995,20 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">+</kbd>
                 <span>/</span>
                 <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">−</kbd>
+              </span>
+            </div>
+          )}
+          {/* Discoverability only, and deliberately not a control. Font size
+              belongs to the Electron shell, and the renderer has no bridge to
+              it: the one review deleted for having no consumer would have to
+              come back as a write channel on this surface, which is a security
+              review this change does not need. So this line says where the
+              ladder is and how it differs from the zoom above it. Gated on
+              isElectron because a browser tab has no View menu to point at. */}
+          {isElectron && (
+            <div className="py-1.5">
+              <span className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.content_text_size_tip')}
               </span>
             </div>
           )}

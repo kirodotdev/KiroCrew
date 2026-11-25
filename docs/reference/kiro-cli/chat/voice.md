@@ -160,13 +160,14 @@ Open the **More actions** menu on any non-blank assistant reply and choose
 Use the `/kirocrew voice` slash command to open a settings modal where you can
 configure voice, engine, speed, and pitch.
 
-The legacy `!voice` inline commands still work but are deprecated:
+The `!voice` inline commands work in any thread, also when the `/kirocrew` slash
+command is turned off:
 
 | Command | Effect |
 |---------|--------|
 | `!voice on` | Enable voice replies in this thread |
 | `!voice off` | Clear this thread's `!voice on` and its voice settings. It does not silence a thread while `voice_reply.enabled` is `true` |
-| `!voice global` | Turn global voice replies on or off. Saved to `voice_reply.enabled` in `config.json`, like the Voice settings, so it survives a restart. Like `enabled`, it also moves the `auto_reply_to_voice` default when that key is unset. When `config.local.json` sets `voice_reply.enabled`, that value still wins and the reply says so |
+| `!voice global on` / `!voice global off` | Turn global voice replies on or off; a bare `!voice global` toggles them. Saved to `voice_reply.enabled` in `config.json`, like the Voice settings, so it survives a restart. Like `enabled`, it also moves the `auto_reply_to_voice` default when that key is unset. When `config.local.json` sets `voice_reply.enabled`, that value still wins and the reply says so |
 | `!voice Ruth` | Switch to a specific Polly voice |
 | `!voice engine generative` | Change engine type |
 | `!voice speed 120%` | Adjust speech rate |

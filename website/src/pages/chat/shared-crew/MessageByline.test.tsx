@@ -6,9 +6,9 @@ import type { ReactNode } from 'react'
 import { api } from '../../../api/client'
 import { ALL_UNAVAILABLE } from '../../../api/sharedCrewUi'
 import type { CrewModeResponse } from '../../../api/sharedCrewMode'
-import { MessageByline } from './MessageByline'
+import { MessageByline, SpeakerHeading, useUserRowSpeaker } from './MessageByline'
 
-vi.mock('../../../api/client', () => ({ api: { sharedCrewViewer: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), sharedCrewPeople: vi.fn() } }))
+vi.mock('../../../api/client', () => ({ api: { sharedCrewViewer: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), sharedCrewPeople: vi.fn(), listApps: vi.fn(async () => []) } }))
 const viewer = vi.mocked(api.sharedCrewViewer)
 
 const person = (id: string, name: string, kind: 'human' | 'unknown' = 'human') => ({ id, kind, display: { name, login: '', captured_at: null } })
@@ -93,5 +93,71 @@ describe('MessageByline', () => {
     expect((await screen.findByTestId('message-byline')).textContent).toBe('Cy')
     const { container } = mount(<MessageByline meta={{}} />, null)
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('SpeakerHeading', () => {
+  const headings = () => screen.queryAllByRole('heading', { level: 2 }).map(el => el.textContent)
+
+  it('names a teammate and says You for the viewer, the same rule as the byline', async () => {
+    mount(<><SpeakerHeading meta={authored('p_bob', 'Bob')} slotKey="s1" /><SpeakerHeading meta={authored('p_cy', 'Cy')} slotKey="s1" /></>, [SLOT])
+    await waitFor(() => expect(headings()).toEqual(['You', 'Cy']))
+  })
+
+  it('says You on a message with no author stamp', () => {
+    mount(<SpeakerHeading meta={{}} />, null)
+    expect(headings()).toEqual(['You'])
+  })
+
+  it('names the app on a row an app sent', () => {
+    mount(<SpeakerHeading meta={{ turnActor: 'app', appLabel: 'notes-app' }} />, null)
+    expect(headings()).toEqual(['notes-app'])
+  })
+
+  it('names the sending session on a relayed message, never You', () => {
+    mount(<SpeakerHeading meta={{}} relayedFrom="Research session" />, null)
+    expect(headings()).toEqual(['Research session'])
+  })
+})
+
+describe('useUserRowSpeaker', () => {
+  // The text the live region speaks when the row is not drawn, so it must say
+  // what SpeakerHeading would: the same mount, the same reads.
+  function Spoken({ meta, slotKey, content, sessions }: {
+    meta?: Record<string, unknown>
+    slotKey?: string
+    content?: string
+    sessions?: ReadonlyMap<string, string>
+  }) {
+    const resolved = useUserRowSpeaker(meta, slotKey, content, sessions)
+    return <span data-testid="spoken" data-own={String(resolved.own)}>{resolved.speaker}</span>
+  }
+  const spoken = () => screen.getAllByTestId('spoken').map(el => el.textContent)
+  const owned = () => screen.getAllByTestId('spoken').map(el => el.getAttribute('data-own'))
+
+  it('names a teammate and says You for the viewer, as the heading does', async () => {
+    mount(<><Spoken meta={authored('p_bob', 'Bob')} slotKey="s1" /><Spoken meta={authored('p_cy', 'Cy')} slotKey="s1" /></>, [SLOT])
+    await waitFor(() => expect(spoken()).toEqual(['You', 'Cy']))
+    expect(owned()).toEqual(['true', 'false'])
+  })
+
+  it('says You on a message with no author stamp', () => {
+    mount(<Spoken meta={{}} />, null)
+    expect(spoken()).toEqual(['You'])
+    expect(owned()).toEqual(['true'])
+  })
+
+  it('names the app on a row an app sent', () => {
+    mount(<Spoken meta={{ turnActor: 'app', appLabel: 'notes-app' }} />, null)
+    expect(spoken()).toEqual(['notes-app'])
+    expect(owned()).toEqual(['false'])
+  })
+
+  it('uses the linked session title before the generic sender role', () => {
+    const relay = { relay: { senderKey: 'dashboard:other', via: 'session_send' } }
+    const sessions = new Map([['dashboard:other', 'Research session']])
+    mount(<Spoken meta={relay} sessions={sessions} />, null)
+    expect(spoken()).toEqual(['Research session'])
+    expect(owned()).toEqual(['false'])
   })
 })

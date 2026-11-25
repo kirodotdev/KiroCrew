@@ -175,6 +175,33 @@ two entries match apart from `disabledTools`
 collision handling. The merged entry is the one read, so a Kiro global guard on the
 raw key survives a store entry that omits the field.
 
+**A raw store key adopts its own rendering.** Switching such a row off writes
+`disabled: true` onto the raw store entry, which then differs from the previous
+rendering under the alias. Before the store merge, `_adopt_stale_alias_rendering`
+moves that rendering back under the raw key, so the server mounts once, switched
+off, rather than running beside a muted `playwright-mcp-2`. It adopts only when the
+store holds one raw key for the alias, the rendering launches the store entry's own
+program, and no app and no scope global declares a server (a `command` or `url`)
+under the alias. The stub a tool toggle leaves there (`{"disabledTools": [...]}`,
+or `{}` once the tool is back on) declares nothing, so it does not block adoption.
+The `timeout` and `disabled` it reconciled onto the rendering stay, and a switch
+written onto the stub mutes that one mount. The adopted entry is then reconciled as
+a slash-free store key's previous rendering is: when no source claimed the alias in
+the pass, `timeout` and `disabled` follow the store entry, and one it leaves out is
+removed. That includes a `timeout` the agent spec wrote on the alias, since nothing
+records which side wrote it. `disabledTools` is decided after that, and dropped only
+when `mcp_aliases.raw_tools_project_onto_alias()`, the call the raw-key list
+projection above makes, says the entry is the raw key's: no scope holds the alias,
+and apart from the launch (already compared) and `disabled` (the shared-server
+sync's) the two entries match except for that list. Then a store entry with no list
+clears it, and an entry with its own `autoApprove` keeps its list. An app server whose raw key
+renders as the same alias claims it, so the store never adopts an app's rendering. A `playwright-mcp-2` that is only a muted copy of the
+same rendering, left by an older build, is folded into the one mount, and its
+`tools` and `allowedTools` refs (bare and per-tool) move to `playwright-mcp` through
+the helpers key normalization uses for a duplicate's refs
+(`mcp_aliases.mcp_ref_owner()`, `mcp_aliases.rewrite_mcp_ref()`); the
+disabled-server sync then revokes the grants a muted server may not keep.
+
 **Resolution-aware fallback.** The same server can be defined in several sources
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
@@ -632,10 +659,10 @@ gateway expects of it, and the gateway itself only checks each exposed name
   disabled server, and a server whose `disabledTools` is unreadable or longer than 512.
   Nothing ticked means nothing exposed; a plain stdio server the user ticks IS exposed, so
   the feature is never met by refusing them all.
-- **Tools turned off locally**: a server with
+- **Tools turned off locally** (`connected_computers/mcp_filter.py`): a server with
   `disabledTools` is exposed with that list snapshotted, and the connector on the computer
   keeps those tools off whatever the gateway sends. Each entry is read as kiro-cli reads
-  it (the rule of `cron_script_mcp._tool_is_switched_off` in this repository):
+  it (`mcp_filter.tool_is_turned_off`, the one copy of the rule, which `cron_script_mcp._tool_is_switched_off` also calls):
   exactly, and an entry with `*` or `?` also as an `fnmatchcase` glob, so `delete_*` keeps
   `delete_repo` off; a glob holding `{`, `}` or `\` covers every tool. It forwards each request line
   re-encoded (so a duplicate `name` key cannot smuggle a turned-off tool), answers a
@@ -938,9 +965,9 @@ is stdio.
   | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
   | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401` whose server publishes no metadata naming itself. Naming any state here would assert more than the probe observed. |
 
-  On the KAS harness, a remote row whose own `oauth` block reaches no engine
-  (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld`: the block names a
-  `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
+  On the KAS harness, a remote row whose own `oauth` block Crew does not send
+  (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld` with no engine
+  flag: the block names a `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
   provider nor Crew-held offers no sign-in at all (`kasCannotSignIn` in
   `McpTab.tsx`). Neither the chat guidance nor Sign in could ever finish for it. A
   block Crew does send (a public `clientId`) keeps the normal row. A row with no
@@ -955,8 +982,13 @@ is stdio.
   which drops every block, is left to the chat notice. It offers no harness switch: a Kiro CLI pick runs on KAS wherever
   kiro-cli offers its v3 engine (`kiro_cli_pick_backend`, and the row also reads
   the `kiro_selection_runs_on_kas` probe), so the switch would
-  not reach the sign-in either. For an `oauthWithheld` server the chat says the
-  same at session start in a notice tagged
+  not reach the sign-in either. The row cannot see whether the chat's engine
+  announces `mcpOAuthClientSecret` either; an engine that does takes a
+  confidential block with a `clientId` (its secret goes through
+  `_kiro/mcp/oauth/setClientSecret`, `acp/kas_client_secret.py`), so the row
+  reads the block as withheld on every engine. For an `oauthWithheld` server the
+  chat says the same at session start, except on an engine that takes the
+  secret, in a notice tagged
   `meta.kind: "mcp_sign_in_unsupported"`, which `TurnBlock.isAlwaysVisible` keeps
   out of the turn's folded steps.
 
@@ -2144,7 +2176,11 @@ old-daemon compatibility.
 `_spawns_own_control_plane` vetting gatewayd applies before it hands a pooled
 backend the token: control-plane name, managed binary by real path, exact args,
 no loader or `PYTHON*` overlay in the child env (Kiro Crew's own pinned UTF-8
-values excepted), and no import root shadowing `kiro_crew`. A kept token also
+values excepted), and no import root shadowing `kiro_crew`. The env vetted
+there is the one a kept token's child gets: it has no inherited
+`PYTHONUNBUFFERED`, which a service manager often exports to the whole runtime
+and the pooled resolver removes too, while a declared one stays and still costs
+the token. A target that loses the token keeps its env unchanged. A kept token also
 gets `PYTHONSAFEPATH` (and `PYTHONNOUSERSITE` unless user-site holds this
 package). Every other target has the token removed, so a third-party binary
 never inherits it. Without the token a fallback control plane relies on the
@@ -2499,9 +2535,11 @@ What the pass does with a Bot file is what it does with an agent spec: the
 same hardened reader, the same `_rewrite_single_spec`, the same launch approvals
 (an unapproved launch stays unwrapped), the same env-sidecar ledger and prune,
 and the same fingerprint and cache (the files sign as the `mate_sources` input,
-which an app overlay refresh may see change; a new target still makes the refresh
-wait for a restart). It differs in four places. The stub's `--agent` identity is
-`crewmate:<id>`, never the file's own `name`, so the sidecar
+which an app overlay refresh, or the refresh a change card runs when it adds or
+changes a gateway-routed server on a Bot, may see change; a new target still
+makes the refresh wait for a restart, and the card then says so). It differs
+in four places. The stub's `--agent` identity is `crewmate:<id>`, never the
+file's own `name`, so the sidecar
 (`env_sidecar_name(agent, server)`) and caller identity are the Bot's own. A
 file gets no settings injection: the worker's servers are its Bot file's. A
 file is taken only when it is a plain file (no symlink) in a plain folder, is not
@@ -2619,7 +2657,20 @@ before; the stub identity itself, and so the pool and sidecar names, stay the
 Bot's own.
 
 An edited Bot file can run on its older stub until the next pass. Overlays
-are written at gateway start and on an app overlay refresh, while the worker's
+are written at gateway start, on an app overlay refresh, and on the refresh a
+`crewmate.capabilities` change card runs when its save adds or changes a
+gateway-routed server on a Bot that owns its file. Routed is the rewriter's own
+rule: the name is in `mcp_gateway.stub_servers`, or, for a server whose env holds
+a `secret://` reference, its slash-free alias matches one there
+(`secret_uri.routed_for_secret_reference`). The save writes the file inside that
+refresh, and the Bot's idle workers
+are reloaded after it. When the refresh refuses (for example, the server's
+launch is a target the running daemon does not hold), or the running gateway
+does not route that server yet (a `mcp_gateway.stub_servers` change written
+outside the per-server share, `POST /api/mcp-gateway/servers/stub`, waits for
+the next gateway start), the overlay does not carry its stub and the
+applied card shows a line saying the Bot's worker gets the server through the
+gateway only after a gateway restart, and where to restart it. The worker's
 governed spec is read at session start, and the lookup matches by server name.
 So after an edit (a changed command, args or env, a rotated token) the session
 subtracts the current entry and gets the stub, and the sidecar, of the launch
@@ -3875,7 +3926,9 @@ change card, and the server is written to the template's additions record
   folds an alias onto its target on every read and write. A session with no
   template is refused `409 no_template`, and a Bot's own thread, its worker
   sessions and any Bot-owned template are refused `403 crewmate_caller`,
-  which points at `request_capabilities`.
+  which points at `request_capabilities`. On Codex, the Bot's own chat has
+  that tool only while `kirocrew-core` is shared, so its refusal also names
+  that row's Share switch on the MCP Servers page.
 - **The default agent and the worker get a mount-only card.** Both normally
   take their servers from the MCP page
   (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
@@ -5364,6 +5417,26 @@ belong in the descriptor), an unknown locale, an empty list, a blank, repeated
 or over-60-character term, more than 16 terms per locale, and a term that only
 repeats a label already searched in that locale.
 
+A setting's English words are the command palette's, in
+`website/src/components/commandPalette/settingsKeywords.ts`: one list for both
+searches, and `SEARCH_TERMS` refuses English for a `setting:` id (its other
+locales stay there). Every setting needs an entry (`settingsKeywords.test.ts`).
+The generator keeps a palette word as a find_ui term only when it has two or
+more words, does not repeat this setting's label or an earlier spelling of the
+same words, is not another location's English label or curated term, and is
+not a run of whole words inside another location's English label or alias
+that makes up at least 60% of that label's words ("bot token" on WeCom is left
+out because "Discord bot token" contains it, so find_ui shows the tie; "amazon
+polly" stays, since find_ui would not answer it with "AWS Profile (Amazon
+Polly)"). A one-word entry is kept only when
+`GUIDE_ONE_WORD_TERMS` in the same file names it for that setting (Theme keeps
+"colors", "colours" and "appearance"); every word listed there must also be in
+the setting's palette list. Such a word skips the word-run rule (Theme's
+"colors" stays although "Sidebar Colors" contains it), and the other rules
+still apply. So
+give each setting at least one phrase that passes those rules;
+`test_every_setting_has_english_search_words` fails when none survives.
+
 Then run `npm run gen:ui` and commit the regenerated index. The label is read
 from the site, never written in the descriptor: visible text minus nested
 controls (a button or `role="button"` inside is skipped), or the named attribute;
@@ -5464,7 +5537,10 @@ thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so
 agent whose `tools` grants no `tool_search`, and for every agent while `agent.tool_search`
 is off, Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
-it already holds; a server it holds none for stays deferred. A deferred tool costs a name
+it already holds; a server it holds none for stays deferred, except
+`kirocrew-core::mcp_server_wait`, which a spec that mounts it always lists
+(`loaderless_never_defer_ids`): the still-starting note tells the turn to call it, and an app
+agent with no probed list would otherwise find it behind the loader. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
 scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including
@@ -5535,7 +5611,11 @@ is waiting on it (`acp/mcp_start_wait.py`), a new chat and a re-opened one
 alike, so a turn can begin while some of
 them are still connecting. Such a server is not in the model's tool list yet, and
 the host's tool loader answers a request for one of its tools as though it did
-not exist. Two parts keep the model from repeating that to the user. Both reach
+not exist. Codex differs in two ways: its adapter holds a new chat's `session/new`
+until the array's servers are ready or failed, and a server that comes up during
+a turn is offered from the next turn
+([acp-client](../system-specs/modules/acp-client.md)). Two parts keep the model
+from repeating that to the user. Both reach
 only a turn whose prompt carries the block (the gateway's context builder builds
 it: a dashboard or channel turn). A first turn whose prompt does not, such as
 `kirocrew chat` or a side question, holds its prompt for those servers instead,
@@ -6793,6 +6873,15 @@ and the legacy loop is the exception. Neither position refuses either tool.
 Objectives that require interpreting comments or advisory review evidence keep a
 finite legacy loop in both positions instead of claiming the structured probe
 observes those facts.
+
+`monitor_watch` and `monitor_update` also take `also_wake_on`, at most three other
+pull requests a `github_pull_request` watch waits on (each wakes the session once
+when it merges, is closed or is retired as unreadable, and never ends the watch;
+[monitor-architecture](../system-specs/modules/monitor-architecture.md#extra-wake-subjects)).
+Each entry is parsed by the GitHub target rules before a directive is emitted; on
+`monitor_update` the list REPLACES the stored one (`[]` clears it). Another kind,
+or a plain `monitor_start` loop, is refused in band from the session-monitor read
+the arming preflight already makes, and again by the applier.
 
 `monitor_watch.kind` is the closed set `github_pull_request`,
 `gitlab_merge_request`, `azure_devops_pull_request`, and

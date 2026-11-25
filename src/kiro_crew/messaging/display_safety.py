@@ -972,6 +972,10 @@ def severs_a_credential(
     forms = [list(pieces)]
     if present is not None:
         forms.append([present(piece) for piece in pieces])
+    # The readings repeat heavily: every interior window of equal pieces is one
+    # string, and a window equal to a prefix or a piece is that string again.
+    # The scan is what costs, so each distinct text is scanned once per grade.
+    redactor = _remembering(redactor, {})
     return any(_sequence_severs(form, redactor) for form in forms)
 
 

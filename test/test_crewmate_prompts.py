@@ -34,6 +34,7 @@ SRC = ROOT / "src" / "kiro_crew"
 ASSEMBLERS: tuple[str, ...] = (
     "context_assembly/member.py",
     "mate_worker.py",
+    "mate_worker_conducts.py",
     "dashboard/goal_reminder.py",
     "dashboard/goal_setup.py",
     "dashboard/mate_thread_wakes.py",
@@ -426,18 +427,22 @@ def test_the_patrol_piece_names_the_gated_ledger_watch_band_and_renewal() -> Non
     assert "the [Worker report] turns stay your patrol" in text
 
 
-def test_both_conductors_send_one_final_report_before_they_stop_the_patrol() -> None:
-    """Bot and conductor mode end a patrol the same way: the final report first, the stop
-    in a later step, and no bound for the model to pick (rfc-permanent-patrol.md)."""
+def test_both_conductors_send_one_final_report_and_leave_the_stop_to_the_gateway() -> None:
+    """Bot and conductor mode end a patrol the same way: the final report in the turn
+    that closes the last item, the gateway's own stop after it, and no bound for the
+    model to pick (rfc-permanent-patrol.md)."""
     from kiro_crew import agent
     from kiro_crew.context_assembly import member
 
     bot = " ".join(member.ledger_rules_block("conductor.patrol").split())
     root = " ".join(agent._CONDUCTOR_SYSTEM_PROMPT.split())
     for text in (bot, root):
-        report = text.index("First send the user ONE final report")
-        stop = text.index("Then, in a later step, stop the loop with `autonudge_stop`")
-        assert report < stop
+        report = text.index("in the turn that closes the last item, send the user ONE final report")
+        gateway = text.index("the gateway ends your patrol itself")
+        assert report < gateway
+        # Only a user's stop with items still open is a separate step.
+        user_stop = text.index("When the user says stop while items are open")
+        assert gateway < user_stop < text.index("stop the loop with `autonudge_stop`")
         assert "The final report is your last message to the user." in text
         assert "Pass no `interval_secs`, no `max_cycles` and no `max_runtime_secs`" in text
         assert "mode=renew" not in text

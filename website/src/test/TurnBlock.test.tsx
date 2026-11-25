@@ -931,6 +931,25 @@ describe('TurnBlock — trailing recycle notice does not become the conclusion (
   }
 })
 
+// #41978: a loop cycle's final report, stamped as the turn's reply, must stay
+// visible when a workflow result lands after it in the same turn.
+describe('TurnBlock — a row after the stamped reply does not become the conclusion', () => {
+  it('keeps the final report outside the collapse-all fold', () => {
+    const report = 'Cycle report: two PRs are green and one waits on review.\n\n| PR | State |\n|---|---|\n| #1 | green |\n\n| Check | Result |\n|---|---|\n| lint | pass |'
+    const tools = ['gh pr view', 'gh pr checks', 'gh run view', 'gh pr view', 'gh pr checks', 'autonudge_stop']
+    const grouped = groupDisplayItems([
+      { role: 'nudge', content: 'Auto-nudge cycle 3', ts: '0', meta: { nudge: { cycle: 3, loop_id: 'l1' } } },
+      ...tools.map((t, i) => ({ role: 'tool', content: `🔧 Running: ${t}`, ts: `t${i}` })),
+      { role: 'assistant', content: report, ts: 'r', meta: { turn_stats: { elapsed_ms: 4200 } } },
+      { role: 'assistant', content: '[Workflow completion event]\nWorkflow `pr-sweep` (wf_000001) → **finished**\n\nResult: swept every open PR and filed the summary.', ts: 'w', meta: { kind: 'workflow_result' } },
+    ] as ChatMessage[])
+    const turn = grouped.turns.find((item): item is Extract<DisplayItem, { kind: 'turn' }> => item.kind === 'turn')
+    render(<TurnBlock turn={turn!} collapseAll renderItem={(item, i) => <div data-testid={`item-${i}`}>{item.kind === 'single' ? item.msg.content : 'group'}</div>} />)
+    expect(screen.getByText(/Cycle report/).closest('[data-collapsed="true"]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Worked through 6 steps' })).toBeInTheDocument()
+  })
+})
+
 describe('TurnBlock — hidden steering reply does not become the conclusion', () => {
   it('keeps the visible reply outside the collapse-all fold', () => {
     const answer = 'The requested change is complete, and every focused check now passes cleanly.'

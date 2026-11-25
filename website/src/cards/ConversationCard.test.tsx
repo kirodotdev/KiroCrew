@@ -794,6 +794,18 @@ describe('result line', () => {
     expect(screen.getByTestId('change-card-undo-unavailable').textContent).toBe(L('undo_unavailable_overwrites'))
   })
 
+  it('says a gateway restart is needed only when the applied record says so', async () => {
+    const caps = { kind: 'crewmate.capabilities', status: 'applied' as const, title: 'Give Scout tiny', params: { member: 'Scout' } }
+    pending = [
+      card({ ...caps, id: 'a', gateway_restart_required: true, created_at: 1 }),
+      card({ ...caps, id: 'b', created_at: 2 }),
+    ]
+    renderCards()
+    const [waits, served] = await screen.findAllByTestId('change-card-result-body')
+    expect(within(waits).getByTestId('change-card-restart-required').textContent).toBe(L('gateway_restart_required'))
+    expect(within(served).queryByTestId('change-card-restart-required')).toBeNull()
+  })
+
   it('reads an undone card as restored, with no undo', async () => {
     pending = [card({ status: 'undone' })]
     renderCards()

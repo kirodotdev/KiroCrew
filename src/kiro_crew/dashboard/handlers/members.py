@@ -165,7 +165,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.sections import (  # noqa: F401
         MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     )
-    from kiro_crew.dashboard import members_roster_goals  # noqa: F401
+    from kiro_crew.dashboard import members_roster_agent, members_roster_goals  # noqa: F401
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
         pin_private_agent_store,
         rehydrate_slot_from_history_async,

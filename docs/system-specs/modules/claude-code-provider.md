@@ -430,7 +430,7 @@ and effort selection, the full `session/request_permission` flow) works. So
 - **`toolsSettings` shell and write allowlists are enforced at Crew's gate.**
   claude reads neither `shell.denyByDefault`/`allowedCommands` nor
   `fs_write.fallbackAction: "deny"`/`allowedPaths`, so for a backend in
-  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode) the client reads
+  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude, opencode and goose) the client reads
   them from the spec `_resolve_session_mcp_servers` projected (or reads the spec
   again when the array is withheld), through `acp/spec_tools_allowlists.py` and the
   KAS readers it wraps, and `_build_permission_event` stamps them on every request
@@ -999,6 +999,10 @@ from a child's. The rung runs only on a backend in
 (`SessionCapabilities.permission_requests_name_child`: kiro-cli and KAS); every
 other backend, an unknown one included, skips it the same way. Every request takes
 the gate it takes with no child running.
+On the backends it does serve, the rung grants only a request the transport marks as
+a child's (its own `sub_session_id`, or `native_child_call` with a tool-call id, on a
+transport whose `child_calls_marked` is true), so the parent's own call takes the
+gates below; and it fires PreToolUse first when no gate above has, so a BLOCKED holds.
 Contract tests: `test_claude_native_subagent_cards.py`.
 
 A Stop on a child's card (`DELETE /api/spawn/native:<child sessionId>`) stops that
@@ -1451,7 +1455,13 @@ A Bot's worker (`members.is_crewmate_worker_session`) is started with
 and the wire array carries them. Without the option every worker also started each
 server in the user's own Claude config, the project's `.mcp.json` and installed
 plugins, once per worker, so a host with many such servers and several workers ran
-out of memory. Ordinary and member chats keep the adapter's default.
+out of memory.
+
+A `spawn_run` sub-agent (session key `subagent:<id>`) is started with
+`strictMcpConfig` too (`_claude_session_meta`). Its wire array already carries the
+servers its spec's `tools` allowlist grants; without the option the harness also
+added the user's, the project's and plugins' servers, including ones the spec leaves
+out. Ordinary and member chats keep the adapter's default.
 
 ### An incognito or temporary chat
 

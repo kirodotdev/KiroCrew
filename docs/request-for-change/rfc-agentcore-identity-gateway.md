@@ -17,10 +17,12 @@ superseded-by: []
 Status: partial. The AWS-free `AgentIdentityProvider` CPP slot, public no-op,
 policy validators, and default-off `capabilities.agentcore` governance row are
 on main. The AWS adapter, IAM document helpers, Gateway session attachment,
-consent flow, and Settings surfaces are not on main. The on-main seam is also
-unconsumed: `agent._agent_identity_enabled()` has no caller, and nothing reads
-`PlatformContext.agent_identity` beyond bootstrap wiring, so no Gateway or token
-path is gated by it yet.
+consent flow, and Settings surfaces are not on main. The on-main seam is barely
+consumed: `agent._agent_identity_enabled()` has no caller, and the one reader of
+`PlatformContext.agent_identity` beyond bootstrap wiring is the tunnel relay
+lease (`relay_client/provider._agent_identity_enabled`), which refuses the
+sign-in lease default on a host that reports an agent identity. No Gateway or
+token path is gated by it yet.
 
 The Design, Migration plan (Phase 1b onward), Live verification findings,
 resolved Open questions and Alternative F describe the proposed design and

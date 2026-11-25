@@ -71,3 +71,12 @@ def test_the_install_step_lands_kiro_cli_in_usr_local_bin_for_both_installer_lay
     assert 'mv -f "${bin}" /usr/local/bin/' in text
     assert not re.search(r"ln\s+-s\S*\s+\S*\.local/bin", text)
     assert "test -x /usr/local/bin/kiro-cli; \\\n    kiro-cli --version" in text
+
+
+def test_the_pin_clears_the_kas_agent_prompt_floor() -> None:
+    """The image must not ship a kiro-cli whose KAS drops the agent's own prompt."""
+    from kiro_crew.acp.harness.kas import KAS_AGENT_PROMPT_MIN_KIRO_CLI
+
+    version = _text(_ROOT / "packaging" / "kiro-cli-version").strip()
+    pinned = tuple(int(part) for part in version.split("."))
+    assert pinned >= KAS_AGENT_PROMPT_MIN_KIRO_CLI, version

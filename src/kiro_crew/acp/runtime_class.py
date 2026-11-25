@@ -280,6 +280,7 @@ class AcpRuntime:
     _reader_loop = _rt_reader._reader_loop
     _route_owned_child_frame = _rt_reader._route_owned_child_frame
     _notification_aliases = _rt_reader._notification_aliases
+    _follow_shared_model_picker = _rt_reader._follow_shared_model_picker
     # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
     _close_remote_workspace = _rt_remote._close_remote_workspace
     set_remote_workspace = _rt_remote.set_remote_workspace
@@ -407,6 +408,10 @@ class AcpRuntime:
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
         self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
+        # Per MCP OAuth client (url, client id), the digest (never the value) of the
+        # last secret this process's engine took through ``setClientSecret``
+        # (``kas_client_secret``). Reset at each handshake.
+        self._mcp_prereg_sent: dict[tuple[str, str], str] = {}
         # Set for a remote session: built-in file/shell tools give way to the workspace server.
         self._remote_workspace: Any = None
         # First answered credential callback per runtime is logged at INFO as a

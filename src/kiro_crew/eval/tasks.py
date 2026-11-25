@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.eval.arms import ARMS, Arm, ArmOutcome, Caps, NotBuiltArm, operator_kiro_cli
 
 #: Per-tier limits and weekly runs per case (§3.1): timeout, credit and USD caps, k.
@@ -843,7 +844,7 @@ def _copy_transcript(stdout: str, dirs: RunDirs) -> None:
         # destination is replaced, never followed.
         tmp = dirs.out / f".transcript.{uuid.uuid4().hex}"
         shutil.copyfile(path, tmp)
-        os.replace(tmp, dirs.out / "transcript.jsonl")
+        replace_with_retry(tmp, dirs.out / "transcript.jsonl")
     if dirs.out.is_symlink():
         return
     # Copied into a directory made here and then renamed into place, never merged into
@@ -862,7 +863,7 @@ def _copy_transcript(stdout: str, dirs: RunDirs) -> None:
             dest.unlink()
         elif dest.is_dir():
             shutil.rmtree(dest)
-        os.replace(staged, dest)
+        replace_with_retry(staged, dest)
     except (shutil.Error, OSError):
         shutil.rmtree(staged, ignore_errors=True)  # no partial copy is left behind
 
@@ -897,7 +898,7 @@ def _write_record(out_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
     tmp = run_dir / f".result.json.{uuid.uuid4().hex}"
     tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, run_dir / "result.json")
+    replace_with_retry(tmp, run_dir / "result.json")
     return record
 
 

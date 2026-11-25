@@ -207,6 +207,26 @@ class TestPodEnvCredentialScrub:
         survivors = set(CREDENTIAL_KEYS) & set(env)
         assert survivors == {CRED_KIRO_API_KEY, CRED_OWNER_ID}
 
+    def test_drops_the_callers_scratch_and_keeps_its_own_temp_dir(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An agent session's temp dir is its scratch, which the sandbox masks; a
+        `pod exec eval` that inherited it built its workspace there and the pod's
+        agent could not start its MCP servers. A temp dir outside the scratch
+        root is the user's own and stays."""
+        from kiro_crew import agent_scratch
+
+        scratch = agent_scratch.scratch_root() / "abc123"
+        for key in ("TMPDIR", "KIROCREW_SCRATCH"):
+            monkeypatch.setenv(key, str(scratch))
+        monkeypatch.setenv("KIRO_CHAT_LOG_FILE", str(scratch / "kiro-log" / "kiro-chat.log"))
+        own_tmp = str(tmp_path / "own-tmp")
+        for key in ("TMP", "TEMP"):
+            monkeypatch.setenv(key, own_tmp)
+        env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
+        assert {"TMPDIR", "KIROCREW_SCRATCH", "KIRO_CHAT_LOG_FILE"}.isdisjoint(env)
+        assert (env["TMP"], env["TEMP"]) == (own_tmp, own_tmp)
+
     @pytest.mark.parametrize("inherited", ["::1", "0.0.0.0", "192.168.1.5"])
     def test_bind_is_pinned_to_the_loopback_every_pod_client_dials(
         self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inherited: str

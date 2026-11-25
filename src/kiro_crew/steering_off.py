@@ -80,6 +80,20 @@ def _read_all() -> dict[str, list[str]]:
     }
 
 
+def honoured_for(provider_type: str | None) -> bool:
+    """Whether a chat on the provider label *provider_type* may switch files off.
+
+    Read from the backend's capability record
+    (``SessionCapabilities.honors_chat_steering_off``); a label that names no
+    known backend, ``None`` and ``""`` answer False.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.agent_sdk.kas_tool_names import backend_of_provider_label
+
+    backend = backend_of_provider_label(provider_type)
+    return backend is not None and capabilities_for(backend).honors_chat_steering_off
+
+
 def steering_off_for(session_key: str | None) -> frozenset[str]:
     """The resolved paths *session_key* switched off; empty for none.
 

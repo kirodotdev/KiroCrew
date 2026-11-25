@@ -54,9 +54,13 @@ from kiro_crew.permission_floor import (
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
 from kiro_crew.providers.base import (
+    EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
+    EVENT_SUBAGENT_ACTIVITY,
     EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
     LLMEvent,
     LLMProvider,
 )
@@ -69,6 +73,7 @@ from kiro_crew.terminal_safe import safe_terminal_line
 
 if TYPE_CHECKING:
     from kiro_crew.cli_chat_context import CliSessionContext
+    from kiro_crew.messaging.tool_hooks import ChannelTurnHooks
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +456,9 @@ async def _chat(
             # path never stops to ask -- a permission request is denied rather
             # than blocking a caller that may be a script.
             built = await context.first_message(provider, message)
-            await _send_and_print(provider, built or message, interactive=False, gate=gate)
+            await _send_and_print(
+                provider, built or message, interactive=False, gate=gate, new_session=True
+            )
             await note_turn(run, provider, message)
         else:
             await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context, run=run)
@@ -1052,14 +1059,17 @@ def _audit(
     )
 
 
-async def _spec_hook_refusal(provider: LLMProvider, gate: _ToolGate, event: LLMEvent) -> str | None:
+async def _spec_hook_refusal(
+    provider: LLMProvider, gate: _ToolGate, event: LLMEvent, hooks: ChannelTurnHooks | None = None
+) -> str | None:
     """Why the running agent spec's own PreToolUse hooks refuse *event*, or ``None``.
 
     Asked only where Crew runs the spec's hooks (KAS and the other backends whose
     harness never receives them); there the projection sends every call such a hook
     covers here. The agent-channel member's gate (:mod:`kiro_crew.channel_spec_hooks`):
     the spec's hooks alone, through an empty store, so the CLI runs none of the Hooks
-    page's, and a spec that cannot be read refuses.
+    page's, and a spec that cannot be read refuses. *hooks* are the ones the turn
+    read (:mod:`kiro_crew.cli_chat_spec_hooks`); ``None`` reads the spec here.
     """
     # Deferred, as in messaging.tool_hooks: the agent_sdk package reaches acp.client.
     from kiro_crew.agent_sdk.capabilities import capabilities_of
@@ -1068,7 +1078,10 @@ async def _spec_hook_refusal(provider: LLMProvider, gate: _ToolGate, event: LLME
 
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return None
-    spec = await turn_spec_hooks(provider, running_agent(provider, gate.kiro_agent))
+    if hooks is not None:
+        spec = hooks.spec
+    else:
+        spec = await turn_spec_hooks(provider, running_agent(provider, gate.kiro_agent))
     return await pre_tool_refusal(spec, provider, event, gate.session_key)
 
 
@@ -1079,6 +1092,7 @@ async def _answer_permission(
     interactive: bool,
     gate: _ToolGate | None = None,
     undelivered_replies: list[str] | None = None,
+    hooks: ChannelTurnHooks | None = None,
 ) -> None:
     """Answer a pending permission request so the backend can resume the turn.
 
@@ -1115,6 +1129,10 @@ async def _answer_permission(
     """
     gate = gate or _build_tool_gate()
     title = event.title or "tool call"
+    if hooks is not None:
+        # First, so a call refused on any path below still fires its PostToolUse
+        # matched by the id the request names (KAS states ``fs_write`` only here).
+        hooks.note_permission_request(event)
 
     # Fail-close FIRST for a child event with unverified context: opting into
     # the child-fidelity contract (``child_fidelity_aware`` in ``_chat``) makes
@@ -1185,7 +1203,7 @@ async def _answer_permission(
         )
         spec_refusal: str | None = None
         if decision.action != TOOL_DENY:
-            spec_refusal = await _spec_hook_refusal(provider, gate, event)
+            spec_refusal = await _spec_hook_refusal(provider, gate, event, hooks)
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
         await _reject_internal_failure(
@@ -1437,6 +1455,7 @@ async def _send_and_print(
     *,
     interactive: bool = False,
     gate: _ToolGate | None = None,
+    new_session: bool = False,
 ) -> None:
     """Stream a single message to stdout, handling errors and timeouts.
 
@@ -1448,7 +1467,23 @@ async def _send_and_print(
     ``gate`` is the security gate permission requests are decided against. None
     builds the process default on first use, so a caller that never sees a
     request pays nothing for it.
+
+    Where Crew fires the agent spec's hooks (KAS and the other backends whose
+    harness never receives them), the message fires them through
+    :mod:`kiro_crew.cli_chat_spec_hooks`; *new_session* says the message is the
+    first of a session, which fires ``AgentSpawn`` and prints the spec's notices.
     """
+    from kiro_crew.cli_chat_spec_hooks import start, stop, switched
+
+    session_key = gate.session_key if gate is not None else _CLI_SESSION_KEY
+    hooks, message = await start(
+        provider,
+        session_key,
+        gate.kiro_agent if gate is not None else "",
+        message,
+        new_session=new_session,
+    )
+    reply: list[str] = []
     # ``o`` replies the backend could not take mid-turn. Sent as the next message
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
@@ -1462,7 +1497,17 @@ async def _send_and_print(
             lambda prompt: drop_echo(provider.stream(prompt)), message
         ):
             if event.kind == EVENT_TEXT_CHUNK:
+                reply.append(event.text)
                 print(quoted.feed(event.text), end="", flush=True)
+            elif event.kind == EVENT_AGENT_SWITCHED and hooks is not None:
+                hooks = await switched(provider, hooks, event)
+            elif event.kind == EVENT_TOOL_CALL and hooks is not None:
+                await hooks.on_tool_call(event)
+            elif event.kind == EVENT_TOOL_RESULT and hooks is not None:
+                await hooks.on_tool_result(event)
+            elif event.kind == EVENT_SUBAGENT_ACTIVITY and hooks is not None:
+                # A native sub-agent's finished call: its PostToolUse, as for the turn's own.
+                await hooks.on_child_result(event)
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 print(quoted.flush(), end="", flush=True)  # the held text goes above the prompt
                 # The backend holds the turn open until this is answered, so an
@@ -1474,6 +1519,7 @@ async def _send_and_print(
                     interactive=interactive,
                     gate=gate,
                     undelivered_replies=undelivered,
+                    hooks=hooks,
                 )
             elif event.kind == EVENT_COMPLETE:
                 print(quoted.flush(), end="", flush=True)
@@ -1482,6 +1528,8 @@ async def _send_and_print(
                 unfinished = unfinished_turn_error(event, "")
                 if unfinished is not None:
                     raise unfinished
+                if hooks is not None:
+                    await stop(hooks, "".join(reply), str(event.stop_reason or ""))
                 break
         print(quoted.flush())  # a stream that ended without a complete event, and the newline
     except AcpTimeoutError as e:
@@ -1540,6 +1588,8 @@ async def _interactive(
     # ``provider.context_incarnation`` after the last turn that carried the
     # context; ``None`` until one does, and again once the session drops it.
     delivered_to: object | None = None
+    # The next message opens a session: the first, and the first after a restart.
+    new_session = True
     while True:
         # A cancelled permission prompt left a reader on stdin that this call
         # would race for the user's keystrokes, so the session ends here instead
@@ -1560,7 +1610,10 @@ async def _interactive(
         built: str | None = None
         if context is not None and context.owed(provider, delivered_to):
             built = await context.first_message(provider, message)
-        await _send_and_print(provider, built or message, interactive=True, gate=gate)
+        await _send_and_print(
+            provider, built or message, interactive=True, gate=gate, new_session=new_session
+        )
+        new_session = False
         await note_turn(run, provider, message)
         if built is not None:
             delivered_to = provider.context_incarnation
@@ -1592,6 +1645,7 @@ async def _interactive(
             await provider.shutdown()
             await provider.start()
             delivered_to = None
+            new_session = True
         elif warn_at > 0 and pct >= warn_at:
             print(f"\n⚠️  Context at {pct:.0f}%", file=sys.stderr)
 

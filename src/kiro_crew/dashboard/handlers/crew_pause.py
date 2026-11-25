@@ -423,6 +423,7 @@ async def _resume(request: web.Request) -> web.Response:
                     root=root,
                     pending=pending,
                     root_pending=root_pending,
+                    memory_only=record.get("memory_only") or [],
                 )
             )
         )

@@ -40,6 +40,7 @@ from kiro_crew.acp._dispatch_parts.tool_call_provenance import scoped_tool_cache
 from kiro_crew.acp.harness_tool_names import (
     CLAUDE_READ_ONLY_BUILTINS,
     GOOSE_READ_ONLY_BUILTINS,
+    GOOSE_TOOL_IDS_BY_KIRO_TOOL,
     qualified_harness_tool_id,
 )
 from kiro_crew.acp.types import (
@@ -1424,6 +1425,20 @@ def build_permission_event(
             # goose does state is kept, and a non-read one still refuses the call.
             if tool_kind in ("", "other"):
                 tool_kind = "read"
+    # goose's own file writes (``write``, ``edit``) state no ACP kind either, and
+    # the identity channel reports their ``developer`` pair with no server, as it
+    # does the shell (``tool_call_identity``). The trusted name is the write, so
+    # ``other`` is read as ``edit`` and every write-plane row judges the target.
+    if (
+        harness_backend == ACP_BACKEND_GOOSE
+        and _mcp_identity_trusted
+        and not _mcp_server_name
+        and tool_kind in ("", "other")
+        and harness_tool_name_cache is not None
+        and tool_call_id
+        and harness_tool_name_cache.get(_ck, "") in GOOSE_TOOL_IDS_BY_KIRO_TOOL["fs_write"]
+    ):
+        tool_kind = "edit"
 
     # A remote workspace's tools stand in for the engine built-ins Crew unmounted
     # for that session, so they are read as those built-ins, as the claude and

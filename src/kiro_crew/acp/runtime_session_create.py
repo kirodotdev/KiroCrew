@@ -35,7 +35,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from kiro_crew import session_head
-from kiro_crew.acp import kas_approve_for_me, kas_cli_settings, kas_env_launch, runtime_start
+from kiro_crew.acp import (
+    kas_approve_for_me,
+    kas_cli_settings,
+    kas_client_secret,
+    kas_env_launch,
+    runtime_start,
+)
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -238,11 +244,15 @@ async def create_session(
     the owner is not known yet (a pooled worker claimed later), and the
     ``rekey()`` claim then carries the token.
 
-    ``member_session_key`` marks a crew member's DM session and carries its
-    session key: the dashboard session-control server is mounted as a
-    session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
-    KAS wire agent's projection widens to grant its tools. Empty — every
-    non-member session — leaves both paths byte-identical to before.
+    ``member_session_key`` marks a session that mounts session control and
+    carries its session key: a crew member's DM session, or one of its
+    conducting workers (``members.mounts_session_control``, the provider's
+    test). The dashboard session-control server is mounted as a session-level
+    entry (identity via ``KIROCREW_SESSION_KEY``), and the KAS wire agent's
+    projection widens to grant its tools, the thread's set or the conducting
+    worker's (``kas_agents.to_client_custom_agent``). The crew panel stays the
+    thread's alone (``_mount_member_panel``). Empty — every other session —
+    leaves both paths byte-identical to before.
 
     ``channel_id`` is the channel this session belongs to, and it reaches a
     MIRRORED host's ``mcpServers`` ELEMENTS rather than the process env: a
@@ -336,6 +346,28 @@ async def create_session(
     mcp_json: tuple[str, ...] = ()
     # The KAS crewmate worker's stub names, set beside its one overlay lookup.
     worker_stubs: frozenset[str] | None = None
+    member_withheld = False
+    if member_session_key:
+        # circular import: members' module graph is heavy; resolved at call
+        # time like the projection seams below.
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        # The operator's switch-off of the dashboard server, asked on THIS path
+        # too. ``disabled`` has no per-tool or per-call spelling, so a harness
+        # handed the server cannot refuse a call to it, and the ``tools``
+        # allowlist that keeps a disabled server out of a projected array does
+        # not reach an entry appended here. Only a member session reaches this
+        # branch, so no other host gains a suspension point (H13). Asked before
+        # the array is built, so a mirrored host's projection gives a crewmate
+        # worker the conducting kit only on a start that mounts it, and keyed by
+        # the session, so a worker's Bot's file is read as its spec reads it.
+        member_withheld = await asyncio.to_thread(
+            session_mcp_server_is_disabled,
+            MEMBER_DISPATCH_SERVER,
+            agent or self._agent,
+            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+            session_key=session_key or "",
+        )
     if mcp_servers is None:
         # A mirrored host takes its whole array from the mirror; every other host
         # takes the pooled stubs it always took. Which one is a synchronous
@@ -353,6 +385,7 @@ async def create_session(
                     harness_state is not None
                     and self._harness.permission_surface_owned(harness_state)
                 ),
+                session_control_mounted=bool(member_session_key) and not member_withheld,
                 harness_state=harness_state,
             )
         if mirrored is not None:
@@ -402,7 +435,6 @@ async def create_session(
         # judge against and stays silent -- as the client does with no warmed
         # snapshot.
         stub_token = ""
-    member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
     member_mounted = False
@@ -410,22 +442,8 @@ async def create_session(
     # Kiro construction path is untouched by this capability (H13).
     panel_mounted = False
     if member_session_key:
-        # circular import: members' module graph is heavy; resolved at call
-        # time like the projection seams below.
         from kiro_crew.members import MEMBER_DISPATCH_SERVER, member_dispatch_session_server
 
-        # The operator's switch-off of the dashboard server, asked on THIS path
-        # too. ``disabled`` has no per-tool or per-call spelling, so a harness
-        # handed the server cannot refuse a call to it, and the ``tools``
-        # allowlist that keeps a disabled server out of a projected array does
-        # not reach an entry appended here. Only a member session reaches this
-        # branch, so no other host gains a suspension point (H13).
-        member_withheld = await asyncio.to_thread(
-            session_mcp_server_is_disabled,
-            MEMBER_DISPATCH_SERVER,
-            agent or self._agent,
-            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
-        )
         member_entry = (
             None
             if member_withheld
@@ -578,7 +596,8 @@ async def create_session(
     # The host's last word on the request and on the agent it activates
     # (harness-parity H13): every served host returns both unchanged, except
     # that KAS names the customAgents batch's first entry, the session's own
-    # agent, as _meta.kiro.modeId on session/new.
+    # agent, as _meta.kiro.modeId on session/new, and codex asks its adapter to
+    # wait for the array's MCP startup (_meta.mcpStartupAwaitTimeoutMs).
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
@@ -770,6 +789,7 @@ async def create_session(
             request_identity=request_identity,
             launch_snapshots=launch_snapshots,
             withheld_notice=withheld_notice,
+            prereg_clients=getattr(kas_extras, "mcp_prereg_clients", None),
         )
         if collector is None:
             permit.release()
@@ -794,7 +814,7 @@ async def create_session(
         # reach the shielded close.
         self._unclaimed_new_sessions.add(session_id)
         kas_memory.require_memory_ack(resp, kas_memory_mode)
-        if harness_state is not None:
+        if harness_state is not None or self._harness.checks_stateless_session_start:
             # Before the handle exists, so a session the host refuses never
             # reaches a caller. Its own refusal ends only this session.
             await self._harness.after_session_start(
@@ -836,6 +856,7 @@ async def create_session(
             launch_snapshots=launch_snapshots,
             withheld_notice=withheld_notice,
             start_priority=start_priority,
+            prereg_clients=getattr(kas_extras, "mcp_prereg_clients", None),
         )
         if pruned is not None:
             # On the report the session opened with: what the array left out failed.
@@ -916,6 +937,7 @@ def _collect_late_start(
     request_identity: str = "",
     launch_snapshots: list[str] | None = None,
     withheld_notice: str = "",
+    prereg_clients: Mapping[str, Any] | None = None,
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -1012,6 +1034,7 @@ def _collect_late_start(
                 request_identity=request_identity,
                 launch_snapshots=launch_snapshots,
                 withheld_notice=withheld_notice,
+                prereg_clients=prereg_clients,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -1086,13 +1109,16 @@ async def _finish_create_session(
     launch_snapshots: list[str] | None = None,
     withheld_notice: str = "",
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    prereg_clients: Mapping[str, Any] | None = None,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
     Shared by the direct path and a late adoption through
     :class:`StartCollector`. ``buffered_init`` comes from whichever holder
     staged the frames while this id was unknown: the runtime's in-flight
-    scope on the direct path, the collector on an adoption.
+    scope on the direct path, the collector on an adoption. *prereg_clients*
+    (``SessionExtras.mcp_prereg_clients``) go to the engine before the session
+    is claimed (``kas_client_secret.deliver_prereg_clients``).
     """
     # Register the session's queue, and its MCP report with it: no await in
     # between, so a frame that reaches the queue has reached the report.
@@ -1382,6 +1408,12 @@ async def _finish_create_session(
     self._saw_delegate_launch_failure = False
     self._saw_kas_engine_refusal = False
     self._record_tree_in_background()
+
+    if prereg_clients:
+        # After the queue exists, so the status frames the engine's reconnect sends
+        # reach this session's report, and before the claim below, so a failure or a
+        # cancellation in the wait still tears the session down.
+        await kas_client_secret.deliver_prereg_clients(self, session_id, prereg_clients)
 
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)

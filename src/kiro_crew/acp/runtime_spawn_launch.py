@@ -23,7 +23,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
-``_mcp_secret_server``.
+``_mcp_secret_server`` and ``_mcp_prereg_sent``.
 
 Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
 ``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
@@ -47,6 +47,7 @@ from kiro_crew.acp import (
     kas_cli_settings,
     kas_memory,
     kas_secret_storage,
+    kas_shared_model_picker,
     scope_admission,
 )
 from kiro_crew.acp._dispatch import agent_version_from_init
@@ -85,7 +86,7 @@ from kiro_crew.agent_sdk.tool_search import (
     custom_agent_never_defer_ids,
     job_tool_ids,
     kas_client_meta_settings,
-    kas_never_defer_ids,
+    loaderless_never_defer_ids,
     spec_grants_tool_search,
     with_client_meta_settings,
 )
@@ -156,6 +157,9 @@ _INITIALIZE_TIMEOUT = INITIALIZE_TIMEOUT_SECS
 # admission. The two together fit the window, within one admission poll
 # interval, so the watchdog ordering above holds unchanged.
 _SCOPE_ADMISSION_RESERVE = 30.0
+#: How long the one connection-view read may take. It runs beside the start, not
+#: in it, so a slow answer only delays the chat picker's hiding.
+_SHARED_PICKER_READ_TIMEOUT = 10.0
 _SCOPE_ADMISSION_TIMEOUT = _INITIALIZE_TIMEOUT - _SCOPE_ADMISSION_RESERVE
 
 
@@ -1176,6 +1180,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
         self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
         self._agent_version = agent_version_from_init(init_resp)
+        _start_shared_model_picker_read(self)
 
         # The subprocess has now read its agent spec, which closes the window the
         # pre-spawn snapshot opened: a write landing before this point is caught
@@ -1371,6 +1376,9 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     )
     base = await _with_mcp_sign_in_storage(self, base)
     if self._harness.client_meta_settings:
+        # KAS then lists every served model and states the account's hidden ones
+        # as a row of the connection view; the chat picker hides them itself.
+        base = kas_shared_model_picker.with_shared_model_picker(base)
         # KAS takes the opt-out only at initialize. It is judged on the child's own
         # environment, in launch's order: the gateway's, agent.env, then extra_env.
         # The agent.env snapshot read here is the one launch applies.
@@ -1426,7 +1434,7 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
             )
         else:
             never_defer = await asyncio.to_thread(
-                kas_never_defer_ids, spec, _known_server_tool_names
+                loaderless_never_defer_ids, spec, _known_server_tool_names
             )
     elif operator_mandatory_mcps() is None:
         never_defer = job_tool_ids(self._agent, spec, custom=bool(added))
@@ -1524,6 +1532,8 @@ async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -
     says later.
     """
     runtime._mcp_secret_server = None
+    # A new process holds none of the client secrets the last one was handed.
+    runtime._mcp_prereg_sent = {}
     if not runtime._harness.opens_external_urls:
         return base
     if not await asyncio.to_thread(kas_secret_storage.persistence_enabled):
@@ -1614,3 +1624,54 @@ def _adopt_launch_copy_view(projection: Any, launch_agent: str) -> None:
     projection.specs[launch_agent] = view
     if is_search_launch_copy(launch_agent):
         projection.search_agents.add(launch_agent)
+
+
+def _start_shared_model_picker_read(runtime: AcpRuntime) -> None:
+    """Start the one read of the account's hidden models beside the start, not in it.
+
+    Only an engine whose ``agentCapabilities`` declare the shared picker is asked
+    (``kas_shared_model_picker.serves_shared_picker``). The read is a task in
+    ``_answer_tasks``, so a slow answer never holds the handshake or the session
+    that follows it; the chat picker hides nothing from the account until it lands.
+    """
+    if not kas_shared_model_picker.serves_shared_picker(runtime._agent_capabilities):
+        return
+    task = asyncio.ensure_future(_read_shared_model_picker(runtime))
+    runtime._answer_tasks.add(task)
+    task.add_done_callback(runtime._answer_tasks.discard)
+
+
+async def _read_shared_model_picker(runtime: AcpRuntime) -> None:
+    """Read the account's hidden models off the engine's connection view, once.
+
+    The vault identity is read before the request goes out, as the catalog
+    recorder does: the engine takes its credential from the vault per call, so
+    the row it answers is that account's, and a sign-in that changes the vault
+    while the read is in flight does not stamp its account on it. A failed read
+    records nothing: the picker then hides nothing from the account, which is
+    what an older engine gives too.
+    """
+    from kiro_crew.agent_sdk import kas_model_catalog
+
+    # Stamped first: a view the engine pushes while this read (vault, then
+    # request) is in flight is newer, and keeps precedence over the answer.
+    seq = kas_model_catalog.next_hidden_models_seq()
+    identity = await asyncio.to_thread(
+        kas_model_catalog.vault_identity, getattr(runtime._harness, "spawn_machine_auth", None)
+    )
+    try:
+        response = await runtime._send_and_await(
+            kas_shared_model_picker.GET_STATE_METHOD,
+            kas_shared_model_picker.request_params(),
+            timeout=_SHARED_PICKER_READ_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 - the picker then hides nothing from the account
+        logger.info("KAS shared model picker: the connection view could not be read (%s)", exc)
+        return
+    settings = response.get("settings") if isinstance(response, dict) else None
+    hidden = kas_shared_model_picker.hidden_models_from_settings(settings)
+    logger.info(
+        "KAS shared model picker: the connection view states %s",
+        "no hidden-models row" if hidden is None else f"{len(hidden)} hidden model(s)",
+    )
+    kas_model_catalog.record_hidden_models(hidden, identity=identity, seq=seq)

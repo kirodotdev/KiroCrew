@@ -266,6 +266,7 @@ from kiro_crew.config.sections_dashboard import (  # noqa: F401
     CHAT_ENTRY_CACHE_ENTRIES_DEFAULT,
     CHAT_ENTRY_CACHE_ENTRIES_MAX,
     CHAT_ENTRY_CACHE_ENTRIES_MIN,
+    DEFAULT_APPROVAL_MODES,
     EXTERNAL_TERMINAL_APPS,
     FEATURE_PREVIEW_FLAGS,
     LEGACY_VERBOSITY_ALIASES,
@@ -404,6 +405,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
+    BOT_MAX_WORKERS_CONDUCTING,
     BOT_MAX_WORKERS_DEFAULT,
     BOT_MAX_WORKERS_MAX,
     BOT_MAX_WORKERS_MIN,

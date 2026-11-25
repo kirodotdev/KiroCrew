@@ -149,6 +149,12 @@ def _chat_mounts_mate_tools(spec: dict, member: str) -> bool:
 
         if mcp_entry_is_muted(entry):
             return False
+    from kiro_crew.agent_sdk import spec_withholds_server_whole
+
+    # A spec that excludes the server whole keeps it out of the chat on every
+    # backend (the mount withholds it; KAS applies the exclusion itself).
+    if spec_withholds_server_whole(spec, MATE_SERVER):
+        return False
     try:
         # The crewmate's chat and its worker run on the one backend it resolves to.
         return crewmate_worker_backend(KiroCrewConfig.load(), member) in ACP_BACKENDS_MEMBER_PANEL

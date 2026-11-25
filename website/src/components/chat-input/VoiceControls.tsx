@@ -1,4 +1,5 @@
 import { ArrowUp, ArrowUpLeft, ArrowUpRight, Keyboard, Loader2, Mic, MicOff, PenLine, X } from 'lucide-react'
+import { AnimatePresence } from 'framer-motion'
 import VoiceStatusBar from '../VoiceStatusBar'
 import VoiceDictationPanel from '../VoiceDictationPanel'
 import { Btn } from '../ui'
@@ -18,7 +19,7 @@ const noopSelectDevice = () => {}
 
 /** Above the editor: the hold gesture's cancel cue while a press is live, then
  *  the dictation panel while recording, else the thin status bar. */
-export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false, sendZone = false, sendSteers = false, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded, voiceMuted = false, onVoiceToggleMute }: {
+export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false, sendZone = false, sendSteers = false, showDictation, value, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceIsStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded, voiceMuted = false, onVoiceToggleMute }: {
   voiceHoldMode: boolean
   touchPtt: TouchPtt
   /** The hold gesture offers its sideways keep-as-draft zone (`stt.submit_on_release`). */
@@ -29,12 +30,11 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
   sendSteers?: boolean
   showDictation: NonNullable<VoiceInput['voiceSampleRef']> | null
   value: string
-  voicePartial: string
   voiceDeviceLabel: string
   voiceDeviceId: string
   onSelectVoiceDevice: VoiceInput['onSelectVoiceDevice']
   voiceDeviceSwitchIsLive: boolean
-  voiceStreaming: boolean
+  voiceIsStreaming: boolean
   voiceDownload: VoiceInput['voiceDownload']
   voiceRecording: boolean
   voiceLevel: number
@@ -118,6 +118,7 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
       )}
 
 
+      <AnimatePresence initial={false} mode="wait">
       {showDictation ? (
         /* `gestureDriven` carries the settling term because ownership ends at
            the release while this panel outlives it: `showDictation` is gated
@@ -127,9 +128,10 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
            keyboard hint stays suppressed for exactly the drain the finger
            just committed — and stays SHOWN for a keyboard-binding capture,
            where Esc/Enter genuinely work. */
-        <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} submitOnRelease={draftZone} download={voiceDownload} captureEnded={voiceDrainCancellable} muted={voiceMuted} onToggleMute={onVoiceToggleMute} />
+        <VoiceDictationPanel key="dictation" sampleRef={showDictation} transcript={voiceHoldMode ? value : undefined} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceIsStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} submitOnRelease={draftZone} download={voiceDownload} muted={voiceMuted} onToggleMute={onVoiceToggleMute} />
       ) : (
         <VoiceStatusBar
+          key="status"
           recording={voiceRecording} level={voiceLevel} muted={voiceMuted} onToggleMute={onVoiceToggleMute} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} keptRecording={voiceKeptRecording} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
           /* The released utterance's own window. Gated on the transport of the
              request IN FLIGHT, which is what `voiceDrainCancellable` reads: a
@@ -138,12 +140,8 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
              transcriber's hands over HTTP and the strip offers it no exit
              rather than an exit that leaves the work running.
 
-             Not on `voiceStreaming`. That is the saved setting, so it describes
-             the NEXT utterance; a setting flipped while one request is open
-             names a transport nothing in flight is using, and the control then
-             appears over a batch request whose transcript still lands. The flag
-             is ownership-gated at its source, so a composer offers the discard
-             for its OWN drain and never for a session another chat holds. */
+             The flag is ownership-gated at its source, so a composer offers
+             the discard for its OWN drain and never for a session another chat holds. */
           draining={voiceDrainCancellable}
           onCancelDrain={cancelVoiceDrain}
           /* Visible reasons, not tooltips: why the mic is blocked, or that a
@@ -158,6 +156,7 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
               : null}
         />
       )}
+      </AnimatePresence>
     </>
   )
 }

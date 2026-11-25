@@ -117,8 +117,8 @@ function seedAppsData(qc: QueryClient, registry: RegistryRow[], installed: Insta
   vi.mocked(api.listApps).mockResolvedValue(installed)
 }
 
-/** Renders App at /chat with the QueryClient handed back for cache seeding. */
-function renderApp(seed?: (qc: QueryClient) => void) {
+/** Renders App at `route` (default /chat) with the QueryClient handed back for cache seeding. */
+function renderApp(seed?: (qc: QueryClient) => void, route = '/chat') {
   const store = configureStore({
     reducer: {
       dashboard: dashboardReducer,
@@ -133,7 +133,7 @@ function renderApp(seed?: (qc: QueryClient) => void) {
     <Provider store={store}>
       <QueryClientProvider client={qc}>
         <ThemeProvider>
-          <MemoryRouter initialEntries={['/chat']}>
+          <MemoryRouter initialEntries={[route]}>
             <App />
           </MemoryRouter>
         </ThemeProvider>
@@ -227,5 +227,29 @@ describe('Sidebar Discover badge — pending app updates', () => {
       qc.setQueryData(['apps'], [secretaryInstalled, { ...radarInstalled, lifecycle: 'gateway' }])
     })
     await waitFor(() => expect(within(discoverRow()).getByText('2')).toBeInTheDocument())
+  })
+})
+
+describe('Sidebar with "Show Discover in the sidebar" off', () => {
+  beforeEach(() => {
+    vi.mocked(api.listApps).mockResolvedValue([])
+    localStorage.setItem('mc-nav', '0')
+    // The Display switch's off state: Discover's nav id in the sidebar hidden set.
+    localStorage.setItem('mc-app-nav-hidden', JSON.stringify(['apps']))
+  })
+
+  it('draws no Discover row and shows the updates count on Library', async () => {
+    renderApp(qc => seedAppsData(qc, [secretaryRegistry], [secretaryInstalled]))
+    const libraryRow = await screen.findByRole('button', { name: /^Library/ })
+    expect(await within(libraryRow).findByText('1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Discover/ })).not.toBeInTheDocument()
+  })
+
+  it('still opens Discover at /apps', async () => {
+    renderApp(undefined, '/apps')
+    // The page sits behind App.tsx's `lazy(() => import('./pages/apps/DiscoverPage'))`
+    // boundary, so the wait is a chunk load: an explicit timeout, not the 1000ms default.
+    expect(await screen.findByTestId('discover-page', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Discover/ })).not.toBeInTheDocument()
   })
 })

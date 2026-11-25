@@ -145,10 +145,11 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess as subprocess_mod
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -167,7 +168,9 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
+    METHOD_PROMPT,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_NEW,
     METHOD_SESSION_UPDATE,
 )
 from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
@@ -1010,6 +1013,82 @@ class CodexHarness(MembershipHarness):
         if not isinstance(advertised, dict) or not advertised:
             return requested
         return drop_unadvertised_transports(list(requested), dict(advertised))
+
+    #: How long codex-acp may hold a ``session/new`` reply for the array's servers.
+    #: Under the runtime's own ``session/new`` floor, so a server that never
+    #: reports still leaves the session time to start.
+    MCP_STARTUP_AWAIT_MS = 30_000
+
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """Ask codex-acp to answer ``session/new`` only once its MCP servers started.
+
+        Otherwise codex gives MCP startup about one second at the first turn, and
+        a server still starting then, a gateway stub most often, is offered on no
+        tool of that turn. ``mcpStartupAwaitTimeoutMs`` holds the reply until every
+        server in the array is ready or failed, up to the cap.
+        """
+        if method != METHOD_SESSION_NEW or not params.get("mcpServers"):
+            return params, agent
+        meta = {
+            **(params.get("_meta") or {}),
+            "mcpStartupAwaitTimeoutMs": self.MCP_STARTUP_AWAIT_MS,
+        }
+        return {**params, "_meta": meta}, agent
+
+    #: :meth:`after_session_start` runs with no per-session state.
+    checks_stateless_session_start = True
+
+    #: The title a helper session is given before its first turn.
+    HELPER_SESSION_TITLE = "Kiro Crew helper"
+
+    #: The first codex-acp with the title generator and its ``/rename`` command;
+    #: both arrive in 1.8.0.
+    TITLE_GENERATOR_SINCE = (1, 8, 0)
+
+    async def after_session_start(
+        self,
+        state: Any,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        send_request: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        close_session: Callable[[], Awaitable[None]],
+        agent_version: str = "",
+    ) -> None:
+        """Title a helper session, so codex-acp never generates one for it.
+
+        After a session's first turn, codex-acp's title generator starts an
+        ephemeral ``thread/start`` that carries only ``cwd``, not the session's
+        config. The ``CODEX_CONFIG`` disable override (:meth:`apply_spawn_env`)
+        reaches only the session's own thread, so codex starts every server in
+        the user's ``config.toml`` for that title thread. The generator skips a
+        session whose title is explicit, and codex-acp's ``/rename`` command,
+        handled without a Codex turn, sets one. A chat keeps its generated title.
+
+        codex-acp below :data:`TITLE_GENERATOR_SINCE` has no title generator, and
+        would run ``/rename`` as a model turn, so it is sent nothing. An adapter
+        whose version does not parse is renamed. A rename that fails raises, so
+        the runtime closes the session rather than run a helper that can leak.
+        """
+        if self._helper_spawn is None:
+            return
+        version = re.match(r"(\d+)\.(\d+)\.(\d+)", agent_version or "")
+        if version and tuple(map(int, version.groups())) < self.TITLE_GENERATOR_SINCE:
+            return
+        await send_request(
+            METHOD_PROMPT,
+            {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": f"/rename {self.HELPER_SESSION_TITLE}"}],
+            },
+        )
 
     @property
     def wants_session_file_on_load(self) -> bool:

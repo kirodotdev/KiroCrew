@@ -7,6 +7,7 @@ import json
 
 from kiro_crew.metrics import monitor_loops as monitor_loop_metrics
 from kiro_crew.monitoring import models
+from kiro_crew.monitoring.also_wake import also_wake_waiting
 
 # A skip that made no API call is not evidence about the target: the counters
 # refuse to charge it, and the retirement PREDICTION here must refuse to spend it.
@@ -202,7 +203,12 @@ def _fold_stall_streak(
     :func:`monitor_stall_reason` relies on. A subject whose checks flap never
     builds a streak and is retired by its runtime budget, with an honest reason.
     """
-    if decision is not _STALL_COUNTED_DECISION or not _verdict_is_settled(entries):
+    # An extra still open, or owing its wake, means the watch is still waiting.
+    if (
+        decision is not _STALL_COUNTED_DECISION
+        or not _verdict_is_settled(entries)
+        or also_wake_waiting(state)
+    ):
         state.stall_digest = ""
         state.stall_streak = 0
         state.stall_started_at = 0.0

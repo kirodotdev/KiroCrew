@@ -26,11 +26,6 @@ import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { createAudioSample } from '../hooks/mic'
 
-vi.mock('../components/Strands', () => ({
-  __esModule: true,
-  default: () => <div data-testid="strands-stub" />,
-  strandsSupported: () => true,
-}))
 
 const sampleRef = { current: createAudioSample() }
 const base = { value: '', onChange: vi.fn(), onSend: vi.fn() }
@@ -57,13 +52,13 @@ const TRANSPORTS = [
     /** Socket held open by this composer's own session, so a discard closes it. */
     transport: 'streaming',
     cancellable: true,
-    props: { voiceDrainCancellable: true, voiceStreaming: false },
+    props: { voiceDrainCancellable: true, voiceTransport: 'stream' as const },
   },
   {
     /** Blob already POSTed to the transcriber, so no press can call it back. */
     transport: 'batch',
     cancellable: false,
-    props: { voiceDrainCancellable: false, voiceStreaming: true },
+    props: { voiceDrainCancellable: false, voiceTransport: 'batch' as const },
   },
 ]
 
@@ -82,7 +77,7 @@ beforeEach(() => {
   vi.restoreAllMocks()
   localStorage.clear()
   vi.stubGlobal('matchMedia', (q: string) => ({
-    matches: false, media: q, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    matches: q === '(prefers-reduced-motion: reduce)', media: q, addEventListener: vi.fn(), removeEventListener: vi.fn(),
   }))
 })
 

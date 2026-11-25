@@ -340,6 +340,85 @@ def _retire_verified_claim(claim: Path, dest_dir: Path, verified_fingerprint: st
     return True
 
 
+def _resolve_claim(
+    claim: Path,
+    dest_dir: Path,
+    verified: str | None,
+    name: str,
+    set_aside: list[tuple[str, Path]],
+) -> None:
+    """Dispose of a claimed previous tree that does not go back to *dest_dir*.
+
+    A content-free placeholder is removed, a verified copy is retired to the
+    superseded slot, and a diverged one is quarantined as a user backup and
+    reported in *set_aside*, at the claim path when the quarantine rename
+    fails.
+    """
+    if not is_link_or_junction(claim) and not _tree_has_content(claim):
+        # A placeholder holding nothing but (at most) our own provenance
+        # marker has no user bytes to preserve; the kernel-atomic rmdir inside
+        # fails — and the tree is preserved instead — if anything landed after
+        # the check.
+        if not _remove_ignorable_dir(claim):
+            backup = _finalize_user_backup(claim, dest_dir)
+            logger.warning(
+                "placeholder skill dir %s gained content before " "removal; preserved it at %s",
+                dest_dir,
+                backup if backup is not None else claim,
+            )
+    elif verified is not None:
+        if not _retire_verified_claim(claim, dest_dir, verified):
+            # The retirement slot was unusable: preserve the verified copy
+            # rather than delete it.
+            backup = _finalize_user_backup(claim, dest_dir)
+            logger.warning(
+                "could not retire verified skill copy of %s; " "preserved it at %s",
+                dest_dir,
+                backup if backup is not None else claim,
+            )
+    else:
+        backup = _finalize_user_backup(claim, dest_dir)
+        # A failed finalize leaves the data at the dot-prefixed claim path
+        # (hidden but intact), which is then the path reported.
+        set_aside.append((name, backup if backup is not None else claim))
+        logger.warning(
+            "Skill directory %s does not match the copy this sync "
+            "installed (user-authored or locally edited); preserved "
+            "it at %s",
+            dest_dir,
+            backup if backup is not None else claim,
+        )
+
+
+def _settle_claim(
+    claim: Path,
+    dest_dir: Path,
+    verified: str | None,
+    name: str,
+    set_aside: list[tuple[str, Path]],
+) -> None:
+    """Resolve the claimed previous tree after the packaged copy failed.
+
+    When the name is still free, the claim goes back to *dest_dir* with a
+    no-replace publish, so the installed copy and its Context-budget opt-out
+    stay and the update stays due. When another process's copy holds the name,
+    or the restore fails, the claim is resolved by ``_resolve_claim`` as after
+    a successful update.
+    """
+    if not os.path.lexists(dest_dir):
+        try:
+            publish_dir_noreplace(claim, dest_dir)
+        except OSError:
+            logger.warning("could not put skill dir %s back at %s", claim, dest_dir, exc_info=True)
+        else:
+            logger.warning(
+                "Kept the installed copy of skill %s; its update is retried on the next sync",
+                name,
+            )
+            return
+    _resolve_claim(claim, dest_dir, verified, name, set_aside)
+
+
 def _linked_component(base: Path, name: str) -> Path | None:
     """The first directory of *name* under *base* that is a link or junction, if any.
 
@@ -555,11 +634,14 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
                     if adopted is not None:
                         _write_provenance_marker(dest_dir, adopted)
                 continue
+            # Resolved only once the packaged copy's outcome is known
+            # (``_settle_claim``): a failed copy must not leave the name empty.
+            claim: Path | None = None
+            verified: str | None = None
             if dest_dir.exists() or is_link_or_junction(dest_dir):
                 claim = _claim_dir_for_replacement(dest_dir)
                 if claim is None:
                     continue
-                verified: str | None = None
                 if not is_link_or_junction(claim):
                     verified = _verified_unchanged_fingerprint(claim, src_dir)
                     # The Context-budget switch is the one user-mutable setting
@@ -569,43 +651,6 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
                     # so a dashboard toggle landing in that window is reflected
                     # here instead of being read stale and then discarded.
                     carry_opt_out = _dest_opted_out_of_injection(claim)
-                if not is_link_or_junction(claim) and not _tree_has_content(claim):
-                    # A placeholder holding nothing but (at most) our own
-                    # provenance marker has no user bytes to preserve; the
-                    # kernel-atomic rmdir inside fails — and the tree is
-                    # preserved instead — if anything landed after the check.
-                    if not _remove_ignorable_dir(claim):
-                        backup = _finalize_user_backup(claim, dest_dir)
-                        logger.warning(
-                            "placeholder skill dir %s gained content before "
-                            "removal; preserved it at %s",
-                            dest_dir,
-                            backup if backup is not None else claim,
-                        )
-                elif verified is not None:
-                    if not _retire_verified_claim(claim, dest_dir, verified):
-                        # The retirement slot was unusable: preserve the
-                        # verified copy rather than delete it. Installing the
-                        # packaged version is still correct either way.
-                        backup = _finalize_user_backup(claim, dest_dir)
-                        logger.warning(
-                            "could not retire verified skill copy of %s; " "preserved it at %s",
-                            dest_dir,
-                            backup if backup is not None else claim,
-                        )
-                else:
-                    backup = _finalize_user_backup(claim, dest_dir)
-                    # A failed finalize leaves the data at the dot-prefixed
-                    # claim path (hidden but intact); installing the packaged
-                    # version is still correct either way.
-                    set_aside.append((name, backup if backup is not None else claim))
-                    logger.warning(
-                        "Skill directory %s does not match the copy this sync "
-                        "installed (user-authored or locally edited); preserved "
-                        "it at %s before installing the packaged version",
-                        dest_dir,
-                        backup if backup is not None else claim,
-                    )
             # Fingerprint the PACKAGED tree (immutable while this runs) and
             # record that as the installed state: fingerprinting the freshly
             # copied destination instead would bless any user write that lands
@@ -620,9 +665,9 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
             ensure_directory(base)  # copytree would create the skills root at the umask default
             # Copy into a private, dot-prefixed staging sibling and publish it
             # with one rename only once the copy is complete. A failed copy
-            # then costs this one skill and leaves nothing at the skill's name
-            # (no half tree that loads, counts as a relocation target, or reads
-            # as up to date), and the cleanup removes only the staging tree.
+            # then costs this one skill and leaves no half tree at the skill's
+            # name (one that loads, counts as a relocation target, or reads as
+            # up to date), and the cleanup removes only the staging tree.
             # ``mkdtemp`` creates the stage atomically under a name no other
             # process can pick, so a second sync of the same home never copies
             # into, or removes, this one's stage. Discovery skips dot-entries.
@@ -633,6 +678,8 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
                 )
             except OSError as exc:
                 logger.warning("Could not install skill %s at %s: %s", name, dest_dir, exc)
+                if claim is not None:
+                    _settle_claim(claim, dest_dir, verified, name, set_aside)
                 continue
             try:
                 if carried is None:
@@ -650,6 +697,8 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
                 logger.warning("Could not install skill %s at %s: %s", name, dest_dir, exc)
                 if not rmtree_force(stage):
                     logger.warning("could not remove staged skill copy %s", stage)
+                if claim is not None:
+                    _settle_claim(claim, dest_dir, verified, name, set_aside)
                 continue
             try:
                 # copytree copied the packaged root's mode onto the stage, and
@@ -672,7 +721,11 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
                     )
                 if not rmtree_force(stage):
                     logger.warning("could not remove staged skill copy %s", stage)
+                if claim is not None:
+                    _settle_claim(claim, dest_dir, verified, name, set_aside)
                 continue
+            if claim is not None:
+                _resolve_claim(claim, dest_dir, verified, name, set_aside)
             # copytree preserves source modes verbatim, so a read-only
             # install source (0o555 -- a Nix store path, a read-only mount)
             # yields a copy whose directories reject the provenance-marker

@@ -163,7 +163,11 @@ whether or not it exists; the Linux launcher seals a name that exists, so
 `{"mcpServers": {}}` (0o600, exclusive, no-follow, under a kiro home that
 exists). A dangling registry symlink is preserved; its absent referent is published
 only when its resolved parent is an existing real directory, without creating any
-intermediate directories or replacing an existing entry. Unlike a crew-home ceiling,
+intermediate directories or replacing an existing entry. The link is read once with
+`readlink` and the referent comes from that value, never from a second resolve of the
+registry name. A chain of links is walked hop by hop (`_registry_chain_end`), each hop
+read once the same way: a chain that reaches a real file is left alone, and an absent
+far end is published under its folder only when that folder exists. Unlike a crew-home ceiling,
 that step never refuses a spawn: a file it cannot create is logged and left unsealed
 for that spawn. It is not on the delegated-workspace guard, so a
 workspace that holds it keeps working where kiro-cli's own sandbox confines the
@@ -201,6 +205,45 @@ including bare names such as `server.py` and `index.js`, count as using the chat
 folder. A per-server share that restarts the broker resets open chats even with
 **Restart open chats to use it** unchecked: subscribed stubs cannot reconnect.
 The reset defers busy chats until their turn ends and reports `sessions_reset`.
+
+A project's own MCP files are sealed under the same decision
+(`project_mcp_files`): kiro-cli and KAS read `<folder>/.kiro/settings/mcp.json`
+when a session starts in that folder on a spec with `includeMcpJson`, and Claude
+Code reads `<folder>/.mcp.json`. The file-edit tool is refused on either name in any folder
+(`project_mcp_write`, matched by name on every candidate spelling, inside
+`sensitive_write_path_refusal`), with the same remedy. The sandbox seals both
+names in the session's own folder read-only (`project_mcp_targets`, passed as the
+wrap's `project_folder` into its own host field, `PlanHost.project_mcp_targets`),
+under both the folder as given and its resolved path (Seatbelt matches the resolved
+one), plus the resolved path of a file that is a link. A name the seal cannot hold
+(one that resolves to a folder or another non-file, loops, runs through a file, or
+cannot be read) is skipped with a log line, so it never seals a folder or stops a
+chat starting. They and their folders' rename
+guards (`PlanHost.project_ancestor_guards`) are emitted after every window,
+carve-out and operator exception is checked and are never checked against one, so
+an operator's writable exception holding the project never loses to them. Only the folders that exist are guarded
+against rename, so an agent can still create its project's `.kiro` folder. Seatbelt
+denies each name whether or not it exists. Crew never creates a file in the
+person's folder, so the Linux launcher seals only a file that exists at spawn, and
+a file that does not exist yet is fenced by the file-edit refusal alone (#41996).
+The refusal's way forward is `request_server`. Its default target adds the server
+to Kiro Crew's own store, the list every governed chat's servers come from, or the
+person adds it on **MCP Servers**. With `target` `project` the card adds it to the
+asking chat's own file instead (`request_server_page.project_place`): the folder and
+the file come from the chat's live session, never from the agent, and the card is
+raised only where that chat loads the file. That is a Kiro or KAS chat whose agent
+spec sets `includeMcpJson` (`agent_sdk.mcp_json_reach.agent_includes_mcp_json`, the
+same spec read the session projection uses), and the card writes
+`.kiro/settings/mcp.json`. Any other chat, the default agent included, is refused
+with a 409 that names `target` `crew`. A Claude Code chat is refused too: whether
+it loads `.mcp.json` depends on its setting sources, on `strictMcpConfig` (which a
+Bot's worker sets) and on Claude Code's own approval of project servers, and Crew
+reads none of them back from a live session. The person's Apply writes the file through
+the owner-only `POST /api/mcp/project-file` (`dashboard.handlers.mcp_project_file`),
+which accepts nothing but a confirmed card's step, so no caller chooses the folder;
+it refuses a link anywhere below the folder, and on POSIX it opens each folder on
+the way by descriptor with `O_NOFOLLOW`, so a link planted after the name check is
+refused too.
 
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next
@@ -1371,7 +1414,38 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     pass dedups would survive in the original-case pass, the two frame counts would
     diverge, and the floor would drop the option words it reads in the written case
     and lose a denial it should make. This holds whether the `<<` opens a real body
-    or none at all (a here-string `<<<`, an arithmetic `<<` shift). The ordinary
+    or none at all (a here-string `<<<`, an arithmetic `<<` shift). As a backstop,
+    the git/tar floor FAILS CLOSED when the two passes still disagree: if the
+    original-case and lowered walks of a line produce a different number of frames
+    and a frame of one walk has no partner in the other (same source and words once
+    lowered), it refuses the line rather than read on with the written-case option
+    words dropped. The top frame pairs by position when its words agree once
+    lowered, since its source text can differ only through the pre-walk's
+    lowercase-only rewrites (`VERSION=1; echo $VERSION`). Like the floor's other
+    fail-closed reads, it refuses only when the input carries a self-dial signal and a frame with no partner could run git
+    or tar (the top frame, or a payload frame that names a git/tar word or an
+    expansion); otherwise each such frame keeps the lowered reading, so an ordinary
+    line of that shape (`echo "a;b"; npm start; cat <<EOF` with an `eof` body line)
+    is allowed. Payloads that differ only in case (`bash -c 'git log
+    --format=%H' && bash -c 'git log --format=%h'`) are one lowered frame but two
+    written ones; that is not a disagreement, so the floor reads the lowered frame
+    once per written spelling and every spelling's option words are read. Identical
+    inherited environments are read and propagated once, in first-seen order;
+    distinct names, value lists, value order and case remain separate readings.
+    A per-read signature set for each payload deduplicates only incoming launch
+    environments. Reading a frame snapshots the retained list without hashing it
+    again, so neither a launch nor a read rescans accumulated signatures.
+    Typed case-spelling replay has one 262,144-unit work budget shared by all its
+    frames, spellings and commands. It charges frame source characters and command
+    words multiplied by inherited, exported and pending environment names and
+    values before building each environment. It also bounds the replay-list size
+    before allocating it. Exhaustion refuses the line unread, even without a
+    self-dial signal; it never skips a spelling and allows the remainder. Within
+    the budget every written-case interpretation is preserved. Ordinary paired
+    readings do not consume this replay budget.
+    A line whose readings genuinely disagree (a rare quote-and-case here-document
+    shape) is refused, and refusing it is the safe direction. The
+    ordinary
     reading and the main-reading pass keep a body's quotes as origin/main read them,
     so the reset pass only ADDS a denial and never removes one. The here-document
     body readers and the untracked fallback are unchanged.
@@ -1414,6 +1488,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     recovered, and in every case it could have been in when it cannot.
   - `argv_floor_git_tar.py` — the git/tar self-target floor (`_is_git_tar_to_self`),
     which reads the tar grammar, the ssh floor's front end and the host verdicts below it.
+  - `argv_floor_git_tar_parallel.py` — GNU parallel replacement readings and their
+    shared token unmasking and word cap, re-exported by `argv_floor_git_tar.py`.
+    It loads before that reader in the argv-floor mirror so patches reach both
+    modules without an import cycle.
   - `argv_floor_git.py` — protected or ambiguous git-publish detection.
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,
@@ -1600,8 +1678,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   rest of the line for heredocs only when a newline follows a `<<` in the text its close
   walk read (`shell_normalizer_walk._matching_close_paren_reach`), since a heredoc body
   starts after that newline; a `<<<` here-string or a `$(( 1 << n ))` shift needs no
-  re-read. The skip changes no span, so no verdict. A line of many bodies that each hold a
-  multi-line heredoc still re-reads per body and stays quadratic (tracked in #39106). The floor does not model `#` comments: a quoted `$( )` before a comment
+  re-read. The skip changes no span, so no verdict. A body that does need it reads a prefix
+  of the rest that doubles from 1 KiB until every heredoc in it closes before its end and the
+  close is proven inside it (`_close_past_heredocs`), the answer the whole rest gives, so a line of
+  many such bodies is linear. The floor does not model `#` comments: a quoted `$( )` before a comment
   whose text names ssh to this host is refused, as main refuses the same line without the
   quote.
   Within one `is_denied` call (`call_views.sharing_views`, which this module also serves
@@ -1638,8 +1718,27 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   header must decode to JSON naming `alg` or `enc`, and an unsigned JWT is not a
   credential. `armour.py` reads PEM and PGP private-key blocks by their BEGIN/END
   lines. `known_key.py` reads the AWS secret key names in JSON, assignments, CLI
-  flags and XML. `identifiers.py` parses a URL's query per RFC 3986 and masks only
-  the values of credential-type parameters. `identifiers.py` and
+  flags and XML. It reads the text as written first, with no CJK rule. A text
+  that holds a full-width form, or CJK text right before a key, is then read a
+  second time: full-width forms (`ｐａｓｓｗｏｒｄ`, `：`, `＝`) read as their ASCII
+  characters (`charsets.fold_wide`, NFKC for that block, one index for one), and
+  CJK text or punctuation right before a key reads as a blank
+  (`charsets.breaks_word`). That pass reads every value as written, a quoted value
+  closes only on its opening quote as written, an XML value closes only on
+  `</key>` written in ASCII, as in the first pass, an unquoted value ends at CJK
+  punctuation or a CJK blank (U+3000-U+303F and the full-width block, category P
+  or Z), and an unquoted value that starts with a Han, kana or Hangul character is
+  a sentence, not a value (any other non-ASCII first character, such as an
+  accented letter, an emoji or a full-width symbol, is read as a value). Every hit
+  of the first pass is kept. A hit of the second pass is kept when it overlaps no
+  hit of the first and no hit of the first starts at its key, or when it reaches
+  at least to the end of every first-pass hit it overlaps and past at least one of
+  them (a full-width quoted value whose head the first pass masked up to an ASCII
+  `,`). Overlapping Secret hits are masked as their union (`engine.resolve`), so
+  the second pass only adds masking to what the text as written gets; the open
+  units of both passes hold the stream.
+  `identifiers.py` parses a URL's query per
+  RFC 3986 and masks only the values of credential-type parameters. `identifiers.py` and
   `identifier_values.py` mark values that stay visible (AWS access key IDs, account
   IDs, ARNs, request ids, `x-amz-id-2`, UUIDs, git object names and commit
   permalinks, public OAuth values such as `code` and `state`, image data URIs, SSH
@@ -1671,8 +1770,18 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   the raw text that preceded it (`compat.look_behind`), so the stream yields the
   batch result (`test_stream_table_parity.py`). A unit still open whose start lies
   in that already-sent text (a label streamed before its value) holds the window
-  from its first character (`engine.scan` clamps it to `origin`). The fixed tail hold ends at the last
-  blank, and `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
+  from its first character (`engine.scan` clamps it to `origin`).
+  The fixed tail hold ends at the last
+  word, and a word ends at a blank or at a non-ASCII character that no reader folds
+  onto ASCII (`compat.ends_word`; `ſ`, the Kelvin sign or `ß` fold onto letters and
+  stay inside the word, and so does a default-ignorable character such as `U+200B`,
+  which the credential plan reads a token through): every anchor and credential is ASCII, and unspaced Chinese
+  or Japanese prose would otherwise be held whole until its next blank. The stream
+  snaps the hold back to the start of that word (`compat.word_start`) and holds a
+  hit the cut would end exactly at while more text follows it (its closing quote
+  goes out with it); `text_redaction._outside_batch_spans` holds such a span too,
+  reading the buffer after the text already sent, and
+  `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
   calls it at a tool call or prompt and Slack at a tool card, a `wait` and the
   turn's end. `display_battery.RULE_SOURCES` lists every `redaction_structured/`
   file and `pass_compose.py`, so a table change gives stored verdicts a new version.
@@ -1892,7 +2001,9 @@ Security properties:
   (`SecretVault.add_item_under_free_name` picks a free name under the store
   lock, so nothing is overwritten, and skips every name `POST /api/secrets` would
   refuse the same caller, through `secrets.reserved_name_check`: a Connections
-  client secret, the WakaTime OAuth tokens, and for a remote caller a channel
+  client secret, the WakaTime OAuth tokens, connected computers' own state
+  (`CONNECTED_COMPUTERS_LOCAL`, `CONNECTED_COMPUTERS_DEVICES`, which the routes
+  also leave out of the listing), and for a remote caller a channel
   credential, so a remote session cannot plant one from the browser card; the
   route and that check share `_managed_name_owned` and `_remote_channel_reserved`,
   so each rule is written once). One SEL row per vault fill and per save
@@ -1921,12 +2032,15 @@ Security properties:
   The owner opened them
   (`docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`;
   see [browser](browser.md), "The tool" and Security). They are acting ops, approved
-  on a card every call (the owner's ruling "改成这三个每次都弹卡"). The op route opens
+  on a card every call (the owner's ruling "改成这三个每次都弹卡"), except `js` on a
+  person's chat that trusts all tools or that YOLO reaches, or in the current tab of
+  a site that chat holds an `act` grant for, never in a Dashboard card's turn (`docs/decisions/2026-11-25-browser-js-runs-with-no-card-under-yolo-trust-or-site-trust.md`). The op route opens
   that card itself, an Allow / Deny agent ask bound to the call's digest and spent
   by one run (`dashboard/handlers/browser_card_ask.py`), because the default spec's
   `@kirocrew-core` grant in `allowedTools` means the host raises no permission
-  request for a `browser` call. No site grant, "Trust all tools", trust-reads,
-  YOLO, trusted pattern or app `browserSites` grant answers it, since every call
+  request for a `browser` call. For `cdp` and `http_get` no site grant, "Trust all
+  tools", trust-reads, YOLO, trusted pattern or app `browserSites` grant answers it,
+  and for `js` only those exceptions do, since every call
   reaches that route whatever let the tool call through; the card shows the whole
   call, and a session with nobody to ask refuses it.
   Behind `capabilities.browse`; a
@@ -2371,7 +2485,7 @@ On macOS the marker must additionally **agree with the kernel**, and the two cov
 
 **Delegation is reported, not just logged.** Delegation changes which paths the agent can reach — kiro-cli's profile scopes file access to the session workspace, so reading a *pre-existing* file outside it (`~/Desktop`, a project elsewhere) fails with `Operation not permitted` while files the session created stay readable. That presents as a macOS privacy (TCC) problem and is not one: Full Disk Access cannot affect a Seatbelt profile, so an operator who is told only "permission denied" grants FDA, relaunches, and observes no change. Two surfaces close that: the once-per-process `SECURITY` warning names the settings file and key that decided it, and `kirocrew doctor`'s **Sandbox** section prints a `kiro-cli:` line after the backend verdict (`_doctor_kiro_internal_sandbox`), naming the switch via `kiro_internal_sandbox_switch()`, ruling out Full Disk Access explicitly, and giving the config-level remedy — set the key to `false` so Kiro Crew's own profile owns isolation, which *keeps* isolation rather than weakening it. Reporting only the backend is a false reassurance here, because `backend: ✅ seatbelt` describes a wrap that a delegated kiro-cli spawn never runs under. The line is **not** counted as an issue: delegation is a working, audited configuration, and `kirocrew doctor` must not exit non-zero on a correctly configured host. **The remedy is conditional on the tier Kiro Crew would actually apply** (`effective_sandbox_mode(configured_sandbox_mode())`, which includes the governance clamp): under `agent.sandbox="off"` no profile is built, so recommending the internal sandbox off would remove the *only* layer confining the spawn and make `~/.aws` and `~/.ssh` readable. The two settings correlate rather than being independently unlikely — `"off"` exists to defer isolation to kiro-cli — so that branch names the order instead (`agent.sandbox` to `"auto"` first, then either layer owns isolation), and a tier that cannot be read gets the cautious wording rather than the bare recommendation.
 
-**The one failure delegation does cause is reported as a fault.** With the switch on, kiro-cli also confines the MCP servers it starts, and Kiro Crew's `kirocrew-core` fails to start under that profile, so every kiro-cli session fails at `session/new` with kiro-cli's own `mcp-client(kirocrew-core): initial connection or tool synchronization failed`. `kirocrew doctor`'s MCP probe starts the server outside kiro-cli, so it stays green on exactly that host. `kiro_sandbox_conflict.py` owns the detection and the wording for two surfaces: a `kiro-cli sandbox:` row in doctor's **MCP Tools** section (`_doctor_kiro_sandbox_blocks_crew_mcp`), and a `Likely cause:` suffix on the session-start error. That suffix is added on both start paths: `AcpClient._wait_for_response` (`AcpError`, for `session/new`, `session/load` and `session/resume`) and the shared runtime's `_send_and_await` (an exact `AcpRuntimeError`, for `session/new` and `session/load`). It is added only when the failing session runs inside kiro-cli (`backend_spawns_kiro_cli`: the Kiro CLI backend, or KAS on the relay route, never Kiro Crew's own KAS bundle or another harness), the error names a `kirocrew*` server, AND the switch is on. The switch and the KAS route are read off the event loop. The route is resolved the way a spawn resolves it (`kas_bundle.kas_route`, `acp.kas_route.resolve_kas_route`), not from `agent.kas_bundle` alone: a build that prefers the engine runs the bundle with the setting unset, and a Bot pinned to the Kiro CLI keeps the relay. The shared runtime passes the session's own Bot pin (`_harness_pin`); `AcpClient` passes none, so it judges the route with no pin. The doctor row is fatal only when a role selected for the main or Bot backend spawns kiro-cli (the Kiro CLI backend, or KAS through kiro-cli's relay, `cli_doctor._selected_roles_run_kiro_cli`); for any other selection it is advisory and stays out of `issues`. The Sandbox line above, the MCP Tools row and the session-start suffix all print `kiro_sandbox_conflict.self_sandbox_remedy()`, the one copy of the tier-conditional remedy. None of them edits kiro-cli's settings: turning a sandbox layer off is the operator's call.
+**The one failure delegation does cause is reported as a fault.** With the switch on, kiro-cli also confines the MCP servers it starts, and Kiro Crew's `kirocrew-core` fails to start under that profile, so every kiro-cli session fails at `session/new` with kiro-cli's own `mcp-client(kirocrew-core): initial connection or tool synchronization failed`. `kirocrew doctor`'s MCP probe starts the server outside kiro-cli, so it stays green on exactly that host. `kiro_sandbox_conflict.py` owns the detection and the wording for two surfaces: a `kiro-cli sandbox:` row in doctor's **MCP Tools** section (`_doctor_kiro_sandbox_blocks_crew_mcp`), and a `Likely cause:` suffix on the session-start error. That suffix is added on both start paths: `AcpClient._wait_for_response` (`AcpError`, for `session/new`, `session/load` and `session/resume`) and the shared runtime's `_send_and_await` (an exact `AcpRuntimeError`, for `session/new` and `session/load`). It is added only when the failing session runs inside kiro-cli (`backend_spawns_kiro_cli`: the Kiro CLI backend, or KAS on the relay route, never Kiro Crew's own KAS bundle or another harness), the error names a `kirocrew*` server, AND the switch is on. The switch and the KAS route are read off the event loop. The route is resolved the way a spawn resolves it (`kas_bundle.kas_route`, `acp.kas_route.resolve_kas_route`), not from `agent.kas_bundle` alone: a build that prefers the engine runs the bundle with the setting unset, and a Bot pinned to the Kiro CLI keeps the relay. The shared runtime passes the session's own Bot pin (`_harness_pin`); `AcpClient` passes none, so it judges the route with no pin. The doctor row is fatal only when a role selected for the main or Bot backend spawns kiro-cli (the Kiro CLI backend, or KAS through kiro-cli's relay, `cli_doctor._selected_roles_run_kiro_cli`, which resolves the KAS route the same way with no Bot pin); for any other selection it is advisory and stays out of `issues`. The Sandbox line above, the MCP Tools row and the session-start suffix all print `kiro_sandbox_conflict.self_sandbox_remedy()`, the one copy of the tier-conditional remedy. None of them edits kiro-cli's settings: turning a sandbox layer off is the operator's call.
 
 **Windows Kiro internal-sandbox delegation**: Kiro Crew has no native Windows OS wrapper, but the official Kiro CLI backend has its own sandbox. `wrap_argv()` therefore delegates before backend detection when, and only when, the reviewed caller passes `is_kiro_cli=True`. This is a positive capability grant from `ACP_BACKENDS_INTERNAL_SANDBOX`; `_spawns_kiro_cli()` basename inference and `is_kiro_cli=None` never grant it on Windows. The main ACP client/runtime and the three fixed one-shot Kiro reads pass the classification explicitly. Extra Kiro Crew path restrictions (`extra_hidden_dirs` / `extra_visible_dirs`) disable delegation because Kiro's sandbox cannot prove it enforces them. Every delegation is `outcome="delegated"`, `critical=True`; an SEL failure returns to normal Windows no-backend policy and raises. All other ACP backends, scripts, hooks, third-party MCP probes, Papyrus/Polly commands and future unclassified spawns take the ordinary Windows no-backend path, which the platform default permits unless the operator declared `agent.sandbox_allow_unsandboxed_exec=false` or a governance `sandbox.min_level` floor is pinned; they are audited `unconfined` rather than delegated, since nothing confines them. Because Windows cannot prefix `env -u`, every delegated production spawn passes `scrub_agent_subprocess_env()` as its explicit child environment.
 
@@ -2709,7 +2823,9 @@ transfer may hold its worker for a long time on a healthy mount.
 - **Mirror admission (signed record inside agent-writable `session_map.json`)** — a dashboard-born session's mirror link records the peer it was admitted for (`ChannelLink.principal`) so the per-send recipient check can reach a roster a Discord DM channel id alone cannot answer ([messaging](messaging.md), § Proactive sends). `session_map.json` is not a keystone leaf: in-sandbox code reads and writes it, and no seal is added for this — widening what the sandbox masks is the operator's decision. The record is therefore SIGNED rather than fenced: the two paths that authorize a peer for a conversation (the dashboard mirror-link handler and the resume controller's pick commit; with the key-named binds below, the minting sites are pinned by AST) store beside the peer an `admission`, HMAC-SHA256 over the canonical session key and the whole location (channel type, conversation id, thread id, peer) under a key derived from `token_signing.key` with a purpose label of its own (`kiro_crew.mirror_admission`), the same secret and the same construction the tag-grant store's key certificate rests on. `SessionMap.set_mirror_link` itself never mints one -- it carries the caller's bytes through verbatim -- and every rollback that re-sets a row it read back restores a peer only under an admission that still verifies (`mirror_admission.restorable_link`), so no writer can launder a planted row into a trusted one. The signing secret is masked from every agent plane (`sandbox._CREW_HIDDEN_LEAVES`), so a rewritten, moved or hand-assembled row cannot carry a valid admission; the ladder's recipient leg verifies with `hmac.compare_digest` and refuses, audits (`channel.mirror_admission`) and logs once for a row whose admission is absent or does not verify, and names the remedy (re-link, which mints a fresh record); the check refuses and never raises on a planted row of any shape (a non-string or non-hex admission, a non-string peer, fields of any type), because it sits on a dashboard turn's send path; both this audit and the rollback's `stripped_on_restore` keep the verbatim-stored SEL fields (`caller`, `source`) to in-tree constants and carry the row's ids only in the redacted `resources` field, since a credential planted in an agent-written `channel_id` must not reach the append-only log unredacted. A token-key rotation invalidates every admission at once, and such mirrors are refused until re-linked — fail-closed, the same posture the tag-grant quarantine takes. Key-named rows: a channel-born session's key names the peer the roster is handed, so its stored `channel_id` alone decided where a send landed; such a row is now signed whether or not it names a peer (`mirror_admission.admission_required`), minted also by the binds the conversation's own peer makes from inside it (origin bind, in-channel link), and the ladder (`chat_turn/recipient._key_named_row_admitted`) refuses one whose admission does not verify unless it is the gateway's in-memory origin record or addresses the key's own peer by id. The by-id exception holds only on the key's own channel, since the same digits on another channel are another person. A row written before this is refused until re-bound (the user's next message in that same conversation, whose origin bind re-signs a row already pointing there and no other; the link command; a `!sessions` pick; or a dashboard re-link), and the refusal says so. Stated residual: a row the gateway once signed for this session, location and principal can be replayed after an unlink — in-sandbox code that copied the signed row while the binding existed writes it back, and after a restart nothing contradicts it until the transport learns the DM's pairing; refusing it needs revocation state the agent cannot write back, the same agent-writable-row class, and sealing a store is the operator's sandbox decision (no new sealed leaf here).
 - **Registry trust (keystone leaf `registry_trust.json`)** — the operator's trust grants for App Kit registries (see [app-kit-platform](app-kit-platform.md)). A writable record would let an agent trust a registry of its choosing, so it is on `_CREW_SECRET_LEAVES` (agent file tools, read+write, under every `_CREW_HOME_PREFIXES` entry) and sealed for the OS sandbox like the other keystone leaves; the gateway's own readers open it directly.
 - **Bot teams (gateway-only directory `crew-teams`)** — `crew_teams.py` keeps the owner's grouping of the roster (`teams.json`: `{version, teams: [{id, name, members}]}`) in the data-home directory `crew-teams`. Not a secret, but the record decides which team view a Bot's questions and work roll up into, and the Bots it groups are exactly the population that must not rewrite it. It is deliberately NOT under `trust/`: `trust` is a declared sandbox read-write exception, so a record there stays writable by a sandboxed command that builds the path at runtime (the `crew-panels` lesson). The whole DIRECTORY is on `_CREW_SECRET_LEAVES` (agent file tools, read+write, under every `_CREW_HOME_PREFIXES` entry), masked on `sandbox._CREW_HIDDEN_LEAVES`, and pre-created at 0700 before every namespace spawn (`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`) because the store is created on the first team and `mount(2)` cannot mask a name that does not exist yet. A directory rather than the file so the `atomic_write` temp sibling is covered too. Only owner-invoked code opens the path — the owner-gated `/api/teams` routes, the crew create/delete and package-sync hooks, the CLI agent create/delete commands, and the snapshot/import installers — and never an agent tool, so nothing legitimate reads it through a file tool. Spec: [learn-cron-dashboard](learn-cron-dashboard.md), `handlers/teams.py`.
-- **Bot records (gateway-only directory `member-records`)** — `member_records.py` names the data-home directory that holds each Bot's permanent rules (`member-rules/<slug>.json`), goals (`member-goals/<slug>.json`) and DM thread binding (`member-bindings/<slug>.json`), plus the Bots the owner ticked for each installed app (`app-bot-grants/<app>.json`, `apps/bot_grant_store.py`; see [app-kit-platform](app-kit-platform.md) §32c), which has no old layout, and the grant requests and grants of local authorization (the `local-grants` kind, `dashboard/local_authorization.py`; see [learn-cron-dashboard](learn-cron-dashboard.md) "Local authorization"), which has none either. The person writes them through the dashboard; the gateway injects the rules and goals into that Bot's prompt and routes its thread by the binding. Nothing in a sandbox reads or writes them (the in-sandbox `kirocrew-mate` server reads only `member_goals` size constants), so the whole DIRECTORY is masked on `sandbox._CREW_HIDDEN_LEAVES`, refused on `_CREW_SECRET_LEAVES`, pre-created at 0700 before every namespace spawn (`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`) and refused as a link (`_CREW_NO_ALIAS_LEAVES`). Deliberately NOT under `trust/`, the declared sandbox read-write exception, for the `crew-teams` reason. An older build kept the three kinds under `trust/<kind>/`; `member_records.migrate_from_trust` moves them once, from spawn prep (`sandbox_staging._member_records_move`) and from every record path function outside a sandbox (`ensure_migrated`): each regular file is read once without following its last link and written with `atomic_write(fsync=True)`, every old file is removed only after all copies, their directories, the records directory and the data home that names it are synced, a new name already holding the same bytes is a finished copy and one holding different bytes wins with the old file kept, a copy that fails removes nothing and leaves the move unsealed for the next caller, nothing behind a link is promoted -- and because the old build read through such a link, records reached through one at `trust` or `trust/<kind>`, or a `<slug>.json` that is not a regular file, hold the move unsealed rather than being sealed over (a link that leads to no records does not) -- and the pass ends with a `.moved-from-trust` marker after which nothing under `trust/` is read again. Until it seals, a kind whose old layout still holds a record raises `RecordsNotMoved` from `records_dir` instead of reading as absent: the rules read raises `MemberRulesUnreadable` (the member section is withheld, never built without its rules), the goals read raises `GoalsUnreadable`, the binding reads as unbound, and no write lands over the old copy. Spawn prep also REFUSES to launch a sandbox (`SandboxCeilingUnsealable`, naming the cause and any kinds `member_records.outstanding_kinds` lists) whenever the move is unsealed, on both the namespace and Seatbelt paths, whatever the old layout holds at that moment: `trust/` is writable inside every sandbox, so a process launched then could write or replace a record there that the next pass would promote. A fresh data home needs no exception, because the move seals it on the first spawn. The move never runs inside a sandbox (`KIROCREW_SANDBOX_ACTIVE`), and a spawn made from inside one is not refused by it. Spec: [crew-mode](crew-mode.md).
+- **Bot records (gateway-only directory `member-records`)** — `member_records.py` names the data-home directory that holds each Bot's permanent rules (`member-rules/<slug>.json`), goals (`member-goals/<slug>.json`) and DM thread binding (`member-bindings/<slug>.json`), plus the Bots the owner ticked for each installed app (`app-bot-grants/<app>.json`, `apps/bot_grant_store.py`; see [app-kit-platform](app-kit-platform.md) §32c), which has no old layout, and the grant requests and grants of local authorization (the `local-grants` kind, `dashboard/local_authorization.py`; see [learn-cron-dashboard](learn-cron-dashboard.md) "Local authorization"), which has none either, and the ids and states of the Owner tool approvals (the `crew-api-approvals` kind, `dashboard/crew_api_approval_records.py`), which has no old layout either, and the kept turns of `POST /v1/responses` (the `crew-api-responses` kind, `dashboard/crew_api_response_records.py`: one file per response; its reply, failure reason and input texts are redacted before they are written, and its `metadata`, model name and ignored field names are as the machine owner sent them, because only that owner makes and reads a record and redacting a pair would break an id that looks like a key), which the gateway writes when such a turn ends and which has no old layout either. The person writes the others through the dashboard; the gateway injects the rules and goals into that Bot's prompt and routes its thread by the binding. Nothing in a sandbox reads or writes them (the in-sandbox `kirocrew-mate` server reads only `member_goals` size constants), so the whole DIRECTORY is masked on `sandbox._CREW_HIDDEN_LEAVES`, refused on `_CREW_SECRET_LEAVES`, pre-created at 0700 before every namespace spawn (`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`) and refused as a link (`_CREW_NO_ALIAS_LEAVES`). Deliberately NOT under `trust/`, the declared sandbox read-write exception, for the `crew-teams` reason. An older build kept the three kinds under `trust/<kind>/`; `member_records.migrate_from_trust` moves them once, from spawn prep (`sandbox_staging._member_records_move`) and from every record path function outside a sandbox (`ensure_migrated`): each regular file is read once without following its last link and written with `atomic_write(fsync=True)`, every old file is removed only after all copies, their directories, the records directory and the data home that names it are synced, a new name already holding the same bytes is a finished copy and one holding different bytes wins with the old file kept, a copy that fails removes nothing and leaves the move unsealed for the next caller, nothing behind a link is promoted -- and because the old build read through such a link, records reached through one at `trust` or `trust/<kind>`, or a `<slug>.json` that is not a regular file, hold the move unsealed rather than being sealed over (a link that leads to no records does not) -- and the pass ends with a `.moved-from-trust` marker after which nothing under `trust/` is read again. Until it seals, a kind whose old layout still holds a record raises `RecordsNotMoved` from `records_dir` instead of reading as absent: the rules read raises `MemberRulesUnreadable` (the member section is withheld, never built without its rules), the goals read raises `GoalsUnreadable`, the binding reads as unbound, and no write lands over the old copy. Spawn prep also REFUSES to launch a sandbox (`SandboxCeilingUnsealable`, naming the cause and any kinds `member_records.outstanding_kinds` lists) whenever the move is unsealed, on both the namespace and Seatbelt paths, whatever the old layout holds at that moment: `trust/` is writable inside every sandbox, so a process launched then could write or replace a record there that the next pass would promote. A fresh data home needs no exception, because the move seals it on the first spawn. The move never runs inside a sandbox (`KIROCREW_SANDBOX_ACTIVE`), and a spawn made from inside one is not refused by it. Spec: [crew-mode](crew-mode.md).
+- **App startup-module approvals (`member-records/app-startup/<app>.json`)**: the owner's approval of an app's `ui.startup` module (`{version, entry, digest, files}`, see [manifest-reference](../../app-kit/manifest-reference.md#uistartup--code-that-runs-while-the-dashboard-is-open)), kept by `apps.protected_app_state` beside the approved permission set and disable, in the directory the sandbox masks in every mode. The approval holds against a sandboxed agent process: the verb refuses one that shows agent confinement. It is a guardrail, not a boundary, against code running in the dashboard origin (an installed app's page runs there with the owner's session and can reach owner routes, as `docs/architecture/app-platform-trust-model.md` states); closing that is tracked as a follow-up. `files` maps regular files' relative POSIX paths to SHA-256 hashes from the roots the static route serves: with `agent.apps_ui_protected_copy` on, scripts come from the protected copy and non-scripts from live `ui/` (a missing copy refuses approval), while the flag-off and operator-granted out-of-install dev-root paths stay live, with symlinks skipped and the static route's 8 MiB file cap enforced. `_MAX_UI_FILES` caps the tree and stored map at 4,096 entries; the inventory stops at the first entry over that cap, and the parser checks the map's count before per-entry validation or digest computation. `digest` is SHA-256 over sorted relative paths, each followed by a NUL and the raw file hash. The shared parser validates paths, hashes and digest consistency, naming an invalid entry's path; the approval writer runs that exact parser before storing anything. Records without `files` need re-approval, not migration. App-list reads fail soft to no approval. Before admission they inventory once, reject added or deleted paths without reading file bytes, and stop at the first hash mismatch or size-cap error; an over-cap tree needs approval. The only approval writer is `kirocrew app startup`, which refuses agent confinement and audits approvals, refusals and failures to the SEL. Uninstall forgets the record; an owner install or update without `ui.startup` also forgets it inside its record-writing transaction. A committed withdrawal emits SEL `app_startup_revoke` with outcome `completed` and the reason `install dropped ui.startup` or `update dropped ui.startup`; its lifecycle result's `message` discloses that the UI files are served without startup approval checks. Failed operations restore the previous record and emit no completed withdrawal; keeping `ui.startup` keeps the record. An unreadable record refuses install before any approved-permissions, startup or installed-record write. A direct manifest edit never bypasses serving checks.
+  While a record exists, including a stale version or entry, `routes_static.handle_app_ui_file` checks every served UI file type (`.js`, `.mjs`, `.css`, `.json`, `.svg`, `.map`, images and fonts). `startup_modules.approved_module` reads only the requested file from the pinned, bounded descriptor, compares the SHA-256 of those bytes to `files[rel]` and sends exactly that buffer. It never caches by stat metadata or opens other UI files. The file cap bounds each file read and hash, the file-count cap bounds per-entry map validation, and the eight permits bound concurrency and buffered memory. Verified responses omit `Last-Modified` and revalidate only by the ETag carrying the approved digest, so restored inode, size and mtime cannot validate unchecked cached bytes. `If-None-Match: *` gets the full verified bytes, not a 304; unchecked responses retain wildcard and date-based revalidation. Ordinary UI URLs serve unchecked only when the record is absent. Startup URLs use `/apps/<name>/ui/startup:<digest>/<entry>`: the reserved prefix requires a current record with that exact digest before any bytes are read for verification. Revocation or a different approval returns 409, even for unchanged files; relative imports inherit the prefix. The app list exposes `digest` only on an admitted row, and the dashboard keys the mount on name, version and digest. Absolute imports, `../` climbs out of the prefix and fetch-and-eval remain outside this guarantee, but cannot be added to approved code without a hash mismatch. Unknown, changed or unavailable files and unreadable or malformed records answer 409 without file bytes. Its JSON carries `code`, `reason` and `remedy`: run `kirocrew app startup <name>` to approve current code, or `kirocrew app startup <name> --revoke`. The name must first pass `APP_NAME_RE`; unsafe names retain 404 without a reflected remedy, and refusal logs quote request paths and exceptions. Revoke works even after the manifest drops `ui.startup`.
 - <a id="channel-routing-state"></a>**Channel routing state (keystone leaf `routing`, holding Teams' `teams_service_urls.json`)** — the store is DELIVERY ADDRESSING, not a secret: it maps each allow-listed Teams identity to the conversation that identity was last seen in, and `teams/transport.py`'s `resolve_configured_target` resolves an explicit `user:<upn>` send target through exactly that map. While the file sat outside the protected leaves, a prompt-injected agent with file-write access could point one operator's UPN at a different person's conversation and have the next cron result, subagent-completion notice or `send_message` delivered there. The two attestations on the inbound path do not close it: the JWT's own `serviceurl` claim binds the address only for the activity carrying it, `connector_host_allowed` re-checks the host wherever the Connector token is attached, and neither can distinguish one legitimate conversation id from another on a shared Connector host. Reading is fenced with writing because the file enumerates the operator's UPNs and the conversations they use. **A DIRECTORY leaf, not the file, and that is load-bearing:** a file leaf matches only its exact name, while `atomic_write` publishes through a `tempfile.mkstemp` sibling (`tmpXXXXXXXX.tmp`) in the same parent — so with the store loose in the data-home root an agent watching that directory could overwrite the temp file in the window before `os.replace` and have the rename publish its own routing. A directory entry covers every child, random temp names included; the same residual is why `trust`, `profiles` and `cron-history` are directories. Note the general form is NOT closed by this entry: a keystone leaf named as a FILE (`crons.json`, `security_policy.json`, …) still has an uncovered `atomic_write` temp sibling, which is a matcher-level question rather than a per-store one. `ServiceUrlStore` opens its path directly (`atomic_write` / `read_text`) rather than through the gate, so proactive routing across a restart is unaffected. There is deliberately no migration from the pre-`routing/` location: reading the old, agent-writable path would reopen exactly the hole this closes, and the store is a warm start that degrades to in-memory by design.
 - **Computer-use primary enable (keystone leaf `computer_use.json`)** — the on/off switch for native desktop GUI automation (see [computer-use.md](computer-use.md)) is `~/.kiro/crew/computer_use.json`, added to `_CREW_SECRET_LEAVES` so it is read+write-blocked under every `_CREW_HOME_PREFIXES` entry on the tool path (`is_sensitive_path`), and sealed against every shell form (`>`, `tee`, `rm`, `tar -C` / `unzip -d` extraction into the trust root) by the OS sandbox rather than by command text: it is a `READONLY` leaf in `sandbox_leaves.py`, mounted read-only in every mode, and `is_sensitive_bash_command` matches no paths. **It is deliberately NOT in `config.json`**, and the precedent is the denied-command opt-out immediately below: `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True`, but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is `None` and `is_denied(...)` is `None`, and before `config.json` was sealed at the OS layer (see the runtime-config bullet below) a `config.json` toggle was flippable by a prompt-injected agent through any redirect. A primary enable for full desktop observation plus input synthesis is a **security ceiling**, the same class as the deny opt-out, so it lives on the keystone. Reads fail soft to `{}` → **disabled**, and `is_enabled()` is a strict identity test against `True` (a hand-edited `"enabled": "false"` or `1` does not enable desktop control). The only writer is the dashboard PUT handler, which does not route through the agent tool gate; `enable_state.load_state()` opens the file directly, so legitimate reads are unaffected. The file carries no separate pointer opt-in: an earlier revision documented an `allow_pointer_move` flag (plus a `capabilities.computer_use_pointer` governance row) as a second consent gate for the one click path that warps the operator's REAL mouse pointer (`click_method: "global"`), and both were removed by product decision — `PolicyConfig.from_state` reads only `allowed_apps` / `extra_denied_apps`, so writing the flag has no effect and must not be re-documented without being re-implemented. That path is instead contained by requiring the model to NAME the method (`auto` never resolves onto it) and by a dedicated SEL `tool_kind` on every use.
 - **Runtime config (`config.json`, `config.local.json`) sealed read-only** — both files are `READONLY` leaves in `sandbox_leaves.py` (and on `_CREW_PRECREATE_READONLY_FILE_LEAVES`, so the Linux mount seal has a file to bind before the overlay exists), not merely write-fenced on the file-edit tool path. They carry the switches that LOOSEN confinement: `agent.sandbox` (`"off"` skips Kiro Crew's own sandbox for every later spawn, after which the other read-only ceilings are writable), `agent.apps_allow_third_party` / `agent.apps_trusted` (admit app code the gateway runs in-process), `agent.sandbox_allow_unsandboxed_exec` and `agent.approval_mode`. The loader's load-time clamp neutralises an inflated number, not a loosened switch, and `is_sensitive_write_path` never sees a spawned shell's `open()`, so a writable file let an in-sandbox agent end its own confinement. Both are sealed because `KiroCrewConfig.load()` deep-merges the overlay over the base with the overlay winning; sealing one would leave every key writable through the other. Every legitimate writer runs outside the sandbox (dashboard config API, channel handlers, the gateway's boot default and write-back migrations, `kirocrew config` from the operator's own terminal). Inside the sandbox reads keep working, a load-time migration write-back fails soft (`Config write-back failed` warning), and `kirocrew config set` exits with a pointer to the dashboard (`cli_config._sandboxed_config_write_hint`). Any other program gets the bare errno, which no Kiro Crew code sees, so the default contract (`config/prompt.md`), the root conductor (`spec_prompts._SEALED_CREW_PATHS_RULE`) and the worker (`spec_prompts._WORKER_SEALED_CREW_PATHS_RULE`) carry one standing rule: an `Operation not permitted`, `Read-only file system` or `Device or resource busy` on `config.json`, `config.local.json` or `work-ledger` is this protection. Each copy names only routes its own agents mount: the default contract offers a `setting.change` card or the Settings page, and for the ledger the owning conductor's Dashboard tab (the default agent has no `kirocrew-work`); the root conductor's copy offers the Settings page, `work_ledger_read`, `work_brief` and `work_report`; the worker's copy offers the Settings page, `work_brief` and `work_report` only, since a worker is not granted `work_ledger_read` and would stall on its approval in an unwatched child session. `test_sealed_crew_paths_prompt.py` pins the wording, that every tool a copy names is mounted on the spec that reads it, and that a dispatched agent's copy names only tools that spec pre-approves. The `<leaf>.lock` sidecar is not sealed: it holds no setting. Residuals: (1) on Linux the seal is a per-file bind mount, and the host writers of this pair and of the other rename-published `READONLY` leaves publish through `atomic_write` (temp + rename), which the kernel answers by detaching a mount whose file is renamed over from another mount namespace — so the seal holds from spawn until the next gateway save of that file, after which the name is unsealed in that sandbox until it respawns. That save is not only the operator's: the gateway also saves `config.json` on its own (boot migrations, member-identity publication and memory-store provisioning in `memory_stores.py`, the embedding-model stamp), and some of those paths an in-sandbox agent can reach indirectly through an ordinary tool call, so on Linux the agent can shorten the wait rather than only sit it out. macOS (Seatbelt, path-based) is unaffected. Closing this for the rename-published leaves at once (one read-only directory instead of per-file binds) is tracked as a follow-up; until then, on Linux, saving a setting during a session reopens the pre-seal exposure for that session. The owner-only switches `decisions_consent.json`, `credential_redaction.json` and `shared_crew_preview.json` are not in that class: their writers rewrite the existing record in place (`atomic_write.rewrite_in_place`), keeping its inode, so the seal holds for the sandbox's lifetime. That gives up the rename's crash atomicity: a read racing a save, or a crash inside one, can see an empty or cut-off record, which reads as each switch's narrow answer. The consent save, which reads the record before writing it, reports an empty or cut-off one as corrupt, as it does a hand-edited one, so a save never drops the browser opt-outs a crash erased. A save whose write fails tries to put the previous bytes back before it reports the error; a record that save created goes back to `{}`, which reads as absent, and is never removed, since a sandbox spawned meanwhile may already have sealed it. A save refuses a record that is a link or has a second hard link (a hard-link backup of the data home is one) rather than writing through or replacing it. (2) A symlinked or hardlinked `config.json` (a dotfile manager) is sealed by name only: the other name stays writable. The Linux spawn path treats it as it does every pre-created leaf: a RESOLVING link warns and continues, because refusing would block all agent work on a host whose dotfiles legitimately carry a second name; a DANGLING link (target absent) refuses the spawn with `SandboxCeilingUnsealable` via `_refuse_if_dangling_symlink`, since a mount on a dangling name has nothing to seal.
@@ -3896,8 +4012,8 @@ or an authored restriction in the RAW spec inputs
 (`kas_permissions.withhold_answered_under_authored_rules`,
 `authored_restricted_capabilities`): any non-`allow` rule in the spec's own
 `permissions` block, all three capabilities when that block is anything but a
-readable `{"rules": [...]}` with no `policies` bundle (the shapes the merge refuses
-whole, which a KAS session's start notice names as `permissions`), and any
+readable `{"rules": [...]}` (the shapes the merge refuses whole, which a KAS
+session's start notice names as `permissions`), and any
 `toolsSettings` entry for one of these built-ins. The keys that
 only grant on kiro-cli are not read as a restriction there: a shell entry's
 `allowedCommands` and boolean `autoAllowReadonly`, and a read or write entry's `allowedPaths`
@@ -4363,9 +4479,19 @@ and every gap fails closed:
   too, and the grant the deny record lifts answers nothing for one, so no limit
   is left to the gate alone (`test_kas_engine_child_kinds.py`). A refused agent, the engine's bundled agents
   (`general-task-execution`, whose tools are `*`, and `semantic_reviewer`) and
-  every name not registered stay under the `*` deny. A registered entry is held
+  every name not registered stay under the `*` deny. Under the engine mount
+  (`kas_engine_subagents._held_children`), outside a person's own dashboard chat on
+  the default agent and member `default`'s chat on it
+  (`own_agents_keep_their_servers`), a registered entry also keeps only the MCP
+  servers it declares exactly as the session agent does, every other one dropped and
+  excluded whole (`_only_shared_servers`): a cron run's `auto` or a trusted chat
+  would answer the ask that is otherwise all that holds such a server. In those
+  chats its tool selection is also cut to the session agent's `tools`, built-ins
+  and per-tool server refs alike, and one whose `tools` select by a wildcard or tag
+  is not registered (`_only_parents_builtins`). A registered entry is held
   five ways: it carries every `deny` and `ask` rule of the default agent's entry
-  (`_with_parent_restrictions`, as the helper does); every Kiro Crew server is
+  (`_with_parent_restrictions`; the helper, a copy of that entry, holds them as its
+  own); every Kiro Crew server is
   excluded whole (`@server` in `excludedTools`, `for_default_mount`), since each
   runs under the parent session's identity, and one it declares is dropped
   rather than launched; it asks for every MCP call (`_asking_for_mcp`), because
@@ -4769,10 +4895,15 @@ and every gap fails closed:
     `trustedAgents`. Every other harness is unchanged.
 - *Its tools.* The one agent Kiro Crew ships for the tool, `kirocrew-helper`
   (`acp/kas_engine_subagent_target.py`), exists only in memory, with no hooks. It
-  holds built-in tools and the MCP servers its parent holds
+  is a copy of the session agent's projected entry, the agent an unnamed
+  `spawn_run` runs: its built-in tools, `allowedTools`, `permissions`,
+  `excludedTools` and prompt, less Kiro Crew's own records of the parent
+  (`CREW_ONLY_ENTRY_KEYS`) and the sub-agent tool (`invoke_sub_agent` excluded and
+  every engine sub-agent denied, `deny_every_subagent`), so it starts no child. It
+  holds the MCP servers its parent holds
   (`shared_servers`): a server of the parent's block or a pooled stub of one its
   spec declares, that the parent's `tools` mount and its `excludedTools` do not
-  withdraw whole. The helper lists each as the parent's `tools` name it, carries
+  withdraw whole. The helper keeps the parent's `tools` entry for each, carries
   every `excludedTools` entry the parent holds for it, and repeats the parent's
   projected block entry byte for byte: the engine keys a running server by its
   name and declaration, so the helper is handed the parent's process and adds
@@ -4800,8 +4931,9 @@ and every gap fails closed:
   without a permission request would otherwise leave no row.
 
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
-a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode,
-whose seeded `permission` `"*": "ask"` already makes each call ask; kiro-cli
+a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude; opencode,
+whose seeded `permission` `"*": "ask"` already makes each call ask; goose, whose
+seeded `approve` mode on a goose home Crew builds for the spawn does the same; kiro-cli
 enforces the field itself and must never join) the direct `AcpClient` records both
 from the spec its session array was projected from (`acp/spec_tools_allowlists.py`:
 `spec_shell_allowlist` with no KAS policy, so an `allowedTools` naming the shell
@@ -5201,6 +5333,58 @@ re-parsed into GUI sub-effects; and the **web terminal PTY**
 (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no `is_denied` /
 `is_sensitive_bash_command` / governance call at all, so it is an operator-only,
 ungoverned plane.
+
+### Connected computers: a second, local OS fence
+
+Feature preview `connected_computers` (owner: `connected_computers/`, spec:
+[providers.md](providers.md)). A chat on a remote gateway can run its workspace tools
+and the user's explicitly exposed local MCP servers on the user's own computer. That
+computer runs them under its OWN fence, separate from `sandbox.py`, which this
+feature does not widen or change:
+
+- **An allow-list, not a mask** (`confinement.py`): a child may write only the
+  granted root and a private scratch, and read only those plus its runtime.
+  TLS trust reads mount only `/etc/ssl/certs`, `/etc/ssl/cert.pem`,
+  `/etc/ca-certificates`, `/etc/pki/tls/certs` and `/etc/pki/ca-trust` when
+  present, never the enclosing SSL/PKI trees or their private-key directories. Linux
+  uses `bwrap` with new user, PID, IPC and UTS namespaces and a seccomp filter
+  (`seccomp.py`) that refuses AF_UNIX sockets (abstract X11 and session-bus
+  sockets), io_uring, and `keyctl`/`add_key`/`request_key` (the user's session
+  keyring). Sharing is Linux-only for now: macOS, Windows and any processor
+  without a seccomp table refuse; nothing falls back to an unconfined run.
+- **Proved before each connect** (`self_test`): one probe runs unconfined and then
+  confined against fresh witnesses outside the root; any witness the confined run
+  reaches fails the connect.
+- **Consent is native only**: a desktop dialog and folder picker; no CLI verb, page,
+  HTTP route or agent tool can share a folder. The one grant path is the desktop
+  host on the stdio pipe the desktop app's main process holds, so a local process
+  that holds the gateway's internal secret (an app backend) still cannot grant.
+  The host binds the connection coordinates at `describe` and refuses a different
+  target at `share`.
+  Saved grants and queued revokes keep those coordinates across restarts; renewal,
+  reconnect and queued remote cleanup refuse changed or missing approvals before
+  sending to a destination. A changed target needs fresh native consent.
+  Remote forgets also carry the retired enrollment's saved generation. The remote
+  registry compares device, fingerprint and generation in its existing atomic
+  update; delayed or legacy unscoped cleanup cannot revoke a newer enrollment.
+  Probe writes use fresh private subdirectories and exclusive no-follow opens;
+  neither the unconfined control nor the confined probe follows planted links.
+  The connector credential is per device and
+  gateway, sealed under an OS keyring key (`protected_store.py`, tools resolved
+  with `trusted_system_bin_quiet`), and sent only after the gateway proved itself.
+- **Shared local permission audits:** local grant operations emit once after their
+  committed mutation with the entry point's HTTP subject, `cli` or `desktop-host`
+  when known. Remote HTTP Disconnect/Remove keeps its request-aware audit;
+  remote CLI mutations emit at their entry point, not in the registry. Local
+  HTTP success duplicates are removed.
+- **Every narrowing is immediate**: a revoke or Off from any local process stops
+  new input at the next frame and the process tree within a bound.
+- **Auth surface**: `GET /api/connected-computers/connect` bypasses the dashboard
+  token and checks its own credential; no internal path is added
+  ([dashboard-token-auth](dashboard-token-auth.md)). `@connected-computer-*` and
+  `@workspace` tools are never pre-authorized past Kiro Crew's own gate
+  (`platform.governance.may_skip_gate` answers False for both; for `@connected-computer-*`
+  while the preview is on, the only time such a server is mounted).
 
 ### Suspicious Bash Patterns (`security/`)
 
@@ -6218,7 +6402,7 @@ After expiry, re-authorization is required. A 5-minute grace window allows `!yol
 
 **Grants kept across an exit the user did not choose** (`kept_grants.py`, `kept_yolo.py`, `dashboard/chat_trust_restart.py`; decision [2026-11-18](../../decisions/2026-11-18-yolo-and-chat-trust-survive-every-exit-the-user-did-not-choose.md)).
 
-- *What is kept.* An ad-hoc YOLO grant from any surface, and an owner's Trust or Trust reads on a dashboard chat (the all-chats request included). Kept across every restart (the dashboard or desktop Restart, `/kirocrew restart`, `kirocrew restart`, an update's re-exec), a crash, a watchdog or OOM kill, a host reboot and a SIGTERM the service manager sends on its own. A timed grant keeps its original wall-clock expiry and is never extended; an `until_shutdown` grant lasts until the user stops Kiro Crew. Declared grants (`agent.dangerously_skip_permissions`, `gateway --approval yolo`) are not recorded: boot arms them again. Task-scoped grants, app-owned chats, Slack and channel session trust, and a Crew Mode card's crew-member trust are not kept. A worker whose posture its creator handed it and a crewmate chat its Profile seeded are not recorded as kept; a worker takes its creator's kept mode again through the picker's inherited-posture walk.
+- *What is kept.* An ad-hoc YOLO grant from any surface, and an owner's Trust or Trust reads on a dashboard chat (the all-chats request included). Kept across every restart (the dashboard or desktop Restart, `/kirocrew restart`, `kirocrew restart`, an update's re-exec), a crash, a watchdog or OOM kill, a host reboot and a SIGTERM the service manager sends on its own. A timed grant keeps its original wall-clock expiry and is never extended; an `until_shutdown` grant lasts until the user stops Kiro Crew. Declared grants (`agent.dangerously_skip_permissions`, `gateway --approval yolo`) are not recorded: boot arms them again. Task-scoped grants, app-owned chats, Slack and channel session trust, and a Crew Mode card's crew-member trust are not kept. A plain chat the owner's start mode (`dashboard.default_approval_mode`) seeded on Reads is kept like a pick, since that mode is the owner's own choice for it. A worker whose posture its creator handed it and a crewmate chat its Profile seeded are not recorded as kept; a worker takes its creator's kept mode again through the picker's inherited-posture walk.
 - *What ends them.* Only a stop the user chose, which writes the user-stop mark before the process goes: `kirocrew stop` (taken back when the stop exits non-zero, because it stopped nothing; a repeat stop that stops nothing keeps an earlier stop's mark; a `--port` stop always marks this data home and, when this home's recorded gateway pid does not hold that port live, says the gateway may use another home and keep its grants, and otherwise says the other gateway keeps its grants; the desktop's pid-pinned `--expect-pid` stop and its "Stop and restart" of an older gateway, `--keeps-grants`, write none), the desktop Quit (not a relaunch: the GPU-crash fallback, the update Restart now, the dashboard relaunch and a managed apply are restarts, `website/electron/relaunch-intent.js`; it writes the mark itself first, also when its gateway child already exited, so its signal fallback still ends the grants, then `POST /api/shutdown` with `{"user_stop": true}`; the desktop's stop before an update, and its quit when the OS ends the session, send none), and Ctrl+C (SIGINT) on a foreground gateway (its mark is written off the loop, and the shutdown starts once it is on disk; a Ctrl+C that forces a stop already under way writes it on the force-exit thread first). `kept_grants.boot_verdict` reads the mark once per process image: with it, every record is deleted and each owner audits what the stop ended; without it, each owner restores its record.
 - *The store.* `<data home>/kept-grants/` holds `yolo.json`, `chats.json` and the `user-stop` mark. The directory is `HIDDEN` in every sandbox mode, pre-created before the first spawn, refused as a link (`_CREW_NO_ALIAS_LEAVES`) and on the file-tool sensitive list, so a sandboxed process can neither plant a record nor delete the mark. Each record is an envelope signed with HMAC-SHA256 under a key derived from the persisted dashboard token-signing key with the label `kirocrew/kept-grants/v1`; nothing is written while that key is the in-memory fallback. A record that is a link, not a regular file, oversized, unparseable, of the wrong kind or version, unsigned or wrongly signed is deleted, audited as `kept_grants:record_rejected` and read as absent. The mark is unsigned: it can only end grants. The chat transcript's metadata is never a source of kept trust.
 - *When it is written.* The YOLO record follows every grant transition (a `safety_override_breadcrumb` transition listener queues the write on the breadcrumb worker, derived from live state). The chats record is written by the periodic flush, the shutdown save, and a write scheduled on the gateway loop right after any slot's mode changes (`_ChatSlot._trust` / `_trust_reads` setters). A change that takes a grant away (YOLO off, expired or revoked; a chat's recorded mode no longer held) removes its record on the changing thread before the change returns, and a queued write is renamed into place only while no change followed its sample, under a lock held for one rename or unlink and never across a write, so a crash right after cannot bring it back and the event loop never waits on a file write. A user's turn-off is answered only once that removal also survives a power loss: after the change, never inside it (so the grant is off in memory while the disk catches up), the answering path awaits `kept_grants.settle`, a sync of the record directory on a worker thread: `apply_approval_mode` (every approval-mode change, a chat's Trust and Trust reads and the dashboard's YOLO off included, before its slots update and its answer), Slack's `/kirocrew yolo off` and `!yolo off`, the shared channel `/yolo off` (`messaging/commands.py`) and Webex's. When the disk refuses that sync (an I/O error; a platform or filesystem that cannot sync a directory is not one), `settle` returns false and the answer still reports the turn-off but adds that a power loss could undo it (the dashboard as a safety notification). A guarded write's rename is synced the same way after its lock, best effort. The user-stop mark is written with `fsync` and its directory synced, by the gateway and by the desktop app; a mark whose file sync fails is not written, and the grants are then kept as after any other exit. None of these syncs runs on the event loop's thread, except the Ctrl+C mark when no thread can start, which already writes it there. The chats writer starts from the record its boot verified, so a record a refused restore left behind is removed by the first flush. Neither recorder writes before its boot read the previous record.
@@ -6366,10 +6550,10 @@ API instead of importing dashboard runner internals or fabricating a
 offers the `trust_command` tier as a grant on ONE site: the host of the page the
 call acts on, with its port when the URL names one, for one op class
 (`browser_harness/op_classes.py`). `read` covers opening and reading that host's
-pages; `act` covers clicking, typing, picking and uploading files there too, and is stored as the
+pages; `act` covers clicking, typing, picking, uploading files and a `js` in the current tab there too, and is stored as the
 host's key prefix plus `*`, so it also covers `read` on that host and nothing
-else. `ask`, `reflex` and every call of `op_classes.card_only` (`js`,
-`cdp`, `http_get` and `tabs close`, which reach past one host's pages) never get
+else. `ask`, `reflex`, a `js` that names a `target_id` and every call of
+`op_classes.card_only` (`cdp`, `http_get` and `tabs close`, which reach past one host's pages) never get
 a key, and neither does an op the
 classifier does not name. The host is the URL a `navigate` or `tabs new` opens
 and otherwise the chat's current page as the live hub last saw it; a Unicode

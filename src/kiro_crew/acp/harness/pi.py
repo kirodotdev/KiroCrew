@@ -954,11 +954,20 @@ class PiLaunch(ProcessAdapter):
         self._session: ProcessSession | None = None
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve both components, check pi's version, then seal and verify the gate."""
+        """Refuse or mask, resolve both components, check pi's version, seal and verify the gate."""
         global _pi_acp_argv_cache, _pi_bin_cache  # noqa: PLW0603
         session = ctx.session
         assert session is not None, "pi is launched for one session"
         self._session = session
+        # The refuse-then-mask preflight every enforced host runs, keyed on the
+        # routing rather than on this harness's identity, and FIRST: before the
+        # binary lookups, so a host that refuses the session never names an install
+        # command, and before the read-back below, which starts a child of this
+        # harness.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # Two components, resolved separately because either can be absent on its
         # own and the not-found message must name the one that is.
         cached_pi_acp: tuple[list[str] | None, str] | object = _pi_acp_argv_cache
@@ -1005,13 +1014,6 @@ class PiLaunch(ProcessAdapter):
         spawn_label = launch_mod._adapter_spawn_label(
             argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
         )
-        # The refuse-then-mask preflight every enforced host runs, keyed on the
-        # routing rather than on this harness's identity, and FIRST because the
-        # read-back below starts a child of this harness.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
-        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # The Node pi's shebang would find, against pi's own engine floor. Refused
         # here rather than left to the read-back: a pi under too old a Node dies at
         # module load, and the read-back can name only an exit code. When a Node

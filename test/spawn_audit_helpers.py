@@ -102,6 +102,28 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Gateway readiness uses fixed auth-status argv for a HOSTS entry, with
         # all three streams discarded. It reads no credential or guest cwd.
         "remote_session/git_gateway.py::login_status",
+        # Connected computers (local machine). asyncio.run drives the CLI's one
+        # revoke pass and the desktop host's stdio loop in-process; neither spawns.
+        "connected_computers/cli.py::_tell_remotes",
+        "connected_computers/desktop_host.py::run_desktop_host",
+        # The connector's tool servers. The argv is chosen on THIS computer: this
+        # interpreter, -I, the installed workspace_tools.py and the root the user
+        # picked in native consent, or an MCP server's command/args/env as the
+        # grant snapshotted it at consent. The remote gateway only names a kind,
+        # which selects among those entries; it supplies no path, argv, env or cwd,
+        # and agent input reaches the child only as MCP frames on its pipes. Each
+        # child already runs under confinement.wrap_off_loop (bwrap on the granted
+        # root, env built from nothing), which self_test proves holds;
+        # the gateway's own sandbox wrapper would replace that fence, not add one.
+        "connected_computers/connector.py::_spawn",
+        # That self-test's probe: this interpreter, -I -c with a fixed program; its
+        # argv tail is the JSON of witnesses this check created, cwd the granted
+        # root. stdin DEVNULL, no shell. Confined by the plan on the second run.
+        "connected_computers/confinement.py::_run_probe",
+        # OS keyring for the local grant key: secret-tool resolved from fixed system
+        # folders, with fixed verbs and a hashed account id; the key travels on
+        # stdin, never argv. No shell, no agent input.
+        "connected_computers/protected_store.py::_run",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has
@@ -1047,6 +1069,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Messages.app through the operator's own Full Disk Access and
         # Automation grants, which a scrubbed-env sandbox strips.
         "imessage/rpc.py::start",
+        # The managed-environment lane's ssh: `ssh -T -o ... crew-sbx-<id> sh -s`, a
+        # fixed argv whose one variable, the alias, is checked against the lane's
+        # `crew-sbx-<id>` shape first; the script travels on stdin and is rendered by
+        # the lane from its closed list (managed_env/install.py, machine.py). No agent
+        # input reaches it, and it must reach the operator's ssh config and plugin.
+        "managed_env/remote.py::_default_runner",
         "mcp_gateway/backend.py::spawn_backend",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the one-shot
@@ -1240,7 +1268,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "pod/provision.py::_manifest_path",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
-        "pod/runtime.py::recent_journal",
         # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in
         # place; Windows has no exec, so the CLI runs the same binary as a child
         # and returns its exit code. Argv is the pod venv's entry point plus a

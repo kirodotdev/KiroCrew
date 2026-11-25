@@ -48,6 +48,7 @@ from kiro_crew.slack.handler import (
     describe_grant_lifetime,
     is_allowed_user,
     is_owner,
+    is_shared_user,
     slack_cfg,
 )
 from kiro_crew.slack.sessions_view import (
@@ -56,6 +57,7 @@ from kiro_crew.slack.sessions_view import (
     _message_surface_limit,
     sessions_include_ended,
 )
+from kiro_crew.slack.shared_access import prime_shared_user
 from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
@@ -258,8 +260,9 @@ async def _handle_conductor(
     that message's thread a Conductor thread (``kiro_crew.slack.conductor_thread``).
 
     Slack does not run a slash command typed inside a thread and names no thread, so
-    an existing thread is made one with ``!conductor`` sent in it. Owner only, by
-    identity; every refusal is ephemeral and posts nothing.
+    an existing thread is made one with ``!conductor`` sent in it. The owner, or a
+    shared user Slack confirms (recorded as the thread's opener); every refusal is
+    ephemeral and posts nothing.
     """
     from kiro_crew.dashboard.session_control_parts.code_channel_exemption import published_goal
     from kiro_crew.slack import conductor_thread, slash_context  # local: see its docstring
@@ -267,7 +270,7 @@ async def _handle_conductor(
 
     goal = args.strip()
     channel, team = slash_context.room.get()
-    if not is_owner(caller_id):
+    if not is_owner(caller_id) and not conductor_thread.opener_for(caller_id):
         await respond("⛔ Owner-only command.")
         return
     if not thread_conductor_on(live_config(orch)):
@@ -282,7 +285,7 @@ async def _handle_conductor(
         return
     # Refused before the parent message is posted, so a refusal leaves nothing behind.
     why, _room = await conductor_thread.refusal(
-        slack, channel, "", caller_id, "", in_thread=True, new_thread=True
+        slack, channel, "", caller_id, "", in_thread=True, new_thread=True, goal=goal
     )
     if why:
         conductor_thread._audit(caller_id, "denied", f"channel={channel}", why)
@@ -737,7 +740,9 @@ async def _handle_restart(
     from kiro_crew.cron import stop_cron_before_restart
 
     await stop_cron_before_restart(getattr(orch, "cron_svc", None))
-    # A planned restart: the turns close_all() cuts resume on the next boot.
+    # A planned restart: record the chats with a running turn that close_all() is
+    # about to cut, so the next start tries to resume them, and wait for Owner
+    # approval records still being written.
     from kiro_crew.dashboard import restart_resume
 
     await restart_resume.record_running_slots(orch.dashboard_state)
@@ -866,9 +871,16 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if not slack_manifest.is_app_command(cmd, orch.slack_command, configured):
         return
 
-    # Deny-by-default — only the owner can invoke slash commands (a shared user,
-    # slack.shared_access, drives work by message, never through the slash command)
-    if not is_allowed_user(caller_id):
+    parts = cmd_text.split(maxsplit=1)
+    sub_cmd = parts[0].lower() if parts else ""
+    args = parts[1] if len(parts) > 1 else ""
+
+    # Deny-by-default — only the owner can invoke slash commands. A shared user,
+    # slack.shared_access, drives work by message, and may use the slash command only
+    # to start a Conductor thread (``conductor``), which records them as its opener.
+    if sub_cmd == "conductor" and not is_allowed_user(caller_id):
+        await prime_shared_user(caller_id, orch)
+    if not (is_allowed_user(caller_id) or (sub_cmd == "conductor" and is_shared_user(caller_id))):
         sel().log_api_access(
             caller=caller_id,
             operation="slack.slash_command",
@@ -894,11 +906,8 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     # The owner typed a name this app registered: adopt it, so usage replies,
     # the Home tab and the code-channel pickers name a command that exists even
     # while slack.command is still the default. A slack.command change sets it.
-    orch.slack_command = cmd[1:]
-
-    parts = cmd_text.split(maxsplit=1)
-    sub_cmd = parts[0].lower() if parts else ""
-    args = parts[1] if len(parts) > 1 else ""
+    if is_allowed_user(caller_id):
+        orch.slack_command = cmd[1:]
 
     entry = SLASH_REGISTRY.get(sub_cmd)
     if entry is not None:

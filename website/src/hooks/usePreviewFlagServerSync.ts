@@ -139,6 +139,9 @@ function persist(qc: QueryClient, flag: string, on: boolean): void {
       // portals the company form warns for), so re-read it once the gateway has
       // the new value (`useKasLogin` KAS_LOGIN_STATUS_KEY).
       void qc.invalidateQueries({ queryKey: ['kas-login'] })
+      // It can change which Remote Crew launch lanes the gateway offers too
+      // (`crew_client`: the managed-environment lane), so re-read that list.
+      void qc.invalidateQueries({ queryKey: ['cloud', 'provisioners'] })
       // Clears only this switch's notice: another switch's refused write is
       // still true after this one saved.
       if (writeError?.flag === flag) setWriteError(null)

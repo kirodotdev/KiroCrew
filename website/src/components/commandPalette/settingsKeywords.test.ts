@@ -28,6 +28,13 @@ describe('settingsKeywords integrity', () => {
     }
     expect(deadKeys, `Dead keyword IDs not in registry: ${deadKeys.join(', ')}`).toEqual([])
   })
+
+  // These words are also the guide's (find_ui) English search terms, so a new
+  // setting needs words a person would use for it, not only its label.
+  it('every SETTINGS_REGISTRY setting has search words', () => {
+    const missing = SETTINGS_REGISTRY.map(e => e.id).filter(id => !(SETTINGS_KEYWORDS[id]?.length))
+    expect(missing, `Add words for these settings to settingsKeywords.ts: ${missing.join(', ')}`).toEqual([])
+  })
 })
 
 describe('the About update switches are found by the words people use', () => {

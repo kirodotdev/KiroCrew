@@ -62,8 +62,10 @@ def post_compaction_parts(
 ) -> list[str]:
     """What a turn re-injects after a confirmed compaction dropped session start.
 
-    The agent contract, the memory activity index, the skills index (same gate and
-    glob restriction as session start), the learned-lessons block (same store,
+    The agent contract, the critical rules (same variant and opt-out as session
+    start, left out where the session head holds that exact text), the memory
+    activity index, the skills index (same gate and glob restriction as session
+    start), the learned-lessons block (same store,
     gates and budgets as session start, ranked against *query_text*, the user's
     own text for this turn), the CURRENT reply-style preferences, the Claude Code
     backend's steering resources (same gate as session start) and the CURRENT
@@ -77,6 +79,7 @@ def post_compaction_parts(
     resources and folder steering stay out of a prompt other people read.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_head as _session_head
 
     parts: list[str] = []
     _essentials = essentials
@@ -93,13 +96,21 @@ def post_compaction_parts(
         project=project or template_dir,
         mode=mode,
         session_key=session_key,
-        is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
         provider_type=provider_type,
+        # The live session's own mount, which a crewmate worker's conducting rules follow.
+        member_dispatch_mounted=getattr(context_provider, "member_dispatch_mounted", None),
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+    # The reply contract went with it, and only its short reminder rides the next
+    # message. A minimal session start sent none; a session head keeps its copy.
+    if not minimal_context and ctx._agent_includes_crew_context(agent):
+        _rules = ctx._critical_rules_for(session_key, runtime_source)
+        _held = context_provider.native_context_documents if context_provider is not None else {}
+        if not _session_head.holds(_held, _session_head.RULES_KEY, _rules):
+            parts.append(_rules)
     # The tool-name rule went with the session start too, and the contract just
     # restored names the tools bare again. Minimal turns carried it as well.
     _tool_names_part = _tool_names.tool_names_block(provider_type)
@@ -809,12 +820,31 @@ def interactive_guidance(
     return _interactive_guidance
 
 
+def recall_query(text: str, user_text_range: tuple[int, int]) -> str:
+    """What session-start recall ranks: the user's own span of *text*.
+
+    The context a dispatcher put in front of that span (a sub-agent notice, a
+    drained pending-context block, a cancelled-turn restore) ranks nothing, as
+    on the per-message and post-compaction lesson paths. An ``@prompt`` turn
+    reports an empty span where the prompt body that replaced its text begins,
+    so that body, still without what was put in front of it, is what ranks.
+    """
+    start, end = user_text_range
+    return text[start:end] or text[start:]
+
+
 def user_turn(
-    text: str, hook_result: HookResult, user_text_range: tuple[int, int] | None
+    text: str,
+    hook_result: HookResult,
+    user_text_range: tuple[int, int] | None,
+    *,
+    quick_prompts: bool = True,
 ) -> tuple[str, tuple[int, int] | None]:
     """``(the turn text as sent, the user's own bounds within it)``.
 
     The bounds are ``None`` when the caller gave no *user_text_range*.
+    *quick_prompts* off sends a leading ``/token`` as written: a chat option
+    tap's label, which the model wrote.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -845,11 +875,11 @@ def user_turn(
     # output is likewise the turn in full.
     _quick_prompt: str | None = None
     _quick_at = 0
-    if hook_result.action == ctx.HOOK_MODIFY or user_text_range is None:
+    if quick_prompts and (hook_result.action == ctx.HOOK_MODIFY or user_text_range is None):
         _quick_prompt = ctx.expand_quick_prompt(turn_text)
         if _quick_prompt is not None:
             turn_text = _quick_prompt
-    else:
+    elif quick_prompts and user_text_range is not None:
         _q0, _q1 = user_text_range
         _q0 = max(0, min(_q0, len(turn_text)))
         _q1 = max(_q0, min(_q1, len(turn_text)))

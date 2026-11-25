@@ -776,8 +776,9 @@ engine instead ([aws-control.md](aws-control.md)).
   vault still names that account, so a sign-in or sign-out from the dashboard
   or from `kirocrew kas login` / `kas logout` (`cli_kas_login.py`) turns it cold
   ([model-selection.md](../common/model-selection.md)). The dashboard drops its
-  own copy as well: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
-  and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
+  own copy as well: the sign-out (`useKiroSignOut` in
+  `pages/developer/KiroSignInSources.tsx`, behind the card's Sign out and "Use
+  the Kiro CLI account") and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
   model-list caches (`clearCachedModels`, a reset of `['available-models']`),
   because that query is otherwise refetched only when a session spawns. The
   authorized sign-in also asks for a fresh credit reading
@@ -787,10 +788,12 @@ engine instead ([aws-control.md](aws-control.md)).
   back to re-reading the GET. It re-reads the Team Crews list
   (`RELAY_VIEWER_CREWS_KEY`) at once too, which otherwise holds its signed-out
   refusal for its 60 s poll.
-- The device-code screen (`DeviceWaiting`) does not open a browser: it shows the
-  verification URL as a link with a labelled Copy link beside it, and the user code
-  as large, selectable text with its own Copy code, so a host with no browser to
-  open (a Linux desktop, a remote gateway) can still finish. A Copy that reaches no
+- The device-code screen (`DeviceWaiting`) does not open a browser. On the
+  full-screen gate it shows the verification URL as a link with a labelled Copy
+  link beside it, and the user code as large, selectable text with its own Copy
+  code, so a host with no browser to open (a Linux desktop, a remote gateway) can
+  still finish. In card chrome (Settings and the sign-in dialog) it renders
+  `DeviceCodeCard` instead, whose code has no copy control (see below). A Copy that reaches no
   clipboard says Copied nowhere and shows an inline `ErrorNotice` under the steps
   ("Couldn't copy the code. Select it and copy it by hand.", or the link's form);
   the attempt keeps polling, and the next copy that works clears it.
@@ -916,8 +919,24 @@ engine instead ([aws-control.md](aws-control.md)).
   outlined and sit in a two-column grid, none accent-filled, because the detail's
   own primary button is "Use {{name}}", from
   `components.kiroPrerequisiteGate.use_agent`; in both chromes every provider
-  choice is a plain button with no caption under it) and adds a signed-in summary (provider,
-  expiry, renewability -- never a token) with sign-out and sign-in-again. It is
+  choice is a plain button with no caption under it). The tab is one centered
+  column (the tab sets `ownHeader` on its `SidePanelTab`, so `SidePanelLayout`
+  draws no title row and the column's own header is the page title) that shows
+  only what the state needs. Signed out: the Kiro ghost (`LookingGhost`, whose
+  eyes follow the pointer on desktop and stay still on a phone and under reduced
+  motion), "Sign in to Kiro", one line, and the choices in a column at most
+  320 px wide; the Credits card only when there is a real reading (sessions on
+  kiro-cli's own login still have a balance). Signed in: an account header (initials avatar,
+  the account's name as the title -- an e-mail blurred by default beside the
+  account popup's show/hide toggle -- "Signed in with <provider>", Switch
+  account and Sign out, neither red; gray placeholders while the name may still
+  arrive with the `['kiro-usage']` reading, `useSignedInAccount().pending`), then
+  the Credits card (`KiroCreditsCard`), whose no-reading state is one gray line
+  with a small Refresh; the card names the account itself unless the header
+  already does. A lapsed sign-in says so in the header, with Sign in
+  again as its one filled button, and the Credits card shows only for a real
+  reading. A live sign-in with no refresh token says, in one muted line, that it
+  cannot renew itself. Never a token. It is
   reachable from the chat error row an `AcpAuthRequired` turn produces
   (`chat_utils.AUTH_REQUIRED_KIND` → "Sign in to Kiro", navigating to
   `KIRO_SIGN_IN_PATH` = `/settings/kiro-account?highlight=key:kiro-sign-in`
@@ -987,10 +1006,18 @@ engine instead ([aws-control.md](aws-control.md)).
   In both places the choices are Google, GitHub and AWS Builder ID with their
   marks (`assets/google-mark.svg`, `assets/aws-mark.svg`, the shipped GitHub mark),
   then "or", then company SSO. Its device-code screen (`DeviceCodeCard`, card
-  chrome) shows one heading, an "Open sign-in page" button with a copy control,
-  the code with its own copy control, one waiting line with the expiry, and a back
-  arrow that returns to the choices: in the dialog header (`SignInBackContext`),
-  and beside the screen's heading in the Settings card, which has no such header.
+  chrome) is ONE component in both hosts: a heading ("Finish in your browser")
+  and a one-line hint, a full-width "Open sign-in page" button, a "Copy link" text
+  button under it, the code in a box the same width with no copy control (it is
+  only compared by eye, never typed), and one waiting line with the expiry. The
+  host takes the way back to the choices through `SignInBackContext`: the dialog
+  puts it in its header as a back arrow, Settings as "Use another way" above the
+  screen. The screen sets and clears that slot in layout effects, so the host's
+  header and back control change in the same paint as the screen, never one
+  frame later with the chooser's header. The one difference between the hosts is the slot's `ownsHeading`:
+  Settings sets it, because its centered header already says "Finish in your
+  browser" with its own hint, so the screen leaves its heading out; the dialog,
+  whose header says "Sign in to Kiro", leaves it unset and the screen draws it.
 - **The chat asks before a message fails.** `KiroSignInPrompt`, above the
   composer (`ComposerDockView`), shows one line and a Sign in button that opens
   `KiroSignInDialog` while

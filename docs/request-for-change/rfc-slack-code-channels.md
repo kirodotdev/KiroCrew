@@ -90,17 +90,18 @@ superseded-by: []
   effect when the owner merges this amendment. The decision, the rules and the
   security trade-off are recorded in
   [rfc-slack-shared-access](rfc-slack-shared-access.md), "A shared user's own code
-  channel". Not built: on main `4158830b79`, `_route_message` in `slack/events.py`
-  skips `code_channel_dispatch` for a shared sender, who is refused in every code
-  channel. The
-  code is open in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181).
+  channel". Built in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181)
+  (merged 2026-11-23): `_route_message` in `slack/events.py` admits a shared user
+  in a code channel they opened and refuses them in any other
+  (`slack/code_channels/shared_refusal.py`).
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
   and pganapathy80's `slack-code-channels-preview` branch
   (`7888cb2ec3` agent sessions, `ae2545752c` opt-in code channels,
   `8b243f0b1d` `create_code_channel`, `21fc677d5d` views and the plan canvas),
-  also open as [#15259](https://github.com/kirodotdev/KiroCrew/pull/15259).
+  also opened as [#15259](https://github.com/kirodotdev/KiroCrew/pull/15259)
+  (closed unmerged 2026-10-17).
   The Rust reference implementation is `crates/kiro-bot` on kiro-cli's
   `codex/kiro-bot-development` branch.
 - Slack documentation: [Slack Code](https://docs.slack.dev/ai/slack-code/),
@@ -578,6 +579,21 @@ crewmates' private copies.
     once the board carries each row's PR. A PR tab is removed, by the view id
     recorded when it opened, only on evidence: its PR seen merged or closed, or
     two newer open PRs seen. A failed read removes nothing.
+  * **Pull request status** (amended 2026-11-23). The channel-wide
+    `code_channel.pr_status` property mirrors the channel's own PR, the one its
+    `agent_resource` names; helper agents' PRs do not change it. The PR counts
+    by its real state as `gh` reads it: a draft, merged or closed PR as such;
+    an open one as `blocked` while its checks fail, a review asks for changes or
+    it conflicts with its base, else `open`. A read that could not settle the
+    checks leaves the last-read result in place, and an open PR whose checks no
+    read has settled sends nothing that pass. Once the channel has no PR any
+    more an empty value clears the status, once. The value never comes from an
+    agent tool or a person's text. It goes in a `setProperties` call of its own
+    after a turn, only when it or its PR changed, through the workspace's write
+    gate and the channel's activation. A rate limit, an outage or
+    `pr_link_failed` is retried on the next pass; a refusal of the value itself
+    holds it for that channel until the gateway restarts and never turns the
+    channel's publishing off. No setting.
   * **Workers tab.** A `workers` block_kit tab drawn from the work board's own
     snapshot and redaction: for each open helper agent (up to 14, then `+N
     more`) its title, status, PR and CI, **Open in dashboard** and, while it

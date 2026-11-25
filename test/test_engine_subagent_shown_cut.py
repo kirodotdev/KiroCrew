@@ -199,7 +199,8 @@ async def test_a_session_whose_cards_show_none_of_these_strings_scans_none_of_th
 ) -> None:
     """A chat that mounted nothing (the preview off or never set, a custom agent's own
     sub-agents): its native cards show the row's title, and the handle keeps the
-    dispatch's strings unread."""
+    dispatch's strings unread. Only an approval card scans the task and the asker,
+    when it shows them."""
     handle, slot = _handle(), _slot()
     turn = _turn(slot, engine=False)
     task, agent = f"{_TASK} run ls and report", f"{_AGENT}-helper"
@@ -207,11 +208,13 @@ async def test_a_session_whose_cards_show_none_of_these_strings_scans_none_of_th
     await _roster(turn, handle, _dispatch("in_progress", task, agent))
     await _roster(turn, handle, _dispatch("failed", task, agent, rawOutput=f"{_WHY} refused"))
     held = children.kas_requesting_subagent(_asking(f"{_ASKER}-helper"))
-    event = SimpleNamespace(tool_call_id=CALL, requesting_subagent=held)
-    assert cards.approval_card_fields(turn, event) == {}
 
     assert scanned, "the card's own title is still scanned, as it was"
     assert _holding(scanned, _TASK, _AGENT, _WHY, _ASKER) == []
+
+    event = SimpleNamespace(tool_call_id=CALL, requesting_subagent=held)
+    assert set(cards.approval_card_fields(turn, event)) == {"subagent_task", "asked_by_subagent"}
+    assert _holding(scanned, _AGENT, _WHY) == []
 
 
 # ── what the cut returns ──────────────────────────────────────────────────────

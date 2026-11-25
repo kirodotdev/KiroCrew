@@ -59,6 +59,7 @@ __all__ = [
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
     "spec_with_default_crew_servers",
+    "spec_withholds_server_whole",
     "default_crew_servers_pass",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
@@ -520,9 +521,10 @@ def narrowed_agent_permissions(
     """*derived* with the ``deny`` and ``ask`` rules of the authored block *inherited* first.
 
     *inherited* is read with the parser KAS's projection uses
-    (``parse_user_permissions``), so a block it refuses whole on every session -- a
-    named policy bundle, an unknown key, a capability KAS does not define -- yields
-    no rule: none of its rules ever applied. Duplicates are dropped, so a writer
+    (``parse_user_permissions``), so a block it refuses whole on every session -- an
+    unknown key, a capability KAS does not define -- yields no rule: none of its
+    rules ever applied. A named policy bundle is left out with the ``allow`` rules
+    beside it, so its ``deny`` and ``ask`` rules are carried. Duplicates are dropped, so a writer
     that runs over its own output does not grow the list.
 
     The block returned is one that same projection accepts, because a refused block
@@ -639,7 +641,7 @@ def agent_spec_mcp_refs(
     for the same boot-path reason as every other function here.
     """
     from kiro_crew.acp.default_crew_servers import session_spec_on
-    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld
+    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld, drop_opted_out
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
     from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
@@ -659,12 +661,18 @@ def agent_spec_mcp_refs(
                 raw = params.get("mcpServers")
                 wire = list(raw) if isinstance(raw, list) else []
             judged = session_spec_on(backend, agent, spec)
-            # Same filter as the runtime detector, so doctor's per-backend rows
-            # and a session's report agree on a gate-withheld server.
-            unresolved = drop_gate_withheld(
-                unresolved_server_refs(
-                    judged, wire, backend=backend, mcp_json=mcp_json_server_names(spec, backend)
-                )
+            # Same filters as the runtime detector, so doctor's per-backend rows and a
+            # session's report agree on a gate-withheld or an excluded server.
+            unresolved = drop_opted_out(
+                judged,
+                drop_gate_withheld(
+                    unresolved_server_refs(
+                        judged,
+                        wire,
+                        backend=backend,
+                        mcp_json=mcp_json_server_names(spec, backend),
+                    )
+                ),
             )
         except Exception:
             continue
@@ -722,6 +730,13 @@ def default_crew_servers_pass() -> AbstractContextManager[None]:
     from kiro_crew.acp.default_crew_servers import one_pass
 
     return one_pass()
+
+
+def spec_withholds_server_whole(spec: Any, server: str) -> bool:
+    """Whether *spec* excludes *server* whole; see :func:`kiro_crew.acp.default_crew_servers.withheld_whole`."""
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    return bool(withheld_whole(spec, [server]))
 
 
 def kiro_cli_resolves() -> bool:

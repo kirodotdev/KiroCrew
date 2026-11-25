@@ -16,6 +16,8 @@
  *   between Edit and Remove.
  * - `detail` renders under the row header: the machine's own state, an action
  *   in progress, or the error it ended in.
+ * - `managedBy` is the row's "Managed by" line, in place of "Kiro Crew does not
+ *   manage this crew": what the machine is and what Remove leaves behind.
  *
  * Four properties are deliberate.
  *
@@ -41,12 +43,19 @@
  * a throwing contribution costs the user its controls and not the row.
  *
  * Registration is module-load, like every other frontend seam. The core
- * registers nothing, so stock behavior is unchanged.
+ * registers nothing; its own contribution is the seed map below (the
+ * managed-environment lane, whose components draw nothing and call no route
+ * while the `crew_client` preview is off).
  */
 import type { ComponentType } from 'react'
 import type { InstanceView } from '../api/client'
 import { BUILTIN_PROVISIONER_ID } from '../utils/remoteCrew'
 import { reportSeamCollision } from '../apps/seamCollision'
+import {
+  SANDBOX_PROVISIONER_ID,
+  SandboxCrewRowDetail,
+  sandboxManagedBy,
+} from './managedEnv/SandboxCrewRowActions'
 
 /** What each contributed component is handed. */
 export interface CrewRowActionProps {
@@ -66,9 +75,23 @@ export interface CrewRowActions {
   menuItems?: ComponentType<CrewRowActionProps>
   /** A block under the row header, or null for none. */
   detail?: ComponentType<CrewRowActionProps>
+  /** The row's "Managed by" text, or undefined for the core's default line. Only with
+   *  `menuItems` or `detail`. */
+  managedBy?: () => string | undefined
 }
 
-const CONTRIBUTIONS = new Map<string, CrewRowActions>()
+/** The core's own contributions (a seed map). */
+const CONTRIBUTIONS = new Map<string, CrewRowActions>([
+  [
+    SANDBOX_PROVISIONER_ID,
+    {
+      provisionerId: SANDBOX_PROVISIONER_ID,
+      // Its actions live in the detail block, so the row's own action group keeps its size.
+      detail: SandboxCrewRowDetail,
+      managedBy: sandboxManagedBy,
+    },
+  ],
+])
 
 /**
  * Register the row actions for crews one provisioner created.
@@ -110,7 +133,12 @@ export function registerCrewRowActions(actions: CrewRowActions): void {
     )
     return
   }
-  CONTRIBUTIONS.set(id, { provisionerId: id, menuItems: actions.menuItems, detail: actions.detail })
+  CONTRIBUTIONS.set(id, {
+    provisionerId: id,
+    menuItems: actions.menuItems,
+    detail: actions.detail,
+    managedBy: actions.managedBy,
+  })
 }
 
 /**

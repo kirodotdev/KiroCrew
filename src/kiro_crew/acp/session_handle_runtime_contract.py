@@ -231,6 +231,10 @@ class AcpRuntimeProtocol(Protocol):
     _session_harness_states: dict[str, Any]
     """What the host prepared for each session, by session id."""
 
+    recording_allowed: bool
+    """Whether agent-supplied text may reach the log. Latched False once anything on
+    the process runs outside persistent memory."""
+
     @property
     def pid(self) -> int | None:
         """Subprocess pid (sandbox launcher parent under the Linux namespace

@@ -249,9 +249,9 @@ def gate_grants(facts: Any) -> bool:
     * the app holds approved sites right now (read fresh);
     * a call that names a URL (``navigate``, ``tabs`` ``new``) names one of them; any
       other URL falls through to the card, and the op route refuses it anyway;
-    * the call is not :func:`card_only` (``js``, ``cdp``, ``http_get``, ``tabs
-      close``), which always asks, nor ``upload``, which only a person's own site
-      grant covers.
+    * the call is not :func:`card_only` (``cdp``, ``http_get``, ``tabs close``),
+      which always asks, nor ``js`` or ``upload``, which only a person's own site
+      grant covers (``js`` also a person's "Trust all tools" or YOLO).
 
     A granted slot is noted (:func:`note_granted_session`) before the approval leaves,
     so the op route holds it to its sites even if they are revoked before the call
@@ -272,7 +272,7 @@ def gate_grants(facts: Any) -> bool:
     op = str(call.raw_params.get("op"))
     if (
         not readable
-        or op == "upload"
+        or op in ("js", "upload")
         or card_only(op, op_args if isinstance(op_args, dict) else {})
     ):
         return False

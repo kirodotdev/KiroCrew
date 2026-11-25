@@ -577,7 +577,7 @@ test still passes.
 | Id | Guarantees | Pinned by | Constrains |
 |---|---|---|---|
 | H9 | `kiro-cli` remains the default branch of spawn-argv resolution, keeping its pre-spawn agent materialization (`kiro-cli` discovers selectable modes from `~/.kiro/agents/*.json` at startup, so a later `set_mode` fails with "Mode not found" without it) and its `--model` pin (the only way to run a model outside the agent's provider). A refactor that treats Kiro as one entry among N drops both. The Kiro spawn lives in its own harness on the runtime and in the client's own explicit arm of `AcpClient._spawn`, so no other host shares the code that carries them. | `test_harness_parity.py::test_kiro_spawn_argv_keeps_its_own_branch`, `::test_codex_resolves_its_own_adapter_and_declares_its_own_handshake`, `test_acp_harness_contract.py::test_kiro_spawn_argv_names_the_agent_and_the_model` | `acp/harness/kiro.py` (`KiroHarness.resolve_spawn`) |
-| H10 | Protocol version and client capabilities stay per-harness literals. Collapsing them to one handshake that every harness accepts silently downgrades the Kiro session's declared capabilities. The hosts also disagree on the protocol version's TYPE, so one shared handshake would break a host outright. | `test_harness_parity.py::test_handshake_is_per_backend`, `test_acp_harness_contract.py::test_protocol_versions_differ_in_type_not_just_value` | `acp/harness/kiro.py`, `acp/harness/kas.py` (`client_capabilities`, `protocol_version`), `acp/types.py` (`ACP_CLIENT_CAPABILITIES`, `KAS_CLIENT_CAPABILITIES`) |
+| H10 | Protocol version and client capabilities stay per-harness literals. Collapsing them to one handshake that every harness accepts silently downgrades the Kiro session's declared capabilities. The hosts also disagree on the protocol version's TYPE, so one shared handshake would break a host outright. | `test_harness_parity.py::test_handshake_is_per_backend`, `test_acp_harness_contract.py::test_protocol_versions_differ_in_type_not_just_value` | `acp/harness/kiro.py`, `acp/harness/kas.py` (`client_capabilities`, `protocol_version`), `acp/types.py` (`ACP_CLIENT_CAPABILITIES`, `KAS_CLIENT_CAPABILITIES`), `acp/kas_shared_model_picker.py` (`with_shared_model_picker`, the `_meta.kiro.sharedModelPicker` and `configurationState` flags the KAS handshake adds, under `client_meta_settings` only) |
 | H11 | The provider label is a closed mapping and an absent label means Kiro. It indexes resume compatibility, session-map persistence, and session-file cleanup routing, so a harness with no `PROVIDER_LABEL_*` of its own persists as a Kiro session and its transcript is pruned for want of a Kiro session file. | `test_harness_parity.py::test_every_known_backend_has_a_label`, `::test_codex_carries_its_own_provider_label` | `acp/provider_labels.py` (`PROVIDER_LABEL_*`), `providers/acp.py` (`provider_label`), `providers/acp_lifecycle.py` (`cleanup_session`), `session.py` (`detect_provider_switch`) |
 | H12 | Model pre-flight keeps "empty or unknown advertised set means allow", and never compares ids across harness namespaces. Harnesses advertise ids in their own spelling; one shared membership test across two namespaces calls every legitimate model unusable and withholds the model. | `test_harness_parity.py::test_model_preflight_allows_unknown_advertised_set` | `acp/runtime_models.py` (`model_is_unusable`, `advertised_model_ids`; re-exported by `acp/client.py`) |
 
@@ -654,10 +654,14 @@ is not sent.
 
 ### KAS engine sub-agents (the `kas_subagents` feature preview)
 
-With the `kas_subagents` feature preview on (default off) a KAS dashboard chat of the default agent mounts the
-engine's own sub-agent tool with the shipped `kirocrew-helper` and the person's own
-registered agents reachable, and
-its entry excludes `spawn_sub_agents` (`acp/kas_engine_subagents.py`). In the same
+With the `kas_subagents` feature preview on (default off) every KAS chat on an agent Kiro
+Crew ships or builds (a dashboard chat, a crew member's, a cron run, a messaging
+channel's; never a conductor's, a Kiro Crew sub-agent run, a workflow or a heartbeat)
+mounts the engine's own sub-agent tool with the shipped `kirocrew-helper` (a copy of
+the chat's own agent) and the person's own registered agents reachable
+(`acp/kas_engine_subagents.py:engine_subagents_on`), and the entry excludes `spawn_run`
+and `spawn_sub_agents`: the engine's tool replaces them in every mounted chat.
+In the same
 chats on a person's own agent, a file that excludes the sub-agent tool the way a
 file run on kiro-cli did is read as kiro-cli read it
 (`acp/kas_excluded_tool_cli.py`). The gate is

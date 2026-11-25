@@ -14,8 +14,11 @@ import functools
 import importlib.util
 import io
 import json
+import shlex
+import sys
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -739,6 +742,57 @@ def test_the_summary_step_writes_nothing_and_passes_on_no_plan(
     assert not (tmp_path / "summary").exists()
 
 
+def _measure_step() -> dict[str, Any]:
+    steps = _ci()["jobs"]["backend-test"]["steps"]
+    found = [step for step in steps if step.get("name", "").startswith("Measure the tests skipped")]
+    assert len(found) == 1, [step.get("name") for step in steps]
+    return found[0]
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_the_measure_step_counts_the_skipped_tests_only_when_they_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
+) -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(argv: list[str], env: dict[str, str], check: bool) -> SimpleNamespace:
+        calls.append((argv, env))
+        (tmp_path / ".coverage-measure.host.1.cc").write_text("data", encoding="utf-8")
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(SKIP, "subprocess", SimpleNamespace(run=run))
+    main = getattr(SKIP, "main", None)
+    assert main is not None, "scripts/ci_main_red_skip.py has no main(argv, env)"
+    # The step's own command line, as the workflow runs it.
+    words = shlex.split(_measure_step()["run"].replace("\\\n", " "))
+    assert words[:3] == ["python3", "scripts/ci_main_red_skip.py", "measure"]
+    ids = [THREE[0], "test/test_g.py::test_scan@tree_scan_g"]
+    env = {
+        **summary_env(tmp_path, json.dumps({"issue": 900, "nodeids": ids})),
+        "GITHUB_ACTIONS": "true",
+    }
+    assert main(words[2:], env) == 0
+
+    [(argv, child)] = calls
+    assert argv == [
+        sys.executable,
+        "-m",
+        "pytest",
+        *words[3:],
+        THREE[0],
+        "test/test_g.py::test_scan",
+    ]
+    assert child["COVERAGE_FILE"] == ".coverage-measure" and "GITHUB_ACTIONS" not in child
+    # Only a green pass reaches the files the shard's `coverage combine` folds in.
+    folded = sorted(path.name for path in tmp_path.glob(".coverage.*"))
+    assert folded == ([".coverage.measure.host.1.cc"] if returncode == 0 else [])
+
+    calls.clear()
+    assert main(["measure", "-q"], summary_env(tmp_path, "")) == 0
+    assert calls == []
+
+
 def test_the_plugin_matches_an_xdist_group_id_on_either_side(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -802,7 +856,7 @@ def _ci() -> dict[str, Any]:
 
 def test_the_changes_job_reads_the_issue_once_and_fails_open() -> None:
     changes = _ci()["jobs"]["changes"]
-    assert changes["permissions"] == {"contents": "read", "issues": "read"}
+    assert changes["permissions"] == {"contents": "read", "issues": "read", "actions": "read"}
     assert changes["outputs"]["main_red_skip"] == "${{ steps.main-red.outputs.main_red_skip }}"
     step = next(step for step in changes["steps"] if step.get("id") == "main-red")
     assert step["continue-on-error"] is True
@@ -850,3 +904,39 @@ def test_each_backend_shard_loads_the_plugin_with_the_plan_in_env(job: str) -> N
         assert step["env"]["CI_MAIN_RED_SKIP"] == "${{ needs.changes.outputs.main_red_skip }}"
         assert "-p scripts.ci_main_red_skip" in step["run"]
         assert "main_red_skip" not in step["run"].replace("scripts.ci_main_red_skip", "")
+
+
+def test_shard_one_measures_the_skipped_tests_with_the_suite_coverage_targets() -> None:
+    job = _ci()["jobs"]["backend-test"]
+    names = [step.get("name", "") for step in job["steps"]]
+    step = _measure_step()
+    tests = next(i for i, name in enumerate(names) if name.startswith("Run tests"))
+    assert tests < job["steps"].index(step) < names.index("Stage shard coverage data")
+    assert step["if"] == (
+        "matrix.group == 1 && steps.scope.outputs.reduced == 'false'"
+        " && needs.changes.outputs.main_red_skip != ''"
+        " && startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-')"
+    )
+    # The tests' own identity and home, and a pass that can neither fail the job
+    # nor eat into the 60 minutes a fleet shard had before it existed.
+    assert step["shell"] == job["steps"][tests]["shell"]
+    assert step["continue-on-error"] is True
+    fleet = [int(word) for word in job["timeout-minutes"].split() if word.isdigit()][0]
+    assert fleet - step["timeout-minutes"] >= 60
+    assert step["env"]["CI_MAIN_RED_SKIP"] == "${{ needs.changes.outputs.main_red_skip }}"
+    words = shlex.split(step["run"].replace("\\\n", " "))
+    targets = {word for word in job["steps"][tests]["run"].split() if word.startswith("--cov=")}
+    assert targets and {word for word in words if word.startswith("--cov=")} == targets
+    for kept in (
+        "-n0",
+        "--dist",
+        "no",
+        "--timeout=120",
+        "-m",
+        "not ipv6_required and not real_venv",
+    ):
+        assert kept in words
+    assert words[-1] == "--cov-report="
+    # A counted measure file joins the tests' own data; it must never replace it.
+    staged = job["steps"][names.index("Stage shard coverage data")]["run"]
+    assert "coverage combine --append" in staged

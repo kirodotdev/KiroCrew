@@ -122,9 +122,13 @@ def _model_unentitled_meta(exc: BaseException) -> dict[str, object] | None:
     rejected = getattr(exc, "rejected_model", None)
     if not isinstance(rejected, str) or not rejected.strip():
         return None
-    # ONE shared predicate (see its docstring): an empty/None advertised list is
-    # "unknowable" and answers False, which is the None this path wants — the
-    # formatter treats that case as transient wording too, so no fix affordance.
+    # ``_raise_acp_error`` stamps the verdict its formatter used (``unentitled``):
+    # the backend's own entitlement token decides with no served list at all.
+    # Without the stamp, ONE shared predicate (see its docstring): an empty/None
+    # advertised list is "unknowable" and answers False, which is the None this
+    # path wants — the formatter treats that case as transient wording too.
+    if getattr(exc, "unentitled", False) is True:
+        return {"kind": MODEL_UNENTITLED_KIND}
     if not model_is_unusable(rejected, getattr(exc, "advertised", None)):
         return None
     return {"kind": MODEL_UNENTITLED_KIND}

@@ -1149,7 +1149,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
-  onPutPinInComposer?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => boolean | void
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string

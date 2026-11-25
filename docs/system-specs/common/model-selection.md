@@ -158,6 +158,35 @@ the cold start, the warm-pool re-apply and a live switch already use. A
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
+The select stays the account's whole served list because Crew declares the
+sharedModelPicker client capability (`acp/kas_shared_model_picker.py`, added to
+`clientCapabilities._meta.kiro` in `runtime_spawn_launch._handshake_client_capabilities`).
+A Kiro user hides models from the model picker and orders it on Kiro Web or in the
+Kiro CLI, the choice is stored per account, and the engine applies it to the `model`
+select it sends a client that does not declare the capability; a client that
+declares it is sent every served model, in the account's order, and the hidden
+models as the `modelPickerHidden` row of its connection-level configuration view.
+Crew reads that row once after `initialize` (`_kiro/configuration/getState`,
+`observer: connection`; `_read_shared_model_picker`) and on each pushed
+`_kiro/configuration/state` of the connection view (the reader loop's
+`_follow_shared_model_picker`), only from an engine whose `agentCapabilities` carry
+the flag and the method (`serves_shared_picker`), and records it beside the catalog
+under the vault identity (`kas_model_catalog.record_hidden_models`). The bundle-route
+picker marks each such model's row `hidden_by_account: true`
+(`models_kas_bundle._picker_row`); the chat picker leaves those models out on top of
+Crew's own hidden list (`filterInteractiveModels`), the Selectable Models editor
+lists them locked and unticked, the row's description line starting "Hidden
+through your app.kiro.dev settings" with a link to app.kiro.dev/settings/model
+(`MultiSelectOption.lockedReason`), and writes none of them, and the Bot and role pickers keep
+every served model, since hiding is a view preference and a hidden model stays
+usable. The account's order arrives as the select's order, which the picker keeps
+(`withAutoFirst` moves only Auto); the `modelPickerOrder` row is not read, nothing
+is written back, and an engine
+that states no row (an older one, or a view without it) hides nothing from the
+account. On the kiro-cli relay route the picker is `--list-models` narrowed to
+what a live session advertises; the same flags go out there, so the account's
+hidden models stay in that list, and nothing on that route marks them.
+
 A reopened chat's select is not the account's list. From kiro-cli 3.4 (measured on
 3.4.1) `session/load` answers with a select naming one model, the one the session
 runs, while `session/new` on the same account lists every served model, and KAS
@@ -847,8 +876,11 @@ its own once the cache refreshes with a list that carries it.
   current catalog. Enabling the configured effort default moves the slider thumb to
   that level before the setting write completes.
 - **Pin a cheaper model** for the worker roles only through
-  `agent.role_models.<role>` (`background`, `subagent`), read by
-  `AgentConfig.resolve_model(role)` in `config/sections_agent.py`. Roles default to
+  `agent.role_models.<role>` (`background`, `subagent`, `subagent_light`,
+  `optimizer`), read by `AgentConfig.resolve_model(role)` in
+  `config/sections_agent.py`; the prompt optimizer reads its `optimizer` pin
+  directly, and unset leaves it on the model the `kirocrew-lite` spec
+  resolves. Roles default to
   `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat model
   does not silently become the price of every background task. The sessions a
   Bot dispatches with `session_create` are the one decided exception
@@ -879,10 +911,18 @@ its own once the cache refreshes with a list that carries it.
   inherits a model reaches its session through the session manager's own
   config, which that rebuild replaces); the Bot editor sends
   both fields on every save, renaming included, and the Bot's `set_model` card
-  goes through the same route. That route is the only caller: a change of a
-  Bot's model or effort from `kirocrew agent update --model` or a hand edit of
-  `config.json` does not clear the chat's own value yet (#36614), and a fix must
-  not let a dashboard save clear twice through the config watcher. A
+  goes through the same route. A change of `agents.<name>.model` or
+  `agents.<name>.reasoning_effort` from any other writer (`kirocrew agent update
+  --model`, `kirocrew config set`, a hand edit of `config.json`) clears it through
+  the config watcher's `bot_chat.follow` applier, which runs after the session
+  manager's applier has rebuilt the factory for a changed Bot effort, and defers
+  with it while a section that applier reads is degraded for one load
+  (`agents`, `workspaces`), but not for one the loader keeps degraded until a
+  restart, since the restarted watcher never replays the edit. Each Bot
+  value is followed once: every follow records the value it applied, the watcher
+  skips a value already recorded, and a save skips a field already followed to
+  the same value after the save began, so a dashboard save never clears twice
+  and a `/model` pick made between the two is kept. A
   cleared value that differed from the Bot's, or a save of the Bot's model while
   a throttle or refusal fallback serves the chat (whether or not the chat keeps a
   model of its own), queues the reset a model pick queues, so a

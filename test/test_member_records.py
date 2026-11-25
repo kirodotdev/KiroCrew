@@ -26,7 +26,11 @@ from kiro_crew import (
 )
 from kiro_crew.apps import bot_grant_store, protected_app_state
 from kiro_crew.config.paths import data_home
-from kiro_crew.dashboard import local_authorization
+from kiro_crew.dashboard import (
+    crew_api_approval_records,
+    crew_api_response_records,
+    local_authorization,
+)
 
 _SLUG = "atlas"
 _MEMBER = "Atlas"
@@ -123,6 +127,9 @@ def test_the_spelled_names_match_their_owners() -> None:
         local_authorization.LOCAL_GRANTS_KIND,
         protected_app_ui.APP_UI_KIND,
         protected_app_state.APP_BROWSER_SITES_KIND,
+        protected_app_state.APP_STARTUP_KIND,
+        crew_api_approval_records.APPROVALS_KIND,
+        crew_api_response_records.RESPONSES_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

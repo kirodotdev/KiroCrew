@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp.kas_permissions import shell_deny_globs, tools_settings_to_permissions
@@ -58,7 +59,8 @@ def test_a_group_alternation_reaches_kas_as_one_deny_per_branch(regex: str, glob
     assert uncarried_denied_commands(settings, block) == []
 
 
-@pytest.mark.parametrize(
+_NO_GROUP = named_cases(
+    "test_an_entry_with_no_group_travels_as_before",
     ("regex", "globs"),
     [
         ("touch .*", {"touch *"}),
@@ -66,9 +68,6 @@ def test_a_group_alternation_reaches_kas_as_one_deny_per_branch(regex: str, glob
         (r"echo \(a\|b\) .*", {"echo (a|b) *"}),
     ],
 )
-def test_an_entry_with_no_group_travels_as_before(regex: str, globs: set[str]):
-    assert _shell_globs([regex]) == globs
-    assert _named([regex]) == []
 
 
 @pytest.mark.parametrize(
@@ -207,7 +206,8 @@ def test_a_bot_worker_still_holds_its_shell_for_a_top_level_alternation():
 # ── a branch keeps its edge spaces ────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
+_TOP_LEVEL_BRANCH = named_cases(
+    "test_a_top_level_branch_keeps_its_edge_spaces",
     ("regex", "globs"),
     [
         # kiro-cli's own conversion writes `["rm * ", " shred *"]` for this entry.
@@ -216,14 +216,9 @@ def test_a_bot_worker_still_holds_its_shell_for_a_top_level_alternation():
         ("rm .* |(touch|mkdir) .*", ["rm * ", "touch *", "mkdir *"]),
     ],
 )
-def test_a_top_level_branch_keeps_its_edge_spaces(regex: str, globs: list[str]):
-    out = kas_agents.to_client_custom_agent("a", _spec([regex]), "p")
-    [rule] = [r for r in out["permissions"]["rules"] if r["capability"] == "shell"]
-    assert rule["match"] == globs
-    assert _named([regex]) == []
 
-
-@pytest.mark.parametrize(
+_GROUP_BRANCH = named_cases(
+    "test_a_group_branch_keeps_its_edge_spaces",
     ("regex", "globs"),
     [
         # kiro-cli writes `[" rm  *", " shred  *"]` and `["nice rm *", " rm *"]`.
@@ -233,7 +228,10 @@ def test_a_top_level_branch_keeps_its_edge_spaces(regex: str, globs: list[str]):
         ("(sudo |)rm .*", ["sudo rm *", "rm *"]),
     ],
 )
-def test_a_group_branch_keeps_its_edge_spaces(regex: str, globs: list[str]):
+
+
+@pytest.mark.parametrize(("regex", "globs"), [*_TOP_LEVEL_BRANCH, *_GROUP_BRANCH])
+def test_a_branch_keeps_its_edge_spaces(regex: str, globs: list[str]):
     out = kas_agents.to_client_custom_agent("a", _spec([regex]), "p")
     [rule] = [r for r in out["permissions"]["rules"] if r["capability"] == "shell"]
     assert rule["match"] == globs
@@ -253,7 +251,8 @@ def test_an_edge_spaced_split_still_keeps_the_allowlist():
     assert out[CREW_SHELL_ALLOWLIST_KEY] == ["git status.*"]
 
 
-@pytest.mark.parametrize(
+_ONE_GROUP_IN_A_GROUP = named_cases(
+    "test_a_group_wrapping_one_group_reads_as_that_group",
     ("regex", "globs"),
     [
         # kiro-cli writes `["rm *", "shred *"]` for this entry and refuses both.
@@ -263,7 +262,12 @@ def test_an_edge_spaced_split_still_keeps_the_allowlist():
         ("((rm|shred)) (a|b)", {"rm a", "rm b", "shred a", "shred b"}),
     ],
 )
-def test_a_group_wrapping_one_group_reads_as_that_group(regex: str, globs: set[str]):
+
+
+# An entry with no group, and a group that only wraps one group, reach KAS as plain
+# globs, and neither is named as a deny left uncarried.
+@pytest.mark.parametrize(("regex", "globs"), [*_NO_GROUP, *_ONE_GROUP_IN_A_GROUP])
+def test_an_entry_reaches_kas_as_its_globs(regex: str, globs: set[str]):
     assert _shell_globs([regex]) == globs
     assert _named([regex]) == []
 

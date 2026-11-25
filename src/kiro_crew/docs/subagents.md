@@ -166,15 +166,29 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 ## KAS sub-agents (a feature preview)
 
 With the "KAS sub-agents" feature preview on (Settings > Developer > Feature
-previews, off by default), a KAS dashboard chat on the default agent hands short, independent tasks whose
+previews, off by default), a KAS chat hands short, independent tasks whose
 results it needs in the same reply to the KAS engine's own sub-agent tool
-(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. A KAS sub-agent
+(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent, a copy of the
+chat's own agent. That is every KAS chat: your dashboard chats, a crew member's
+chat, a cron run, a messaging channel's chat, and the chats a conductor or a Bot
+creates for its work (a dispatched worker, a Bot's worker chat), on any agent Kiro
+Crew ships or builds (an agent file of your own is read as kiro-cli reads it); not a
+conductor's own chat (a Bot's own chat, which hands its work to the Bot's workers,
+and a conductor mode chat), a Kiro Crew sub-agent run, a workflow or a heartbeat,
+and not while "Chat runtime sharing" is on. In those chats the engine's tool takes
+the place of `spawn_run` and `spawn_sub_agents`, and it can run your own agents
+too (outside your own dashboard chat on the default agent, each with only the MCP
+servers it shares with the chat's agent, since no one may be there to approve a
+call to another). It takes none of `spawn_run`'s options: no model, backend, folder or turn limit
+of its own, and nothing that outlives the turn, so the built-in flows that pin a
+model for each run (the local review lanes, llm-council) run every task on the
+chat's own model there. A KAS sub-agent
 runs inside the chat's turn and process: it starts no process and no MCP server of
 its own, so the memory guard, the queue and the sub-agent count settings above do
 not apply to it, and its cost is part of the chat's turn. It holds the chat agent's
 built-in tools and the MCP servers that agent uses, on the same running servers,
 but none of Kiro Crew's own tools (memory, skills, artifacts, spawn, cron,
-messages). The chat agent's rules decide its calls as they decide the agent's own:
+messages), and it cannot start sub-agents of its own. The chat agent's rules decide its calls as they decide the agent's own:
 what the agent runs without asking, it runs without asking, and what the agent is
 asked about or denied, it is too. Each dispatch is one approval card unless the
 chat is trusted or YOLO is on.

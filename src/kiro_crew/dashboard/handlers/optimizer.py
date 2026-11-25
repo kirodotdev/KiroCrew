@@ -10,6 +10,7 @@ from collections import Counter
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.state import DashboardState
@@ -370,12 +371,17 @@ async def handle_optimize(request: web.Request) -> web.Response:
 
     try:
         logger.debug("Optimizer: acquiring dedicated session")
+        # The optimizer role pins; unset, the start runs on the kirocrew-lite
+        # spec's background model and the background role effort.
+        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
         # Not under the 30s budget below: a slow start it cancelled would be
         # killed as a failed setup and the draft handed back unchanged. The
         # start's own stage budgets bound it instead.
         client, _is_new, _resumed = await state.sessions.get_or_create(
             optimizer_session_key,
             agent="kirocrew-lite",
+            model=agent_cfg.role_models.get("optimizer") or None,
+            reasoning_effort_override=agent_cfg.role_efforts.get("optimizer") or None,
             # The owner is waiting on the composer (kiro_crew.start_priority).
             start_priority=owner_start_priority(request),
         )

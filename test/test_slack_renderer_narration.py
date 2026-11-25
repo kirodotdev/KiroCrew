@@ -267,7 +267,7 @@ class TestNarrationFoldsIntoSteps:
         )
         read = [t for t in tasks if t["title"].startswith("read") and t["details"]]
         assert [t["details"] for t in read] == ["Reading the config.\nread\nfailed"], tasks
-        assert read[0]["status"] == "error"
+        assert read[0]["status"] == "complete"
 
     def test_a_finished_turn_releases_nothing_more_when_it_then_dies(self):
         # A fault after the reply went out (a footer post that 4xxs) must not

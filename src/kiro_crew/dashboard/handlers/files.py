@@ -82,6 +82,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     update_config_locked,
 )
 from kiro_crew.config.sections import (  # noqa: F401
+    DEFAULT_APPROVAL_MODES,
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
     LINK_PATTERNS_MAX,

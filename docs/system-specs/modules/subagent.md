@@ -1878,29 +1878,37 @@ other harness: unchanged. Rules and fail-closed cases:
 
 ### KAS engine sub-agents beside this manager (the `kas_subagents` feature preview)
 
-On KAS with the `kas_subagents` feature preview on (default off), a person's dashboard chat on
-the default agent hands in-turn fan-out to the engine's own sub-agent tool and the
-in-memory `kirocrew-helper` agent (`acp/kas_engine_subagents.py`,
-[acp-client](acp-client.md)); its agent entry excludes `spawn_sub_agents`, and the
-contract's one `spawn_sub_agents` sentence names the engine's tool instead. The
-tool also reaches the person's own agents that pass the KAS target projection, at
-most `MAX_SUBAGENT_TARGETS`; one it leaves out can still be started with
-`spawn_run`. The engine's own tool text lists every agent it finds, the ones the
+On KAS with the `kas_subagents` feature preview on (default off), every chat on an agent
+Kiro Crew ships or builds (a dashboard chat, a crew member's, a cron run, a messaging
+channel's; never a conductor's) can hand in-turn fan-out to the engine's own sub-agent
+tool and the in-memory `kirocrew-helper` agent, a copy of the chat's own agent
+(`acp/kas_engine_subagents.py`, [acp-client](acp-client.md)). A conductor's own chat
+and a Bot's own thread never mount it; the sessions they create (a dispatched
+worker, a Bot worker chat) do. In every mounted chat the agent entry excludes
+`spawn_run` and `spawn_sub_agents` and the contract names the engine's tool in their
+place. The tool also reaches the person's own agents that pass the KAS target
+projection, at most `MAX_SUBAGENT_TARGETS`; outside a person's own dashboard chat on
+the default agent and member `default`'s chat on it, each holds only the MCP servers
+it shares with the chat's agent ([acp-client](acp-client.md)). An engine sub-agent takes none of
+`spawn_run`'s per-run options, so the built-in flows that pin a model, a backend or
+a folder on a run (the local review lanes, llm-council) lose that pin in a mounted
+chat. The engine's own tool text lists every agent it finds, the ones the
 mount refuses included, and Kiro Crew cannot shorten that list, so the sentence
-says it for the model (`ENGINE_SUB_AGENT_SENTENCE`): the helper or one of the
+says it for the model (`ENGINE_ONLY_SUB_AGENT_SENTENCE`): the helper or one of the
 user's own agents runs, the list names agents that will not, a refusal that reads
 `deny subagent matching "*"` refuses that one agent (an own agent past the ones
-tried; one left out after it was tried is denied by name), `spawn_run` starts it
-instead, and no agent the tool runs holds a Kiro Crew tool. The helper's
-`description`, which the engine prints in that list, says what the helper holds,
-and its prompt tells it to report a tool it lacks instead of working around it.
+tried; one left out after it was tried is denied by name), and no agent the tool
+runs holds a Kiro Crew tool, starts a sub-agent or takes a model, folder or turn
+limit. The helper's `description`, which the engine prints in that list, says what
+the helper is, and its prompt (its parent's, then `CHILD_NOTE`) says what it lacks
+and tells it to report a tool it lacks instead of working around it.
 The person is not told which own agents were left out: that line is logged
 (`kas_engine_subagents._held_children`). In the same chats on a person's own agent, an `excludedTools` list
 run on kiro-cli is read as kiro-cli read it (`acp/kas_excluded_tool_cli.py`,
 [acp-client](acp-client.md)). Nothing
-in this module changes: `spawn_run`, `spawn_sub_agents` (still served to every other
-session and agent), the manager, admission, the memory gate and its deferral queue,
-orphan recovery and every route stay, and serve every other session kind
+in this module changes: `spawn_run`, `spawn_sub_agents` (still served to every session
+and agent but the mounted chats above), the manager, admission, the memory gate and its
+deferral queue, orphan recovery and every route stay, and serve every session kind
 (`subagent:`, `cron:`, workflows, the task runner, Crew members, Bots, conductors
 and their workers, channels). A KAS child never reaches this manager: it starts no
 process, so the memory gate, `agent.max_subagents` and the per-child usage row do
@@ -1923,14 +1931,14 @@ once the runs it stopped have reported to the parent, which a running turn holds
 back, so in a turn with both kinds the turn's stop does not wait on it and the
 request is answered. With none open the turn is left alone
 (`test_stop_all_engine_children.py`). A chat whose only sub-agents are KAS children
-shows no Stop-all control. The helper's prompt carries the default contract's Rules bullets on
-what a shell or file tool must not do, read from the shipped `config/prompt.md` at
-build time by the anchors in `HELPER_RULE_ANCHORS` (no second copy); they are guidance, and the helper is bounded by the same gate and
-sandbox as its parent. The helper holds its parent's built-in tools and MCP servers
-under its parent's rules, and none of Kiro Crew's own servers, so it has no memory,
-skill, artifact, spawn, cron or message tool: a task that needs one stays with the
-parent or goes to `spawn_run` ([security](security.md), KAS native sub-agent
-ceiling). With the preview off or never set, those chats use this manager's path
+shows no Stop-all control. The helper's prompt is its parent's, so it carries the same
+Rules on what a shell or file tool must not do; they are guidance, and the helper is
+bounded by the same gate and sandbox as its parent. The helper holds its parent's
+built-in tools and MCP servers under its parent's rules, and none of Kiro Crew's own
+servers (each is launched with the parent session's key, and an engine sub-agent has
+no session of its own), so it has no memory, skill, artifact, spawn, cron or message
+tool: a task that needs one stays with the parent ([security](security.md), KAS
+native sub-agent ceiling). With the preview off or never set, those chats use this manager's path
 from their next session, and every other agent is projected as before the preview
 existed.
 
@@ -2082,14 +2090,18 @@ row is written). A child's call request names its asker in
 `_meta.kiro.requester.subagent.agentName` when the engine reports it, read into
 `AcpEvent.requesting_subagent` (`session_handle_native_children.kas_requesting_subagent`,
 kept to `REQUESTER_NAME_CAP` plus the same lookahead; the card cuts it).
-In an engine turn the permission row's meta takes two more keys
+In every KAS turn, the `kas_subagents` preview on or off, the permission row's meta
+takes two more keys
 (`approval_card_fields`): `subagent_task` (the task, redacted, `APPROVAL_TASK_MAX`) and
 `asked_by_subagent` (the asker). The composer's approval bar draws them as a plain
 text "Task:" line and an "Asked by sub-agent" chip beside "Raised by"
-(`components/chat-input/ApprovalSubagent.tsx`). No gate, grant, trust key, Slack
-mirror or audit reads either key; an engine that does not name the asker (the
-bundled 0.66.117) leaves the card as it was, and outside an engine turn neither key
-is written. Tests: `test_engine_subagent_approval_card.py`,
+(`components/chat-input/ApprovalSubagent.tsx`). The preview does not gate them: a
+KAS dispatch's request carries only its `Sub-agent: <name>` title, and the dispatch
+frame never reaches the tool-input cache (`_handle_kas_subagent` routes it to the
+roster), so without the task the card had nothing under its title. No gate, grant,
+trust key, Slack mirror or audit reads either key; an engine that does not name the
+asker (the bundled 0.66.117) leaves the card as it was, and only KAS writes either
+input, so no other harness's card gains one. Tests: `test_engine_subagent_approval_card.py`,
 `website/src/test/ChatInput.engineSubagentApproval.test.tsx`.
 
 ### Kiro Crew's own generated specs are not sub-agents
@@ -2389,8 +2401,10 @@ it `end_turn` with nothing after it. The run then withholds that ending and send
 `deny_notice.build_refused_turn_resume_prompt` (the redacted notice, plus the fact
 that the turn was stopped) as the next prompt on the same session, at most
 `REFUSED_TURN_RESUME_MAX` times per run (`subagent_manager/run_turn.py`). The clean
-ending resumes only on opencode (the provider's `is_opencode_backend`; other
-harnesses go on after a reject, so their clean ending is the model's own), and
+ending resumes only on a harness whose session capability
+`ends_turn_on_permission_reject` is true, which is opencode alone
+(`agent_sdk/capabilities.py`; other harnesses and an unknown backend go on after a
+reject, so their clean ending is the model's own), and
 only when the model wrote no text and made no new tool call after the latest
 refusal; a
 turn the model went on with, a person's no in the same attempt, and a stop, reap

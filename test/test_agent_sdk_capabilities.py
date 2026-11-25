@@ -90,6 +90,15 @@ CAPABILITY_FIELDS = (
     "refines_tool_call_titles",
     "permission_requests_name_child",
     "writes_crew_readable_transcript",
+    "honors_chat_steering_off",
+    "crew_sends_persona_prompt",
+    "loads_steering_natively",
+    "keeps_prompt_on_unlanded_turn",
+    "ends_turn_on_permission_reject",
+    "names_crew_tools_by_fused_name",
+    "model_auto_switches_in_place",
+    "harness_loads_agent_context",
+    "keeps_session_across_compaction",
 )
 
 

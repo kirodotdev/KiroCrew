@@ -48,16 +48,19 @@ def schemas() -> list[dict[str, Any]]:
                 "Publish or update a view tab in your Slack code channel: an html "
                 "page (a full, self-contained document; no external resources load) "
                 "or a display-only block_kit surface. Use html for a preview of a page "
-                "or site, not a file upload or a screenshot. Calls with the same view_key "
-                "update the same tab; a channel holds at most five tabs. The Code "
-                "tab's diff comes from your worktree and the Plan tab from "
-                "code_channel_publish_plan_canvas, so neither is a type here." + _PIN
+                "or site, not a file upload or a screenshot. Use type diff (no other "
+                "argument) when someone asks to see the diff or picks 'Show me the diff': "
+                "it opens the channel's Code tab with your worktree's and helpers' changes; "
+                "never paste a diff into the channel, and if it finds nothing to show, send "
+                "the diff as an html view. Calls with the same view_key update the same tab; "
+                "a channel holds at most five tabs. The Plan tab comes from "
+                "code_channel_publish_plan_canvas." + _PIN
             ),
             "inputSchema": _obj(
                 {
                     "type": {
                         "type": "string",
-                        "enum": ["html", "block_kit"],
+                        "enum": ["html", "block_kit", "diff"],
                         "description": "View kind (default html).",
                     },
                     "view_key": {

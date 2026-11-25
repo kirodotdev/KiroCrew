@@ -75,6 +75,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_SESSION_SHARING,
@@ -1129,7 +1130,7 @@ class AcpProvider(LLMProvider):
     def native_steering(self) -> bool:
         # Kiro ACP manual/fileMatch support depends on version and engine;
         # the fallback keeps those guides reachable without a false capability.
-        return self._client.backend == ACP_BACKEND_KAS
+        return self.capabilities.loads_steering_natively
 
     @property
     def reports_compaction(self) -> bool:
@@ -1290,9 +1291,15 @@ class AcpProvider(LLMProvider):
             # needs too: the member DM mount and channel ride ``session/new``
             # (``_start_kiro_runtime``), the essentials delivered to the old
             # conversation are not in the new one, and an effort pushed as a
-            # per-session config option (KAS, codex) is back at the default.
+            # per-session config option (KAS, codex) is back at the default. The key
+            # is read off the loop where one can exist (a Bot worker's answer reads its
+            # Bot's record); every other host stops at the membership read (H13).
             await self._client.new_conversation(
-                member_session_key=self._member_session_key(),
+                member_session_key=(
+                    await asyncio.to_thread(self._member_session_key)
+                    if self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+                    else ""
+                ),
                 channel_id=self._owning_channel_id() or "",
             )
             self.essential_delivery.invalidate()

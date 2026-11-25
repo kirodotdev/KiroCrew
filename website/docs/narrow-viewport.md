@@ -384,8 +384,13 @@ reading), leads to **Settings -> Kiro account**, whose **Credits** section
 that section is always there (its Refresh fills an empty reading); on any other
 harness only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)`, the
-segment's own derivation minus the warming `null`. The tab itself shows while the
-build offers Kiro sign-in or that section has something to show.
+segment's own derivation minus the warming `null`. While the build offers Kiro
+sign-in, the section shows once Kiro Crew is signed in (and not lapsed), or
+whenever there is a real reading: sessions on kiro-cli's own login still have a
+balance, and this is the phone's only view of it. Signed out or lapsed with no
+reading, the tab shows only the sign-in column. The tab
+itself shows while the build offers Kiro sign-in or that section has something to
+show.
 Off the chat route the phone header keeps the logo -> nav drawer
 and the bell, and renders an empty centre spacer so the header still has three
 in-flow children -- with two, the actions group would be auto-placed into the `auto`
@@ -730,8 +735,8 @@ from the column's own docked width, measured before the swap, and the panel is
 the same element throughout (its terminals and frames live on). The settle runs
 on the main thread so the column reads every frame. The swipe is bound on the
 shell grid, which holds both the chat and the column, so a run keeps going when
-the panel arrives under the pointer. It is off for a bottom-docked panel, while
-the find pane holds the dock, and in embed frames. The exact lift-off from the desktop app reaches it
+the panel arrives under the pointer. It is off for a bottom-docked panel and in
+embed frames. The exact lift-off from the desktop app reaches it
 through the same reader, and so does the start distance: a closed panel moves only once a
 leftward run has travelled 80px. An artifact frame in the panel (`ArtifactBodyIframe`
 with `relayWheel`, set only for the side panel) relays the runs its own content
@@ -860,6 +865,15 @@ buttons that own the only gutter their content has, and rows inside a bordered p
 keep theirs. There is no lint gate for this, so read the structure around a hit before
 gating it.
 
+
+### A tab that draws its own header
+
+A `SidePanelTab` with `ownHeader` (Settings > Kiro account, whose centered column
+opens on the account's own header) gets no title row: the layout leaves out its
+`label`, `description` and a `header`-docked `headerRight`, and keeps the label as
+a visually hidden `h2` so a screen reader still meets the tab's title first. Unlike
+`paneOwnsHeader`, the phone keeps its back bar to the root list, because the pane
+has no back action of its own.
 
 ### Member memory drill-in
 

@@ -282,6 +282,37 @@ def _is_alias_family(key: str, base: str) -> bool:
     return key == base or (key.startswith(f"{base}-") and key[len(base) + 1 :].isdigit())
 
 
+def mcp_ref_owner(ref: str, keys: Iterable[str]) -> str:
+    """The longest of *keys* claiming ``ref`` as ``@key`` or ``@key/tool``, else ``""``.
+
+    Longest wins because a server key may itself contain a slash: with keys ``a/b``
+    and ``a/b/c``, the bare ``@a/b/c`` belongs to ``a/b/c``, not to ``a/b`` as a tool.
+    An exact bare match is always the longest claimant.
+    """
+    return max(
+        (k for k in keys if ref == f"@{k}" or ref.startswith(f"@{k}/")),
+        key=len,
+        default="",
+    )
+
+
+def rewrite_mcp_ref(ref: object, old_ref: str, new_ref: str) -> object:
+    """*ref* moved from ``old_ref`` to ``new_ref``, bare and per-tool spelling alike.
+
+    Both spellings kiro-cli resolves move together: the bare ``@server`` and the
+    per-tool ``@server/tool``. Leaving the per-tool spelling on the old key strands it
+    on a name the caller removes, and the final reconcile then drops it from BOTH
+    lists as dangling. The suffix is carried VERBATIM by slicing off the matched
+    prefix -- never re-derived by splitting the ref, because the server key itself
+    may contain a slash (``npm:@scope/pkg``), so a split takes the wrong component.
+    """
+    if ref == old_ref:
+        return new_ref
+    if isinstance(ref, str) and ref.startswith(f"{old_ref}/"):
+        return new_ref + ref[len(old_ref) :]
+    return ref
+
+
 def _normalize_mcp_server_keys(
     config: dict,
     *,
@@ -330,20 +361,9 @@ def _normalize_mcp_server_keys(
         return _is_alias_family(key, base)
 
     def _rewrite_ref(ref: object, old_ref: str, new_ref: str) -> object:
-        # Both spellings kiro-cli resolves move together: the bare ``@server``
-        # and the per-tool ``@server/tool``. Leaving the per-tool spelling on
-        # the old key strands it on a name this pass removes, and the final
-        # reconcile then drops it from BOTH lists as dangling. The suffix is
-        # carried VERBATIM by slicing off the matched prefix -- never re-derived
-        # by splitting the ref, because the server key itself may contain a
-        # slash (``npm:@scope/pkg``), so a split takes the wrong component.
         if isinstance(ref, str) and ref in _immovable:
             return ref
-        if ref == old_ref:
-            return new_ref
-        if isinstance(ref, str) and ref.startswith(f"{old_ref}/"):
-            return new_ref + ref[len(old_ref) :]
-        return ref
+        return rewrite_mcp_ref(ref, old_ref, new_ref)
 
     # A known-but-absent slashed server's refs are IMMOVABLE. They need
     # protecting from exactly one thing -- a present ANCESTOR reading the absent
@@ -376,12 +396,7 @@ def _normalize_mcp_server_keys(
     _claimable = _reserved | set(servers)
 
     def _owner(ref: str) -> str:
-        """The longest key claiming ``ref``; an exact bare match always wins."""
-        return max(
-            (k for k in _claimable if ref == f"@{k}" or ref.startswith(f"@{k}/")),
-            key=len,
-            default="",
-        )
+        return mcp_ref_owner(ref, _claimable)
 
     _immovable: set[str] = set()
     for _key in ("tools", "allowedTools"):

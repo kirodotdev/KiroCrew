@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 #: The one interval of every work-ledger patrol: this default patrol, and a loop the
 #: conductor arms itself (``monitor_start`` forces it for ``watch="work-ledger"``).
-#: No cycle cap: the patrol runs until the conductor stops it after its final report,
-#: or a person stops it. Its one bound is the runaway backstop
+#: No cycle cap: the patrol runs until every item is closed and the conductor's turn
+#: is over (the gateway then ends it), or until the conductor or a person stops it. Its one bound is the runaway backstop
 #: :func:`patrol_max_runtime_secs` (``rfc-permanent-patrol.md``).
 PATROL_INTERVAL_SECS = 300
 PATROL_MAX_CYCLES = 0
@@ -83,10 +83,12 @@ PATROL_MESSAGE = (
     "session_send with steer: true. "
     "Answer question and blocked "
     "items with session_send with steer: true. Ignore progress. This loop has no cycle cap; its one "
-    "bound is the 7-day runaway backstop. When every item is terminal and nothing "
-    "is queued, or the user says stop, first send "
-    "the user one final report (what landed, what is left, links); then, in a "
-    "later step, call autonudge_stop."
+    "bound is the 7-day runaway backstop. When you close the last item, send the "
+    "user one final report (what landed, what is left, links) in that turn: once "
+    "every item is closed and your turn is over, the gateway ends this loop, so "
+    "open the next item in that same turn to keep it. If the user says stop "
+    "while items are open, send that report, then, in a later step, call "
+    "autonudge_stop."
 )
 
 #: Every text the gateway has armed a default patrol with. A persisted loop keeps
@@ -95,6 +97,23 @@ PATROL_MESSAGE = (
 SHIPPED_PATROL_MESSAGES: frozenset[str] = frozenset(
     {
         PATROL_MESSAGE,
+        "Conductor patrol (armed by the gateway when you dispatched work and had no "
+        "active loop). Run work_ledger_read with compact=true, unless this wake names "
+        "an item whose status is done. For done items call the accept_eval tool with no "
+        "arguments: it reads each done item's bar from your ledger and returns the "
+        "worker's report beside each verdict. Settle a pass with "
+        "one write, work_ledger_record action=close state=accepted verdict=pass; "
+        "record any other answer with "
+        "work_ledger_record action=verdict. A done whose report says it "
+        "finished a step and whose own acceptance is a later step is not a failed "
+        "attempt: do not count it in fails or reject it; send it the next step with "
+        "session_send with steer: true. "
+        "Answer question and blocked "
+        "items with session_send with steer: true. Ignore progress. This loop has no cycle cap; its one "
+        "bound is the 7-day runaway backstop. When every item is terminal and nothing "
+        "is queued, or the user says stop, first send "
+        "the user one final report (what landed, what is left, links); then, in a "
+        "later step, call autonudge_stop.",
         "Conductor patrol (armed by the gateway when you dispatched work and had no "
         "active loop). Run work_ledger_read with compact=true, unless this wake names "
         "an item whose status is done. For done items call the accept_eval tool with no "

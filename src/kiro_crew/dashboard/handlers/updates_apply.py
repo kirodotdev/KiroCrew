@@ -202,7 +202,9 @@ async def _restart_gateway(
         # flight is filed cancelled, its marker cleared and its owner told.
         await stop_cron_before_restart(getattr(state, "crons", None))
         committed = True
-        # A planned restart: the turns close_all() cuts resume on the next boot.
+        # A planned restart: record the chats with a running turn that close_all()
+        # is about to cut, so the next start tries to resume them, and wait for
+        # Owner approval records still being written.
         # Imported at module load, before an apply can remove this tree; that
         # also preloads it for the gateway's update restart.
         step("recording running chats")
@@ -607,6 +609,9 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
         if census is not None and isinstance(census.busy, int) and census.busy > 0:
             counts = census.payload()
             logger.info("Restart refused while work is in flight: %s", counts)
+            # Named for this answer only: the owner gate above admits the owner and
+            # a Shared Crew teammate, who both list every slot and cron job already.
+            holders, holders_more = census.named_holders()
             return web.json_response(
                 {
                     "ok": False,
@@ -622,6 +627,8 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
                     "busy": counts["busy"],
                     "quiet_remaining_secs": counts["quiet_remaining_secs"],
                     "settle_remaining_secs": counts["settle_remaining_secs"],
+                    "holders": holders,
+                    "holders_more": holders_more,
                     "force_available": True,
                 },
                 status=409,

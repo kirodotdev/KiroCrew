@@ -20,6 +20,7 @@ import { api, type MemberRosterRow } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { RowGroup, RowStatic } from './profileRow'
 
 /** The full config read (`GET /api/config/kirocrew`): any refresh frame re-reads it. */
@@ -104,7 +105,7 @@ export default function BotSessionListSwitches({ member, displayName }: BotSessi
         </RowStatic>
         <RowStatic icon={<List size={16} />} tone="accent" label={botLabel} testId="bot-sessions-in-list-this" wrap>
           {/* The global switch lists every bot's sessions, so this one reads on and cannot be pressed while it is on. */}
-          <Toggle checked={all.on || botOn} onChange={(v) => botFlip.mutate(v)} busy={botFlip.isPending} disabled={all.on || !loaded} label={botLabel} />
+          <Toggle checked={all.on || botOn} onChange={(v) => botFlip.mutate(v)} busy={botFlip.isPending} disabled={all.on || !loaded} label={botLabel} {...uiLocation('members.bot-sessions-switch')} />
         </RowStatic>
       </RowGroup>
       <AllBotsConfigLoadNotice cfg={all.cfg} />

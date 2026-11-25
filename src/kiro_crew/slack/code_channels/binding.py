@@ -67,13 +67,11 @@ def code_channels_on(cfg: Any | None) -> bool:
 
 #: Whether the Conductor-thread runtime Slack needs before dispatch is safe --
 #: worker approval cards, Stop and restart resume in the thread (RFC
-#: ``rfc-slack-thread-conductor.md``, part D) -- is built. While it is False,
-#: nothing turns the feature on. The config keys read below are not declared
-#: yet: part D adds ``slack.thread_conductor`` and
-#: ``slack.thread_conductor_public_channels`` with that runtime, so until then
-#: the ``getattr`` reads find no attribute and answer off; tests patch both.
-#: shortcut: part D sets this True in the same change that builds that runtime.
-THREAD_CONDUCTOR_RUNTIME_BUILT = False
+#: ``rfc-slack-thread-conductor.md``, part D, :mod:`.thread_runtime`) -- is built.
+#: While it is False, nothing turns the feature on. Part D builds that runtime,
+#: sets this True and declares ``slack.thread_conductor`` and
+#: ``slack.thread_conductor_public_channels`` (both off by default).
+THREAD_CONDUCTOR_RUNTIME_BUILT = True
 
 
 def thread_conductor_on(cfg: Any | None) -> bool:

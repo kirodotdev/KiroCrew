@@ -189,20 +189,22 @@ def _workers_of(state: Any, member: str) -> list[Any]:
     return out
 
 
-async def reload_workers(state: Any, member: str) -> dict[str, str]:
+async def reload_workers(state: Any, member: str, *, notice: str = _NOTICE) -> dict[str, str]:
     """Reload every live worker of crewmate *member* (idle now, busy at turn end).
 
-    Returns ``{slot key: outcome}``. Never raises.
+    Each reloaded chat gets *notice*. Returns ``{slot key: outcome}``. Never raises.
     """
     try:
         workers = await asyncio.to_thread(_workers_of, state, member)
     except Exception:  # noqa: BLE001 - no roster names no worker
         logger.debug("Bot reload: workers of %s unreadable", member, exc_info=True)
         return {}
-    return {slot.key: await reload_if_idle(state, slot) for slot in workers}
+    return {slot.key: await reload_if_idle(state, slot, notice=notice) for slot in workers}
 
 
-def schedule_reload_workers(state: Any, member: str) -> "asyncio.Task[dict[str, str]] | None":
+def schedule_reload_workers(
+    state: Any, member: str, *, notice: str = _NOTICE
+) -> "asyncio.Task[dict[str, str]] | None":
     """:func:`reload_workers` as a task, so the route that changed the file answers first."""
     if state is None or not member:
         return None
@@ -210,7 +212,7 @@ def schedule_reload_workers(state: Any, member: str) -> "asyncio.Task[dict[str, 
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    task = loop.create_task(reload_workers(state, member))
+    task = loop.create_task(reload_workers(state, member, notice=notice))
     tasks = getattr(state, "_crewmate_reload_tasks", None)
     if not isinstance(tasks, set):
         tasks = set()

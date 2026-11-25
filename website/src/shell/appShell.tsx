@@ -64,6 +64,7 @@ import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
+import { useFullScreenExitHint } from './platform/fullScreenExitHint'
 import { useCrewAddressLink, useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
@@ -91,6 +92,8 @@ import { useConfigPendingCount } from '../pages/settings/configPendingQuery'
 import { resolveSlotOverlays, type SlotOwners } from '../apps/overlaySlots'
 import { isChatRoute, useRouteActiveModel } from './nav/routeActive'
 import { appPathname } from '../lib/basePath'
+import { useAppNavHidden } from '../lib/appNavHidden'
+import { BUILTIN_SURFACE_NAV } from '../surfaces/surfaceData'
 import { slotRowByKey } from '../store/slotIndex'
 
 /** Mobile nav drawer travel: its 220px width + the 8px mx-2 inset + border. */
@@ -898,6 +901,10 @@ export function useAppShell() {
   }, [connected, refreshAppNav])
 
   const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
+  // Settings > Display > View > "Show Discover in the sidebar": off puts
+  // Discover's nav id in this browser's sidebar hidden set. While it is off the
+  // rails draw no Discover row and its updates badge rides the Library row.
+  const discoverInRail = !useAppNavHidden().has(BUILTIN_SURFACE_NAV.apps.navId)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
@@ -1002,6 +1009,7 @@ export function useAppShell() {
   }, [navigate, dispatch, mayLeaveForNavigation, appStore, openCrewLink])
   // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
+  useFullScreenExitHint()
 
   useEffect(() => {
     dispatch(fetchSlots()).then(action => {
@@ -1166,7 +1174,7 @@ export function useAppShell() {
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
     mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
-    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,

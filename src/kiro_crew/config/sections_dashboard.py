@@ -27,6 +27,12 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The values ``dashboard.default_approval_mode`` takes: the mode a plain chat the
+# owner starts from the dashboard opens on (``dashboard.chat_default_mode``).
+# ``trust`` is deliberately absent (rfc-default-approval-mode section 6), and
+# ``yolo`` is process-wide, never one chat's start mode.
+DEFAULT_APPROVAL_MODES: tuple[str, ...] = ("normal", "trust_reads")
+
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
@@ -234,6 +240,35 @@ class DashboardConfig:
         metadata=_meta(
             "Dashboard URL",
             "Public URL for the dashboard (used in Slack links).",
+            restart=True,
+        ),
+    )
+    entry_port: int = field(
+        default=0,
+        metadata=_meta(
+            "Entry Port",
+            "Off at 0. From 1024 to 65535: also listen at this port on both loopback "
+            "addresses (127.0.0.1 and ::1; the bind address is not configurable), "
+            "for a reverse proxy on this computer that forwards callers on other "
+            "machines. The port serves the Crew API only, reads no cookie, never "
+            "treats a request as a direct local request (it always counts as "
+            "forwarded by the proxy) and refuses Owner routes. "
+            "The proxy must send a Host naming 127.0.0.1, [::1] or localhost; a "
+            "request to a Crew API route with any other Host is refused with 400. "
+            "A computer with no IPv6 loopback serves 127.0.0.1 alone. Linux and "
+            "macOS only for now: on "
+            "Windows a non-zero value stops the start of the regular or headless "
+            "kirocrew gateway. An integer that is "
+            "neither 0 nor 1024 to 65535, or that equals the gateway's own port or "
+            "dashboard.shared_crew.ssm_port while the SSM listener is on, stops that "
+            "start too (EntryPortError), as does a port that cannot be bound. The "
+            "API-only server (--slack-only) does not check the value: it logs a "
+            "warning and starts. "
+            'Shared config validation replaces wrong-typed values (8443.5, "abc", '
+            "true, null) with 0, so the entry port stays off, and logs "
+            "Config: type mismatch at 'dashboard.entry_port': ...; using default. "
+            'Legacy numeric handling coerces "8443" and 8443.0 to integer 8443, '
+            "so the port opens if it can be bound.",
             restart=True,
         ),
     )
@@ -563,6 +598,18 @@ class DashboardConfig:
             "'temporary' neither reads nor writes. Explicit per-session choices "
             "still win.",
             enum=["persistent", "incognito", "temporary"],
+        ),
+    )
+    default_approval_mode: str = field(
+        default="normal",
+        metadata=_meta(
+            "New chats start on",
+            "Approval mode a plain chat you start from the dashboard opens on: "
+            "'normal' asks before each tool; 'trust_reads' runs read-only tools "
+            "and read-only shell commands without asking. Crewmates, channels, "
+            "schedules and agents keep their own settings, and the approval-modes "
+            "policy can hold a chat on 'normal'.",
+            enum=list(DEFAULT_APPROVAL_MODES),
         ),
     )
     new_chat_crew_mode: bool = field(

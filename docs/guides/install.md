@@ -252,7 +252,15 @@ gateway's automatic update) build each new version as its own tree beside it,
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
 rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
-own venv), so a gateway that is running during the re-run keeps the old version
+own venv). A re-run and an update both install the new version with every
+optional extra the install being replaced has, and a re-run whose carried extra
+cannot be installed fails and keeps the previous install. Neither carries a
+package that is not a declared extra (such as `faiss-cpu`): each names, once,
+the packages the previous install had that the new one does not, with the
+`pip install` command that adds them back (a package installed from a local
+path or a URL is named without one: reinstall it from where it came from). The
+update that ships this note is still built by the older running version, so
+that first update prints none. A gateway that is running during the re-run keeps the old version
 loaded while it reads the new files. The installer never restarts it: when it
 finds one running (an active `kirocrew` systemd unit, the
 `dev.kirocrew.gateway` launchd agent, or a `kirocrew gateway` process holding
@@ -319,9 +327,9 @@ or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
 tree is still built) and to the update engine that builds the shadow venv on a
-managed-venv install, where an extra the update carries with no wheel for the
-host also fails the update; uninstall the package that has no wheel from the
-running install to stop carrying that extra.
+managed-venv install, where an extra an update or an installer re-run carries
+with no wheel for the host also fails it; uninstall the package that has no
+wheel from the existing install to stop carrying that extra.
 The opt-in is not remembered. To compile a dependency
 during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
 shell where the toolchain is on `PATH`: that command builds with the shell's own
@@ -472,27 +480,42 @@ The pip install name is **`kirocrew`**; the import package is `kiro_crew`.
 
 #### Installing a PUBLISHED wheel with pip
 
-Kiro Crew is not on PyPI, so `pip` reaches it through the release CDN. Two forms
-are published, and they serve different needs:
+Kiro Crew is not on PyPI, and a different project named `kirocrew` is. pip
+pools the candidates from every index it is given and takes the highest
+version, so `pip install kirocrew` and any `--extra-index-url` form that adds
+the channel index beside PyPI install that project instead of Kiro Crew. Both
+supported forms below take `kirocrew` from one source only:
 
 ```bash
-# 1. Track a channel. A PEP 503 simple index per channel, so pip resolves the
-#    newest version itself. Stable versions carry no prerelease suffix, so the
-#    stable line needs no --pre. Every insider and nightly version does carry
-#    one, so those channels need it — and --pre then applies to every package
-#    pip resolves, third-party dependencies included:
-#      pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/insider/simple/
-#    NOTE: --extra-index-url ADDS the channel index beside default PyPI, so pip
-#    pools `kirocrew` candidates across both and a higher-versioned public-PyPI
-#    package of the name would win. Prefer form 2 (or verify the installed
-#    artifact) where that exposure matters.
-pip install kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+# 1. Track a channel with uv. The channel index is a PEP 503 simple index, and
+#    uv's default index strategy (first-index) takes `kirocrew` only from the
+#    first index that lists it; PyPI serves only the dependencies. The CDN
+#    answers 403 for a package it does not host, so the index needs
+#    ignore-error-codes for uv to move on to PyPI for those.
+cat > kirocrew-uv.toml <<'EOF'
+[[index]]
+url = "https://updates.crew.kiro.dev/feed/stable/simple/"
+ignore-error-codes = [403]
+EOF
+uv tool install --config-file kirocrew-uv.toml kirocrew
+#    uv stores the index in the tool's receipt, so `uv tool upgrade kirocrew`
+#    stays on the channel. Into a venv you manage, the same file works with
+#    `uv pip install --config-file kirocrew-uv.toml kirocrew`.
 
-# 2. Pin one exact wheel by hash. Every version directory publishes a SHA256SUMS
-#    file beside the wheel; take your wheel's hash from there. pip verifies it and
-#    consults no index for Kiro Crew itself — so there is no name to squat.
+# 2. Pin one exact wheel by hash, with pip or uv. The channel's latest-cli.json
+#    names the current wheel_url and sha256 (every version directory also
+#    publishes a SHA256SUMS file beside the wheel). pip verifies the hash and
+#    consults no index for Kiro Crew itself, so there is no name to squat.
+curl -fsS https://updates.crew.kiro.dev/feed/stable/latest-cli.json
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
+
+Form 1 suits `stable` and `nightly`. The `nightly` index lists only prerelease
+versions, which uv then takes without a flag. The `insider` index lists stable
+releases beside its release candidates, and uv takes a prerelease only when it
+must, so form 1 there installs the stable release; `--prerelease allow` would
+fix that but also lets uv pick prerelease versions of third-party
+dependencies. Use form 2 for `insider`.
 
 Create the venv and run either form under `umask 022`. Under umask `002`,
 `python -m venv` and pip leave the venv group-writable, and `kirocrew service
@@ -500,7 +523,7 @@ install` then refuses to attach the
 [AppArmor profile](#linux-the-agent-sandbox-and-unprivileged-user-namespaces);
 `chmod -R g-w <venv>` repairs an existing install.
 
-Swap `stable` for `insider` or `nightly` in either URL. The two names split by
+Swap `stable` for another channel in the URLs. The two names split by
 class as a convention — `updates.crew.kiro.dev` for mutable pointers and indexes,
 `download.crew.kiro.dev` for the bytes — and today both alias the same
 distribution, which is why `KIROCREW_CDN_BASE` (or `cli.sh --cdn`) overrides both
@@ -508,14 +531,13 @@ at once. Use the documented name for each class rather than relying on the
 aliasing.
 
 Form 2 pins a byte-exact artifact and consults no index for the `kirocrew` name,
-so it is the one to use where a public-PyPI squat of the name is a concern, or
-when a deployment must pin a byte-exact artifact anyway — a locked requirements
-file, an airgapped mirror, or a reproducible image build. The in-place upgrade
+so it is also the one to use when a deployment must pin a byte-exact artifact
+anyway — a locked requirements file, an airgapped mirror, or a reproducible
+image build. The in-place upgrade
 command Kiro Crew emits for a plain-pip install uses the form-2 pinned wheel for
 exactly this reason, and when it cannot fetch or verify the signed wheel it
 reports that and points at the channel's artifact directory rather than fall
-back to the form-1 name-resolving command. Form 1 tracks a channel hands-free
-when that exposure is acceptable.
+back to a name-resolving pip command. Form 1 tracks a channel hands-free.
 
 Installed console script:
 
@@ -529,12 +551,13 @@ there and ignores `setup.cfg`'s `console_scripts`, so `kirocrew` is the only
 command installed on `PATH`.
 
 Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
-cannot resolve — install an extra's own distributions into the environment that
-runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
+would fetch the unrelated PyPI project of that name — install an extra's own
+distributions into the environment that runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
 "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter. On a
-`cli.sh` managed-venv install, an update keeps every extra the running install
-has.
+`cli.sh` managed-venv install, an update and an installer re-run keep every
+extra the existing install has, and name any other package they did not carry,
+with the command that adds it back.
 
 | Extra | Adds | For |
 |-------|------|-----|
@@ -581,7 +604,7 @@ The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
 installs the next time you quit the app (by default closing the window only hides
-it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+it to the tray, and the first time it does a notification says so; quit with **Quit Kiro Crew** (**Quit Kiro Crew and Stop Background Sessions** while the app runs a gateway it started) from the tray or the menu bar, or turn off **Keep running in the background
 after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
@@ -1157,7 +1180,12 @@ path — `python -m kiro_crew`, a different venv's entry point, a re-created ven
 the profile has not been re-pointed at — stays unconfined, and `kirocrew doctor`
 reports the attachment as stale in the re-created-venv case. Prefer running the
 gateway as the service: it pins `ExecStart` to the attached path and restarts on
-boot.
+boot. On a Toolbox install `ExecStart` runs the Toolbox launcher
+`~/.toolbox/bin/kirocrew` instead, which starts the current version, so the
+service keeps starting after an update. That launcher execs the version's own
+`tools/kirocrew/<version>/bin/kirocrew` script, so on a Toolbox install the
+profile is attached to that script in every version folder
+(`tools/kirocrew/*/bin/kirocrew`), and to no other Toolbox tool's.
 
 ### The AppImage (desktop app) needs its own profile
 

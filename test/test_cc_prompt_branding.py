@@ -44,7 +44,7 @@ def _resolve(builder: ContextBuilder, *, is_cc: bool) -> str:
         project=None,
         mode="",
         session_key="sess-cc-branding",
-        is_cc=is_cc,
+        provider_type="claude_code" if is_cc else None,
         private_owner=False,
         session_start=True,
     )
@@ -83,3 +83,45 @@ def test_user_override_respells_kiro_cli_and_nothing_else(
     resolved = _resolve(builder, is_cc=True)
 
     assert resolved.startswith("Kiro Crew runs claude code; skills live in ~/.kiro/crew/skills/.")
+
+
+def _resolve_label(builder: ContextBuilder, provider_type: str | None) -> str:
+    return builder._resolve_agent_prompt(
+        "kirocrew",
+        project=None,
+        mode="",
+        session_key="sess-cc-branding",
+        private_owner=False,
+        session_start=True,
+        provider_type=provider_type,
+    )
+
+
+@pytest.mark.parametrize("label", [None, "", "acp", "kas", "codex", "label-nobody-registered"])
+def test_only_the_claude_label_gets_the_respelled_persona(
+    home: Path, builder: ContextBuilder, label: str | None
+) -> None:
+    (home / "prompt.md").write_text("Kiro Crew runs kiro-cli.\n", encoding="utf-8")
+    assert _resolve_label(builder, "claude_code").startswith("Kiro Crew runs claude code.")
+    assert not _resolve_label(builder, label).startswith("Kiro Crew runs claude code.")
+
+
+def test_the_persona_follows_the_capability_not_the_label(
+    home: Path, builder: ContextBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Give codex ``crew_sends_persona_prompt`` and a codex session gets the persona."""
+    import dataclasses
+
+    import kiro_crew.agent_sdk.capabilities as caps_mod
+
+    real = caps_mod.capabilities_for
+
+    def _codex_sends(backend: str):
+        record = real(backend)
+        if backend == "codex":
+            return dataclasses.replace(record, crew_sends_persona_prompt=True)
+        return record
+
+    monkeypatch.setattr(caps_mod, "capabilities_for", _codex_sends)
+    (home / "prompt.md").write_text("Kiro Crew runs kiro-cli.\n", encoding="utf-8")
+    assert _resolve_label(builder, "codex").startswith("Kiro Crew runs claude code.")

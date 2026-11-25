@@ -1,4 +1,5 @@
-"""Restore's hold-back of the agent config an archive carries under ``workspace/``.
+"""Restore's hold-back of the agent config an archive carries under ``workspace/`` and
+in each named workspace folder (``workspace-<name>/``) it carries.
 
 A bundle can come from someone else, and each harness reads its project config from the
 folder a session starts in, so neither restore mode installs the archive's copy of those
@@ -12,7 +13,14 @@ import os
 from pathlib import Path, PurePosixPath
 
 from kiro_crew import pinned_fs, platform_compat
-from kiro_crew.snapshot_components import _WHOLE_TREE_COMPONENTS, COMPONENTS, _facade, _want
+from kiro_crew.snapshot_components import (
+    _WHOLE_TREE_COMPONENTS,
+    COMPONENTS,
+    NAMED_WORKSPACES,
+    _facade,
+    _want,
+    component_trees,
+)
 from kiro_crew.snapshot_restore import _rmtree_or_raise
 
 #: Names, at any depth under ``workspace/``, that steer an agent session started in that
@@ -78,13 +86,15 @@ def _hold_back_agent_config(
 
     Done on the staged bundle, like :func:`_hold_back_executables`, over every
     ``workspace/`` tree the selected components install (:func:`_restored_workspace_trees`):
-    the whole tree for ``workspace``, the memory and knowledge subtrees for ``memory``.
+    the whole tree for ``workspace``, the memory and knowledge subtrees for ``memory``,
+    and each carried ``workspace-<name>/`` folder for ``named-workspaces``, since a session
+    starts in that folder too.
     The archive's copy is removed, so merge (which adds what is missing) installs nothing
     for these names. Replace swaps each such tree whole, so it also gets the LIVE copy
     staged in the
     archive's place; a live name with no copy ends up absent, never the archive's. Returns
-    ``(held, notes)``: the workspace-relative paths the bundle carried and did not get to
-    install, and the notes (``CLAUDE.md``, ``AGENTS.md``) the restore WILL install, which
+    ``(held, notes)``: the data-home-relative paths (``workspace/...``,
+    ``workspace-<name>/...``) the bundle carried and did not get to install, and the notes (``CLAUDE.md``, ``AGENTS.md``) the restore WILL install, which
     stay restorable but are named. Merge keeps a note the live tree already has.
 
     A live link or hard link is not handled here: Replace's own backup of the live
@@ -99,8 +109,8 @@ def _hold_back_agent_config(
     """
     held: list[str] = []
     notes: list[str] = []
-    workspace = snap / "workspace"
-    for tree in _restored_workspace_trees(components):
+    named = list(component_trees(NAMED_WORKSPACES)) if _want(components, NAMED_WORKSPACES) else []
+    for tree in _restored_workspace_trees(components) + named:
         staged = snap / tree
         live = mc / tree
         if not staged.is_dir():
@@ -116,7 +126,7 @@ def _hold_back_agent_config(
                 continue
             staged.mkdir(parents=True)
         h, n = _hold_back_agent_config_in(
-            staged, live, mode, allow_unpinned=allow_unpinned, workspace=workspace
+            staged, live, mode, allow_unpinned=allow_unpinned, bundle_root=snap
         )
         held.extend(h)
         notes.extend(n)
@@ -125,7 +135,7 @@ def _hold_back_agent_config(
 
 def _owned_by_whole_tree_component(tree: str) -> bool:
     """Whether *tree* belongs to a component whose replace keeps a tree the archive lacks."""
-    return any(tree in COMPONENTS[name].trees for name in _WHOLE_TREE_COMPONENTS)
+    return any(tree in component_trees(name) for name in _WHOLE_TREE_COMPONENTS)
 
 
 def _restored_workspace_trees(components: list[str] | None) -> list[str]:
@@ -148,12 +158,12 @@ def _restored_workspace_trees(components: list[str] | None) -> list[str]:
 
 
 def _hold_back_agent_config_in(
-    staged: Path, live_root: Path, mode: str, *, allow_unpinned: bool, workspace: Path
+    staged: Path, live_root: Path, mode: str, *, allow_unpinned: bool, bundle_root: Path
 ) -> tuple[list[str], list[str]]:
     """:func:`_hold_back_agent_config` for one staged tree and its live counterpart.
 
-    Paths it returns are relative to the staged ``workspace/``, so a subtree's entries
-    read the same as the whole tree's.
+    Paths it returns are relative to the bundle root, which is the data home's layout, so a
+    subtree's entries read the same as the whole tree's.
     """
     facade = _facade()
     held: list[str] = []
@@ -164,9 +174,9 @@ def _hold_back_agent_config_in(
             _rmtree_or_raise(entry)
         else:
             entry.unlink()
-        held.append(entry.relative_to(workspace).as_posix())
+        held.append(entry.relative_to(bundle_root).as_posix())
     notes = [
-        p.relative_to(workspace).as_posix()
+        p.relative_to(bundle_root).as_posix()
         for p in _agent_config_paths(staged, names=_NOTE_NAMES)
         if mode == "replace" or not os.path.lexists(live_root / p.relative_to(staged))
     ]
@@ -174,7 +184,7 @@ def _hold_back_agent_config_in(
         for live in _agent_config_paths(live_root):
             rel = live.relative_to(live_root)
             dst = staged / rel
-            what = f"keeping the live workspace/{dst.relative_to(workspace).as_posix()}"
+            what = f"keeping the live {dst.relative_to(bundle_root).as_posix()}"
             # A parent the archive does not carry is made; one that is a link is refused,
             # so the live copy is never written through it.
             for parent in dst.parents:

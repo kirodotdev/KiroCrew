@@ -37,7 +37,7 @@ from typing import Any
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal, new_channel_refusal
-from kiro_crew.slack.code_channels import hooks, recognition
+from kiro_crew.slack.code_channels import hooks, recognition, thread_stop_gate
 from kiro_crew.slack.code_channels.binding import (
     BindingUnavailable,
     bound_slot,
@@ -353,6 +353,11 @@ async def _inbound_gate(
     channel = str(event.get("channel") or "")
     if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
         return DROP
+    in_thread = thread_stop_gate.binding_of(channel, event)
+    if in_thread is not None:
+        return await thread_stop_gate.decide(
+            orch, cfg, in_thread, text=text, sender_id=sender_id, from_trusted_bot=from_trusted_bot
+        )
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
@@ -1379,6 +1384,11 @@ def _seed_framing(origin_channel: str, context: str) -> str:
         "document (inline <style>, no external files or data: URLs). It opens as a tab in "
         "this channel, with no upload or screenshot. Slack shows it as a sandboxed static "
         "preview where scripts may not run, so put the visible result in the markup and CSS.",
+        # Without this an asked-for (or offered) diff is pasted as a code block.
+        "To show a diff here (asked for, or a 'Show me the diff' option picked), call "
+        "code_channel_set_view with type diff and no other argument: it opens this "
+        "channel's Code tab. Never paste the diff into a message: reply with a one-line "
+        "summary and the PR link. If it finds nothing to show, send the diff as an html view.",
     ]
     # Only while hand-off is on: with the switch off (its default) the guidance
     # would steer the conductor into a call that is refused.

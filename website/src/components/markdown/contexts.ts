@@ -265,3 +265,12 @@ export const SidebarFolderCtx = createContext<SidebarFolderActions>({})
  * session reference, and only then, so other paragraphs keep their exact DOM.
  */
 export const ParagraphNoticeSlotCtx = createContext<HTMLElement | null>(null)
+
+/**
+ * The jump a sent message's `>` quote offers back to the reply it quotes.
+ * Called with the quote's markdown source; returns the jump, or null when no
+ * reply holds those words. Provided only by a sent message on the main chat
+ * (`UserMessage`), so a quote everywhere else gets no jump control.
+ */
+export type QuoteJumpFor = (quoted: string) => (() => void) | null
+export const QuoteJumpCtx = createContext<QuoteJumpFor | null>(null)

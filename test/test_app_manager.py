@@ -36,6 +36,7 @@ from kiro_crew.apps.manager import (
     uninstall_app,
     update_app,
 )
+from kiro_crew.apps.version import MIN_VERSION_REFUSAL_CODE
 from kiro_crew.dashboard.token_auth import read_app_secret
 
 # App-name admission contract
@@ -198,6 +199,45 @@ class TestInstall:
         with registry_source_repository("https://example.test/owner/test-app"):
             assert update_app(_make_app_source(tmp_path / "v2", version="1.1.0")).ok
         assert _read_installed("test-app").origin == "local"
+
+    def test_an_update_whose_manifest_fails_validation_is_coded(self, tmp_path, app_home):
+        """The code lets the App Store name the app and say who can fix it."""
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        src = _make_app_source(tmp_path / "v2", version="1.1.0")
+        raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        raw["ui"] = {"overlays": [{"id": "launcher", "replaces": "quick-search"}]}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
+        result = update_app(src)
+        assert not result.ok
+        assert result.error_code == "app_update_invalid"
+        assert "ui.overlays" in result.error
+        assert result.to_dict()["code"] == "app_update_invalid"
+        assert _read_installed("test-app").version == "1.0.0"
+
+    def test_an_update_that_only_needs_a_newer_kiro_crew_keeps_the_version_code(
+        self, tmp_path, app_home
+    ):
+        """Its maker has nothing to fix, so it is not coded as an invalid version."""
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        src = _make_app_source(tmp_path / "v2", version="1.1.0", minKiroCrewVersion="999.0.0")
+        result = update_app(src)
+        assert not result.ok
+        assert result.error_code == MIN_VERSION_REFUSAL_CODE
+        assert "999.0.0" in result.error
+        assert _read_installed("test-app").version == "1.0.0"
+
+    def test_an_update_with_a_manifest_error_and_a_newer_kiro_crew_is_invalid(
+        self, tmp_path, app_home
+    ):
+        """The manifest error still needs the maker, so it decides the code."""
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        src = _make_app_source(tmp_path / "v2", version="1.1.0", minKiroCrewVersion="999.0.0")
+        raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        raw["ui"] = {"overlays": [{"id": "launcher", "replaces": "quick-search"}]}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
+        result = update_app(src)
+        assert result.error_code == "app_update_invalid"
+        assert _read_installed("test-app").version == "1.0.0"
 
     def test_install_creates_data_dir(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)

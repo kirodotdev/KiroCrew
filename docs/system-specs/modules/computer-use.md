@@ -524,7 +524,12 @@ forms (`is_sensitive_bash_command`, including `cat`, `>`, `tee`, and
 Mechanics:
 
 - Every read fails soft to `{}` → **DISABLED**. Absent, unreadable, truncated or
-  hand-mangled must never mean "enabled".
+  hand-mangled must never mean "enabled". One leading UTF-8 byte-order mark is not
+  content (`user_json.loads_user_json`, as for `denied_commands.json`). A file that
+  is present but unusable logs one WARNING per file version naming
+  `computer_use.json` and the error type, never its contents, and
+  `kirocrew computer doctor` lists the same sentence under errors from one read
+  (`enable_state.load_state_for_report`).
 - `is_enabled()` is strict identity against `True`: a hand-edited
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.
@@ -563,10 +568,12 @@ models is the point.
 | `POST /api/computer-use/invoke` | loopback + `X-Internal-Secret` | the stdio shim ONLY |
 | `POST /api/computer-use/frame` | loopback + `X-Internal-Secret` | this gateway's own capture thread ONLY |
 
-`invoke` is in `server._STRICT_INTERNAL_API_PATHS` — no cookie fall-through, and
-non-loopback is denied outright. It is the entry point to accessibility reads and
-input synthesis, so it is the one route where a cookie fall-through would be a
-genuinely new attack path rather than a convenience. It is registered in
+`invoke` is in `server._STRICT_INTERNAL_API_PATHS`, and non-loopback is denied
+outright. A loopback request with no `X-Internal-Secret` falls through to cookie
+auth, where a dashboard session must be the owner's or a teammate's
+(`require_owner_dashboard_request`; any other session gets 403 `owner_only`) and
+an app token stays under its own scope (`token_auth.token_auth_middleware`). It is
+the entry point to accessibility reads and input synthesis. It is registered in
 `_register_mcp_routes` so the headless `--slack-only` server exposes it too (kiro-cli
 spawns the shim on both entrypoints). The config pair is deliberately NOT in that
 set: it is browser-called, like the browser-config pair.
@@ -794,6 +801,15 @@ then verifies what came back:
    `C:\Program Files` → "Access is denied"), which is what makes the prefix test
    meaningful in both directions.
 
+   The refusal names the half that failed (`_protection_refusal`). Only a target
+   outside every root, or one whose path cannot be resolved, is told it is outside the
+   protected install directories. One inside a root whose directory this user can
+   write, or whose file this user can replace, or where either could not be verified,
+   names that directory or file instead, as the macOS refusal does. A gateway running
+   with administrator rights can write every root, so every application inside one gets
+   the second text there, where the first would send the user after a reinstall that
+   cannot help.
+
    **The root LIST is read from `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion`, never
    from `os.environ`**, and that is the single most load-bearing line in the module. An
    earlier draft read `%ProgramFiles%`, which is an ordinary environment variable — so
@@ -879,7 +895,7 @@ place. A target has to fail both questions to be trusted:
 immediate parent.** Write access to any single level is enough to substitute the code that
 runs: an agent owning an intermediate `C:\Program Files\Vendor` renames its `App` child aside
 and recreates it with its own binary inside, and a parent-only probe then reports the leaf it
-just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
+just created as unwritable. `_first_writable_directory` walks from the executable's directory
 up to and including the root and stops there — everything above is off the caller's path by
 construction, since the prefix test already placed the target inside it. `launch_macos`'
 `_writable_component` does the same for a bundle's four levels (three under a stock

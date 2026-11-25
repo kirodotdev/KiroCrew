@@ -941,6 +941,20 @@
       "route": "/settings/chat/composer?highlight=chat.optimize-before-sending"
     },
     {
+      "id": "chat.optimize-prompt-effort",
+      "label": "Optimize Prompt Effort",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-prompt-effort",
+      "hint": "The reasoning effort “Optimize prompt” runs at. 'Same as Background' uses your Background Effort under Model. Applies only on reasoning-capable models."
+    },
+    {
+      "id": "chat.optimize-prompt-model",
+      "label": "Optimize Prompt Model",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-prompt-model",
+      "hint": "The model “Optimize prompt” runs on. 'Same as Background' runs it on the model your background work uses; pick a model to run only Optimize prompt on it."
+    },
+    {
       "id": "chat.pin-forks-of-pinned-sessions",
       "label": "Pin forks of pinned sessions",
       "tab": "chat",
@@ -1032,13 +1046,6 @@
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.recall-sent-messages-with-arrow-keys",
       "hint": "In an empty message input, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
-    },
-    {
-      "id": "chat.require-a-second-escape-to-stop-the-turn",
-      "label": "Require a second Escape to stop the turn",
-      "tab": "chat",
-      "route": "/settings/chat/composer?highlight=chat.require-a-second-escape-to-stop-the-turn",
-      "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn."
     },
     {
       "id": "chat.response-verbosity",
@@ -1884,6 +1891,13 @@
       "configKey": "dashboard.channels_enabled"
     },
     {
+      "id": "display.show-discover-in-the-sidebar",
+      "label": "Show Discover in the sidebar",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-discover-in-the-sidebar",
+      "hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library."
+    },
+    {
       "id": "display.show-search-in-the-top-bar",
       "label": "Show search in the top bar",
       "tab": "display",
@@ -2403,7 +2417,7 @@
       "label": "Dictation panel",
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.dictation-panel",
-      "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
+      "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when your system requests reduced motion."
     },
     {
       "id": "voice.enabled",

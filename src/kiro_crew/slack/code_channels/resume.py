@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
-from kiro_crew.slack.code_channels import surface
+from kiro_crew.slack.code_channels import resume_thread, surface, thread_runtime
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 from kiro_crew.slack.code_channels.store import Binding, store
 
@@ -148,6 +148,8 @@ TRUST_NOTE = (
     "This channel is in Trust mode (its tool calls are approved automatically), so once "
     "work resumes it acts without asking you first."
 )
+#: :data:`TRUST_NOTE` for a Conductor thread.
+THREAD_TRUST_NOTE = TRUST_NOTE.replace("This channel", "This thread")
 BUTTON_TEXT = "Resume"
 PRESSED_TEXT = "Resumed by <@{user}>."
 ALREADY_RUNNING_TEXT = "<@{user}> pressed Resume; the work was already running again."
@@ -403,7 +405,12 @@ def _is_the_channels_session(state: Any, binding: Binding, slot: Any) -> bool:
     if state is None or state.get_slot(binding.session_key) is not slot:
         return False
     found = code_channel_binding_of(state, slot)
-    return found is not None and found.channel_id == binding.channel_id
+    return (
+        found is not None
+        and found.channel_id == binding.channel_id
+        # One channel holds many Conductor threads: the thread must be this one.
+        and (not thread_runtime.is_thread(binding) or found.anchor_ts == binding.anchor_ts)
+    )
 
 
 def _is_own_worker(state: Any, conductor_key: str, worker: Any) -> bool:
@@ -479,6 +486,8 @@ def _admitted_now(state: Any, channel_id: str, conductor: Any, *, caller: str = 
     """
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
 
+    if thread_runtime.ROOM_SEP in channel_id:
+        return resume_thread.admitted_now(state, channel_id, conductor, caller=caller)
     if not code_channels_on(live_config()):
         return "code channels are off"
     binding = store().get_binding(channel_id)
@@ -504,10 +513,17 @@ def _admitted_now(state: Any, channel_id: str, conductor: Any, *, caller: str = 
 CHANNEL_POLICY_REFUSAL = "the channel policy refuses this channel"
 
 
+def binding_for_room(room: str) -> Binding | None:
+    """The binding a resume key names (a code channel, or ``channel:anchor``); None when unknown."""
+    return thread_runtime.binding_for_room(room)
+
+
 async def _channel_admitted(
     state: Any, channel_id: str, conductor: Any, *, caller: str = "system"
 ) -> str:
     """:func:`_admitted_now` plus channels governance (an await)."""
+    if thread_runtime.ROOM_SEP in channel_id:
+        await resume_thread.prime_room(channel_id)
     why = _admitted_now(state, channel_id, conductor, caller=caller)
     if why:
         return why
@@ -526,6 +542,8 @@ async def _archive_refusal(binding: Binding) -> str:
     """
     from kiro_crew.slack.code_channels import lifecycle
 
+    if thread_runtime.is_thread(binding):
+        return await resume_thread.archive_refusal(binding)
     if await surface.is_archived(binding):
         return "archived"
     seen = await lifecycle.reconcile_archived(binding)
@@ -672,6 +690,8 @@ async def _settle_status(channel_id: str) -> None:
     """Move the channel's native status off a ``processing`` the restart left behind."""
     from kiro_crew.slack.code_channels import status
 
+    if thread_runtime.ROOM_SEP in channel_id:
+        return  # a thread's own loader is the handler's, not a code channel's agents.* status
     try:
         await status.settle_after_stop(channel_id)
     except Exception:  # pragma: no cover - decoration only
@@ -842,9 +862,17 @@ async def resume_channel(state: Any, binding: Binding) -> ResumeReport | None:
     """Resume one channel's interrupted work and post its notice; ``None`` if skipped."""
     from kiro_crew.slack.code_channels.binding import bound_slot
 
-    channel = binding.channel_id
+    # The room id: the channel for a code channel, ``channel:anchor`` for a thread.
+    channel = thread_runtime.room_id(binding)
     conductor = bound_slot(state, binding)
     why = await _channel_admitted(state, channel, conductor)
+    if why and thread_runtime.is_thread(binding) and resume_thread.room_unknown(why):
+        # Slack could not say what the room is (the bounded read failed): that is
+        # not a refusal. Nothing runs by itself and nothing is posted, but each
+        # interrupted session is held (:data:`HELD_UNCONFIRMED`) and the owner is
+        # told in the dashboard, instead of the work being silently dropped.
+        surface.audit("system", OPERATION, "denied", f"channel={channel}", why)
+        why = ""
     if why:
         surface.audit("system", OPERATION, "denied", f"channel={channel}", why)
         return None
@@ -889,12 +917,22 @@ async def resume_channel(state: Any, binding: Binding) -> ResumeReport | None:
 
 
 async def resume_after_restart(state: Any) -> list[ResumeReport]:
-    """The start-up pass over every bound code channel (see the module docstring)."""
-    if not code_channels_on(live_config()):
+    """The start-up pass over every bound code channel and live Conductor thread
+    (see the module docstring), each only while its own switch is on."""
+    cfg = live_config()
+    if not thread_runtime.any_runtime_on(cfg, channels_on=code_channels_on):
         return []
     try:
         await asyncio.to_thread(store().load)
-        bindings = await asyncio.to_thread(store().bindings)
+        bindings = list(await asyncio.to_thread(store().bindings))
+        # An ended thread is not resumed.
+        bindings += [b for b in await asyncio.to_thread(store().thread_bindings) if not b.ended_at]
+        # Each room only while its own switch is on.
+        bindings = [
+            b
+            for b in bindings
+            if thread_runtime.room_runtime_on(b, cfg, channels_on=code_channels_on)
+        ]
     except Exception:
         logger.warning("code channel resume: store unavailable", exc_info=True)
         return []
@@ -903,7 +941,9 @@ async def resume_after_restart(state: Any) -> list[ResumeReport]:
         try:
             report = await resume_channel(state, binding)
         except Exception:
-            logger.warning("code channel %s: resume failed", binding.channel_id, exc_info=True)
+            logger.warning(
+                "code channel %s: resume failed", thread_runtime.room_id(binding), exc_info=True
+            )
             continue
         if report is not None:
             reports.append(report)
@@ -1002,6 +1042,11 @@ def _view(
     work) each kind of work is named on its own line with its own button beside
     it, so neither button's target is left to guess.
     """
+    if thread_runtime.ROOM_SEP in channel_id:
+        # A Conductor thread's notice says "thread" where a channel's says "channel".
+        text, context, resumed_line, held_line = (
+            thread_runtime.thread_words(t) for t in (text, context, resumed_line, held_line)
+        )
     blocks: list[dict[str, Any]] = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
     who = OWNER_ONLY_TEXT.get((resume, stop), "")
     owner_block: dict[str, Any] | None = (
@@ -1125,7 +1170,7 @@ def _trust_on(conductor: Any) -> bool:
 
 
 def _without_trust_note(text: str) -> str:
-    return text.removesuffix(f" {TRUST_NOTE}")
+    return text.removesuffix(f" {TRUST_NOTE}").removesuffix(f" {THREAD_TRUST_NOTE}")
 
 
 async def _channel_trusted(channel: str) -> bool:
@@ -1133,7 +1178,7 @@ async def _channel_trusted(channel: str) -> bool:
     from kiro_crew.slack.code_channels.binding import bound_slot
 
     try:
-        binding = await asyncio.to_thread(store().get_binding, channel)
+        binding = await asyncio.to_thread(binding_for_room, channel)
         if binding is None:
             return False
         return _trust_on(bound_slot(surface.dashboard_state(), binding))
@@ -1144,7 +1189,11 @@ async def _channel_trusted(channel: str) -> bool:
 
 async def _notify(state: Any, binding: Binding, conductor: Any, report: ResumeReport) -> None:
     """Post the one notice, deduplicated by store record."""
-    channel = binding.channel_id
+    # *channel* is the room id (the key and the buttons' value); *where* the Slack
+    # channel it posts to and *thread_ts* the thread it posts in (None: top level).
+    channel = thread_runtime.room_id(binding)
+    where = binding.channel_id
+    thread_ts = thread_runtime.post_thread_ts(binding)
     resources = f"channel={channel}"
     held = bool(report.held)
     keys = report.held if held else report.resumed
@@ -1192,7 +1241,7 @@ async def _notify(state: Any, binding: Binding, conductor: Any, report: ResumeRe
     )
     text = blocks[0]["text"]["text"]
     try:
-        ts = str(await slack.post_blocks(channel, blocks, text) or "")
+        ts = str(await slack.post_blocks(where, blocks, text, thread_ts) or "")
     except Exception:
         logger.warning("code channel %s: restart notice outcome unknown", channel, exc_info=True)
         ts = ""
@@ -1228,7 +1277,7 @@ async def _notify(state: Any, binding: Binding, conductor: Any, report: ResumeRe
         ]
         try:
             await slack.update_message(
-                channel,
+                where,
                 ts,
                 unregistered,
                 [{"type": "section", "text": {"type": "mrkdwn", "text": unregistered}}, *kept],
@@ -1324,9 +1373,19 @@ async def _ephemeral(channel: str, user: str, text: str) -> None:
         logger.debug("code channel ephemeral failed", exc_info=True)
 
 
+def _say_in(binding: Binding, channel: str, user: str) -> Callable[[str], Awaitable[None]]:
+    """A private reply to *user* about *binding*'s room, worded for a thread when it is one."""
+
+    async def say(text: str) -> None:
+        await _ephemeral(channel, user, thread_runtime.say(binding, text))
+
+    return say
+
+
 async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
     """A Resume click on a restart notice; False when it is not ours to answer."""
-    if not code_channels_on(live_config(orch)):
+    cfg = live_config(orch)
+    if not thread_runtime.any_runtime_on(cfg, channels_on=code_channels_on):
         return False
     from kiro_crew.slack.code_channels.binding import bound_slot
     from kiro_crew.slack.handler import is_owner
@@ -1346,35 +1405,39 @@ async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
     if not surface.workspace_admitted(team):
         surface.audit(user, OPERATION, "denied", f"{resources} team_id={team}", "workspace")
         return True
-    binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
-    if binding is None or not isinstance(value, dict) or value.get("channel") != channel:
+    binding = await resume_thread.binding_of_click(value, channel)
+    if binding is None:
         surface.audit(user, OPERATION, "denied", resources, "not a bound code channel")
         await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
         return True
+    # From here the key of every record, lock and audit row is the room id: the
+    # channel for a code channel, ``channel:anchor`` for a Conductor thread.
+    if not thread_runtime.room_runtime_on(binding, cfg, channels_on=code_channels_on):
+        return False  # this room's own switch is off: not ours to answer
+    room = thread_runtime.room_id(binding)
+    say = _say_in(binding, channel, user)
     if not is_owner(user):
         surface.audit(user, OPERATION, "denied", resources, "not the owner")
-        await _ephemeral(channel, user, NOT_OWNER_TEXT.format(owner=surface.owner_name()))
+        await say(NOT_OWNER_TEXT.format(owner=surface.owner_name()))
         return True
     state = surface.dashboard_state()
     conductor = bound_slot(state, binding)
-    why = await _channel_admitted(state, channel, conductor, caller=user) or await _archive_refusal(
+    why = await _channel_admitted(state, room, conductor, caller=user) or await _archive_refusal(
         binding
     )
     if why:
         surface.audit(user, OPERATION, "denied", resources, why)
-        await _ephemeral(
-            channel, user, UNCONFIRMED_TEXT if why == ARCHIVE_UNREADABLE else NOT_ALLOWED_TEXT
-        )
+        await say(UNCONFIRMED_TEXT if why == ARCHIVE_UNREADABLE else NOT_ALLOWED_TEXT)
         return True
-    notice_key = f"{_NOTICE_PREFIX}{channel}"
+    notice_key = f"{_NOTICE_PREFIX}{room}"
     record = await asyncio.to_thread(store().resume_record, notice_key)
     if record is None or record.get("state") != "button" or record.get("notice_ts") != msg_ts:
         surface.audit(user, OPERATION, "denied", resources, "not the current restart notice")
-        await _ephemeral(channel, user, STALE_TEXT)
+        await say(STALE_TEXT)
         return True
     # Admission again, synchronously, after the Slack and store awaits: a channel
     # dropped meanwhile leaves no claim and no attempt record behind.
-    why = _admitted_now(state, channel, conductor, caller=user)
+    why = _admitted_now(state, room, conductor, caller=user)
     if why:
         surface.audit(user, OPERATION, "denied", resources, why)
         return True
@@ -1388,11 +1451,11 @@ async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
     )
     if claimed is None:
         surface.audit(user, OPERATION, "denied", resources, "already pressed")
-        await _ephemeral(channel, user, STALE_TEXT)
+        await say(STALE_TEXT)
         return True
     try:
         resumed, refusals, approvals, refused_keys = await _resume_on_press(
-            state, channel, conductor, user, resources
+            state, room, conductor, user, resources
         )
     except asyncio.CancelledError:
         # Cancelled mid-press: give the button back before going, so a later
@@ -1407,7 +1470,7 @@ async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
         )
         raise
     except Exception:
-        logger.warning("code channel %s: Resume failed", channel, exc_info=True)
+        logger.warning("code channel %s: Resume failed", room, exc_info=True)
         surface.audit(user, OPERATION, "error", resources, "resume failed")
         resumed, refusals, approvals, refused_keys = [], ["error"], [], []
     # Already running is not a failure: that work needs nothing from the button.
@@ -1459,12 +1522,12 @@ async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
         else:
             # The other button may have redrawn the notice while this one held its
             # claim: draw it again from the record, so the button offered is shown.
-            await _redraw(channel, msg_ts, notice_key)
-        await _ephemeral(channel, user, text)
+            await _redraw(room, msg_ts, notice_key)
+        await say(text)
         return True
     note = (PRESSED_TEXT if resumed else ALREADY_RUNNING_TEXT).format(user=user)
     await _update_notice(notice_key, msg_ts, lambda c: True, lambda c: {**c, "resume_note": note})
-    await _redraw(channel, msg_ts, notice_key)
+    await _redraw(room, msg_ts, notice_key)
     return True
 
 
@@ -1593,8 +1656,12 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
     or wrapped-up channel's notice may still stop its own resumed work. The
     per-channel policy ceiling still applies, as for every Slack action: a press
     in a channel the policy refuses is audited and changes nothing.
+
+    A Conductor thread's notice is answered the same way, keyed by its room id
+    (its own switch, not the code-channel one); a thread ended since still stops.
     """
-    if not code_channels_on(live_config(orch)):
+    cfg = live_config(orch)
+    if not thread_runtime.any_runtime_on(cfg, channels_on=code_channels_on):
         return False
     from kiro_crew.slack.code_channels.binding import bound_slot
     from kiro_crew.slack.handler import is_owner
@@ -1614,22 +1681,28 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
     if not surface.workspace_admitted(team):
         surface.audit(user, STOP_OPERATION, "denied", f"{resources} team_id={team}", "workspace")
         return True
-    binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
-    if binding is None or not isinstance(value, dict) or value.get("channel") != channel:
+    binding = await resume_thread.binding_of_click(value, channel)
+    if binding is None:
         surface.audit(user, STOP_OPERATION, "denied", resources, "not a bound code channel")
         await _ephemeral(channel, user, STOP_NOT_ALLOWED_TEXT)
         return True
+    # The key of the notice record, lock and audit rows: the channel for a code
+    # channel, ``channel:anchor`` for a Conductor thread.
+    if not thread_runtime.room_runtime_on(binding, cfg, channels_on=code_channels_on):
+        return False  # this room's own switch is off: not ours to answer
+    room = thread_runtime.room_id(binding)
+    say = _say_in(binding, channel, user)
     if not is_owner(user):
         surface.audit(user, STOP_OPERATION, "denied", resources, "not the owner")
-        await _ephemeral(channel, user, STOP_NOT_OWNER_TEXT.format(owner=surface.owner_name()))
+        await say(STOP_NOT_OWNER_TEXT.format(owner=surface.owner_name()))
         return True
     if surface.channel_policy_refusal(channel, operation=STOP_OPERATION, caller=user):
         return True  # audited by the policy seam; nothing is claimed, stopped or posted
-    notice_key = f"{_NOTICE_PREFIX}{channel}"
+    notice_key = f"{_NOTICE_PREFIX}{room}"
     record = await asyncio.to_thread(store().resume_record, notice_key)
     if record is None or not _stop_live(record) or record.get("notice_ts") != msg_ts:
         surface.audit(user, STOP_OPERATION, "denied", resources, "not the current restart notice")
-        await _ephemeral(channel, user, STOP_STALE_TEXT)
+        await say(STOP_STALE_TEXT)
         return True
     # The policy again after the store read, right before the claim and the stop.
     if surface.channel_policy_refusal(channel, operation=STOP_OPERATION, caller=user):
@@ -1641,7 +1714,7 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
     )
     if claimed is None:
         surface.audit(user, STOP_OPERATION, "denied", resources, "already pressed")
-        await _ephemeral(channel, user, STOP_STALE_TEXT)
+        await say(STOP_STALE_TEXT)
         return True
     try:
         state = surface.dashboard_state()
@@ -1649,7 +1722,7 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
             state, binding, bound_slot(state, binding), record, user
         )
     except Exception:
-        logger.warning("code channel %s: Stop failed", channel, exc_info=True)
+        logger.warning("code channel %s: Stop failed", room, exc_info=True)
         stopped, failed = [], ["unexpected error"]
     if failed:
         # Something may still be running: give the button back so the owner can retry.
@@ -1662,15 +1735,15 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
         reason = ", ".join(sorted(set(failed)))
         surface.audit(user, STOP_OPERATION, "error", f"{resources} stopped={len(stopped)}", reason)
         if released is not None:
-            await _redraw(channel, msg_ts, notice_key)
-            await _ephemeral(channel, user, STOP_FAILED_TEXT.format(reason=reason))
+            await _redraw(room, msg_ts, notice_key)
+            await say(STOP_FAILED_TEXT.format(reason=reason))
         else:
-            await _ephemeral(channel, user, STOP_LOST_TEXT.format(reason=reason))
+            await say(STOP_LOST_TEXT.format(reason=reason))
         return True
     surface.audit(user, STOP_OPERATION, "allowed", f"{resources} stopped={len(stopped)}")
     note = (STOPPED_TEXT if stopped else STOPPED_IDLE_TEXT).format(user=user)
     await _update_notice(notice_key, msg_ts, lambda c: True, lambda c: {**c, "stop_note": note})
-    await _redraw(channel, msg_ts, notice_key)
+    await _redraw(room, msg_ts, notice_key)
     return True
 
 
@@ -1726,8 +1799,11 @@ def _redraw_lock(notice_key: str) -> asyncio.Lock:
     return held[1]
 
 
-async def _redraw(channel: str, msg_ts: str, notice_key: str) -> None:
-    """Draw the notice from its CURRENT record: live buttons, each press's note."""
+async def _redraw(room: str, msg_ts: str, notice_key: str) -> None:
+    """Draw the notice from its CURRENT record: live buttons, each press's note.
+
+    *room* is the code channel, or the Conductor thread's ``channel:anchor``.
+    """
     slack = surface.slack()
     if slack is None or not msg_ts:
         return
@@ -1736,11 +1812,11 @@ async def _redraw(channel: str, msg_ts: str, notice_key: str) -> None:
         if current is None or current.get("notice_ts") != msg_ts:
             return
         posted = _without_trust_note(str(current.get("text") or "") or AUTO_TEXT)
-        if await _channel_trusted(channel):
-            posted = f"{posted} {TRUST_NOTE}"
+        if await _channel_trusted(room):
+            posted = f"{posted} {TRUST_NOTE}"  # _view rewords it for a thread
         notes = [current.get("resume_note", ""), current.get("stop_note", "")]
         view = _view(
-            channel,
+            room,
             posted,
             str(current.get("sig") or ""),
             resume=current.get("state") == "button",
@@ -1752,7 +1828,7 @@ async def _redraw(channel: str, msg_ts: str, notice_key: str) -> None:
             stop_label=str(current.get("stop_label") or ""),
         )
         try:
-            await slack.update_message(channel, msg_ts, posted, view)
+            await slack.update_message(thread_runtime.channel_of_room(room), msg_ts, posted, view)
         except Exception:
             logger.debug("code channel resume notice not updated", exc_info=True)
 
@@ -1803,7 +1879,7 @@ async def _stop_resumed(
     the dispatch the restart resumed, and running; ``(stopped, failures)``."""
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 
-    channel = binding.channel_id
+    channel = thread_runtime.room_id(binding)
     stopped: list[str] = []
     failed: list[str] = []
     for key, dispatch in _resumed_turns(record):

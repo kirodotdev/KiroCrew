@@ -973,6 +973,13 @@ class CardStore:
         rec["after"] = copy.deepcopy(after)
         rec["plan"]["undo"] = undo
         rec["undo_unavailable_reason"] = undo_reason if undo is None else None
+        if any(
+            isinstance(e, dict) and e.get("gateway_restart_required") is True
+            for e in rec.get("evidence") or []
+        ):
+            # A step's write is saved but the gateway serves it only after a
+            # restart (a Bot's new gateway-routed MCP server); the card says so.
+            rec["gateway_restart_required"] = True
         rec["undo_evidence"] = []
         self._dirty()
 

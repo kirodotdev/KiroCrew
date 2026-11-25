@@ -52,6 +52,8 @@ import { getCrewRowActions } from '../../components/remoteCrewRowActions'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { useConnected } from '../../hooks/useConnected'
+import { offlineProps } from '../../utils/offline'
 import { i18nT } from '../../i18n/t'
 import { guideCaution } from '../../guide/trustRoot'
 import { StatusBadge } from './InstancesPanel'
@@ -351,6 +353,14 @@ export function CrewRow({
   useEffect(() => { if (editing || blocked) setExpanded(true) }, [editing, blocked])
   const detailsId = `crew-row-details-${inst.id}`
   const actionsDisabled = !!busy || deleting
+  // The row's own writes (connect, disconnect, the switch, start, stop and the
+  // armed delete or remove) are refused while the dashboard is offline, each
+  // naming why on the control. Arming a confirm and opening the editor write
+  // nothing, so they stay live.
+  const online = useConnected()
+  const offline = (label: string) => offlineProps(online, i18nT('utils.offline.manage_crews'), label)
+  const switchLabel = i18nT('pages.settings.remoteCrewPanel.crew_enabled_named', { name: inst.name })
+  const switchOffline = offline(switchLabel)
   // One main action for the row's state. Every other action is in the details.
   const main: 'signin' | 'start' | 'diagnose' | 'update' | 'open' | 'connect' | null = transient
     ? null
@@ -382,7 +392,8 @@ export function CrewRow({
       ? i18nT('pages.settings.remoteCrewPanel.fargate_task_note')
       : unverifiedCloud
         ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
-        : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`
+        : rowActions?.managedBy?.()
+          ?? `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`
   const targetText = inst.connection_method === 'fargate'
     // Two tasks in one cluster differ only at the far right of the ECS
     // target; the short form keeps that tail visible and the title carries
@@ -461,8 +472,9 @@ export function CrewRow({
           <Btn
             primary
             onClick={() => onStart(cloudTag, coordsOf(inst))}
-            disabled={actionsDisabled}
+            disabled={actionsDisabled || !online}
             aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
+            {...offline(i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name }))}
           >
             <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
           </Btn>
@@ -484,13 +496,14 @@ export function CrewRow({
           <Btn
             primary
             onClick={() => onConnect(inst.id)}
-            disabled={actionsDisabled || connectBlocked}
+            disabled={actionsDisabled || connectBlocked || !online}
             // A `title` on a disabled button is unreliable: many browsers never
             // show it on hover, and it is not keyboard- or screen-reader-reachable.
             // While connecting is blocked, point the button at the restart banner
             // so the reason is in its accessible description too.
             title={connectBlocked ? i18nT('pages.settings.instancesPanel.connect_disabled_needs_restart') : undefined}
             aria-describedby={connectBlocked ? CREW_NEEDS_RESTART_BANNER_ID : undefined}
+            {...offline(i18nT('pages.settings.instancesPanel.connect'))}
           >
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
@@ -521,7 +534,8 @@ export function CrewRow({
           </Btn>
         ) : isCloud && confirmDelete ? (
           <>
-            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })} {...guideCaution}>
+            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy || !online} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })} {...guideCaution}
+              {...offline(i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name }))}>
               {/* Names its target on screen, not only to assistive tech: this click
                   terminates an EC2 instance, and "Confirm delete" beside two other
                   rows does not say WHICH. */}
@@ -535,7 +549,8 @@ export function CrewRow({
           </>
         ) : !isCloud && confirmRemove ? (
           <>
-            <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
+            <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy || !online} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}
+              {...offline(i18nT('pages.settings.instancesPanel.remove', { name: inst.name }))}>
               <Trash2 className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}
             </Btn>
             <Btn onClick={() => onRequestRemove(null)} disabled={!!busy}>
@@ -565,10 +580,12 @@ export function CrewRow({
           {!reportedOnly && detailRow(i18nT('pages.settings.remoteCrewPanel.detail_port'), inst.remote_port)}
           {/* The switch's own text names it ("Connections: On"), so it spans the
               row rather than repeating the word in a label cell. */}
-          <div className="col-span-2 inline-flex items-center gap-1.5 text-text">
+          {/* The switch takes no `title`, so its offline reason sits on this
+              wrapper, which a hover over the disabled switch reaches. */}
+          <div className="col-span-2 inline-flex items-center gap-1.5 text-text" title={switchOffline.title}>
             <Toggle checked={!inst.disabled} onChange={on => onSetEnabled(inst.id, on)}
-              disabled={actionsDisabled} describedBy={CREW_SWITCH_HINT_ID}
-              label={i18nT('pages.settings.remoteCrewPanel.crew_enabled_named', { name: inst.name })} />
+              disabled={actionsDisabled || !online} describedBy={CREW_SWITCH_HINT_ID}
+              label={switchOffline['aria-label'] ?? switchLabel} />
             {inst.disabled
               ? i18nT('pages.settings.remoteCrewPanel.crew_disabled')
               : i18nT('pages.settings.remoteCrewPanel.crew_enabled')}
@@ -610,14 +627,16 @@ export function CrewRow({
         {!transient && (
           <div className="mt-2.5 flex items-center gap-2 flex-wrap">
             {connected ? (
-              <Btn onClick={() => onDisconnect(inst.id)} disabled={actionsDisabled}>
+              <Btn onClick={() => onDisconnect(inst.id)} disabled={actionsDisabled || !online}
+                {...offline(i18nT('pages.settings.instancesPanel.disconnect'))}>
                 <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
               </Btn>
             ) : main !== 'connect' && !inst.disabled && !cloudStopped ? (
               // A crew whose main action is something else (Diagnose, Sign in)
               // can still be connected from here.
-              <Btn onClick={() => onConnect(inst.id)} disabled={actionsDisabled || connectBlocked}
-                aria-describedby={connectBlocked ? CREW_NEEDS_RESTART_BANNER_ID : undefined}>
+              <Btn onClick={() => onConnect(inst.id)} disabled={actionsDisabled || connectBlocked || !online}
+                aria-describedby={connectBlocked ? CREW_NEEDS_RESTART_BANNER_ID : undefined}
+                {...offline(i18nT('pages.settings.instancesPanel.connect'))}>
                 <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
               </Btn>
             ) : null}
@@ -659,12 +678,14 @@ export function CrewRow({
                     crew stopped from here carries Start as its main action. */}
                 {!cloudStopped && (
                   <>
-                    <Btn onClick={() => onStop(cloudTag, coordsOf(inst))} disabled={actionsDisabled}
-                      aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}>
+                    <Btn onClick={() => onStop(cloudTag, coordsOf(inst))} disabled={actionsDisabled || !online}
+                      aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}
+                      {...offline(i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name }))}>
                       <Power className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.stop')}
                     </Btn>
-                    <Btn onClick={() => onStart(cloudTag, coordsOf(inst))} disabled={actionsDisabled}
-                      aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}>
+                    <Btn onClick={() => onStart(cloudTag, coordsOf(inst))} disabled={actionsDisabled || !online}
+                      aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
+                      {...offline(i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name }))}>
                       <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
                     </Btn>
                   </>

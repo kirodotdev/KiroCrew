@@ -411,10 +411,11 @@ def test_a_generated_shell_only_control_is_on_every_page(built: tuple[Path, Path
     ("query", "lang", "label", "path"),
     [
         (
+            # Shared by several pages: placed under each by page id, the shell last.
             "continue with github",
             "en",
             "Continue with GitHub",
-            ["Settings", "Agent Harness", "Continue with GitHub"],
+            ["Sessions", "Continue with GitHub"],
         ),
         (
             "where is the download tailscale button",

@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { type NavigateFunction, type Location, type SetURLSearchParams } from 'react-router-dom'
-import { LayoutDashboard, Route } from 'lucide-react'
+import { LayoutDashboard, Route, Search } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -55,6 +55,8 @@ import { type ChatSlot } from '../../types'
 import { type MembersPageProfileFlight, type MembersPageProfileState } from './MembersPageProfile'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageThreadState } from './MembersPageThread'
+import { CREW_HISTORY_SEARCH_TAB_ID, CREW_HISTORY_SEARCH_TAB_IDS, useCrewHistorySearchTab } from './useCrewHistorySearchTab'
+import { historySearchHostMarks } from '../../hooks/useMessageSearch'
 import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, CREW_SESSIONS_TAB_ID, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_WITHHELD_VIEWS, PANEL_GAPS_W, type ProfileCardOpen } from './membersPageModel'
 import { type MembersPageDrawers } from './useMembersPageDrawers'
 import { type MembersPageLayout } from './useMembersPageLayout'
@@ -89,7 +91,7 @@ export function useMembersPageSidePanel({
   layout, profileCard, drawers, rosterView, thread, navigate, location, queryClient, activeName, searchParams,
   setSearchParams, profile, setProfile, liveSlots, slotsLoaded, active, activeMemberName,
 }: MembersPageSidePanelStateOptions) {
-  const { winW, beside, setOverlayOpen, setDockedOpen, panelVisible } = layout
+  const { winW, beside, setOverlayOpen, setDockedOpen, panelVisible, isMobile } = layout
   const { openProfile, schedGuardRef, schedAtStakeRef } = profileCard
   const { sidePanelPhase, panelSlides } = drawers
   const { crewmateLabel } = rosterView
@@ -139,7 +141,7 @@ export function useMembersPageSidePanel({
   // and every slot-bound view is withheld (`hiddenViews` below); the Crew
   // summary needs no slot and stays.
   const panelTabDescriptors = usePanelTabDescriptors()
-  const tabsCtl = usePanelTabs(activeSlot || null, panelTabDescriptors, { leadingIds: CREW_PANEL_TAB_IDS })
+  const tabsCtl = usePanelTabs(activeSlot || null, panelTabDescriptors, { leadingIds: CREW_PANEL_TAB_IDS, keepFocusIds: CREW_HISTORY_SEARCH_TAB_IDS })
   // The member slot's project directory (the WS slots frame carries it) roots
   // the Files tab and is the cwd a Terminal tab spawns in. Only a record from
   // the CURRENT snapshot counts: a reconnect drops `slotsLoaded` but keeps the
@@ -347,6 +349,11 @@ export function useMembersPageSidePanel({
   const [shownTabId, setShownTabId] = useState<string | null>(null)
   const activeTabId = shownTabId ?? tabsCtl.activeId
   const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
+  const historySearch = useCrewHistorySearchTab({
+    activeTabId, setActive: tabsCtl.setActive, fallbackTabId: CREW_DASHBOARD_TAB_ID, isMobile, beside, setDockedOpen, setOverlayOpen, closeReplyThread,
+    panelOpen: panelVisible,
+    panelShown: panelVisible && !(threadsOn && openThreadMid),
+  })
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
   useEffect(() => {
     // Once the Dashboard has been on screen for this crewmate its body stays
@@ -358,11 +365,11 @@ export function useMembersPageSidePanel({
   // Mount continuity — the chat page's rule, verbatim: a live Browser tab (its
   // WebContentsView) or a body-owning app tab (any slot's) cannot survive a
   // remount, so while one exists a closed overlay is kept mounted and hidden
-  // rather than unmounted. There is no find pane on this page.
+  // rather than unmounted.
   const hasLiveAppTab = useAnyLiveAppTab()
   const hasBrowserTab = tabsCtl.tabs.some((tab) => tab.kind === 'browser')
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
-  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: false }
+  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, hasTaskDashboard }
   const panelMounted = shouldMountSidePanel(mountInput)
   const panelHidden = isSidePanelHidden(mountInput)
   // Phone, and a desktop trackpad drag: the slide owns the panel's presence.
@@ -537,6 +544,7 @@ export function useMembersPageSidePanel({
     openSessionGuarded, drivingSessions, openPanelSession, setOpenPanelSession, openSessionInPanel, slotsLoaded,
     panelSessionFocused, setPanelSessionFocused,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay, activeTabId,
+    ...historySearch,
   }
 }
 
@@ -577,7 +585,7 @@ export function MembersPageSidePanel({
     closeReplyThread, setShownTabId, dashboardVisitedFor, closeOverlay, sidePanelOnScreen, sidePanelHiddenNow,
     openFile, openWorkingTreeDiff, saveFile, submitComments, dashboardPreviewLink, leaveDashboardPreview,
     requestCloseOverlay, drivingSessions, openPanelSession, setOpenPanelSession, openSessionGuarded, slotsLoaded,
-    setPanelSessionFocused,
+    setPanelSessionFocused, historySearchOpen, historySearchOnScreen, setHistorySearchHost, openHistorySearch, closeHistorySearch,
   } = sidePanel
   const { reduceMotion } = profileFlight
   const { openArtifactInPanel } = navigation
@@ -629,9 +637,16 @@ export function MembersPageSidePanel({
           // Badge click opens the Profile tab, where the one-click-send switch is.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.
+          // As an overlay (a phone, a narrow window) this panel sits above the
+          // thread column the floating card opens in, so it steps aside first;
+          // left up, the tap opened a card nobody could see.
           onOpenProfileTab={() => {
-            if (!schedAtStakeRef.current()) { openProfile('profile'); return }
-            void schedGuardRef.current().then((ok) => { if (ok) openProfile('profile') })
+            const open = () => {
+              if (!beside) requestCloseOverlay()
+              openProfile('profile')
+            }
+            if (!schedAtStakeRef.current()) { open(); return }
+            void schedGuardRef.current().then((ok) => { if (ok) open() })
           }}
           preview={dashboardPreviewLink}
           onLeavePreview={leaveDashboardPreview}
@@ -675,6 +690,19 @@ export function MembersPageSidePanel({
         />
       ),
     },
+    // The chat's history search, only while it is open. The bot's ChatPane
+    // owns it and draws it into this body; kept mounted so a switch to another
+    // tab and back keeps the query and the preview. Its close button ends it.
+    ...(historySearchOpen ? [{
+      id: CREW_HISTORY_SEARCH_TAB_ID,
+      title: t('components.chatHistorySearch.title'),
+      icon: <Search className="lucide-inline" aria-hidden="true" />,
+      keepMounted: true,
+      // A phone shows the search full screen with its own Cancel: no tab strip.
+      bare: isMobile,
+      onClose: closeHistorySearch,
+      render: () => <div ref={setHistorySearchHost} {...historySearchHostMarks(historySearchOnScreen)} className="h-full min-h-0 flex flex-col" data-testid="member-history-search-tab" />,
+    }] : []),
   ]
   // Everything both placements share. Two different keys do two
   // different jobs here. `slot` is the IDENTITY of the panel's bodies —
@@ -706,6 +734,8 @@ export function MembersPageSidePanel({
     hiddenViews,
     viewTitles,
     onActiveTabChange: setShownTabId,
+    // The + menu's Search: the bot chat's own history search.
+    onOpenHistorySearch: openHistorySearch,
     projectDir,
     onFileOpen: openFile,
     onOpenWorkingTreeDiff: openWorkingTreeDiff,
@@ -782,7 +812,7 @@ export function MembersPageSidePanel({
                       transition={instantPlacement ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0, 0, 1] }}
                       className={panelSlides
                         ? isMobile
-                          ? 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end'
+                          ? `fixed ${historySearchOnScreen ? 'top-safe z-[60]' : 'top-safe-offset-[42px] z-40'} bottom-safe left-safe right-safe flex justify-end`
                           // Desktop drag: no scrim, and the uncovered chat keeps its pointer.
                           : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end pointer-events-none [&>*]:pointer-events-auto'
                         : beside
@@ -793,6 +823,10 @@ export function MembersPageSidePanel({
                            handed the window width (`fillWidth`) so it fills the
                            scrim; on a tablet-width window the panel keeps its own
                            (resizable, persisted) width against the dimmed chat. */
+                        // The history search in front covers the topbar too on a
+                        // phone, so only its own field and Cancel are at the top.
+                        : isMobile && historySearchOnScreen
+                        ? 'fixed top-safe bottom-safe left-safe right-safe z-[60] flex justify-end bg-bg'
                         : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-xs'}
                       style={sidePanelHiddenNow ? { display: 'none' } : undefined}
                       // The scrim dismisses only the side panel. The Profile card is a

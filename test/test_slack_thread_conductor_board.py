@@ -19,12 +19,21 @@ from typing import Any
 import pytest
 from test_session_control_owner_dm import _state
 
+from kiro_crew import session_ledger
 from kiro_crew.dashboard.session_control_parts import code_channel_exemption as cce
 from kiro_crew.slack import handler as slack_handler
-from kiro_crew.slack.code_channels import audience
+from kiro_crew.slack.code_channels import (
+    audience,
+)
 from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.code_channels import board as board_pkg
-from kiro_crew.slack.code_channels import surface, surface_store
+from kiro_crew.slack.code_channels import (
+    stop_helpers,
+    surface,
+    surface_store,
+    thread_runtime,
+    thread_stop_gate,
+)
 from kiro_crew.slack.code_channels.board import (
     links,
     model,
@@ -55,6 +64,8 @@ SECRET_SUMMARY = "SECRET-SUMMARY wired the admin password into config"
 SECRET_STEP = "cat /srv/secret-notes.txt"
 SECRET_BRANCH = "feat/secret-branch"
 DASHBOARD = "https://dash.example/chat/"
+#: A wait that never ends is a lost run, not a failure: half the suite's test timeout.
+_LOST_RUN_SECS = 60.0
 
 
 class _Slack:
@@ -517,6 +528,60 @@ def test_the_schedule_coalesces_a_burst_and_reruns_once_for_a_trigger_mid_pass(w
 
     asyncio.run(burst())
     assert len(passes) == 2  # five triggers cost one pass; the ones mid-pass, one rerun
+
+
+# ── a Stop fences the board its thread admitted ───────────────────────────
+
+
+def test_a_stop_fences_its_threads_refresh_in_flight_and_not_the_other_threads(
+    world, slack, monkeypatch
+):
+    """The owner's ``!stop`` lands while both threads' refreshes are in flight: the
+    stopped thread's status message is not edited, the other thread's still is."""
+    world.worker("it_00000001")
+    _slot, other = world.thread(OTHER_ANCHOR)
+    world.refresh()
+    world.refresh(other)
+    world.live["chat-it_00000001"] = "idle"
+    world.items[0].status = "done"  # both boards owe an edit
+    monkeypatch.setattr(surface, "_stopped_at", {})
+    monkeypatch.setattr(thread_runtime, "thread_conductor_on", lambda cfg: True)
+    stopped: list[str] = []
+
+    async def stop_channel(orch, binding, *args, **kwargs):
+        stopped.append(binding.anchor_ts)
+        return "stopping"
+
+    monkeypatch.setattr(stop_helpers, "stop_channel", stop_channel)
+    record = SimpleNamespace(goal="Ship the login flow", round=1)
+    stopped_key = session_ledger.ledger_key(world.conductor.key)
+
+    async def both():
+        pressed = asyncio.Event()
+
+        async def records(key):
+            if key == stopped_key and not pressed.is_set():
+                try:
+                    await thread_stop_gate.decide(
+                        None,
+                        world.cfg,
+                        world.binding,
+                        text="!stop",
+                        sender_id=OWNER,
+                        from_trusted_bot=False,
+                    )
+                finally:
+                    pressed.set()
+            # The other pass, admitted before the Stop, reads after it.
+            await asyncio.wait_for(pressed.wait(), _LOST_RUN_SECS)
+            return record, list(world.items)
+
+        source.set_records_reader(records)
+        await asyncio.gather(thread_board.refresh(world.binding), thread_board.refresh(other))
+
+    asyncio.run(both())
+    assert stopped == [ANCHOR]
+    assert [c[2] for c in slack.of("update_message")] == ["100.2"]  # the other thread's only
 
 
 # ── a code channel's own board is unchanged ───────────────────────────────

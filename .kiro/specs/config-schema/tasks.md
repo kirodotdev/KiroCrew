@@ -1,6 +1,6 @@
 # Implementation Plan: Config Schema
 
-Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`.
+Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`. Historical where it differs from main: the dataclasses live in `config/sections_*.py` and `config/memory_sections.py`, not all in `config/loader.py`; the handler is `api_config_schema` in `src/kiro_crew/dashboard/handlers/agents.py` (it also returns `lockedByPolicy` and a settings descriptor); `agent.provider` is `enum=["acp"]` (`config/sections_agent.py`), with no Bedrock fields; the data home is `~/.kiro/crew/config.json`, not `~/.kirocrew/config.json`; and the baseline carries `generatedBy` and `entries` only, with no `generatedAt` (`KIROCREW_BASELINE_OUTPUT` can redirect where it is written).
 
 ## Overview
 
@@ -150,13 +150,13 @@ Formalize KiroCrew's configuration by making the Python dataclass hierarchy the 
 
   - [x] 7.5 Create `scripts/generate_config_baseline.py` baseline generator script
     - Import `SCHEMA_REGISTRY` and `config_entry_to_dict` from `config/schema.py`
-    - Serialize entries to JSON with `generatedBy`, `generatedAt` (ISO-8601), and `entries` keys
+    - Serialize entries to JSON with `generatedBy` and `entries` keys
     - Write to `config-baseline.json` in the repo root
     - Make script executable via `python scripts/generate_config_baseline.py`
     - _Requirements: 4.1, 4.2, 4.3, 4.5_
 
   - [x]* 7.6 Write unit tests for baseline generator
-    - Verify output JSON has `generatedBy`, `generatedAt`, and `entries` keys
+    - Verify output JSON has `generatedBy` and `entries` keys
     - Verify `entries` array contains expected number of ConfigEntry dicts
     - Verify script is runnable and produces valid JSON
     - _Requirements: 4.1, 4.2, 4.3, 4.5_

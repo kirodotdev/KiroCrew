@@ -131,6 +131,10 @@ _NEW_CHAT_PER_RUN_TOO_OFTEN = (
     "or turn new_chat_per_run off."
 )
 
+_NOTIFY_ONLY_MESSAGE_ONLY = (
+    "A reminder (notify_only) delivers its message as written: it cannot also "
+    "run a script, a command or several agents."
+)
 _NEW_CHAT_PER_RUN_AGENT_ONLY = (
     "A new chat per run applies to a single-agent (message) job: a script, "
     "command or multi-agent job never opens a chat tab."
@@ -174,6 +178,20 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("secret_env_resurfaced_pin", MAX_SHORT_STRING),
 )
 
+#: A character a job's ``name`` may not carry: every ``Cc`` control character but
+#: TAB, plus the two Unicode line/paragraph separators Python does not end a line
+#: at. The name is interpolated with ``%s`` into dozens of gateway log lines
+#: (``cron_exec``, ``cron_fire``, ``cron_failure``, ``cron_delivery`` and the
+#: rest), so one line break in it splits a single log line in two and the
+#: continuation reads as an unlabelled message. Checked beside the caps table on
+#: purpose: this is the one gate EVERY create and update surface runs -- MCP
+#: tool, REST, CLI, apps SDK, onboarding import -- which is also why the name's
+#: cap lives here (``test/test_cron_name_cap.py``). TAB is kept: it draws on one
+#: line, the same Cc-but-tab rule ``change_card_catalog_kinds`` applies to the
+#: text a card draws. ``message`` deliberately gets no such rule: it is a
+#: multi-line prompt and is meant to carry line breaks.
+_NAME_LINE_BREAK_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+
 
 # The shape of an installer's provenance key (CronJob.managed_by). Deliberately
 # not in _CRON_STRING_FIELD_CAPS: that table also gates apply_job_update, and
@@ -216,7 +234,7 @@ def _validate_cron_string_fields(
     *,
     required: frozenset[str] = frozenset(),
 ) -> None:
-    """Type+length gate for every caller-supplied string field.
+    """Type+length gate for every caller-supplied string field, plus ``name``'s shape.
 
     Iterates _CRON_STRING_FIELD_CAPS. For each field:
     - If in *required*: always validates (rejects non-str or over-cap).
@@ -224,6 +242,10 @@ def _validate_cron_string_fields(
       other value — including falsy non-strings like ``[]`` or ``0``, which
       a bare truthiness test would silently admit — must be a string within
       the cap.
+
+    ``name`` is then held to one more rule it needs and no other field has:
+    it must be a single line (:data:`_NAME_LINE_BREAK_RE`), because that is
+    the field the gateway's log lines interpolate.
     """
     for field_name, cap in _CRON_STRING_FIELD_CAPS:
         val = values.get(field_name)
@@ -239,6 +261,17 @@ def _validate_cron_string_fields(
                 raise ValueError(f"{field_name} must be a string")
             if len(val) > cap:
                 raise ValueError(f"{field_name} exceeds max length {cap}")
+    # Beside the loop rather than in it: only ``name`` carries a shape rule, and
+    # reading it out of the same dict keeps the table a table of caps. Absent
+    # from ``values`` (an update that does not touch the name) means nothing to
+    # check, and a name the caps already rejected never gets here.
+    name = values.get("name")
+    if isinstance(name, str) and _NAME_LINE_BREAK_RE.search(name):
+        raise ValueError(
+            "name must be on one line: it carries a line break or control "
+            "character, which would split the gateway log line that names the "
+            "job; remove it"
+        )
 
 
 def _check_timeout_secs_range(timeout_secs: int) -> None:
@@ -326,6 +359,7 @@ def build_job(
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
     new_chat_per_run: bool = False,
+    notify_only: bool = False,
     on_tab_close: str = "resume",
     folder_id: str = "",
     chat_folder_id: str = "",
@@ -416,6 +450,8 @@ def build_job(
         raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if project_path and (command or script):
         raise ValueError(_PROJECT_PATH_AGENT_ONLY)
+    if notify_only and (command or script or agent_sequence_dispatches(agent_sequence or [])):
+        raise ValueError(_NOTIFY_ONLY_MESSAGE_ONLY)
     project_path = resolve_project_path(project_path)
     validate_create_timeouts(timeout, timeout_secs, command=command, script=script)
     _auto_pause = (
@@ -472,6 +508,7 @@ def build_job(
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
         new_chat_per_run=bool(new_chat_per_run),
+        notify_only=bool(notify_only),
         on_tab_close=on_tab_close,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,

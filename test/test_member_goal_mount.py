@@ -25,6 +25,13 @@ MEMBER_KEY = "dashboard_member-ar-tpm-bot"
 agents_dir = _deepseek.agents_dir
 USER_SPEC = {"tools": ["@asana"], "mcpServers": {"asana": {"command": "asana-mcp"}}}
 MATE_SPEC = {"tools": ["@kirocrew-mate"], "mcpServers": {"kirocrew-mate": {"command": "k"}}}
+#: Each way a spec withholds the server whole (``default_crew_servers.opted_out``).
+EXCLUDING_SPECS = [
+    {"tools": ["*"], "excludedTools": ["@kirocrew-mate"]},
+    {"tools": ["*"], "excludedTools": ["@kirocrew-mate/*"]},
+    {"tools": ["*"], "managedToolPolicy": {"excludeServers": ["kirocrew-mate"]}},
+]
+EXCLUDING_IDS = ["excludedTools", "excludedTools-glob", "excludeServers"]
 
 
 def _base() -> list[dict]:
@@ -78,6 +85,10 @@ class TestClientAppend:
         )
         assert out == _base()
 
+    @pytest.mark.parametrize("spec", EXCLUDING_SPECS, ids=EXCLUDING_IDS)
+    def test_a_spec_that_excludes_the_server_is_never_mounted(self, spec):
+        assert mount.append_member_goal_server(_ClientStub(), _base(), spec) == _base()
+
 
 reads: list[tuple] = []
 
@@ -121,6 +132,10 @@ class TestRuntimeMount:
         assert self._run(monkeypatch, ACP_BACKEND_CODEX, disabled=True) == _base()
         narrowed = frozenset({(MEMBER_MATE_SERVER, "set_goal")})
         assert self._run(monkeypatch, ACP_BACKEND_CODEX, narrowed=narrowed) == _base()
+
+    @pytest.mark.parametrize("spec", EXCLUDING_SPECS, ids=EXCLUDING_IDS)
+    def test_a_spec_that_excludes_the_server_withholds_it(self, monkeypatch, spec):
+        assert self._run(monkeypatch, ACP_BACKEND_CODEX, spec=spec) == _base()
 
     def test_a_spec_that_has_it_is_untouched(self, monkeypatch):
         assert self._run(monkeypatch, ACP_BACKEND_CODEX, spec=MATE_SPEC) == _base()

@@ -908,7 +908,8 @@ def test_real_kiro_cli_delivers_the_token_and_still_overrides_the_spec() -> None
                     with contextlib.suppress(OSError):
                         stream.close()
                 wait_until(
-                    lambda: (root / "marks" / "INJECTED").exists(),
+                    lambda: (root / "marks" / "INJECTED").read_text(encoding="utf-8"),
+                    ignoring=(FileNotFoundError, PermissionError),
                     describe=lambda: (
                         f"driver exit: {proc.returncode}\n"
                         + f"driver stdout: {(stdout or '')[-2000:]}\n"

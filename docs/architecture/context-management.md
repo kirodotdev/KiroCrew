@@ -63,7 +63,7 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed; on a KAS session whose default agent mounts the engine's sub-agent tool, the `kas_subagents` feature preview, its one `spawn_sub_agents` sentence names that tool instead, read once per session like the browse gate: `_engine_subagent_gates`, `kas_engine_subagents.contract_names_engine_subagents`); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed; on a KAS session whose agent mounts the engine's sub-agent tool, the `kas_subagents` feature preview, its one `spawn_sub_agents` sentence names that tool instead (`replace`), read once per session like the browse gate: `_engine_subagent_gates`, `kas_engine_subagents.contract_engine_subagent_mode`); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false`, or the session head holds this exact text |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -77,7 +77,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
 | 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound, except on Codex, OpenCode and Pi, which read `AGENTS.md` from their working directory), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code, Codex, OpenCode and Pi backends** (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`), `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
-| 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
+| 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first, only rows after the newest typed `/clear` row, `clear_command.is_clear_command_row`), else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
@@ -265,8 +265,9 @@ Thread history has its own reference base, `_HISTORY_REFERENCE_BASE`, and takes
 21% of it on the fallback path (`_HISTORY_BUDGET_CHARS`) and 27% compressed
 (`_COMPRESSED_HISTORY_CAP`), each then scaled by the model window. One embedding
 deadline covers a whole prompt build: `_PROMPT_BUILD_EMBED_TIMEOUT_SECS`, five
-seconds; a missed embedding is ranked by keyword. A dashboard turn starts the first
-message's embedding before the build (`embed_startup_query`), beside session startup
+seconds; a missed embedding is ranked by keyword. A dashboard turn starts the
+embedding of the text the build ranks, the user's own span of the first message
+(`recall_query`), before the build (`embed_startup_query`), beside session startup
 when the turn has to start the session itself. A build that finds that embedding
 cached reads it at once, and one that finds it still running joins it and waits
 `memory.startup_recall_timeout_secs` (one second) instead. On that same cold start
@@ -297,7 +298,8 @@ build's query embed stops it at the model's next step and runs first
 
 No memory cap is a config key — they are module constants. The keys that change
 assembly include `skills.max_triggered`, `skills.lazy_load`, `agent.session_sharing`,
-`agent.member_dispatch`, and each agent's `includeCrewContext`.
+`agent.member_dispatch`, and each agent's `includeCrewContext` and
+`includeCrossSessionContext`.
 
 Memory, lessons, history, folder names, channel text and skill bodies are all
 agent- or third-party-writable, so `_neutralize_structural_markers` rewrites forged
@@ -443,9 +445,11 @@ The mechanism, when on:
 
 - `skills_selection.py` → `get_triggered_skills` scores each visible skill's comma-separated
   `triggers` through `trigger_match.py` → `trigger_score`. A phrase's score is the
-  fraction of *its* words present in the message; an entry's score is its best
-  phrase; a `!`-prefixed phrase whose words all appear is a veto evaluated after
-  every positive, so phrase order cannot change the outcome. Case is ignored,
+  fraction of *its* words present in the message, and a Chinese, Japanese or Thai
+  word is present when it occurs anywhere inside the message, since those scripts
+  are written without spaces; an entry's score is its best phrase; a `!`-prefixed
+  phrase whose words all appear is a veto evaluated after every positive, so
+  phrase order cannot change the outcome. Case is ignored,
   except in a phrase prefixed with `=`: its words must appear exactly as
   written, so `=Word` fires on "Word" and not on "word".
 - The bar is `MIN_TRIGGER_OVERLAP = 0.7`. `always: true` skills are excluded (already
@@ -617,12 +621,19 @@ re-adds, once:
    team-lead conductors run their own skills), and a crewmate's DM thread under the
    gate session start appends `conductor.patrol` with (dispatch tools held, ledger
    tools on the binding). Workers, plain chats and minimal turns get nothing.
+10. `[CRITICAL RULES]` — the reply contract (the `[OPTIONS:]` rule, diff blocks,
+    path and link rules, the ask policy) in the session's own variant
+    (`_critical_rules_for`), after the agent contract. Same opt-out as session
+    start (`includeCrewContext: false` gets none), and left out where the session
+    head holds that exact text (`session_head.holds`): the KAS agent prompt that
+    carries it outlives the compaction. A slim resume that re-injects sends it
+    here only, not a second time in its resume block.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn. A minimal-context turn
-gets back only the agent contract and the reply-style preferences; the memory index,
-skills index, lessons, steering resources, folder steering, member section and work
-ledger stay withheld
+gets back only the agent contract and the reply-style preferences; the critical
+rules, memory index, skills index, lessons, steering resources, folder steering,
+member section and work ledger stay withheld
 (`post_compaction_parts(minimal_context=True)`).
 
 ### The `[work ledger]` snapshot
@@ -662,6 +673,20 @@ both `build_message` and the `state.json` record read, so a retried or continued
 run sees the scope its caller asked for. Anything withheld is named to the child
 in `[CONTEXT SCOPE]` — an unexplained gap makes a sub-agent invent user
 preferences, and naming it converts that into an honest "not provided".
+
+The same two groups can be dropped for one agent, on any surface. An agent spec
+that sets `includeCrossSessionContext: false` loses the `memory` and `lessons`
+groups in every build: `context_assembly/inclusion.py` → `_spec_scoped_groups`
+subtracts them from the caller's set in `build_session_context` and in
+`build_message`, ahead of the operator's `memory.inject_memory` /
+`memory.inject_lessons` intersection, so every row above conditioned on one of
+those groups is left out, and so is the re-injection after a compaction. The key
+is read on every build from the spec the agent's prompt is read from (the
+project's spec ahead of a global one, or a pinned session's file), by
+`_agent_includes_cross_session_context`. It only removes groups, it is silent
+like the operator's toggles (no `[CONTEXT SCOPE]`, which names a parent's
+choice), and a key that is present but not exactly `true`, or a spec lookup that
+is refused, withholds.
 
 **What a sub-agent does not get.** No channel history, Slack thread context, board
 tags, folder breadcrumb, dashboard tool nudges, or the parent's reply-style

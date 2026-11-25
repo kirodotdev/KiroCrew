@@ -393,7 +393,7 @@ and are imported from their owner.
 | `kiro_crew.artifacts_disk` | How a store keeps artifacts on disk: the directory layout (`_artifact_dir`, whose rule is `_artifact_dir_in`) and slug claiming, the fenced file IO (`_read_text`, whose body is `_read_store_text`, / `_write_text` / `_read_bytes` / `_write_bytes`) and its pinned, durable primitives, the meta / version / image-asset writes, the lifecycle event append, version listing and pruning, the meta scan and the pinned `rmtree`. Also the caps (`MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`, `MAX_EVENTS_PER_ARTIFACT`, `MAX_AUTO_WIDGET_ARTIFACTS`), the clock (`_now_iso`), the content token and the content check |
 | `kiro_crew.artifacts_source_link` | The live `source_path` pointer: its allowed roots, the descriptor-pinned read and the write-back, and `relocate` |
 | `kiro_crew.artifacts_writes` | Content writes: `create`, `create_image`, `update` and `settle_blank`, and the `kirocrew.artifact.created` counter |
-| `kiro_crew.artifacts_scans` | Lookups and sweeps over every `meta.json`: by upstream artifact id (one and the batch index), by source path, the kind migration and the auto-widget retention sweep |
+| `kiro_crew.artifacts_scans` | Lookups and sweeps over every `meta.json`: by upstream artifact id (one and the batch index), by source path, `kind_of` (one slug's `kind` from its meta.json alone, through the fenced reader, never the body and no write; None for a slug outside the store's shape by plain character checks, a meta path resolving outside the root, a missing or unreadable record; the history search uses it for slugs read from chat links), the kind migration and the auto-widget retention sweep |
 | `kiro_crew.artifacts_comments` | The `comments.json` sidecar: comment CRUD, the provider merge, the anchor rescan and the comment events |
 | `kiro_crew.artifact_store.model` | The error hierarchy, the `EXPECT_ABSENT` generation sentinel and the record dataclasses (`Artifact`, `ArtifactPublication`, `ForkMetadata`, `ArtifactComment`, `ImageMetadata`) |
 | `kiro_crew.artifact_store.rules` | Field limits and grammar (slug, tag, name, description, `source_path`), `slugify`, the kind policy (`_infer_kind`, `detect_editor_kind`, `USER_SELECTABLE_KINDS`), the theme-colour lint, the document-path test and session-scope matching |
@@ -1870,6 +1870,57 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   blank re-typing that turns a JSON-looking first save into `json` cannot apply.
   Importing a `.canvas` file through **Add Artifact** gives the same kind, and
   **Download** writes one back out.
+- **A full-page canvas.** A canvas opens on its own page
+  (`ArtifactDetailPageCanvas.tsx`), not the generic header and body: the canvas
+  fills everything under the app's top bar, edge to edge with no border or
+  rounding, and the page never scrolls. The page's controls float over the
+  top-left corner as one pill in two groups: Back and the title (click to rename)
+  with the save state, then the version, the agent chat and a menu with Star and
+  Tags (current version only), Comments, Activity, Snapshot, Copy, Send to
+  session, Pop out (or Focus and Bring back once popped out, never inside the
+  popout window), Publish and Download. On a past version the menu leads with Revert (disabled
+  while saving), the same confirmed revert as the generic header's button,
+  kept in the menu so the pill holds two buttons beside the version. The layer
+  holding the pill and its notices reserves the board's top-right corner, where
+  the editor's zoom control sits, at every board width rather than capping the
+  pill's width, so the pill never covers zoom or takes its taps: the title
+  truncates and the save state yields first. Save failures and conflicts, and a
+  failed versions load, star, rename, Snapshot, Copy, Download or Send to
+  session, float under the pill as error notices without the agent hand-off,
+  because the board may hold a waiting autosave. A forked or published canvas
+  shows the generic page's publication status in the same stack, from the same
+  components (`ArtifactUpstreamSync` and `ArtifactPublicationNotices` in
+  `ArtifactDetailPageBody.tsx`): the upstream sync banner with its Pull latest,
+  Overwrite remote and Snapshot to publish actions, a failed sync
+  (`publication.last_error`) and a publish notice with Check again, also
+  without the hand-off. A sync action first flushes the board's waiting
+  autosave; if it cannot save, the action stops and the banner shows the error. The
+  menu's Publish opens the generic page's Publish panel (`PublishHub`) as the
+  right-hand column. The pill and the page's notices
+  are drawn by the page,
+  outside the lazily loaded board (`lazyCanvas.ts`): the board reports its save
+  state up and renders its own save and unreadable-document notices into a slot
+  under them, so Back, the version, the menu and the chat stay while the board's
+  chunk loads, fails to load or throws. While the load-failure notice shows, the
+  controls sit above it in the flow rather than floating over it.
+- **The canvas page's tags and columns.** Tags open in a popover under the pill
+  with the same chips and add field as the generic header
+  (`components/ArtifactTagChips.tsx`). The agent chat, the comments, the
+  activity log and the Publish panel each open as the one full-height column on the right, and the
+  canvas shrinks beside it; on a phone the open column takes the whole width and
+  the canvas is hidden (not unmounted) until it closes. Comments are on the whole
+  artifact, since a canvas has no text to anchor to. The comments column opens
+  only from the menu: the generic page's auto-reveal of its comments panel does
+  not apply. If an add, reply or edit draft is dirty, closing comments or
+  switching to Activity or chat hides the comments subtree instead of unmounting
+  it; reopening comments restores the same draft. A hidden dirty subtree takes
+  no column width and is absent from keyboard navigation and accessibility reads.
+  The generic page's kind badge, folder chip, Compare with,
+  description and created/updated line are not on this page. No registered
+  `artifacts.detail.*` location renders on a canvas: each id names one render
+  site, and those sites are in the generic header, so a guide step aimed at
+  `artifacts.detail.versions`, `.more`, `.comments` or `.move-to-folder` finds
+  nothing on a canvas even where the pill draws the same control.
 - **No edit mode, live saves.** The editor is always live on the current
   version and saves a moment after the last change as a silent live save
   (`snapshot: false`), so moving shapes never adds a numbered version; the
@@ -1892,7 +1943,7 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   direct response remains the latest read until the page delivers another one.
 - **The page's controls see its saves.** A canvas has no edit buffer, so the
   page's `dirty` never covers it; `canvasPending.ts` lets the page reach the
-  mounted canvas instead. Back, the version picker, Compare with, Snapshot and Send to
+  mounted canvas instead. Back, the version picker, Snapshot and Send to
   session flush what is waiting first, so a snapshot holds what the screen
   shows, and Snapshot refuses when the flush cannot save. Every local exit
   through the page's navigation dispatcher checks the leave guard immediately
@@ -1900,8 +1951,8 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   content read the document the editor shows, waiting edits included. A guarded
   in-app exit is held while a save is waiting or in flight, and the save is
   finished while the page still exists to show a failure; edits a failed or
-  refused save left on the page ask before Back, a version switch, entering a
-  comparison or any guarded exit drops them.
+  refused save left on the page ask before Back, a version switch or any
+  guarded exit drops them.
 - **Undo never crosses a replacement.** Content that replaces the canvas from
   outside (another tab, an agent, Reload) clears the editor's undo history and
   ends any gesture still open (a text edit, a colour drag, a move or resize), so

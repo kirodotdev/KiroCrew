@@ -619,7 +619,7 @@ export default function AgentTemplatesTab() {
     if (dirty && !confirm(dirtyMessage)) return
     try {
       // The template namespace, so a same-name crewmate is not what answers.
-      await dispatch(createSlot({ agent: row.name, agent_kind: 'template' })).unwrap()
+      await dispatch(createSlot({ agent: row.name, agent_kind: 'template', startModeDefault: true })).unwrap()
       navigate('/chat')
     } catch (e) {
       setNotice({ kind: 'err', text: errMessage(e) || i18nT('pages.overview.agentTemplatesTab.err_generic') })

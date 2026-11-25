@@ -216,9 +216,14 @@ class AntigravityLaunch(ProcessAdapter):
         self._helper_path = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the pair, warm MCP, then apply the enforced-host credential mask."""
+        """Apply the enforced-host floor and mask first, then resolve the pair and warm MCP."""
         session = ctx.session
         assert session is not None, "antigravity is launched for one session"
+        # The enforced-host floor and mask FIRST, before the binary lookup, so a host
+        # that refuses the session never names an install command.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
         resolution = await asyncio.to_thread(resolve_antigravity_runtime)
         if not resolution.server or not resolution.helper:
             raise AcpError(antigravity_not_found_message(resolution))
@@ -226,9 +231,6 @@ class AntigravityLaunch(ProcessAdapter):
         # The mirror reads the agent spec into this session's MCP cache. Antigravity
         # reads no Kiro agent file of its own, so this call must precede session/new.
         await session._prepare_session_mcp()
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
         self._helper_path = resolution.helper
         # The mode write proves the asking state; nothing proves the harness then asks
         # before every call. Arm the completed-unasked tripwire

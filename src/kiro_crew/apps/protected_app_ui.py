@@ -229,6 +229,30 @@ def enabled() -> bool:
         return False
 
 
+def ui_roots(
+    apps_root: Path, app_name: str, *, script: bool
+) -> tuple[Path, Path, Path | None] | None:
+    """The UI source, containment anchor and optional pinned root; ``None`` if unavailable.
+
+    Only an operator-granted dev root outside the install serves live scripts while
+    the protected copy is enabled. Its resolved root stays pinned across the open.
+    In-install dev grants still use the copy because the toggle route grants them without
+    operator confirmation; callers include ``kirocrew app startup`` and app-list reads,
+    which can reach ``served_root`` and trigger its one-time capture.
+    """
+    from kiro_crew.apps.dev_mode import dev_mode_granted_root
+
+    ui = apps_root / app_name / "ui"
+    anchor = Path(os.path.realpath(apps_root)) / app_name
+    live_root = os.path.realpath(ui)
+    if not script or not enabled():
+        return ui, anchor, None
+    if live_root == dev_mode_granted_root(app_name) and not Path(live_root).is_relative_to(anchor):
+        return Path(live_root), anchor, Path(live_root)
+    copy = served_root(apps_root, app_name)
+    return (copy, copy, None) if copy is not None else None
+
+
 def _set_aside_copies(app_name: str) -> list[Path]:
     """The copies :func:`record` set aside for *app_name* and never dropped."""
     kind = _kind_dir()
