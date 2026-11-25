@@ -32,6 +32,7 @@ from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import (
     acquire_lock,
     is_link_or_junction,
@@ -191,7 +192,7 @@ def _keep_aside(path: Path) -> Path:
     """Rename ``path`` to a reserved ``<name>.corrupt-<UTC time>`` beside it."""
     target = reserve_quarantine_name(path)
     try:
-        os.replace(path, target)
+        replace_with_retry(path, target)
     except OSError:
         target.unlink(missing_ok=True)
         raise

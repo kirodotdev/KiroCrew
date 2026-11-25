@@ -140,7 +140,7 @@ def test_a_key_rename_that_fails_leaves_a_recoverable_vault(tmp_path: Path, monk
 
     def replace(src, dst):
         if Path(src).name == ".vault_key":
-            raise PermissionError(errno.EACCES, "held open", str(src))
+            raise OSError(errno.EBUSY, "held open", str(src))
         return real(src, dst)
 
     with monkeypatch.context() as m:
