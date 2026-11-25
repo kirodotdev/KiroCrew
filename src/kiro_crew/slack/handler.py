@@ -432,6 +432,7 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _comment_hold_is_protocol,
     _could_open_marker_line,
     _filter_options_brackets,
+    _final_update_landed,
     _resolve_comment_hold,
     _resolve_options_hold,
     _safe_final_update,
@@ -469,6 +470,11 @@ from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
 from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
     SHARED_OWNER_ONLY_TEXT,
     shared_command_refused,
+)
+from kiro_crew.slack.stream_window import (  # noqa: F401 - read by the owners
+    CONTINUES_BELOW,
+    stream_clock,
+    stream_due_for_renewal,
 )
 from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,
