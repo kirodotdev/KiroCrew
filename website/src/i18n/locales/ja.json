@@ -9350,6 +9350,7 @@
       "desktop_app_only": "デスクトップアプリのみ",
       "panel_toggles": "パネルの表示切り替え",
       "unset": "未設定",
+      "terminal_focus_only": "フォーカス中のターミナルでのみ",
       "save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。"
     },
     "sidePanelLayout": {

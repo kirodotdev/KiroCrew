@@ -9584,6 +9584,7 @@
       "desktop_app_only": "Nur Desktop-App",
       "panel_toggles": "Panels umschalten",
       "unset": "Nicht festgelegt",
+      "terminal_focus_only": "Nur in einem fokussierten Terminal",
       "save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut."
     },
     "sidePanelLayout": {

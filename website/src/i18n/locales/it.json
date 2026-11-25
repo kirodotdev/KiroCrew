@@ -9818,6 +9818,7 @@
       "desktop_app_only": "Solo app desktop",
       "panel_toggles": "Attiva/disattiva pannelli",
       "unset": "Non impostato",
+      "terminal_focus_only": "Solo in un terminale con il focus",
       "save_refused": "Non salvato: lo spazio di archiviazione del browser è pieno. Libera spazio e riprova."
     },
     "sidePanelLayout": {

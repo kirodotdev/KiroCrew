@@ -9818,6 +9818,7 @@
       "desktop_app_only": "Application de bureau uniquement",
       "panel_toggles": "Affichage des panneaux",
       "unset": "Non défini",
+      "terminal_focus_only": "Uniquement dans un terminal qui a le focus",
       "save_refused": "Non enregistré : le stockage du navigateur est plein. Libère de l’espace et réessaie."
     },
     "sidePanelLayout": {

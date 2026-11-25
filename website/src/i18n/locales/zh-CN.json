@@ -9350,6 +9350,7 @@
       "desktop_app_only": "仅桌面应用",
       "panel_toggles": "面板开关",
       "unset": "未设置",
+      "terminal_focus_only": "仅在获得焦点的终端中",
       "save_refused": "未保存：浏览器存储空间已满。请释放一些空间后重试。"
     },
     "sidePanelLayout": {

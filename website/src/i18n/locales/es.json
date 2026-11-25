@@ -9818,6 +9818,7 @@
       "desktop_app_only": "Solo aplicación de escritorio",
       "panel_toggles": "Alternar paneles",
       "unset": "Sin definir",
+      "terminal_focus_only": "Solo en un terminal con el foco",
       "save_refused": "No se guardó: el almacenamiento del navegador está lleno. Libera espacio e inténtalo de nuevo."
     },
     "sidePanelLayout": {

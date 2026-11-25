@@ -9350,6 +9350,7 @@
       "desktop_app_only": "데스크톱 앱 전용",
       "panel_toggles": "패널 표시 전환",
       "unset": "설정 안 됨",
+      "terminal_focus_only": "포커스된 터미널에서만",
       "save_refused": "저장되지 않았습니다. 브라우저 저장 공간이 가득 찼습니다. 공간을 확보한 후 다시 시도하세요."
     },
     "sidePanelLayout": {

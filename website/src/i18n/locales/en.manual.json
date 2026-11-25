@@ -4279,7 +4279,8 @@
       "browser_reserved_hint": "In a browser tab the browser takes these shortcuts before the page sees them — the alternatives work everywhere; the desktop app honours both.",
       "desktop_app_only": "Desktop app only",
       "panel_toggles": "Panel toggles",
-      "unset": "Not set"
+      "unset": "Not set",
+      "terminal_focus_only": "Only in a focused terminal"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Close this tab. The session stays in the sidebar.",
