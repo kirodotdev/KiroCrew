@@ -113,9 +113,9 @@ Read the app's own grant.
 
 | About | This endpoint |
 |---|---|
-| Status | Planned |
+| Status | Available now: owner and apps |
 | Tier | Public |
-| Stability | stable |
+| Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with any credential the user granted it. |
 
 Any delegated credential may call it; no extra scope is needed. It keeps answering while the grant is paused (other operations return 403 grant_paused), so the app can tell the user why it stopped. The user's own credential has no grant of its own and gets 404; all grants are listed by the Owner operation GET /v1/crew/owner/grants.

@@ -476,6 +476,11 @@ class LocalAuthorization:
             for grant_id, grant in sorted(live, key=lambda item: (item[1]["created_at"], item[0]))
         ]
 
+    def grant(self, grant_id: str) -> dict[str, Any] | None:
+        """The grant *grant_id* as :meth:`grants` lists it, or ``None`` when it does
+        not work now."""
+        return next((row for row in self.grants() if row["grant_id"] == grant_id), None)
+
     def decide(
         self,
         request_id: str,

@@ -63,7 +63,7 @@ Endpoints an app calls with a credential the user granted it.
 | [`POST /v1/crew/webhooks`](public-webhooks.md#post-v1crewwebhooks) | Subscribe to webhook events | Planned | stable |
 | [`DELETE /v1/crew/webhooks/{webhook_id}`](public-webhooks.md#delete-v1crewwebhookswebhook_id) | Delete a webhook subscription | Planned | stable |
 | [`DELETE /v1/files/{file_id}`](public-files.md#delete-v1filesfile_id) | Delete a file this grant uploaded | Planned | stable |
-| [`GET /v1/crew/grant`](public-crew.md#get-v1crewgrant) | Read the app's own grant | Planned | stable |
+| [`GET /v1/crew/grant`](public-crew.md#get-v1crewgrant) | Read the app's own grant | Available now: owner and apps | preview |
 
 ## Owner endpoints
 

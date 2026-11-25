@@ -145,4 +145,8 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # and keeps the instance id (relay_client.lease.crew_instance_id), so the verb is
     # not ``read``; it changes nothing after that.
     ("GET", "/v1/crew/info"): RouteAccess("crew_api.info.resolve", PREVIEW),
+    # An app credential reads the grant it was issued for (crew_api_grant_self); a
+    # first-party session is answered 404. Reads only.
+    # Contract test: test_crew_api_grant_self.py.
+    ("GET", "/v1/crew/grant"): RouteAccess("crew_api.grant.read", PREVIEW),
 }
