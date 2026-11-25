@@ -518,7 +518,7 @@ describe('AgentTemplatesTab actions', () => {
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
     fireEvent.click(screen.getByRole('button', { name: /Chat with this custom agent/ }))
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/chat'))
-    expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template' })
+    expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template', startModeDefault: true })
   })
 
   it('keeps Chat enabled while dirty and asks first, instead of a disabled button', async () => {
@@ -535,7 +535,7 @@ describe('AgentTemplatesTab actions', () => {
     expect(mockCreateSlot).not.toHaveBeenCalled()
     confirmSpy.mockReturnValue(true)
     fireEvent.click(chat)
-    await waitFor(() => expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template' }))
+    await waitFor(() => expect(mockCreateSlot).toHaveBeenCalledWith({ agent: 'reviewer', agent_kind: 'template', startModeDefault: true }))
   })
 
   it('shows the reference list when the server refuses a delete as referenced', async () => {

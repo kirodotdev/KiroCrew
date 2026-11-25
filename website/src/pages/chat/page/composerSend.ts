@@ -614,7 +614,7 @@ export function useComposerSend({
         // via ?autoSend=1&newSession=1). Neither is the person's own first
         // message, so neither asks for their default sidebar folder.
         const launched = isolated || (forceNew && optionText !== undefined)
-        created = await dispatch(createSlot({ agent: pendingAgentRef.current || undefined, agent_kind: pendingAgentRef.current ? pendingAgentKindRef.current : undefined, model: pendingModelRef.current || undefined, mode: modeRef.current, ...(pendingProjectRef.current ? { sessionFolder: false } : launched ? {} : { defaultFolder: true }) })).unwrap()
+        created = await dispatch(createSlot({ agent: pendingAgentRef.current || undefined, agent_kind: pendingAgentRef.current ? pendingAgentKindRef.current : undefined, model: pendingModelRef.current || undefined, mode: modeRef.current, ...(pendingProjectRef.current ? { sessionFolder: false } : launched ? {} : { defaultFolder: true }), ...(launched ? {} : { startModeDefault: true }) })).unwrap()
       } catch (e: unknown) {
         sendingRef.current = false
         if (isolated) {

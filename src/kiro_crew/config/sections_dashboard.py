@@ -27,6 +27,12 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The values ``dashboard.default_approval_mode`` takes: the mode a plain chat the
+# owner starts from the dashboard opens on (``dashboard.chat_default_mode``).
+# ``trust`` is deliberately absent (rfc-default-approval-mode section 6), and
+# ``yolo`` is process-wide, never one chat's start mode.
+DEFAULT_APPROVAL_MODES: tuple[str, ...] = ("normal", "trust_reads")
+
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
@@ -592,6 +598,18 @@ class DashboardConfig:
             "'temporary' neither reads nor writes. Explicit per-session choices "
             "still win.",
             enum=["persistent", "incognito", "temporary"],
+        ),
+    )
+    default_approval_mode: str = field(
+        default="normal",
+        metadata=_meta(
+            "New chats start on",
+            "Approval mode a plain chat you start from the dashboard opens on: "
+            "'normal' asks before each tool; 'trust_reads' runs read-only tools "
+            "and read-only shell commands without asking. Crewmates, channels, "
+            "schedules and agents keep their own settings, and the approval-modes "
+            "policy can hold a chat on 'normal'.",
+            enum=list(DEFAULT_APPROVAL_MODES),
         ),
     )
     new_chat_crew_mode: bool = field(

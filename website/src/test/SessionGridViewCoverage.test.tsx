@@ -806,6 +806,18 @@ describe('SessionGridView — picker controls', () => {
     expect(pickers()).toHaveLength(1)
   })
 
+  it('says why when the create is refused, instead of only stopping the spinner', async () => {
+    const m = seedApi([{ key: 'a' }])
+    m.createChatSlot = vi.fn().mockRejectedValue(new Error('Memory is still starting'))
+    renderGrid('a')
+
+    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'New session' }))
+
+    expect((await screen.findByTestId('grid-create-error')).textContent).toContain('Memory is still starting')
+    // The person's own New session asks for their stored start mode.
+    expect(m.createChatSlot.mock.calls[0][13]).toBe(true)
+  })
+
   it('disables the create button and shows a spinner while creating', async () => {
     const m = seedApi([{ key: 'a' }])
     let release: (v: { key?: string }) => void = () => {}
