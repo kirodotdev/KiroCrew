@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -90,6 +91,40 @@ GROUPED_PARAMS = (
     "def test_x(p):\n"
     "    assert p == 'a'\n"
 )
+# Fails in the first session and is not collected by the retry pass.
+ONLY_FIRST_SESSION = (
+    "import os\n"
+    "if not os.environ.get('CI_SHARD_RETRY_RESULTS'):\n"
+    "    def test_only_first():\n"
+    "        raise ValueError('not collected again')\n"
+)
+# Ends its xdist worker: a crash, which no test phase reports.
+CRASHES_WORKER = "import os\ndef test_crash():\n    os._exit(1)\n"
+# Fails its call once, then passes it while its teardown fails on the retry pass.
+TEARDOWN_FAILS_ON_RETRY = (
+    "import os\nimport pytest\n"
+    "@pytest.fixture\ndef late():\n"
+    "    yield\n"
+    "    if os.environ.get('CI_SHARD_RETRY_RESULTS'):\n"
+    "        raise RuntimeError('teardown broke on the retry')\n"
+) + FLAKY.replace("def test_flaky():", "def test_flaky(late):")
+# Calls the repository's own root conftest guard on a session a retry turned green.
+ROOT_GUARD = (
+    "import importlib.util, sys\n"
+    "from types import SimpleNamespace\n"
+    "spec = importlib.util.spec_from_file_location('root_conftest', sys.argv[1])\n"
+    "guard = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(guard)\n"
+    "guard._ROOT_BASELINE = set()\n"
+    "guard._root_entries = lambda: {'left-behind'}\n"
+    "guard._runner_owned = lambda name: False\n"
+    "guard._not_ignored = lambda names: sorted(names)\n"
+    "manager = SimpleNamespace(get_plugin=lambda name: None)\n"
+    "for status, argument in ((0, 1), (0, 0), (2, 2)):\n"
+    "    session = SimpleNamespace(exitstatus=status, config=SimpleNamespace(pluginmanager=manager))\n"
+    "    guard.pytest_sessionfinish(session, argument)\n"
+    "    print(int(session.exitstatus))\n"
+)
 SHA = "a" * 40
 
 # name -> (files, pytest arguments, extra environment, opted in)
@@ -148,7 +183,24 @@ SCENARIOS: dict[str, tuple[dict[str, str], list[str], dict[str, str], bool]] = {
         {"PYTEST_ADDOPTS": "test_b.py"},
         True,
     ),
+    # Only $PYTEST_ADDOPTS loads the plugin: the command line does not name it.
+    "env_loads_plugin": (
+        {"test_a.py": FLAKY + PASSING},
+        [],
+        {"PYTEST_ADDOPTS": "-p " + RETRY.PLUGIN},
+        True,
+    ),
+    # The file arguments follow a `--` terminator.
+    "terminator": ({"test_a.py": FLAKY + PASSING}, ["--"], {}, True),
     "setup_error": ({"test_a.py": SETUP_ONCE}, [], {}, True),
+    "not_rerun": ({"test_a.py": FLAKY + ONLY_FIRST_SESSION}, [], {}, True),
+    "worker_crash": (
+        {"test_a.py": FLAKY, "test_b.py": CRASHES_WORKER},
+        ["-p", "xdist", "-n", "2"],
+        {},
+        True,
+    ),
+    "teardown_fails_on_retry": ({"test_a.py": TEARDOWN_FAILS_ON_RETRY}, [], {}, True),
     "fail_fast": ({"test_a.py": FLAKY + BROKEN}, ["-x"], {}, True),
     "retry_exits_nonzero": ({"test_a.py": FLAKY, "conftest.py": RETRY_EXITS_3}, [], {}, True),
     "guard_after_retry": ({"test_a.py": FLAKY, "conftest.py": FIRST_SESSION_GUARD}, [], {}, True),
@@ -207,10 +259,13 @@ def run_scenario(
         env[RETRY.ENV_ON] = "1"
         env[RETRY.ENV_EVENT] = "pull_request"
     env.update(env_extra)
+    # On the command line, unless the scenario's own $PYTEST_ADDOPTS loads it.
+    in_env = RETRY.names_plugin(shlex.split(env_extra.get("PYTEST_ADDOPTS", "")))
+    load = [] if in_env else ["-p", RETRY.PLUGIN]
     try:
         # A timeout kills the whole tree, the plugin's retry child included.
         return stdlib_run_killing_tree_on_timeout(
-            [sys.executable, "-B", "-m", "pytest", "-p", RETRY.PLUGIN, "-p", "no:cacheprovider"]
+            [sys.executable, "-B", "-m", "pytest", *load, "-p", "no:cacheprovider"]
             + ["-q", *args, "."],
             cwd=root,
             env=env,
@@ -318,6 +373,16 @@ def test_a_selection_in_addopts_retries_only_the_failed_test(runs: Runs, name: s
     assert (root / "runs-test_b").read_text(encoding="utf-8") == "x"
 
 
+@pytest.mark.parametrize("name", ["env_loads_plugin", "terminator"])
+def test_a_flaky_pass_turns_green_however_the_shard_was_invoked(runs: Runs, name: str) -> None:
+    # The plugin loaded by $PYTEST_ADDOPTS alone, and file arguments after `--`:
+    # the retry pass starts, runs the one failed test and reports it.
+    done, record, _ = runs[name]
+    assert done.returncode == 0, done.stdout
+    assert "shard-retry: retrying 1 failed test(s) once." in done.stdout
+    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+
+
 def test_a_setup_error_is_retried(runs: Runs) -> None:
     done, record, _ = runs["setup_error"]
     assert done.returncode == 0, done.stdout
@@ -346,6 +411,63 @@ def test_a_guard_that_fails_a_clean_run_still_fails_it_after_a_green_retry(runs:
     assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
 
 
+def test_a_failure_the_retry_pass_did_not_rerun_keeps_the_job_red(runs: Runs) -> None:
+    # Two tests failed; the retry pass collected one, ran it green and exited 0.
+    done, record, _ = runs["not_rerun"]
+    assert "shard-retry: retrying 2 failed test(s) once." in done.stdout
+    assert "1 flaky test(s) passed on retry" in done.stdout
+    assert done.returncode == 1, done.stdout
+    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+
+
+def test_a_crashed_worker_retries_nothing(runs: Runs) -> None:
+    # The flaky test would pass a retry, and a green one would hide the crash.
+    done, record, _ = runs["worker_crash"]
+    assert done.returncode != 0, done.stdout
+    assert "shard-retry: a worker crashed; no retry." in done.stdout
+    assert "retrying" not in done.stdout and record == []
+
+
+def test_a_test_whose_teardown_fails_on_the_retry_is_not_a_flaky_pass(runs: Runs) -> None:
+    done, record, _ = runs["teardown_fails_on_retry"]
+    assert "shard-retry: retrying 1 failed test(s) once." in done.stdout
+    assert done.returncode == 1, done.stdout
+    assert record == []
+
+
+def test_the_root_conftest_guard_reads_the_status_a_green_retry_left(tmp_path: Path) -> None:
+    # A session the retry turned green (status 0, hook argument still 1) that left
+    # an entry at the repository root is failed; so is a plain clean one; a status
+    # that is not OK is left as it is.
+    done = stdlib_run_killing_tree_on_timeout(
+        [sys.executable, "-B", "-c", ROOT_GUARD, str(ROOT / "conftest.py")],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+        start_new_session=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["1", "1", "2"]
+
+
+def test_a_failed_report_is_counted_the_way_pytest_counts_it() -> None:
+    retry = RETRY._Retry(SimpleNamespace())
+    plain = SimpleNamespace(failed=True, when="call", nodeid="t.py::test_a", longrepr="boom")
+    retry.pytest_runtest_logreport(plain)
+    assert retry.failed_reports == 1
+    # pytest leaves a failed report that carries `wasxfail` out of `testsfailed`.
+    marked = SimpleNamespace(**{**vars(plain), "nodeid": "t.py::test_b", "wasxfail": "known"})
+    retry.pytest_runtest_logreport(marked)
+    assert retry.failed_reports == 1 and list(retry.failures) == ["t.py::test_a", "t.py::test_b"]
+    # A report outside the three phases is a crash, and is no test failure.
+    retry.pytest_runtest_logreport(SimpleNamespace(failed=True, when="???", nodeid="t.py::c"))
+    assert retry.crashed and retry.failed_reports == 1 and len(retry.failures) == 2
+
+
 def test_a_failure_beside_the_tests_retries_nothing(runs: Runs) -> None:
     done, record, _ = runs["fail_beside_tests"]
     assert done.returncode == 1, done.stdout
@@ -368,18 +490,62 @@ def test_retry_argv_keeps_the_sessions_arguments_and_runs_serial() -> None:
 @pytest.mark.parametrize(
     "where",
     [
-        (["-p", "scripts.ci_shard_retry"], [], []),
-        (["-pscripts.ci_shard_retry"], [], []),
-        ([], ["-p", "scripts.ci_shard_retry"], []),
-        ([], [], ["-p", "scripts.ci_shard_retry"]),
+        (["-p", "scripts.ci_shard_retry"], []),
+        (["-pscripts.ci_shard_retry"], []),
+        ([], ["-p", "scripts.ci_shard_retry"]),
     ],
 )
 def test_retry_argv_adds_no_second_load_of_the_plugin(
-    where: tuple[list[str], list[str], list[str]],
+    where: tuple[list[str], list[str]],
 ) -> None:
-    args, addopts, env_addopts = where
-    argv = RETRY.retry_argv(args, False, addopts, env_addopts)
+    args, addopts = where
+    argv = RETRY.retry_argv(args, False, addopts)
     assert argv[3:] == [*args, "-o", "addopts=" + " ".join(addopts)]
+
+
+def test_retry_argv_adds_its_options_before_a_terminator_and_leaves_the_rest() -> None:
+    # After `--` every token is a file argument: one spelt like a report option
+    # stays, and one spelt like this plugin's `-p` does not count as a load.
+    tail = ["--", "test/a.py", "--junitxml=x.xml", "-p", RETRY.PLUGIN, "--", "--cov"]
+    argv = RETRY.retry_argv(["-q", "--junitxml=report.xml", *tail], True)
+    assert argv[3:] == ["-q", "-p", RETRY.PLUGIN, "-n", "0", "-o", "addopts=", *tail]
+    assert RETRY.split_terminator(["-q", "test"]) == (["-q", "test"], [])
+    assert RETRY.split_terminator(["--"]) == ([], ["--"])
+
+
+def test_no_environment_text_reaches_the_retry_command_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every variable the retry pass inherits carries a marker; none may be an argument.
+    marker = "from-the-environment"
+    for name in ("PYTEST_ADDOPTS", RETRY.ENV_RECORD, RETRY.ENV_SHARD, RETRY.ENV_HEAD_SHA):
+        monkeypatch.setenv(name, f"--{marker}-{name.lower()}")
+    monkeypatch.setenv("PYTEST_ADDOPTS", f"-p {RETRY.PLUGIN} --{marker} --junitxml=r.xml")
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        results = Path(kwargs["env"][RETRY.ENV_RESULTS])
+        results.write_text(json.dumps({"passed": {"t.py::test_x": "t.py::test_x"}}), "utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(RETRY.subprocess, "run", run)
+    manager = SimpleNamespace(hasplugin=lambda name: False, get_plugin=lambda name: None)
+    config = SimpleNamespace(
+        invocation_params=SimpleNamespace(args=("-q", "test"), dir=tmp_path),
+        pluginmanager=manager,
+        getini=lambda name: ["--strict-markers"],
+    )
+    passed, ok = RETRY._Retry(config)._run_retry(SimpleNamespace(config=config), ["t.py::test_x"])
+    assert ok and passed == {"t.py::test_x": "t.py::test_x"}
+    (argv, kwargs), *more = calls
+    assert not more
+    # The command line is the session's own arguments and the ini options, nothing else.
+    assert argv[3:] == ["-q", "test", "-p", RETRY.PLUGIN, "-o", "addopts=--strict-markers"]
+    assert not any(marker in token for token in argv)
+    # $PYTEST_ADDOPTS goes to the pass as its environment, less the report options.
+    assert kwargs["env"]["PYTEST_ADDOPTS"] == f"-p {RETRY.PLUGIN} --{marker}"
+    assert json.loads(kwargs["env"][RETRY.ENV_TARGETS]) == ["t.py::test_x"]
 
 
 def test_match_targets_pairs_a_grouped_id_with_its_plain_id() -> None:

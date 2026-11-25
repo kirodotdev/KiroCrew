@@ -29,8 +29,10 @@ Rules (each is pinned by `test/test_ci_shard_retry.py`):
    deselects every test but the failed ones. A failed id with the xdist
    ``@group`` suffix matches the plain id the serial pass collects, whatever
    the group's name. Report-writing options are dropped from all three
-   sources, so the first session's reports stay whole. It never retries
-   again.
+   sources, so the first session's reports stay whole. Its command line is
+   built from the session's command line and ini file alone: $PYTEST_ADDOPTS
+   reaches the pass through its environment, never as arguments. It never
+   retries again.
 4. The job turns green only when every retried test passed, the retry pass
    exited 0 and the record was written. A test that fails again keeps the job
    red.
@@ -170,23 +172,39 @@ def names_plugin(args: list[str]) -> bool:
     return any(arg == "-p" + PLUGIN or (arg, after) == ("-p", PLUGIN) for arg, after in pairs)
 
 
-def retry_argv(
-    args: list[str],
-    xdist: bool,
-    addopts: list[str] | None = None,
-    env_addopts: list[str] | None = None,
-) -> list[str]:
+def split_terminator(args: list[str]) -> tuple[list[str], list[str]]:
+    """``(the options, the first bare `--` and every token after it)``.
+
+    What follows ``--`` is a file argument however it is spelt, so nothing there
+    is an option to drop, to read or to add after.
+    """
+    if "--" not in args:
+        return list(args), []
+    at = args.index("--")
+    return args[:at], args[at:]
+
+
+def retry_argv(args: list[str], xdist: bool, addopts: list[str] | None = None) -> list[str]:
     """The session's own arguments, serial, for a pass that deselects all but the failed tests.
 
     Report-writing options are dropped from the command line and from the ini
     ``addopts`` (passed back as the last ``-o addopts=``, which wins over the
-    ini file and any earlier override).
+    ini file and any earlier override). What this adds goes before a ``--``
+    terminator, where pytest still reads options.
+
+    Built from the session's command line and ini file only. $PYTEST_ADDOPTS is
+    not read here: the retry pass inherits it (`retry_env`) and pytest parses
+    it there, so no environment text is ever placed on a command line. When
+    only $PYTEST_ADDOPTS loads this plugin, the ``-p`` added here names it a
+    second time, which pytest takes as one load.
     """
-    options = drop_report_options(args)
+    head, positional = split_terminator(args)
+    options = drop_report_options(head)
     ini = drop_report_options(list(addopts or []))
-    loaded = names_plugin(options) or names_plugin(ini) or names_plugin(list(env_addopts or []))
+    loaded = names_plugin(options) or names_plugin(ini)
     extra = ([] if loaded else ["-p", PLUGIN]) + (["-n", "0"] if xdist else [])
-    return [sys.executable, "-m", "pytest", *options, *extra, "-o", "addopts=" + shlex.join(ini)]
+    override = ["-o", "addopts=" + shlex.join(ini)]
+    return [sys.executable, "-m", "pytest", *options, *extra, *override, *positional]
 
 
 def retry_env(env: dict[str, str]) -> dict[str, str]:
@@ -292,17 +310,15 @@ class _Retry:
     def _run_retry(self, session: Any, nodeids: list[str]) -> tuple[dict[str, str], bool]:
         """``({failed id: its plain id} for each that passed, whether the pass exited 0)``."""
         config = self.config
-        env = dict(os.environ)
         argv = retry_argv(
             list(config.invocation_params.args),
             config.pluginmanager.hasplugin("xdist"),
             [str(arg) for arg in config.getini("addopts")],
-            shlex.split(env.get("PYTEST_ADDOPTS") or ""),
         )
         self._say(session, f"shard-retry: retrying {len(nodeids)} failed test(s) once.")
         with tempfile.TemporaryDirectory(prefix="ci-shard-retry-") as scratch:
             results = Path(scratch) / "results.json"
-            env = retry_env(env)
+            env = retry_env(dict(os.environ))
             env[ENV_RESULTS] = str(results)
             env[ENV_TARGETS] = json.dumps(nodeids)
             capture = config.pluginmanager.get_plugin("capturemanager")
