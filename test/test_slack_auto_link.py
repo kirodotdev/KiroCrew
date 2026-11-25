@@ -28,6 +28,10 @@ from kiro_crew.dashboard.chat_slack import (
 )
 from kiro_crew.dashboard.state import SlotOrigin
 
+#: Dashboard uploads, named ``<32 hex>_<name>`` the way the upload handler stores them.
+_UPLOAD = "/home/u/.kiro/crew/uploads/67ec3421ee184a8db0c1d2e3f4a5b6c7_pasted-image-20261124-110538064.png"
+_UPLOAD2 = "/home/u/.kiro/crew/uploads/7c350a389ab747a0b0c1d2e3f4a5b6c7_pasted-image-2.png"
+
 
 def _slack_state(tmp_path, monkeypatch, *, owner: str | None = "U123"):
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -476,6 +480,58 @@ class TestSharedHelper:
         anchor = state.slack_client.post_message.await_args.args[1]
         assert "<!channel>" not in anchor
         assert "&lt;!channel&gt;" in anchor
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt", "files", "expected"),
+        [
+            # A pasted screenshot ahead of the words, as the composer sends it:
+            # the title is the words.
+            (f"![image]({_UPLOAD})\n\nwhy does this fail?", None, "why does this fail?"),
+            # A picture written inside a sentence is named where it stands.
+            (
+                f"look at ![image]({_UPLOAD}) here",
+                None,
+                "look at Image: pasted-image-20261124-110538064.png here",
+            ),
+            # Two pictures and a dropped file around the words.
+            (
+                f"![image]({_UPLOAD})\n![image]({_UPLOAD2})\n"
+                "[attached_file 1] /home/u/.kiro/crew/uploads/report.pdf compare these",
+                ["/home/u/.kiro/crew/uploads/report.pdf"],
+                "compare these",
+            ),
+            # A picture alone is named the way a later one is echoed.
+            (f"![image]({_UPLOAD})", None, "Image: pasted-image-20261124-110538064.png"),
+            # A link to a local file reads as its label.
+            ("see [the notes](/home/u/notes.md) first", None, "see the notes first"),
+        ],
+        ids=[
+            "image-then-words",
+            "inline-image",
+            "two-images-and-a-file",
+            "image-only",
+            "local-link",
+        ],
+    )
+    async def test_anchor_names_attachments_instead_of_their_paths(
+        self, tmp_path, monkeypatch, prompt, files, expected
+    ):
+        """The parent of an auto-opened thread shows the prompt's words, never
+        image markdown or a path on this host (Adam's ``![image](/home/...``)."""
+        state = _slack_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+        slot.append("user", prompt, meta={"files": files} if files else None)
+        slot.drain()
+        _settings(monkeypatch, enabled=True)
+
+        assert await maybe_auto_link_slack(state, slot) is True
+
+        anchor = state.slack_client.post_message.await_args.args[1]
+        assert anchor.startswith(f"\U0001f9f5 *{expected}*\n")
+        assert "](" not in anchor
+        assert "/home/" not in anchor
+        assert "uploads" not in anchor
 
     @pytest.mark.asyncio
     async def test_manual_path_skips_governance(self, tmp_path, monkeypatch):
