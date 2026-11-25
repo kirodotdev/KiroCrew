@@ -1,11 +1,24 @@
 // The composer's Escape on pending steers (useSteerEscape): which row each press
 // takes back, how presses queue behind the one take-back a chat runs at a time,
 // and when the stop Escape asks for is sent.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import type { ChatMessage } from '../types'
 import type { SteerRetractRequestOutcome } from '../hooks/useSteerRetract'
 import { useSteerEscape, type SteerEscapeOptions } from '../hooks/useSteerEscape'
+
+// An Edit needs the Web Locks API, which the test DOM lacks: a present `locks`
+// is enough here, since the take-back hook itself is a mock.
+let restoreLocks: () => void
+beforeEach(() => {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'locks')
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: vi.fn() } })
+  restoreLocks = () => {
+    if (original) Object.defineProperty(navigator, 'locks', original)
+    else delete (navigator as { locks?: unknown }).locks
+  }
+})
+afterEach(() => { restoreLocks() })
 
 const steerRow = (mid: string, meta: Record<string, unknown> = {}, content = `steer ${mid}`): ChatMessage => ({
   role: 'user',
@@ -131,7 +144,7 @@ describe('useSteerEscape', () => {
     expect(stop).toHaveBeenCalledTimes(1)
   })
 
-  it.each(['refused', 'unknown', 'not_sent'] as const)('drops the queue and the stop when a take-back is %s', async (outcome) => {
+  it.each(['refused', 'not_sent'] as const)('drops the queue and the stop when a take-back is %s', async (outcome) => {
     const { hook, onSteerAction, stop, update, answer } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
     act(() => { hook.result.current.takeBack() })
     act(() => { hook.result.current.takeBack() })
@@ -140,7 +153,126 @@ describe('useSteerEscape', () => {
     update({ pending: {} })
     expect(onSteerAction).toHaveBeenCalledTimes(1)
     expect(stop).not.toHaveBeenCalled()
-    expect(hook.result.current.offered).toBe(2)
+    // The refused row is left alone; the other steer can be taken back again.
+    expect(hook.result.current.offered).toBe(1)
+  })
+
+  it('holds the queue and the stop behind a take-back whose answer was lost, until its row settles', async () => {
+    const { hook, onSteerAction, stop, update, answer } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
+    act(() => { hook.result.current.takeBack() })
+    update({ pending: { 'm-2': 'edit' } })
+    act(() => { hook.result.current.takeBack() })
+    act(() => { hook.result.current.stop() })
+    await answer(0, 'unknown')
+    update({ messages: [steerRow('m-1'), steerRow('m-2')] })
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+    expect(stop).not.toHaveBeenCalled()
+    // Another press stops nothing either: the steer may still be pending at the gateway.
+    let verdict = ''
+    act(() => { verdict = hook.result.current.takeBack() })
+    expect(verdict).toBe('none')
+    act(() => { hook.result.current.stop() })
+    expect(stop).not.toHaveBeenCalled()
+
+    update({ messages: [steerRow('m-1'), steerRow('m-2', { steerState: 'retracted' })], pending: {} })
+    expect(onSteerAction).toHaveBeenCalledTimes(2)
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', { prepend: true, retryBusy: true })
+    await answer(1, 'accepted')
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not pick a row again after the route said its steer was no longer pending, until the row moves on', async () => {
+    const { hook, onSteerAction, update, answer } = setup({ messages: [steerRow('m-1')] })
+    act(() => { hook.result.current.takeBack() })
+    update({ pending: { 'm-1': 'edit' } })
+    await answer(0, 'not_pending')
+    update({ pending: {} })
+    expect(hook.result.current.offered).toBe(0)
+    let verdict = ''
+    act(() => { verdict = hook.result.current.takeBack() })
+    expect(verdict).toBe('none')
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+
+    update({ messages: [steerRow('m-1', { steerState: 'consumed' }), steerRow('m-3')] })
+    expect(hook.result.current.offered).toBe(1)
+    act(() => { verdict = hook.result.current.takeBack() })
+    expect(verdict).toBe('last')
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-3', 'edit', { prepend: true, retryBusy: true })
+  })
+
+  it('leaves a refused row alone, so the next press reaches the stop', async () => {
+    const { hook, onSteerAction, stop, update, answer } = setup({ messages: [steerRow('m-1')] })
+    act(() => { hook.result.current.takeBack() })
+    update({ pending: { 'm-1': 'edit' } })
+    await answer(0, 'refused')
+    update({ pending: {} })
+    expect(hook.result.current.offered).toBe(0)
+    let verdict = ''
+    act(() => { verdict = hook.result.current.takeBack() })
+    expect(verdict).toBe('none')
+    act(() => { hook.result.current.stop() })
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not press Stop for an owed stop once a stop is already under way', async () => {
+    const { hook, stop, update, answer } = setup({ messages: [steerRow('m-1')] })
+    act(() => { hook.result.current.takeBack() })
+    act(() => { hook.result.current.stop() })
+    update({ stopState: 'soft_pending' })
+    await answer(0, 'accepted')
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('reaches no steer on a page without Web Locks, where an Edit cannot be sent', () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'locks')
+    delete (navigator as { locks?: unknown }).locks
+    try {
+      const { hook, onSteerAction } = setup({ messages: [steerRow('m-1')] })
+      expect(hook.result.current.offered).toBe(0)
+      expect(hook.result.current.reachable).toBe(0)
+      let verdict = ''
+      act(() => { verdict = hook.result.current.takeBack() })
+      expect(verdict).toBe('none')
+      expect(onSteerAction).not.toHaveBeenCalled()
+    } finally {
+      if (original) Object.defineProperty(navigator, 'locks', original)
+    }
+  })
+
+  it('ignores an answer for the old chat while the new chat has its own take-back in flight', async () => {
+    const { hook, onSteerAction, stop, update, answer } = setup({ messages: [steerRow('m-1')] })
+    act(() => { hook.result.current.takeBack() })
+    act(() => { hook.result.current.stop() })
+    update({ slot: 'chat-b', messages: [steerRow('m-7'), steerRow('m-8')] })
+    act(() => { hook.result.current.takeBack() })
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-8', 'edit', { prepend: true, retryBusy: true })
+    await answer(0, 'accepted')
+    expect(stop).not.toHaveBeenCalled()
+    expect(hook.result.current.offered).toBe(1)
+    await answer(1, 'accepted')
+    update({ messages: [steerRow('m-7'), steerRow('m-8', { steerState: 'retracted' })] })
+    expect(hook.result.current.offered).toBe(1)
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('forgets every press and the stop when the next turn starts', async () => {
+    const { hook, stop, update, answer } = setup({ messages: [steerRow('m-1')], runEpoch: 3 })
+    act(() => { hook.result.current.takeBack() })
+    act(() => { hook.result.current.stop() })
+    update({ runEpoch: 4 })
+    await answer(0, 'accepted')
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('drops a kept press and the stop when a hard stop starts before the echo', () => {
+    const { hook, onSteerAction, stop, update } = setup({ messages: [bubble('s-1')] })
+    act(() => { hook.result.current.takeBack() })
+    act(() => { hook.result.current.stop() })
+    update({ stopState: 'killing' })
+    update({ messages: [steerRow('m-9', { sendId: 's-1' })] })
+    expect(onSteerAction).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
   })
 
   it('keeps a press made before the steer echo arrived, and sends it once the row has an id', async () => {
@@ -159,11 +291,14 @@ describe('useSteerEscape', () => {
     expect(stop).toHaveBeenCalledTimes(1)
   })
 
-  it('drops a kept press when the echo shows the steer cannot be taken back, and sends the stop', () => {
+  it.each([
+    ['carries no take-back mark', { steerRetract: undefined }],
+    ['refuses a take-back', { steerRetract: false }],
+  ])('drops a kept press when the echoed row %s, and sends the stop', (_case, meta) => {
     const { hook, onSteerAction, stop, update } = setup({ messages: [bubble('s-1')] })
     act(() => { hook.result.current.takeBack() })
     act(() => { hook.result.current.stop() })
-    update({ messages: [steerRow('m-9', { sendId: 's-1', steerRetract: undefined })] })
+    update({ messages: [steerRow('m-9', { sendId: 's-1', ...meta })] })
     expect(onSteerAction).not.toHaveBeenCalled()
     expect(stop).toHaveBeenCalledTimes(1)
   })

@@ -1086,17 +1086,13 @@ describe('useSteerRetract: request outcome, placement and busy retry', () => {
     expect(reloaded.restoreDraft.mock.calls[0][4]).toBe('prepend')
   })
 
-  it('drops a stored record whose prepend mark is not true', () => {
-    const record = { slot: 'test', mid: 'm-1', action: 'edit', content: 'x', observedRunning: true, requestFailed: false }
+  it('keeps a stored record whose prepend mark is odd, and appends its text', () => {
+    const record = { slot: 'test', mid: 'm-1', action: 'edit', content: 'x', observedRunning: true, requestFailed: false, prepend: 'yes' }
     localStorage.setItem(TAKE_BACKS_KEY, JSON.stringify({ test: record }))
-    const kept = setup([row({ steerState: 'written' })])
-    expect(kept.hook.result.current.pending).toEqual({ 'm-1': 'edit' })
-    kept.hook.unmount()
-    __resetSteerTakeBacksForTests()
-
-    localStorage.setItem(TAKE_BACKS_KEY, JSON.stringify({ test: { ...record, prepend: 'yes' } }))
-    const dropped = setup([row({ steerState: 'written' })])
-    expect(dropped.hook.result.current.pending).toEqual({})
+    const { hook, restoreDraft } = setup([row({ steerState: 'retracted', steerRetractAction: 'edit' })])
+    expect(restoreDraft).toHaveBeenCalledTimes(1)
+    expect(restoreDraft.mock.calls[0][4]).toBe('append')
+    expect(hook.result.current.pending).toEqual({})
   })
 
   it('asks again after a busy answer, with the row still in flight, and resolves accepted', async () => {

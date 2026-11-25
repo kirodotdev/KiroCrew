@@ -1820,7 +1820,7 @@ function ChatInput({
               </button>
               )}
             </>)}
-            {escapeHint && (escapeHint === 'again_to_stop' || !richDropsKeys) && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid={escapeHint === 'again_to_stop' ? 'escape-stop-armed-hint' : 'escape-steer-take-back-hint'}>{i18nT(ESCAPE_HINT_KEY[escapeHint])}</span>}
+            {escapeHint && (escapeHint === 'again_to_stop' || !(richDropsKeys || optimizing)) && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid={escapeHint === 'again_to_stop' ? 'escape-stop-armed-hint' : 'escape-steer-take-back-hint'}>{i18nT(ESCAPE_HINT_KEY[escapeHint])}</span>}
           </div>
         </div>
 

@@ -352,8 +352,11 @@ describe('prependRecoveredDraft', () => {
     expect(prependRecoveredDraft(afterNewest, 'first steer')).toBe('first steer\n\nsecond steer\n\ndraft')
   })
 
-  it('does not duplicate a payload the composer already holds, and dedupes on equality only', () => {
-    expect(prependRecoveredDraft(' same text\n', 'same text ')).toBe(' same text\n')
+  it('brings back two steers with the same text as two paragraphs', () => {
+    // Each press takes back one message, so a second "yes" is a second message,
+    // not a copy of the first.
+    expect(prependRecoveredDraft('yes', 'yes')).toBe('yes\n\nyes')
+    expect(prependRecoveredDraft(' same text\n', 'same text ')).toBe('same text \n\n same text\n')
     expect(prependRecoveredDraft('please run tests first', 'run tests')).toBe('run tests\n\nplease run tests first')
   })
 

@@ -37,6 +37,8 @@ interface BusyTurnControlsOptions {
   connected: boolean
   activeSlotRef: MutableRefObject<string | null>
   slotRunning: boolean
+  /** The active slot's turn-start count (`selectSlotRunEpoch`). */
+  slotRunEpoch: number
   messages: ChatMessage[]
   transcriptAuthoritative: boolean
   /** The page's send, for the busy-but-not-running case and a `/fork` prompt. */
@@ -88,6 +90,7 @@ export function useBusyTurnControls({
   connected,
   activeSlotRef,
   slotRunning,
+  slotRunEpoch,
   messages,
   transcriptAuthoritative,
   send,
@@ -451,6 +454,7 @@ export function useBusyTurnControls({
     messages,
     slotRunning,
     stopState: currentSlot?.stop_state,
+    runEpoch: slotRunEpoch,
     onSteerAction: handleSteerAction,
     pending: steerActionPending,
     stop: stopTurn,

@@ -4167,14 +4167,20 @@ take-back at a time per chat, as the route allows: a later press waits until the
 earlier take-back settles on its row, and a `busy` answer is asked again after
 150, 300, 600 and 1,200 ms before the row shows it. The stop an Escape asks for
 is sent only after each take-back queued before it is armed (`202`), because a
-steer still pending when its turn ends runs as the next turn. A refused or
-unanswered take-back drops the presses queued behind it and that stop. A press
+steer still pending when its turn ends runs as the next turn. A refused take-back
+drops the presses queued behind it and that stop; a take-back whose request was
+lost holds them until its row settles. A row the route answered as no longer
+pending is not picked again until the row itself moves on. A hard stop drops the
+queued presses. Two steers with the same text come back as two paragraphs. A press
 made before the composer's steer echo gives its row an id is kept and sent when
-the echo arrives, or dropped when the row does not offer a take-back. While a
-steer can be taken back, the composer shows "Esc to take back your message", or
-"Esc to take back your message and stop" when that press also stops. Pinned by
-`composerStopKey.test.ts`, `useSteerEscape.test.ts` and
-`useSteerRetract.test.ts`.
+the echo arrives, or dropped when the row does not offer a take-back, and a stop
+owed behind it waits for that echo too. A page without Web Locks cannot send an
+Edit, so there Escape reaches no steer and stops the turn as before. While a
+steer can be taken back and nothing ahead of the turn owns Escape, the composer
+shows "Esc to take back your message", or "Esc to take back your message and
+stop" when that press also stops. Pinned by `composerStopKey.test.ts`,
+`useSteerEscape.test.ts`, `useSteerRetract.test.ts`, `chatDrafts.test.ts`,
+`shortcutRegistry.test.ts` and `ShortcutsModal.cov80.test.tsx`.
 
 **A manual `/compact` takes no steer.** That turn runs the compaction, not a
 prompt, so a steer would reach nothing the model reads. `_begin_compact_command`

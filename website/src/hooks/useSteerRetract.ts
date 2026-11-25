@@ -83,7 +83,8 @@ function sanitizePendingTakeBack(value: unknown): PendingTakeBack | null {
     typeof record.requestFailed !== 'boolean'
   ) return null
   if (record.meta !== undefined && (!record.meta || typeof record.meta !== 'object' || Array.isArray(record.meta))) return null
-  if (record.prepend !== undefined && record.prepend !== true) return null
+  // A record can hold the only copy of an Edit's text, so an odd placement mark
+  // reads as append rather than losing it.
   return {
     slot: record.slot,
     mid: record.mid,
@@ -172,6 +173,13 @@ function definitiveRefusalOf(err: unknown): SteerRetractRefusal | null | undefin
 
 function takeBackLocks(): LockManager | undefined {
   return typeof navigator === 'undefined' ? undefined : navigator.locks
+}
+
+/** Whether an Edit can be sent from this page at all: it needs the cross-tab lock
+ *  that guards the only copy of its text, which a page without Web Locks (a plain
+ *  http page away from localhost) does not have. */
+export function canTakeBackIntoComposer(): boolean {
+  return !!takeBackLocks()
 }
 
 function withTakeBackLock(callback: () => void): void {

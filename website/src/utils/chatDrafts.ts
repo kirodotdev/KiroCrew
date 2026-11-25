@@ -141,14 +141,15 @@ const LEADING_BLANK_LINES = /^(?:[^\S\r\n]*\r?\n)+/
 /**
  * Put recovered text IN FRONT of whatever the composer already holds.
  *
- * `mergeRecoveredDraft` with the opposite order and the same exact-duplicate
- * guard. Escape takes back pending steers newest first, so putting each one in
- * front rebuilds them in the order they were sent, above the draft. Only the
- * newlines between the two go, because the paragraph break supplies them.
+ * `mergeRecoveredDraft` with the opposite order. Escape takes back pending
+ * steers newest first, so putting each one in front rebuilds them in the order
+ * they were sent, above the draft. No duplicate guard: each press takes back one
+ * message, and two steers with the same text are two messages, so both come
+ * back. Only the newlines between the two go, because the paragraph break
+ * supplies them.
  */
 export function prependRecoveredDraft(keep: string | null | undefined, payload: string): string {
   const existing = keep ?? ''
-  if (existing.trim() && existing.trim() === payload.trim()) return existing
   if (!existing.trim()) return payload
   if (!payload.trim()) return existing
   return payload.replace(TRAILING_NEWLINES, '') + PARAGRAPH_BREAK + existing.replace(LEADING_BLANK_LINES, '')

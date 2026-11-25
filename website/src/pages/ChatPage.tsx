@@ -5,7 +5,7 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectSlotRunEpoch,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
@@ -997,6 +997,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     connected,
     activeSlotRef,
     slotRunning,
+    slotRunEpoch: useAppSelector(s => activeSlot ? selectSlotRunEpoch(s, activeSlot) : 0),
     messages,
     transcriptAuthoritative: !slotLoading && slotSwitchTarget !== activeSlot,
     send,

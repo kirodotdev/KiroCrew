@@ -480,6 +480,13 @@ describe('useComposerStopKey: pending steers', () => {
       expect(hintOf(base())).toBeNull()
     })
 
+    it('shows nothing while a dictation or an approval owns Escape', () => {
+      expect(hintOf(base({ steerEscape: steerEscape([]), voiceRecording: true }))).toBeNull()
+      expect(hintOf(base({ steerEscape: steerEscape([]), voiceDrainCancellable: true }))).toBeNull()
+      expect(hintOf(base({ steerEscape: steerEscape([]), hasApproval: true }))).toBeNull()
+      expect(hintOf(base({ steerEscape: steerEscape([]), approvalNudgeActive: true }))).toBeNull()
+    })
+
     it('says "again to stop" while armed, and a steer to take back outranks it', () => {
       vi.useFakeTimers()
       localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))

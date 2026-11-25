@@ -203,8 +203,10 @@ export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, stee
     stop()
     return true
   }, [isRunning, stopping, arm, disarm, onStop, steerEscape, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize])
-  // A steer to take back outranks the armed hint: it is what the next press does.
-  const steerHint: EscapeHint | null = isRunning && onStop && steerEscape && steerEscape.offered > 0
+  // A steer to take back outranks the armed hint: it is what the next press does,
+  // unless a claimant ahead of the turn holds Escape (a dictation, an approval).
+  const escapeOwned = voiceRecording || voiceDrainCancellable || hasApproval || approvalNudgeActive
+  const steerHint: EscapeHint | null = isRunning && onStop && steerEscape && steerEscape.offered > 0 && !escapeOwned
     ? (steerEscape.reachable === 1 && !stopping && !doubleEscapeToStop ? 'take_back_and_stop' : 'take_back')
     : null
   const escapeHint = steerHint ?? (escapeArmed ? 'again_to_stop' : null)

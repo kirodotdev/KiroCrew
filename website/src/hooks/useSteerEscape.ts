@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from 'react'
 import type { SteerEscape, SteerEscapeVerdict } from '../components/chat-input/stopKey'
 import type { ChatMessage } from '../types'
-import type { SteerRetract } from './useSteerRetract'
+import { canTakeBackIntoComposer, type SteerRetract } from './useSteerRetract'
+import { isEscalationState } from '../utils/stopDebounce'
 
 /** A steer one Escape press asked to take back: a written row by its id, or the
  *  composer's own bubble by its send id while the steer's echo has not given it one. */
@@ -33,8 +34,10 @@ export interface SteerEscapeOptions {
   /** A turn is running on the slot. Its pending steers exist only while it runs. */
   slotRunning: boolean
   /** The slot's stop state. A hard stop discards the pending steers, so none is
-   *  taken back while it runs. */
+   *  taken back while it runs, and a stop already under way is not sent again. */
   stopState?: string
+  /** The slot's turn-start count (`selectSlotRunEpoch`): presses belong to one turn. */
+  runEpoch?: number
   onSteerAction: SteerRetract['onSteerAction']
   /** The take-back in flight for each row, from `useSteerRetract`. */
   pending: SteerRetract['pending']
@@ -58,32 +61,54 @@ export interface SteerEscapeOptions {
  * The stop Escape asks for waits for every take-back queued here to be armed.
  * A turn that ends with a steer still pending runs that steer as the next turn,
  * so a stop sent first would run the very message the press took back. A
- * take-back that is refused, or whose answer is lost, drops the queue and the
- * stop: the row says what happened, and the next press asks again.
+ * refused take-back drops the queue and the stop: the row says what happened,
+ * and the next press asks again. A take-back whose answer is lost holds them
+ * until its row settles, since the gateway may or may not hold it.
  */
-export function useSteerEscape({ slot, messages, slotRunning, stopState, onSteerAction, pending, stop }: SteerEscapeOptions): SteerEscape {
+export function useSteerEscape({ slot, messages, slotRunning, stopState, runEpoch = 0, onSteerAction, pending, stop }: SteerEscapeOptions): SteerEscape {
   const latest = useRef({ slot, messages, slotRunning, stopState, onSteerAction, pending, stop })
   latest.current = { slot, messages, slotRunning, stopState, onSteerAction, pending, stop }
   const queueRef = useRef<SteerTarget[]>([])
-  const inFlightRef = useRef<SteerTarget | null>(null)
+  // The take-back sent and not yet settled. `unanswered` once its request failed
+  // before its outcome was known: the take-back hook keeps that record until the
+  // row settles, and the claim stands as long as the record does.
+  const inFlightRef = useRef<{ target: SteerTarget; unanswered: boolean } | null>(null)
+  // Rows whose take-back ended without being armed: the route said the steer was
+  // no longer pending, or refused it, or nothing could be sent. The row may still
+  // read as a target (its own update can arrive after the answer, and a refusal
+  // leaves it as it was), so until the row moves on Escape leaves it alone and
+  // the next press reaches the stop.
+  const settledRef = useRef<Set<string>>(new Set())
   const stopOwedRef = useRef(false)
   // Bumped by every reset, so an answer for a slot or turn that is gone is ignored.
   const generationRef = useRef(0)
   const [claimsVersion, claimsChanged] = useReducer((n: number) => n + 1, 0)
 
   const reset = useCallback(() => {
-    if (!queueRef.current.length && !inFlightRef.current && !stopOwedRef.current) return
+    if (!queueRef.current.length && !inFlightRef.current && !stopOwedRef.current && !settledRef.current.size) return
     generationRef.current += 1
     queueRef.current = []
     inFlightRef.current = null
+    settledRef.current = new Set()
     stopOwedRef.current = false
     claimsChanged()
   }, [])
 
   const pump = useCallback(() => {
     const now = latest.current
-    if (!now.slotRunning) { reset(); return }
-    if (inFlightRef.current) return
+    // A hard stop discards the pending steers, so nothing is left to take back.
+    if (!now.slotRunning || now.stopState === 'killing') { reset(); return }
+    if (settledRef.current.size) {
+      for (const mid of settledRef.current) {
+        const row = now.messages.find(m => isRowOf(m, { mid }))
+        if (!row || !targetOf(row)) settledRef.current.delete(mid)
+      }
+    }
+    if (inFlightRef.current) {
+      const held = inFlightRef.current
+      if (!held.unanswered || ('mid' in held.target && held.target.mid in now.pending)) return
+      inFlightRef.current = null
+    }
     while (queueRef.current.length) {
       // One take-back per chat at a time: the next waits until this one settles.
       if (Object.keys(now.pending).length) return
@@ -94,14 +119,22 @@ export function useSteerEscape({ slot, messages, slotRunning, stopState, onSteer
       claimsChanged()
       if (!target) continue
       const generation = generationRef.current
-      inFlightRef.current = target
+      const sentFor = now.slot
+      const held = { target, unanswered: false }
+      inFlightRef.current = held
       void now.onSteerAction(target.mid, 'edit', { prepend: true, retryBusy: true }).then(outcome => {
-        if (generationRef.current !== generation) return
+        if (generationRef.current !== generation || latest.current.slot !== sentFor || inFlightRef.current !== held) return
+        if (outcome === 'unknown') {
+          held.unanswered = true
+          return
+        }
         inFlightRef.current = null
         if (outcome === 'accepted' || outcome === 'not_pending') {
+          if (outcome === 'not_pending') settledRef.current.add(target.mid)
           pump()
           return
         }
+        settledRef.current.add(target.mid)
         queueRef.current = []
         stopOwedRef.current = false
         claimsChanged()
@@ -110,23 +143,26 @@ export function useSteerEscape({ slot, messages, slotRunning, stopState, onSteer
     }
     if (stopOwedRef.current) {
       stopOwedRef.current = false
-      now.stop()
+      // A stop that got under way meanwhile (the Stop button, another tab) is not
+      // pressed again: the owed press would read as the force kill.
+      if (!isEscalationState(now.stopState)) now.stop()
     }
   }, [reset])
 
-  useEffect(() => { reset() }, [slot, reset])
-  useEffect(() => { pump() }, [messages, pending, slotRunning, pump])
+  // In the commit that shows another chat or turn, before any answer for the old one can land.
+  useLayoutEffect(() => { reset() }, [slot, runEpoch, reset])
+  useEffect(() => { pump() }, [messages, pending, slotRunning, stopState, pump])
 
   const claimed = useCallback((m: ChatMessage, inFlight: Readonly<Record<string, unknown>>) => {
     const mid = (m.meta as { mid?: unknown } | undefined)?.mid
-    if (typeof mid === 'string' && mid in inFlight) return true
-    const asked = inFlightRef.current ? [inFlightRef.current, ...queueRef.current] : queueRef.current
+    if (typeof mid === 'string' && (mid in inFlight || settledRef.current.has(mid))) return true
+    const asked = inFlightRef.current ? [inFlightRef.current.target, ...queueRef.current] : queueRef.current
     return asked.some(target => isRowOf(m, target))
   }, [])
 
   const takeBack = useCallback((): SteerEscapeVerdict => {
     const now = latest.current
-    if (!now.slot || !now.slotRunning || now.stopState === 'killing') return 'none'
+    if (!now.slot || !now.slotRunning || now.stopState === 'killing' || !canTakeBackIntoComposer()) return 'none'
     const reachable = now.messages.filter(m => targetOf(m) && !claimed(m, now.pending))
     const newest = reachable[reachable.length - 1]
     const target = newest && targetOf(newest)
@@ -148,7 +184,7 @@ export function useSteerEscape({ slot, messages, slotRunning, stopState, onSteer
   const counts = useMemo(() => {
     // The queue lives in refs, so `claimsVersion` is what re-runs this count when it changes.
     void claimsVersion
-    if (!slot || !slotRunning || stopState === 'killing') return { offered: 0, reachable: 0 }
+    if (!slot || !slotRunning || stopState === 'killing' || !canTakeBackIntoComposer()) return { offered: 0, reachable: 0 }
     let offered = 0
     let reachable = 0
     for (const m of messages) {
