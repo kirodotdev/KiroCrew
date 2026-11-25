@@ -90,17 +90,18 @@ superseded-by: []
   effect when the owner merges this amendment. The decision, the rules and the
   security trade-off are recorded in
   [rfc-slack-shared-access](rfc-slack-shared-access.md), "A shared user's own code
-  channel". Not built: on main `4158830b79`, `_route_message` in `slack/events.py`
-  skips `code_channel_dispatch` for a shared sender, who is refused in every code
-  channel. The
-  code is open in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181).
+  channel". Built in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181)
+  (merged 2026-11-23): `_route_message` in `slack/events.py` admits a shared user
+  in a code channel they opened and refuses them in any other
+  (`slack/code_channels/shared_refusal.py`).
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
   and pganapathy80's `slack-code-channels-preview` branch
   (`7888cb2ec3` agent sessions, `ae2545752c` opt-in code channels,
   `8b243f0b1d` `create_code_channel`, `21fc677d5d` views and the plan canvas),
-  also open as [#15259](https://github.com/kirodotdev/KiroCrew/pull/15259).
+  also opened as [#15259](https://github.com/kirodotdev/KiroCrew/pull/15259)
+  (closed unmerged 2026-10-17).
   The Rust reference implementation is `crates/kiro-bot` on kiro-cli's
   `codex/kiro-bot-development` branch.
 - Slack documentation: [Slack Code](https://docs.slack.dev/ai/slack-code/),

@@ -66,7 +66,7 @@ How the Slack card behaves on main today:
   `https://api.slack.com/apps?new_app=1&manifest_yaml=<encoded>` create link,
   served by `kirocrew manifest` and `GET /api/slack/manifest`, and the exfil
   redactor exempts only that exact rebuilt link. It makes the Slack channel
-  app. Open [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169) adds an opt-in switch that puts Slack's MCP setting,
+  app. [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169) (merged 2026-11-20) added an opt-in switch (`slack_manifest.SLACK_MCP`) that puts Slack's MCP setting,
   PKCE, the `localhost:48106` redirect and the MCP user scopes into the same
   manifest.
 - **Opening consent.** The gateway never opens a browser for this sign-in. The
@@ -202,7 +202,7 @@ Slack's manifest schema
 | No bot scopes | leave `oauth_config.scopes.bot` out |
 
 This RFC builds no second generator. The MCP fields come from
-`slack_manifest.py` once [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169) adds them, so one manifest serves the
+`slack_manifest.py`, which [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169) added them to, so one manifest serves the
 Slack channel and the Slack Connection.
 
 - **The card.** The Slack card's "Before you connect" tip gets a
@@ -497,7 +497,7 @@ default-off and changes nothing for a user who never turns it on.
 | 0 | Probe, no code: create a Slack app from the section 2 manifest on a throwaway workspace; re-read Google and Asana redirect rules. Verdict written into this RFC. | The RFC states whether Slack accepts `pkce_enabled` and the `localhost` redirect in one manifest, with the date and the error text if not. |
 | 1 | Plain words (section 5) and the consent tab fixes (section 3): reproduce the lost tab in a Mac browser first, then the reclaim fix and the primary approve link. Frontend and locales only. | The waiting card shows the new strings in every locale. A test pins `window.open` before any `await` in `startMint`. A render during the mint never closes the held tab. A refused or lost tab shows **Open Slack to approve** as the primary button. A test pins no server-side browser opener under `connections/`. |
 | 2 | One-click enable on the card (section 1), and live-session marks when the flag turns on. | With previews on and a bridged backend, one click on the Slack card shows **Connect** with no page change. With previews off or locked, the card shows the link and the reason. |
-| 3 | Create and copy the Slack app (section 2): the tip's buttons from `slack_manifest.deep_link()` with the MCP switch on; guide pictures. Blocked on [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169) merging and on Phase 0 for the redirect line. | The button opens Slack's create page with the MCP settings, PKCE, the redirect and the registry's user scopes, and no bot scopes for the Connection. The guide's section 1 to 3 shrink to that step plus the manual steps. |
+| 3 | Create and copy the Slack app (section 2): the tip's buttons from `slack_manifest.deep_link()` with the MCP switch on; guide pictures. Built in [#41513](https://github.com/kirodotdev/KiroCrew/pull/41513), after [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169) merged. | The button opens Slack's create page with the MCP settings, PKCE, the redirect and the registry's user scopes, and no bot scopes for the Connection. The guide's section 1 to 3 shrink to that step plus the manual steps. |
 | 4 | Remote mode (section 4.1, 4.2): the `/reachable` route on the sign-in listener, `gatewayHeadless` in the status answer, the warning and the open paste box. | On a gateway the browser cannot reach, the paste box is open before **Allow**. On a local gateway it is closed. The route answers 204 only while a sign-in is pending. |
 | 5 | Verified Connected (section 6): the post-grant `tools/list` and granted-scope check, "Checking…", `on_granted` on the card path, the open-chats line. | A grant whose `tools/list` fails, or that lacks a recommended scope, never shows Connected. An open KAS chat can call a Slack tool after Connect with no reload. |
 | 6 | Chat card (section 7.1, 7.2): `connection.connect` reads the Crew's grant, renders the shared waiting body, channel fallback line. | In a dashboard chat the agent's card connects Slack end to end, paste box included. On a channel the reply carries the gateway's line and no card. |
