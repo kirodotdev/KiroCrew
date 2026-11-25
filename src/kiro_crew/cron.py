@@ -910,9 +910,12 @@ class CronService:
                 staged = copy.copy(job)
                 prior = dict(staged.__dict__)
                 apply_job_update(staged, kwargs, chat_folder_out, resolved_project_path)
-                # An owner's switch to auto through this write: the save signs it
-                # (cron_service.approval_grant).
-                if kwargs.get("approval_mode") == "auto":
+                # An owner's switch of auto from off to on: the save signs it
+                # (cron_service.approval_grant). An edit that re-sends a stored
+                # auto (the Schedule page form sends the field every time) grants
+                # nothing new, so an unsigned stored auto stays unsigned until it
+                # is turned off and on again.
+                if kwargs.get("approval_mode") == "auto" and job.approval_mode != "auto":
                     staged.grant_held = True
                 edits = {
                     name: value

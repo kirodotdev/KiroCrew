@@ -162,6 +162,57 @@ def test_a_gateway_change_of_who_the_job_runs_as_keeps_auto(tmp_path) -> None:
     assert job_fire_approval_mode(reloaded) == "auto"
 
 
+def _hand_written_auto(tmp_path) -> str:
+    """A job whose stored ``auto`` the gateway never signed."""
+    job = CronService(base_dir=tmp_path).add_job(name="a", message="go", every_secs=3600)
+    _rewrite(tmp_path, job.id, approval_mode="auto")
+    return job.id
+
+
+def test_an_edit_that_re_sends_an_unsigned_auto_does_not_sign_it(tmp_path) -> None:
+    job_id = _hand_written_auto(tmp_path)
+
+    svc = CronService(base_dir=tmp_path)
+    assert svc.update_job(job_id, name="renamed", approval_mode="auto") is not None
+
+    reloaded = _reload(tmp_path, job_id)
+    assert (reloaded.name, reloaded.approval_mode) == ("renamed", "auto")
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_schedule_page_edit_of_an_unsigned_auto_job_does_not_sign_it(tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.handlers import cron as handlers
+
+    job_id = _hand_written_auto(tmp_path)
+    svc = CronService(base_dir=tmp_path)
+    app = web.Application(middlewares=[_identity(user=_OWNER, app="")])
+    app["state"] = MagicMock(crons=svc, owner_id=_OWNER)
+    app.router.add_route("PATCH", "/api/crons/{job_id}", handlers.api_cron_update)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.patch(
+            f"/api/crons/{job_id}", json={"name": "renamed", "approval_mode": "auto"}
+        )
+        body = await resp.json()
+    assert resp.status < 300, body
+
+    reloaded = _reload(tmp_path, job_id)
+    assert (reloaded.name, reloaded.approval_mode) == ("renamed", "auto")
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+def test_turning_an_unsigned_auto_off_and_on_again_signs_it(tmp_path) -> None:
+    job_id = _hand_written_auto(tmp_path)
+
+    svc = CronService(base_dir=tmp_path)
+    assert svc.update_job(job_id, approval_mode="") is not None
+    assert svc.update_job(job_id, approval_mode="auto") is not None
+
+    assert job_fire_approval_mode(_reload(tmp_path, job_id)) == "auto"
+
+
 def test_turning_auto_on_through_an_update_signs_it(tmp_path) -> None:
     svc = CronService(base_dir=tmp_path)
     job = svc.add_job(name="a", message="go", every_secs=3600)

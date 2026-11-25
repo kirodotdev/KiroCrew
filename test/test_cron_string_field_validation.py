@@ -368,6 +368,9 @@ class TestAntiDrift:
             "owner_approval_mode",
             # Set only by the run, from the raised error's transport tags.
             "last_error_kind",
+            # The gateway's MAC, written only by cron_service.approval_grant on
+            # save; no create or update path accepts it from a caller.
+            "approval_grant",
         }
     )
 

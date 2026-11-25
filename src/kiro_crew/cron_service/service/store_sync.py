@@ -388,7 +388,7 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
         if unsigned and approval_grant._key() is not None:
             logger.warning(
                 "%d cron job(s) store an approval grant the gateway did not sign (%s): "
-                "they ask for each tool call until auto is turned on again from the "
+                "they ask for each tool call until auto is turned off and on again from the "
                 "Schedule page or the CLI",
                 len(unsigned),
                 ", ".join(unsigned),
