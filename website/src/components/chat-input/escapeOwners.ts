@@ -1,9 +1,10 @@
 /* Shared Escape-precedence probe for the composer.
  *
- * The composer binds Escape to two things that must YIELD to anything already
+ * The composer binds Escape to three things that must YIELD to anything already
  * holding Escape on the page: cancelling an in-flight optimize
- * (optimizeEscape.ts) and discarding a live/draining dictation (voice.ts).
- * Escape never stops a running turn. Both ask the same question
+ * (optimizeEscape.ts), taking back a pending steer (steerEscape.ts) and
+ * discarding a live/draining dictation (voice.ts). Escape never stops a
+ * running turn. All three ask the same question
  * — "is some other surface the current Escape owner?" — so they ask it in ONE
  * place rather than each carrying its own copy of the selector (the drift a
  * second copy invites: one gets a carve-out, the other does not, and the two

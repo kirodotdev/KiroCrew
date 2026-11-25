@@ -86,8 +86,8 @@ import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-i
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
-import { useComposerOptimizeEscape } from './chat-input/optimizeEscape'
-import { useComposerSteerEscape } from './chat-input/steerEscape'
+import { steerTakeBackHintShown, useComposerEscape } from './chat-input/steerEscape'
+import { SteerTakeBackHint } from './chat-input/SteerTakeBackHint'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
@@ -761,13 +761,11 @@ function ChatInput({
   // stopped voice read-back. Wired into BOTH editors: the textarea's keydown and
   // the rich-text editor's Escape command. Escape never stops a running turn;
   // the Stop button does.
-  const optimizeEscape = useComposerOptimizeEscape({
+  // Set below, once hold-to-talk is known; the gate reads it at key time.
+  const composerReadOnlyRef = useRef(false)
+  const composerEscape = useComposerEscape({
     anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
-    optimizingRef, onCancelOptimize: cancelOptimize,
-  })
-  const { composerEscape, takeBackHint } = useComposerSteerEscape({
-    optimizeEscape, steerEscape, composerReadOnly: optimizing || disabled || typingLocked || streamingDictationReadOnly,
-    anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef,
+    optimizingRef, onCancelOptimize: cancelOptimize, steerEscape, composerReadOnlyRef,
   })
   // While an optimize runs the rich-text editor is not editable, so Lexical
   // drops key events and its Escape command never fires (issue #22470). This
@@ -840,6 +838,8 @@ function ChatInput({
     onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
     voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked, optimizing, placeholder, holdCaret, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
+  composerReadOnlyRef.current = optimizing || disabled || typingLocked || streamingDictationReadOnly || voiceHoldMode
+  const takeBackHint = !touchInput && steerTakeBackHintShown(steerEscape, { anyPickerOpen: anyPickerOpenRef.current, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, composerReadOnly: composerReadOnlyRef.current })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
   const micHeldElsewhereAction = micOwnerTitle && voiceBusyElsewhereSession
@@ -1270,6 +1270,7 @@ function ChatInput({
       {optimizeBusy && (
         <div role="status" data-testid="optimize-busy" className="px-4 mb-1 text-muted text-[13px]">{optimizeBusy}</div>
       )}
+      {takeBackHint && <SteerTakeBackHint />}
       {typeof approvalNotice === 'string' && approvalNotice && approvalNoticeKind === 'error' && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below is unsaved. */}
@@ -1595,8 +1596,8 @@ function ChatInput({
           onChange={handleTextareaChange}
           // Locked, no key reaches the composer's own handlers (send, history
           // recall, list continuation): the box only reads, selects and copies.
-          // A running turn keeps its two keys, Escape to stop and the send key
-          // to steer, as the busy buttons do.
+          // A running turn keeps the send key to steer, as the busy buttons do,
+          // and Escape still cancels an in-flight optimize.
           onKeyDown={e => { if (typingLocked) { lockedKeyDown(e); return } noteKeyDown(e); listContinuation.onKeyDown(e); handleKeyDown(e) }}
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
@@ -1825,7 +1826,6 @@ function ChatInput({
               </button>
               )}
             </>)}
-            {takeBackHint && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="escape-steer-take-back-hint">{i18nT('components.chatInput.esc_to_take_back_message')}</span>}
           </div>
         </div>
 

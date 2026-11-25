@@ -4162,29 +4162,32 @@ resend that fails leaves its steer pending for the teardown's requeue. Pinned by
 
 **Escape takes back a pending steer (`chat-input/steerEscape.ts`,
 `hooks/useSteerEscape.ts`).** In the message box, Escape takes back the newest
-steer whose row offers a take-back, with Edit. Each press takes back one, and its
-text goes in front of the draft, so presses made one per steer bring the steers
-back in the order they were sent. The row controls' Edit still puts its text
-after the draft. Escape never stops the turn
+steer whose row offers a take-back, with Edit. Each press takes back one, and
+its text goes in front of the draft, so presses made one per steer bring the
+steers back in the order they were sent. The row controls' Edit still puts its
+text after the draft. Escape never stops the turn
 (`docs/decisions/2026-11-24-escape-in-the-message-box-does-not-stop-the-turn.md`):
 with no steer to take back, the press does what it does on a composer with no
 steers. The take-back gate runs behind the optimize gate
-(`chat-input/optimizeEscape.ts`) and yields to the same claimants, in the same
-order; a held Escape takes back one steer, not one per key repeat. A hard stop
-takes nothing back. The page sends one take-back at a time per chat, as the
-route allows: a later press waits until the earlier take-back settles on its
-row, and a `busy` answer is asked again after 150, 300, 600 and 1,200 ms before
-the row shows it. A refused take-back drops the presses queued behind it; a
-take-back whose request was lost holds them until its row settles. A row the
-route answered as no longer pending is not picked again until the row itself
-moves on. Two steers with the same text come back as two paragraphs. A press
-made before the composer's steer echo gives its row an id is kept and sent when
-the echo arrives, or dropped when the row does not offer a take-back. A page
-without Web Locks cannot send an Edit, so there Escape reaches no steer. While a
-steer can be taken back, nothing ahead of the steers owns Escape and the message
-box takes text, the composer shows "Esc to take back your message". The
-shortcuts reference lists the take-back beside Escape. Pinned by
-`composerSteerEscape.test.ts`, `ChatInput.steerTakeBack.test.tsx`,
+(`chat-input/optimizeEscape.ts`) and yields to the same claimants, and also
+while the message box takes no text (an optimize, a typing lock, a streaming
+dictation, a disabled composer, or hold-to-talk hiding the box). A held Escape
+takes back one steer, not one per key repeat. While a hard stop runs, Escape
+takes nothing back and queued presses are dropped. The page sends one take-back
+at a time per chat, as the route allows: a later press waits until the earlier
+take-back settles on its row, and a `busy` answer is asked again after 150, 300,
+600 and 1,200 ms before the row shows it. A refused take-back drops the presses
+queued behind it, and the next press asks for the same row again; a take-back
+whose request was lost holds them until its row settles. A row the route
+answered as no longer pending is not picked again until the row itself moves on.
+A steer whose text the draft already holds still comes back, as its own
+paragraph. A press made before the composer's steer echo gives its row an id is
+kept and sent when the echo arrives, or dropped when the row does not offer a
+take-back. A page without Web Locks cannot send an Edit, so there Escape reaches
+no steer. While a steer can be taken back, nothing ahead of the steers owns
+Escape and the message box takes text, a row above the box reads "Esc to take
+back your message". The shortcuts reference lists the take-back beside Escape.
+Pinned by `composerSteerEscape.test.ts`, `ChatInput.steerTakeBack.test.tsx`,
 `useSteerEscape.test.ts`, `useSteerRetract.test.ts`, `chatDrafts.test.ts`,
 `shortcutRegistry.test.ts` and `ShortcutsModal.cov80.test.tsx`.
 

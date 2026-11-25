@@ -352,7 +352,7 @@ describe('prependRecoveredDraft', () => {
     expect(prependRecoveredDraft(afterNewest, 'first steer')).toBe('first steer\n\nsecond steer\n\ndraft')
   })
 
-  it('brings back two steers with the same text as two paragraphs', () => {
+  it('brings back a steer whose text the draft already holds, as its own paragraph', () => {
     // Each press takes back one message, so a second "yes" is a second message,
     // not a copy of the first.
     expect(prependRecoveredDraft('yes', 'yes')).toBe('yes\n\nyes')

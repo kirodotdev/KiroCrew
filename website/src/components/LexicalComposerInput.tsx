@@ -142,10 +142,11 @@ interface LexicalComposerInputProps {
    *  result of removing the touched mention(s) whole, or null when the edit
    *  touches no staged mention (then the editor's own delete runs). */
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
-  /** A bare Escape: the composer's Escape gate (chat-input/optimizeEscape.ts),
-   *  the SAME gate the textarea's keydown runs, so both editors behave alike.
-   *  It returns true when it claimed the key (it cancelled an in-flight
-   *  optimize). Escape never stops a running turn. */
+  /** A bare Escape: the composer's Escape gate (chat-input/optimizeEscape.ts,
+   *  then chat-input/steerEscape.ts), the SAME gate the textarea's keydown
+   *  runs, so both editors behave alike. It returns true when it claimed the
+   *  key (it cancelled an in-flight optimize or took back a pending steer).
+   *  Escape never stops a running turn. */
   onEscapeKey?: ComposerEscapeKey
 }
 

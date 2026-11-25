@@ -443,7 +443,12 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
   useEffect(() => {
     if (!slot) return
     const taken = pendingTakeBackBySlot.get(slot)
-    if (!taken) return
+    if (!taken) {
+      // A take-back started on a page that has since unmounted settles through
+      // that page's state, so this page's in-flight mark for it would stay.
+      setPending(prev => (Object.keys(prev).length ? {} : prev))
+      return
+    }
     const row = messages.find(message => message.meta?.mid === taken.mid)
     if (!row && transcriptAuthoritative && messages.length > 0) {
       // A row missing from the loaded page may only be older than it. If the take-back

@@ -1131,6 +1131,22 @@ describe('useSteerRetract: request outcome, placement and busy retry', () => {
     expect(hook.result.current.pending).toEqual({})
   })
 
+  it('clears the in-flight mark on a page that mounted while another page\'s take-back was still asking', async () => {
+    vi.useFakeTimers()
+    retractSteer.mockRejectedValue(busy())
+    const first = setup([row({ steerState: 'written' })])
+    act(() => { void first.hook.result.current.onSteerAction('m-1', 'edit', { retryBusy: true }) })
+    await act(async () => { await Promise.resolve() })
+    first.hook.unmount()
+    const second = setup([row({ steerState: 'written' })])
+    expect(second.hook.result.current.pending).toEqual({ 'm-1': 'edit' })
+    for (const delay of BUSY_RETRY_DELAYS_MS) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay) })
+    }
+    second.hook.rerender({ messages: [row({ steerState: 'written' })] })
+    expect(second.hook.result.current.pending).toEqual({})
+  })
+
   it('does not ask again for a take-back that settled during the wait', async () => {
     vi.useFakeTimers()
     retractSteer.mockRejectedValue(busy())

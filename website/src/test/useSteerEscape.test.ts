@@ -102,6 +102,17 @@ describe('useSteerEscape', () => {
     expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', EDIT)
   })
 
+  it('a press made before the first take-back shows as pending reaches the next older steer', async () => {
+    const { onSteerAction, answer, press } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
+    expect(press()).toBe(true)
+    expect(press()).toBe(true)
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+    expect(onSteerAction).toHaveBeenCalledWith('m-2', 'edit', EDIT)
+    await answer(0, 'accepted')
+    expect(onSteerAction).toHaveBeenCalledTimes(2)
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', EDIT)
+  })
+
   it('answers false when every pending steer is already asked for', () => {
     const { update, press } = setup({ messages: [steerRow('m-1')] })
     press()
@@ -118,16 +129,17 @@ describe('useSteerEscape', () => {
     expect(onSteerAction).toHaveBeenCalledWith('m-1', 'edit', EDIT)
   })
 
-  it.each(['refused', 'not_sent'] as const)('drops the queue when a take-back is %s, and leaves that row alone', async (outcome) => {
+  it.each(['refused', 'not_sent'] as const)('drops the queue when a take-back is %s, and the next press asks for the same row again', async (outcome) => {
     const { hook, onSteerAction, update, answer, press } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
     press()
     press()
     await answer(0, outcome)
     update({ pending: {} })
     expect(onSteerAction).toHaveBeenCalledTimes(1)
-    expect(hook.result.current.offered).toBe(1)
+    expect(hook.result.current.offered).toBe(2)
     expect(press()).toBe(true)
-    expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', EDIT)
+    expect(onSteerAction).toHaveBeenCalledTimes(2)
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-2', 'edit', EDIT)
   })
 
   it('holds the queue behind a take-back whose answer was lost, until its row settles', async () => {
@@ -143,6 +155,30 @@ describe('useSteerEscape', () => {
     update({ messages: [steerRow('m-1'), steerRow('m-2', { steerState: 'retracted' })], pending: {} })
     expect(onSteerAction).toHaveBeenCalledTimes(2)
     expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', EDIT)
+  })
+
+  it('sends the queued press when a lost answer arrives after its row already settled', async () => {
+    const { onSteerAction, update, answer, press } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
+    press()
+    update({ pending: { 'm-2': 'edit' } })
+    press()
+    update({ messages: [steerRow('m-1'), steerRow('m-2', { steerState: 'retracted' })], pending: {} })
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+    await answer(0, 'unknown')
+    expect(onSteerAction).toHaveBeenCalledTimes(2)
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', EDIT)
+  })
+
+  it('keeps a row answered as no longer pending out of reach while the transcript reloads without it', async () => {
+    const { hook, update, answer, press } = setup({ messages: [steerRow('m-1')] })
+    press()
+    update({ pending: { 'm-1': 'edit' } })
+    await answer(0, 'not_pending')
+    update({ pending: {} })
+    update({ messages: [], transcriptAuthoritative: false })
+    update({ messages: [steerRow('m-1')], transcriptAuthoritative: true })
+    expect(hook.result.current.offered).toBe(0)
+    expect(press()).toBe(false)
   })
 
   it('does not pick a row again after the route said its steer was no longer pending, until the row moves on', async () => {
@@ -250,6 +286,29 @@ describe('useSteerEscape', () => {
     press()
     await answer(0, 'accepted')
     update({ messages: [steerRow('m-1', { steerState: 'consumed' }), steerRow('m-2', { steerState: 'retracted' })], pending: {} })
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds a queued press while the transcript is still loading, and sends it once the row is back', async () => {
+    const { onSteerAction, update, answer, press } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
+    press()
+    update({ pending: { 'm-2': 'edit' } })
+    press()
+    update({ transcriptAuthoritative: false, messages: [] })
+    await answer(0, 'accepted')
+    update({ pending: {} })
+    expect(onSteerAction).toHaveBeenCalledTimes(1)
+    update({ transcriptAuthoritative: true, messages: [steerRow('m-1'), steerRow('m-2', { steerState: 'retracted' })] })
+    expect(onSteerAction).toHaveBeenCalledTimes(2)
+    expect(onSteerAction).toHaveBeenLastCalledWith('m-1', 'edit', EDIT)
+  })
+
+  it('sends nothing for a queued press once the composer is gone', async () => {
+    const { hook, onSteerAction, answer, press } = setup({ messages: [steerRow('m-1'), steerRow('m-2')] })
+    press()
+    press()
+    hook.unmount()
+    await answer(0, 'accepted')
     expect(onSteerAction).toHaveBeenCalledTimes(1)
   })
 

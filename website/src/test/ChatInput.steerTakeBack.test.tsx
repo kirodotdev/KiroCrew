@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent } from '@testing-library/react'
 import { useState } from 'react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import type { SteerEscape } from '../components/chat-input/steerEscape'
+import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 
 // Escape in the message box takes back a steer the running turn has not read
 // yet (issue #42197). It never stops the turn
@@ -59,8 +60,26 @@ describe('ChatInput: the take-back hint', () => {
     expect(screen.queryByTestId('escape-steer-take-back-hint')).toBeNull()
   })
 
-  it('shows nothing while the message box is typing-locked', () => {
-    renderWithProviders(<Host isRunning onStop={vi.fn()} steerEscape={steers(1)} typingLock={{ holderName: 'Alice' }} />)
+  it('shows nothing while the message box is typing-locked, where Escape takes nothing back', () => {
+    const steerEscape = steers(1)
+    renderWithProviders(<Host isRunning onStop={vi.fn()} steerEscape={steerEscape} typingLock={{ holderName: 'Alice' }} />)
     expect(screen.queryByTestId('escape-steer-take-back-hint')).toBeNull()
+    fireEvent.keyDown(textarea(), { key: 'Escape', code: 'Escape' })
+    expect(steerEscape.takeBack).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatInput rich-text editor: Escape takes back a pending steer', () => {
+  it('takes back the steer through the editor\'s Escape command, and does not stop the turn', async () => {
+    const onStop = vi.fn()
+    const steerEscape = steers(1)
+    renderWithProviders(<Host isRunning onStop={onStop} steerEscape={steerEscape} lexicalComposer />)
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+    expect(input).toHaveAttribute('data-lexical-composer')
+    await act(async () => {})
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' })
+    await act(async () => {})
+    expect(steerEscape.takeBack).toHaveBeenCalledTimes(1)
+    expect(onStop).not.toHaveBeenCalled()
   })
 })

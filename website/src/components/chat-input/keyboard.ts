@@ -135,8 +135,9 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   inputRef: React.RefObject<HTMLTextAreaElement>
   pasteBlocksRef: React.RefObject<PasteBlock[]>
   /** A bare Escape with the prompt box focused: cancel an in-flight optimize
-   *  (optimizeEscape.ts). Returns true when it claimed the key, so the handler
-   *  stops before Escape reaches undo/Tab/history. Escape never stops a turn. */
+   *  (optimizeEscape.ts), or else take back a pending steer (steerEscape.ts).
+   *  Returns true when it claimed the key, so the handler stops before Escape
+   *  reaches undo/Tab/history. Escape never stops a turn. */
   escapeKey?: ComposerEscapeKey
 }) {
   // Set by a bare Escape and spent by the next key: Esc then Tab always moves

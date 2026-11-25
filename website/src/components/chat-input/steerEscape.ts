@@ -1,7 +1,7 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { anotherEscapeOwnerIsOpen } from './escapeOwners'
 import { escapeStoppedSpeech } from '../../utils/speechStopKey'
-import type { ComposerEscapeKey } from './optimizeEscape'
+import { useComposerOptimizeEscape, type ComposerEscapeKey } from './optimizeEscape'
 
 /* Escape takes back a steer the running turn has not read yet (issue #42197).
    A steer sent too early, or with a mistake in it, can be taken back from its
@@ -14,9 +14,10 @@ import type { ComposerEscapeKey } from './optimizeEscape'
    (docs/decisions/2026-11-24-escape-in-the-message-box-does-not-stop-the-turn.md).
    With no steer to take back this gate claims nothing, and the press does what
    it does on a composer with no steers. The gate runs behind the optimize gate
-   (optimizeEscape.ts) and yields to the same claimants, in the same order: a
-   press that closes a picker, discards a dictation, dismisses an approval or
-   cancels an optimize takes nothing back. */
+   (optimizeEscape.ts) and yields to the same claimants: a press that closes a
+   picker, discards a dictation, dismisses an approval or cancels an optimize
+   takes nothing back. It also yields while the message box takes no text,
+   because the text a press brings back could be neither seen nor edited. */
 
 /** The page's steers that the running turn has not read yet, as Escape sees them. */
 export interface SteerEscape {
@@ -28,18 +29,12 @@ export interface SteerEscape {
   takeBack: () => boolean
 }
 
-export function useComposerSteerEscape({ optimizeEscape, steerEscape, composerReadOnly, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef }: {
-  /** The gate ahead of this one: it cancels an in-flight optimize. */
-  optimizeEscape: ComposerEscapeKey
-  /** The slot's steers the turn has not read yet. Absent on a surface that
-   *  cannot take a steer back. */
-  steerEscape?: SteerEscape
-  /** The message box takes no text now (an optimize, a typing lock, a streaming
-   *  dictation, a disabled composer): the hint hides, since the text a press
-   *  brings back could not be edited. */
-  composerReadOnly: boolean
+/** What holds Escape ahead of the steers, apart from the keydown itself. The
+ *  gate and its hint read the same set, so the hint shows only while the next
+ *  press would take a steer back. */
+export interface SteerEscapeClaimants {
   /** Any trigger picker (/ @ $ path) is open: it owns Escape to close. */
-  anyPickerOpenRef: React.RefObject<boolean>
+  anyPickerOpen: boolean
   /** A dictation is recording or draining: voice.ts owns Escape to discard. */
   voiceRecording: boolean
   voiceDrainCancellable: boolean
@@ -47,36 +42,63 @@ export function useComposerSteerEscape({ optimizeEscape, steerEscape, composerRe
   hasApproval: boolean
   /** The approval-mode nudge is up: Escape hides it for the session. */
   approvalNudgeActive: boolean
-  /** A prompt optimize is in flight: it is rewriting the draft the steer's text
-   *  would join, so the press takes nothing back. */
-  optimizingRef?: React.RefObject<boolean>
-}): { composerEscape: ComposerEscapeKey; takeBackHint: boolean } {
-  const composerEscape = useCallback<ComposerEscapeKey>((e, key) => {
+  /** The message box takes no text now: an optimize, a typing lock, a streaming
+   *  dictation, a disabled composer, or hold-to-talk hiding the box. */
+  composerReadOnly: boolean
+}
+
+function claimedAhead(c: SteerEscapeClaimants): boolean {
+  return c.anyPickerOpen || c.voiceRecording || c.voiceDrainCancellable || c.hasApproval || c.approvalNudgeActive
+    || c.composerReadOnly || anotherEscapeOwnerIsOpen()
+}
+
+/**
+ * Checks whether the composer shows "Esc to take back your message": a row
+ * offers a take-back and nothing ahead of the steers holds Escape.
+ *
+ * A dialog or a side panel view that opens without a composer render hides the
+ * hint at the composer's next render; the press itself checks at key time.
+ */
+export function steerTakeBackHintShown(steerEscape: SteerEscape | undefined, claimants: SteerEscapeClaimants): boolean {
+  return !!steerEscape && steerEscape.offered > 0 && !claimedAhead(claimants)
+}
+
+/** The composer's bare-Escape gate: the optimize gate, then the take-back. */
+export function useComposerEscape({ steerEscape, composerReadOnlyRef, ...optimize }: Parameters<typeof useComposerOptimizeEscape>[0] & {
+  /** The slot's steers the turn has not read yet. Absent on a surface that
+   *  cannot take a steer back. */
+  steerEscape?: SteerEscape
+  /** `SteerEscapeClaimants.composerReadOnly` as of the latest render. */
+  composerReadOnlyRef: React.RefObject<boolean>
+}): ComposerEscapeKey {
+  const optimizeEscape = useComposerOptimizeEscape(optimize)
+  const { anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef } = optimize
+  // Whether the press that started the current hold took a steer back. A held
+  // Escape takes back one steer, not one per key repeat: OS key-repeat starts
+  // within a few hundred milliseconds, so a press held a moment too long would
+  // otherwise empty the whole steer stack. The repeats of such a hold are
+  // claimed and do nothing, even once no steer is left; the next take-back
+  // needs a release and a new press. The repeats of any other hold pass on as
+  // they do on a composer with no steers.
+  const holdTookBackRef = useRef(false)
+  return useCallback<ComposerEscapeKey>((e, key) => {
+    if (e.repeat) {
+      if (!holdTookBackRef.current) return optimizeEscape(e, key)
+      e.preventDefault()
+      return true
+    }
+    holdTookBackRef.current = false
     if (optimizeEscape(e, key)) return true
-    // The claimants the optimize gate yields to, in the same order.
     if (key.composing || escapeStoppedSpeech(key.native)) return false
-    if (anyPickerOpenRef.current) return false
-    if (voiceRecording || voiceDrainCancellable) return false
-    if (hasApproval || approvalNudgeActive) return false
-    if (anotherEscapeOwnerIsOpen()) return false
-    if (optimizingRef?.current) return false
-    if (!steerEscape?.reachable) return false
+    const claimants = { anyPickerOpen: !!anyPickerOpenRef.current, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, composerReadOnly: !!composerReadOnlyRef.current }
+    // An in-flight optimize is rewriting the draft the steer's text would join.
+    if (claimedAhead(claimants) || optimizingRef?.current) return false
+    if (!steerEscape?.reachable || !steerEscape.takeBack()) return false
     // preventDefault also tells document-level handlers that read
     // `defaultPrevented` (the notification banner, dictation discard) that
     // this Escape is spent.
     e.preventDefault()
-    // A held Escape takes back one steer, not one per key repeat: OS key-repeat
-    // starts within a few hundred milliseconds, so a press held a moment too
-    // long would otherwise empty the whole steer stack. An auto-repeat keydown
-    // is claimed and does nothing; the next take-back needs a release and a
-    // new press.
-    if (e.repeat) return true
-    steerEscape.takeBack()
+    holdTookBackRef.current = true
     return true
-  }, [optimizeEscape, steerEscape, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef])
-  // The hint says what the next press does, so it hides while a claimant ahead
-  // of the steers holds Escape (a dictation, an approval) or the box takes no text.
-  const escapeOwned = voiceRecording || voiceDrainCancellable || hasApproval || approvalNudgeActive
-  const takeBackHint = !!steerEscape && steerEscape.offered > 0 && !escapeOwned && !composerReadOnly
-  return { composerEscape, takeBackHint }
+  }, [optimizeEscape, steerEscape, composerReadOnlyRef, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef])
 }

@@ -7,7 +7,7 @@ import { useAppSelector, store, type AppDispatch } from '../store'
 import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectSlotRunEpoch,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
@@ -1002,7 +1002,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     connected,
     activeSlotRef,
     slotRunning,
-    slotRunEpoch: useAppSelector(s => activeSlot ? selectSlotRunEpoch(s, activeSlot) : 0),
     messages,
     transcriptAuthoritative: !slotLoading && slotSwitchTarget !== activeSlot,
     send,

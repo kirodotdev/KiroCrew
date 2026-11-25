@@ -59,8 +59,9 @@ export interface SteerEscapeOptions {
  * names the row, and dropped when the row turns out not to offer a take-back.
  *
  * A refused take-back drops the presses queued behind it: the row says what
- * happened, and the next press asks again. A take-back whose answer is lost holds
- * them until its row settles, since the gateway may or may not hold it.
+ * happened, and the next press asks for the same row again. A take-back whose
+ * answer is lost holds them until its row settles, since the gateway may or may
+ * not hold it.
  */
 export function useSteerEscape({ slot, messages, transcriptAuthoritative = true, slotRunning, stopState, runEpoch = 0, onSteerAction, pending }: SteerEscapeOptions): SteerEscape {
   const latest = useRef({ slot, messages, transcriptAuthoritative, slotRunning, stopState, onSteerAction, pending })
@@ -70,10 +71,10 @@ export function useSteerEscape({ slot, messages, transcriptAuthoritative = true,
   // before its outcome was known: the take-back hook keeps that record until the
   // row settles, and the claim stands as long as the record does.
   const inFlightRef = useRef<{ target: SteerTarget; unanswered: boolean } | null>(null)
-  // Rows whose take-back ended without being armed: the route said the steer was
-  // no longer pending, or refused it, or nothing could be sent. The row may still
-  // read as a target (its own update can arrive after the answer, and a refusal
-  // leaves it as it was), so until the row moves on Escape leaves it alone.
+  // Rows whose take-back the route answered as no longer pending. The row may
+  // still read as a target, since its own update can arrive after the answer,
+  // so until the row moves on Escape leaves it alone. Keyed by row id: a bubble
+  // has none, and is sent or dropped when its echo arrives.
   const settledRef = useRef<Set<string>>(new Set())
   // Bumped by every reset, so an answer for a slot or turn that is gone is ignored.
   const generationRef = useRef(0)
@@ -92,7 +93,8 @@ export function useSteerEscape({ slot, messages, transcriptAuthoritative = true,
     const now = latest.current
     // A hard stop discards the pending steers, so nothing is left to take back.
     if (!now.slotRunning || now.stopState === 'killing') { reset(); return }
-    if (settledRef.current.size) {
+    // A row missing from a transcript that is still loading may come back as it was.
+    if (settledRef.current.size && now.transcriptAuthoritative) {
       for (const mid of settledRef.current) {
         const row = now.messages.find(m => isRowOf(m, { mid }))
         if (!row || !targetOf(row)) settledRef.current.delete(mid)
@@ -120,7 +122,9 @@ export function useSteerEscape({ slot, messages, transcriptAuthoritative = true,
       void now.onSteerAction(target.mid, 'edit', { prepend: true, retryBusy: true }).then(outcome => {
         if (generationRef.current !== generation || latest.current.slot !== sentFor || inFlightRef.current !== held) return
         if (outcome === 'unknown') {
+          // Its row may have settled before this answer, with nothing left to wake the queue.
           held.unanswered = true
+          pump()
           return
         }
         inFlightRef.current = null
@@ -129,7 +133,8 @@ export function useSteerEscape({ slot, messages, transcriptAuthoritative = true,
           pump()
           return
         }
-        settledRef.current.add(target.mid)
+        // Refused, or nothing was sent: the row says what happened, and the next
+        // press asks for it again.
         queueRef.current = []
         claimsChanged()
       })

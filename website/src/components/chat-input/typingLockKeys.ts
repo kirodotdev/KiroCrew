@@ -21,7 +21,7 @@ export function useTypingLockKeys({ lockedRich, isRunning, allowIdleSend = false
   wrapperRef: React.RefObject<HTMLDivElement>
   ownsFocusRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
-  /** The composer's bare-Escape gate: it cancels an in-flight optimize, never the turn. */
+  /** The composer's bare-Escape gate. On a typing-locked box it only cancels an in-flight optimize, and never stops the turn. */
   escapeKey: ComposerEscapeKey
   ime: ReturnType<typeof useImeGuard>
 }): (e: React.KeyboardEvent<HTMLTextAreaElement>) => void {

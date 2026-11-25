@@ -12,8 +12,8 @@ import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { useSteerRetract, type SteerRestorePlacement } from '../../../hooks/useSteerRetract'
 import { useSteerEscape } from '../../../hooks/useSteerEscape'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
-import { store, type AppDispatch } from '../../../store'
-import { appendMessage, appendSlotMessage, capturePendingAskId, requestStop, selectComposerBusy, selectSendConfirmed, type pendingQuestionFor } from '../../../store/chatSlice'
+import { store, useAppSelector, type AppDispatch } from '../../../store'
+import { appendMessage, appendSlotMessage, capturePendingAskId, requestStop, selectComposerBusy, selectSendConfirmed, selectSlotRunEpoch, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, prependRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
@@ -37,8 +37,6 @@ interface BusyTurnControlsOptions {
   connected: boolean
   activeSlotRef: MutableRefObject<string | null>
   slotRunning: boolean
-  /** The active slot's turn-start count (`selectSlotRunEpoch`). */
-  slotRunEpoch: number
   messages: ChatMessage[]
   transcriptAuthoritative: boolean
   /** The page's send, for the busy-but-not-running case and a `/fork` prompt. */
@@ -92,7 +90,6 @@ export function useBusyTurnControls({
   connected,
   activeSlotRef,
   slotRunning,
-  slotRunEpoch,
   messages,
   transcriptAuthoritative,
   send,
@@ -453,6 +450,7 @@ export function useBusyTurnControls({
     )
   }
   // The composer's Escape takes the pending steers back one per press, newest first.
+  const slotRunEpoch = useAppSelector(s => activeSlot ? selectSlotRunEpoch(s, activeSlot) : 0)
   const steerEscape = useSteerEscape({
     slot: activeSlot,
     messages,
