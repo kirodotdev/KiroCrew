@@ -13,13 +13,13 @@ against that release's ``SHASUMS256.txt`` -- and writes the manifest
 
     <out>/kas/<version>/provenance.json      (where each artifact came from)
 
-For an Amazon Linux 2 release (``packaging/kas-al2/``) two optional inputs
-replace linux-x64 pieces, each pinned by a sha256 the caller supplies:
-``--node-linux-x64`` uses a local Node tarball for the ``linux-x64`` Node key
-instead of nodejs.org's (every other key still comes from nodejs.org), and
-``--onnx-overlay-linux-x64`` swaps the files in the linux-x64 engine's
-``onnxruntime-node/bin/napi-v3/linux/x64/`` for the overlay's. Both are recorded
-in ``provenance.json``; the manifest's own shape does not change.
+For an Amazon Linux 2 release (``packaging/kas-al2/``) optional inputs replace
+Linux pieces per architecture (``x64``, ``arm64``), each pinned by a sha256 the
+caller supplies: ``--node-linux-<arch>`` uses a local Node tarball for that Node
+key instead of nodejs.org's (every other key still comes from nodejs.org), and
+``--onnx-overlay-linux-<arch>`` swaps the files in that engine's
+``onnxruntime-node/bin/napi-v3/linux/<arch>/`` for the overlay's. All are
+recorded in ``provenance.json``; the manifest's own shape does not change.
 
 With ``--s3 s3://<bucket>`` the same tree is uploaded with the ``aws`` CLI. The
 script never reads a credential itself; the CLI resolves its own. Nothing points
@@ -134,16 +134,33 @@ def _expect_sha256(path: Path, want: str, what: str) -> str:
     return actual
 
 
-def _check_node_tarball(path: Path, version: str) -> None:
-    """Refuse a linux-x64 Node tarball the installer would not accept.
+#: Linux Node keys a local build may replace -> the ELF ``e_machine`` its
+#: ``bin/node`` must carry (EM_X86_64, EM_AARCH64). Checked before the binary is
+#: run, because under binfmt emulation a binary of the other architecture runs too.
+LOCAL_NODE_ELF_MACHINES = {"linux-x64": 62, "linux-arm64": 183}
+LOCAL_NODE_KEYS = tuple(LOCAL_NODE_ELF_MACHINES)
+
+
+def _elf_machine(head: bytes) -> int | None:
+    """``e_machine`` of a 64-bit little-endian ELF header, else None."""
+    if len(head) < 20 or head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1:
+        return None
+    return int.from_bytes(head[18:20], "little")
+
+
+def _check_node_tarball(path: Path, version: str, key: str = "linux-x64") -> None:
+    """Refuse a local Linux Node tarball the installer would not accept.
 
     The installer finds ``bin/node`` under the archive's one top directory and
     requires ``node --version`` to print exactly ``v<version>``, the layout and
-    answer of nodejs.org's ``node-v<version>-linux-x64.tar.xz``. The binary runs
-    here only on a linux-x64 host; elsewhere this refuses rather than publish an
-    unverified Node.
+    answer of nodejs.org's ``node-v<version>-<key>.tar.xz``. The binary is run
+    here, so this needs a Linux host that can execute *key*'s binaries: one of
+    that architecture, or one with binfmt emulation for it (publishing x64 and
+    arm64 builds in one release needs one of the two). Anything else is refused
+    rather than publish an unverified Node.
     """
-    top = f"node-v{version}-linux-x64"
+    top = f"node-v{version}-{key}"
+    cannot_run = f"{path.name}: checking 'node --version' needs a host that runs {key} binaries"
     try:
         with tarfile.open(path, "r:xz") as tar:
             names = tar.getnames()
@@ -152,8 +169,8 @@ def _check_node_tarball(path: Path, version: str) -> None:
                 sys.exit(f"{path.name}: {top}/bin/node is not a regular file")
             if any(n != top and not n.startswith(top + "/") for n in names):
                 sys.exit(f"{path.name}: every member must sit under {top}/")
-            if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
-                sys.exit(f"{path.name}: checking 'node --version' needs a linux-x64 host")
+            if platform.system() != "Linux":
+                sys.exit(cannot_run)
             fh = tar.extractfile(member)
             assert fh is not None
             with tempfile.TemporaryDirectory() as tmp:
@@ -161,13 +178,24 @@ def _check_node_tarball(path: Path, version: str) -> None:
                 with fh, open(node, "wb") as out:
                     shutil.copyfileobj(fh, out)
                 node.chmod(0o755)
-                got = subprocess.run(
-                    [str(node), "--version"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    timeout=60,
-                ).stdout.strip()
+                with open(node, "rb") as nf:
+                    machine = _elf_machine(nf.read(20))
+                if machine != LOCAL_NODE_ELF_MACHINES[key]:
+                    sys.exit(
+                        f"{path.name}: {top}/bin/node is not a 64-bit {key} ELF binary "
+                        f"(e_machine {machine})"
+                    )
+                try:
+                    got = subprocess.run(
+                        [str(node), "--version"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=60,
+                    ).stdout.strip()
+                except OSError as exc:
+                    # ENOEXEC: a foreign architecture with no emulation registered.
+                    sys.exit(f"{cannot_run} ({exc})")
     except (tarfile.TarError, KeyError, OSError, lzma.LZMAError) as exc:
         sys.exit(f"{path.name}: not a {top}.tar.xz layout ({exc})")
     if got != f"v{version}":
@@ -175,8 +203,16 @@ def _check_node_tarball(path: Path, version: str) -> None:
 
 
 def node_builds(
-    version: str, out_dir: Path, local_linux_x64: tuple[Path, str] | None = None
+    version: str, out_dir: Path, local: dict[str, tuple[Path, str]] | None = None
 ) -> dict[str, dict]:
+    """Every Node build the manifest names, from nodejs.org unless *local* has its key.
+
+    *local* maps a key of :data:`LOCAL_NODE_KEYS` to ``(tarball, expected sha256)``.
+    """
+    local = local or {}
+    for key in local:
+        if key not in LOCAL_NODE_KEYS:
+            sys.exit(f"a local Node build can replace only {', '.join(LOCAL_NODE_KEYS)}, not {key}")
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         sys.exit(f"Node version must look like 22.23.3, got {version!r}")
     parts = tuple(int(x) for x in version.split("."))
@@ -193,10 +229,10 @@ def node_builds(
     for key, suffix in NODE_BUILDS.items():
         name = f"node-v{version}-{suffix}"
         dest = out_dir / name
-        if key == "linux-x64" and local_linux_x64 is not None:
-            src, want = local_linux_x64
-            _expect_sha256(src, want, "--node-linux-x64")
-            _check_node_tarball(src, version)
+        if key in local:
+            src, want = local[key]
+            _expect_sha256(src, want, f"--node-{key}")
+            _check_node_tarball(src, version, key)
             # Published under nodejs.org's name, so the installer's lookup is unchanged.
             tmp = dest.with_suffix(dest.suffix + ".part")
             shutil.copyfile(src, tmp)
@@ -244,17 +280,23 @@ def _recompress_zst_to_xz(src: Path, dest: Path) -> None:
     tmp.replace(dest)
 
 
-#: Where onnxruntime-node keeps its linux-x64 native files inside the engine.
-ONNX_X64_DIR = "node_modules/onnxruntime-node/bin/napi-v3/linux/x64/"
+#: Where onnxruntime-node keeps each Linux engine's native files inside it.
+ONNX_DIRS = {
+    "linux-x64": "node_modules/onnxruntime-node/bin/napi-v3/linux/x64/",
+    "linux-arm64": "node_modules/onnxruntime-node/bin/napi-v3/linux/arm64/",
+}
+ONNX_X64_DIR = ONNX_DIRS["linux-x64"]
 
 
-def read_onnx_overlay(path: Path, want_sha256: str) -> dict[str, tuple[tarfile.TarInfo, bytes]]:
+def read_onnx_overlay(
+    path: Path, want_sha256: str, flag: str = "--onnx-overlay-linux-x64"
+) -> dict[str, tuple[tarfile.TarInfo, bytes]]:
     """The overlay tarball's members by name: flat regular files and symlinks only.
 
     ``packaging/kas-al2/build-onnxruntime.sh`` writes it: ``libonnxruntime.so.1``,
     the ``libonnxruntime.so.<ver>`` symlink and ``onnxruntime_binding.node``.
     """
-    _expect_sha256(path, want_sha256, "--onnx-overlay-linux-x64")
+    _expect_sha256(path, want_sha256, flag)
     entries: dict[str, tuple[tarfile.TarInfo, bytes]] = {}
     with tarfile.open(path, "r:*") as tar:
         for m in tar.getmembers():
@@ -277,9 +319,12 @@ def read_onnx_overlay(path: Path, want_sha256: str) -> dict[str, tuple[tarfile.T
 
 
 def _repack_with_overlay(
-    src: Path, dest: Path, overlay: dict[str, tuple[tarfile.TarInfo, bytes]]
+    src: Path,
+    dest: Path,
+    overlay: dict[str, tuple[tarfile.TarInfo, bytes]],
+    onnx_dir: str = ONNX_X64_DIR,
 ) -> None:
-    """Rewrite *src* (``.tar.zst``) as ``.tar.xz`` with onnxruntime's x64 files swapped.
+    """Rewrite *src* (``.tar.zst``) as ``.tar.xz`` with the files in *onnx_dir* swapped.
 
     Unlike :func:`_recompress_zst_to_xz` the tar stream IS re-packed, so the
     result is not byte-identical inside: every member keeps its name, mode,
@@ -305,7 +350,7 @@ def _repack_with_overlay(
         ):
             for m in tin:
                 head, _, base = m.name.removeprefix("./").rpartition("/")
-                in_dir = head + "/" == ONNX_X64_DIR or (head + "/").endswith("/" + ONNX_X64_DIR)
+                in_dir = head + "/" == onnx_dir or (head + "/").endswith("/" + onnx_dir)
                 if in_dir:
                     if base in overlay:
                         new, data = overlay[base]
@@ -329,7 +374,7 @@ def _repack_with_overlay(
     missing = sorted(n for n, c in hits.items() if c == 0)
     if missing:
         tmp.unlink(missing_ok=True)
-        sys.exit(f"{src.name}: no {ONNX_X64_DIR}{', '.join(missing)} to replace")
+        sys.exit(f"{src.name}: no {onnx_dir}{', '.join(missing)} to replace")
     tmp.replace(dest)
 
 
@@ -347,15 +392,17 @@ def _xz_is_complete(path: Path) -> bool:
 def engine_platforms(
     kas_dir: Path,
     out_dir: Path,
-    onnx_overlay_x64: tuple[dict[str, tuple[tarfile.TarInfo, bytes]], str] | None = None,
+    onnx_overlays: dict[str, tuple[dict[str, tuple[tarfile.TarInfo, bytes]], str]] | None = None,
     sources: dict[str, dict] | None = None,
 ) -> dict[str, dict]:
     """Write one ``.tar.xz`` per engine platform; fill *sources* for provenance.
 
-    *onnx_overlay_x64* is ``(read_onnx_overlay(...), its sha256)``: applied to
-    ``linux-x64`` only, after that tarball passed the upstream manifest's sha256.
+    *onnx_overlays* maps a key of :data:`ONNX_DIRS` to ``(read_onnx_overlay(...),
+    its sha256)``: each is applied to that platform only, after its tarball passed
+    the upstream manifest's sha256.
     """
     sources = {} if sources is None else sources
+    onnx_overlays = onnx_overlays or {}
     platforms: dict[str, dict] = {}
     upstream = kas_dir / "manifest.json"
     declared = {}
@@ -369,9 +416,9 @@ def engine_platforms(
             continue
         if declared.get(key) and declared[key].get("sha256") != sha256_of(src):
             sys.exit(f"{name}: sha256 differs from the upstream manifest.json beside it")
-        overlay = onnx_overlay_x64 if key == "linux-x64" else None
+        overlay = onnx_overlays.get(key)
         if overlay is not None and not name.endswith(".tar.zst"):
-            sys.exit(f"--onnx-overlay-linux-x64 needs the KAS build's .tar.zst, got {name}")
+            sys.exit(f"--onnx-overlay-{key} needs the KAS build's .tar.zst, got {name}")
         src_sha = sha256_of(src)
         sources[key] = {"engine_upstream": name, "engine_upstream_sha256": src_sha}
         if name.endswith(".tar.zst"):
@@ -399,12 +446,12 @@ def engine_platforms(
                     _recompress_zst_to_xz(src, dest)
                 else:
                     print(f"  ~ {name} -> {dest.name} (repacking with the onnxruntime overlay)")
-                    _repack_with_overlay(src, dest, overlay[0])
+                    _repack_with_overlay(src, dest, overlay[0], ONNX_DIRS[key])
                 sidecar.write_text(made_from + "\n")
             if overlay is not None:
                 sources[key]["onnx_overlay_sha256"] = overlay[1]
                 sources[key]["onnx_overlay_replaced"] = [
-                    ONNX_X64_DIR + n for n in sorted(overlay[0])
+                    ONNX_DIRS[key] + n for n in sorted(overlay[0])
                 ]
         else:
             dest = out_dir / name
@@ -421,8 +468,9 @@ def engine_platforms(
         print(f"  ✓ {dest.name}")
     if not platforms:
         sys.exit(f"no kas-*.tar.zst found in {kas_dir}")
-    if onnx_overlay_x64 is not None and "linux-x64" not in platforms:
-        sys.exit("--onnx-overlay-linux-x64 given but there is no linux-x64 engine tarball")
+    for key in onnx_overlays:
+        if key not in platforms:
+            sys.exit(f"--onnx-overlay-{key} given but there is no {key} engine tarball")
     return platforms
 
 
@@ -463,32 +511,50 @@ def main() -> None:
         help="tarball of onnxruntime-node linux/x64 files to swap into the linux-x64 engine",
     )
     ap.add_argument("--onnx-overlay-sha256", help="expected sha256 of --onnx-overlay-linux-x64")
+    ap.add_argument(
+        "--node-linux-arm64",
+        type=Path,
+        help="local node-v<N>-linux-arm64.tar.xz to publish instead of nodejs.org's (e.g. an AL2 build)",
+    )
+    ap.add_argument("--node-linux-arm64-sha256", help="expected sha256 of --node-linux-arm64")
+    ap.add_argument(
+        "--onnx-overlay-linux-arm64",
+        type=Path,
+        help="tarball of onnxruntime-node linux/arm64 files to swap into the linux-arm64 engine",
+    )
+    ap.add_argument(
+        "--onnx-overlay-linux-arm64-sha256", help="expected sha256 of --onnx-overlay-linux-arm64"
+    )
     args = ap.parse_args()
-    for path, sha, flag in (
-        (args.node_linux_x64, args.node_linux_x64_sha256, "--node-linux-x64"),
-        (args.onnx_overlay_linux_x64, args.onnx_overlay_sha256, "--onnx-overlay-linux-x64"),
-    ):
-        if (path is None) != (sha is None):
-            ap.error(f"{flag} and its sha256 flag go together")
-        if path is not None and not path.is_file():
-            ap.error(f"{flag}: no file at {path}")
+    node_inputs = {
+        "linux-x64": (args.node_linux_x64, args.node_linux_x64_sha256),
+        "linux-arm64": (args.node_linux_arm64, args.node_linux_arm64_sha256),
+    }
+    overlay_inputs = {
+        "linux-x64": (args.onnx_overlay_linux_x64, args.onnx_overlay_sha256),
+        "linux-arm64": (args.onnx_overlay_linux_arm64, args.onnx_overlay_linux_arm64_sha256),
+    }
+    for kind, inputs in (("node", node_inputs), ("onnx-overlay", overlay_inputs)):
+        for key, (path, sha) in inputs.items():
+            flag = f"--{kind}-{key}"
+            if (path is None) != (sha is None):
+                ap.error(f"{flag} and its sha256 flag go together")
+            if path is not None and not path.is_file():
+                ap.error(f"{flag}: no file at {path}")
 
     release = args.out / "kas" / args.version
     release.mkdir(parents=True, exist_ok=True)
 
-    overlay = None
-    if args.onnx_overlay_linux_x64 is not None:
-        overlay = (
-            read_onnx_overlay(args.onnx_overlay_linux_x64, args.onnx_overlay_sha256),
-            args.onnx_overlay_sha256,
-        )
+    overlays = {
+        key: (read_onnx_overlay(path, sha, f"--onnx-overlay-{key}"), sha)
+        for key, (path, sha) in overlay_inputs.items()
+        if path is not None
+    }
     sources: dict[str, dict] = {}
     print(f"Engine tarballs ({args.version}):")
-    platforms = engine_platforms(args.kas_dir, release, overlay, sources)
+    platforms = engine_platforms(args.kas_dir, release, overlays, sources)
     print(f"Node runtime ({args.node_version}):")
-    local_node = None
-    if args.node_linux_x64 is not None:
-        local_node = (args.node_linux_x64, args.node_linux_x64_sha256)
+    local_node = {key: (p, s) for key, (p, s) in node_inputs.items() if p is not None}
     builds = node_builds(args.node_version, release, local_node)
 
     manifest = {
@@ -505,8 +571,8 @@ def main() -> None:
         "engine": sources,
         "node": {
             key: (
-                "local --node-linux-x64"
-                if key == "linux-x64" and local_node is not None
+                f"local --node-{key}"
+                if key in local_node
                 else f"{NODE_DIST}/v{args.node_version}/ (SHASUMS256.txt)"
             )
             for key in builds
@@ -519,7 +585,7 @@ def main() -> None:
     print("Pin it in src/kiro_crew/acp/kas_pin.py (after testing):")
     print(f'  KAS_PIN_VERSION = "{args.version}"')
     print(f'  KAS_PIN_MANIFEST_SHA256 = "{sha256_of(release / "manifest.json")}"')
-    if local_node is not None and overlay is not None:
+    if local_node and overlays:
         print(
             "  (an AL2 build: set KAS_PIN_AL2_MANIFEST_SHA256 instead; KAS_PIN_AL2_VERSION follows KAS_PIN_VERSION)"
         )
