@@ -655,6 +655,8 @@ app draw structured results inline: a card gets only its own payload through
 `card.render`, never the transcript, and `card.action` asks for a separately
 authorized host action. Each card stores a static fallback, so history stays
 readable after the app is uninstalled. Both use typed, versioned envelopes on §2.
+[rfc-app-widgets.md](rfc-app-widgets.md) (`draft`) specifies message cards in
+full, under the name `contributes.widgets`.
 
 **Event handlers.** `contributes.eventHandlers` lets an app react to events such
 as a finished turn, extending today's `crons`. Each handler has an approved
