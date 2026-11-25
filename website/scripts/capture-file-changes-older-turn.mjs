@@ -87,7 +87,7 @@ async function main() {
   const wrote = []
   for (const theme of ['dark', 'light']) {
     const context = await browser.newContext({ viewport: { width: 1180, height: 900 }, deviceScaleFactor: 2 })
-    const page = await context.newPage()
+    let page = null
     const extra = async (path, route) => {
       if (path === '/api/chat/slots') return json(route, slots), true
       if (path.startsWith('/api/chat/slots/')) return json(route, detail), true
@@ -95,9 +95,6 @@ async function main() {
       if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
       return false
     }
-    await stubDashboardApi(page, { slots, extra, theme })
-    logPageProblems(page)
-
     async function shot(target, name) {
       const file = `${OUT}/${name}.png`
       await target.screenshot({ path: file })
@@ -105,14 +102,18 @@ async function main() {
       console.log(`wrote ${file}  ${w}x${h}`)
       wrote.push({ file, over: w > MAX_EDGE || h > MAX_EDGE })
     }
+    /** A fresh page per chip style, stubbed once with its seed. */
     async function open(fileChipStyle) {
-      await page.addInitScript(([key, t, style]) => {
-        localStorage.clear()
-        localStorage.setItem('mc-theme', t)
-        localStorage.setItem('mc-onboarded', '1')
-        localStorage.setItem('mc-active-slot-chat', key)
-        localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, fileChipStyle: style, streamMode: 'immediate' }))
-      }, [SURFACE.key, theme, fileChipStyle])
+      await page?.close()
+      page = await context.newPage()
+      await stubDashboardApi(page, {
+        slots, extra, theme,
+        localStorageEntries: {
+          'mc-active-slot-chat': SURFACE.key,
+          'mc-chat-config': JSON.stringify({ pinLastPrompt: false, fileChipStyle, streamMode: 'immediate' }),
+        },
+      })
+      logPageProblems(page)
       await page.goto(base + '/?sid=' + encodeURIComponent(SURFACE.key), { waitUntil: 'domcontentloaded' })
       await page.waitForTimeout(2600)
       await page.keyboard.press('Escape')

@@ -42,11 +42,12 @@ async function main() {
     viewport: { width: 1400, height: 900 },
     deviceScaleFactor: 2, // 13px menu type renders soft at 1x
   })
-  const page = await context.newPage()
-  logPageProblems(page)
 
   for (const theme of ['light', 'dark']) {
-    // Re-stub per theme: /api/theme/boot decides the mode.
+    // A fresh page per theme: /api/theme/boot decides the mode, and a page
+    // stubbed once runs only that stub's storage seed.
+    const page = await context.newPage()
+    logPageProblems(page)
     await stubDashboardApi(page, {
       slots, theme,
       localStorageEntries: {
@@ -106,6 +107,7 @@ async function main() {
       },
     })
     console.log('wrote', `${OUT}/02-menu-${theme}.png`)
+    await page.close()
   }
 
   await browser.close()
