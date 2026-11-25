@@ -14,6 +14,7 @@ import pytest
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.kas_agents import spec_keys_without_carrier, to_client_custom_agent
 
@@ -72,6 +73,21 @@ def test_a_knowledge_base_kas_would_refuse_is_dropped_and_named(bad):
 
     assert entry["resources"] == ["file://README.md"]
     assert spec_keys_without_carrier(spec) == ["resources[1] (kb)"]
+
+
+@pytest.mark.parametrize("ref", ["$HOME/docs", "${HOME}/docs"])
+def test_a_home_knowledge_base_on_windows_without_home_reads_the_profile(
+    monkeypatch, tmp_path, ref
+):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    spec = {"resources": [{"type": "knowledgeBase", "source": f"file://{ref}"}]}
+
+    entry = to_client_custom_agent("a", spec, "p")
+
+    source = f"file://{(tmp_path / 'docs').as_posix()}"
+    assert entry["resources"] == [{"type": "knowledgeBase", "source": source}]
 
 
 def test_a_users_tool_aliases_are_named(monkeypatch):

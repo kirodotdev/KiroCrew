@@ -630,7 +630,7 @@ itself:
   (`file://../prompts/x.md`), as on kiro-cli's v2 engine;
 - an absolute path (and `~`) is accepted and resolved; a relative one expands
   `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli's v2 engine
-  does;
+  does; on Windows a missing `HOME` is read as `USERPROFILE`, as for MCP args;
 - relative or absolute, the resolved path (symlinks followed) must not be a
   credential or governance location, `~/.config/gh`, the data home's
   `app_receipt_secret` or `session_token_*.sig`, `/proc`, `/sys` or `/dev` —
@@ -997,7 +997,7 @@ keys inside to the backend. Crew never reads the entry: no document, no budget
 spent, no path derived, so the admitted roots are unchanged.
 On KAS, `to_client_custom_agent` sends a valid object with only the keys KAS's
 `KnowledgeBaseResourceSchema` names (`acp/kas_spec_carry.py`): `source` must be
-`file://` with a path; `~` and `$VAR` are expanded; an absolute path must not be
+`file://` with a path; `~` and `$VAR` are expanded as in a prompt path; an absolute path must not be
 a sensitive location and a relative one may not use `..`; each other key must
 have its schema type. Any other object is dropped and the session-start notice
 names it as `resources[<index>]`, because one KAS refuses drops the whole agent.
