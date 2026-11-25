@@ -1,8 +1,9 @@
-"""An app backend and its install spawns cannot read the gateway's secret files.
+"""An app backend's install spawns cannot read the gateway's secret files.
 
 ``.local_secret`` and ``run/gateway-<port>.secret`` hold the credential of the gateway's
-internal routes. The spawns of an app backend (the server itself, ``npm install``, ``pip
-install``) run third-party code, so none of them may read it.
+internal routes. ``npm install`` and ``pip install`` for an app backend run third-party
+code, so neither may read it. The running backend itself keeps read access on purpose
+(``docs/system-specs/modules/dashboard-token-auth.md``), so it is not tested here.
 
 The sibling tests only check the arguments handed to ``wrap_argv``. This one goes through
 the real launcher: the production spawn code runs unchanged up to the sandbox wrap, where
@@ -149,18 +150,6 @@ def _assert_secrets_hidden(reports: list[dict[str, Any]], seeded: dict[str, Any]
 
 
 class TestARealSandboxHidesTheSecretFiles:
-    def test_the_backend_spawn_cannot_read_them(
-        self, spawn_root: Any, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        (spawn_root / "server.py").write_text("x = 1\n")
-        reports = _install_real_probe(monkeypatch, seeded, lambda argv: "server.py" in argv[-1])
-        _capture_popen(monkeypatch)
-
-        with pytest.raises(_StopSpawn):
-            bmod._start_app_backend_body("realspawn", _manifest("server.py"))
-
-        _assert_secrets_hidden(reports, seeded)
-
     def test_the_npm_install_spawn_cannot_read_them(
         self, spawn_root: Any, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
