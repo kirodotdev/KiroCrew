@@ -271,6 +271,7 @@ class TestTheScrubAddsNoRefusal:
             match_info={"loop_id": "loop-abc"},
             remote="test",
             json=AsyncMock(return_value={"idle_secs": 600}),
+            get=lambda key, default=None: default,
         )
         resp = await h.api_autonudge_update(request)
         assert svc.update.await_count == 1, "the save never reached the store"

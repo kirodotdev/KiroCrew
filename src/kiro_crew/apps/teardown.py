@@ -275,7 +275,7 @@ async def teardown_app_runtime(
     # call is first so the window is closed before it can open, and it runs before
     # ``disable_app`` writes the ``enabled`` flag, so a hook must not wait on that
     # flag to decide it has been switched off.
-    await notify_app_disabled(name)
+    await notify_app_disabled(name, state=state)
 
     # Stop Bot chats that have this app's servers mounted AFTER the in-process
     # workers are down.  Notify FIRST so app workers lose their authority before
@@ -530,7 +530,7 @@ async def teardown_app_runtime(
     )
 
 
-async def stop_app_hooks_for_uninstall(name: str) -> TeardownResult:
+async def stop_app_hooks_for_uninstall(name: str, *, state: Any = None) -> TeardownResult:
     """Stop *name*'s in-process code before an uninstall removes its files.
 
     The uninstall handler runs its own backend stop and deregistration, so it does
@@ -557,7 +557,7 @@ async def stop_app_hooks_for_uninstall(name: str) -> TeardownResult:
     """
     warnings: list[str] = []
     failures: list[str] = []
-    await notify_app_disabled(name)
+    await notify_app_disabled(name, state=state)
     retained = loaded_hook_manifest(name)
     try:
         result = await on_app_disable(
@@ -625,16 +625,20 @@ def unregister_app_disable_hook(app: str) -> None:
     _APP_DISABLE_HOOKS.pop(app, None)
 
 
-async def notify_app_disabled(app: str) -> None:
+async def notify_app_disabled(app: str, *, state: Any = None) -> None:
     """Tell *app* its in-process workers must stop now.
 
     Never raises: the teardown has to complete whether or not the app could stand
     its workers down, for the same reason every other step here pushes through.
 
     The app's worker auto-approve grants end FIRST, before its own hook runs, so a
-    hook that fails or stalls cannot keep one alive (``worker_auto_approve``).
+    hook that fails or stalls cannot keep one alive (``worker_auto_approve``). The
+    goal loops on its slots stop next, for the same reason (``app_loops``).
     """
     revoke_worker_auto_approve(app)
+    from kiro_crew.apps.app_loops import stop_app_loops  # noqa: PLC0415
+
+    await stop_app_loops(app, state=state)
     hook = _APP_DISABLE_HOOKS.get(app)
     if hook is None:
         return
