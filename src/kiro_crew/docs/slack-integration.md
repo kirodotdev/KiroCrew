@@ -251,7 +251,9 @@ one is for Slack only and takes effect at once.
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, each one is a button: one click sends that
-choice back to the conversation. To send several at once, open the card's ⋯ menu
+choice back to the conversation, as an answer and never as a command. In a
+thread linked to a dashboard session the choice reaches the agent word for word:
+an `@prompt`, `$skill` or quick-prompt name in it is not expanded. To send several at once, open the card's ⋯ menu
 and pick **Choose several…**, then tick them in the dialog and press Send. Once a
 card is answered its buttons give way to a line saying who chose what and when;
 a later click on it only gets a private "Already answered".
