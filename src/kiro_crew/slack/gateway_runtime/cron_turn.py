@@ -60,8 +60,8 @@ if TYPE_CHECKING:
         dataclass,
         declared_mcp_not_ready_note,
         declared_mcp_note_change,
-        effective_job_approval_mode,
         engine_attributed_model,
+        job_fire_approval_mode,
         live,
         logger,
         note_turn_landed,
@@ -421,7 +421,7 @@ async def _cron_run_sequence(
                     unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
-                        if effective_job_approval_mode(job.approval_mode) == "auto"
+                        if job_fire_approval_mode(job) == "auto"
                         else ToolApprovalPolicy.HOOK_BASED
                     ),
                     hooks=self.ctx_builder.hooks,
@@ -435,7 +435,7 @@ async def _cron_run_sequence(
                                 requester=f"cron job {job.id}, agent {step.alias}: {job.name}",
                             )
                         )
-                        if effective_job_approval_mode(job.approval_mode) == "auto"
+                        if job_fire_approval_mode(job) == "auto"
                         else self._interactive_approval(
                             "cron", requester=f"cron job {job.id}, agent {step.alias}: {job.name}"
                         )

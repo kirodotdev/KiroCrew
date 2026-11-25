@@ -370,6 +370,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/crew-oauth-bridge": "standard",
         "<crew>/crew-panels": "standard",
         "<crew>/crew-teams": "standard",
+        "<crew>/cron-grants": "standard",
         "<crew>/cron-history": "standard",
         "<crew>/cron-running": "standard",
         "<crew>/data.sqlite3": "standard",

@@ -185,6 +185,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # unsandboxed gateway reads or writes it. Deliberately NOT under ``trust/``,
     # which stays read-write for the SEL log.
     "vouched-executions",
+    # Gateway-only marker of the one-time cron grant signing pass
+    # (``cron_service.approval_grant.MIGRATION_DIR_LEAF``). Hidden so a sandbox
+    # cannot remove it and make the pass run again.
+    "cron-grants",
     # Quarantine markers for auto-improvement clones whose provisional rollback AND
     # retirement both failed. Each marker is the only durable record that a clone still
     # carrying a REFUSED, unscanned commit must never be reused, and the process it has to

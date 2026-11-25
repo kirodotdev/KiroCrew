@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.cron_service import approval_grant
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.llm_helpers import ToolApprovalPolicy
 from kiro_crew.sel import SecurityEventLog
@@ -49,8 +50,11 @@ class TestCronApprovalModeField:
 class TestCronApprovalModeGateway:
     """Gateway passes correct args to stream_and_collect based on approval_mode."""
 
-    def _run_cron_callback(self, approval_mode: str) -> dict:
-        """Invoke the real _cron_callback closure and capture stream_and_collect kwargs."""
+    def _run_cron_callback(self, approval_mode: str, *, signed: bool = True) -> dict:
+        """Invoke the real _cron_callback closure and capture stream_and_collect kwargs.
+
+        *signed* stores the gateway's grant on the job, as every gateway write does.
+        """
         from kiro_crew.slack.gateway import GatewayOrchestrator
 
         gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
@@ -88,6 +92,8 @@ class TestCronApprovalModeGateway:
             schedule=CronSchedule(kind="every", every_secs=300),
             approval_mode=approval_mode,
         )
+        if signed:
+            approval_grant.sign(job)
 
         captured_cb = None
 
@@ -121,6 +127,10 @@ class TestCronApprovalModeGateway:
         approve = captured["on_tool_approval"]
         assert asyncio.run(approve(MagicMock())) is True
 
+    def test_an_unsigned_auto_job_passes_hook_based(self) -> None:
+        captured = self._run_cron_callback("auto", signed=False)
+        assert captured["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
+
     def test_empty_mode_passes_hook_based_and_callback(self) -> None:
         captured = self._run_cron_callback("")
         assert captured["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
@@ -149,9 +159,12 @@ class TestCronApprovalModeExtraEnv:
     cron's session key."""
 
     def _run_cron_callback_capture_get_or_create(
-        self, approval_mode: str, job_env: dict | None = None
+        self, approval_mode: str, job_env: dict | None = None, *, signed: bool = True
     ) -> dict:
-        """Invoke the real _cron_callback closure and capture get_or_create kwargs."""
+        """Invoke the real _cron_callback closure and capture get_or_create kwargs.
+
+        *signed* stores the gateway's grant on the job, as every gateway write does.
+        """
         from kiro_crew.slack.gateway import GatewayOrchestrator
 
         gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
@@ -189,6 +202,8 @@ class TestCronApprovalModeExtraEnv:
             approval_mode=approval_mode,
             env=job_env or {},
         )
+        if signed:
+            approval_grant.sign(job)
 
         captured_cb = None
 
@@ -217,6 +232,11 @@ class TestCronApprovalModeExtraEnv:
     def test_auto_mode_injects_approval_mode_env_var(self) -> None:
         captured = self._run_cron_callback_capture_get_or_create("auto")
         assert captured["extra_env"] == {"KIROCREW_APPROVAL_MODE": "auto"}
+
+    def test_an_unsigned_auto_job_injects_nothing(self) -> None:
+        captured = self._run_cron_callback_capture_get_or_create("auto", signed=False)
+        assert captured["approval_policy"] == ""
+        assert captured["extra_env"] is None
 
     def test_empty_mode_does_not_inject_env_var(self) -> None:
         captured = self._run_cron_callback_capture_get_or_create("")

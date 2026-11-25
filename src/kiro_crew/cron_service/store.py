@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.cron_service import approval_grant
 from kiro_crew.cron_service.model import (
     _ALERT_AFTER_DEFAULT,
     _AUTO_PAUSE_THRESHOLD,
@@ -382,6 +383,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         person_owner_key=_guard_str("person_owner_key"),
         owner_member_id=_guard_str("owner_member_id"),
         owner_approval_mode=_guard_str("owner_approval_mode"),
+        approval_grant=_guard_str("approval_grant"),
         last_posted_hash=_guard_str("last_posted_hash"),
         consecutive_dupes=_guard_num("consecutive_dupes", 0),
         last_posted_at=_guard_num("last_posted_at", 0.0),
@@ -424,6 +426,10 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
         secret_env_resurfaced_pin=_guard_str("secret_env_resurfaced_pin"),
     )
+    # Trusted only when the gateway signed it (approval_grant). A job with no
+    # auto or owner fields never reads the key.
+    if approval_grant.carries_grant(job):
+        job.grant_held = approval_grant.holds(job)
     # Measured on what the save writes back, so a coerced field does not count.
     # Skipping the record rather than clearing the field keeps a too-deep
     # execution_context or env from running the job under one it was not given.
@@ -619,6 +625,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
     if j.owner_member_id or j.owner_approval_mode:
         record["owner_member_id"] = j.owner_member_id
         record["owner_approval_mode"] = j.owner_approval_mode
+    if j.approval_grant:
+        record["approval_grant"] = j.approval_grant
     # The per-entry ack ids follow the same rule: a job whose acks carry no id
     # (every ack before this key, and every Slack ack) writes nothing new.
     if any(j.acked_item_ids):
@@ -650,7 +658,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``user_pause_requested``, ``managed_by``, ``app_manifest_digest``,
-#: ``person_owner_key``, ``owner_member_id`` with ``owner_approval_mode``,
+#: ``person_owner_key``, ``owner_member_id`` with ``owner_approval_mode``, ``approval_grant``,
 #: ``acked_item_ids`` with ``acked_item_ids_digest``,
 #: ``project_path``, ``new_chat_per_run``, ``notify_only``, ``secret_env_resurfaced_pin``,
 #: ``on_tab_close``, ``channel_type`` with ``target_id``, ``last_error_kind``, and a non-default
@@ -671,6 +679,7 @@ _KNOWN_JOB_KEYS = frozenset(
             app_manifest_digest="-",
             person_owner_key="-",
             owner_member_id="-",
+            approval_grant="-",
             project_path="-",
             new_chat_per_run=True,
             notify_only=True,

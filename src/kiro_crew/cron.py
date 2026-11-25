@@ -910,6 +910,10 @@ class CronService:
                 staged = copy.copy(job)
                 prior = dict(staged.__dict__)
                 apply_job_update(staged, kwargs, chat_folder_out, resolved_project_path)
+                # An owner's switch to auto through this write: the save signs it
+                # (cron_service.approval_grant).
+                if kwargs.get("approval_mode") == "auto":
+                    staged.grant_held = True
                 edits = {
                     name: value
                     for name, value in staged.__dict__.items()

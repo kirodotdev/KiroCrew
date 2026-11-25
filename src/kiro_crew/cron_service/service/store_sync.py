@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterator
 
+from kiro_crew.cron_service import approval_grant
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.readers import enabled_count_from_disk
 from kiro_crew.cron_service.store import (
@@ -492,6 +493,12 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
         raise self._unreadable_error()
     self._dir.mkdir(parents=True, exist_ok=True)
     written = self._jobs if jobs is None else jobs
+    # Re-sign each job this process trusts, so a gateway change to who it runs
+    # as (adopt, release, update) keeps its grant. A job not held keeps the MAC
+    # it was loaded with: a process without the key must not erase a valid one.
+    for job in written:
+        if job.grant_held:
+            approval_grant.sign(job)
     document = encode_store(
         written,
         version=self._store_version,

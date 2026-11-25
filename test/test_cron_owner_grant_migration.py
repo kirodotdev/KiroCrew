@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.cron import CronService
-from kiro_crew.cron_service import owner_grant
+from kiro_crew.cron_service import approval_grant, owner_grant
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
 
 _MEMBER = "m-slack-1"
@@ -79,6 +79,9 @@ def _as_job(row: dict) -> SimpleNamespace:
         approval_mode=row.get("approval_mode", ""),
         owner_member_id=row.get("owner_member_id", ""),
         owner_approval_mode=row.get("owner_approval_mode", ""),
+        session_key=row.get("session_key", ""),
+        agent_id=row.get("agent_id", ""),
+        approval_grant=row.get("approval_grant", ""),
     )
 
 
@@ -86,6 +89,8 @@ def test_a_job_its_bot_made_gets_the_bots_mode(tmp_path, _world) -> None:
     job_id = _bot_job(tmp_path)
 
     assert owner_grant.migrate_owner_grants(tmp_path, _world["cfg"]) == [job_id]
+    # The start's next step signs the stamped grant (approval_grant).
+    assert approval_grant.sign_existing_grants(tmp_path) == [job_id]
 
     row = _row(tmp_path, job_id)
     assert (row["owner_member_id"], row["owner_approval_mode"]) == (_MEMBER, "trust")

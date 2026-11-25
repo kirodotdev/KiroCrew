@@ -19,6 +19,7 @@ import uuid
 from typing import Any
 
 from kiro_crew import cron_script
+from kiro_crew.cron_service import approval_grant
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
 from kiro_crew.cron_service.identity import agent_sequence_dispatches
 from kiro_crew.cron_service.model import (
@@ -928,6 +929,14 @@ def effective_job_approval_mode(approval_mode: str) -> str:
     if approval_mode == "auto" and not cron_job_auto_permitted():
         return ""
     return approval_mode
+
+
+def job_fire_approval_mode(job: Any) -> str:
+    """The mode *job* fires with: :func:`effective_job_approval_mode` of its own mode,
+    or ``""`` unless the gateway signed the job's grant (``approval_grant.holds``)."""
+    if not approval_grant.holds(job):
+        return ""
+    return effective_job_approval_mode(getattr(job, "approval_mode", ""))
 
 
 def auto_job_approver(fallback: Any, holds: Any = None) -> Any:

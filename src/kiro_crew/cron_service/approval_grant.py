@@ -1,0 +1,171 @@
+"""A scheduled job's auto approval counts only when the gateway signed it.
+
+Two stored fields let a job's fire auto-approve its tool calls: the job's own
+``approval_mode == "auto"`` (the owner's switch) and the Bot owner grant
+(``owner_member_id`` with ``owner_approval_mode``, see ``owner_grant``). Each
+gateway write that sets either one also stores ``approval_grant``: an
+HMAC-SHA256 over who the job runs as and those approval fields
+(:data:`_SIGNED_FIELDS`). At fire time the grant counts only while that MAC
+matches (:func:`holds`).
+
+The key comes from the persisted dashboard token-signing key under a label of
+its own. That key file is masked in every sandbox, so a process in a sandbox
+cannot sign. A record written or edited by hand, or a MAC copied from another
+job, therefore matches nothing: the job keeps loading and running, but it fires
+interactive (every tool call asks). Nothing is deleted, refused or rewritten on
+load.
+
+Jobs stored before this field existed get their MAC once, at start, from
+:func:`sign_existing_grants`. Its marker lives in a directory the sandbox
+hides (:data:`MIGRATION_DIR_LEAF`), so the pass cannot be made to run again.
+
+shortcut: the MAC covers who the job runs as and its approval fields, not its
+message or command; the job store itself is still sandbox-writable on Linux.
+Upgrade when the store moves into a sealed directory.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+# The cron channel every cron_service owner logs on.
+logger = logging.getLogger("kiro_crew.cron")
+
+_MAC_LABEL = b"kiro-crew cron approval grant v1"
+
+#: The job fields the MAC covers, in signing order.
+_SIGNED_FIELDS = (
+    "id",
+    "approval_mode",
+    "owner_member_id",
+    "owner_approval_mode",
+    "session_key",
+    "agent_id",
+)
+
+#: The data-home directory holding the one-time signing pass's marker. Hidden in
+#: every sandbox (``sandbox_leaves._CREW_HIDDEN_LEAVES``).
+MIGRATION_DIR_LEAF = "cron-grants"
+#: The marker file :func:`sign_existing_grants` writes once its pass ran.
+MIGRATION_MARKER = "signed"
+
+
+def _key() -> bytes | None:
+    """The grant MAC key, or ``None`` when the token-signing key is not persisted."""
+    try:
+        from kiro_crew.dashboard.token_secret import get_persisted_secret
+
+        secret = get_persisted_secret()
+    except Exception:
+        logger.debug("cron approval grant: no persisted signing key", exc_info=True)
+        return None
+    return hmac.new(secret, _MAC_LABEL, hashlib.sha256).digest()
+
+
+def _value(obj: Any, name: str) -> str:
+    """Field *name* of a store record (dict) or a ``CronJob``; a non-string reads as ""."""
+    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, "")
+    return value if isinstance(value, str) else ""
+
+
+def carries_grant(obj: Any) -> bool:
+    """Whether *obj* stores an approval grant: its own ``auto`` or a Bot owner grant."""
+    return (
+        _value(obj, "approval_mode") == "auto"
+        or bool(_value(obj, "owner_member_id"))
+        or bool(_value(obj, "owner_approval_mode"))
+    )
+
+
+def mac(obj: Any) -> str | None:
+    """The hex MAC of *obj*'s signed fields, or ``None`` when there is no key."""
+    key = _key()
+    if key is None:
+        return None
+    text = json.dumps([_value(obj, f) for f in _SIGNED_FIELDS], separators=(",", ":"))
+    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def holds(obj: Any) -> bool:
+    """Whether *obj* stores a grant AND the gateway signed exactly these fields."""
+    if not carries_grant(obj):
+        return False
+    stored = _value(obj, "approval_grant")
+    if not stored:
+        return False
+    expected = mac(obj)
+    if expected is None:
+        return False
+    return hmac.compare_digest(stored, expected)
+
+
+def sign(job: Any) -> None:
+    """Store the gateway's MAC on *job* (or clear it when it carries no grant).
+
+    Marks *job* as held by this process (``CronJob.grant_held``). A process with
+    no persisted key writes "" here, so the job fires interactive.
+    """
+    job.approval_grant = (mac(job) or "") if carries_grant(job) else ""
+    job.grant_held = True
+
+
+def sign_record(record: dict[str, Any]) -> bool:
+    """Store the gateway's MAC on a raw store *record*; whether it wrote one."""
+    if not carries_grant(record):
+        record["approval_grant"] = ""
+        return False
+    signed = mac(record)
+    record["approval_grant"] = signed or ""
+    return bool(signed)
+
+
+def sign_existing_grants(store_dir: Path) -> list[str]:
+    """Sign each stored grant that predates ``approval_grant``, once. Never raises.
+
+    Runs at start, after ``owner_grant.migrate_owner_grants``. Skipped while the
+    marker under :data:`MIGRATION_DIR_LEAF` exists. With no persisted key it logs
+    and returns without the marker, so the next start tries again. Returns the
+    signed ids.
+    """
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
+
+    marker_dir = store_dir / MIGRATION_DIR_LEAF
+    marker = marker_dir / MIGRATION_MARKER
+    path = store_dir / _CRONS_FILE
+    try:
+        if marker.exists():
+            return []
+        if _key() is None:
+            logger.warning(
+                "Stored cron approval grants were not signed: no persisted signing key; "
+                "the next start tries again"
+            )
+            return []
+        signed: list[str] = []
+        if path.is_file():
+            with cron_store_lock(store_dir):
+                data = json.loads(path.read_bytes())
+                records = data.get("jobs") if isinstance(data, dict) else None
+                if not isinstance(records, list):
+                    return []
+                for record in records:
+                    if not isinstance(record, dict) or not carries_grant(record):
+                        continue
+                    if holds(record):
+                        continue
+                    if sign_record(record):
+                        signed.append(str(record.get("id") or ""))
+                if signed:
+                    atomic_write(path, json.dumps(data, indent=2))
+        marker_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write(marker, "1\n")
+        return signed
+    except Exception:
+        logger.warning("Stored cron approval grants were not signed", exc_info=True)
+        return []

@@ -309,6 +309,15 @@ class CronJob:
     # the Bot's live Profile, so the job never runs above either. "" = no grant.
     owner_member_id: str = ""
     owner_approval_mode: str = ""
+    # The gateway's HMAC over who the job runs as and its approval fields
+    # (``cron_service.approval_grant``). ``approval_mode == "auto"`` and the
+    # owner grant above count at fire time only while it matches. "" = unsigned.
+    approval_grant: str = ""
+    # In-memory only, never written by ``job_record``: this process trusts the
+    # job's grant, because it verified ``approval_grant`` at load or a gateway
+    # write set the grant. A save re-signs such a job. An init field, so
+    # ``dataclasses.replace`` copies carry it.
+    grant_held: bool = field(default=False, compare=False, repr=False)
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)

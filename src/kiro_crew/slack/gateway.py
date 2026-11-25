@@ -158,6 +158,7 @@ from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, r
 from kiro_crew.cron_service.fields import (  # noqa: F401
     auto_job_approver,
     effective_job_approval_mode,
+    job_fire_approval_mode,
 )
 from kiro_crew.cron_service.grant_resurface import resurface_stale_grant
 from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret

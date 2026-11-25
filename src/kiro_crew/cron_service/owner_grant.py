@@ -32,9 +32,9 @@ it, with the Bot's Profile mode at that moment.
 
 Anything missing, unreadable or different answers "no grant", which is today's
 behaviour: the call goes to the approval prompt. A held Bot limit still reaches
-the prompt (``fields.auto_job_approver``). ``crons.json`` is a protected file an
-agent cannot write, and a forged stored mode could only lift a job to what the
-Bot's live Profile already gives its worker.
+the prompt (``fields.auto_job_approver``). A stored grant counts only when the
+gateway signed it (``approval_grant``), and even a signed one could only lift a
+job to what the Bot's live Profile already gives its worker.
 
 shortcut: only ``trust`` carries. A ``trust_reads`` Profile stores its mode but
 the job keeps asking, because the cron turn has no read-only auto-approve rung.
@@ -108,8 +108,12 @@ def owner_grant_holds(job: Any, execution: Any, config: Any) -> bool:
     *execution* is the record this fire runs (after the swap to the Bot's
     worker) and *config* the live configuration.
     """
+    from kiro_crew.cron_service import approval_grant
+
     owner = getattr(job, "owner_member_id", "") or ""
     if not owner or getattr(job, "owner_approval_mode", "") != _CARRIED_MODE:
+        return False
+    if not approval_grant.holds(job):
         return False
     if execution is None or config is None:
         return False
@@ -133,12 +137,12 @@ def owner_grant_holds(job: Any, execution: Any, config: Any) -> bool:
 def fire_approval_mode(job: Any, execution: Any, config: Any) -> str:
     """The mode a single-agent fire of *job* runs with: ``"auto"`` or ``""``.
 
-    The job's own ``auto`` (the owner's switch, re-checked against policy), else
-    its Bot grant when :func:`owner_grant_holds`.
+    The job's own ``auto`` (the owner's switch, signed by the gateway and
+    re-checked against policy), else its Bot grant when :func:`owner_grant_holds`.
     """
-    from kiro_crew.cron_service.fields import effective_job_approval_mode
+    from kiro_crew.cron_service.fields import job_fire_approval_mode
 
-    if effective_job_approval_mode(getattr(job, "approval_mode", "")) == "auto":
+    if job_fire_approval_mode(job) == "auto":
         return "auto"
     return "auto" if owner_grant_holds(job, execution, config) else ""
 

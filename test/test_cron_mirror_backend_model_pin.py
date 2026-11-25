@@ -31,6 +31,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.agent_sdk import backends as sdk_backends
 from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.cron_service import approval_grant
 from kiro_crew.llm_helpers import ToolApprovalPolicy
 from kiro_crew.providers.acp import AcpProvider
 
@@ -182,6 +183,8 @@ async def test_a_refused_pin_is_visible_and_not_billed(backend, pin, build, tmp_
         model=pin,
         approval_mode="auto",
     )
+    # Signed as every gateway write of an auto job is (approval_grant).
+    approval_grant.sign(job)
     calls: list[str] = []
 
     async def _get_or_create(*_args, **kwargs):

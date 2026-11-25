@@ -23,6 +23,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import milestones
+from kiro_crew.cron_service import approval_grant
 from kiro_crew.cron_service.fields import (
     _validate_cron_string_fields,
     check_delivery_pin,
@@ -263,6 +264,9 @@ def _persist_add_if_absent_locked(
             return False
         bind_cron_memory(job)
         self._drop_owner_if_parent_gone(job)
+        # A grant this write set: the save below signs it (approval_grant).
+        if approval_grant.carries_grant(job):
+            job.grant_held = True
         self._jobs.append(job)
         # A failed save must leave the list as disk still holds it: readers
         # see ``self._jobs`` itself, so a rejected row would be fired by the
@@ -322,6 +326,9 @@ def _persist_add_locked(self: CronService, job: CronJob) -> None:
         self._sync_for_write()
         bind_cron_memory(job)
         self._drop_owner_if_parent_gone(job)
+        # A grant this write set: the save below signs it (approval_grant).
+        if approval_grant.carries_grant(job):
+            job.grant_held = True
         self._jobs.append(job)
         # Roll the append back on a failed save, for the reason
         # :meth:`_persist_add_if_absent_locked` spells out: a row the store

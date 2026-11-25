@@ -45,6 +45,7 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
     from kiro_crew.boot_timing import timed_step
     from kiro_crew.config.loader import data_home
     from kiro_crew.context import reset_memory_caches
+    from kiro_crew.cron_service.approval_grant import sign_existing_grants
     from kiro_crew.cron_service.identity import (
         migrate_legacy_member_schedules,
         migrate_member_named_template_schedules,
@@ -112,6 +113,13 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
                     stamped = migrate_owner_grants(data_home())
                 if stamped:
                     logger.info("Gave %d Bot job(s) their Bot's approval mode", len(stamped))
+                # Then, once ever, the gateway's signature on each stored grant
+                # from before jobs carried one (cron_service.approval_grant).
+                # Never raises.
+                with timed_step("sign_existing_cron_grants"):
+                    signed = sign_existing_grants(data_home())
+                if signed:
+                    logger.info("Signed the approval grant of %d cron job(s)", len(signed))
                 if startup.stopped:
                     return False
                 with timed_step("apply_pending_member_restores"):
