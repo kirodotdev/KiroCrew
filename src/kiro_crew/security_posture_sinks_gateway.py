@@ -1138,4 +1138,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credentials) whole before URLs are shortened and the excerpt is cut, so "
         "a credential inside a long URL never reaches the excerpt.",
     ),
+    (
+        "A Bot's held limits on its Profile tab",
+        "mate_held_rules.py",
+        "The stored text of each limit a Bot's move held for a person, on its way "
+        "to the Bot's Profile tab. The text can quote an old permission rule's "
+        "match, so each one passes the "
+        "exfiltration-URL and credential redactors (`redact`) before it leaves the "
+        "record, and a release compares the list it was sent with that same view.",
+    ),
 )

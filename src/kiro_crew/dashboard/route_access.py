@@ -110,6 +110,13 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ),
     # Gateway auth middleware: 403 without a token (tips.api_tips_exploratory); reads only.
     ("GET", "/api/tips/exploratory"): RouteAccess("tips.exploratory.read", UNSTABLE),
+    # Owner dashboard or Shared Crew teammate only: 404 for an app token, 403 for an
+    # internal caller (dashboard/handlers/member_held_limits.py).
+    ("GET", "/api/members/{slug}/held-limits"): RouteAccess("members.held_limits.read", UNSTABLE),
+    # Same callers as the read; ends every held limit the page showed.
+    ("POST", "/api/members/{slug}/held-limits/release"): RouteAccess(
+        "members.held_limits.release", UNSTABLE
+    ),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),

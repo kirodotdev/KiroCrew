@@ -52,6 +52,14 @@ export interface CrewmateExportPreview {
   fingerprint: string
 }
 
+/** One held limit of a Bot, as `GET /api/members/{slug}/held-limits` answers it.
+ *  `text` is stored text; `capability` names what it covers (`*`: every action,
+ *  `none`: a hook that does not run on its worker). */
+export interface MemberHeldLimit {
+  text: string
+  capability: string
+}
+
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
  *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
  *  spread verbatim from the backend dataclass; only the fields the page reads
@@ -500,6 +508,15 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
       if (!r.ok) throw await toApiError(r)
       return r.blob()
     },
+    // A Bot's held limits (owner or Shared Crew teammate): the limits its upgrade
+    // move could not apply as written, which make it ask a person first.
+    memberHeldLimits: (slug: string, member: string) =>
+      fetch(
+        '/api/members/' + encodeURIComponent(slug) + '/held-limits?member=' + encodeURIComponent(member),
+      ).then(j) as Promise<{ limits: MemberHeldLimit[]; kiro_cli: boolean }>,
+    // Ends every one of them, only while they are still `limits` (else 409).
+    memberHeldLimitsRelease: (slug: string, member: string, limits: MemberHeldLimit[]) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/held-limits/release', { member, limits }).then(j) as Promise<{ released: MemberHeldLimit[] }>,
     // A member's recent activity pointers (real recorded signal only: session
     // participations and routing decisions). `member` is the exact crew name —
     // slugs are lossy, so the backend filters the shared log by exact name.

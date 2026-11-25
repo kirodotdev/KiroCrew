@@ -9,6 +9,7 @@ import Tablist, { type TablistTab } from '../../components/Tablist'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
 import CrewScheduleList from './CrewScheduleList'
+import CrewHeldLimits from './CrewHeldLimits'
 // Loaded on first open, so the export view stays out of the profile card's chunk.
 const CrewExportView = lazy(() => import('./CrewExportView'))
 import { cn } from '../../lib/utils'
@@ -545,6 +546,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     <p className="text-[13px] text-muted">{t('pages.membersPage.profile_no_description')}</p>
                   ) : null}
                 </section>
+
+                <CrewHeldLimits member={p.member} schedules={p.schedules} schedulesLoading={p.schedulesLoading} schedulesError={p.schedulesError} />
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />

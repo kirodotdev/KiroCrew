@@ -13,7 +13,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
-from kiro_crew.dashboard.handlers import agent_templates, member_export
+from kiro_crew.dashboard.handlers import agent_templates, member_export, member_held_limits
 from kiro_crew.dashboard.handlers.agent_catalog import api_agent_catalog
 
 
@@ -111,6 +111,14 @@ def register(app: web.Application) -> None:
     # An app's wake (`permissions.bots: wake`, handlers/members_app.py): app tokens only.
     app.router.add_post("/api/members/{slug}/wake", handlers.api_member_wake)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
+    # A Bot's held limits and their release (owner or Shared Crew teammate only).
+    app.router.add_get(
+        "/api/members/{slug}/held-limits", member_held_limits.api_member_held_limits_get
+    )
+    app.router.add_post(
+        "/api/members/{slug}/held-limits/release",
+        member_held_limits.api_member_held_limits_release,
+    )
     # Export one crewmate as a .crewmate file (rfc-crewmate-share.md §5.3): owner-only.
     app.router.add_post("/api/members/{slug}/export", member_export.api_member_export)
     app.router.add_post(
