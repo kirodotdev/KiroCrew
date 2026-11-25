@@ -97,8 +97,11 @@ async def gateway(monkeypatch):
         yield served
 
 
-async def _two_ports(monkeypatch, auth, *, ipv6=False):
-    """The front of the chain with *auth* as its token auth, on both ports."""
+async def _two_ports(monkeypatch, auth, *, ipv6=False, inner=()):
+    """The front of the chain with *auth* as its token auth, on both ports.
+
+    *inner* holds the layers a test puts inside token auth.
+    """
     monkeypatch.setattr(crew_api_models, "usable_models", lambda: [])
     ref = entry_gate.GateRef()
     app = web.Application(
@@ -107,6 +110,7 @@ async def _two_ports(monkeypatch, auth, *, ipv6=False):
             relay_header_strip_middleware,
             entry_gate.entry_gate_middleware,
             auth,
+            *inner,
         ]
     )
     app["state"] = SimpleNamespace(owner_id=OWNER)
@@ -482,6 +486,127 @@ async def test_a_wrong_method_on_a_crew_api_route_is_405_on_both_ports(
     # Without a bearer the gate's own 401 comes first.
     bare = await gateway.send(path, entry=True, method=method)
     assert await _error(bare) == (401, "authentication_error", "invalid_token")
+
+
+@pytest_asyncio.fixture
+async def answering_gateway(monkeypatch):
+    """The gateway fixture with the dashboard chain's real ``spa_fallback`` inside token auth."""
+    from config_pending_helpers import dashboard_refusal_layer
+
+    served = _two_ports(monkeypatch, token_auth_middleware(), inner=[dashboard_refusal_layer()])
+    async for gateway in served:
+        yield gateway
+
+
+_KEPT = "/v1/responses/resp_" + "1" * 32
+_NOBODY = "/v1/responses/resp_" + "0" * 32
+
+
+async def _not_supported(resp) -> tuple[int, str, str, str | None, str | None]:
+    """A 405 as the contract words it, with the router's ``Allow`` value."""
+    body = await resp.json()
+    assert body["error"]["message"] == "A method this API does not support."
+    assert body["error"]["param"] is None
+    return (
+        *await _error(resp),
+        resp.headers.get("Allow"),
+        resp.headers.get("Crew-API-Version"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", [False, True], ids=["own port", "entry port"])
+@pytest.mark.parametrize(
+    ("method", "path", "allow"),
+    [
+        ("DELETE", _KEPT, "GET,HEAD"),
+        ("DELETE", _NOBODY, "GET,HEAD"),
+        ("DELETE", "/v1/responses/not-an-id", "GET,HEAD"),
+        ("DELETE", _KEPT + "/input_items", "GET,HEAD"),
+        ("GET", "/v1/responses", "POST"),
+        ("POST", MODELS, "GET,HEAD"),
+        ("DELETE", "/v1/crew/info", "GET,HEAD"),
+    ],
+)
+async def test_a_method_a_crew_api_route_does_not_serve_is_the_contracts_405(
+    answering_gateway, entry, method, path, allow
+) -> None:
+    owner = _bearer(_session_token(OWNER))
+    resp = await answering_gateway.send(path, entry=entry, method=method, headers=owner)
+    assert await _not_supported(resp) == (
+        405,
+        "invalid_request_error",
+        "method_not_supported",
+        allow,
+        "1.0",
+    )
+    assert "WWW-Authenticate" not in resp.headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", [False, True], ids=["own port", "entry port"])
+async def test_deleting_a_response_answers_the_same_whether_the_id_names_one(
+    answering_gateway, entry
+) -> None:
+    """No record is read: the router answers before any handler runs."""
+    owner = _bearer(_session_token(OWNER))
+    seen = []
+    for path in (_KEPT, _NOBODY):
+        resp = await answering_gateway.send(path, entry=entry, method="DELETE", headers=owner)
+        body = await resp.json()
+        body["error"].pop("request_id")
+        seen.append((resp.status, body, resp.headers["Allow"]))
+    assert seen[0] == seen[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", [False, True], ids=["own port", "entry port"])
+@pytest.mark.parametrize("path", [_KEPT, _NOBODY])
+async def test_a_caller_without_a_credential_is_refused_before_the_405(
+    answering_gateway, entry, path
+) -> None:
+    resp = await answering_gateway.send(path, entry=entry, method="DELETE")
+    assert await _error(resp) == (401, "authentication_error", "invalid_token")
+    assert "Allow" not in resp.headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [_KEPT, _NOBODY])
+@pytest.mark.parametrize(
+    ("entry", "refusal"),
+    [
+        (False, (403, "permission_error", "owner_only")),
+        # An app credential is taken from this machine alone, and the entry port forwards.
+        (True, (401, "authentication_error", "invalid_token")),
+    ],
+    ids=["own port", "entry port"],
+)
+async def test_an_app_credential_is_refused_before_the_405(
+    answering_gateway, store, clock, audit, path, entry, refusal  # noqa: F811
+) -> None:
+    app = _bearer(_grant(store, clock)["access_token"])
+    resp = await answering_gateway.send(path, entry=entry, method="DELETE", headers=app)
+    assert await _error(resp) == refusal
+    assert "Allow" not in resp.headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "allow"),
+    [("GET", "/v1/chat/completions", "POST"), ("DELETE", "/api/health", "GET,HEAD")],
+    ids=["the frozen /v1 route", "a dashboard route"],
+)
+async def test_a_route_outside_the_crew_api_contract_keeps_the_routers_405(
+    answering_gateway, method, path, allow
+) -> None:
+    # A dashboard session in its cookie: these two routes do not read a bearer.
+    port = answering_gateway.client.port
+    owner = {"Cookie": f"mc_token_{port}={_session_token(OWNER)}"}
+    resp = await answering_gateway.send(path, entry=False, method=method, headers=owner)
+    assert (resp.status, await resp.text()) == (405, "405: Method Not Allowed")
+    assert resp.headers["Allow"] == allow
+    assert "Crew-API-Version" not in resp.headers
+    assert "X-Request-Id" not in resp.headers
 
 
 @pytest.mark.asyncio
