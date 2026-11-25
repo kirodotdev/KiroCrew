@@ -528,7 +528,17 @@ every supported platform's `pid_max`
 several; `test/test_update_provider.py::_UNALLOCATABLE_PID` is the same value), or
 neutralise the killer
 and assert the ordering instead
-(`test/test_platform_compat_kill_reap.py::TestKillAndReap`). The first spelling IS gated:
+(`test/test_platform_compat_kill_reap.py::TestKillAndReap`).
+Neutralising the killer means every host READ that picks the kill path too, not only the
+signal calls: `pgroup_of`, `pgroup_of_leader`, `pgroup_exists`, `pid_exists` and
+`process_start_time` answer from the real table for a fabricated pid. The forwarder
+reclaim asks `pgroup_of(pid) == pid` and, when a real group leader owns the number, takes
+a group path the test never stubbed: it signalled that stranger's group with the real
+`kill_process_group` and polled a group that never went, so
+`test_windows_kill_is_pinned_to_the_recorded_start_time` read `not_gone` on four macOS PRs
+at once (pid 4242). Stub the branch-picking read too
+(`test/test_instances_orphan_reclaim.py::_fabricated_pid_leads_no_group`) and make the
+unstubbed killer raise, so a new path fails loudly instead of signalling the runner. The first spelling IS gated:
 `semgrep/mock-pid-allocatable.yaml` (`kirocrew.mock-pid-allocatable`), which
 `code-review.yml`'s SAST job runs diff-scoped and blocking, refuses a literal below
 `2**32` assigned to `.pid` or passed as `pid=` to a `Mock` / `SimpleNamespace`
