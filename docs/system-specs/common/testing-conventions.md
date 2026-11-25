@@ -179,7 +179,12 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   grep endpoint's), or set the search path with `monkeypatch.setenv("PATH",
   str(tmp_path))` and plant the tool there; a test that needs a real interpreter names
   `sys.executable`. The suite has no autouse `PATH` floor (real `git`, `bash` and `node`
-  tests need the host's), so no shared fixture covers this. Run a host-tool test once
+  tests need the host's), so no shared fixture covers this. The one exception is the
+  service suites: a unit or plist render reads the installer's `$PATH` split on `:`,
+  and a Windows runner's `PATH` split that way gives fragments such as `\\ghcup\bin;C`
+  that resolve as UNC shares (D10), so every suite that renders one imports
+  `_posix_installer_path` from `test/service_helpers.py` (or calls
+  `pin_posix_installer_path`), which pins a POSIX `PATH` on Windows. Run a host-tool test once
   with the tool off `PATH`. #35547 fixed a rewriter spec whose verdict turned on an
   `http` program being on `PATH`.
   [What the host lends the suite](#what-the-host-lends-the-suite-and-must-not).
