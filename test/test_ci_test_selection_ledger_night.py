@@ -456,6 +456,11 @@ def test_the_first_day_listed_is_two_days_back_or_the_one_a_person_gave(tmp_path
 
 
 # -- the workflow -----------------------------------------------------------
+#
+# Each lookup below is by role (the job that runs the pass script, the step
+# that runs it, the upload of the ledger's artifact), and each assertion is of
+# a property of that role. A job or a step added for another purpose changes
+# none of them.
 
 
 def _document() -> dict[str, Any]:
@@ -467,15 +472,40 @@ def _triggers() -> dict[str, Any]:
     return doc.get("on") or doc[True]
 
 
+def _runs_the_pass(step_: dict[str, Any]) -> bool:
+    return f"scripts/{Path(night.__file__).name}" in str(step_.get("run", ""))
+
+
+def _ledger_job() -> dict[str, Any]:
+    """The job that runs the pass script: the script is run in one place."""
+    found = [job for job in _document()["jobs"].values() if any(map(_runs_the_pass, job["steps"]))]
+    assert len(found) == 1, "the pass script must be run by exactly one job"
+    return found[0]
+
+
 def _steps() -> list[dict[str, Any]]:
-    jobs = _document()["jobs"]
-    assert len(jobs) == 1
-    return next(iter(jobs.values()))["steps"]
+    return _ledger_job()["steps"]
 
 
 def _pass_step() -> dict[str, Any]:
-    found = [s for s in _steps() if "ci_test_selection_ledger_night.py" in str(s.get("run", ""))]
-    assert len(found) == 1
+    found = [one for one in _steps() if _runs_the_pass(one)]
+    assert len(found) == 1, "the pass script must be run by exactly one step"
+    return found[0]
+
+
+def _all_steps() -> list[dict[str, Any]]:
+    return [one for job in _document()["jobs"].values() for one in job.get("steps") or []]
+
+
+def _ledger_upload() -> dict[str, Any]:
+    """The upload of the ledger's artifact: one writer of that name in the whole workflow."""
+    found = [
+        one
+        for one in _all_steps()
+        if "actions/upload-artifact@" in str(one.get("uses", ""))
+        and one.get("with", {}).get("name") == night.ARTIFACT
+    ]
+    assert len(found) == 1, "the ledger artifact must have exactly one writer"
     return found[0]
 
 
@@ -491,14 +521,18 @@ def _ticks() -> list[tuple[int, int]]:
 
 def test_only_a_schedule_or_a_person_starts_it_and_every_permission_is_read() -> None:
     assert set(_triggers()) == {"schedule", "workflow_dispatch"}
+    # The scopes the ledger's reads need, and no other: the token every job gets.
     assert _document()["permissions"] == {
         "contents": "read",
         "actions": "read",
         "checks": "read",
         "issues": "read",
     }
-    job = next(iter(_document()["jobs"].values()))
-    assert "permissions" not in job and job["runs-on"] == "ubuntu-latest"
+    # No job widens that for itself.
+    for name, job in _document()["jobs"].items():
+        assert set((job.get("permissions") or {}).values()) <= {"read"}, name
+    job = _ledger_job()
+    assert job["runs-on"] == "ubuntu-latest"
     # Only the repository whose runs the ledger reads: a fork has none of its own to read.
     assert job["if"] == f"github.repository == '{ledger.shadow.REPO}'"
 
@@ -506,10 +540,11 @@ def test_only_a_schedule_or_a_person_starts_it_and_every_permission_is_read() ->
 def test_two_passes_never_overlap_and_a_running_one_is_not_cancelled() -> None:
     group = _document()["concurrency"]
     assert group["cancel-in-progress"] is False and "${{" not in group["group"]
+    # No job leaves that group for one of its own.
+    assert all("concurrency" not in job for job in _document()["jobs"].values())
     # A tick finds the one before it ended: a pass that outlasts its timeout is killed.
-    job = next(iter(_document()["jobs"].values()))
     minutes = sorted(hour * 60 + minute for hour, minute in _ticks())
-    assert min(b - a for a, b in zip(minutes, minutes[1:])) >= job["timeout-minutes"]
+    assert min(b - a for a, b in zip(minutes, minutes[1:])) >= _ledger_job()["timeout-minutes"]
 
 
 def test_the_ticks_are_bounded_passes_in_the_quiet_hours() -> None:
@@ -531,13 +566,14 @@ def test_the_ticks_are_bounded_passes_in_the_quiet_hours() -> None:
 
 
 def test_the_pass_never_waits_and_is_given_only_what_the_script_reads() -> None:
-    text = WORKFLOW.read_text(encoding="utf-8")
-    # The waiting `gh` wrapper is not installed: a pass under the reserve ends at once.
-    assert "gh-rate-limit" not in yaml.safe_dump(_document())
-    step_ = _pass_step()
+    steps, step_ = _steps(), _pass_step()
+    before = steps[: steps.index(step_)]
+    # The waiting `gh` wrapper is not put in front of the pass: under the reserve it ends at once.
+    assert "gh-rate-limit" not in yaml.safe_dump(before + [step_])
     assert step_["run"].strip() == f"python3 scripts/{Path(night.__file__).name} --out ledger"
-    assert "continue-on-error" not in text
-    for one in _steps():
+    # Neither the pass nor the upload may fail without failing the job.
+    assert "continue-on-error" not in step_ and "continue-on-error" not in _ledger_upload()
+    for one in _all_steps():
         assert "${{" not in str(one.get("run", "")), one
     read = set(re.findall(r'env(?:\.get\(|\[)"([A-Z_]+)"', Path(night.__file__).read_text()))
     given = set(step_["env"]) | {"GITHUB_REPOSITORY", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT"}
@@ -547,24 +583,23 @@ def test_the_pass_never_waits_and_is_given_only_what_the_script_reads() -> None:
     assert {step_["env"][name] for name in ("SINCE", "RESTORE_RUN", "START_EMPTY")} == {
         "${{ inputs.%s }}" % name for name in inputs
     }
-    assert "secrets." not in text
+    assert "secrets." not in yaml.safe_dump(_document()["jobs"])
     # The gh version is in the log before the pass that depends on it.
-    names = [str(one.get("run", "")).strip() for one in _steps()]
-    assert names.index("gh --version") < _steps().index(step_)
+    assert any(str(one.get("run", "")).strip() == "gh --version" for one in before)
 
 
 def test_the_ledger_is_uploaded_only_on_the_pass_word_and_kept_as_long_as_its_rows() -> None:
-    steps = _steps()
-    uploads = [s for s in steps if "actions/upload-artifact@" in str(s.get("uses", ""))]
-    assert len(uploads) == 1 and steps[-1] is uploads[0]
-    upload = uploads[0]
+    steps, step_, upload = _steps(), _pass_step(), _ledger_upload()
+    # In the pass's own job and after it, so the word it waits on is that job's.
+    assert upload in steps and steps.index(step_) < steps.index(upload)
     # Only on the output the script writes when what it left may be continued: a
     # pass that failed, or kept out of a low pool, writes none.
-    assert "if" not in _pass_step()
-    assert upload["if"] == f"steps.{_pass_step()['id']}.outputs.upload == 'true'"
+    assert "if" not in step_
+    assert upload["if"] == f"steps.{step_['id']}.outputs.upload == 'true'"
     assert Path(night.__file__).read_text(encoding="utf-8").count('"upload=true\\n"') == 1
-    assert upload["with"]["name"] == night.ARTIFACT
-    assert upload["with"]["path"].rstrip("/") == _pass_step()["run"].split()[-1]
+    # No other step carries the pass's id, so the word cannot come from elsewhere.
+    assert [one.get("id") for one in steps].count(step_["id"]) == 1
+    assert upload["with"]["path"].rstrip("/") == step_["run"].split()[-1]
     assert upload["with"]["if-no-files-found"] == "error"
     assert upload["with"]["retention-days"] == night.KEEP_DAYS
     assert WORKFLOW.name == night.WORKFLOW
@@ -579,13 +614,20 @@ def test_every_action_is_pinned_as_elsewhere_and_the_checkout_keeps_no_credentia
             for one in job.get("steps") or []:
                 name, _, ref = str(one.get("uses", "")).partition("@")
                 pinned.setdefault(name, set()).add(ref)
-    for one in _steps():
+    for one in _all_steps():
         if "uses" not in one:
             continue
         name, _, ref = one["uses"].partition("@")
         assert re.fullmatch(r"[0-9a-f]{40}", ref) and ref in pinned[name], one["uses"]
         if name == "actions/checkout":
             assert one["with"]["persist-credentials"] is False
-            # Every directory the pass imports from is checked out.
-            sparse = one["with"]["sparse-checkout"].split()
-            assert {"scripts", ".github/scripts"} <= set(sparse)
+    # The pass's job checks out every directory the pass imports from, before the pass.
+    steps = _steps()
+    checkouts = [
+        one
+        for one in steps[: steps.index(_pass_step())]
+        if str(one.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkouts, "the pass's job must check the scripts out before the pass"
+    for one in checkouts:
+        assert {"scripts", ".github/scripts"} <= set(one["with"]["sparse-checkout"].split())

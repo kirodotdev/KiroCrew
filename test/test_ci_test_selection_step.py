@@ -17,6 +17,7 @@ import copy
 import gzip
 import io
 import json
+import re
 import socketserver
 import subprocess
 import threading
@@ -454,10 +455,12 @@ def test_the_shadow_steps_cannot_change_the_job_or_any_other() -> None:
     ci = _ci()
     changes = ci["jobs"]["changes"]
     steps, score, upload = _shadow_steps()
-    # Last, in order, on pull requests only, and unable to fail the job. A job's
-    # outputs are published when it ends, so the time these steps take is added
-    # to every job that waits on this one: the bounds below are that cost.
-    assert steps[-2:] == [score, upload]
+    # After every step that can set an output, in order, on pull requests only,
+    # and unable to fail the job. A job's outputs are published when it ends, so
+    # the time these steps take is added to every job that waits on this one:
+    # the bounds below are that cost.
+    last_with_an_id = max(i for i, s in enumerate(steps) if "id" in s)
+    assert last_with_an_id < steps.index(score) < steps.index(upload)
     for shadow in (score, upload):
         assert shadow["if"] == "github.event_name == 'pull_request'"
         assert shadow["continue-on-error"] is True
@@ -492,14 +495,15 @@ def test_the_shadow_steps_hold_a_read_token_and_upload_the_ledgers_artifact() ->
     assert upload["with"]["overwrite"] is True
     # The name the ledger asks a run for by default.
     assert f'default="{step.VERDICT_DIR}"' in Path(ledger.__file__).read_text(encoding="utf-8")
-    # The same pinned action every other upload in the workflow uses.
-    pins = {
+    # A pinned action, at a commit another upload in the workflow is pinned to.
+    others = {
         s["uses"]
         for job in _ci()["jobs"].values()
         for s in job.get("steps", [])
-        if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+        if str(s.get("uses", "")).startswith("actions/upload-artifact@") and s != upload
     }
-    assert pins == {upload["uses"]}
+    assert re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", upload["uses"])
+    assert upload["uses"] in others
 
 
 def test_the_nightly_workflow_publishes_the_bundle_the_step_asks_for() -> None:
