@@ -419,7 +419,9 @@ channel's `record` adapter as `TurnRecord.notice`, seals an unclosed stream unde
 `Drift.SEAL_UNCLOSED_STREAM`, and keys delivery-aware accounting on a renderer
 whose `delivery_failed` is `True`; Discord's `record` adapter
 (`DiscordDispatcher._record_turn`) normalizes the reply and writes the live
-projection, the `notice` row and the transcript. Only Discord adopts the verdict
+projection, the `notice` row and the transcript, after it stores the pictures
+the turn downloaded (`ConversationLog.store_ingested_images`) so both name the
+stored copy. Only Discord adopts the verdict
 today; the exchange-only `drive_turn` adopters (`exchange_writer`) and the
 Telegram renderer still show the bare `…` and persist the user row alone, and
 adopting it there is the same two reads.

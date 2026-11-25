@@ -3977,7 +3977,9 @@ Contract:
   append); see [slack-gateway](slack-gateway.md). Telegram calls the same method
   ahead of its append, because a resumed turn also shows the row in a live dashboard
   window, which re-serializes its rows on every flush: both of its writers get the
-  stored text, and a failed store leaves them the text as it came in. The other
+  stored text, and a failed store leaves them the text as it came in. Discord's
+  `record` adapter (`DiscordDispatcher._record_turn`) does the same with the
+  pictures its turn downloaded, after its restricted-session check. The other
   channels still persist the temp path.
 - **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
   `![` openers is left as written without scanning: the reference scanner is
