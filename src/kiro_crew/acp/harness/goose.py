@@ -189,9 +189,17 @@ class GooseLaunch(ProcessAdapter):
         self._side_scratch: Callable[[], Path | None] | None = None
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the binary, warm the session's MCP array, then mask and seed."""
+        """Refuse or mask first, then resolve the binary, warm the MCP array and seed."""
         session = ctx.session
         assert session is not None, "goose is launched for one session"
+        # The same refuse-then-mask preflight the other enforced hosts run, keyed on
+        # the same routing question rather than on this harness's identity: it is
+        # ENFORCED, so the OS credential mask is the compensating control for the
+        # passive reads ACP v1 cannot make it ask about. FIRST, before the binary
+        # lookup, so a host that refuses the session never names an install command.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
         _goose_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
             self.backend
         )
@@ -208,13 +216,6 @@ class GooseLaunch(ProcessAdapter):
         # would put an executor hop and a new failure mode on EVERY backend's
         # construction path, kiro-cli included (harness-parity H13).
         await session._prepare_session_mcp()
-        # The same refuse-then-mask preflight the other enforced hosts run, keyed on
-        # the same routing question rather than on this harness's identity: it is
-        # ENFORCED, so the OS credential mask is the compensating control for the
-        # passive reads ACP v1 cannot make it ask about.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
         # The routing seed. There is no read-back child here and no wrapped second
         # spawn: this harness reports the mode it resolved in the ``modes`` block of
         # the very response that opens or restores the session, so the read-back
