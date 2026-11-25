@@ -123,16 +123,23 @@ for a reader that needs a path, `agent_spec_pins.pick_spec_row` for first-match 
 flag lookups): with no pin, differing claimants are refused with the pin command for each
 file; a pin naming none of them is refused and never falls back; identical claimants
 still pass; a pin on a name with one claimant picks no file, but waives the held-file check
-that follows. The start check of a host that does not resolve the spec itself
-(`acp/session_mcp_spec_check.refuse_contested_agent_spec`) also refuses a start when, on
-Windows, a spec file stays held open past the read retry while a readable spec declares the
-name and no pin names it, since the held file may be a second claimant a later read sees:
-the error names each held file and the pin commands, and shows no chooser card. KAS takes
+that follows. Every host's start is also refused when, on Windows, a spec file stays held
+open past the read retry while a readable spec declares the name and no pin names it, since
+the held file may be a second claimant a later read sees (`agent_discovery.held_spec_refusal`):
+the start check of a host that does not resolve the spec itself
+(`acp/session_mcp_spec_check.refuse_contested_agent_spec`), KAS's session start
+(`kas_agents.refuse_held_spec`; the other readers of `kas_agents.load_agent_spec` keep
+their answer) and kiro-cli's launch check, for the authored name or a skill view, refuse
+it. The error names each held file and the pin commands, and shows no
+chooser card. KAS takes
 the pinned file's projection over the wire. kiro-cli resolves a name it is handed itself, so for a contested
 name it is handed only a skill view built from the pinned file (`acp/skill_projection`);
 handing it the authored name of a contested agent is refused
 (`fork_refresh.require_launch_resolves_one_file`, run inside the over-ceiling start
-check at every spawn, mode switch and session start). A pin is read at each session
+check at every spawn, mode switch and session start). On Windows a skill view's start
+there also gets the resolver's refusals (a contest, a broken pin), since the projection
+chose the view's file from a cached scan of the directory that keeps a held file out until
+a spec there changes. A pin is read at each session
 start, so a new session (the card's retry
 included) runs the pinned file; a running session's later spec reads (its spawn allowlist and tool policy) follow the current pin, as they follow an edit to the file itself. Prompt and member-essential readers use
 `session_agent_spec_path` in both user and Bot scope, and read-only side sessions
