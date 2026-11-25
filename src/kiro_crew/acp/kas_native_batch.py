@@ -3,9 +3,9 @@
 ``KasHarness.session_extras`` hands this the session agent's projected entries and
 the targets ``kas_subagent_targets.project_subagent_targets`` registered. In a
 session ``kas_engine_subagents.engine_subagents_on`` names, on an agent that is not a
-person's own file, the session agent's entry mounts the engine's sub-agent tool with
-the shipped helper reachable, and the person's own registered agents too where
-``kas_engine_subagents.engine_replaces_spawn`` holds.
+person's own file, the session agent's entry mounts the engine's sub-agent tool in
+place of ``spawn_run``, with the helper (a copy of that agent) and the person's own
+registered agents reachable.
 Then Kiro Crew's own agents are denied to every entry, whether it mounts
 ``invoke_sub_agent`` or only a per-agent ``subagent_<id>`` tool, listed or not (``kas_subagent_targets.deny_own_agents``), and every engine
 sub-agent is denied to an entry whose ``excludedTools`` withhold the tool
@@ -87,24 +87,20 @@ def native_batch(
                 crew_panel=crew_panel,
             )
         ):
-            replace_spawn = engine.engine_replaces_spawn(agent, session_key)
             batch = engine.with_engine_subagents(
                 batch,
                 agent,
-                agents_dir=agents_dir,
                 work_dir=work_dir,
                 stub_server_names=stub_server_names,
-                session_key=session_key,
                 settings_dir=settings_dir,
                 notices=[] if notices is None else notices,
                 parent_spec=parent_spec,
                 mounted_out=mounted_out,
-                # A person's own agents run as children only where the engine's tool
-                # replaces Kiro Crew's own: elsewhere a child's MCP servers beyond the
-                # chat agent's would be held by an ask alone, which an auto-approving
-                # chat answers, so those chats run the shipped helper only.
-                own_agents=own_agents if replace_spawn else None,
-                replace_spawn=replace_spawn,
+                own_agents=own_agents,
+                # Outside the two chats that registered them before, a person's own
+                # agent keeps only the servers it shares with the chat's agent: an
+                # ask on another server may be answered by no one (a cron's auto).
+                own_agents_keep_servers=engine.own_agents_keep_their_servers(agent, session_key),
             )
         # The chats the preview reaches, whatever their agent: the mount's own
         # test, asked as for the default agent.

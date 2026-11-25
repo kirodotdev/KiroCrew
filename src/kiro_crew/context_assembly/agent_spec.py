@@ -927,9 +927,8 @@ def _render_contract(
     from kiro_crew.agent_sdk import kas_engine_subagents as _engine
 
     if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt:
-        mode = engine_subagents()
-        if mode:
-            agent_prompt = _engine.with_engine_sentence(agent_prompt, mode)
+        if engine_subagents():
+            agent_prompt = _engine.with_engine_sentence(agent_prompt)
     # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
     # shared core and conductor tail, the same constants Conductor mode carries)
     # rides here at agent rank. After any user prompt.md is read, so a custom

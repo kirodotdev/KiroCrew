@@ -77,23 +77,6 @@ def test_replace_names_only_the_engines_tool_where_both_spawn_tools_are_gone():
     assert lifecycle in after.splitlines()
 
 
-def test_beside_names_both_paths_where_the_spawn_tools_stay():
-    before, after = _render(""), _render("beside")
-    assert after == before.replace(
-        engine.SPAWN_SUB_AGENTS_SENTENCE,
-        f"{engine.SPAWN_SUB_AGENTS_SENTENCE} {engine.ENGINE_HELPER_SUB_AGENT_SENTENCE}",
-    )
-    # Those chats run the shipped helper only, so it names no own agent as a choice.
-    assert "one of the user's own agents" not in engine.ENGINE_HELPER_SUB_AGENT_SENTENCE
-    assert "with agent `kirocrew-helper` only" in engine.ENGINE_HELPER_SUB_AGENT_SENTENCE
-    bullet = next(line for line in after.splitlines() if line.startswith("- `spawn_run`:"))
-    assert "`invoke_sub_agent`" in bullet and "`spawn_sub_agents`" in bullet
-    # Those chats keep spawn_run, so its steps stay as they are.
-    assert engine.ENGINE_STEPS not in after
-    assert "Report the dispatch and **END YOUR TURN**" in after
-    assert "These are the ONLY subagent mechanisms" in bullet
-
-
 def test_crew_renders_todays_contract():
     assert _render(False) == agent_spec._render_contract(
         "kirocrew",
@@ -114,13 +97,15 @@ def test_crew_renders_todays_contract():
         ("kiro", "kirocrew", "dashboard:t1", True, ""),
         ("claude", "kirocrew", "dashboard:t1", True, ""),
         (None, "kirocrew", "dashboard:t1", True, ""),
-        (PROVIDER_LABEL_KAS, "kirocrew-research", "dashboard:t1", True, "beside"),
+        (PROVIDER_LABEL_KAS, "kirocrew-research", "dashboard:t1", True, "replace"),
+        (PROVIDER_LABEL_KAS, "kirocrew-worker", "dashboard:t1", True, "replace"),
+        (PROVIDER_LABEL_KAS, "kirocrew-mate-worker", "dashboard:member-ada", True, "replace"),
         (PROVIDER_LABEL_KAS, "kirocrew-conductor", "dashboard:t1", True, ""),
         (PROVIDER_LABEL_KAS, "kirocrew-mate-conductor", "dashboard:member-ada", True, ""),
-        (PROVIDER_LABEL_KAS, "kirocrew", "cron:j", True, "beside"),
+        (PROVIDER_LABEL_KAS, "kirocrew", "cron:j", True, "replace"),
         (PROVIDER_LABEL_KAS, "kirocrew", "subagent:x", True, ""),
-        (PROVIDER_LABEL_KAS, "kirocrew", "slack:C:T", True, "beside"),
-        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:member-ada", True, "beside"),
+        (PROVIDER_LABEL_KAS, "kirocrew", "slack:C:T", True, "replace"),
+        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:member-ada", True, "replace"),
     ],
 )
 def test_who_reads_the_engine_sentence(setting, label, agent, key, value, expected):
@@ -177,18 +162,17 @@ def test_a_turn_with_no_agent_named_reads_like_the_default_agent_as_the_head_doe
 
 def test_the_engine_sentence_says_who_runs_and_what_a_refusal_means():
     """The engine's own tool text lists every agent it finds; the sentence says which run."""
-    sentence = engine.ENGINE_SUB_AGENT_SENTENCE
-    # The helper and the registered own agents run; nothing else the tool lists does.
-    assert "with agent `kirocrew-helper` or one of the user's own agents" in sentence
-    assert "Its list names agents it will not run" in sentence
+    only = engine.ENGINE_ONLY_SUB_AGENT_SENTENCE
+    # The helper (the chat's own agent) and the registered own agents run; nothing
+    # else the tool lists does.
+    assert "with agent `kirocrew-helper` (this chat's own agent) or one of" in only
+    assert "Its list names agents it will not run" in only
     # An own agent the mount never tried is refused under the deny on every name,
     # whose quoted match is ``*``.
-    assert 'a refusal that reads `deny subagent matching "*"` refuses that one agent' in sentence
-    assert "start it with `spawn_run` instead" in sentence
-    # No agent the tool runs holds a Kiro Crew server.
-    assert "No sub-agent it runs has a Kiro Crew tool" in sentence
-    assert engine.ENGINE_HELPER_SUB_AGENT_SENTENCE in _render("beside")
-    only = engine.ENGINE_ONLY_SUB_AGENT_SENTENCE
+    assert 'a refusal that reads `deny subagent matching "*"` refuses that one agent' in only
+    # What no agent the tool runs has.
+    assert "No sub-agent it runs has a Kiro Crew tool or can start sub-agents" in only
+    assert "none takes a model, folder or turn limit" in only
     head, _, tail = only.partition("When it is not in your tool list, ")
     assert "in this chat's own process" in head and "spawn_run" not in head
     assert tail.endswith(engine.SPAWN_SUB_AGENTS_SENTENCE)

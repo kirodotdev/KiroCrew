@@ -558,10 +558,8 @@ def test_a_refused_mount_never_projects_the_persons_agents(agents_dir, refusal):
     out = engine.with_engine_subagents(
         [parent],
         "kirocrew",
-        agents_dir=agents_dir,
         work_dir=None,
         stub_server_names=frozenset(),
-        session_key=_DASHBOARD,
         settings_dir=None,
         notices=[],
         parent_spec=spec,
@@ -579,10 +577,8 @@ def test_a_projection_that_fails_registers_none_and_keeps_the_helper(agents_dir)
     out = engine.with_engine_subagents(
         [{"id": "kirocrew", "tools": ["fs_read"]}],
         "kirocrew",
-        agents_dir=agents_dir,
         work_dir=None,
         stub_server_names=frozenset(),
-        session_key=_DASHBOARD,
         settings_dir=None,
         notices=[],
         parent_spec=_default_spec(),
@@ -602,10 +598,8 @@ def test_an_entry_under_the_helpers_id_never_joins_a_mounted_batch(agents_dir):
     out = engine.with_engine_subagents(
         [{"id": "kirocrew", "tools": ["fs_read"]}],
         "kirocrew",
-        agents_dir=agents_dir,
         work_dir=None,
         stub_server_names=frozenset(),
-        session_key=_DASHBOARD,
         settings_dir=None,
         notices=[],
         parent_spec=_default_spec(),

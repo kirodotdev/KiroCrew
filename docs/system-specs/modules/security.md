@@ -4308,9 +4308,19 @@ and every gap fails closed:
   too, and the grant the deny record lifts answers nothing for one, so no limit
   is left to the gate alone (`test_kas_engine_child_kinds.py`). A refused agent, the engine's bundled agents
   (`general-task-execution`, whose tools are `*`, and `semantic_reviewer`) and
-  every name not registered stay under the `*` deny. A registered entry is held
+  every name not registered stay under the `*` deny. Under the engine mount
+  (`kas_engine_subagents._held_children`), outside a person's own dashboard chat on
+  the default agent and member `default`'s chat on it
+  (`own_agents_keep_their_servers`), a registered entry also keeps only the MCP
+  servers it declares exactly as the session agent does, every other one dropped and
+  excluded whole (`_only_shared_servers`): a cron run's `auto` or a trusted chat
+  would answer the ask that is otherwise all that holds such a server. In those
+  chats its tool selection is also cut to the session agent's `tools`, built-ins
+  and per-tool server refs alike, and one whose `tools` select by a wildcard or tag
+  is not registered (`_only_parents_builtins`). A registered entry is held
   five ways: it carries every `deny` and `ask` rule of the default agent's entry
-  (`_with_parent_restrictions`, as the helper does); every Kiro Crew server is
+  (`_with_parent_restrictions`; the helper, a copy of that entry, holds them as its
+  own); every Kiro Crew server is
   excluded whole (`@server` in `excludedTools`, `for_default_mount`), since each
   runs under the parent session's identity, and one it declares is dropped
   rather than launched; it asks for every MCP call (`_asking_for_mcp`), because
@@ -4714,10 +4724,15 @@ and every gap fails closed:
     `trustedAgents`. Every other harness is unchanged.
 - *Its tools.* The one agent Kiro Crew ships for the tool, `kirocrew-helper`
   (`acp/kas_engine_subagent_target.py`), exists only in memory, with no hooks. It
-  holds built-in tools and the MCP servers its parent holds
+  is a copy of the session agent's projected entry, the agent an unnamed
+  `spawn_run` runs: its built-in tools, `allowedTools`, `permissions`,
+  `excludedTools` and prompt, less Kiro Crew's own records of the parent
+  (`CREW_ONLY_ENTRY_KEYS`) and the sub-agent tool (`invoke_sub_agent` excluded and
+  every engine sub-agent denied, `deny_every_subagent`), so it starts no child. It
+  holds the MCP servers its parent holds
   (`shared_servers`): a server of the parent's block or a pooled stub of one its
   spec declares, that the parent's `tools` mount and its `excludedTools` do not
-  withdraw whole. The helper lists each as the parent's `tools` name it, carries
+  withdraw whole. The helper keeps the parent's `tools` entry for each, carries
   every `excludedTools` entry the parent holds for it, and repeats the parent's
   projected block entry byte for byte: the engine keys a running server by its
   name and declaration, so the helper is handed the parent's process and adds

@@ -3,10 +3,11 @@
 On (``dashboard.feature_previews.kas_subagents`` is ``true``, set under Settings >
 Developer > Feature previews): in the chats :func:`engine_subagents_on` names
 (never a conductor's, :func:`hands_work_to_sessions`), the chat agent's projected
-entry mounts KAS's own sub-agent tool (``invoke_sub_agent``) naming the shipped helper (``acp/kas_engine_subagent_target.py``). Only in the chats
-:func:`engine_replaces_spawn` names do the person's own agents the target projection
-registers join it (:func:`_held_children`) and ``spawn_run`` and ``spawn_sub_agents``
-leave that entry's tools. The operating contract's one ``spawn_sub_agents`` sentence
+entry mounts KAS's own sub-agent tool (``invoke_sub_agent``) naming the helper, a copy
+of the chat's own agent (``acp/kas_engine_subagent_target.py``), the person's own
+agents the target projection registers join it (:func:`_held_children`), and
+``spawn_run`` and ``spawn_sub_agents`` leave that entry's tools. The operating
+contract's one ``spawn_sub_agents`` sentence
 names the engine's tool to match (:func:`contract_engine_subagent_mode`, read once per
 session by the contract renderer). Off or never set (the default): nothing is
 mounted and the contract is what it was. An LTS build reads it off
@@ -32,7 +33,7 @@ kiro-cli's agent engine keeps it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ from kiro_crew.acp.kas_subagent_targets import (
     _session_hook_matchers,
     _withhold_session_hooks,
     audit_subagent_policy,
+    deny_every_subagent,
 )
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 
@@ -57,43 +59,18 @@ KAS_SUBAGENTS_PREVIEW = "kas_subagents"
 
 #: The shipped default agent.
 DEFAULT_AGENT = "kirocrew"
-#: The crew member whose own dashboard chat on the shipped default agent drops
-#: Kiro Crew's own sub-agent tools for the engine's, as the shipped agent's does.
+#: The crew member whose own chat on the default agent registers the person's own
+#: agents with every server they declare (:func:`own_agents_keep_their_servers`).
 DEFAULT_MEMBER = "default"
-#: Kiro Crew's own sub-agent tools the engine's tool replaces in those two chats.
+#: Kiro Crew's own sub-agent tools the engine's tool replaces in a mounted chat.
 _SPAWN_TOOLS = frozenset({("kirocrew-core", "spawn_sub_agents"), ("kirocrew-core", "spawn_run")})
 
 #: The contract sentence the engine's tool replaces, as ``config/prompt.md`` ships
-#: it, and its replacement. Only this sentence changes; a prompt that does not hold
-#: it (a person's own ``prompt.md``) is left as it is. The replacement names its
-#: condition, so a chat whose mount was refused (a helper name taken) still reads true.
-#: It also says what the engine's own tool text cannot: that text lists every agent
-#: the engine finds, and the mount runs the helper and the registered own agents
-#: only (:func:`_also_reaching`), refusing an own agent it never tried under a deny
-#: whose quoted ``match`` is ``*``; and no agent it runs holds a Kiro Crew server
-#: (``kas_engine_subagent_target.own_servers``).
+#: it. Only this sentence changes; a prompt that does not hold it (a person's own
+#: ``prompt.md``) is left as it is.
 SPAWN_SUB_AGENTS_SENTENCE = (
     "`spawn_sub_agents` blocks for inline results; use only if you cannot end the "
     "turn without them."
-)
-ENGINE_SUB_AGENT_SENTENCE = (
-    f"`{KAS_SUBAGENT_TOOL}`, when it is in your tool list, runs short, independent "
-    f"tasks whose results you need before you answer inside this turn, with agent "
-    f"`{KAS_HELPER_AGENT}` or one of the user's own agents: one call per task, all "
-    "in one reply. Its list names agents it will not run (Kiro Crew's own, and some "
-    'of the user\'s): a refusal that reads `deny subagent matching "*"` refuses '
-    "that one agent, so start it with `spawn_run` instead. No sub-agent it runs has "
-    "a Kiro Crew tool: keep that work or send it to `spawn_run`."
-)
-#: The sentence the chats that keep ``spawn_run`` and ``spawn_sub_agents`` read beside
-#: theirs (``"beside"``): their mount runs the shipped helper only.
-ENGINE_HELPER_SUB_AGENT_SENTENCE = (
-    f"`{KAS_SUBAGENT_TOOL}`, when it is in your tool list, runs short, independent "
-    f"tasks whose results you need before you answer inside this turn, in this chat's "
-    f"own process, with agent `{KAS_HELPER_AGENT}` only: one call per task, all in one "
-    "reply. Every other agent its list names is refused here: start that one with "
-    "`spawn_run`. No sub-agent it runs has a Kiro Crew tool: keep that work or send it "
-    "to `spawn_run`."
 )
 #: The first words of the shipped contract's three orchestration steps, which name
 #: ``spawn_run`` and its completion events; the chats that drop it read
@@ -103,7 +80,7 @@ _SPAWN_STEP_STARTS = (
     "2. Report the dispatch and **END YOUR TURN**.",
     "3. Results arrive as `[Subagent completion event]` messages.",
 )
-#: The orchestration steps for the chats that drop ``spawn_run`` (``"replace"``).
+#: The orchestration steps for a mounted chat, which drops ``spawn_run``.
 ENGINE_STEPS = (
     f"1. Call `{KAS_SUBAGENT_TOOL}` once per independent task, all in one reply. Each "
     "task states its goal, ready inputs, verifiable output and stop condition. Never "
@@ -116,25 +93,30 @@ ENGINE_STEPS = (
     "answer."
 )
 #: What the shipped contract's sub-agent bullet says of ``spawn_run`` before that
-#: sentence; the chats that drop ``spawn_run`` lose it with the sentence.
+#: sentence; a mounted chat loses it with the sentence.
 SPAWN_RUN_LEAD = (
     "`spawn_run`: background subagents, `tasks` array for parallel work; follow the "
     "lifecycle below. "
 )
-#: The same bullet lead for the chats that drop ``spawn_run`` and ``spawn_sub_agents``
-#: (:func:`engine_replaces_spawn`). True whether or not the mount was accepted: a chat
-#: whose mount was refused (a remote workspace, a helper name taken, a restriction the
-#: helper cannot mirror) keeps both spawn tools and has no engine tool.
+#: The bullet that replaces that lead and sentence in a mounted chat. It names its
+#: condition, so a chat whose mount was refused (a remote workspace, a helper name
+#: taken, a restriction the helper cannot mirror) still reads true: that chat keeps
+#: both spawn tools and has no engine tool. It also says what the engine's own tool
+#: text cannot: the mount runs the helper and the registered own agents only
+#: (:func:`_also_reaching`), refusing an agent it never tried under a deny whose
+#: quoted ``match`` is ``*``; and what no sub-agent it runs has
+#: (``kas_engine_subagent_target.CHILD_NOTE``).
 ENGINE_ONLY_SUB_AGENT_SENTENCE = (
     f"`{KAS_SUBAGENT_TOOL}`, when it is in your tool list, runs short, independent "
     f"tasks whose results you need before you answer inside this turn, in this chat's "
-    f"own process, with agent `{KAS_HELPER_AGENT}` or one of the user's own agents: "
-    "one call per task, all in one reply. Its list names agents it will not run (Kiro "
-    "Crew's own, and some of the user's): a refusal that reads `deny subagent matching \"*\"` "
-    "refuses that one agent. No sub-agent it runs has a Kiro Crew tool: keep that work "
-    "yourself. When it is not in your tool list, `spawn_run` runs background subagents "
-    "(`tasks` array for parallel work; follow the lifecycle below), and "
-    + SPAWN_SUB_AGENTS_SENTENCE
+    f"own process, with agent `{KAS_HELPER_AGENT}` (this chat's own agent) or one of "
+    "the user's own agents: one call per task, all in one reply. Its list names agents "
+    "it will not run (Kiro Crew's own, and some of the user's): a refusal that reads "
+    '`deny subagent matching "*"` refuses that one agent. No sub-agent it runs has a '
+    "Kiro Crew tool or can start sub-agents, and none takes a model, folder or turn "
+    "limit: keep that work yourself. When it is not in your tool list, `spawn_run` "
+    "runs background subagents (`tasks` array for parallel work; follow the lifecycle "
+    "below), and " + SPAWN_SUB_AGENTS_SENTENCE
 )
 
 #: The not-registered line when a helper of the same name already exists.
@@ -224,15 +206,18 @@ def _is_chat_key(session_key: str) -> bool:
     )
 
 
-def engine_replaces_spawn(agent: str, session_key: str) -> bool:
-    """Whether a mounted chat also drops ``spawn_run`` and ``spawn_sub_agents``.
+def own_agents_keep_their_servers(agent: str, session_key: str) -> bool:
+    """Whether the person's own agents this chat registers keep MCP servers its agent lacks.
 
-    Only a person's own dashboard chat on the shipped default agent, and the crew
-    member named ``default``'s own chat on it. Read from the agent and the key alone,
-    the two facts the contract renderer also holds, so the batch and the contract
-    agree. Every other mounted chat keeps both: the shipped flows that pin a model,
-    a backend or a folder for a sub-agent run there. Blocking file IO (the member's
-    DM binding).
+    Only the two chats that registered them before the engine's tool replaced
+    ``spawn_run`` everywhere: a person's own dashboard chat on the default agent, and
+    the crew member named ``default``'s own chat on it. There a child's server
+    beyond the chat agent's is held by an ask the person answers. In every other
+    mounted chat (a cron run, a channel, a dispatched worker, a Bot's worker chat,
+    another member's) that ask may be answered by no one (a cron's ``auto``, a
+    trusted chat), so each child keeps only the servers it shares with the chat's
+    agent (:func:`_only_shared_servers`). Read from the agent and the key alone.
+    Blocking file IO (the member's DM binding).
     """
     from kiro_crew.constants import is_owner_minted_session_key
     from kiro_crew.members import is_member_session_key, member_identity_for_session
@@ -257,9 +242,8 @@ def contract_engine_subagent_mode(
 ) -> str:
     """How a session's operating contract names the engine's sub-agent tool.
 
-    ``""`` when it does not, ``"replace"`` when the engine's tool replaces Kiro Crew's
-    own sub-agent tools (:func:`engine_replaces_spawn`), else ``"beside"``. A live
-    reading, taken once per session by the contract renderer: the session's provider
+    ``""`` when it does not, ``"replace"`` when it does: the engine's tool replaces
+    Kiro Crew's own sub-agent tools in every chat it is mounted in. A live reading, taken once per session by the contract renderer: the session's provider
     label is KAS's (positive), and :func:`engine_subagents_on` holds for it with no
     member dispatch or Crew panel. Never raises: an unreadable config reads ``""``.
     """
@@ -278,11 +262,10 @@ def contract_engine_subagent_mode(
         if _is_own_agent_file(agent):
             # Never mounted (``kas_native_batch``): its file is read as kiro-cli reads it.
             return ""
-        replaces = engine_replaces_spawn(agent, session_key)
     except Exception:  # noqa: BLE001 - an unreadable config keeps today's contract
         logger.debug("the kas_subagents preview unreadable for the contract", exc_info=True)
         return ""
-    return "replace" if replaces else "beside"
+    return "replace"
 
 
 def _is_own_agent_file(agent: str) -> bool:
@@ -316,15 +299,11 @@ def _with_engine_steps(prompt: str) -> str:
     return prompt
 
 
-def with_engine_sentence(prompt: str, mode: str = "replace") -> str:
-    """*prompt* with its one ``spawn_sub_agents`` sentence naming the engine's tool.
+def with_engine_sentence(prompt: str) -> str:
+    """*prompt* with its one ``spawn_sub_agents`` sentence naming the engine's tool first.
 
-    ``"replace"``: the sentence names the engine's tool first. ``"beside"``: the
-    ``spawn_sub_agents`` sentence stays and the helper-only one follows it.
+    The shipped three ``spawn_run`` steps become :data:`ENGINE_STEPS` too.
     """
-    if mode == "beside":
-        both = f"{SPAWN_SUB_AGENTS_SENTENCE} {ENGINE_HELPER_SUB_AGENT_SENTENCE}"
-        return prompt.replace(SPAWN_SUB_AGENTS_SENTENCE, both, 1)
     prompt = _with_engine_steps(prompt)
     lead = SPAWN_RUN_LEAD + SPAWN_SUB_AGENTS_SENTENCE
     if lead in prompt:
@@ -357,18 +336,16 @@ def _helper_file_exists(work_dir: str | Path | None) -> bool:
     return False
 
 
-def _mounted(entry: dict[str, Any], replace_spawn: bool = True) -> dict[str, Any]:
+def _mounted(entry: dict[str, Any]) -> dict[str, Any]:
     """The session agent's *entry* with the engine's tool on, only the helper reachable.
 
-    *replace_spawn* also takes ``spawn_run`` and ``spawn_sub_agents`` off it
-    (:func:`engine_replaces_spawn`); otherwise both stay beside the engine's tool.
+    ``spawn_run`` and ``spawn_sub_agents`` leave it: the engine's tool replaces them.
     """
     tools = entry.get("tools")
     held = entry.get("permissions")
     block = dict(held) if isinstance(held, dict) else {}
     block["rules"] = [*(block.get("rules") or []), only_helper_rule()]
-    if replace_spawn:
-        [entry] = with_switched_off_tools([entry], _SPAWN_TOOLS)
+    [entry] = with_switched_off_tools([entry], _SPAWN_TOOLS)
     # ``"*"`` already mounts the tool; any other shape is a list the tool joins.
     mounted = (
         tools
@@ -378,14 +355,14 @@ def _mounted(entry: dict[str, Any], replace_spawn: bool = True) -> dict[str, Any
     return {**entry, "tools": mounted, "permissions": block}
 
 
-def _with_parent_restrictions(helper: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:
-    """*helper* also carrying every ``deny`` and ``ask`` rule of the session agent's entry.
+def _with_parent_restrictions(child: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:
+    """*child* also carrying every ``deny`` and ``ask`` rule of the session agent's entry.
 
-    The helper runs as the session agent's sub-agent, so it is held to that agent's
-    engine rules as well as to its gate-only limits: a read ``deniedPaths``, a web
-    ``blocked`` entry or an authored deny refuses the helper's call as it refuses the
-    parent's. Only restrictions are copied, never an allow; the ``subagent`` rules
-    stay the parent's, since the helper has no sub-agent tool.
+    A person's own agent runs as the session agent's sub-agent, so it is held to that
+    agent's engine rules as well as to its gate-only limits: a read ``deniedPaths``, a
+    web ``blocked`` entry or an authored deny refuses the child's call as it refuses
+    the parent's. Only restrictions are copied, never an allow; the ``subagent`` rules
+    stay the parent's.
     """
     held = parent.get("permissions")
     rules = held.get("rules") if isinstance(held, dict) else None
@@ -397,11 +374,11 @@ def _with_parent_restrictions(helper: dict[str, Any], parent: dict[str, Any]) ->
         and r.get("capability") != "subagent"
     ]
     if not restrictions:
-        return helper
-    own = helper.get("permissions")
+        return child
+    own = child.get("permissions")
     block = dict(own) if isinstance(own, dict) else {}
     block["rules"] = [*(block.get("rules") or []), *restrictions]
-    return {**helper, "permissions": block}
+    return {**child, "permissions": block}
 
 
 def _rules_of(entry: dict[str, Any]) -> list[Any]:
@@ -411,9 +388,148 @@ def _rules_of(entry: dict[str, Any]) -> list[Any]:
     return rules if isinstance(rules, list) else []
 
 
+def _only_shared_servers(child: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:
+    """*child* holding only the MCP servers it declares exactly as *parent* does.
+
+    Every other server of its block is dropped and excluded whole (``@server`` in its
+    ``excludedTools``), its spec's names leave the ``mcp.json`` stamp, and the stamp
+    marks it not opted in, so a settings-file server reaches it only as it reaches the
+    parent. What remains is what an approval of its call can never widen past the
+    chat's own agent. Read after ``kas_engine_child_grants.holding_parents_servers``,
+    which gives a server set up as the parent's the parent's declaration.
+    """
+    from kiro_crew.acp.kas_engine_child_grants import _withheld_servers, shared_servers_of
+    from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY
+    from kiro_crew.acp.kas_subagent_targets import _excluding_switched_off, _without_servers
+
+    held = child.get("mcpServers")
+    stamp = child.get(CREW_SETTINGS_MCP_KEY)
+    named = {n for n in (held if isinstance(held, dict) else ()) if isinstance(n, str)}
+    if isinstance(stamp, dict):
+        named.update(n for n in stamp.get("declared") or () if isinstance(n, str))
+    # A pooled server both declare reaches the child as the session's own stub: the
+    # target projection leaves it out of the child's block only when the two
+    # declarations are alike (``kas_subagent_targets._pooled_elsewhere``), so a name
+    # both stamps declare and neither block carries is the parent's server too.
+    theirs = parent.get(CREW_SETTINGS_MCP_KEY)
+    parent_block = parent.get("mcpServers")
+    pooled = {
+        n
+        for n in named
+        if n not in (held if isinstance(held, dict) else ())
+        and n not in (parent_block if isinstance(parent_block, dict) else ())
+        and isinstance(theirs, dict)
+        and n in (theirs.get("declared") or ())
+    } - _withheld_servers(parent)
+    keep = shared_servers_of(child, parent) | pooled
+    unshared = sorted(n for n in named if n and n not in keep)
+    out = _excluding_switched_off(_without_servers(child, unshared), frozenset(unshared))
+    if isinstance(stamp, dict):
+        declared = [n for n in stamp.get("declared") or () if n in keep]
+        out[CREW_SETTINGS_MCP_KEY] = {
+            **stamp,
+            "declared": declared,
+            "optedIn": False,
+            "legacy": False,
+        }
+    return out
+
+
+def _only_parents_builtins(child: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any] | None:
+    """*child*'s tool selection cut to what *parent*'s projected ``tools`` mount, or ``None``.
+
+    A child runs its own tool list under its parent's rules, and a tool the parent's
+    ``tools`` leave out is no rule the child copies: an ask an unattended approver
+    answers would be all that held it. So the child keeps, never more than the
+    parent's:
+
+    * a built-in only when the parent mounts it (every built-in when the parent
+      does not narrow them, ``kas_subagent_targets._narrows_tools``; else one of the
+      parent's entries selects it, read with the engine's ``*`` and ``?``);
+    * for a server, its own ref when the parent mounts that server whole, the
+      parent's own refs to it in place of a whole-server ref when the parent mounts
+      only some of its tools, a per-tool ref only when a parent ref covers it, and
+      the server excluded whole when the parent mounts none of it;
+    * every ``excludedTools`` entry of the parent.
+
+    ``_only_shared_servers`` then cuts the servers it does not share. A child whose
+    ``tools`` select by a wildcard, a pattern or an engine tag cannot be cut entry by
+    entry, so it is not registered (``None``).
+    """
+    import fnmatch
+
+    from kiro_crew.acp.kas_engine_subagent_target import _ENGINE_TAGS, _refs
+    from kiro_crew.acp.kas_subagent_targets import _narrows_tools
+
+    theirs = parent.get("tools")
+    every_builtin = not _narrows_tools(parent)
+    # Read as the engine selects a tool: ``*`` is any run, ``?`` any one character,
+    # every other character itself (``kas_subagent_targets._selects_subagent_tool``).
+    patterns = [
+        t.replace("[", "[[]")
+        for t in (theirs if isinstance(theirs, list) else [])
+        if isinstance(t, str) and not t.startswith("@") and t != KAS_SUBAGENT_TOOL
+    ]
+
+    def mounts(name: str) -> bool:
+        if name == KAS_SUBAGENT_TOOL:
+            return False
+        return every_builtin or any(fnmatch.fnmatchcase(name, p) for p in patterns)
+
+    def server_refs(ref: str) -> list[str]:
+        """The parent's refs that cover child *ref*: never wider than the parent's."""
+        name = ref[1:].split("/", 1)[0]
+        parents = _refs(theirs, name)
+        if f"@{name}" in parents:
+            return [ref]
+        if ref == f"@{name}":
+            return parents
+        globs = [p.replace("[", "[[]") for p in parents]
+        return [ref] if any(fnmatch.fnmatchcase(ref, g) for g in globs) else []
+
+    held = parent.get("excludedTools")
+    withdrawn = [t for t in (held if isinstance(held, list) else []) if isinstance(t, str)]
+    current = child.get("excludedTools")
+    mine = current if isinstance(current, list) else []
+    if theirs == "*" or (isinstance(theirs, list) and "*" in theirs):
+        # The parent mounts every tool: the child's own list is within it.
+        if not withdrawn:
+            return child
+        return {**child, "excludedTools": list(dict.fromkeys([*mine, *withdrawn]))}
+    tools = child.get("tools")
+    if not isinstance(tools, list):
+        return None
+    kept: list[Any] = []
+    unmounted: list[str] = []
+    for entry in tools:
+        if not isinstance(entry, str) or any(c in entry for c in "*?["):
+            return None
+        if entry.startswith("@"):
+            server = entry[1:].split("/", 1)[0]
+            if server in _ENGINE_TAGS:
+                return None
+            covered = server_refs(entry)
+            if not covered:
+                unmounted.append(f"@{server}")
+            kept.extend(covered)
+        elif mounts(entry):
+            kept.append(entry)
+    kept = list(dict.fromkeys(kept))
+    # A server the child named that the parent mounts none of is excluded whole,
+    # so its stub in the session-level array does not reach the child either.
+    still = {t[1:].split("/", 1)[0] for t in kept if isinstance(t, str) and t.startswith("@")}
+    unmounted = [r for r in dict.fromkeys(unmounted) if r[1:] not in still]
+    excluded = list(dict.fromkeys([*mine, *withdrawn, *unmounted]))
+    out = {**child, "tools": kept}
+    if excluded:
+        out["excludedTools"] = excluded
+    return out
+
+
 def _held_children(
     own_agents: Callable[[], tuple[list[dict[str, Any]], str]] | None,
     parent: dict[str, Any],
+    keep_their_servers: bool = False,
 ) -> list[dict[str, Any]]:
     """The person's own agents this mount registers, each held as the helper is.
 
@@ -430,9 +546,11 @@ def _held_children(
     entry carries every ``deny`` and ``ask`` rule of the parent's entry
     (:func:`_with_parent_restrictions`). An entry's own allow rules stay: the
     engine answers a child by its parent's decision unless the child's own is a
-    deny or an ask, so they add nothing. The line naming the agents left out is
-    logged, not shown: the person listed none of them. A projection that fails
-    registers none.
+    deny or an ask, so they add nothing. Unless *keep_their_servers*
+    (:func:`own_agents_keep_their_servers`), each also keeps only the servers it
+    shares with the parent (:func:`_only_shared_servers`). The line naming the agents
+    left out is logged, not shown: the person listed none of them. A projection that
+    fails registers none.
     """
     if own_agents is None:
         return []
@@ -445,17 +563,34 @@ def _held_children(
         logger.info("KAS sub-agents: %s", notice)
     # The helper's id names the helper alone: a file of that name written after
     # the mount's own check would otherwise register under it.
+    from kiro_crew.acp import kas_env_launch
     from kiro_crew.acp.kas_engine_child_grants import asking_outside, holding_parents_servers
 
-    # Its ask on every MCP call spares the servers it declares exactly as *parent*
-    # does, before the parent's own asks join: those stay whole.
-    return [
-        _with_parent_restrictions(
-            asking_outside(holding_parents_servers(e, parent), parent), parent
+    def held(entry: dict[str, Any]) -> dict[str, Any] | None:
+        projected = entry
+        entry = holding_parents_servers(entry, parent)
+        if not keep_their_servers:
+            cut = _only_parents_builtins(entry, parent)
+            if cut is None:
+                # Its own projection took launch holds the batch will never
+                # release, as a refused target's does.
+                kas_env_launch.discard_batch([projected])
+                logger.info(
+                    "KAS sub-agents: %s left out (its tools reach past its parent's)",
+                    entry.get("id"),
+                )
+                return None
+            entry = _only_shared_servers(cut, parent)
+        # Its ask on every MCP call spares the servers it declares exactly as
+        # *parent* does, before the parent's own asks join: those stay whole.
+        entry = _with_parent_restrictions(asking_outside(entry, parent), parent)
+        # An engine sub-agent starts none of its own, as the helper does not.
+        return deny_every_subagent(
+            entry, "kas_engine_subagent_child_leaf", "a registered own agent starts no sub-agent"
         )
-        for e in entries
-        if e.get("id") != KAS_HELPER_AGENT
-    ]
+
+    kept = [held(e) for e in entries if e.get("id") != KAS_HELPER_AGENT]
+    return [e for e in kept if e is not None]
 
 
 def _also_reaching(mounted: dict[str, Any], names: list[str]) -> dict[str, Any]:
@@ -477,21 +612,6 @@ def _also_reaching(mounted: dict[str, Any], names: list[str]) -> dict[str, Any]:
     return {**mounted, "permissions": {**mounted["permissions"], "rules": rules}}
 
 
-#: Entries of a spec's ``tools`` that mount every built-in (the projection passes
-#: ``@builtin/`` and ``@builtin/*`` through unexpanded there, so they mount none).
-_ALL_BUILTINS_TOOLS = frozenset({"*", "@builtin"})
-#: Entries of a spec's ``allowedTools`` that grant every built-in.
-_ALL_BUILTINS_ALLOWED = frozenset({"*", "@builtin", "@builtin/", "@builtin/*"})
-
-
-def _reaches_all(raw: Any, names: Iterable[str], wide: frozenset[str]) -> bool:
-    """Whether a spec ``tools`` / ``allowedTools`` value names every one of *names*."""
-    if raw == "*":
-        return True
-    listed = {t for t in raw if isinstance(t, str)} if isinstance(raw, list) else set()
-    return bool(listed & wide) or set(names) <= listed
-
-
 def unmirrored_restriction(parent_spec: Any) -> str:
     """The first restriction of the session agent's spec the helper cannot mirror, or ``""``.
 
@@ -500,8 +620,9 @@ def unmirrored_restriction(parent_spec: Any) -> str:
 
     * ``hooks`` PreToolUse: withheld on the helper's entry (``_withhold_session_hooks``);
       PostToolUse: fired for its finished calls (``acp.kas_child_finished``).
-    * engine ``deny`` / ``ask`` rules of the projected entry (skill scope included):
-      copied (:func:`_with_parent_restrictions`).
+    * built-in tools, ``excludedTools``, ``allowedTools`` and the engine ``deny`` /
+      ``ask`` rules of the projected entry (skill scope included): the helper's entry
+      is a copy of the parent's (``kas_engine_subagent_target.helper_entry``).
     * gate-only limits (shell / write allowlists, denied commands): stamped on its
       requests (``session_handle_permissions._denies_only``).
     * MCP servers: the helper holds the parent's, with each ``excludedTools`` entry
@@ -511,12 +632,9 @@ def unmirrored_restriction(parent_spec: Any) -> str:
 
     What has no mirror refuses the mount, so the session stays on Kiro Crew's own
     sub-agents exactly as on main: a spec that is not readable, ``excludedTools``
-    naming any built-in, ``toolsSettings`` of any tool but the shell
-    (:func:`_only_held_tools_settings`), a ``tools`` that does not reach every
-    helper built-in, or an ``allowedTools`` that does not run unasked everything
-    the helper runs unasked.
+    naming any built-in (the sub-agent tool among them), and ``toolsSettings`` of any
+    tool but the shell (:func:`_only_held_tools_settings`).
     """
-    from kiro_crew.acp.kas_engine_subagent_target import _HELPER_ALLOWED, _HELPER_TOOLS
     from kiro_crew.platform.tool_names import canonical_kiro_cli_tool_name
 
     if not isinstance(parent_spec, dict):
@@ -529,17 +647,13 @@ def unmirrored_restriction(parent_spec: Any) -> str:
     )
     excluded = parent_spec.get("excludedTools")
     for raw in excluded if isinstance(excluded, list) else ([excluded] if excluded else []):
-        # Only an exclusion of a known MCP server (the helper reaches none) has its
-        # mirror; a built-in, a tag or anything unrecognised does not.
+        # Only an exclusion of a known MCP server leaves the engine's sub-agent tool
+        # to the chat; a built-in, a tag or anything unrecognised may withhold it.
         name = canonical_kiro_cli_tool_name(raw) if isinstance(raw, str) else ""
         if not name.startswith("@") or name[1:].split("/", 1)[0] not in servers:
             return "its excludedTools withdraw a built-in"
     if not _only_held_tools_settings(parent_spec.get("toolsSettings")):
         return "it sets toolsSettings"
-    if not _reaches_all(parent_spec.get("tools"), _HELPER_TOOLS, _ALL_BUILTINS_TOOLS):
-        return "its tools do not include every built-in the helper holds"
-    if not _reaches_all(parent_spec.get("allowedTools"), _HELPER_ALLOWED, _ALL_BUILTINS_ALLOWED):
-        return "its allowedTools do not run unasked what the helper runs unasked"
     return ""
 
 
@@ -621,27 +735,29 @@ def with_engine_subagents(
     custom_agents: list[dict[str, Any]],
     agent: str,
     *,
-    agents_dir: Path,
     work_dir: str | Path | None,
     stub_server_names: frozenset[str],
-    session_key: str,
     settings_dir: str | Path | None,
     notices: list[str],
     parent_spec: dict[str, Any] | None = None,
     mounted_out: list[str] | None = None,
     own_agents: Callable[[], tuple[list[dict[str, Any]], str]] | None = None,
-    replace_spawn: bool = True,
+    own_agents_keep_servers: bool = False,
 ) -> list[dict[str, Any]]:
     """*custom_agents* with the session agent's entry mounted and the helper appended.
 
-    *replace_spawn* is :func:`engine_replaces_spawn`'s answer for the session.
+    The helper is a copy of the session agent's projected entry
+    (``kas_engine_subagent_target.helper_entry``), and the mounted entry drops
+    ``spawn_run`` and ``spawn_sub_agents`` (:func:`_mounted`).
 
     *mounted_out* gains *agent* only when the helper is built and appended here: the
     host-memory provenance a helper-only child's grant stamp requires.
 
     The person's own agents *own_agents* registers join the batch too, held as
     :func:`_held_children` says, and the mount's deny spares their ids. It is
-    called only once the mount is accepted.
+    called only once the mount is accepted. *own_agents_keep_servers* is
+    :func:`own_agents_keep_their_servers`'s answer for the session: without it, each
+    keeps only the MCP servers it shares with the session agent.
 
     The helper runs inside the session agent's turn, so that agent's own spec
     PreToolUse hooks meet its requests: its entry withholds auto-approval for what
@@ -669,7 +785,7 @@ def with_engine_subagents(
         logger.info("KAS sub-agents stay off for %s: %s", agent, unmirrored)
         return custom_agents
     # Before the helper is built, so it excludes their servers as a target's.
-    children = _held_children(own_agents, parent)
+    children = _held_children(own_agents, parent, own_agents_keep_servers)
     custom_agents = [*custom_agents, *children]
     # The helper holds its parent's servers. Every other entry's own servers can
     # reach the session-level array too, so the helper excludes those.
@@ -680,10 +796,8 @@ def with_engine_subagents(
         for name in a["mcpServers"]
     )
     helper = helper_entry(
-        agents_dir,
         parent,
         stub_server_names=stub_server_names,
-        session_key=session_key,
         settings_dir=settings_dir,
         other_servers=others,
     )
@@ -691,9 +805,7 @@ def with_engine_subagents(
         return custom_agents
     matchers = _session_hook_matchers(agent, parent_spec)
     helper = _withhold_session_hooks(helper, KAS_HELPER_AGENT, matchers)
-    own_rules = len(_rules_of(helper))
-    helper = _with_parent_restrictions(helper, parent)
-    mounted = [_mounted(a, replace_spawn) if a is parent else a for a in custom_agents]
+    mounted = [_mounted(a) if a is parent else a for a in custom_agents]
     if children:
         reached = [str(c.get("id")) for c in children]
         mounted = [_also_reaching(a, reached) if a.get("id") == agent else a for a in mounted]
@@ -706,9 +818,9 @@ def with_engine_subagents(
     audit_subagent_policy(
         "kas_engine_subagent_mounted",
         agent,
-        f"sub-agent tool limited to {KAS_HELPER_AGENT}, which carries "
-        f"{len(_rules_of(helper)) - own_rules} deny or ask rule(s) of its parent "
-        f"and holds {len(shared_servers(parent, stub_server_names))} of its MCP server(s)",
+        f"sub-agent tool limited to {KAS_HELPER_AGENT}, a copy of {agent} without "
+        "Kiro Crew's own servers or a sub-agent tool, holding "
+        f"{len(shared_servers(parent, stub_server_names))} of its MCP server(s)",
     )
     logger.info("KAS sub-agents on for %s: %s mounted", agent, KAS_HELPER_AGENT)
     if mounted_out is not None:
@@ -718,16 +830,14 @@ def with_engine_subagents(
 
 __all__ = [
     "DEFAULT_MEMBER",
-    "ENGINE_HELPER_SUB_AGENT_SENTENCE",
     "ENGINE_ONLY_SUB_AGENT_SENTENCE",
     "ENGINE_STEPS",
-    "ENGINE_SUB_AGENT_SENTENCE",
     "SPAWN_RUN_LEAD",
     "SPAWN_SUB_AGENTS_SENTENCE",
     "KAS_SUBAGENTS_PREVIEW",
     "contract_engine_subagent_mode",
     "contract_names_engine_subagents",
-    "engine_replaces_spawn",
+    "own_agents_keep_their_servers",
     "engine_subagents_on",
     "hands_work_to_sessions",
     "kas_subagents_preview_on",

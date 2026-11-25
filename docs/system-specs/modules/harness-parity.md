@@ -657,11 +657,10 @@ is not sent.
 With the `kas_subagents` feature preview on (default off) every KAS chat on an agent Kiro
 Crew ships or builds (a dashboard chat, a crew member's, a cron run, a messaging
 channel's; never a conductor's, a Kiro Crew sub-agent run, a workflow or a heartbeat)
-mounts the engine's own sub-agent tool with the shipped `kirocrew-helper` reachable
-(`acp/kas_engine_subagents.py:engine_subagents_on`). Only a person's own dashboard chat
-on the default agent, and the crew member named `default`'s own chat on it, also reach
-the person's own registered agents, and only there does the entry exclude `spawn_run`
-and `spawn_sub_agents` (`engine_replaces_spawn`); every other mounted chat keeps both.
+mounts the engine's own sub-agent tool with the shipped `kirocrew-helper` (a copy of
+the chat's own agent) and the person's own registered agents reachable
+(`acp/kas_engine_subagents.py:engine_subagents_on`), and the entry excludes `spawn_run`
+and `spawn_sub_agents`: the engine's tool replaces them in every mounted chat.
 In the same
 chats on a person's own agent, a file that excludes the sub-agent tool the way a
 file run on kiro-cli did is read as kiro-cli read it

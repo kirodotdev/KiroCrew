@@ -3393,45 +3393,61 @@ spec the same way kiro-cli v2 does where the wire allows it:
   the chat-runtime-sharing preview off, because the sharing check
   `chat_runtime_sharing.spec_grants_native_subagents` reads the spec on disk and
   not this mount), the session agent's entry gains `invoke_sub_agent` in `tools`
-  and a `subagent` deny on every name but `kirocrew-helper`. Only in a person's own
-  dashboard chat on the default agent `kirocrew`, and the crew member named
-  `default`'s own chat on it (`engine_replaces_spawn`, read from the agent and the
-  key alone, so the batch and the contract renderer, which holds only those two,
-  agree), does that entry also get `@kirocrew-core/spawn_run` and
-  `@kirocrew-core/spawn_sub_agents` in `excludedTools`, and only there does the
-  mount register the person's own agents as children (`own_agents`); every other
-  mounted chat keeps both spawn tools, for the shipped flows that pin a model, a
-  backend or a folder for a run, and runs the shipped helper only, because an own
-  agent's MCP servers beyond the chat agent's are held by an `ask` alone, which an
-  auto-approving chat answers. The contract's sub-agent bullet follows the same
-  decision (`contract_engine_subagent_mode`): `replace` names the engine's tool
-  first and `spawn_run` / `spawn_sub_agents` only for a chat whose mount was
-  refused, `beside` keeps the `spawn_sub_agents` sentence and adds one that names
-  `kirocrew-helper` alone and sends every other agent to `spawn_run`, and a person's
-  own agent file, which the mount skips, reads the contract of before. Nothing is written to an agent file: the mount goes only into the batch
-  handed to KAS (`test_kas_engine_subagents_every_chat.py`). The in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended,
-  carrying every `deny` and `ask` rule of the default agent's entry (never an
-  allow) and withholding auto-approval for what that agent's own spec PreToolUse
-  hooks cover, as a registered target's entry does. The helper also holds the
-  default agent's MCP servers (`shared_servers`), never Kiro Crew's own: the engine
-  hands a sub-agent the session-level array and the servers its own entry
-  declares, never its parent's block, so the helper lists each server as the
-  parent's `tools` name it, repeats the parent's projected block entry unchanged
-  (the same declaration is the same running server, measured on engine 0.66.119)
-  and copies the parent's `excludedTools` entries for it
+  and a `subagent` deny on every name but `kirocrew-helper`, and
+  `@kirocrew-core/spawn_run` and `@kirocrew-core/spawn_sub_agents` join its
+  `excludedTools`: in every mounted chat the engine's tool replaces them, a
+  dispatched worker's and a Bot worker chat's included, and the mount registers the
+  person's own agents as children (`own_agents`). Outside the two chats that
+  registered them before (a person's own dashboard chat on the default agent, and
+  the crew member named `default`'s own chat on it:
+  `own_agents_keep_their_servers`), each child keeps only the MCP servers it
+  declares exactly as the session agent does, every other one dropped and excluded
+  whole and its `mcp.json` stamp not opted in (`_only_shared_servers`): in a cron
+  run on `auto`, a trusted channel or a dispatched worker, no person may answer the
+  ask that would otherwise hold such a server. In those same chats, under a
+  session agent, each child's tool selection is cut to the session agent's
+  (`_only_parents_builtins`): the built-ins it mounts, for a server it mounts only
+  in part its own per-tool refs in place of a whole-server ref, a server it
+  mounts none of excluded whole, and all of its `excludedTools`; a child that
+  selects tools by a wildcard, a pattern or an engine tag is not registered there. Every child, like the helper,
+  starts no sub-agent of its own (`deny_every_subagent` on each registered
+  entry). Built-in flows that pin a model,
+  a backend or a folder on a `spawn_run` (the local review lanes, llm-council) lose
+  that pin there: an engine sub-agent takes no per-run option. The contract's
+  sub-agent bullet follows the same decision (`contract_engine_subagent_mode`):
+  `replace` names the engine's tool first and `spawn_run` / `spawn_sub_agents` only
+  for a chat whose mount was refused, and a person's own agent file, which the mount
+  skips, reads the contract of before. Nothing is written to an agent file: the mount goes only into the batch
+  handed to KAS (`test_kas_engine_subagents_every_chat.py`). The in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended:
+  a copy of the session agent's projected entry, the agent an unnamed `spawn_run`
+  runs (its built-in tools, `allowedTools`, `permissions`, `excludedTools`, prompt
+  and resources), under the helper's id and description, with
+  `kas_engine_subagent_target.CHILD_NOTE` after the prompt saying it has no Kiro
+  Crew tool, cannot start sub-agents and takes no model, folder or turn limit. It
+  leaves out Kiro Crew's own records of the parent (`CREW_ONLY_ENTRY_KEYS`: the
+  gate stamps the parent's on its requests) and the sub-agent tool
+  (`invoke_sub_agent` excluded, every engine sub-agent denied), and withholds
+  auto-approval for what that agent's own spec PreToolUse hooks cover, as a
+  registered target's entry does. The helper holds the session agent's MCP servers
+  (`shared_servers`), never Kiro Crew's own: those are launched with the parent
+  session's key, and an engine sub-agent has no session of its own, so its call
+  there would be the parent's. The engine hands a sub-agent the session-level array
+  and the servers its own entry declares, never its parent's block, so the helper
+  keeps the parent's `tools` entry for each shared server, repeats the parent's
+  projected block entry unchanged (the same declaration is the same running server,
+  measured on engine 0.66.119), and keeps the parent's `excludedTools` entries for it
   ([security](security.md), KAS native sub-agent ceiling). The helper's ceiling is never
-  wider than its parent's: a default-agent spec carrying a restriction the helper
+  wider than its parent's: a session-agent spec carrying a restriction the helper
   cannot mirror (`kas_engine_subagents.unmirrored_restriction`: an unreadable spec,
   an `excludedTools` entry that withdraws a built-in or names no known MCP server,
   `toolsSettings` of any tool but the shell (`_only_held_tools_settings`: the
   shell's deny rules travel on every sub-agent's entry, and the gate stamps its
   allowlist, read-only flag and the denies only it refuses on every native
-  sub-agent's request, `test_kas_engine_child_parent_settings.py`), a `tools` or
-  `allowedTools` narrower than the helper's)
+  sub-agent's request, `test_kas_engine_child_parent_settings.py`))
   refuses the mount, and that chat keeps Kiro Crew's own sub-agents exactly as on
   main. A mount records one `kas_engine_subagent_mounted` security event (source
-  `kas_agent_projection`) naming the agent, how many of its rules the helper
-  carries and how many of its MCP servers it holds
+  `kas_agent_projection`) naming the agent and how many of its MCP servers the
+  helper holds
   (`kas_subagent_targets.audit_subagent_policy`). An accepted mount also
   registers the person's own agents: `KasHarness.session_extras` hands
   `native_batch` the same `project_subagent_targets` call with `every_agent=True`
