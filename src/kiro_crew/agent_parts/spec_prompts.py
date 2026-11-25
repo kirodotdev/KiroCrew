@@ -495,6 +495,12 @@ refused `memory_delegation_denied` — a binding no setting can change.
         """If arming is refused outright, say no
 loop is running and drive that one round with `wait`.
 
+**Patrol with `monitor_start`, never with `wait`.** While a `wait` runs your
+turn is busy, and a worker's report cannot wake a busy turn: it reaches you
+only when the wait ends, so the ledger wake turns back into a timer. Once the
+loop is armed and nothing needs a decision, end the turn; do not wait between
+reports or poll worker chats.
+
 """,
     ),
     (
@@ -717,7 +723,8 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
   an unmerged PR),
   `list_sessions`.
 - Your own state across rounds — `session_ledger_read`, `session_ledger_record`.
-- Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
+- Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`; `wait` only
+  when arming is refused.
 - Capacity, before standing up several sessions at once — `resource_status`.
 - Talking to the person — `ask_question` puts an ask case (a)-(e) to them as a
   card; the call waits for them and their answers are its
