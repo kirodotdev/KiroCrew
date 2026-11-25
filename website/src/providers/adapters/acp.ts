@@ -20,17 +20,15 @@ import type {
 const MODEL_TOKENS: Record<string, number> = Object.fromEntries(
   Object.entries(modelTokensRaw).filter(([k]) => !k.startsWith('_')) as [string, number][]
 )
-const DEFAULT_CONTEXT = 200_000
 
-// Windows learned from GET /api/models, which enriches every row with the
-// backend's centrally-resolved `context_window` (kiro `--list-models` cache >
-// static registry > supplementary map > [1m] heuristic). That resolver knows
-// every model kiro actually serves; the bundled static map above is a 21-entry
-// snapshot that does NOT (claude-opus-5, gpt-5.6-sol, glm-5, kimi-k3, grok-4.3,
-// …). Without this cache, `getContextWindow` fell through to DEFAULT_CONTEXT for
-// those, so the composer's context meter read "0% of 200K" right after a model
-// switch and only became correct once the first turn's live usage_update landed.
-// Keyed by the same model id the picker sends and slot.model stores.
+// Windows learned from GET /api/models, whose rows carry the backend's
+// centrally-resolved `context_window` (kiro `--list-models` cache > static
+// registry > supplementary map > [1m] heuristic) wherever a source knows it.
+// That resolver knows every model kiro actually serves; the bundled static map
+// above is a 21-entry snapshot that does NOT (claude-opus-5, gpt-5.6-sol, glm-5,
+// kimi-k3, grok-4.3, …). This is the window the composer's context meter shows
+// between a model switch and the first live usage_update. Keyed by the same
+// model id the picker sends and slot.model stores.
 const LIVE_WINDOWS: Record<string, number> = {}
 
 /** Record an authoritative per-model window so the window lookup no longer
@@ -122,12 +120,15 @@ function readCachedModels(): ModelInfo[] | null {
 
 /** Seed `LIVE_WINDOWS` from the persisted list at module load so a cold start
  *  (first paint, before /api/models resolves) already resolves the real window
- *  for the slot's current model instead of falling back to DEFAULT_CONTEXT. The
- *  cached rows carry whatever `fetchAvailableModels` stored — the reported window
- *  when the backend gave one, else its own fallback, which is the value the
- *  lookup would have produced anyway. Either way the next live response corrects
- *  it. */
-for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ?? 0)
+ *  for the slot's current model. The cached rows carry whatever
+ *  `fetchAvailableModels` stored: the reported window, else the bundled
+ *  snapshot's, else none. A seeded window lasts until the first live answer
+ *  names its id: a list an earlier build saved can carry a guessed window. */
+const SEEDED_WINDOWS = new Set<string>()
+for (const m of readCachedModels() ?? []) {
+  learnWindow(m.name, m.contextWindow ?? 0)
+  SEEDED_WINDOWS.add(m.name)
+}
 
 /** Drop the last-good list. Called when `agent.acp_backend` changes: the cache
  *  is keyed by nothing but time, so after a switch it still holds the PREVIOUS
@@ -492,10 +493,12 @@ export class AcpAdapter implements ProviderAdapter {
       const result = models.map((m: RawModel) => {
         // Prefer the backend's resolved window over the bundled snapshot: the
         // gateway reads kiro's own --list-models output, so it is right for
-        // models this bundle does not list. Learn only the reported value — never
-        // the fallback, or a row with no window would record 200K as fact and
-        // clobber a window learned from an earlier, better-informed response.
+        // models this bundle does not list. Learn only the reported value, so a
+        // row with no window cannot clobber one an earlier response reported.
         const reported = rowWindow(m)
+        // Only the configured list speaks for a window the saved list seeded.
+        if (reported) SEEDED_WINDOWS.delete(m.model_name)
+        else if (configured && SEEDED_WINDOWS.delete(m.model_name)) delete LIVE_WINDOWS[m.model_name]
         learnWindow(m.model_name, reported)
         return {
           name: m.model_name,
@@ -508,7 +511,9 @@ export class AcpAdapter implements ProviderAdapter {
               ? m.display_name
               : undefined,
           description: m.description || '',
-          contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
+          // No default: this row is persisted and seeds the window lookup above,
+          // so a made-up figure would come back as the model's real window.
+          contextWindow: reported || MODEL_TOKENS[m.model_name] || undefined,
           rateMultiplier: rowMultiplier(m),
           ...(m.hidden_by_account === true ? { hiddenByAccount: true } : {}),
         }
@@ -551,16 +556,15 @@ export class AcpAdapter implements ProviderAdapter {
     return [{
       name: 'auto',
       description: 'Models chosen by task for optimal usage and consistent quality',
-      contextWindow: this.getContextWindow('auto'),
+      contextWindow: this.getContextWindow('auto') || undefined,
     }]
   }
 
   getContextWindow(model: string): number {
-    // Learned-from-backend first, bundled snapshot second, reference default
-    // last. This is the value the composer's context meter shows between a model
-    // switch and the next turn's live usage_update, so a miss here is what made
-    // a 1M model read as 200K until a message was sent.
-    return LIVE_WINDOWS[model] ?? MODEL_TOKENS[model] ?? DEFAULT_CONTEXT
+    // Learned-from-backend first, bundled snapshot second. 0 when neither knows
+    // the model: the composer's meter shows that as an unknown window until the
+    // turn's live usage_update reports the served one, never a guessed figure.
+    return LIVE_WINDOWS[model] ?? MODEL_TOKENS[model] ?? 0
   }
 
   getDefaultModel(): string {

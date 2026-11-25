@@ -282,8 +282,7 @@ def _cap_rows(payload: object, fields: dict[str, int]) -> list[dict[str, object]
     Allowlist, not passthrough: the browser gets the keys this gateway knows how
     to render and nothing else, so a peer on a build with extra fields cannot
     inject content into a picker. ``context_window`` is the one numeric field and
-    is coerced rather than clamped — a bogus value reads as "unknown", which the
-    frontend already handles by falling back to the reference window.
+    is coerced rather than clamped — a bogus value reads as "unknown" (0).
     """
     if not isinstance(payload, list):
         return []
