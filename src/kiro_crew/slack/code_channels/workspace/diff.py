@@ -64,13 +64,26 @@ def _cut_to_fit(body: bytes, budget: int) -> bytes:
     return body[: line + 1] if line >= 0 else b""
 
 
-def truncation_note(files_shown: int) -> str:
-    """The plain-text line that opens a cut diff (outside every file section)."""
-    return (
-        f"Diff truncated: {files_shown} file(s) shown. Other changes are not included: "
-        "they are over Slack's 1,000,000-byte view limit, or were withheld because "
-        "they may hold a credential.\n"
-    )
+def truncation_note(files_shown: int, *, unread: bool = False, lost: bool = True) -> str:
+    """The plain-text line that opens a cut diff (outside every file section).
+
+    ``unread``: new files were left out because this platform cannot read them
+    safely (:data:`UNREAD`). ``lost``: something was cut for size or withheld.
+    Each names only its own cause, so a platform omission is never blamed on
+    the size limit or a credential.
+    """
+    note = f"Diff truncated: {files_shown} file(s) shown."
+    if unread:
+        note += (
+            " New files are not shown on this platform until they are added to git:"
+            " ask the agent to `git add` them."
+        )
+    if lost:
+        note += (
+            " Other changes are not included: they are over Slack's 1,000,000-byte view"
+            " limit, or were withheld because they may hold a credential."
+        )
+    return note + "\n"
 
 
 def _utf8(data: bytes) -> bytes:
@@ -110,6 +123,7 @@ def assemble(
     tracked_truncated: bool,
     untracked: list[bytes],
     untracked_truncated: bool,
+    untracked_unread: bool = False,
     limit: int = MAX_VIEW_BYTES,
 ) -> BuiltDiff:
     """Join tracked and new-file sections under ``limit`` bytes.
@@ -117,20 +131,25 @@ def assemble(
     ``tracked_truncated`` / ``untracked_truncated`` say an upstream read already
     lost data (git output overflowed its cap, a new file could not be shown),
     which marks the result truncated even when what survived happens to fit.
+    ``untracked_unread`` says a new file was left out because this platform
+    cannot read it safely (:data:`UNREAD`); it marks the result truncated too,
+    under its own reason in the note.
     """
     budget = limit - _NOTE_RESERVE
     joined, cut = _join(tracked, untracked, budget)
-    truncated = tracked_truncated or untracked_truncated or cut
+    lost = tracked_truncated or untracked_truncated or cut
+    truncated = lost or untracked_unread
     files = _count_files(joined)
+    note = truncation_note(files, unread=untracked_unread, lost=lost) if truncated else ""
     if not joined:
         if truncated:
-            # Everything was too large to show even one file: say so rather than
+            # Nothing could be shown, not even one file: say so rather than
             # publish nothing and let the tab read as "no changes".
-            return BuiltDiff(truncation_note(0), True, 0)
+            return BuiltDiff(note, True, 0)
         return BuiltDiff("", False, 0)
     text = joined.decode("utf-8")
     if truncated:
-        text = truncation_note(files) + "\n" + text
+        text = note + "\n" + text
     return BuiltDiff(text, truncated, files)
 
 
@@ -384,6 +403,7 @@ class DiffGroup:
     tracked_truncated: bool = False
     untracked: tuple[bytes, ...] = ()
     untracked_truncated: bool = False
+    untracked_unread: bool = False
 
 
 _HEADER_RULE = "=" * 4
@@ -407,32 +427,34 @@ def assemble_groups(groups: list[DiffGroup], *, limit: int = MAX_VIEW_BYTES) -> 
     budget = limit - _NOTE_RESERVE
     parts: list[bytes] = []
     used = 0
-    truncated = False
+    lost_any = False
+    unread = False
     for group in groups:
         head = (group_header(group.header) + "\n").encode("utf-8")
         if parts:
             head = b"\n" + head
         room = budget - used - len(head)
         if room <= 0:
-            truncated = True
+            lost_any = True
             break
+        unread = unread or group.untracked_unread
         body, cut = _join(group.tracked, list(group.untracked), room)
         lost = cut or group.tracked_truncated or group.untracked_truncated
+        lost_any = lost_any or lost
         if not body:
-            if lost:
-                truncated = True
             continue
-        truncated = truncated or lost
         parts.append(head + body)
         used += len(head) + len(body)
     joined = b"".join(parts)
     # Every group opens with its header line, so each file section follows a newline.
     files = joined.count(b"\n" + _FILE_HEADER)
+    truncated = lost_any or unread
+    note = truncation_note(files, unread=unread, lost=lost_any) if truncated else ""
     if not joined:
-        return BuiltDiff(truncation_note(0), True, 0) if truncated else BuiltDiff("", False, 0)
+        return BuiltDiff(note, True, 0) if truncated else BuiltDiff("", False, 0)
     text = joined.decode("utf-8")
     if truncated:
-        text = truncation_note(files) + "\n" + text
+        text = note + "\n" + text
     return BuiltDiff(text, truncated, files)
 
 
@@ -448,6 +470,12 @@ def _safe_rel(rel: str) -> bool:
 #: the caller marks the diff truncated instead of dropping the file silently.
 OMITTED = b""
 
+#: :func:`render_untracked`'s answer where the walk cannot be pinned (Windows):
+#: the file exists but was not read at all, so the caller names the platform as
+#: the reason (:func:`truncation_note`) rather than size or a credential. Never a
+#: real section: every section opens with ``diff --git``.
+UNREAD = b"\0unread"
+
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 #: ``O_NONBLOCK`` so a FIFO swapped in for a regular file cannot park the open forever.
 _LEAF_FLAGS = (
@@ -460,7 +488,7 @@ _LEAF_FLAGS = (
 
 
 def _read_leaf(root: str, rel: str, budget: int) -> tuple[str, bytes, int] | None:
-    """``(kind, data, mode)`` for one untracked path; kind ``link``/``file``/``large``.
+    """``(kind, data, mode)`` for one untracked path; kind ``link``/``file``/``large``/``unread``.
 
     The gateway reads this file itself, outside any sandbox, so the read must be
     confined to the worktree against an agent racing it: the directories are
@@ -472,12 +500,13 @@ def _read_leaf(root: str, rel: str, budget: int) -> tuple[str, bytes, int] | Non
     on the filesystem, including a file the agent's own sandbox hides (it is
     shown as ``large``, i.e. omitted with the truncation note, and refused on
     the open descriptor by :func:`pinned_fs.refuse_hardlink_alias`). Where the
-    walk cannot be pinned (Windows) nothing is read: every untracked file is
-    shown as ``large`` (omitted, never read), so the view still says a change
-    exists instead of reading as no change at all.
+    walk cannot be pinned (Windows) nothing is read, not even its size: every
+    untracked file is ``unread`` (omitted with the platform named as the
+    reason), so the view still says a change exists instead of reading as no
+    change at all.
     """
     if not pinned_fs.supports_pinned_walk():
-        return "large", b"", 0
+        return "unread", b"", 0
     parts = rel.replace(os.sep, _GIT_SEP).split(_GIT_SEP)
     leaf = parts[-1]
     try:
@@ -525,8 +554,9 @@ def render_untracked(root: str, rel: str, *, budget: int) -> bytes | None:
     """A ``new file`` diff section for one untracked path.
 
     Returns the section, :data:`OMITTED` for a file that exists but cannot be
-    shown (too large, or an unsafe name), or ``None`` for something that is not
-    a file to show at all (a directory, a FIFO, a path that vanished or escaped).
+    shown (too large, or an unsafe name), :data:`UNREAD` where this platform
+    cannot read it safely, or ``None`` for something that is not a file to show
+    at all (a directory, a FIFO, a path that vanished or escaped).
 
     Never follows a symlink: a link is rendered as git does (mode ``120000`` and
     its target text), so a link to a credential file cannot pull that file into a
@@ -538,6 +568,8 @@ def render_untracked(root: str, rel: str, *, budget: int) -> bytes | None:
     if leaf is None:
         return None
     kind, data, mode = leaf
+    if kind == "unread":
+        return UNREAD
     if kind == "large":
         return OMITTED
     name = rel.replace(os.sep, _GIT_SEP).encode("utf-8", "surrogateescape")
