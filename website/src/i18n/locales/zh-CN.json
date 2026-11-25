@@ -10417,6 +10417,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "在手机上使用 {{productName}}",
       "close": "关闭",
+      "dialog_load_failed": "无法加载连接手机的方式。请检查与网关的连接，然后重试。",
       "scan_with_your_phone_camera_to_continue_with_the_s": "用手机相机扫码，在手机浏览器里打开 {{productName}}。所有内容与这台电脑实时同步。",
       "generating": "生成中…",
       "show_qr_code": "显示二维码",
@@ -13042,6 +13043,7 @@
         "never_started_memory_pressure_reason": "macOS 内存压力未能及时缓解；等压力缓解或某个正在运行的代理完成后，使用“重试失败项”",
         "loading": "正在加载…",
         "loading_workspace": "正在加载工作区…",
+        "workspace_load_failed": "无法加载文件树。请检查与网关的连接，然后重试。",
         "logs": "日志",
         "no_issues_in_this_session_yet_mention_a_github_o": "这个会话里还没有 issue。提到一个 GitHub 或 GitLab 的 issue 链接，它就会出现在这里。",
         "no_links_yet": "这个会话里还没有链接。在聊天中提到一个网址，它就会出现在这里。",

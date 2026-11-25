@@ -10661,6 +10661,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "{{productName}} auf dem Telefon nutzen",
       "close": "Schließen",
+      "dialog_load_failed": "Die Möglichkeiten, dein Telefon zu verbinden, konnten nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
       "scan_with_your_phone_camera_to_continue_with_the_s": "Mit der Handykamera scannen, um {{productName}} im mobilen Browser zu öffnen. Alles bleibt mit diesem Computer synchron.",
       "generating": "Wird erzeugt …",
       "show_qr_code": "QR-Code anzeigen",
@@ -13344,6 +13345,7 @@
         "never_started_memory_pressure_reason": "Der Speicherdruck von macOS hat nicht rechtzeitig nachgelassen; sobald er nachlässt oder ein laufender Agent fertig ist, nutze „Fehlgeschlagene wiederholen“",
         "loading": "Wird geladen…",
         "loading_workspace": "Arbeitsbereich wird geladen …",
+        "workspace_load_failed": "Der Dateibaum konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
         "logs": "Protokolle",
         "no_issues_in_this_session_yet_mention_a_github_o": "In dieser Sitzung gibt es noch keine Issues. Erwähne einen GitHub- oder GitLab-Issue-Link, und er erscheint hier.",
         "no_links_yet": "In dieser Sitzung gibt es noch keine Links. Erwähne eine URL im Chat, und sie erscheint hier.",

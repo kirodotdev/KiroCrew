@@ -10417,6 +10417,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "휴대폰에서 {{productName}} 사용",
       "close": "닫기",
+      "dialog_load_failed": "휴대폰 연결 방법을 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
       "scan_with_your_phone_camera_to_continue_with_the_s": "휴대폰 카메라로 스캔하면 모바일 브라우저에서 {{productName}}이(가) 열립니다. 모든 내용이 이 컴퓨터와 동기화됩니다.",
       "generating": "생성 중…",
       "show_qr_code": "QR 코드 표시",
@@ -13042,6 +13043,7 @@
         "never_started_memory_pressure_reason": "macOS 메모리 압박이 제때 줄어들지 않았습니다. 압박이 줄거나 실행 중인 에이전트가 끝나면 '실패 재시도'를 사용하세요",
         "loading": "불러오는 중…",
         "loading_workspace": "워크스페이스 로드 중…",
+        "workspace_load_failed": "파일 트리를 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
         "logs": "로그",
         "no_issues_in_this_session_yet_mention_a_github_o": "이 세션에는 아직 이슈가 없습니다. GitHub 또는 GitLab 이슈 링크를 언급하면 여기에 표시됩니다.",
         "no_links_yet": "이 세션에는 아직 링크가 없습니다. 채팅에서 URL을 언급하면 여기에 표시됩니다.",
