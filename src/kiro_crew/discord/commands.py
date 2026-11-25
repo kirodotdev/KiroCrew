@@ -181,13 +181,28 @@ _APP_COMMAND_CONTEXTS = (_APP_CONTEXT_GUILD, _APP_CONTEXT_BOT_DM)
 #: ``value`` is what comes back in ``DiscordInteraction.options``, so it has to
 #: be a token the ``!`` text handlers already accept: the slash and text paths
 #: share one parser.
+#:
+#: ``autocomplete`` makes Discord ask for matches as the user types (an
+#: interaction of type 4, answered in ``transport_dispatch_interactions``). It
+#: suggests; it does not restrict, so a typed value still reaches the same
+#: handler and is checked there.
 _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
+    "model": (
+        {
+            "type": _APP_OPTION_STRING,
+            "name": "name",
+            "description": "The model to switch to; leave empty for the list",
+            "required": False,
+            "autocomplete": True,
+        },
+    ),
     "agent": (
         {
             "type": _APP_OPTION_STRING,
             "name": "name",
             "description": "The agent to switch to, or default",
             "required": False,
+            "autocomplete": True,
         },
     ),
     "sessions": (
@@ -196,6 +211,7 @@ _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             "name": "query",
             "description": "Match a session by title or slot name",
             "required": False,
+            "autocomplete": True,
         },
     ),
     "bot": (
@@ -204,6 +220,7 @@ _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             "name": "name",
             "description": "Match a Bot by its name",
             "required": False,
+            "autocomplete": True,
         },
     ),
 }

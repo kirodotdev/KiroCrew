@@ -294,6 +294,7 @@ class DiscordDispatcher:
     _interaction_actionable = _interactions._interaction_actionable
     _interaction_reply = _interactions._interaction_reply
     _on_command_interaction = _interactions._on_command_interaction
+    _on_autocomplete_interaction = _interactions._on_autocomplete_interaction
 
     # transport_dispatch_midturn.py
     _handle_resumed_busy = _midturn._handle_resumed_busy
@@ -737,6 +738,7 @@ class DiscordDispatcher:
                 route.resumed_key or self._session_key(user_id, thread_id),
                 parse_command_argument(text),
                 reply=reply,
+                user_id=user_id,
             )
             return monitor_result
         if cmd == "agent":

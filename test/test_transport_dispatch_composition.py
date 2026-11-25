@@ -286,6 +286,7 @@ MOVED_MEMBERS = {
     "interactions": (
         "_interaction_actionable",
         "_interaction_reply",
+        "_on_autocomplete_interaction",
         "_on_command_interaction",
         "on_interaction",
     ),
@@ -368,7 +369,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, channel_id: 'str', scope_id: 'str', session_key: 'str', arg: 'str', *, "
-            "reply: 'ReplyFn | None' = None) -> 'None'"
+            "reply: 'ReplyFn | None' = None, user_id: 'str' = '') -> 'None'"
         ),
     ),
     "_handle_resumed_busy": (
@@ -431,6 +432,11 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         "function",
         False,
         ("(self, session_key: 'str') -> 'tuple[tuple[str, str], ...]'"),
+    ),
+    "_on_autocomplete_interaction": (
+        "function",
+        True,
+        ("(self, itx: \"'DiscordInteraction'\") -> 'None'"),
     ),
     "_on_command_interaction": (
         "function",
