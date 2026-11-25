@@ -1031,6 +1031,7 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         reactions_enabled=bool(section.get("reactions_enabled")),
         show_thinking=bool(section.get("show_thinking")),
+        show_timing_footer=bool(section.get("show_timing_footer")),
     )
 
 

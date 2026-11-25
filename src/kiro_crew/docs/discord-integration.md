@@ -117,7 +117,7 @@ Omit `allowed_thread_ids` and `allowed_channel_ids`, or leave them empty, for
 DMs only. `allowed_channel_ids` lets an approved user start a turn from a shared
 server channel; the turn itself always runs in a public thread opened from that
 message, so `auto_thread` (default `true`) must stay on for those channels to
-work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `reactions_enabled` defaults to `true`, `show_thinking` defaults to `false`, and `session_folder` defaults to empty. The bot token belongs in the `DISCORD_BOT_TOKEN` credential (env / `.env` / credential store), not in `config.json`, which an agent can read. A `discord.bot_token` value is still honoured as a legacy fallback, but the credential takes precedence and is the supported place for it.
+work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `reactions_enabled` defaults to `true`, `show_thinking` defaults to `false`, `show_timing_footer` defaults to `true`, and `session_folder` defaults to empty. The bot token belongs in the `DISCORD_BOT_TOKEN` credential (env / `.env` / credential store), not in `config.json`, which an agent can read. A `discord.bot_token` value is still honoured as a legacy fallback, but the credential takes precedence and is the supported place for it.
 
 ### 6. Save, or start the gateway
 
@@ -367,6 +367,10 @@ refuses the command instead of guessing. Incognito and temporary sessions are
 never listed, and session titles plus replayed messages are scrubbed of
 credentials, inside URLs too, before they reach Discord.
 
+Each reply ends with a small "Finished in 12s · ctx 8%" line showing how long the
+turn took and how full the context is. Set `discord.show_timing_footer` to `false`
+to hide it from the next reply on; choice buttons still post.
+
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. The reply being written carries a
 ⏹ Stop button that does what `!stop` does, for anyone who could send `!stop` there; it
@@ -384,6 +388,8 @@ formatting that disguises a credential. The tool name, MCP names and purpose
 are never shortened: one that holds a backtick, starts or ends with a space,
 or is longer than 200 characters (100 for an MCP name) is hidden instead. A
 long input is cut to fit one Discord message and marked `… [truncated]`. A
+prompt waits `agent.tool_approval_timeout_secs` (default 600 seconds), as on
+Slack, and an unanswered one is denied. A
 sub-agent spawn started from Discord asks for approval the same way, with
 Approve/Deny buttons in the DM or thread it came from; there is no Trust button,
 because standing trust is granted only on the dashboard. With `messaging.dm_scope` set to `unified`, a DM session cannot be traced back to

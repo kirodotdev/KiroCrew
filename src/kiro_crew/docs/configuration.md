@@ -1254,6 +1254,7 @@ See [Discord](discord-integration.md).
 | `discord.soft_threshold_pct` | Prompt the user to !compact or !new when context passes this percentage. | 80 |
 | `discord.reactions_enabled` | Show phase-aware emoji reactions on Discord messages during processing. | true |
 | `discord.show_thinking` | Post the model's thinking/reasoning as a subtext note in Discord. Off by default to keep responses concise. | false |
+| `discord.show_timing_footer` | Post the "Finished in … · ctx …%" line under each reply. Turn it off for a cleaner chat; choice buttons still post. | true |
 | `discord.session_folder` | Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it. | empty |
 
 #### Webex
