@@ -5856,6 +5856,39 @@ Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.
 
+**Kiro cloud skills (`kiro_cloud_skills.py`).** KAS pulls a signed-in account's
+CloudConfig into a replica at `<kiro home>/cloud-cache/resolved/config` and loads
+`<layer>/skills/<name>/SKILL.md` from it into every session beside `~/.kiro/skills`.
+Measured on KAS 3.3.0 with a hand-built replica: the `organization` layer is read
+only while `state.json` lists it under `layers`, the `user` layer always. Crew
+reads the same trees, and only `{organization,user}/skills/*/SKILL.md` in them, for
+two things. The Skills page lists them read-only as sources `kiro-org` and
+`kiro-cloud` (keys `kiro-org/<name>`, `kiro-cloud/<name>`, resolved by
+`_resolve_skill_root` and refused by every write as `READONLY_SKILL_KEY_PREFIXES`).
+The KAS skill scope counts them among the trees KAS loads by default: a session with
+no skill rule (a whole-catalog agent, or one that inherits the default trees) is
+offered them, a spec's own allow by literal name keeps one in a narrowed scope (a
+deny would override the author), and the split `match` form denies the ones outside
+a wide scope. A mapped scope does not take them in, including one that adds
+`~/.kiro/skills` (the crewmate conductor's temporary inheritance names only the
+user and workspace trees). Measured on KAS before this: a mapped agent that allowed
+an org skill by name still had it denied by Crew's `exclude`
+(`_kiro/permissions/explain` named Crew's rule). A replica skill KAS refuses is
+never copied, judged by where the file is. Crew never loads a replica skill's body
+itself: `SkillsLoader`, `skill_search` and the kiro-cli inherited trees do not
+include the replica, so an organization's `deny skill` rule stays KAS's to
+enforce (RFC `rfc-crew-lts-edition` D8), and org skills do not reach kiro-cli
+(v2) chats, whose engine has no reader for the replica. A replica whose
+`state.json` is missing or unreadable, or whose sync lock KAS holds
+(`.sync.lock.lock` younger than 10 s, proper-lockfile's stale bound), gives no
+cloud skills and no error. The layout is KAS's undocumented on-disk format, marked
+as a shortcut in the module. Org skills cannot be mapped in an agent's Abilities or
+a hook yet, and Crew cannot expand their `$token`, so the Abilities editor, the hook
+skill picker, the `$` picker and the command palette leave `kiro-org` and
+`kiro-cloud` rows out (`isListOnlySkill` in `website/src/lib/skillsPayload.ts`). When a
+`skills.extra_paths` entry names the replica, the usable Kiro Crew row for the same
+file is the one kept (`_row_rank`), with the cloud key as an alias. Pinned by `test/test_kiro_cloud_skills.py` and `test/test_kas_skill_scope.py`.
+
 **KAS-refused skills (`kas_skill_scope.refused_skill_copies`).** KAS drops, without a word, a SKILL.md that kiro-cli loads: no front matter, no `name` or `description`, front matter its YAML parser rejects (an unquoted `: ` in a value), and, in its default trees only, a name outside `[a-z0-9-]` (1-64, no edge or double hyphen) or a description over 1024 UTF-16 units (in kiro-agent: `validateSkillMd` and `readSkill`). kiro-cli falls back to the path and "No description available". For each in-scope skill (the scope above, or every default-tree skill when there is no rule) that no path KAS reads loads, Crew writes a copy to `<data home>/kas-skills/<sha256 of the path and the copy name, 16 hex>/SKILL.md` (0600 in a 0700 dir, rewritten at every session start) and appends it to the agent's `resources` as `skill://`. The copy's front matter carries a sanitized name not used by any skill KAS loads (`-2`, `-3` on a clash) and a description: the original's, else the body's first line, else "No description available", cut to 1024. The body is the original's after one line naming the original path, so relative paths still resolve. The name and description are written double-quoted, so a value like `1e3` stays a string. A skill whose own name, folder or path a `deny` or `ask` rule of the spec's `permissions` matches under `skill` gets no copy, since the copy's new name would slip that rule. The copy names join the rule's `exclude`. The original is read through `hooks.safe_read_prefix`, which asks `kas_prompt_paths.is_unsafe_prompt_path` about the descriptor's kernel path after the open, so a SKILL.md linked into `/proc` or `~/.config/gh` gets no copy even when the link is swapped mid-read; a file over 1 MiB, unreadable, or not writable gets no copy, and a failure here costs the copies, never the session. One KAS session start reads each skill file once for its own agent and every sub-agent target (`build_reuse.one_build`; `_kept_skill_read`, `_kept_files`), and writes a copy it needs twice under the same name and text once. What each read decided (`_skill_facts`: the size, whether KAS loads the skill, and its name when KAS accepts it, the only kind a copy's name can clash with) is kept across starts under the file's device, inode, size and modification and change times as they were just before that read, so a new chat over an unchanged tree reads only the skills it copies, each through the fence afresh; a refusal is not kept, nor is a file changed in the two seconds before that read.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded wherever a body reaches the model: the **body-delivery loop** in `context_assembly/turn_message.py` (`ContextBuilder.build_message`; `_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt), `resolve_dollar_skills`, an exact `skill_search` read (below), and direct reads of `SKILL.md` (see **Direct reads**). Since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config, so the other three supply the hits unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading. The load never raises on file content: a row it cannot read (a non-numeric or infinite `hits`) is skipped, and a file that is not UTF-8 or nested past the recursion limit reads as a corrupt file (empty ledger, replaced by the next flush).

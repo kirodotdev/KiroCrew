@@ -18962,6 +18962,8 @@
         "on_demand": "à la demande",
         "on_demand_skills_loaded_when_the_agent_determine": "Compétences à la demande, chargées quand l’agent les juge pertinentes.",
         "package": "Package",
+        "organization": "Organisation",
+        "your_account": "Ton compte",
         "pending_review_count": "En attente de validation ({{count}})",
         "new_candidate": "Nouvelle",
         "newer_update_exists": "Une mise à jour plus récente existe",

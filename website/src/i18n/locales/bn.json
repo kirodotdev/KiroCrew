@@ -18468,6 +18468,8 @@
         "on_demand": "চাহিদা অনুযায়ী",
         "on_demand_skills_loaded_when_the_agent_determine": "প্রয়োজনমাফিক স্কিল, এজেন্ট প্রাসঙ্গিক মনে করলে লোড হয়।",
         "package": "প্যাকেজ",
+        "organization": "সংস্থা",
+        "your_account": "তোমার অ্যাকাউন্ট",
         "pending_review_count": "পর্যালোচনার অপেক্ষায় ({{count}})",
         "new_candidate": "নতুন",
         "newer_update_exists": "নতুন হালনাগাদ আছে",

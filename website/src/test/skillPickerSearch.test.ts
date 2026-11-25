@@ -226,6 +226,22 @@ describe('dollarToken — what goes after the $', () => {
     expect(loaderKey({ key: 'group/foo', name: 'foo', aliases: ['kiro-user/foo'] }, [])).toBe('group/foo')
   })
 
+  // A Kiro cloud key (kiro-org/, kiro-cloud/) names a list-only row the loader never
+  // holds, so it is never a loader key, even riding on a native row as an alias.
+  it('a Kiro cloud alias never becomes a $ token', () => {
+    const rows = [
+      { key: 'kiro-user/shared', name: 'shared', aliases: ['kiro-org/shared'] },
+      { key: 'tools/shared', name: 'shared' },
+      { key: 'kiro-user/mine', name: 'mine', aliases: ['kiro-cloud/mine'] },
+      { key: 'x/mine', name: 'mine' },
+    ]
+    expect(loaderKey(rows[0], rows)).toBeNull()
+    expect(loaderKey(rows[2], rows)).toBeNull()
+    expect(dollarToken(rows[1], rows)).toBe('shared')
+    expect(keys(rankSkills(rows, 'shared'))).toEqual(['tools/shared'])
+    expect(keys(rankSkills(rows, 'mine'))).toEqual(['x/mine'])
+  })
+
   it('a row the loader does not hold never makes another row\'s leaf ambiguous', () => {
     // Ops/foo cannot be spelled as a `$` token, but with only a bare native `foo`
     // beside it, `$foo` still resolves to Ops/foo by leaf: keep it listed.

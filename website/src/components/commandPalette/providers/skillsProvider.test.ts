@@ -90,6 +90,21 @@ describe('createSkillsProvider — listing + filtering', () => {
     })
     expect((await run(p, '')).map((r) => r.title).sort()).toEqual(['shared', 'trusted-proj'])
   })
+
+  it('leaves out a Kiro cloud skill, which KAS loads and Crew cannot expand', async () => {
+    const { d } = deps(true)
+    const p = createSkillsProvider({
+      ...d,
+      fetchSkills: () => Promise.resolve([
+        { name: 'org-guide', source: 'kiro-org' },
+        { name: 'my-cloud-skill', source: 'kiro-cloud' },
+        // A cloud row does not hide a usable skill of the same name.
+        { name: 'shared', source: 'kiro-org' },
+        { name: 'shared', source: 'kirocrew' },
+      ]),
+    })
+    expect((await run(p, '')).map((r) => r.title)).toEqual(['shared'])
+  })
 })
 
 describe('createSkillsProvider — §2 Enter matrix', () => {

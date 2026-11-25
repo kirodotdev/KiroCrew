@@ -96,6 +96,9 @@ function sourceLabel(source: Skill['source']): string | null {
   switch (source) {
     case 'package': return i18nT('pages.overview.skillsTab.package')
     case 'kiro-user': return '~/.kiro/skills'
+    // Skills Kiro cloud syncs for the organization and for the user (read-only).
+    case 'kiro-org': return i18nT('pages.overview.skillsTab.organization')
+    case 'kiro-cloud': return i18nT('pages.overview.skillsTab.your_account')
     case 'kiro-workspace': return i18nT('pages.overview.skillsTab.workspace')
     default: return null  // kirocrew — the default home, no badge needed
   }

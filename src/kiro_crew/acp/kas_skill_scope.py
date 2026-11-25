@@ -4,9 +4,12 @@ kiro-cli (v2) and KAS (v3) build a session's skill catalog differently. On kiro-
 Crew's native launch turns ``chat.disableInheritingDefaultResources`` on, so the
 session loads only the skills its spec maps (or the inherited trees, served by Crew's
 ``skill_search``). KAS reads no
-``cli.json``: it loads every skill under ``~/.kiro/skills`` and the workspace's
-``.kiro/skills`` on top of the injected agent's ``resources`` (measured on kiro-cli
-2.35.1: a spec mapping 3 skills ran with 45 on KAS and with 3 through Crew's v2 path).
+``cli.json``: it loads every skill under ``~/.kiro/skills``, Kiro cloud's replica
+(:mod:`kiro_crew.kiro_cloud_skills`) and the workspace's ``.kiro/skills`` on top of
+the injected agent's ``resources`` (measured on kiro-cli 2.35.1: a spec mapping 3
+skills ran with 45 on KAS and with 3 through Crew's v2 path). A replica skill is
+offered wherever no rule narrows the catalog and to an agent whose own ``permissions``
+allow it by name; a mapped scope does not take it in, and it is never copied.
 
 The ``customAgents`` wire has no field that turns that off, but its ``permissions``
 does reach the catalog: KAS drops every skill the policy denies under the ``skill``
@@ -121,11 +124,14 @@ def skill_names(globs: list[str]) -> set[str]:
 
 
 def _default_tree_globs(work_dir: str | Path | None) -> list[str]:
-    """The skill trees KAS loads for every session, whatever the agent maps."""
+    """The skill trees KAS loads for every session, whatever the agent maps:
+    ``~/.kiro/skills``, Kiro cloud's replica (:mod:`kiro_crew.kiro_cloud_skills`)
+    and the workspace's ``.kiro/skills``."""
     from kiro_crew.config import paths
+    from kiro_crew.kiro_cloud_skills import replica_skill_globs
     from kiro_crew.skills import project_skill_tree_present
 
-    globs = [str(paths.kiro_home() / "skills" / "*" / "SKILL.md")]
+    globs = [str(paths.kiro_home() / "skills" / "*" / "SKILL.md"), *replica_skill_globs()]
     if work_dir and project_skill_tree_present(work_dir):
         globs.append(str(Path(work_dir) / ".kiro" / "skills" / "*" / "SKILL.md"))
     return globs
@@ -738,6 +744,14 @@ def _kept_skill_read(
     )
 
 
+def _is_under(path: str, root: str) -> bool:
+    """Whether real path *path* is *root* or inside it."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # another drive, on Windows
+        return False
+
+
 def _unsafe_to_copy(opened: str) -> bool:
     """Whether the kernel path of an opened skill file is one a prompt may not carry."""
     from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path
@@ -818,10 +832,15 @@ def refused_skill_copies(
     from kiro_crew.atomic_write import atomic_write
     from kiro_crew.build_reuse import reuse
     from kiro_crew.config import paths
+    from kiro_crew.kiro_cloud_skills import replica_dir
 
     native = set(_kept_files(_default_tree_globs(work_dir)))
     resource = set(_kept_files(_resource_globs(spec, agents_dir / f"{agent}.json", work_dir)))
     in_scope = sorted(native) if globs is None else _kept_files(globs)
+    # Kiro cloud's skills are KAS's own to load: a copy would put the replica's
+    # text and path in front of the agent, so one KAS refuses stays refused. Told by
+    # where the file is, not by a second read of the replica that a sync could race.
+    replica = os.path.realpath(replica_dir())
     taken: set[str] = set()
     refused: list[Path] = []
     for path in sorted(native | resource | set(in_scope)):
@@ -831,7 +850,11 @@ def refused_skill_copies(
         size, name, loads_native, loads_resource = facts
         if (path in native and loads_native) or (path in resource and loads_resource):
             taken.add(name)
-        elif path in in_scope and size <= _MAX_COPY_BYTES:
+        elif (
+            path in in_scope
+            and not _is_under(os.path.realpath(path), replica)
+            and size <= _MAX_COPY_BYTES
+        ):
             refused.append(path)
     copies: list[SkillCopy] = []
     root = paths.data_home() / COPY_DIR_NAME

@@ -82,6 +82,20 @@ describe('AgentSkillsEditor', () => {
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('specialist', ['babysit', 'widgets']))
   })
 
+  it('offers no Kiro cloud skill, which the save could not map', async () => {
+    mockApi.skills.mockResolvedValue([
+      ...CATALOG,
+      { key: 'kiro-org/org-guide', name: 'org-guide', description: 'Org', source: 'kiro-org' },
+      { key: 'kiro-cloud/mine', name: 'my-cloud-skill', description: 'Mine', source: 'kiro-cloud' },
+    ])
+    renderEditor({ skills: ['babysit'] })
+    await openAddMenu()
+
+    await waitFor(() => expect(screen.getByRole('option', { name: /widgets/i })).toBeInTheDocument())
+    expect(screen.queryByRole('option', { name: /org-guide/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /my-cloud-skill/i })).not.toBeInTheDocument()
+  })
+
   it('omits already-mapped skills from the add list', async () => {
     renderEditor({ skills: ['babysit'] })
     await openAddMenu()

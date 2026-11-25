@@ -17974,6 +17974,8 @@
         "on_demand": "オンデマンド",
         "on_demand_skills_loaded_when_the_agent_determine": "エージェントが関連性があると判断したときにオンデマンドスキルを読み込みます。",
         "package": "パッケージ",
+        "organization": "組織",
+        "your_account": "あなたのアカウント",
         "pending_review_count": "レビュー待ち ({{count}})",
         "new_candidate": "新規",
         "newer_update_exists": "新しい更新があります",

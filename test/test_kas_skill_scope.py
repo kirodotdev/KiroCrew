@@ -29,6 +29,9 @@ from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.agent_discovery import session_skill_globs
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
 
+#: The replica layers whose skills KAS loads (``kiro_crew.kiro_cloud_skills``).
+_CLOUD_LAYERS = ("organization", "user")
+
 
 def _skill(root: Path, dirname: str, name: str | None = None) -> Path:
     path = root / dirname / "SKILL.md"
@@ -72,8 +75,12 @@ async def _entry(agent: str, checkout: Path) -> dict:
 
 
 def _kas_catalog(kiro: Path, entry: dict) -> set[str]:
-    """What KAS loads before any policy: the default tree plus the agent's resources."""
+    """What KAS loads before any policy: the default trees (``~/.kiro/skills`` and the
+    Kiro cloud replica's skills, as KAS 3.3.0 was measured to) plus the agent's
+    resources."""
+    replica = kiro / "cloud-cache" / "resolved" / "config"
     paths = [str(kiro / "skills" / "*" / "SKILL.md")]
+    paths += [str(replica / layer / "skills" / "*" / "SKILL.md") for layer in _CLOUD_LAYERS]
     paths += [r[len("skill://") :] for r in entry.get("resources", []) if r.startswith("skill://")]
     return kas_skill_scope.skill_names(paths)
 
@@ -808,3 +815,135 @@ def test_a_skill_edited_during_a_start_is_screened_again_on_the_next_start(home,
 
     assert screened == ["global-1", "global-1"]
     assert facts is not None and not facts[2]
+
+
+# --- Kiro cloud's skills (the CloudConfig replica KAS loads) -----------------------
+
+
+def _cloud(kiro: Path, layer: str, dirname: str, text: str | None = None) -> Path:
+    """A skill in Kiro cloud's replica under *kiro*, with the ``state.json`` KAS
+    writes listing the organization layer."""
+    root = kiro / "cloud-cache" / "resolved" / "config"
+    root.mkdir(parents=True, exist_ok=True)
+    state = {"syncedAt": 1, "files": {}, "layers": [{"scope": "organization", "assertions": {}}]}
+    (root / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    if text is not None:
+        return _raw_skill(root / layer / "skills", dirname, text)
+    return _skill(root / layer / "skills", dirname)
+
+
+@pytest.mark.asyncio
+async def test_a_whole_catalog_session_is_offered_the_org_skills(home):
+    kiro, checkout, _package = home
+    _cloud(kiro, "organization", "org-guide")
+    _cloud(kiro, "user", "my-cloud-skill")
+    _agent(kiro, "kirocrew-worker", {"tools": ["*"]})
+
+    entry = await _entry("kirocrew-worker", checkout)
+
+    assert _skill_rules(entry) == []
+    assert {"org-guide", "my-cloud-skill"} <= _kas_offers(kiro, entry)
+
+
+@pytest.mark.asyncio
+async def test_a_scope_that_takes_in_the_user_skills_does_not_take_the_org_skills(home):
+    # A mapped scope that adds ~/.kiro/skills (the crewmate conductor's temporary
+    # inheritance) names those trees only, per the "conductors stay simple"
+    # decision in docs/decisions/; an org skill is not added.
+    kiro, checkout, package = home
+    _cloud(kiro, "organization", "org-guide")
+    alpha = _skill(package, "alpha")
+    user_tree = kiro / "skills" / "*" / "SKILL.md"
+    _agent(
+        kiro,
+        "scoped",
+        {"tools": ["*"], "resources": [f"skill://{alpha}", f"skill://{user_tree}"]},
+    )
+
+    entry = await _entry("scoped", checkout)
+
+    offered = _kas_offers(kiro, entry)
+    assert {"alpha", "global-0"} <= offered
+    assert "org-guide" not in offered
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_agent_keeps_an_org_skill_its_own_policy_allows(home):
+    kiro, checkout, package = home
+    _cloud(kiro, "organization", "org-guide")
+    _cloud(kiro, "organization", "org-other")
+    alpha = _skill(package, "alpha")
+    allows = {"capability": "skill", "effect": "allow", "match": ["org-guide"]}
+    _agent(
+        kiro,
+        "managed",
+        {"tools": ["*"], "resources": [f"skill://{alpha}"], "permissions": {"rules": [allows]}},
+    )
+
+    entry = await _entry("managed", checkout)
+
+    assert _kas_offers(kiro, entry) == {"alpha", "org-guide"}
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_agent_gets_no_org_skill_it_does_not_map_like_a_user_skill(home):
+    kiro, checkout, package = home
+    _cloud(kiro, "organization", "org-guide")
+    alpha = _skill(package, "alpha")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{alpha}"]})
+
+    entry = await _entry("mapped", checkout)
+
+    assert _kas_offers(kiro, entry) == {"alpha"}
+
+
+@pytest.mark.asyncio
+async def test_a_scope_past_the_exclude_bound_denies_org_skills_outside_it(home):
+    kiro, checkout, package = home
+    _cloud(kiro, "organization", "org-guide")
+    count = kas_skill_scope._MAX_PATTERNS_PER_RULE + 6
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(count):
+        _skill(package, f"wide-{i:03d}")
+
+    entry = await _entry("wide", checkout)
+
+    assert "org-guide" not in _kas_offers(kiro, entry)
+    assert len(_kas_offers(kiro, entry)) == count
+
+
+@pytest.mark.asyncio
+async def test_an_org_skill_kas_refuses_is_never_copied(home):
+    # A copy would put the replica's text and path in front of the agent.
+    kiro, checkout, _package = home
+    _cloud(kiro, "organization", "No_Front", "# Org helper\n\nRun scripts/go.sh\n")
+    _raw_skill(kiro / "skills", "Mine_Too", "# Mine\n")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    entry = await _entry("plain", checkout)
+
+    assert set(_copies(entry)) == {"mine-too"}
+    assert not any("cloud-cache" in r for r in entry.get("resources", []))
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_cli_session_is_not_served_org_skills_by_crew(home):
+    # Crew's kiro-cli launch turns default-resource inheritance off and serves the
+    # inherited trees itself; the replica is not one of them, so Crew never loads
+    # an org skill's body (the organization's skill policy is KAS's to enforce).
+    kiro, checkout, _package = home
+    _cloud(kiro, "organization", "org-guide")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    assert "org-guide" not in (_v2_skills("plain", checkout) or set())
+
+
+@pytest.mark.asyncio
+async def test_an_org_skill_mapped_by_path_that_kas_refuses_is_never_copied(home):
+    kiro, checkout, _package = home
+    path = _cloud(kiro, "organization", "nodesc", "---\nname: nodesc\n---\nUse me\n")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+
+    entry = await _entry("mapped", checkout)
+
+    assert _copies(entry) == {}

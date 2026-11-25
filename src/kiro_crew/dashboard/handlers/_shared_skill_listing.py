@@ -42,13 +42,18 @@ _KIRO_SKILL_FRONTMATTER_BYTES = 4096
 def _kiro_skill_roots(project_dir: Path | None = None) -> list[tuple[str, Path]]:
     """Return ``(label, path)`` pairs for the open-standard skill locations.
 
-    label is one of: ``kiro-user``, ``kiro-workspace``.  Used as the
-    ``source`` field on listed skills so the UI can show provenance.
+    label is one of: ``kiro-user``, ``kiro-org``, ``kiro-cloud``, ``kiro-workspace``.
+    Used as the ``source`` field on listed skills so the UI can show provenance.
+    ``kiro-org`` and ``kiro-cloud`` are the skills Kiro cloud syncs for the
+    organization and the user (:mod:`kiro_crew.kiro_cloud_skills`).
     """
+    from kiro_crew.kiro_cloud_skills import replica_skill_roots
+
     out: list[tuple[str, Path]] = []
     user_dir = Path.home() / ".kiro" / "skills"
     if user_dir.is_dir() and not is_sensitive_path(str(user_dir)):
         out.append(("kiro-user", user_dir))
+    out.extend(replica_skill_roots())
     if project_dir:
         ws_dir = project_dir / ".kiro" / "skills"
         if ws_dir.is_dir() and not is_sensitive_path(str(ws_dir)):
@@ -692,11 +697,17 @@ def _row_rank(row: dict[str, Any]) -> int:
     folder (``package``, ``kiro-user``): its key is the one the agent-skill
     catalog keys that folder by, so a mapping saved from it resolves. A
     ``kirocrew`` row reached through ``skills.extra_paths`` or an edition root
-    (``owned: False``) is last: nothing can edit it and that catalog does not
-    key it.
+    (``owned: False``) comes after those: nothing can edit it and that catalog
+    does not key it. A Kiro cloud row is last, as it is list-only.
     """
     if _row_is_editable(row):
         return 0
+    from kiro_crew.kiro_cloud_skills import REPLICA_LAYERS
+
+    if row.get("source") in {source for _layer, source in REPLICA_LAYERS}:
+        # A Kiro cloud row is list-only (every picker drops it), so a usable row
+        # for the same file -- ``skills.extra_paths`` naming the replica -- wins.
+        return 3
     if row.get("source") == "kirocrew":
         return 2
     return 1

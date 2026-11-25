@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { defaultAgentQuery } from '../../../api/defaultAgentQuery'
 import { i18nT } from '../../../i18n/t'
-import { unwrapSkills, type SkillsPayload } from '../../../lib/skillsPayload'
+import { isListOnlySkill, unwrapSkills, type SkillsPayload } from '../../../lib/skillsPayload'
 import { useAppSelector } from '../../../store'
 import { slotRowByKey } from '../../../store/slotIndex'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
@@ -143,6 +143,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
         // The $-picker asks for consent on this row; the palette cannot, so it
         // does not offer a token that would be sent as literal text.
         if (s.source === 'kiro-workspace' && s.trusted === false) continue
+        if (isListOnlySkill(s)) continue
         if (seen.has(s.name)) continue
         seen.add(s.name)
         const title = s.name

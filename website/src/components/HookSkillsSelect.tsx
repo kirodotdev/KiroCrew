@@ -12,6 +12,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { i18nT } from '../i18n/t'
 import HookSkillsDropdown from './HookSkillsDropdown'
+import { isListOnlySkill } from '../lib/skillsPayload'
 
 interface CatalogSkill {
   key: string
@@ -19,6 +20,7 @@ interface CatalogSkill {
   description?: string
   /** Other keys that name this same file (see AgentSkillsEditor's CatalogSkill). */
   aliases?: string[]
+  source?: string
 }
 
 interface Props {
@@ -47,6 +49,7 @@ export default function SkillsMultiSelect({ selected, onChange }: Props) {
 
   const candidates = useMemo(
     () => catalog
+      .filter(s => !isListOnlySkill(s))
       .filter(s => !selected.includes(s.key) && !(s.aliases ?? []).some(a => selected.includes(a)))
       .sort((a, b) => compareText(a.name, b.name)),
     [catalog, selected],
