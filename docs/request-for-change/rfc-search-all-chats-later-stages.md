@@ -1,6 +1,6 @@
 ---
 title: Search all chats, later stages -- message links, matches by meaning, tool output
-status: draft
+status: accepted
 author: RohanK6
 created: 2026-11-24
 last-audited: 2026-11-24
@@ -14,12 +14,14 @@ superseded-by: []
 
 # RFC: Search all chats, later stages
 
-**Status:** draft. This is a proposal for the team to accept, change or reject.
+**Status:** accepted on 2026-11-25 by maintainer bolichen97's sign-off on
+[#42015](https://github.com/kirodotdev/KiroCrew/pull/42015#pullrequestreview-6063857145)
+("Bolin accepts this RFC as written"). Nothing is built yet.
 On 2026-11-16 KiroCrewCaptain wrote on
 [#38023](https://github.com/kirodotdev/KiroCrew/issues/38023) that the deferred
 stages are not on the current plan and that a design goes through this
-request-for-change process. Nothing here is built, and no implementation PR
-opens until a maintainer records a decision in this document. Every main-side
+request-for-change process. That decision is now recorded in
+[§13](#13-decision); nothing here is built yet. Every main-side
 reference was read at `50fe0f6cf2`.
 
 Credit: stages 1 and 2 of Search all chats shipped in
@@ -228,4 +230,7 @@ under the lock beyond the rebuild itself, and no retention change.
 
 ## 13. Decision
 
-No decision recorded yet.
+Accepted as written on 2026-11-25 by maintainer bolichen97 in his
+[review of #42015](https://github.com/kirodotdev/KiroCrew/pull/42015#pullrequestreview-6063857145)
+("Bolin accepts this RFC as written"). Implementation PRs may now open
+against this design.
