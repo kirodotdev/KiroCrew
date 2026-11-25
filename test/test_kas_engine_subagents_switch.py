@@ -136,10 +136,8 @@ async def test_a_targets_own_server_is_excluded_from_the_helper(agents_dir, sett
     out = engine.with_engine_subagents(
         batch,
         "kirocrew",
-        agents_dir=agents_dir,
         work_dir=None,
         stub_server_names=frozenset(),
-        session_key=_DASHBOARD,
         settings_dir=None,
         notices=[],
         parent_spec=_default_spec(),
@@ -226,12 +224,13 @@ _RESTRICTIONS = [
         {"toolsSettings": {"web_fetch": {"blocked": ["https://x.example/*"]}}},
         "refused",
     ),
-    ("narrower_tools", {"tools": ["fs_read", "grep", "@kirocrew-core"]}, "refused"),
-    ("aliased_tools", {"tools": ["fsRead", "fsWrite", "@kirocrew-core"]}, "refused"),
+    # The helper is a copy of its parent, so a narrower tool list is its own too.
+    ("narrower_tools", {"tools": ["fs_read", "grep", "@kirocrew-core"]}, "mirrored"),
+    ("aliased_tools", {"tools": ["fsRead", "fsWrite", "@kirocrew-core"]}, "mirrored"),
     ("narrower_allowed", {"allowedTools": ["grep", "@kirocrew-core"]}, "mirrored"),
     ("no_allowed", {"allowedTools": []}, "mirrored"),
-    ("builtin_ref_tools", {"tools": ["@builtin/*", "@kirocrew-core"]}, "refused"),
-    ("builtin_slash_tools", {"tools": ["@builtin/", "@kirocrew-core"]}, "refused"),
+    ("builtin_ref_tools", {"tools": ["@builtin/*", "@kirocrew-core"]}, "mirrored"),
+    ("builtin_slash_tools", {"tools": ["@builtin/", "@kirocrew-core"]}, "mirrored"),
     ("builtin_ref_allowed", {"allowedTools": ["@builtin/*", "@kirocrew-core"]}, "mirrored"),
     ("all_tools", {"tools": "*"}, "mirrored"),
     ("all_tools_list", {"tools": ["*"]}, "mirrored"),
@@ -320,8 +319,20 @@ async def test_every_parent_restriction_is_mirrored_or_refuses_the_mount(
     for rule in rules(parent):
         if rule.get("effect") in ("deny", "ask") and rule.get("capability") != "subagent":
             assert rule in rules(helper), kind
-    # Tools: the helper names no MCP server.
-    assert not any(isinstance(t, str) and t.startswith("@") for t in helper["tools"]), kind
+
+    # Tools: the parent's own, less its servers (it shares none here) and the
+    # engine's sub-agent tool.
+    def own_tools(entry: dict) -> list:
+        listed = entry["tools"] if isinstance(entry["tools"], list) else [entry["tools"]]
+        return [
+            t
+            for t in listed
+            if not (isinstance(t, str) and t.startswith("@kirocrew-")) and t != "invoke_sub_agent"
+        ]
+
+    assert own_tools(helper) == own_tools(parent), kind
+    # Tags such as ``@builtin/*`` stay; no Kiro Crew server does.
+    assert not any(isinstance(t, str) and t.startswith("@kirocrew-") for t in helper["tools"]), kind
     # Unasked: the helper runs nothing unasked the parent would have asked for.
     from kiro_crew.acp.kas_permissions import auto_approved_capabilities
 
@@ -351,10 +362,8 @@ def test_no_parent_spec_means_no_mount(agents_dir):
     out = engine.with_engine_subagents(
         batch,
         "kirocrew",
-        agents_dir=agents_dir,
         work_dir=None,
         stub_server_names=frozenset(),
-        session_key=_DASHBOARD,
         settings_dir=None,
         notices=[],
     )
@@ -380,7 +389,7 @@ def test_only_restrictions_travel_to_the_helper():
 
 
 @pytest.mark.asyncio
-async def test_engine_takes_both_spawn_tools_off_the_default_agents_own_chat(agents_dir, setting):
+async def test_engine_takes_both_spawn_tools_off_a_mounted_chat(agents_dir, setting):
     _write(agents_dir, _default_spec())
     setting(True)
     batch = _by_id(await _batch())
@@ -412,7 +421,7 @@ def _spawn_kept(entry: dict) -> bool:
     ],
     ids=["cron", "channel", "a-members-chat", "a-members-dispatch"],
 )
-async def test_every_other_chat_kind_mounts_the_tool_and_keeps_both_spawn_tools(
+async def test_every_other_chat_kind_mounts_the_tool_in_place_of_both_spawn_tools(
     agents_dir, setting, key, kw
 ):
     _write(agents_dir, _default_spec())
@@ -420,7 +429,7 @@ async def test_every_other_chat_kind_mounts_the_tool_and_keeps_both_spawn_tools(
     batch = _by_id(await _batch(key=key, **kw))
     assert _HELPER in batch
     assert "invoke_sub_agent" in batch["kirocrew"]["tools"] or batch["kirocrew"]["tools"] == "*"
-    assert _spawn_kept(batch["kirocrew"])
+    assert not _spawn_kept(batch["kirocrew"])
 
 
 # ── off, and everywhere "on" does not apply: exactly main's batch ────────────
@@ -451,23 +460,17 @@ async def test_engine_leaves_every_session_that_is_not_a_chat_as_main(
 
 
 @pytest.mark.asyncio
-async def test_the_member_named_default_drops_both_spawn_tools_in_its_own_chat(
-    agents_dir, setting, monkeypatch
-):
+async def test_every_members_own_chat_drops_both_spawn_tools(agents_dir, setting, monkeypatch):
     from kiro_crew import members as members_mod
 
     _write(agents_dir, _default_spec())
     setting(True)
     key = "dashboard:member-default"
-    monkeypatch.setattr(
-        members_mod, "member_identity_for_session", lambda k: {"slug": "default", "name": "default"}
-    )
-    assert not _spawn_kept(_by_id(await _batch(key=key))["kirocrew"])
-    # Another member's chat keeps them.
-    monkeypatch.setattr(
-        members_mod, "member_identity_for_session", lambda k: {"slug": "ada", "name": "ada"}
-    )
-    assert _spawn_kept(_by_id(await _batch(key=key))["kirocrew"])
+    for name in ("default", "ada"):
+        monkeypatch.setattr(
+            members_mod, "member_identity_for_session", lambda k, n=name: {"slug": n, "name": n}
+        )
+        assert not _spawn_kept(_by_id(await _batch(key=key))["kirocrew"]), name
 
 
 @pytest.mark.asyncio
@@ -479,7 +482,7 @@ async def test_the_member_named_default_drops_both_spawn_tools_in_its_own_chat(
         "kirocrew-heartbeat",
     ],
 )
-async def test_an_agent_built_from_the_default_template_mounts_and_keeps_both_spawn_tools(
+async def test_an_agent_built_from_the_default_template_mounts_in_place_of_both_spawn_tools(
     agents_dir, setting, monkeypatch, name
 ):
     _write(agents_dir, _default_spec())
@@ -487,7 +490,7 @@ async def test_an_agent_built_from_the_default_template_mounts_and_keeps_both_sp
     monkeypatch.setattr(agent_mod, "require_fresh_derived_spec", lambda *a, **k: None)
     setting(True)
     batch = _by_id(await _batch(name))
-    assert _HELPER in batch and _spawn_kept(batch[name])
+    assert _HELPER in batch and not _spawn_kept(batch[name])
     setting(False)
     # Off: byte-equal to the batch from before the preview.
     assert json.dumps(await _batch(name), sort_keys=True) == json.dumps(
@@ -740,19 +743,13 @@ async def test_the_mount_is_recorded_in_the_security_event_log(agents_dir, setti
     setting(True)
     events = _sel_events(monkeypatch)
 
-    batch = _by_id(await _batch())
+    await _batch()
 
     [event] = [e for e in events if e["operation"] == "kas_engine_subagent_mounted"]
     assert event["source"] == "kas_agent_projection"
-    copied = sum(
-        1
-        for r in (batch["kirocrew"].get("permissions") or {}).get("rules") or []
-        if r.get("effect") in ("deny", "ask") and r.get("capability") != "subagent"
-    )
-    assert copied > 0
     assert event["resources"] == (
-        f"sub-agent tool limited to {_HELPER}, which carries {copied} deny or ask "
-        "rule(s) of its parent and holds 0 of its MCP server(s) for agent kirocrew"
+        f"sub-agent tool limited to {_HELPER}, a copy of kirocrew without Kiro Crew's "
+        "own servers or a sub-agent tool, holding 0 of its MCP server(s) for agent kirocrew"
     )
 
 
