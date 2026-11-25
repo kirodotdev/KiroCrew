@@ -280,3 +280,30 @@ def test_an_error_code_is_the_one_its_example_carries() -> None:
 
     # The body's code once, not the examples' names; a bare example by its name.
     assert "| 404 | `not_found`, `gone` | No such widget |" in page
+
+
+def test_an_error_row_names_the_headers_it_declares_that_are_not_served() -> None:
+    docs = _docs()
+    read = docs["crew-public.yaml"]["paths"]["/v1/widgets/{widget_id}"]["get"]
+    not_found = docs["components.yaml"]["components"]["responses"]["NotFound"]
+    not_found["headers"] = {
+        "X-Widget-Quota": {"schema": {"type": "integer"}},
+        "X-Request-Id": {"schema": {"type": "string"}},
+    }
+    row = "| 404 | `not_found` | No such widget |"
+    marked = (
+        "| 404 | `not_found` | **Not served yet:** `X-Widget-Quota`. "
+        "Where this note says the response carries them, that is the planned behaviour. "
+        "No such widget |"
+    )
+
+    # Without the mark the shared response reads as the spec has it.
+    assert row in generator.render(docs)["public-widgets.md"]
+
+    read["x-crew-not-served-yet"] = {"response-headers": ["X-Widget-Quota"]}
+    page = generator.render(docs)["public-widgets.md"]
+    assert marked in page and row not in page
+
+    # A mark that names a header this response does not declare leaves the row alone.
+    read["x-crew-not-served-yet"] = {"response-headers": ["X-Other"]}
+    assert row in generator.render(docs)["public-widgets.md"]
