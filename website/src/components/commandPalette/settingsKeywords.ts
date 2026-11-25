@@ -335,7 +335,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'display.show-search-in-the-top-bar': ['search bar', 'top bar search', 'hide search box'],
   'display.show-task-runner': ['hide task runner', 'task runner in left rail', 'turn off task runner'],
   'display.show-tray-icon': ['tray icon', 'menu bar icon', 'hide tray icon', 'system tray icon'],
-  'display.show-linked-items-expanded-on-session-cards': ['linked pull requests', 'pr chips', 'expand links'],
+  'display.show-linked-items-expanded-on-session-cards': ['session cards', 'linked pull requests', 'pr chips', 'expand links'],
   'display.show-unread-dot-on-session-cards': ['unread badge', 'unread indicator', 'blue dot'],
   'display.sounds': ['theme sounds', 'ui sounds', 'click sounds'],
   'display.ssh-host': ['remote ssh host', 'ssh config host', 'dev box name'],

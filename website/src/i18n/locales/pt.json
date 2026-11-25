@@ -21330,6 +21330,8 @@
         "show_unread_dot_save_failed": "Não foi possível salvar a configuração do ponto de não lido.",
         "expand_linked_items": "Mostrar os itens vinculados expandidos nos cartões de sessão",
         "expand_linked_items_save_failed": "Não foi possível salvar a configuração dos itens vinculados.",
+        "expand_linked_items_desc": "Cada cartão de sessão começa mostrando abaixo os pull requests e issues vinculados. Tocar no número de um cartão ainda recolhe ou expande esse cartão.",
+        "session_cards": "Cartões de sessão",
         "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas.",
         "font_family_option_custom": "Personalizada",
         "custom_font_family": "Fonte personalizada",

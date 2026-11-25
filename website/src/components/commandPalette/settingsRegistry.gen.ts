@@ -3235,6 +3235,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "display.show-linked-items-expanded-on-session-cards",
     "label": "Show linked items expanded on session cards",
     "labelKey": "pages.settings.displayPanel.expand_linked_items",
+    "hint": "Each session card starts with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
     "tab": "display",
     "type": "toggle",
     "occurrence": 1,

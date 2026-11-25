@@ -1165,9 +1165,9 @@ class DashboardConfig:
         default=False,
         metadata=_meta(
             "Show Linked Items Expanded",
-            "Start each sidebar session card with its linked items (pull "
-            "requests, issues) shown under it. The count on the card still folds "
-            "or opens each card's list on its own.",
+            "Start each session card with its linked pull requests and issues "
+            "shown under it. Pressing the count on a card still folds or opens "
+            "that card.",
         ),
     )
     command_bar_enabled: bool = field(

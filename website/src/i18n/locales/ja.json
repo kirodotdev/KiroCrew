@@ -20232,6 +20232,8 @@
         "show_unread_dot_save_failed": "未読ドットの設定を保存できませんでした。",
         "expand_linked_items": "セッションカードのリンク項目を展開して表示",
         "expand_linked_items_save_failed": "リンク項目の設定を保存できませんでした。",
+        "expand_linked_items_desc": "各セッションカードは、リンクされたプルリクエストとイシューを下に展開した状態で表示されます。カードの数をクリックすると、そのカードだけを折りたたんだり開いたりできます。",
+        "session_cards": "セッションカード",
         "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。",
         "font_family_option_custom": "カスタム",
         "custom_font_family": "カスタムフォント",

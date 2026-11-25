@@ -20232,6 +20232,8 @@
         "show_unread_dot_save_failed": "읽지 않음 점 설정을 저장할 수 없습니다.",
         "expand_linked_items": "세션 카드에서 연결된 항목을 펼쳐서 표시",
         "expand_linked_items_save_failed": "연결된 항목 설정을 저장할 수 없습니다.",
+        "expand_linked_items_desc": "각 세션 카드가 연결된 풀 리퀘스트와 이슈를 아래에 펼친 상태로 시작합니다. 카드의 숫자를 누르면 여전히 그 카드만 접거나 펼칠 수 있습니다.",
+        "session_cards": "세션 카드",
         "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다.",
         "font_family_option_custom": "사용자 지정",
         "custom_font_family": "사용자 지정 글꼴",

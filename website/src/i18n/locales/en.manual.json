@@ -10209,6 +10209,8 @@
         "show_unread_dot_save_failed": "Could not save the unread dot setting.",
         "expand_linked_items": "Show linked items expanded on session cards",
         "expand_linked_items_save_failed": "Could not save the linked items setting.",
+        "expand_linked_items_desc": "Each session card starts with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
+        "session_cards": "Session Cards",
         "recent_tint_save_failed": "Could not save the recent-session highlight count.",
         "milestones": "Explore",
         "milestones_hint": "Show Explore in the top bar and a Try today card on a new chat.",
