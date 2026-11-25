@@ -46,7 +46,7 @@ The verdict (`--out`)
      "verdict": "select" | "full", "reason": str | null,
      "tiers": {"A": [test file, ...], ..., "G": [...]},
      "would_skip": [test file, ...], "would_run_share": float,
-     "covered": {status letter: rows},
+     "covered": {status letter: rows, "added_test": test files},
      "windows": {"verdict", "reason", "run": [test file, ...], "would_run_share"}}
 
 `covered` counts, by git status letter (`A` added, `D` deleted, `M` modified,
@@ -390,7 +390,8 @@ def score(
             tier = "G"
         tiers[tier].append(test)
     skip = sorted(t for tier in skippable for t in tiers[tier] if t not in held)
-    return _verdict(tiers, skip, counts, None, ctm.covered_statuses(covered))
+    allowed = {**ctm.covered_statuses(covered), **ctm.added_tests(changes)}
+    return _verdict(tiers, skip, counts, None, allowed)
 
 
 def _verdict(
