@@ -24,11 +24,13 @@ own revocations and held approvals strip it as they strip every grant:
 With the switch off nothing here runs, and the worker's spec is byte for byte what
 it is today.
 
-The switch also bounds the Bot's workers: while it is on and the owner set no
-``max_workers`` (0, no limit), the Bot's effective ``Workers at once`` is
+The switch also bounds the sessions the Bot runs: while it is on and the owner set
+no ``max_workers`` (0, no limit), the Bot's effective ``Workers at once`` is
 ``BOT_MAX_WORKERS_CONDUCTING`` (:func:`effective_worker_cap_refusal`, the one cap
-check ``session_create``, ``session_revive`` and ``session_fork`` ask). A limit the
-owner set is used as is, and with the switch off the check is today's.
+check ``session_create``, ``session_revive`` and ``session_fork`` ask), over the
+same sessions ``bot_worker_cap`` counts: its workers and every other session a verb
+opened as the Bot. A limit the owner set is used as is, and with the switch off the
+check is ``bot_worker_cap.worker_cap_refusal``.
 
 What a running worker does per call (its children forced onto the Bot's worker, the
 own-child exemption, the bound for its own creates) follows the kit its session
@@ -157,7 +159,7 @@ def start_mounts_session_control(
 
 
 def effective_worker_cap_refusal(
-    state: Any, execution: Any, caller_conducts: bool = False
+    state: Any, execution: Any, caller_conducts: bool = False, exclude: str = ""
 ) -> str | None:
     """Why a slot running *execution* may not open under its Bot's effective limit.
 
@@ -170,24 +172,25 @@ def effective_worker_cap_refusal(
     ``bot_worker_cap.bot_worker_cap_refusal`` is asked under
     ``BOT_MAX_WORKERS_CONDUCTING``. Every other case, a limit the owner set or a
     Bot whose switch is off and whose workers have restarted, IS
-    ``bot_worker_cap.worker_cap_refusal``, so what that check counts applies
-    unchanged. Nothing in ``bot_worker_cap`` is edited.
+    ``bot_worker_cap.worker_cap_refusal``. Both count the same sessions, decided
+    for any record that carries a member id (``bot_worker_cap.bot_member``), and
+    leave out *exclude*, a fork's own child.
     """
     from kiro_crew.dashboard.state import (
         bot_max_workers,
+        bot_member,
         bot_worker_cap_refusal,
-        own_worker_member,
         worker_cap_refusal,
     )
 
-    member_id = own_worker_member(execution)
+    member_id = bot_member(execution)
     if (
         member_id
         and (caller_conducts or _bot_conducts(member_id))
         and not bot_max_workers(member_id)
     ):
-        return bot_worker_cap_refusal(state, member_id, BOT_MAX_WORKERS_CONDUCTING)
-    return worker_cap_refusal(state, execution)
+        return bot_worker_cap_refusal(state, member_id, BOT_MAX_WORKERS_CONDUCTING, exclude)
+    return worker_cap_refusal(state, execution, exclude)
 
 
 def thread_fork_conducts(caller_key: str, execution: Any) -> bool:

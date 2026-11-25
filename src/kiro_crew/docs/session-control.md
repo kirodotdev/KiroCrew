@@ -1356,12 +1356,16 @@ except while the Bot's workers can conduct, `worker_conducts` on its record:
 then 0 means at most 4).
 Its own worker sessions are the ones that run on its worker template. Its owner
 sets it on the Bot's settings page under **Workers at once**; no Bot tool can
-change it. A `session_create`, `session_revive` or `session_fork` that would
-leave one more of those worker sessions open past it, from the Bot's chat or
-from one of its workers, is refused with `bot_worker_cap_reached` (HTTP 409),
-and nothing is created. A session that a worker opens on another template is
-not counted here; the per-creator cap above still bounds it. A worker keeps its
-seat until it is closed, even after its work is done: close one that has
+change it. Those worker sessions are not all it counts: it counts every open
+session that runs as the Bot and that an agent opened with `session_create`,
+`session_revive` or `session_fork`: its worker sessions, and the sessions they
+open on another template or as the Bot itself, at any depth. The Bot's own chat, the chats you open, and sessions that
+do not run as a Bot are not counted. A call that would leave one more of those
+sessions open past the limit is refused with `bot_worker_cap_reached` (HTTP
+409), and nothing is created. Runs started with `spawn_run` or
+`spawn_sub_agents` are not counted: `agent.max_subagents` bounds them (a spawn
+past it waits in the queue), and so does the spawn depth limit. A session keeps
+its seat until it is closed, even after its work is done: close one that has
 finished (`session_close`), then try again.
 
 ## Combining two chats

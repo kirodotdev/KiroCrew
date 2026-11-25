@@ -352,7 +352,6 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_cjk_segmenter,
     _reset_code_channel_owner_only_notices,
     _reset_create_rate_limit_buckets,
-    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
     _reset_kas_machine_fence_config,
@@ -389,6 +388,9 @@ from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytes
 )
 from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_connected_computers_state,
+)
+from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_crewmate_worker_slots,
 )
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,

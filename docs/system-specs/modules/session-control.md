@@ -1112,24 +1112,46 @@ waits for the owner's Apply, and a hand-edited value above the range is clamped 
 load (`_SECURITY_BOUNDED_FIELDS`) with a SEL `config_bounds_clamped` event.
 
 **A Bot's own worker cap.** `agents.<name>.max_workers` (default 0 = no limit,
-else 1-32, `BOT_MAX_WORKERS_MAX` in `config/sections_session.py`) bounds how many of
-one Bot's own worker sessions, the ones on its worker template, are live at once.
+else 1-32, `BOT_MAX_WORKERS_MAX` in `config/sections_session.py`) bounds how many
+sessions that run as one Bot, and that a session-control verb opened, are live at
+once.
 While the Bot's `worker_conducts` switch is on, 0 reads as
 `BOT_MAX_WORKERS_CONDUCTING` (4), so a tree of conducting workers is bounded when
 the owner chose no number; a limit the owner set is used as is.
-`session_create` (from the Bot's chat or a worker), `session_revive` and
-`session_fork` ask `mate_worker_conducts.effective_worker_cap_refusal` with the
-execution record the new slot will run under. It is `worker_cap_refusal`
+`session_create` (from the Bot's chat, a worker, or any session those opened),
+`session_revive` and `session_fork` ask
+`mate_worker_conducts.effective_worker_cap_refusal` with the execution record the
+new slot will run under, for any record that carries a member id. It is `worker_cap_refusal`
 (`dashboard/state_parts/bot_worker_cap.py`) except for a Bot with no limit whose
 switch is on, or whose caller holds the conducting kit
 (`mate_worker_conducts.holds_conducting_kit`: a conducting worker keeps the bound
 it started under until its next start), which it asks `bot_worker_cap_refusal`
 under the bound. A create past it is
 refused `bot_worker_cap_reached` (409) with nothing minted; a handoff opens nothing
-and is not asked. A worker counts while its slot is live, from its mint (so two
-parallel creates cannot both pass) until it is closed, and workers a restart brought
-back are counted from their saved records. A session a worker opens on another
-template is not counted here; the per-creator ceiling bounds it. The owner sets it
+and is not asked. A slot counts while it is live in `state._slots` and its key is
+one of the Bot's own workers (`members.crewmate_worker_member_id`, unchanged: that
+registry also picks the worker's harness) or in `bot_worker_cap._BOT_SESSIONS`,
+which `note_new_worker` writes at the mint of every slot one of those verbs opened
+under a record carrying the Bot's member id, whatever its `selection_kind`: a
+`template` child on any template, and a `member` selection such as a worker's
+`session_create(agent="<its own Bot>")`. It counts from its mint (so two parallel
+creates cannot both pass) until it is closed; a fork child `_withdraw_fork_child`
+pops stops counting with it. The Bot's own thread and the chats a person opens are
+not minted by those verbs and are not counted, nor is a session with no member id.
+A person's agent selection that rewrites a counted slot's record refreshes its
+entry (`refresh_bot_session`), so a session moved onto a record with no member id
+frees its seat. After a restart `count_restored_workers` reads, off the loop and one
+record at a time, the saved record of each live slot on the worker template, or
+that a verb opened (a non-empty `_created_by`, `UNVERIFIED_CREATOR` included, but
+not the `cron:<job id>` stamp a script cron's chat carries, which no verb wrote) on a
+non-default memory store, that is in neither registry and not read yet; a record
+carrying a member id enters the count, a record read is never read again, and an
+unreadable or absent one leaves only that slot uncounted and is read again at the
+next pass. Each pass first prunes both tables to the live keys. `fork_slot` hands its post-bind `recheck` the minted child, and
+`session_tree`'s recheck leaves that key out of the count (`exclude`), so a fork one
+below the limit is not refused by its own child. Runs a session starts with
+`spawn_run` / `spawn_sub_agents` are not counted; `agent.max_subagents` (a spawn past
+it waits in the queue) and the spawn depth limit bound them. The owner sets it
 on the Bot's settings page (**Workers at once**); no Bot tool writes it, and an
 unreadable value never refuses.
 

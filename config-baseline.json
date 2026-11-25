@@ -13951,7 +13951,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Workers at once",
-      "help": "How many of this Bot's own worker sessions (on its worker template) may be open at once. A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit while Workers can conduct is off; while it is on, 0 means at most 4. Otherwise 1 to 32, used as set.",
+      "help": "How many sessions that run as this Bot may be open at once: its worker sessions and the sessions they open, on any template or as the Bot, at any depth (not the Bot's own chat, a person's chats or sub-agent runs). A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit while Workers can conduct is off; while it is on, 0 means at most 4. Otherwise 1 to 32, used as set.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0

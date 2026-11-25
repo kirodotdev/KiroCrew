@@ -5105,8 +5105,10 @@ Bot's workers (`agent_admin/crew_update.py` through
 `crewmate_worker_reload.schedule_reload_workers`: an idle one at once, a busy one
 at its turn end, the conversation kept). While the switch is on, `Workers at
 once` always applies: with none set (`max_workers` 0) the Bot is held to
-`BOT_MAX_WORKERS_CONDUCTING` (4) workers at once, the thread's and the conducting
-workers' children together, and a conducting worker still running from before a
+`BOT_MAX_WORKERS_CONDUCTING` (4) sessions at once, counted as the owner's limit
+counts them (its workers and every other session a session-control verb opened as
+the Bot, [session-control](session-control.md) "A Bot's own worker cap"), and a
+conducting worker still running from before a
 switch-off keeps that bound for its own creates until it restarts.
 `session_create`, `session_revive` and `session_fork` ask
 `mate_worker_conducts.effective_worker_cap_refusal`, which calls
