@@ -2397,8 +2397,10 @@ it `end_turn` with nothing after it. The run then withholds that ending and send
 `deny_notice.build_refused_turn_resume_prompt` (the redacted notice, plus the fact
 that the turn was stopped) as the next prompt on the same session, at most
 `REFUSED_TURN_RESUME_MAX` times per run (`subagent_manager/run_turn.py`). The clean
-ending resumes only on opencode (the provider's `is_opencode_backend`; other
-harnesses go on after a reject, so their clean ending is the model's own), and
+ending resumes only on a harness whose session capability
+`ends_turn_on_permission_reject` is true, which is opencode alone
+(`agent_sdk/capabilities.py`; other harnesses and an unknown backend go on after a
+reject, so their clean ending is the model's own), and
 only when the model wrote no text and made no new tool call after the latest
 refusal; a
 turn the model went on with, a person's no in the same attempt, and a stop, reap
