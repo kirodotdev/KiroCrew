@@ -120,6 +120,7 @@ def build_session_context(
     served_model: str = "",
     conversation_reset: bool = False,
     native_documents: Mapping[str, str] | None = None,
+    _keeps_stored_context: bool | None = None,
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -178,7 +179,14 @@ def build_session_context(
     # ``includeCrossSessionContext: false`` on the agent's spec drops the memory and
     # lessons groups before any builder below reads a store. The caller's
     # ``context_groups`` is kept for the project group and for [CONTEXT SCOPE].
-    store_groups = _inclusion._agent_scoped_groups(agent, context_groups)
+    # ``build_message`` hands in its own reading of the spec, which also knows the
+    # template directory; a direct caller gets one taken here.
+    keeps_stored = (
+        _inclusion._agent_includes_cross_session_context(agent, project, session_key)
+        if _keeps_stored_context is None
+        else _keeps_stored_context
+    )
+    store_groups = _inclusion._spec_scoped_groups(keeps_stored, context_groups)
     # A harness that is not named is not assumed to be kiro-cli: the
     # essentials builder, the folder dedup and the ``is_cc`` gate all read
     # the value as given.
@@ -253,7 +261,7 @@ def build_session_context(
         logger.info(
             (
                 "Custom agent %r: injecting memory/lessons/rules, %s"
-                if _inclusion._agent_includes_cross_session_context(agent)
+                if keeps_stored
                 else "Custom agent %r: injecting rules, no memory/lessons (spec opt-out), %s"
             ),
             agent,

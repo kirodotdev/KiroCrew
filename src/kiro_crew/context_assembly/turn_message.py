@@ -196,13 +196,6 @@ def build_message(
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
-    # ``includeCrossSessionContext: false`` on the agent's spec drops the memory and
-    # lessons groups for every store-backed block this turn builds: the essentials,
-    # the post-compaction parts and the per-message lessons. Only the project gates
-    # and ``build_session_context``, which narrows for itself and names a parent's
-    # choice in [CONTEXT SCOPE], still take the caller's ``context_groups``.
-    store_groups = _inclusion._agent_scoped_groups(agent, context_groups)
-
     report_user_span = user_text_range is not None
     if user_text_range is None:
         user_text_range = (0, len(text))
@@ -261,6 +254,17 @@ def build_message(
         else ""
     )
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    # ``includeCrossSessionContext: false`` on the agent's spec drops the memory and
+    # lessons groups for every store-backed block this turn builds: the essentials,
+    # the session-start context, the post-compaction parts and the per-message
+    # lessons. The spec is the one the agent prompt is read from (the project, else
+    # the template directory, settled above), read once here. Only the project
+    # gates and ``build_session_context``, which names a parent's choice in
+    # [CONTEXT SCOPE], still take the caller's ``context_groups``.
+    keeps_stored = _inclusion._agent_includes_cross_session_context(
+        agent, project or template_dir, session_key
+    )
+    store_groups = _inclusion._spec_scoped_groups(keeps_stored, context_groups)
     hook_result = self.hooks.on_message(text)
 
     parts: list[str] = []
@@ -462,6 +466,7 @@ def build_message(
                 steering_dirs=steering_dirs,
                 steering_off=steering_off,
                 _v2_essentials=_essentials,
+                _keeps_stored_context=keeps_stored,
                 member_dispatch_mounted=member_dispatch_mounted,
                 served_model=served_model,
                 native_documents=native_documents,
@@ -584,8 +589,7 @@ def build_message(
                 _opener = (
                     "This block holds the rules and runtime facts for this turn. "
                     "Use it to stay consistent but ONLY respond to the "
-                    if (context_groups is not None and not context_groups)
-                    or not _inclusion._agent_includes_cross_session_context(agent)
+                    if (context_groups is not None and not context_groups) or not keeps_stored
                     else "This is your memory, lessons, and conversation history from prior "
                     "sessions. Use it to stay consistent but ONLY respond to the "
                 )

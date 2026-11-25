@@ -239,13 +239,15 @@ def steering_resource_documents(
     return documents
 
 
-def _read_spec_row(agent: str, pins: Mapping[str, str] | None = None) -> dict[str, Any] | None:
-    """*agent*'s materialized spec as parsed, or ``None`` when no readable spec is its.
+def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
+    """Read ``includeCrewContext`` from *agent*'s materialized JSON. True on any miss.
 
     Reuses ``_load_agent_prompt``'s sensitive-path-gated scan: skip ``._`` macOS
     sidecars, ``resolve(strict=True)``, refuse a sensitive resolved target, tolerate
     ``ValueError``/``OSError``, and match on the declared ``name`` (or the filename
-    stem).
+    stem). Returns ``True`` unless the matched spec carries an explicit boolean
+    ``false`` — an absent flag, a non-boolean value, a missing/unreadable spec, or a
+    directory error all default to injecting, reproducing the pre-opt-out behavior.
     """
     from kiro_crew import agent_spec_pins
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
@@ -253,7 +255,7 @@ def _read_spec_row(agent: str, pins: Mapping[str, str] | None = None) -> dict[st
     try:
         candidates = ctx.iter_agent_spec_files(ctx.kiro_agents_dir(), ordered=False)
     except OSError:
-        return None
+        return True
 
     def rows() -> Iterator[tuple[Any, Path]]:
         for f in candidates:
@@ -276,18 +278,7 @@ def _read_spec_row(agent: str, pins: Mapping[str, str] | None = None) -> dict[st
 
     # The first spec declaring or named after *agent*, or the pinned claimant when
     # ``agent.spec_pins`` chooses among several (``pick_spec_row``).
-    return agent_spec_pins.pick_spec_row(rows(), agent, pins)
-
-
-def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
-    """Read ``includeCrewContext`` from *agent*'s materialized JSON. True on any miss.
-
-    Returns ``True`` unless the spec :func:`_read_spec_row` matches carries an
-    explicit boolean ``false`` — an absent flag, a non-boolean value, a
-    missing/unreadable spec, or a directory error all default to injecting,
-    reproducing the pre-opt-out behavior.
-    """
-    data = _read_spec_row(agent, pins)
+    data = agent_spec_pins.pick_spec_row(rows(), agent, pins)
     if data is None:
         return True
     val = data.get("includeCrewContext", True)
@@ -295,17 +286,58 @@ def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None
     return val if isinstance(val, bool) else True
 
 
-def _read_include_cross_session_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
-    """Read ``includeCrossSessionContext`` from *agent*'s materialized JSON.
+def _read_include_cross_session_context(
+    agent: str, project: str | None = None, *, spec_path: Path | None = None
+) -> bool:
+    """Whether the spec *agent*'s session runs keeps other sessions' memory and lessons.
 
-    ``True`` when no readable spec is the agent's or the spec does not carry the
-    key, which is every agent written before the key existed. A spec that carries
-    the key keeps the stored memory and lessons only when the value is exactly
-    ``true``: the key decides what a session may read, so ``false`` and any value
-    that is not a boolean (``"true"``, ``1``, ``null``) both withhold them.
+    The spec is found the way :func:`_load_agent_prompt` finds it, so the flag and
+    the prompt always come from one file: *spec_path* for a session pinned to a
+    file, else *agent* resolved project-first, then in the global and crewmate
+    agents directories with ``agent.spec_pins`` applied.
+
+    ``True`` when no spec declares the agent, or its spec does not carry
+    ``includeCrossSessionContext``: every agent written before the key existed. A
+    spec that carries the key keeps the stored blocks only when the value is exactly
+    ``true``. The key decides what a session may read, so every other outcome
+    withholds: ``false``, a value that is not a boolean (``"true"``, ``1``,
+    ``null``), a resolved or pinned file that cannot be read, and a lookup that is
+    refused (a project spec of that name that cannot be read, an ambiguous name, a
+    pin no claimant matches, an unsafe project).
+
+    Read on every build and never kept: an author who adds the key must not wait
+    for a restart for it to hold.
     """
-    data = _read_spec_row(agent, pins)
-    if data is None or "includeCrossSessionContext" not in data:
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.member_essential_context import read_template_spec
+
+    try:
+        if spec_path is not None:
+            data = _read_agent_spec(spec_path, operation="agent_context_scope", source="context")
+        else:
+            resolved = read_template_spec(
+                agent, project, operation="agent_context_scope", source="context"
+            )
+            if resolved is None:
+                return True
+            data = resolved[1]
+    except (OSError, ValueError, ctx.FileTooLargeError) as exc:
+        logger.warning(
+            "Agent %r: its spec could not be resolved (%s); stored memory and lessons "
+            "are withheld from this build",
+            agent,
+            type(exc).__name__,
+        )
+        return False
+    if data is None:
+        logger.warning(
+            "Agent %r: its spec could not be read; stored memory and lessons are "
+            "withheld from this build",
+            agent,
+        )
+        return False
+    if "includeCrossSessionContext" not in data:
         return True
     return data["includeCrossSessionContext"] is True
 

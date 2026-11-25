@@ -5,6 +5,8 @@ toggles for one agent: it drops the memory and lessons context groups, so the st
 memory block, the learned corrections, the user profile and the recent-session
 snippets never reach that agent's sessions, at session start, after a compaction or
 on a follow-up message. An agent that does not carry the key is built as before.
+The key is read from the spec the session runs: a project's own spec ahead of a
+global one, and the pinned file of a session pinned to one.
 
 Every block is populated, since an "absent" check on an empty store passes with no gate.
 """
@@ -17,8 +19,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew import agent_spec_schema
-from kiro_crew import context as ctx_mod
+from kiro_crew import agent, agent_discovery, agent_spec_schema, skill_scope_pin
 from kiro_crew.config.loader import config_path
 from kiro_crew.context import (
     CONTEXT_GROUP_LESSONS,
@@ -45,20 +46,39 @@ HISTORY = "Remember the code word ZEBRA42"
 REINJECTED_MEMORY = "Call memory_recall with specific keywords"
 
 
-@pytest.fixture
-def write_spec(tmp_path, monkeypatch):
-    """Write one agent's spec into an agents directory only this test reads."""
-    agents_dir = tmp_path / "agents"
-    agents_dir.mkdir()
-    monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
+def _write(directory, name: str, **fields: Any):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps({"name": name, **fields}), encoding="utf-8")
+    return path
 
-    def write(name: str, **fields: Any) -> None:
-        (agents_dir / f"{name}.json").write_text(
-            json.dumps({"name": name, **fields}), encoding="utf-8"
-        )
-        ctx_mod.invalidate_include_crew_context_cache()
+
+@pytest.fixture
+def agents_dir(tmp_path, monkeypatch):
+    """A global agents directory only this test reads."""
+    directory = tmp_path / "user" / ".kiro" / "agents"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: directory)
+    monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", directory)
+    return directory
+
+
+@pytest.fixture
+def write_spec(agents_dir):
+    """Write one agent's spec into the global agents directory."""
+
+    def write(name: str, **fields: Any):
+        return _write(agents_dir, name, **fields)
 
     return write
+
+
+@pytest.fixture
+def project(tmp_path):
+    """A project checkout with its own ``.kiro/agents`` directory."""
+    root = tmp_path / "checkout"
+    (root / ".kiro" / "agents").mkdir(parents=True)
+    return root
 
 
 @pytest.fixture
@@ -110,7 +130,7 @@ class TestSessionStart:
         assert block in _session_start(builder, PLAIN)
 
     @pytest.mark.parametrize("block", [MEMORY, LESSON, PROFILE, HISTORY])
-    def test_block_is_injected_for_an_agent_with_no_spec(self, builder, write_spec, block):
+    def test_block_is_injected_for_an_agent_with_no_spec(self, builder, agents_dir, block):
         assert block in _session_start(builder, "no-such-agent")
 
     @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
@@ -205,58 +225,131 @@ class TestBuildMessage:
         assert inclusion._group_included(seen[0], CONTEXT_GROUP_LESSONS) is lessons_in_scope
 
 
-class TestAgentScopedGroups:
-    def test_an_agent_that_did_not_opt_out_keeps_the_callers_scope(self, write_spec):
-        write_spec(PLAIN)
-        narrowed = frozenset({CONTEXT_GROUP_MEMORY})
-        assert inclusion._agent_scoped_groups(PLAIN, None) is None
-        assert inclusion._agent_scoped_groups(PLAIN, narrowed) is narrowed
-        assert inclusion._agent_scoped_groups(None, None) is None
+class TestEffectiveSpec:
+    """The key is read from the spec the session runs, not only a global one."""
 
-    def test_an_opted_out_agent_loses_memory_and_lessons_only(self, write_spec):
+    def test_a_project_spec_opts_out_with_no_global_spec(self, builder, agents_dir, project):
+        _write(project / ".kiro" / "agents", OPTED_OUT, includeCrossSessionContext=False)
+        text = _session_start(builder, OPTED_OUT, project=str(project))
+        message, _ = builder.build_message("hi", True, KEY, agent=OPTED_OUT, project=str(project))
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in text
+            assert block not in message
+
+    def test_a_project_spec_outranks_a_global_spec_without_the_key(
+        self, builder, write_spec, project
+    ):
+        write_spec(OPTED_OUT)
+        _write(project / ".kiro" / "agents", OPTED_OUT, includeCrossSessionContext=False)
+        message, _ = builder.build_message("hi", True, KEY, agent=OPTED_OUT, project=str(project))
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in message
+
+    def test_a_project_spec_without_the_key_outranks_a_global_opt_out(
+        self, builder, write_spec, project
+    ):
+        """The session runs the project's spec, so that spec's choice is the one read."""
+        write_spec(PLAIN, includeCrossSessionContext=False)
+        _write(project / ".kiro" / "agents", PLAIN)
+        message, _ = builder.build_message("hi", True, KEY, agent=PLAIN, project=str(project))
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block in message
+
+    def test_a_template_directory_stands_in_for_a_missing_project(
+        self, builder, agents_dir, project
+    ):
+        """A sub-agent names no project; its template is found in the caller's directory."""
+        _write(project / ".kiro" / "agents", OPTED_OUT, includeCrossSessionContext=False)
+        message, _ = builder.build_message(
+            "hi", True, KEY, agent=OPTED_OUT, template_dir=str(project)
+        )
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in message
+
+    def test_a_pinned_session_reads_the_file_it_is_pinned_to(self, builder, write_spec, tmp_path):
+        write_spec(OPTED_OUT)
+        pinned = _write(tmp_path / "pinned", OPTED_OUT, includeCrossSessionContext=False)
+        skill_scope_pin.pin_session_skill_spec(KEY, pinned)
+        try:
+            message, _ = builder.build_message("hi", True, KEY, agent=OPTED_OUT)
+        finally:
+            skill_scope_pin.pin_session_skill_spec(KEY, None)
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in message
+
+    def test_an_edited_spec_holds_on_the_next_build(self, builder, write_spec):
+        """The key is read on every build, so adding it needs no restart."""
+        write_spec(OPTED_OUT)
+        assert MEMORY in _session_start(builder, OPTED_OUT)
         write_spec(OPTED_OUT, includeCrossSessionContext=False)
-        project = frozenset({CONTEXT_GROUP_PROJECT})
-        assert inclusion._agent_scoped_groups(OPTED_OUT, None) == project
+        assert MEMORY not in _session_start(builder, OPTED_OUT)
+
+    def test_a_project_spec_that_cannot_be_read_withholds(
+        self, builder, agents_dir, project, caplog
+    ):
+        """A project spec named after the agent may carry the key: nothing is injected."""
+        (project / ".kiro" / "agents" / f"{OPTED_OUT}.json").write_text(
+            "{not json", encoding="utf-8"
+        )
+        with caplog.at_level("WARNING", logger="kiro_crew.context"):
+            text = _session_start(builder, OPTED_OUT, project=str(project))
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in text
+        assert any(OPTED_OUT in record.getMessage() for record in caplog.records)
+
+    def test_a_pinned_file_that_cannot_be_read_withholds(self, builder, write_spec, tmp_path):
+        write_spec(OPTED_OUT)
+        pinned = tmp_path / "pinned" / f"{OPTED_OUT}.json"
+        pinned.parent.mkdir()
+        pinned.write_text("{not json", encoding="utf-8")
+        skill_scope_pin.pin_session_skill_spec(KEY, pinned)
+        try:
+            text = _session_start(builder, OPTED_OUT)
+        finally:
+            skill_scope_pin.pin_session_skill_spec(KEY, None)
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in text
+
+    def test_two_differing_specs_for_one_name_withhold(self, builder, agents_dir):
+        """An ambiguous name is refused by the lookup; the refusal withholds."""
+        _write(agents_dir, "PkgA-" + OPTED_OUT, prompt="A")
+        _write(agents_dir, "PkgB-" + OPTED_OUT, prompt="B", includeCrossSessionContext=False)
+        for path in agents_dir.iterdir():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["name"] = OPTED_OUT
+            path.write_text(json.dumps(data), encoding="utf-8")
+        text = _session_start(builder, OPTED_OUT)
+        for block in (MEMORY, LESSON, PROFILE, HISTORY):
+            assert block not in text
+
+
+class TestSpecScopedGroups:
+    def test_an_agent_that_keeps_stored_context_keeps_the_callers_scope(self):
+        narrowed = frozenset({CONTEXT_GROUP_MEMORY})
+        assert inclusion._spec_scoped_groups(True, None) is None
+        assert inclusion._spec_scoped_groups(True, narrowed) is narrowed
+
+    def test_an_opted_out_agent_loses_memory_and_lessons_only(self):
+        project_only = frozenset({CONTEXT_GROUP_PROJECT})
+        assert inclusion._spec_scoped_groups(False, None) == project_only
         assert (
-            inclusion._agent_scoped_groups(OPTED_OUT, frozenset(SWITCHABLE_CONTEXT_GROUPS))
-            == project
+            inclusion._spec_scoped_groups(False, frozenset(SWITCHABLE_CONTEXT_GROUPS))
+            == project_only
         )
 
-    def test_it_never_adds_a_group_the_caller_withheld(self, write_spec):
-        write_spec(OPTED_OUT, includeCrossSessionContext=False)
-        assert inclusion._agent_scoped_groups(OPTED_OUT, frozenset()) == frozenset()
-        assert inclusion._agent_scoped_groups(OPTED_OUT, frozenset({CONTEXT_GROUP_LESSONS})) == (
-            frozenset()
+    def test_it_never_adds_a_group_the_caller_withheld(self):
+        assert inclusion._spec_scoped_groups(False, frozenset()) == frozenset()
+        assert (
+            inclusion._spec_scoped_groups(False, frozenset({CONTEXT_GROUP_LESSONS})) == frozenset()
         )
 
 
 class TestSpecRead:
-    def test_an_edited_spec_is_read_again_after_the_agents_are_rescanned(
-        self, tmp_path, monkeypatch
-    ):
-        """The answer is kept per agent; a rescan of the agents directory drops it."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
-        spec = agents_dir / f"{OPTED_OUT}.json"
-        spec.write_text(json.dumps({"name": OPTED_OUT}), encoding="utf-8")
-        assert inclusion._agent_includes_cross_session_context(OPTED_OUT) is True
-
-        spec.write_text(
-            json.dumps({"name": OPTED_OUT, "includeCrossSessionContext": False}),
-            encoding="utf-8",
-        )
-        assert inclusion._agent_includes_cross_session_context(OPTED_OUT) is True
-        ctx_mod.invalidate_include_crew_context_cache()
-        assert inclusion._agent_includes_cross_session_context(OPTED_OUT) is False
-
     def test_the_two_spec_flags_are_read_apart(self, write_spec):
-        write_spec(OPTED_OUT, includeCrossSessionContext=False)
+        write_spec(OPTED_OUT, includeCrossSessionContext=False, includeCrewContext=True)
         assert agent_spec._read_include_cross_session_context(OPTED_OUT) is False
-        assert agent_spec._read_include_crew_context(OPTED_OUT) is True
         write_spec(PLAIN, includeCrewContext=False)
         assert agent_spec._read_include_cross_session_context(PLAIN) is True
-        assert agent_spec._read_include_crew_context(PLAIN) is False
 
     def test_the_spec_checker_knows_the_key(self):
         assert agent_spec_schema.check_spec({"includeCrossSessionContext": False}) == []

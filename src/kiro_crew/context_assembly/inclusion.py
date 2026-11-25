@@ -1,7 +1,7 @@
 """What a session's context includes: context-group scope, skills and steering.
 
 A spawning parent narrows the switchable context groups for its sub-agent, the
-agent's own spec can drop the memory and lessons groups (:func:`_agent_scoped_groups`)
+agent's own spec can drop the memory and lessons groups (:func:`_spec_scoped_groups`)
 and the operator's toggles narrow them further; :func:`_build_context_scope_section`
 names what a parent withheld. :func:`_render_folder_steering_section` is the one folder
 steering renderer, :func:`skill_parts` the one loader call, and
@@ -85,49 +85,38 @@ def _build_context_scope_section(groups: frozenset[str] | None) -> str:
     )
 
 
-# ``includeCrossSessionContext`` per agent, keyed like the ``includeCrewContext``
-# memo on :mod:`kiro_crew.context` and for the same reason: every turn's build
-# asks, and a miss scans the agents directory. Dropped with that memo when the
-# agent snapshot is rescanned (``forget_cross_session_context_flags``).
-_INCLUDE_CROSS_SESSION_CONTEXT_CACHE: dict[str, bool] = {}
+def _agent_includes_cross_session_context(
+    agent: str | None, project: str | None = None, session_key: str | None = None
+) -> bool:
+    """Whether this session of *agent* gets the memory and lessons kept from other sessions.
 
-
-def _agent_includes_cross_session_context(agent: str | None) -> bool:
-    """Whether *agent*'s sessions get the memory and lessons kept from other sessions.
-
-    ``False`` only for a custom agent whose spec sets ``includeCrossSessionContext``
-    to anything but ``true`` (:func:`_agent_spec._read_include_cross_session_context`).
-    No agent and the built-in ``kirocrew`` agent always answer ``True``: its spec is
-    generated, so it has no author to opt out.
+    ``False`` only for a custom agent whose effective spec sets
+    ``includeCrossSessionContext`` to anything but ``true``, or cannot be read
+    (:func:`_agent_spec._read_include_cross_session_context`). *project* is where
+    the session's agent template is looked up ahead of the global directories, and
+    *session_key* finds the file a pinned session runs from. No agent and a
+    built-in agent always answer ``True``: its spec is generated, so it has no
+    author to opt out.
     """
-    if not agent or agent == "kirocrew":
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
+    if not agent or is_kirocrew_default_agent(agent):
         return True
-    from kiro_crew import agent_spec_pins
-
-    # Keyed with the pin folded in, from the snapshot that also drives the read: a
-    # pin change picks another file, whose flag may differ.
-    pins = agent_spec_pins.spec_pins()
-    key = agent_spec_pins.pinned_memo_key(agent, pins)
-    cached = _INCLUDE_CROSS_SESSION_CONTEXT_CACHE.get(key)
-    if cached is None:
-        cached = _agent_spec._read_include_cross_session_context(agent, pins)
-        _INCLUDE_CROSS_SESSION_CONTEXT_CACHE[key] = cached
-    return cached
+    return _agent_spec._read_include_cross_session_context(
+        agent, project, spec_path=ctx.pinned_session_skill_spec(session_key)
+    )
 
 
-def forget_cross_session_context_flags() -> None:
-    """Drop the memoized ``includeCrossSessionContext`` reads, so an edited spec is read."""
-    _INCLUDE_CROSS_SESSION_CONTEXT_CACHE.clear()
-
-
-def _agent_scoped_groups(
-    agent: str | None, context_groups: frozenset[str] | None
+def _spec_scoped_groups(
+    keeps_stored: bool, context_groups: frozenset[str] | None
 ) -> frozenset[str] | None:
-    """The caller-passed scope minus what *agent*'s spec opts out of.
+    """The caller-passed scope, minus the memory and lessons groups unless *keeps_stored*.
 
-    An agent that sets ``includeCrossSessionContext: false`` loses the memory and
-    lessons groups, the two that carry content from the user's other sessions:
-    stored memory, the activity index, recent-session snippets, a memory provider's
+    *keeps_stored* is :func:`_agent_includes_cross_session_context`'s answer for
+    the session. An agent that sets ``includeCrossSessionContext: false`` loses
+    the two groups that carry content from the user's other sessions: stored
+    memory, the activity index, recent-session snippets, a memory provider's
     blocks, learned corrections and experience, per-message lessons and the user
     profile. The result feeds the same group gates the operator's
     ``memory.inject_memory`` / ``memory.inject_lessons`` toggles feed
@@ -139,7 +128,7 @@ def _agent_scoped_groups(
     Callers keep the caller-passed value for the ``[CONTEXT SCOPE]`` block, whose
     "your parent withheld" text is about a spawn's choice, not the agent's own.
     """
-    if _agent_includes_cross_session_context(agent):
+    if keeps_stored:
         return context_groups
     base = SWITCHABLE_CONTEXT_GROUPS if context_groups is None else context_groups
     return frozenset(base) - {CONTEXT_GROUP_MEMORY, CONTEXT_GROUP_LESSONS}
