@@ -553,7 +553,9 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
      by their key in the table. It holds `GET /v1/models`, which serves an app
      credential with an empty list until a route lets an app run a Bot in its
      grant or an agent. The app list comes only from `models_for_grant`;
-     it reads no owner catalog. This is the one
+     it reads no owner catalog. It also holds `GET /v1/crew/grant`
+     (`crew_api_grant_self`), which answers an app credential with the grant it
+     was issued for and no other. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
      (the peer pin, the link exchange, the installed-app allowlist). A route joins
@@ -649,6 +651,9 @@ caller, an installed app's token included, gets
 the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
 permission errors have the Crew API error shape and no `WWW-Authenticate` header;
 an invalid credential still gets `401 invalid_token` with the Bearer challenge.
+`GET /v1/crew/grant` is the one Public route not behind `owner_route`: its handler
+calls `crew_api_scopes.require_scope` with its own key, reads the grant named by the
+verified credential, and answers a first-party session `404 not_found`.
 
 #### SSM listener: a Crew invite instead of a token
 
