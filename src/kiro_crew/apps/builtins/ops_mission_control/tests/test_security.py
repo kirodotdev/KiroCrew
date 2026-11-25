@@ -232,6 +232,7 @@ class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
                 self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+firsttokenvalue")
                 self.backend.delete("pagerduty")
                 secrets.secrets_path().unlink()
+                self.legacy.unlink()  # a fresh install again for the next case
 
     def test_the_new_directory_entry_is_durable_before_the_marker_replaces_the_root_store(self):
         """Syncing ``secrets/`` alone leaves its own entry in ``data/`` unsynced."""
@@ -294,17 +295,45 @@ class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
 
         self.assertEqual(list(outside.iterdir()), [])
 
-    def test_a_revoke_is_refused_where_it_would_publish_for_an_earlier_sandbox(self):
-        """Rewriting the store without the revoked provider still publishes the others."""
+    def test_a_save_or_revoke_never_replaces_a_store_with_a_second_name(self):
+        """A replace gives the store a fresh inode; the old name would keep the old tokens.
+
+        Then the sandbox's hard-link check no longer finds that name, so it stays unmasked.
+        Both stores: the moved one, and the root one before the move.
+        """
+        for moved in (True, False):
+            with self.subTest(moved=moved):
+                self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+                if moved:
+                    secrets.migrate_legacy_store()
+                store = secrets.secrets_path() if moved else self.legacy
+                alias = store.with_name("backup.json")
+                os.link(store, alias)
+                try:
+                    with self.assertRaises(OSError):
+                        self.backend.put("datadog", "api_key", "a" * 32)
+                    with self.assertRaises(OSError):
+                        self.backend.delete("pagerduty")
+                    self.assertEqual(store.stat().st_nlink, 2)
+                    self.assertEqual(
+                        self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue"
+                    )
+                finally:
+                    alias.unlink()
+                for path in (secrets.secrets_path(), self.legacy):
+                    path.unlink(missing_ok=True)
+
+    def test_a_save_after_the_move_does_not_scan_for_earlier_sandboxes(self):
+        """Once handed over, the scan can only fail a save for no reason (a busy host)."""
         self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
-        self.backend.put("datadog", "api_key", "a" * 32)
+        secrets.migrate_legacy_store()
+        self._assert_handed_over()
 
-        with mock.patch.object(secrets, "_older_sandboxes", return_value=[4242]):
-            with self.assertRaises(OSError):
-                self.backend.delete("pagerduty")
-            self.assertFalse(self.backend.delete("absent-provider"))
+        with mock.patch.object(secrets, "_older_sandboxes", side_effect=AssertionError("scanned")):
+            self.backend.put("datadog", "api_key", "a" * 32)
+            self.assertTrue(self.backend.delete("pagerduty"))
 
-        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue")
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
 
     def _plant_new_store(self, content: dict) -> None:
         """What a sandbox of an earlier build can do: it does not mask ``data/``."""
@@ -365,18 +394,6 @@ class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
                         self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
                 finally:
                     self.legacy.unlink()
-
-    def test_a_save_is_refused_while_an_earlier_sandbox_may_read_an_existing_new_store(self):
-        """The moved store gets no new token while such a sandbox can read its directory."""
-        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
-        secrets.migrate_legacy_store()
-
-        with mock.patch.object(secrets, "_older_sandboxes", return_value=[4242]):
-            with self.assertRaises(OSError):
-                self.backend.put("datadog", "api_key", "a" * 32)
-
-        self.assertEqual(self.backend.get("datadog", "api_key"), "")
-        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue")
 
     def test_the_store_and_its_temps_stay_inside_the_masked_directory(self):
         """A write stages beside the store, in the directory the manifest masks whole."""

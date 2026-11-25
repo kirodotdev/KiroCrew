@@ -791,10 +791,13 @@ ends, a lookup, a save and a revoke use the root file where it is, and a first s
 store yet creates the store at the root; each startup and save retries the move. A root
 store that is a symlink or has a second name (a hard-linked backup) is not moved, so the
 sandbox's multi-link check keeps reading its name. A save refuses when the move fails, so it
-never starts a new store that hides the old one's tokens. A save, or a revoke that would
-rewrite the store, is refused while a sandbox of an earlier build may read the new directory
-and the moved store exists there, and every access is refused when a link sits at the store
-or in its directory chain (such a sandbox does not mask `data/`, so it could plant one). The
+never starts a new store that hides the old one's tokens. Once the marker is written, a save
+or revoke runs no process-table scan, as Notes does after its own move. A save, a revoke or
+the move is refused when the file it would replace has a second hard link, because a replace
+gives the store a fresh inode and the other name would keep the old tokens where the
+sandbox's hard-link check no longer finds them. Every access is refused when a link sits at
+the store or in its directory chain (such a sandbox does not mask `data/`, so it could plant
+one). The
 root name stays masked, hard-link refused and fenced as a retired leaf.
 
 Do NOT move these tokens into `config.json` or the app's `data/config.json`: the

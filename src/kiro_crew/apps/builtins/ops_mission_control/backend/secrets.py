@@ -327,6 +327,7 @@ class KeystoneFileBackend:
                 content = legacy.read_bytes()
             except FileNotFoundError:
                 return
+            _refuse_replacing_a_second_name(path)
             atomic_write(path, content, fsync=True, restrict_to_owner=True)
             # The lock just created ``secrets/``, and ``app_data_dir`` any missing folder
             # above it, so each entry down from the data home must be durable before the
@@ -516,27 +517,6 @@ class KeystoneFileBackend:
             _refuse_linked_store()
         return _SecretLock(self._path)
 
-    def _refuse_write_while_earlier_sandbox_reads(self, path: Path) -> Path:
-        """Where a write goes while a sandbox of an earlier build may read the new directory.
-
-        *path* is where the write would land. Anything but the new directory is returned as
-        it is. The new directory is the answer only once the marker is at the root. With no
-        store there then (removed by hand) the first one goes to the root, over the marker,
-        and the next startup or save moves it; with the moved store there the write is
-        refused, so no token is published where that sandbox can read it.
-        """
-        if self._pinned_path is not None or path != self._path:
-            return path
-        if not _earlier_sandbox_may_run():
-            return path
-        if os.path.lexists(path):
-            raise OSError(
-                errno.EBUSY,
-                "the secret store is not written while a session started by an earlier "
-                "build may read its directory; end that session and retry",
-            )
-        return legacy_secrets_path()
-
     def _write(self, path: Path, data: dict[str, dict[str, str]]) -> None:
         payload = json.dumps(data, indent=2, sort_keys=True)
         # Fail-loud lockdown BEFORE any content lands: ``restrict_to_owner=True``
@@ -562,6 +542,7 @@ class KeystoneFileBackend:
         # token at a name no sandbox mask covers for the length of the write, and a
         # crash would leave it there, so those stage in the masked auth-store staging
         # directory.
+        _refuse_replacing_a_second_name(path)
         if self._pinned_path is None and path == self._path:
             atomic_write(path, payload, restrict_to_owner=True)
         else:
@@ -587,7 +568,7 @@ class KeystoneFileBackend:
         # place.
         self._migrate_legacy()
         with self._lock():
-            path = self._refuse_write_while_earlier_sandbox_reads(self._store_path)
+            path = self._store_path
             data = self._read_for_update(path)
             data.setdefault(provider_id, {})[field_name] = value
             self._write(path, data)
@@ -608,9 +589,8 @@ class KeystoneFileBackend:
             data = self._read_for_update(path)
             if provider_id not in data:
                 return False
-            target = self._refuse_write_while_earlier_sandbox_reads(path)
             del data[provider_id]
-            self._write(target, data)
+            self._write(path, data)
         return True
 
     def configured_fields(self, provider_id: str) -> frozenset[str]:
@@ -636,6 +616,25 @@ def _root_is_marker() -> bool:
         return legacy.read_text(encoding="utf-8") == MOVED_MARKER
     except (OSError, UnicodeDecodeError):
         return False
+
+
+def _refuse_replacing_a_second_name(path: Path) -> None:
+    """Refuse to replace a store file that has a second hard link.
+
+    A replace publishes a new inode with one link, so the sandbox's hard-link check stops
+    finding the other name, and that name keeps the old tokens unmasked. The file stays
+    as it is until the operator removes the extra name.
+    """
+    try:
+        links = os.lstat(path).st_nlink
+    except FileNotFoundError:
+        return
+    if links > 1:
+        raise OSError(
+            errno.EMLINK,
+            "the secret store has a second hard link (a backup?); remove the extra name "
+            "and retry",
+        )
 
 
 def _refuse_linked_store() -> None:
