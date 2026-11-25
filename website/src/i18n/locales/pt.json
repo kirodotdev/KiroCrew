@@ -21374,7 +21374,8 @@
         "task_runner_save_failed": "Não foi possível salvar a configuração do Task Runner. Tente de novo.",
         "channels": "Mostrar os Canais",
         "channels_hint": "Desligado, os Canais saem da barra lateral esquerda e da Pesquisar em tudo. Nada é apagado nem parado: seus canais e os agentes que trabalham neles são mantidos.",
-        "channels_save_failed": "Não foi possível salvar a configuração dos Canais. Tente de novo."
+        "channels_save_failed": "Não foi possível salvar a configuração dos Canais. Tente de novo.",
+        "content_text_size_tip": "Content Text Size, no menu View, dimensiona o texto das páginas, dos painéis e das Configurações. Menus e barras de ferramentas não são afetados. O texto das mensagens segue Tamanho da fonte das mensagens nas configurações de Chat, e o terminal segue a sua própria configuração."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

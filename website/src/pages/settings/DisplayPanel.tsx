@@ -13,6 +13,7 @@ import { Btn, Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
 import Modal from '../../components/Modal'
 import { useAppSelector, useAppDispatch } from '../../store'
+import { isElectron } from '../../lib/electron'
 import { setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity } from '../../store/dashboardSlice'
 import { useSessionPalette } from '../../hooks/useSessionPalette'
 import { PALETTE_NAMES, INTENSITY_NAMES, paletteSlot } from '../../utils/sessionColors'
@@ -981,6 +982,20 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">+</kbd>
                 <span>/</span>
                 <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">−</kbd>
+              </span>
+            </div>
+          )}
+          {/* Discoverability only, and deliberately not a control. Font size
+              belongs to the Electron shell, and the renderer has no bridge to
+              it: the one review deleted for having no consumer would have to
+              come back as a write channel on this surface, which is a security
+              review this change does not need. So this line says where the
+              ladder is and how it differs from the zoom above it. Gated on
+              isElectron because a browser tab has no View menu to point at. */}
+          {isElectron && (
+            <div className="py-1.5">
+              <span className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.content_text_size_tip')}
               </span>
             </div>
           )}

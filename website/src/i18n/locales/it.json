@@ -21374,7 +21374,8 @@
         "task_runner_save_failed": "Impossibile salvare l'impostazione di Task Runner. Riprova.",
         "channels": "Mostra Canali",
         "channels_hint": "Se disattivato, Canali esce dalla barra laterale sinistra e da Cerca in tutto. Non viene eliminato né fermato nulla: i tuoi canali e gli agenti che ci lavorano restano.",
-        "channels_save_failed": "Impossibile salvare l'impostazione di Canali. Riprova."
+        "channels_save_failed": "Impossibile salvare l'impostazione di Canali. Riprova.",
+        "content_text_size_tip": "Content Text Size, nel menu View, ridimensiona il testo di pagine, pannelli e Impostazioni. Menu e barre degli strumenti non sono interessati. Il testo dei messaggi segue Dimensione del carattere dei messaggi nelle impostazioni di Chat, mentre il terminale segue la propria impostazione."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

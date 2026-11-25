@@ -986,7 +986,7 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false, remoteHosts = null, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
+function dashboardWindowHarness({ platform, frameless = false, remoteHosts = null, downloadExpectations = null, dialogResponse = 1, dialogChecked = false, storedFontSize = null } = {}) {
   const log = [];
   const prompts = [];
   const sessionListeners = new Map();
@@ -996,6 +996,18 @@ function dashboardWindowHarness({ platform, frameless = false, remoteHosts = nul
   const viewContents = {
     ...viewEvents,
     ipc: { on(channel, listener) { ipcListeners.set(channel, listener); } },
+    // A real dashboard webContents has one, and the content text size re-apply
+    // on did-finish-load uses it. Without it the re-apply fails and defers,
+    // which binds a focus listener and puts an entry in the wiring log that
+    // production never produces. Not logged: this models an existing property
+    // of the object rather than a wiring step.
+    debugger: {
+      isAttached: () => false,
+      attach() {},
+      detach() {},
+      sendCommand: async () => {},
+    },
+    isDestroyed: () => false,
     mainFrame: { url: "http://localhost:5476/" },
     session: {
       webRequest: {
@@ -1039,6 +1051,7 @@ function dashboardWindowHarness({ platform, frameless = false, remoteHosts = nul
     setTitleBarOverlay() { log.push("win.setTitleBarOverlay"); },
   };
   const panelViews = [];
+  const dashboardPrefs = [];
   const openedExternally = [];
   class WebContentsView {
     constructor(options) {
@@ -1059,6 +1072,10 @@ function dashboardWindowHarness({ platform, frameless = false, remoteHosts = nul
         return;
       }
       log.push(`new WebContentsView:${JSON.stringify(options.webPreferences.additionalArguments || [])}`);
+      // Whole options, so a construction-time preference can be asserted. The
+      // log line above carries only additionalArguments on purpose: it is
+      // compared literally by the wiring tests.
+      dashboardPrefs.push(options.webPreferences);
       this.webContents = viewContents;
     }
     setBackgroundColor() {}
@@ -1080,12 +1097,12 @@ function dashboardWindowHarness({ platform, frameless = false, remoteHosts = nul
       nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
       app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
     },
-    store: { get: (key) => (key === "linuxFrameless" ? frameless : key === "remoteHosts" ? remoteHosts : null) },
+    store: { get: (key) => (key === "linuxFrameless" ? frameless : key === "remoteHosts" ? remoteHosts : key === "displayPreferences.fontSize" ? storedFontSize : null) },
     platform,
     env: {},
     downloadExpectations,
   }));
-  return { lifecycle, win, viewContents, log, panelViews, openedExternally, prompts, sessionListeners, ipcListeners };
+  return { lifecycle, win, viewContents, log, panelViews, dashboardPrefs, openedExternally, prompts, sessionListeners, ipcListeners };
 }
 
 async function wireDashboardWindow(t, options) {
@@ -1106,6 +1123,46 @@ const COMMON_WIRING_HEAD = [
   "win.addChildView",
 ];
 
+describe("content text size at window construction", () => {
+  // The durable half of the feature. The protocol command moves a window that
+  // is already open; this is what a relaunch reads, so a tier that survives a
+  // restart survives because of these two keys.
+  // One test per tier, not a loop inside one: wireDashboardWindow enables the
+  // mock timers on its test context, and a context accepts that once.
+  for (const px of [12, 16, 20]) {
+    it(`seeds the dashboard view with ${px}px, standard and monospace alike`, async (t) => {
+      const { dashboardPrefs } = await wireDashboardWindow(t, {
+        platform: "linux",
+        storedFontSize: px,
+      });
+      assert.equal(dashboardPrefs.length, 1, "one dashboard view constructed");
+      assert.equal(dashboardPrefs[0].defaultFontSize, px);
+      // Monospace is its own criterion: seeding only standard leaves code
+      // blocks at Chromium's 13px while the prose around them moves.
+      assert.equal(dashboardPrefs[0].defaultMonospaceFontSize, px);
+    });
+  }
+
+  it("falls back to 16px when nothing is stored", async (t) => {
+    const { dashboardPrefs } = await wireDashboardWindow(t, { platform: "linux" });
+    assert.equal(dashboardPrefs[0].defaultFontSize, 16);
+    assert.equal(dashboardPrefs[0].defaultMonospaceFontSize, 16);
+  });
+
+  // A corrupt stored value must not reach Chromium, which would reject it or
+  // render at a size no tier offers.
+  for (const corrupt of [13, "20", 0]) {
+    it(`falls back to 16px when the stored value is ${JSON.stringify(corrupt)}`, async (t) => {
+      const { dashboardPrefs } = await wireDashboardWindow(t, {
+        platform: "linux",
+        storedFontSize: corrupt,
+      });
+      assert.equal(dashboardPrefs[0].defaultFontSize, 16);
+      assert.equal(dashboardPrefs[0].defaultMonospaceFontSize, 16);
+    });
+  }
+});
+
 describe("dashboard window wiring order", () => {
   it("a macOS window positions traffic lights and tracks zoom before its load handlers", async (t) => {
     const { wiring, onLoad } = await wireDashboardWindow(t, { platform: "darwin" });
@@ -1116,6 +1173,9 @@ describe("dashboard window wiring order", () => {
       "view.on:did-finish-load",
       "win.on:swipe",
       "view.on:input-event",
+      "view.on:did-finish-load",
+      // trackFontSizeChrome: a replaced renderer reads the font size captured
+      // in webPreferences, so the stored size is re-pushed on every load.
       "view.on:did-finish-load",
       "win.on:closed",
       "win.on:resize",

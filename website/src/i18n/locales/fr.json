@@ -21374,7 +21374,8 @@
         "task_runner_save_failed": "Impossible d'enregistrer le réglage Task Runner. Réessaie.",
         "channels": "Afficher Canaux",
         "channels_hint": "Désactivé, Canaux disparaît de la barre latérale gauche et de Rechercher partout. Rien n’est supprimé ni arrêté : tes canaux et les agents qui y travaillent sont conservés.",
-        "channels_save_failed": "Impossible d'enregistrer le réglage Canaux. Réessaie."
+        "channels_save_failed": "Impossible d'enregistrer le réglage Canaux. Réessaie.",
+        "content_text_size_tip": "Content Text Size, dans le menu View, met à l’échelle le texte des pages, des panneaux et des Paramètres. Les menus et les barres d’outils ne sont pas affectés. Le texte des messages suit Taille de police des messages dans les paramètres de Chat, et le terminal suit son propre réglage."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

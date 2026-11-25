@@ -59,6 +59,7 @@ const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
 const { buildMenuTemplate } = require("./app-menu");
+const { TEXT_SIZE_TIERS } = require("./text-size");
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   SYMBOL_DARK: WINDOWS_TITLEBAR_SYMBOL_DARK,
@@ -256,6 +257,9 @@ function createWindowLifecycle(options) {
     getZoom,
     setZoom,
     stepZoom,
+    getFontSize,
+    setFontSize,
+    trackFontSizeChrome,
   } = createWindowChrome({
     BaseWindow,
     nativeTheme,
@@ -350,6 +354,10 @@ function createWindowLifecycle(options) {
         // Frameless Linux is a launch-time decision, not a platform constant.
         // The preload reads this argument to reserve caption-control space.
         additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // Content text size, the durable half (chrome.js holds the why). Both
+        // keys: standard alone leaves monospace at Chromium's 13px.
+        defaultFontSize: getFontSize(),
+        defaultMonospaceFontSize: getFontSize(),
       },
     });
     // The preload asks this on every load, so a crew configured or cleared for
@@ -390,6 +398,9 @@ function createWindowLifecycle(options) {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
       readNatural: () => readNaturalScrolling(systemPreferences),
     });
+    // A replaced renderer reads the font size captured in webPreferences above,
+    // which predates any pick the user has made since. Re-push it per load.
+    trackFontSizeChrome(view);
 
     // Teardown order is load-bearing: no embedded view may outlive the page it
     // is composited over. Close the dashboard WebContents only after releasing
@@ -1545,6 +1556,21 @@ function createWindowLifecycle(options) {
     };
   }
 
+  function pickFontSize(px) {
+    const chosen = setFontSize(px);
+    try {
+      const tier = TEXT_SIZE_TIERS.find((candidate) => candidate.px === chosen);
+      const menu = Menu.getApplicationMenu();
+      const item = tier && menu && menu.getMenuItemById(tier.id);
+      // Only the chosen item. Writing `checked = false` over the siblings
+      // fights Electron's own radio-group handling, and the symptom was the
+      // menu showing the last tier whatever the user picked.
+      if (item) item.checked = true;
+    } catch {
+      // Menu is mid-rebuild; the next build seeds checked from the store.
+    }
+  }
+
   function buildApplicationMenu() {
     appMenu = Menu.buildFromTemplate(buildMenuTemplate({
       isMac: IS_MAC,
@@ -1576,6 +1602,8 @@ function createWindowLifecycle(options) {
       zoomOut: zoomMenuItem((wc) => {
         wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1));
       }),
+      currentFontSize: getFontSize(),
+      setFontSize: pickFontSize,
       alwaysOnTop: !!(store.get("windowState") || {}).alwaysOnTop,
       toggleAlwaysOnTop,
       toggleFocusMode: () => {

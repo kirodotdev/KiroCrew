@@ -181,6 +181,7 @@
       "badge.js",
       "native-theme.js",
       "zoom.js",
+      "text-size.js",
       "instance-guard.js",
       "singleton-lock.js",
       "linux-desktop-integration.js",

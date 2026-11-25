@@ -10101,6 +10101,7 @@
         "install": "Install",
         "install_failed": "Install failed",
         "native_window_zoom_tip": "Native window zoom, the same setting as {{mod}}+ / {{mod}}− (50%–300%). Remembered across launches.",
+        "content_text_size_tip": "Content Text Size, in the View menu, scales text in pages, panels and Settings. Menus and toolbars are unaffected. Message text follows Message Font Size in Chat settings, and the terminal follows its own setting.",
         "custom_font_family": "Custom font",
         "custom_font_family_desc": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures.",
         "custom_font_choose": "Choose a font…",
