@@ -141,6 +141,7 @@ export default function ChatSidePanels({
   // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
   return (
     <>
+      <AnimatePresence>
       {search.isOpen && (
           <DetailPanel
             key="search-panel"
@@ -166,6 +167,7 @@ export default function ChatSidePanels({
             )}
           </DetailPanel>
         )}
+      </AnimatePresence>
       <AnimatePresence initial={false}>
         {/* Inline side panel — mobile / embed frames where there's no actbar
             grid column. Desktop uses the actbar portal below.
