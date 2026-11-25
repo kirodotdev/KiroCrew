@@ -127,6 +127,7 @@ _LISTING_IMPORTS = (
     "mcp_shared_wire.py",
     "mcp_tools/_limits.py",
     "member_goals.py",
+    "monitoring/also_wake.py",
     "monitoring/limits.py",
     "monitoring/models.py",
     "monitoring/registry.py",

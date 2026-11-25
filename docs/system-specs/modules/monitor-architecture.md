@@ -29,7 +29,7 @@ this spec states the target and that one states the present.
 | Layer | Status | Where it lives today |
 |---|---|---|
 | Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`, and `monitoring/plugins.py` lets a downstream edition register further pull-request-shaped kinds at boot; `probes/__init__.py` still has its separate dispatch branch, now for two kernel-path kinds (`gh-pr`, `work-ledger`), and `work-ledger` has no registry row at all |
-| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
+| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; a GitHub watch hands it its target plus its open `also_wake_on` extras in one call, the other adapters loop internally, no driver batches across watches, and the `irq.Probe` path remains separate |
 | Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the kernel path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
@@ -601,6 +601,11 @@ replaces.
 A subject is one addressable thing. A pipeline of several pull requests is not a
 subject; it is several subjects sharing a watch.
 
+A structured watch shares itself with other subjects in exactly one way today: a
+`github_pull_request` watch may name up to three other pull requests it waits on
+(`also_wake_on`, see *Extra wake subjects* below). The watch keeps its one
+`target`, which alone decides its completion; the extras only wake it.
+
 ### 2. Probe
 
 The probe turns subjects into observations. Its signature is **plural from day
@@ -618,8 +623,8 @@ interface cannot be batched later without changing every implementation and
 every caller, and batching is not a micro-optimization here: fifty subjects read
 one at a time is roughly 150 process invocations against one query.
 
-**Status: the GitHub pull-request probe batches; no caller passes more than one
-subject yet.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
+**Status: the GitHub pull-request probe batches, and one caller passes more than
+one subject: a GitHub watch with `also_wake_on` extras.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
 evidence kind per chunk of at most 25 subjects, so a tick of any size up to that
 bound costs three requests instead of three per subject, and each further chunk
 adds three. A read the GraphQL point budget REFUSES costs more than that, because
@@ -627,7 +632,10 @@ the fallback below is per subject rather than per chunk. It carries the (host,
 credential) rule as a check rather than as a grouping pass: the credential is the
 call's own argument, and a chunk is refused if it names two hosts. The
 other four adapters still loop internally and declare so in their own docstrings.
-What is missing is above the probe, not inside it: the in-session driver arms one
+`MonitorController.tick` hands the provider the watch's target and its open
+extras in one call, so an extra usually adds no request: it rides every document
+of that batch, as any subject does. What is missing is above the probe, not inside
+it: the in-session driver arms one
 `asyncio` task per loop in `autonudge_service/timers.py`, so a tick structurally sees one
 monitor, and the kernel path's `irq.poll` (called from `autonudge_service/gate.py`)
 runs one subject per call through `irq.Probe.observe`, which is singular. A batch therefore has no assembler; that
@@ -781,6 +789,8 @@ This layer knows nothing about pull requests, hosts, or agents. That is
 verifiable rather than aspirational: `decide_monitor` in `monitoring/decision.py`
 names no host and reaches no IO, and its clock arrives as the `now` parameter. It
 imports only `hashlib`, `json`, the monitoring models,
+`monitoring.also_wake.also_wake_waiting` (whether an extra still holds the stall
+streak at zero; the module is IO-free too),
 `monitoring.github_provider_errors.is_unattempted_probe` (the shared "this skip made
 no API call" predicate) and `metrics.monitor_loops`, whose
 `record_monitor_decision` counts each verdict by decision and kind as an in-memory
@@ -833,6 +843,89 @@ The one-shot pivot is `last_wake_reason_code`, which the driver stamps on
 `WAKE_ACTIONABLE`. The behaviour is scoped to a watch that opts in: the default
 leaves every existing and stored watch on the turn-free stop paths, with
 `review_ready` and both terminal transitions stopping exactly as before.
+
+### Extra wake subjects
+
+`monitor_watch` and `monitor_update` take an optional `also_wake_on`: at most three
+other pull requests of the watch's own kind, each parsed by that kind's target
+rules, where an entry equal to the target or a repeat collapses. The first version
+admits only `github_pull_request`, a kind that reads with the gateway's own CLI
+identity and no per-target grant; any other kind, and a plain `monitor_start` loop,
+refuse the field in band at the tool (from the session-monitor read the arming
+preflight already makes, failing open) and at the applier (`monitoring.also_wake`'s
+`normalize_also_wake_on`, and the legacy branch's `structured_only` refusal).
+Extras never borrow, record, revoke or re-grant the target's owner-credential
+grant, and an `also_wake_on`-only update never runs the retarget credential
+follow-up; their credential flag is the kind's alone, so they share the target's
+batched call.
+
+`MonitorState` keeps three fields for them, all owner-only public fields
+(`MONITOR_PUBLIC_FIELDS`, so `/api/monitors` carries them) and in the compact
+`monitor_inspect` allowlist, never on the legacy presence reads:
+
+- `also_wake_on`, the list as configured. Ticking never edits it: an ended extra
+  stays listed, is no longer read, and shows its end state and time.
+- `also_wake_state`, per extra: `state` (`open`, `merged`, `closed`,
+  `unreadable`), `at` (when that end state was seen), `read_errors` and
+  `wake_claimed`. No provider payload of an extra is stored or shown.
+- `also_wake_claim`: the extra, end state and reason code (`also_wake_merged`,
+  `also_wake_closed`, `also_wake_unreadable`) of the wake `last_wake_fingerprint`
+  names, so a busy retry renders the same message.
+
+What an extra does on a tick:
+
+- Only an open extra is read, on the target's tick and in the same call. Its
+  errors are its own: consecutive ATTEMPTED failures of its primary (lifecycle)
+  read are counted, a good read resets them, an unattempted skip moves nothing,
+  and supplemental reads never count. At the watch's `max_provider_errors` it is
+  retired as `unreadable`. The target's lifetime and consecutive provider-error
+  counts stay the target's; a failure of a shared document counts for every
+  subject in it, the target included.
+- It wakes the session at most once for each end state: merged, closed unmerged,
+  retired as unreadable. Nothing else about an extra wakes (no checks, no reviews).
+- At most one wake per tick, and the target's own wake goes first. An extra's
+  undelivered end state takes the tick's wake only when the target's decision was
+  `NO_CHANGE`, `RECORD_ONLY` or `RETRY_PROVIDER`; otherwise it waits.
+- Its wake goes through the ordinary dispatch, authorization and completion path
+  keyed on `last_wake_fingerprint`, which for an extra is derived from (extra, end
+  state). It sets `last_decision` to `WAKE_ACTIONABLE` like any wake, and NEVER
+  writes `last_wake_reason_code` or calls `stamp_monitor_alerted`, so it cannot
+  re-arm or mask the target's one-shot terminal wake or its re-alert windows. It
+  never writes `last_fingerprint`, `last_observation`, the `coalesce_*` maps or the
+  stall fields. `_dispatch_claimed` takes the reason code from the claim, and
+  `format_monitor_wake` adds one opening line naming the extra and what happened
+  to it; a target-caused wake is byte-identical to a watch with no extras.
+- The claim is honoured only while `wake_in_flight` is set and its fingerprint
+  equals `last_wake_fingerprint`; otherwise it is stale (a downgrade that settled
+  the wake, say) and is cleared when the record loads. It clears when the wake
+  settles: its turn completes, or its completion evidence is recorded unavailable.
+  An extra is marked `wake_claimed` only when a wake carrying it is claimed, and a
+  stop that ends the watch before that wake was dispatched (a budget stop during a
+  busy retry, an unavailable session) marks it not delivered again.
+
+Extras never end the watch and never change the target's completion rule. One set
+of budgets bounds everything: the runtime budget measured from arming
+(`DEFAULT_MONITOR_RUNTIME_SECS`), the agent-turn and token budgets, and
+`max_provider_errors` as a lifetime limit of the watch (`MAX_MONITOR_PROVIDER_ERRORS`
+at most); there is no separate probe budget. The tool descriptions tell an agent
+waiting on a slow extra to raise `max_runtime_secs` and, for a long wait,
+`max_provider_errors` in the same call, noting that a higher limit also slows
+retiring a mistyped extra. When the target's own rules stop the watch, open extras
+stop with it, and an end state not yet delivered is dropped and shows in the
+stopped record as not delivered.
+
+`monitor_update` REPLACES the list; `[]` clears it, and ended entries count toward
+the three until the list is replaced without them. An entry that stays keeps its
+record; one removed and later re-added starts fresh as open, so one that has
+already merged wakes once more on the next tick. The change is allowed while a wake
+is in flight (the woken turn is usually the one that adds an extra): it touches
+neither `last_wake_fingerprint` nor `wake_in_flight`, an in-flight claim keeps its
+own extra and end state, and it bumps `config_generation` so a probe that raced it
+is declined. A retarget onto a listed extra removes that entry. A dashboard restart
+of a stopped watch re-arms no extras: the restart route's copy clears the list,
+the records and the claim together, and the shared arming path forwards the field
+only when set. The dashboard monitor row does not draw extras yet; they are listed
+by `monitor_inspect` and `/api/monitors`.
 
 The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live kernel path: per-key `alerted` timestamps in its loaded
@@ -927,6 +1020,12 @@ Four things the shape decides, each for a reason worth keeping:
   wide margin, or a folded burst looks like a stall, and stay well under the
   re-alert interval, because a re-alert wakes the subject and zeroes the streak,
   so a floor at or past it could never be reached: `240 << 1800 << 21600`.
+- **Extras hold the streak at zero.** While any `also_wake_on` extra is open or
+  has an end state whose wake is not claimed yet, a tick is not counted, as for a
+  tick that did not settle: a quiet target blocked on another pull request is
+  waiting, not stuck. Once the last extra's wake is claimed the streak starts again
+  from zero and the rule applies exactly as above. A watch with no extras is
+  unchanged.
 - The stop records `verdict_stall`, distinct from `approval_stall` (a delivery
   failure) and from every `*_budget` reason (a spent bound), because a stop that
   reads like a convergence or like a cost is the cycle-cap anti-pattern under a
