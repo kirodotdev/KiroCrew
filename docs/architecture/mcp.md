@@ -5471,7 +5471,10 @@ thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so
 agent whose `tools` grants no `tool_search`, and for every agent while `agent.tool_search`
 is off, Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
-it already holds; a server it holds none for stays deferred. A deferred tool costs a name
+it already holds; a server it holds none for stays deferred, except
+`kirocrew-core::mcp_server_wait`, which a spec that mounts it always lists
+(`loaderless_never_defer_ids`): the still-starting note tells the turn to call it, and an app
+agent with no probed list would otherwise find it behind the loader. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
 scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including

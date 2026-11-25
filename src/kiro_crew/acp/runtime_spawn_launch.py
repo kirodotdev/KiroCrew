@@ -86,7 +86,7 @@ from kiro_crew.agent_sdk.tool_search import (
     custom_agent_never_defer_ids,
     job_tool_ids,
     kas_client_meta_settings,
-    kas_never_defer_ids,
+    loaderless_never_defer_ids,
     spec_grants_tool_search,
     with_client_meta_settings,
 )
@@ -1434,7 +1434,7 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
             )
         else:
             never_defer = await asyncio.to_thread(
-                kas_never_defer_ids, spec, _known_server_tool_names
+                loaderless_never_defer_ids, spec, _known_server_tool_names
             )
     elif operator_mandatory_mcps() is None:
         never_defer = job_tool_ids(self._agent, spec, custom=bool(added))
