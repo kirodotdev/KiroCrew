@@ -1,6 +1,7 @@
 /**
- * The first-run harness step (`FirstRunHarnessSetup`) on its own: what each
- * pick saves, which screen follows, and how failed reads and saves show.
+ * The first-run harness step (`FirstRunHarnessSetup`) on its own: the two
+ * choices, what each pick saves, which screen follows, and how failed reads
+ * and saves show.
  */
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -74,21 +75,79 @@ describe('FirstRunHarnessSetup', () => {
     backends(kiroMissing, strands)
   })
 
-  it('picks the built-in harness first, saves it and signs in before ready', async () => {
+  it('shows the sign-in choices on the first screen; a sign-in there saves the built-in harness', async () => {
     const { onDone } = renderStep()
-    expect(await screen.findByRole('radio', { name: /Built-in harness/ }, WAIT)).toBeChecked()
-    fireEvent.click(screen.getByTestId('harness-setup-continue'))
     fireEvent.click(await screen.findByRole('button', { name: 'stub sign-in' }, WAIT))
+    expect(screen.queryByRole('radio', { name: /Built-in harness/ })).not.toBeInTheDocument()
     expect(await screen.findByTestId('harness-setup-ready', {}, WAIT)).toHaveTextContent("You're all set")
     expect(api.patchConfig).toHaveBeenCalledWith('agent.acp_backend', 'kas')
     expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true)
+    expect(api.patchConfig).toHaveBeenCalledTimes(2)
     fireEvent.click(screen.getByTestId('harness-setup-start'))
     expect(onDone).toHaveBeenCalled()
+  })
+
+  it('a sign-in here whose save fails keeps Continue with Kiro, also after Bring your harness and Back', async () => {
+    vi.mocked(api.patchConfig).mockRejectedValueOnce(new Error('write failed'))
+    renderStep()
+    fireEvent.click(await screen.findByRole('button', { name: 'stub sign-in' }, WAIT))
+    expect(await screen.findByTestId('harness-setup-save-error', {}, WAIT)).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('harness-setup-bring-your-harness'))
+    fireEvent.click(await screen.findByTestId('harness-setup-back', {}, WAIT))
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro', {}, WAIT))
+    expect(await screen.findByTestId('harness-setup-ready', {}, WAIT)).toBeInTheDocument()
+    expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true)
+  })
+
+  it('a sign-in landing while Continue with Kiro CLI saves starts no second save', async () => {
+    backends(kiroInstalled, strands)
+    vi.mocked(api.patchConfig).mockReturnValue(new Promise(() => {}) as never)
+    renderStep({ installed: true, authenticated: true })
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro-cli', {}, WAIT))
+    await waitFor(() => expect(api.patchConfig).toHaveBeenCalledTimes(1), WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'stub sign-in' }))
+    expect(api.patchConfig).toHaveBeenCalledTimes(1)
+    expect(api.patchConfig).not.toHaveBeenCalledWith('agent.kas_bundle', true)
+  })
+
+  it('already signed in to Kiro: one Continue with Kiro instead of the choices', async () => {
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({ ...signedOut, authenticated: true, provider: 'Github' } as never)
+    renderStep()
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro', {}, WAIT))
+    expect(screen.getByTestId('harness-setup-signed-in-as')).toHaveTextContent('Signed in with GitHub')
+    expect(screen.queryByRole('button', { name: 'stub sign-in' })).not.toBeInTheDocument()
+    expect(await screen.findByTestId('harness-setup-ready', {}, WAIT)).toBeInTheDocument()
+    expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true)
+  })
+
+  it('offers Continue with Kiro CLI on the first screen only when Kiro CLI is signed in', async () => {
+    backends(kiroInstalled, strands)
+    const view = renderStep({ installed: true, authenticated: false })
+    await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT)
+    expect(screen.queryByTestId('harness-setup-continue-with-kiro-cli')).not.toBeInTheDocument()
+    view.unmount()
+    renderStep({ installed: true, authenticated: true })
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro-cli', {}, WAIT))
+    expect(await screen.findByTestId('harness-setup-ready', {}, WAIT)).toHaveTextContent('Kiro CLI')
+    expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', false)
+  })
+
+  it('Bring your harness says what the Kiro sign-in gives, lists the harnesses and goes back', async () => {
+    renderStep()
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
+    expect(screen.getByTestId('harness-setup-without-sign-in')).toHaveTextContent(/built-in harness or Kiro models/)
+    expect(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT)).toBeInTheDocument()
+    // Strands comes from the backends read, not the status prop: wait for it.
+    expect(await screen.findByRole('radio', { name: /Strands/ }, WAIT)).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Built-in harness/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('harness-setup-back'))
+    expect(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT)).toBeInTheDocument()
   })
 
   it('lists a missing Kiro CLI with its install command, Continue off and Check again', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status() as never)
     renderStep({ installed: false })
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
     fireEvent.click(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT))
     expect((await screen.findAllByText(/cli\.kiro\.dev\/install/, {}, WAIT)).length).toBeGreaterThan(0)
     expect(screen.getByTestId('harness-setup-continue')).toBeDisabled()
@@ -99,6 +158,7 @@ describe('FirstRunHarnessSetup', () => {
   it('shows a failed Check again', async () => {
     vi.mocked(api.kiroPrerequisite).mockRejectedValue(new Error('probe failed'))
     renderStep({ installed: false })
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
     fireEvent.click(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT))
     fireEvent.click(await screen.findByTestId('harness-setup-check-again', {}, WAIT))
     expect(await screen.findByTestId('harness-setup-recheck-error', {}, WAIT)).toBeInTheDocument()
@@ -108,7 +168,8 @@ describe('FirstRunHarnessSetup', () => {
     backends(kiroInstalled, strands)
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true, authenticated: true }) as never)
     renderStep({ installed: true, authenticated: false })
-    fireEvent.click(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT))
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
+    expect(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT)).toBeChecked()
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
     expect(await screen.findByRole('heading', { name: 'Sign in to Kiro CLI' }, WAIT)).toBeInTheDocument()
     expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', false)
@@ -119,6 +180,7 @@ describe('FirstRunHarnessSetup', () => {
   it('goes straight to ready, with no extra sign-in, for a signed-in Kiro CLI', async () => {
     backends(kiroInstalled, strands)
     renderStep({ installed: true, authenticated: true })
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
     fireEvent.click(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT))
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
     expect(await screen.findByTestId('harness-setup-ready', {}, WAIT)).toHaveTextContent('Kiro CLI')
@@ -126,7 +188,7 @@ describe('FirstRunHarnessSetup', () => {
 
   it('saves another harness as itself and says what sign-in is left', async () => {
     const { onDone } = renderStep({ installed: true, authenticated: true })
-    fireEvent.click(await screen.findByRole('button', { name: /Other harnesses/ }, WAIT))
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
     fireEvent.click(await screen.findByRole('radio', { name: /Strands/ }, WAIT))
     await waitFor(() => expect(screen.getByTestId('harness-setup-continue')).toBeEnabled(), WAIT)
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
@@ -136,13 +198,26 @@ describe('FirstRunHarnessSetup', () => {
     expect(onDone).toHaveBeenCalled()
   })
 
-  it('stays on the choice when the save fails', async () => {
-    vi.mocked(api.patchConfig).mockRejectedValue(new Error('write failed'))
-    renderStep()
-    await screen.findByRole('radio', { name: /Built-in harness/ }, WAIT)
+  it('keeps Back off while a save is in flight, so a later save cannot be overwritten', async () => {
+    backends(kiroInstalled, strands)
+    vi.mocked(api.patchConfig).mockReturnValue(new Promise(() => {}) as never)
+    renderStep({ installed: true, authenticated: true })
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
+    expect(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT)).toBeChecked()
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
-    expect(await screen.findByTestId('harness-setup-save-error', {}, WAIT)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('harness-setup-back')).toBeDisabled(), WAIT)
+    fireEvent.click(screen.getByTestId('harness-setup-back'))
+    expect(screen.queryByTestId('harness-setup-bring-your-harness')).not.toBeInTheDocument()
+  })
+
+  it('stays on the first screen when the save fails, with Continue with Kiro to retry', async () => {
+    vi.mocked(api.patchConfig).mockRejectedValue(new Error('write failed'))
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({ ...signedOut, authenticated: true } as never)
+    renderStep()
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro', {}, WAIT))
+    expect(await screen.findByTestId('harness-setup-save-error', {}, WAIT)).toHaveTextContent('Press Continue with Kiro')
     expect(screen.queryByTestId('harness-setup-ready')).not.toBeInTheDocument()
+    expect(screen.getByTestId('harness-setup-continue-with-kiro')).toBeInTheDocument()
   })
 
   it('says when the harness list or the current setup cannot be read', async () => {
@@ -150,20 +225,28 @@ describe('FirstRunHarnessSetup', () => {
     vi.mocked(api.kirocrewConfig).mockRejectedValue(new Error('config failed'))
     renderStep()
     expect(await screen.findByTestId('harness-setup-read-error', {}, WAIT)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Other harnesses/ }))
+    fireEvent.click(screen.getByTestId('harness-setup-bring-your-harness'))
     expect(await screen.findByTestId('harness-setup-backends-error', {}, WAIT)).toBeInTheDocument()
   })
 
-  it('offers no built-in row where policy denies KAS, and saves Kiro CLI as itself', async () => {
+  it('opens on the harness list with no Back where policy denies KAS, and saves Kiro CLI as itself', async () => {
     schemaQuery.value = { schema: new Map([['agent.acp_backend', { enum: ['kiro', 'strands'] }]]), error: null }
     backends(kiroInstalled, strands)
     renderStep({ installed: true, authenticated: true })
-    fireEvent.click(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT))
-    expect(screen.queryByRole('radio', { name: /Built-in harness/ })).not.toBeInTheDocument()
+    expect(await screen.findByRole('radio', { name: /Kiro CLI/ }, WAIT)).toBeChecked()
+    expect(screen.queryByTestId('harness-setup-bring-your-harness')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('harness-setup-back')).not.toBeInTheDocument()
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
     await screen.findByTestId('harness-setup-ready', {}, WAIT)
     expect(api.patchConfig).toHaveBeenCalledWith('agent.acp_backend', 'kiro')
     expect(api.patchConfig).not.toHaveBeenCalledWith('agent.kas_bundle', expect.anything())
+  })
+
+  it('opens on the harness list with the reason where the built-in harness cannot run', async () => {
+    vi.mocked(api.kasBundleStatus).mockResolvedValue({ enabled: true, engine_choice: 'engine', host_unsupported: 'Needs glibc 2.28.' } as never)
+    renderStep({ installed: false })
+    expect(await screen.findByTestId('harness-setup-without-sign-in', {}, WAIT)).toHaveTextContent('Needs glibc 2.28.')
+    expect(screen.queryByTestId('harness-setup-bring-your-harness')).not.toBeInTheDocument()
   })
 
   it('Set up later admits without saving', async () => {

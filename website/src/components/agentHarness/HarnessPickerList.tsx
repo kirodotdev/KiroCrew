@@ -15,8 +15,8 @@ export interface HarnessRowParts {
 /**
  * The one harness radio list, used by Settings > Agent Harness and first-run
  * setup. The ids, their order and their names come from `harnessList`; each
- * screen passes only what differs per row (`row`). First-run renders it twice:
- * the Kiro harnesses, then the rest behind its "Other harnesses" row.
+ * screen passes only what differs per row (`row`). First-run renders it once,
+ * under "Bring your harness": Kiro CLI, then the rest.
  */
 export function HarnessPickerList({
   ids,

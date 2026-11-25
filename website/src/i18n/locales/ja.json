@@ -11805,14 +11805,9 @@
     },
     "firstRunHarnessSetup": {
       "aside_headline": "エージェントを設定",
-      "aside_body": "実行するものを選んで、一度サインインしてください。あとで設定から変更できます。",
-      "choose_title": "ハーネスを選択",
-      "recommended": "おすすめ",
-      "cannot_run_here": "ここでは実行できません",
+      "aside_body": "Kiro にサインインするか、自分のハーネスを使います。あとで設定で変更できます。",
       "signed_in": "サインイン済み",
       "not_signed_in": "未サインイン",
-      "no_kiro_harness": "Kiro CLI をインストールするか、ほかのハーネスを選んでください。",
-      "other_harnesses": "ほかのハーネス",
       "set_up_later": "あとで設定",
       "continue": "続ける",
       "back": "戻る",
@@ -11826,7 +11821,13 @@
       "start_chatting": "チャットを始める",
       "save_failed": "{{name}} をハーネスとして保存できませんでした。「続ける」を押してもう一度お試しください。",
       "recheck_failed": "{{name}} を再確認できませんでした。「再度確認」を押してもう一度お試しください。",
-      "setup_read_failed": "現在の設定の一部を読み取れなかったため、一部の選択肢が表示されていない可能性があります。"
+      "setup_read_failed": "現在の設定の一部を読み取れなかったため、一部の選択肢が表示されていない可能性があります。",
+      "start_title": "どのように始めますか？",
+      "bring_your_harness": "自分のハーネスを使う",
+      "without_sign_in": "Kiro にサインインしないと、内蔵ハーネスと Kiro モデルは使えません。",
+      "sign_in_save_failed": "セットアップを完了できませんでした。「{{button}}」を押してもう一度お試しください。",
+      "continue_with_kiro": "Kiro で続ける",
+      "continue_with_kiro_cli": "Kiro CLI で続ける"
     }
   },
   "hooks": {

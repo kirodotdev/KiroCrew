@@ -11805,14 +11805,9 @@
     },
     "firstRunHarnessSetup": {
       "aside_headline": "에이전트 설정",
-      "aside_body": "실행할 것을 고르고 한 번 로그인하세요. 나중에 설정에서 바꿀 수 있습니다.",
-      "choose_title": "하네스 선택",
-      "recommended": "추천",
-      "cannot_run_here": "여기서 실행할 수 없음",
+      "aside_body": "Kiro에 로그인하거나 내 하네스를 쓰세요. 나중에 설정에서 바꿀 수 있습니다.",
       "signed_in": "로그인됨",
       "not_signed_in": "로그인 안 됨",
-      "no_kiro_harness": "Kiro CLI를 설치하거나 다른 하네스 중 하나를 고르세요.",
-      "other_harnesses": "다른 하네스",
       "set_up_later": "나중에 설정",
       "continue": "계속",
       "back": "뒤로",
@@ -11826,7 +11821,13 @@
       "start_chatting": "채팅 시작",
       "save_failed": "{{name}}을(를) 하네스로 저장하지 못했습니다. \"계속\"을 눌러 다시 시도하세요.",
       "recheck_failed": "{{name}}을(를) 다시 확인하지 못했습니다. \"다시 확인\"을 눌러 다시 시도하세요.",
-      "setup_read_failed": "현재 설정의 일부를 읽지 못해 일부 선택지가 빠져 있을 수 있습니다."
+      "setup_read_failed": "현재 설정의 일부를 읽지 못해 일부 선택지가 빠져 있을 수 있습니다.",
+      "start_title": "어떻게 시작할까요?",
+      "bring_your_harness": "내 하네스 사용",
+      "without_sign_in": "Kiro에 로그인하지 않으면 내장 하네스와 Kiro 모델을 쓸 수 없습니다.",
+      "sign_in_save_failed": "설정을 마치지 못했습니다. ‘{{button}}’을(를) 눌러 다시 시도하세요.",
+      "continue_with_kiro": "Kiro로 계속",
+      "continue_with_kiro_cli": "Kiro CLI로 계속"
     }
   },
   "hooks": {

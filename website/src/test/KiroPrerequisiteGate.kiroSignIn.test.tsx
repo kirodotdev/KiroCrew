@@ -270,8 +270,9 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
       { enabled: true, engine_choice: 'engine', chat_needs_sign_in: true } as never,
     )
     renderGate()
-    expect(await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: /Built-in harness/ })).toBeChecked()
+    expect(await screen.findByRole('heading', { name: 'How do you want to start?' }, CHAIN)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Builder ID/ }, CHAIN)).toBeInTheDocument()
+    expect(screen.getByTestId('harness-setup-bring-your-harness')).toBeInTheDocument()
     expect(screen.queryByRole('button', SKIP)).not.toBeInTheDocument()
     expect(screen.getByText('Dashboard loaded')).not.toBeVisible()
     fireEvent.click(screen.getByTestId('harness-setup-later'))
@@ -279,19 +280,20 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     expect(api.patchConfig).not.toHaveBeenCalled()
   })
 
-  it('with the built-in engine on, a failed save stays on the choice and says so', async () => {
+  it('with the built-in engine on, a failed save stays on the two choices and says so', async () => {
     nextStatus(firstRun)
     vi.mocked(api.kasBundleStatus).mockResolvedValue(
       { enabled: true, engine_choice: 'engine', chat_needs_sign_in: true } as never,
     )
     vi.mocked(api.patchConfig).mockRejectedValue(new Error('failed to write config file'))
+    vi.mocked(api.kasLoginStatus).mockResolvedValue(signedIn)
     renderGate()
-    await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)
-    fireEvent.click(screen.getByTestId('harness-setup-continue'))
+    await screen.findByRole('heading', { name: 'How do you want to start?' }, CHAIN)
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro', {}, CHAIN))
     expect(await screen.findByTestId('harness-setup-save-error', {}, CHAIN)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Choose a harness' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'How do you want to start?' })).toBeInTheDocument()
     expect(screen.queryByTestId('harness-setup-ready')).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('harness-setup-continue-with-kiro')).toBeInTheDocument()
   })
 
   it('with the built-in engine on, a saved pick drops the old harness model list', async () => {
@@ -301,9 +303,10 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     )
     vi.mocked(api.patchConfig).mockResolvedValue({} as never)
     const { clearCachedModels } = await import('../providers/adapters/acp')
+    vi.mocked(api.kasLoginStatus).mockResolvedValue(signedIn)
     renderGate()
-    await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)
-    fireEvent.click(screen.getByTestId('harness-setup-continue'))
+    await screen.findByRole('heading', { name: 'How do you want to start?' }, CHAIN)
+    fireEvent.click(await screen.findByTestId('harness-setup-continue-with-kiro', {}, CHAIN))
     await waitFor(() => expect(clearCachedModels).toHaveBeenCalled(), CHAIN)
     expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true)
   })
