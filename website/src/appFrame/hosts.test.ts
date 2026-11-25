@@ -10,7 +10,7 @@ describe('shared host claims', () => {
   it('reads claims normalized, capped and cut to the grant', () => {
     const claims = readHostClaims(['A.Example.com.', '.example.dev', '127.0.0.1', 'b.example.com', 7], 3, grantedSet(['a.example.com', '.example.dev']))
     expect([...claims.exact]).toEqual(['a.example.com'])
-    expect(claims.suffixes).toEqual(['.example.dev'])
+    expect([...claims.suffixes]).toEqual(['.example.dev'])
     expect(grantedSet('x')).toBeNull()
   })
 
@@ -26,6 +26,24 @@ describe('shared host claims', () => {
     expect(claimsHost(claims, 'a.example.com')).toBe(true)
     expect(claimsHost(claims, 'x.y.example.dev')).toBe(true)
     expect(claimsHost(claims, 'notexample.dev')).toBe(false)
+  })
+
+  it('reads every host when no cap is given, and matches in one lookup per label', () => {
+    const raw = Array.from({ length: 5000 }, (_, i) => (i % 2 ? `.d${i}.example.com` : `h${i}.example.com`))
+    const claims = readHostClaims(raw)
+    expect(claims.exact.size + claims.suffixes.size).toBe(5000)
+    expect(claimsHost(claims, 'd4999.example.com')).toBe(true)
+    expect(claimsHost(claims, 'a.b.d1.example.com')).toBe(true)
+    expect(claimsHost(claims, 'h4998.example.com')).toBe(true)
+    expect(claimsHost(claims, 'x.h4998.example.com')).toBe(false)
+    // The cost guard, counted instead of timed so it cannot flake: a hover looks
+    // up each of the host's labels once, however many hosts the app claims.
+    let lookups = 0
+    const counted = new Set(claims.suffixes)
+    const has = counted.has.bind(counted)
+    counted.has = (s: string) => { lookups += 1; return has(s) }
+    expect(claimsHost({ exact: claims.exact, suffixes: counted }, 'a.b.c.nomatch.example.org')).toBe(false)
+    expect(lookups).toBe(6)
   })
 
   it('drops the query and fragment by default', () => {

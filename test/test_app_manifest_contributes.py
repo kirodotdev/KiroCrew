@@ -969,7 +969,6 @@ class TestContributesLinkPreviews:
             ({"hosts": [".com"]}, "not a hostname"),
             ({"hosts": ["nodot"]}, "not a hostname"),
             ({"hosts": ["a.example.com", "a.example.com"]}, "repeats"),
-            ({"hosts": [f"h{i}.example.com" for i in range(65)]}, "exceeds the limit"),
         ],
     )
     def test_refuses_malformed_entries(self, override, fragment):
@@ -977,6 +976,20 @@ class TestContributesLinkPreviews:
             _valid_manifest(contributes={"linkPreviews": [_link_preview(**override)]})
         )
         assert any(fragment in e for e in m.contributes.validate()), m.contributes.validate()
+
+    def test_any_number_of_hosts_is_valid(self):
+        """No host cap: an app may claim thousands, each still checked on its own."""
+        hosts = [f"h{i}.example.com" for i in range(5000)] + [".example.dev"]
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"linkPreviews": [_link_preview(hosts=hosts)]})
+        )
+        assert m.contributes.validate() == []
+        bad = AppManifest.from_dict(
+            _valid_manifest(
+                contributes={"linkPreviews": [_link_preview(hosts=[*hosts, "localhost"])]}
+            )
+        )
+        assert any("not a hostname" in e for e in bad.contributes.validate())
 
     def test_one_provider_per_app_and_shape_errors(self):
         two = AppManifest.from_dict(

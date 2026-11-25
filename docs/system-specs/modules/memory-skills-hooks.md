@@ -4970,7 +4970,11 @@ edit still diverges. Without this carry an update turns full-body injection back
 on behind the user's back,
 the same reversion the auto-skill refine (`skill_runtime.auto_skills`)
 and update-approval (`skill_runtime.versions._rewrite_update_frontmatter`) paths
-already guard against on their own rewrites.
+already guard against on their own rewrites. A staging, copy or publish failure that
+leaves the name free puts the claimed tree back at its name, so the installed copy and
+its opt-out stay and the update is retried on the next sync. A diverged tree is set
+aside, and reported, once the packaged copy (or a concurrent sync's) holds the name,
+or when putting it back fails.
 
 **Retired generated skill cleanup.** `skills.remove_retired_conductor_skill()`
 removes `skills/conductor/SKILL.md` only when a descriptor-pinned, capped read has

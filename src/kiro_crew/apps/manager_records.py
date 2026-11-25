@@ -1189,8 +1189,9 @@ def _approved_grants_after_manifest_change(
     else:
         baseline = old_declared
     declared = _declared_grant_entries(new_permissions)
+    baseline_sets = {family: set(baseline.get(family, ())) for family in STAGED_GRANT_FAMILIES}
     return {
-        family: [e for e in declared[family] if e in set(baseline.get(family, ()))]
+        family: [e for e in declared[family] if e in baseline_sets[family]]
         for family in STAGED_GRANT_FAMILIES
     }
 
@@ -1202,14 +1203,12 @@ def _held_back_entries(
     declared = _declared_grant_entries(permissions)
     if approved is None:
         return {family: [] for family in STAGED_GRANT_FAMILIES}
-    return {
-        family: (
-            [e for e in declared[family] if e not in set(approved[family])]
-            if family in approved
-            else []
-        )
-        for family in STAGED_GRANT_FAMILIES
-    }
+    held: dict[str, list[str]] = {}
+    for family in STAGED_GRANT_FAMILIES:
+        # One set per family: a link-preview provider may list any number of hosts.
+        granted = set(approved[family]) if family in approved else None
+        held[family] = [] if granted is None else [e for e in declared[family] if e not in granted]
+    return held
 
 
 def _update_retired_tree_prefix(name: str) -> str:
