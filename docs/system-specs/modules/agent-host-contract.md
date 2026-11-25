@@ -166,7 +166,14 @@ own `config.toml` beside them. A mounted server takes the place of a
 `config.toml` server with the same name (`DISABLE_MCP_CONFIG_FILTERING`). Crew
 turns the `config.toml` servers off only for a `kirocrew-lite` background
 session, and codex-acp 2.3.0 has no per-session channel that would narrow them
-for a worker (`acp/harness/codex.py`, the `CODEX_CONFIG` residuals). On claude,
+for a worker (`acp/harness/codex.py`, the `CODEX_CONFIG` residuals). From
+codex-acp 1.8.0 the adapter titles a session after its first turn on its own
+`thread/start`, which carries only `cwd`, so that thread would start the
+`config.toml` servers even for a helper session. Crew therefore names each
+helper session (a background agent or a tool-less spec) with codex-acp's
+`/rename` before its first turn, and the title generator skips a session with an
+explicit title; a chat keeps its generated title, and a refused rename closes the
+session (`CodexHarness.after_session_start`). On claude,
 codex and pi the worker's
 prompt reaches the agent in the `[AGENT SYSTEM PROMPT]` block, which reads the same seam
 by the session key (`context_assembly.agent_spec._crewmate_worker_prompt`), so the
@@ -460,7 +467,11 @@ session (`agent_sdk/tool_gate.py`). The generic set-`standard`-or-`strict`
 remedy stays for hosts where a backend can exist (Linux user namespaces, macOS
 `sandbox-exec`). Kiro CLI is not an enforced harness, so it is unchanged; on
 Windows Crew delegates to Kiro's own sandbox. The unsandboxed-exec opt-in is
-not a recovery path and is not named.
+not a recovery path and is not named. Each enforced per-process adapter
+(`acp/harness/<host>.py`: OpenCode, goose, DeepSeek, Copilot CLI, pi, MiMo Code,
+Antigravity and Strands) applies that floor before it looks up its binary, so the
+non-retryable `AcpToolGateUnroutable` refusal is the first and only error, never a
+missing-binary install hint that the start retries.
 
 The same verdict is read BEFORE a session, so no dashboard save stores a harness
 every session start then refuses (the crewmate harness picker still lists one;
