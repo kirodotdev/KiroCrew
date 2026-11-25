@@ -9366,6 +9366,7 @@
       "pill_idle_since": "Idle · {{when}}",
       "notes_tab": "Notes",
       "dashboard_tab": "Dashboard",
+      "dashboard_link_refused": "This link was not opened: {{target}} is not a saved artifact or a file in {{name}}'s workspace.",
       "notes_error": "Couldn't load the notes.",
       "notes_refresh_error": "Couldn't refresh these notes. Showing the last version that loaded.",
       "notes_unsupported": "Notes can't be read on this computer.",

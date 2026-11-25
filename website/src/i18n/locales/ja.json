@@ -22733,6 +22733,7 @@
       "pill_idle_since": "待機中 · {{when}}",
       "notes_tab": "ノート",
       "dashboard_tab": "ダッシュボード",
+      "dashboard_link_refused": "このリンクは開かれませんでした。{{target}} は保存済みのアーティファクトでも、{{name}} のワークスペース内のファイルでもありません。",
       "notes_error": "ノートを読み込めませんでした。",
       "notes_refresh_error": "このノートを更新できませんでした。最後に読み込んだバージョンを表示しています。",
       "notes_unsupported": "このコンピューターではノートを読み取れません。",

@@ -244,6 +244,11 @@ function neverRefuse(): boolean {
   return false
 }
 
+/** The bridge's default: the host claims no link for itself. */
+function neverClaim(): boolean {
+  return false
+}
+
 /** A ref that always holds the latest *value*, for use inside stable callbacks. */
 function useLatest<T>(value: T): { current: T } {
   const [ref] = useState(() => ({ current: value }))
@@ -270,6 +275,8 @@ function useLatest<T>(value: T): { current: T } {
  *   in a session opens; a web URL, and any open in a new tab, needs this full tie;
  * - at once, for a page of this dashboard only, when the weaker pointer tie holds
  *   instead (`pointerTiedToFrame`, whose limits its own doc states);
+ * - first by the host's `claim`, for a link it opens itself (the Bots page's
+ *   side panel), unless the click asked for a new tab;
  * - in place, through the router, for a page of this dashboard that
  *   `openInternalLink` accepts, unless the click asked for a new tab; in a new
  *   tab for everything else;
@@ -289,20 +296,24 @@ export function useFrameLinkBridge(
   tied: (frame: HTMLIFrameElement) => boolean = tiedToFrame,
   refuse: (url: string) => boolean = neverRefuse,
   pointerTied: (frame: HTMLIFrameElement) => boolean = pointerTiedToFrame,
+  claim: (url: string) => boolean = neverClaim,
 ): ReactNode {
   const [chip, setChip] = useState<{ url: string; frame: HTMLIFrameElement; tab: boolean } | null>(null)
   const openRef = useLatest(open)
   const tiedRef = useLatest(tied)
   const refuseRef = useLatest(refuse)
   const pointerTiedRef = useLatest(pointerTied)
-  // A page of this dashboard opens in place (`openInternalLink`), unless the
-  // click asked for a new tab (a middle or modified click, which the shim marks
-  // `tab`). Every other URL, and any URL when no in-app navigator is installed,
-  // goes to `open`.
+  const claimRef = useLatest(claim)
+  // The host's own claim comes first (the Bots page opens an artifact or a
+  // workspace file in its side panel). Then a page of this dashboard opens in
+  // place (`openInternalLink`), unless the click asked for a new tab (a middle or
+  // modified click, which the shim marks `tab`). Every other URL, and any URL
+  // when no in-app navigator is installed, goes to `open`.
   const go = useCallback((url: string, tab: boolean) => {
+    if (!tab && claimRef.current(url)) return
     if (!tab && openInternalLink(url)) return
     openRef.current(url)
-  }, [openRef])
+  }, [openRef, claimRef])
   // The frame, URL and gesture checks are useFrameOpenLink's own listener; this
   // hook adds the web-URL rule, the tie and the once-per-click focus move.
   const answer = useCallback((url: string, frame?: HTMLIFrameElement, data?: unknown) => {

@@ -350,6 +350,11 @@ for dense detail. A banner has space without covering data. A link to a web
 page or a dashboard path (`/chat?sid=...`) uses `target="_blank"
 rel="noopener noreferrer"`; the host opens it after the person's click, a web
 page in a new tab and a dashboard page in place.
+On a Bot's Dashboard tab two forms open in the Bot's side panel instead:
+`/artifacts/<slug>` for a saved artifact, and the absolute path of a file in
+the Bot's workspace (`/home/.../drafts/receipt.md`, percent-encoded where
+needed), each with that same `target="_blank"`. A path outside the workspace
+opens nothing.
 Data-driven changes stay readable
 while ambient layers give the page continuity. When a bound value moves or a
 new item lands, the `living-ui` skill says how that motion should feel. Skip

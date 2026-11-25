@@ -12,14 +12,15 @@ import { setInternalNavHandler } from '../utils/internalNav'
 const URL_A = 'https://github.com/example-org/repo/pull/7'
 
 /** A host with one frame. The frame's window is a unique object: the hook compares identity only. */
-function Host({ frame, open, gesture, tied }: {
+function Host({ frame, open, gesture, tied, claim }: {
   frame: HTMLIFrameElement
   open: (url: string) => void
   gesture?: (frame: HTMLIFrameElement) => boolean
   tied?: (frame: HTMLIFrameElement) => boolean
+  claim?: (url: string) => boolean
 }) {
   const ref = useRef<HTMLIFrameElement | null>(frame)
-  return <>{useFrameLinkBridge([ref], open, gesture ?? (() => true), tied ?? (() => true))}</>
+  return <>{useFrameLinkBridge([ref], open, gesture ?? (() => true), tied ?? (() => true), undefined, undefined, claim)}</>
 }
 
 function fakeFrame(): HTMLIFrameElement {
@@ -538,5 +539,57 @@ describe('a page of this dashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Open / }))
     expect(navigate).toHaveBeenCalledWith('/schedule')
     expect(open).not.toHaveBeenCalled()
+  })
+})
+
+describe('a link the host claims', () => {
+  let uninstall: (() => void) | null = null
+  afterEach(() => { uninstall?.(); uninstall = null })
+
+  it('goes to the claim before the in-app navigator and the new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    const claim = vi.fn((url: string) => url.endsWith('/artifacts/receipt'))
+    render(<Host frame={frame} open={open} claim={claim} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/receipt' }, frame.contentWindow)
+    expect(claim).toHaveBeenCalledWith(`${window.location.origin}/artifacts/receipt`)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('leaves an unclaimed link to the in-app navigator or the new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} claim={() => false} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
+    expect(navigate).toHaveBeenCalledWith('/schedule')
+    expect(open).toHaveBeenCalledWith(URL_A)
+  })
+
+  it('is not asked for a click that asked for a new tab', () => {
+    const frame = fakeFrame()
+    const open = vi.fn()
+    const claim = vi.fn(() => true)
+    render(<Host frame={frame} open={open} claim={claim} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/receipt', tab: true }, frame.contentWindow)
+    expect(claim).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledWith(`${window.location.origin}/artifacts/receipt`)
+  })
+
+  it('is not asked without a click in the frame', () => {
+    const frame = fakeFrame()
+    const claim = vi.fn(() => true)
+    function NoGesture() {
+      const ref = useRef<HTMLIFrameElement | null>(frame)
+      return <>{useFrameLinkBridge([ref], vi.fn(), () => false, () => true, undefined, undefined, claim)}</>
+    }
+    render(<NoGesture />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/receipt' }, frame.contentWindow)
+    expect(claim).not.toHaveBeenCalled()
   })
 })

@@ -23319,6 +23319,7 @@
       "pill_idle_since": "Untätig · {{when}}",
       "notes_tab": "Notizen",
       "dashboard_tab": "Dashboard",
+      "dashboard_link_refused": "Dieser Link wurde nicht geöffnet: {{target}} ist kein gespeichertes Artefakt und keine Datei im Arbeitsbereich von {{name}}.",
       "notes_error": "Die Notizen konnten nicht geladen werden.",
       "notes_refresh_error": "Diese Notizen konnten nicht aktualisiert werden. Es wird die zuletzt geladene Version angezeigt.",
       "notes_unsupported": "Notizen können auf diesem Computer nicht gelesen werden.",

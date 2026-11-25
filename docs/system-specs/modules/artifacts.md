@@ -2089,7 +2089,21 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   and `window.open`, into a `kirocrew-dashboard:open` message, and
   `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
   against its origin, only on a real click in
-  that frame, once per click, with no dialog. A page of this dashboard that
+  that frame, once per click, with no dialog. A host may claim a link first
+  (`useFrameLinkBridge`'s `claim`, default none), before the in-app and
+  new-tab opens below. A Bot's Dashboard tab on the Bots page claims through
+  `useDashboardPanelLinkOpener` (`pages/members/dashboardPanelLinks.ts`): a
+  same-origin `/artifacts/<slug>` whose slug the library holds opens in the
+  Bot's side panel (`openArtifactInPanel`); a same-origin absolute path inside
+  the Bot's workspace (the panel's Workspace root, the slot's `project`), with
+  no `.`, `..` or empty segment and no query or fragment, opens through the
+  panel's `openFile(path)`, the same viewer a chat file link opens (the
+  workspace check is lexical, on whole segments, in the page); a path on
+  the workspace's first segment that fails that check, or an unknown slug,
+  opens nothing and shows the panel's notice. It claims nothing else (a
+  staged-dashboard reference and a deeper `/artifacts/...` route included) and
+  nothing on a click that asked for a new tab; a path needs the full tie
+  (`tiedToFrame`). Nothing goes back to the frame. A page of this dashboard that
   `utils/internalNav.ts` accepts (an explicit list of destinations, each with
   the query parameters it may carry, on the dashboard's own origin or the exact
   origin of `dashboard.url` or the tunnel) opens in place through the main

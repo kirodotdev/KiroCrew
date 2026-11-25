@@ -95,10 +95,15 @@ page is their only home. The right-hand side panel is the chat page's panel with
 two standing tabs: **Dashboard** (the page the Bot publishes itself) and
 **Files** (its workspace). The Dashboard's **Download as HTML** button saves the
 page as it looks now as one file you can open anywhere, offline, or send to
-someone; it does not update after it is saved. Links on the page do not open
-from the saved file: the page runs with the same limits it has in the tab, where
-links open through the dashboard, and a saved file has no dashboard. Artifacts is
-not offered here; Terminal, Browser and
+someone; it does not update after it is saved. In the tab, a link on the page
+to a saved artifact or to a file in the Bot's workspace opens in this side
+panel, as the same link in the Bot's chat does. A link to another dashboard page
+opens in place, and any other link opens in your browser. A link to a file
+outside the workspace opens nothing and says so.
+Links on the page do not open from the saved file: the page runs with the same
+limits it has in the tab, where links open through the dashboard, and a saved
+file has no dashboard. The Artifacts list is not offered here, though an artifact
+a link opens shows as its own panel tab; Terminal, Browser and
 the other views open from the panel's **+** menu.
 
 The identity pill in the thread header opens the Bot's **Profile** card,
