@@ -157,7 +157,7 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 | `src/kiro_crew/apps/builtins/__init__.py` | `channels` in `_MIGRATED_BUILTINS`, `_FOLDED_BUILTIN_SWITCHES` (to `dashboard.channels_enabled`) and `_FOLDED_OFF_BY_DEFAULT`; the carry is `apps/builtin_fold.py`. |
 | `website/src/surfaces/surfaceData.ts` | The `channels` surface: nav id, Apps group, `configSwitch` with `configSwitchDefault: false`, `formerApp`. |
 | `src/kiro_crew/channel.py` | Channel model, routing, persistence, containment, and agent execution loop. |
-| `src/kiro_crew/channel_spec_hooks.py` | The member turn's gate on its agent spec's own PreToolUse hooks. |
+| `src/kiro_crew/channel_spec_hooks.py` | The member turn's gate on its agent spec's own PreToolUse hooks, which a native Slack turn, `kirocrew chat` and the unattended turns on a live session (`SessionSpecGate`) ask too. |
 | `src/kiro_crew/dashboard/handlers_channel.py` | Validated channel REST handlers, agent lifecycle calls, approvals, presets, and context resets. |
 | `src/kiro_crew/dashboard/routes/connections.py` | Dashboard route registration. |
 | `website/src/pages/ChannelPage.tsx` | Channel workspace UI, WebSocket reconciliation, threads, presets, and agent controls. |
