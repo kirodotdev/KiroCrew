@@ -18,7 +18,7 @@ import { dirtyWorktreeChanged } from '../../utils/dirtyWorktree'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
-import { useAppSelector } from '../../store'
+import { useAppSelector, useAppStore } from '../../store'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
 import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
@@ -230,9 +230,11 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   // After the user runs the copied installer command in a terminal, the running
   // gateway is still executing the old code and had no in-app way to reload.
   //
-  // Same error shape as gwApply: os.execv kills the connection, so a bare
-  // network failure after the POST is the expected path, and only an ApiError
-  // (a real server rejection) is a failure worth showing.
+  // The gateway answers the restart before it restarts, so a request that fails
+  // while this tab's socket is still connected means no restart is coming: it
+  // is a failure like an ApiError. Only a failure after the socket dropped is
+  // the restart itself. Read at failure time, not from this render's closure.
+  const appStore = useAppStore()
   const restartRefusal = useRestartRefusal(detail => {
     setRestarting(false)
     setApplyReport(null)
@@ -246,10 +248,10 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
       setApplyDirty(false)
       // The person declined the "work is running" confirmation: a quiet cancel.
       if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
-      if (e instanceof ApiError) {
+      if (e instanceof ApiError || appStore.getState().dashboard.connected) {
         restartRefusal.end()
         setApplyReport(null)
-        setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+        setApplyError((e instanceof ApiError && e.message) || i18nT('pages.settings.aboutPanel.restart_failed'))
       } else setRestarting(true)
     },
   })
