@@ -24,6 +24,7 @@ import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { useFrameSrc } from '../hooks/useFrameSrc'
+import { useFrameAliveRecovery } from '../hooks/useFrameAliveRecovery'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 
 /** The selection an open comment composer annotates, resolved while it was
@@ -261,7 +262,7 @@ export default function RemoteArtifactDetailPage() {
   const isHtml = ctype.includes('html')
   const isMarkdown = ctype.includes('markdown') || ctype.includes('text/md')
   const srcdoc = useMemo(
-    () => (isHtml && art?.content ? buildSrcdoc({ html: art.content, themeVars, mode: theme, enableComments: true, linkBridge: true }) : null),
+    () => (isHtml && art?.content ? buildSrcdoc({ html: art.content, themeVars, mode: theme, enableComments: true, linkBridge: true, aliveReply: true }) : null),
     [isHtml, art?.content, themeVars, theme],
   )
   // A gateway-served document, not a `blob:` URL — the same reason the artifact
@@ -270,6 +271,9 @@ export default function RemoteArtifactDetailPage() {
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  // The browser can reload this frame by itself onto its spent url: re-mint when
+  // the document stops answering (AGENT_PAGE_SANDBOX grants scripts).
+  useFrameAliveRecovery(iframeRef, blobUrl, true, retry)
   // Links in a shared page open through the host after a real click in this
   // frame (the frame itself grants no popups), or through the button it returns.
   const linkChip = useFrameLinkBridge([iframeRef])
