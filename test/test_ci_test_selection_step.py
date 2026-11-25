@@ -110,7 +110,7 @@ def _bundle(repo: Path, age: timedelta = timedelta(hours=5), **changed: Any) -> 
         "schema": 1,
         "commit": RUN_SHA,
         "built_at": (windows.commit_time("HEAD", repo) - age).isoformat(),
-        "tests": {"test/metrics/test_schema.py": 3},
+        "tests": {"test/metrics/test_schema.py": 3, "test/test_other.py": 1},
         "files": {"src/kiro_crew/testing/wait.py": [0]},
         "cochange": {"src/kiro_crew/testing/wait.py": ["test/metrics/test_schema.py"]},
         "guard": ["test/test_gate.py"],
