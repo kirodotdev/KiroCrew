@@ -822,7 +822,8 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           <Toggle
             checked={conductsOn}
             onChange={(v) => conductsFlip.mutate(v)}
-            disabled={conductsFlip.isPending}
+            // Its own write: `busy` keeps the tab stop while it runs.
+            busy={conductsFlip.isPending}
             label={t('pages.membersPage.profile_worker_conducts_switch', { name })}
           />
         </RowStatic>

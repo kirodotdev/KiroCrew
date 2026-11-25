@@ -770,11 +770,18 @@ describe('CrewProfileSettings Workers can conduct', () => {
   it('turns it on for this Bot alone, and keeps it on once saved', async () => {
     setupRosterBacked(member())
     await screen.findByTestId('crew-profile-worker-conducts')
+    // A second Bot on the roster, whose row the save must leave alone.
+    act(() => {
+      lastQc.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        [...(rows ?? []), member({ name: 'scout', slug: 'scout', slot_key: 'member-scout' })])
+    })
     fireEvent.click(sw())
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { worker_conducts: true }))
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(sw()).toHaveAttribute('aria-checked', 'true'))
-    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].worker_conducts).toBe(true)
+    const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+    expect(rows?.find((r) => r.name === 'oncall')?.worker_conducts).toBe(true)
+    expect(rows?.find((r) => r.name === 'scout')?.worker_conducts).toBeUndefined()
   })
 
   it('turns an on Bot back off', async () => {
@@ -799,7 +806,7 @@ describe('CrewProfileSettings Workers can conduct', () => {
     await waitFor(() => expect(sw()).toHaveAttribute('aria-checked', 'false'))
   })
 
-  it('holds the switch while its write runs, so a second press sends nothing', async () => {
+  it('holds the switch in the tab order while its write runs, so a second press sends nothing', async () => {
     let finish: (v: unknown) => void = () => {}
     setup(member())
     await screen.findByTestId('crew-profile-worker-conducts')
@@ -807,8 +814,11 @@ describe('CrewProfileSettings Workers can conduct', () => {
     // nobody took, and the next test's first write would get it.
     mockApi.updateKirocrewAgent.mockReturnValueOnce(new Promise((r) => { finish = r }))
     fireEvent.click(sw())
-    // The requested state shows while the write runs, and the switch takes no press.
+    // The requested state shows while the write runs, and the switch takes no
+    // press but keeps its tab stop, so a keyboard user stays on it.
     await waitFor(() => expect(sw()).toHaveAttribute('aria-disabled', 'true'))
+    expect(sw()).toHaveAttribute('aria-busy', 'true')
+    expect(sw()).toHaveAttribute('tabindex', '0')
     expect(sw()).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(sw())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledTimes(1)
