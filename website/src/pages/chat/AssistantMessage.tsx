@@ -317,11 +317,15 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const speed = 1
   const smoothedText = useSmoothStream(steerCleaned, isStreaming, smooth, speed)
   // The smooth buffer keeps draining for ~LAG_SECS AFTER isStreaming flips false
-  // (see useSmoothStream's continuation condition), so for a beat the rendered
-  // text is still truncated — possibly mid-URL. MarkdownRenderer's own `live`
-  // gate only covers isStreaming, so suppress unfurl for the drain window too:
-  // a half-revealed `https://exa` must not be fetched just because the turn
-  // ended. Chips/cards appear once the reveal catches up.
+  // (see useSmoothStream's continuation condition), and for as long as the tab is
+  // hidden, since the reveal runs on animation frames. Until it catches up the
+  // rendered text is still truncated — possibly mid-URL, or mid-widget. So the
+  // renderer is told the text is still streaming for the drain window too:
+  // parsed as finished, a half-revealed `<mcwidget>` is a complete widget whose
+  // body grows every frame, and each body mints its own sandbox document. Unfurl
+  // is suppressed for the same window: a half-revealed `https://exa` must not be
+  // fetched just because the turn ended. Chips/cards appear once the reveal
+  // catches up.
   const draining = smoothedText.length < steerCleaned.length
 
   const planSteps = useMemo<PlanStepInput[] | null>(() => {
@@ -812,7 +816,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       ? { overflowWrap: 'anywhere', wordBreak: 'break-word', height: rawBoxHeight, overflowY: 'auto', fontSize: 'var(--mc-message-font-size, 14px)' }
       : { overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {body ?? <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} textPreviews textPreviewsPaused={isStreaming || draining} collapseDiffs mdCardToggle runYourselfCards blockedLinks={effectiveBlockedLinks} redactions={effectiveRedactions} redactionCoach={showRedactionCoach} redactionSlot={redactionSlot} />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming || draining} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} textPreviews textPreviewsPaused={isStreaming || draining} collapseDiffs mdCardToggle runYourselfCards blockedLinks={effectiveBlockedLinks} redactions={effectiveRedactions} redactionCoach={showRedactionCoach} redactionSlot={redactionSlot} />
       </MessageErrorBoundary>}
       {!body && !isStreaming && grill && <GrillCard key={`${grillSlot}:${grillRow}:${activeIdx}`} grill={grill} slotKey={grillSlot} stateKey={grillSlot && grillRow ? `${grillSlot}:${grillRow}:${activeIdx}` : undefined} wireKey={grillWireKey} answered={grillAnswered} />}
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
