@@ -8,6 +8,7 @@ import { setAgentSwitchNotice, switchSlot } from '../../store/chatSlice'
 import { openClosedSession } from '../../lib/openClosedSession'
 import { i18nT } from '../../i18n/t'
 import { sessionKeyFrom } from '../../utils/sessionKeys'
+import { isMissingSlotError } from '../../utils/thunkError'
 import { applyNavIntentInMain, chatDeepLinkSlot, isAppDetailPath, isMembersPath } from '../../utils/navIntent'
 import { useIsCurrentUrl, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 
@@ -45,22 +46,24 @@ export function useOpenInAppPath(): (path: string) => void {
       // the local Crew forward first (as the notification banner does), so
       // the leave prompt and the switched session are both on screen.
       if (localCovered(appStore.getState())) dispatch(setActiveId(null))
-      // A full key the loaded roster lacks names a closed session, which a slot
-      // switch can only report as deleted. Resume it instead, as a closed-session
-      // chip does: probe the one key and distinguish a failed lookup from a
-      // confirmed deletion, without asking for a live slot that does not exist.
-      const { slots, slotsLoaded } = appStore.getState().dashboard
-      const closedKey = slotsLoaded ? sessionKeyFrom(slotKey) : null
-      if (closedKey && !slots.some(s => s.key === closedKey)) {
-        if (!mayLeave()) return
-        navigate('/chat')
-        const showActionError = (message: string) => { dispatch(setAgentSwitchNotice({ message, error: true })) }
-        void openClosedSession({ key: closedKey, title: closedKey }, dispatch, showActionError).then(outcome => {
-          if (outcome === 'failed') {
-            showActionError(i18nT('components.markdownRenderer.closed_session_open_failed', { name: closedKey }))
-          }
+      // Switch first: the roster can lag a session that was just opened (the
+      // Crew Companion's "Open session"), so only the server's 404 says the
+      // slot is not open. A full key that 404s may still be a closed session on
+      // disk, so it is resumed as a closed-session chip does: probe the one key
+      // and tell a failed lookup from a confirmed deletion.
+      const switchOrResume = (key: string) => {
+        const closedKey = sessionKeyFrom(key)
+        void dispatch(switchSlot({ key, announceOnMissing: true, quietOnMissing: closedKey !== null })).then(action => {
+          if (!closedKey || !switchSlot.rejected.match(action) || !action.payload || !isMissingSlotError(action.payload)) return
+          // A later switch owns the pane now; do not pull it back.
+          if (appStore.getState().chat.slotSwitchLatestRequestId !== action.meta.requestId) return
+          const showActionError = (message: string) => { dispatch(setAgentSwitchNotice({ message, error: true })) }
+          void openClosedSession({ key: closedKey, title: closedKey }, dispatch, showActionError).then(outcome => {
+            if (outcome === 'failed') {
+              showActionError(i18nT('components.markdownRenderer.closed_session_open_failed', { name: closedKey }))
+            }
+          })
         })
-        return
       }
       applyNavIntentInMain(
         // `path` is deliberately dropped in favour of the bare route: a
@@ -69,7 +72,7 @@ export function useOpenInAppPath(): (path: string) => void {
         { path: '/chat', slotKey },
         {
           navigate,
-          switchSlot: (key) => { dispatch(switchSlot({ key, announceOnMissing: true })) },
+          switchSlot: switchOrResume,
           mayLeave,
         },
       )

@@ -7,7 +7,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { createTestStore } from '../../test/helpers'
 import { relayPaneOpened, setActiveId } from '../../store/instancesSlice'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
 import { useOpenInAppPath } from './openInAppPath'
 
 // The crew-link hook is a unit of its own (`lib/crewDeepLink.test.tsx`); here
@@ -144,9 +144,12 @@ describe('useOpenInAppPath', () => {
   })
 
   function mountWithRoster(at: string, openKeys: string[]) {
-    const state = createTestStore().getState().dashboard
+    const base = createTestStore().getState()
     const seeded = createTestStore({
-      dashboard: { ...state, slotsLoaded: true, slots: openKeys.map(key => ({ key, title: key })) as never },
+      dashboard: { ...base.dashboard, slotsLoaded: true, slots: openKeys.map(key => ({ key, title: key })) as never },
+      // The pane shows the session the address names, so a refused switch has
+      // a session to go back to.
+      chat: { ...base.chat, activeSlot: openKeys[0] ?? null },
     })
     render(
       <Provider store={seeded}>
@@ -159,10 +162,12 @@ describe('useOpenInAppPath', () => {
   }
 
   it('resumes a CLOSED session a link names, as a closed-session chip does, rather than calling it deleted', async () => {
+    const detail = vi.spyOn(api, 'chatSlotDetail').mockRejectedValue(new ApiError(404, 'not found'))
     const meta = vi.spyOn(api, 'sessionMeta').mockResolvedValue({ key: 'chat-9-1785000000', title: 'Old run' })
     const resume = vi.spyOn(api, 'resumeChatSlot').mockResolvedValue({ ok: false, key: 'chat-9-1785000000' } as never)
     const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000'])
     await act(async () => { open('/chat?sid=chat-9-1785000000') })
+    expect(detail).toHaveBeenCalledWith('chat-9-1785000000', expect.anything())
     expect(meta).toHaveBeenCalledWith('chat-9-1785000000')
     expect(resume).toHaveBeenCalledWith('chat-9-1785000000', 'Old run')
     expect(store.getState().chat.switchSlotGone).toBeNull()
@@ -174,7 +179,7 @@ describe('useOpenInAppPath', () => {
   it('shows the chip failure message when a closed-session lookup rejects, without reporting deletion', async () => {
     const meta = vi.spyOn(api, 'sessionMeta').mockRejectedValue(new Error('HTTP 503'))
     const resume = vi.spyOn(api, 'resumeChatSlot')
-    const detail = vi.spyOn(api, 'chatSlotDetail')
+    const detail = vi.spyOn(api, 'chatSlotDetail').mockRejectedValue(new ApiError(404, 'not found'))
     const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000'])
     const activeBefore = store.getState().chat.activeSlot
     await act(async () => { open('/chat?sid=chat-9-1785000000') })
@@ -183,19 +188,19 @@ describe('useOpenInAppPath', () => {
     expect(store.getState().chat.switchSlotGone).toBeNull()
     expect(store.getState().chat.activeSlot).toBe(activeBefore)
     expect(resume).not.toHaveBeenCalled()
-    expect(detail).not.toHaveBeenCalled()
+    expect(detail).toHaveBeenCalledTimes(1)
     expect(screen.queryByText(/was deleted/)).toBeNull()
   })
 
   it('shows the chip deleted notice only when the closed-session lookup confirms absence', async () => {
     vi.spyOn(api, 'sessionMeta').mockResolvedValue(null)
     const resume = vi.spyOn(api, 'resumeChatSlot')
-    const detail = vi.spyOn(api, 'chatSlotDetail')
+    const detail = vi.spyOn(api, 'chatSlotDetail').mockRejectedValue(new ApiError(404, 'not found'))
     mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000'])
     await act(async () => { open('/chat?sid=chat-9-1785000000') })
     expect(await screen.findByText(/chat-9-1785000000.*was deleted and cannot be opened/)).toBeInTheDocument()
     expect(resume).not.toHaveBeenCalled()
-    expect(detail).not.toHaveBeenCalled()
+    expect(detail).toHaveBeenCalledTimes(1)
     expect(screen.queryByText("Couldn't open chat-9-1785000000.")).toBeNull()
   })
 
@@ -206,6 +211,19 @@ describe('useOpenInAppPath', () => {
     expect(meta).not.toHaveBeenCalled()
     expect(store.getState().chat.activeSlot).toBe('chat-2-1785000000')
     meta.mockRestore()
+  })
+
+  it('switches to a session the roster does not list yet when the server has it open', async () => {
+    // The Crew Companion opens a session it just created before the slots
+    // frame lists it: only the server's answer says whether it is open.
+    const detail = vi.spyOn(api, 'chatSlotDetail').mockResolvedValue({ messages: [], running: false } as never)
+    const meta = vi.spyOn(api, 'sessionMeta')
+    const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000'])
+    await act(async () => { open('/chat?sid=chat-9-1785000000') })
+    expect(detail).toHaveBeenCalledWith('chat-9-1785000000', expect.anything())
+    expect(store.getState().chat.activeSlot).toBe('chat-9-1785000000')
+    expect(store.getState().chat.switchSlotGone).toBeNull()
+    expect(meta).not.toHaveBeenCalled()
   })
 
   it('does not ask about the session already on screen', () => {
