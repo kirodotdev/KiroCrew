@@ -10,6 +10,8 @@ Covers:
   bounding the rate did not lengthen detection.
 * Normal bridge teardown (stdin EOF, or a stop) is reported as itself, so a
   reconnect is never attempted on a shutdown.
+* A lost gateway transport seen first by a failed ping write or a failed read
+  ends as a reconnectable reason, never ``unknown``.
 """
 
 from __future__ import annotations
@@ -730,3 +732,87 @@ async def test_a_cancelled_request_is_no_longer_outstanding() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await await_until(bridge, what="the cancelled bridge to finish")
     assert sorted(session.outstanding_ids) == ["call-8"]
+
+
+class _GatewayWriter:
+    """The stub's gateway socket; a ping write raises ``ping_error`` if set."""
+
+    def __init__(self, ping_error: Exception | None = None) -> None:
+        self._ping_error = ping_error
+
+    def write(self, data: bytes) -> None:
+        if self._ping_error is not None and _safe_json_get_type(data) == _BRIDGE_PING_TYPE:
+            raise self._ping_error
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+async def _bridge_ending(gw_reader: asyncio.StreamReader, writer: _GatewayWriter) -> StubSession:
+    """Run a bridge whose kiro-cli sent one call and holds stdin open."""
+    stdin_reader = asyncio.StreamReader()
+    stdin_reader.feed_data(_jsonrpc_request("tools/call", "call-1"))
+    stdout_reader = asyncio.StreamReader()
+    stdout_writer = asyncio.StreamWriter(
+        _FakeTransport(),
+        asyncio.StreamReaderProtocol(stdout_reader),
+        stdout_reader,
+        asyncio.get_running_loop(),
+    )
+    session = StubSession()
+    await await_until(
+        asyncio.ensure_future(
+            run_bridge(
+                gw_reader,
+                writer,  # type: ignore[arg-type]
+                asyncio.Event(),
+                stdin=stdin_reader,
+                stdout_writer=stdout_writer,
+                ping_interval=0.05,
+                ping_max_misses=3,
+                peer_supports_ping=True,
+                session=session,
+            )
+        ),
+        what="run_bridge to return once the gateway transport failed",
+    )
+    return session
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ping_write_is_a_reconnectable_ending() -> None:
+    """The gateway died under an outstanding call and the liveness ping is the
+    first write to find out. That ends the bridge before either pump has seen
+    the loss, so an unnamed ending would be recorded as ``unknown``, which is not
+    reconnectable: the stub would give up on a gateway that already respawned."""
+    session = await _bridge_ending(
+        asyncio.StreamReader(), _GatewayWriter(ping_error=ConnectionResetError())
+    )
+
+    assert session.reason == "socket_write_failed"
+    assert session.reason in StubSession.RECONNECTABLE
+    assert session.outstanding_ids == ["call-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [BrokenPipeError(232, "The pipe is being closed"), ConnectionResetError()],
+    ids=["broken-pipe", "reset"],
+)
+async def test_a_failed_gateway_read_is_a_reconnectable_ending(error: OSError) -> None:
+    """A read that fails with a closing pipe (what Windows raises) or a reset,
+    rather than returning EOF, is the same lost transport and ends the same way."""
+    gw_reader = asyncio.StreamReader()
+    gw_reader.set_exception(error)
+
+    session = await _bridge_ending(gw_reader, _GatewayWriter())
+
+    assert session.reason == "socket_eof"
+    assert session.reason in StubSession.RECONNECTABLE
