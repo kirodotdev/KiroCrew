@@ -480,15 +480,14 @@ def _merge_cards_reached_the_model(turn: _ChatTurn) -> bool:
     finally's reset kills a runtime that may still be answering, and the
     reloaded session may lack the prompt. The card is delivered again
     rather than lost. The kept-prompt clause is the Kiro contract, so it
-    counts only on kiro-cli and KAS (which runs the Kiro CLI pick); any other
-    harness consumes a card only on a landed turn, so a wrong guess there
-    repeats the card.
+    counts only where the harness has ``keeps_prompt_on_unlanded_turn``
+    (kiro-cli and KAS); any other harness consumes a card only on a landed
+    turn, so a wrong guess there repeats the card.
     """
-    provider = getattr(turn, "client", None)
-    on_kiro = any(getattr(provider, n, None) is True for n in ("is_kiro_backend", "is_kas_backend"))
+    keeps_prompt = capabilities_of(getattr(turn, "client", None)).keeps_prompt_on_unlanded_turn
     return (
         (turn._turn_lands and not turn._empty_verdict_left_prompt_unanswered)
-        or (on_kiro and _kiro_cli_kept_the_prompt(turn))
+        or (keeps_prompt and _kiro_cli_kept_the_prompt(turn))
     ) and not _native_session_lacks_the_prompt(turn)
 
 
