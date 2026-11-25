@@ -100,6 +100,23 @@ def test_the_wording_follows_the_mount(tmp_path, monkeypatch, backend, expected)
     assert member_mate_tools.binding_has_mate_tools(binding) is False
 
 
+@pytest.mark.parametrize("backend", ["kas", "claude", "codex"])
+def test_a_spec_that_excludes_the_server_gets_the_no_tools_wording(
+    tmp_path, monkeypatch, backend
+) -> None:
+    """The mount withholds an excluded server, so the wording must not name its tools."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    spec = {**_user_spec(), "excludedTools": ["@kirocrew-mate"]}
+    (agents_dir / "ar-tpm.json").write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: agents_dir)
+    monkeypatch.setattr(
+        "kiro_crew.mate_worker.crewmate_worker_backend", lambda _cfg, _member=None: backend
+    )
+    binding = SimpleNamespace(kiro_agent="ar-tpm", workspace="default")
+    assert member_mate_tools.binding_has_mate_tools(binding, "ar-tpm-bot") is False
+
+
 def test_a_spec_without_an_allowlist_keeps_its_own_permission_grants() -> None:
     """No ``allowedTools`` is written: one would make the projection drop the
     author's ``permissions`` allows (``merge_user_permissions``)."""
