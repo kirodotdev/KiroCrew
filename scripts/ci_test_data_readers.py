@@ -31,6 +31,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
@@ -67,6 +68,8 @@ class DataRule:
         self._frontend: list[re.Pattern[str]] | None = None
         self._doc_readers: dict[frozenset[str], set[str]] = {}
         self._surface_tests: set[str] | None = None
+        # Seconds `tests` has taken on this instance: the scans, and nothing a kept answer costs.
+        self.seconds = 0.0
 
     def is_doc(self, path: str) -> bool:
         return bool(self.docs.is_prose_doc(path))
@@ -88,6 +91,13 @@ class DataRule:
 
     def tests(self, paths: Iterable[str]) -> set[str]:
         """The backend test files that could read one of `paths`, each of which `covers`."""
+        started = time.monotonic()
+        try:
+            return self._tests(list(paths))
+        finally:
+            self.seconds += time.monotonic() - started
+
+    def _tests(self, paths: list[str]) -> set[str]:
         found: set[str] = set()
         docs = frozenset(path for path in paths if self.is_doc(path))
         if docs:
