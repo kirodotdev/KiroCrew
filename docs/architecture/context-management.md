@@ -444,9 +444,11 @@ The mechanism, when on:
 
 - `skills_selection.py` → `get_triggered_skills` scores each visible skill's comma-separated
   `triggers` through `trigger_match.py` → `trigger_score`. A phrase's score is the
-  fraction of *its* words present in the message; an entry's score is its best
-  phrase; a `!`-prefixed phrase whose words all appear is a veto evaluated after
-  every positive, so phrase order cannot change the outcome. Case is ignored,
+  fraction of *its* words present in the message, and a Chinese, Japanese or Thai
+  word is present when it occurs anywhere inside the message, since those scripts
+  are written without spaces; an entry's score is its best phrase; a `!`-prefixed
+  phrase whose words all appear is a veto evaluated after every positive, so
+  phrase order cannot change the outcome. Case is ignored,
   except in a phrase prefixed with `=`: its words must appear exactly as
   written, so `=Word` fires on "Word" and not on "word".
 - The bar is `MIN_TRIGGER_OVERLAP = 0.7`. `always: true` skills are excluded (already
