@@ -1869,7 +1869,9 @@ formats that imply it: `--short`, `--porcelain`, `--long`, `-z`/`--null`) or any
 output does not count. Commands are read by the shared shell reader
 (`security.shell_commands.read_commands`, the batch guard's own), so quoting is the shell's
 and a here-document body is data; a command with a quote left open, or longer than 16,384
-characters, counts nothing. An incognito or temporary transcript, or one whose line cannot be
+characters, counts nothing. A program word is named the way Windows runs it
+(`program_name.windows_program_name`), so `git.exe`, `Git` and a full Windows path to
+`git.exe` are `git`, and the same holds for `gh` and `glab`. An incognito or temporary transcript, or one whose line cannot be
 read, is refused by the seam (`TranscriptWithheld`) and its row gets no outcome. The scan
 records each delivering row's chain; `usage_outcome.respond_with_session_outcomes` then,
 off the loop, takes the lock stems of every contributing chain in one sorted acquire, enters

@@ -84,10 +84,10 @@ from kiro_crew.acp.batch_guard_tokens import (
     token_keys,
     tokens_of,
 )
-from kiro_crew.acp.program_name import windows_program_name
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE, DENY_CAUSE_BATCH_WRITE_RUN
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
+from kiro_crew.program_name import windows_program_name
 from kiro_crew.security import argv_rules as _argv_rules
 from kiro_crew.security import shell_commands as _shell_commands
 from kiro_crew.security import shell_normalizer as _shell
