@@ -680,6 +680,55 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     return flow
 
 
+async def _pre_tool_hooks_refused(
+    turn: _ChatTurn,
+    event: Any,
+    validated_tool: str,
+) -> bool:
+    """Fire PreToolUse for *event* unless the hook gate above already did.
+
+    True when a hook blocked the call or failed, with the refusal already sent.
+    An auto-approve rung that approves with no card calls this first, so a hook's
+    BLOCKED holds there as it does on the card.
+    """
+    if turn._pre_tool_hooks_fired:
+        return False
+    try:
+        pre_hook_results = await _fire(
+            turn,
+            HOOK_EVENT_PRE_TOOL_USE,
+            tool_name=validated_tool,
+            tool_input=hook_tool_input(event.raw_tool_params, event.tool_input),
+            tool_id=event.harness_tool_id,
+            tool_identity=event.tool_name,
+            mcp_server=event.mcp_server_name,
+        )
+    except Exception as hook_exc:
+        await _reject_hook_error(
+            turn.client,
+            turn.slot,
+            event,
+            session_key=turn.session_key,
+            error=str(hook_exc),
+            refusal_notices=turn._refusal_notices,
+            state=turn.state,
+            refusal_reasons=turn._refusal_reasons,
+        )
+        return True
+    if _pre_tool_hooks_should_block(pre_hook_results):
+        await _reject_hook_blocked(
+            turn.client,
+            turn.slot,
+            event,
+            session_key=turn.session_key,
+            pre_hook_results=pre_hook_results,
+            refusal_reasons=turn._refusal_reasons,
+            refusal_notices=turn._refusal_notices,
+        )
+        return True
+    return False
+
+
 async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTINUE] | None:
     """Decide a permission request the turn can answer itself: hooks, trust reads, grants and auto-approve."""
     _deferred_cut_text = turn._deferred_cut_text
@@ -1215,6 +1264,16 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         and not _own_worker_call
         and _conductor_own_child_call(state, slot, event)
     )
+    # The rule is for a CHILD's call, so it reads who made this one: a request the
+    # transport marks as a sub-agent's (its own ``sub_session_id``, or
+    # ``native_child_call`` for a native KAS child sharing this session's id), on a
+    # backend proven to mark them (``child_calls_marked``). The parent's own call
+    # while a child runs is not a crew call and takes the gate below. A KAS request
+    # naming no tool call is marked a child only so no override reaches it
+    # (``_is_native_child_call``); it cannot be told apart, so it grants nothing here.
+    _crew_child_call = getattr(event, "child_calls_marked", False) is True and bool(
+        event.sub_session_id or (getattr(event, "native_child_call", False) and event.tool_call_id)
+    )
     if (
         not _card_turn
         and (
@@ -1222,11 +1281,35 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             or _own_child_call
             or (
                 not _unattributed_children
+                and _crew_child_call
                 and _native_crew_should_auto_approve(_native_tracker, state, slot)
             )
         )
         and _child_grant_eligible
     ):
+        # With no hook config the gate above fired no PreToolUse, and session trust
+        # or YOLO alone can bring a request here: fire it now, as the trust rung does.
+        if not turn._pre_tool_hooks_fired:
+            try:
+                validated_tool = _validate_tool_name(
+                    event.title,
+                    is_shell=event.is_shell,
+                    canonical_name=event.tool_name,
+                )
+            except ValueError as e:
+                await _reject_invalid_tool(
+                    client,
+                    slot,
+                    event,
+                    session_key=session_key,
+                    error=e,
+                    refusal_notices=_refusal_notices,
+                    state=state,
+                    refusal_reasons=_refusal_reasons,
+                )
+                return _Flow.CONTINUE
+            if await _pre_tool_hooks_refused(turn, event, validated_tool):
+                return _Flow.CONTINUE
         logger.debug(
             "Native crew auto-approve: %r (request_id=%s)",
             _safe_native_crew_debug_title(event.title),
@@ -1622,41 +1705,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 refusal_reasons=_refusal_reasons,
             )
             return _Flow.CONTINUE
-        if not turn._pre_tool_hooks_fired:
-            _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
-            try:
-                pre_hook_results = await _fire(
-                    turn,
-                    HOOK_EVENT_PRE_TOOL_USE,
-                    tool_name=validated_tool,
-                    tool_input=_parsed_input,
-                    tool_id=event.harness_tool_id,
-                    tool_identity=event.tool_name,
-                    mcp_server=event.mcp_server_name,
-                )
-            except Exception as hook_exc:
-                await _reject_hook_error(
-                    client,
-                    slot,
-                    event,
-                    session_key=session_key,
-                    error=str(hook_exc),
-                    refusal_notices=_refusal_notices,
-                    state=state,
-                    refusal_reasons=_refusal_reasons,
-                )
-                return _Flow.CONTINUE
-            if _pre_tool_hooks_should_block(pre_hook_results):
-                await _reject_hook_blocked(
-                    client,
-                    slot,
-                    event,
-                    session_key=session_key,
-                    pre_hook_results=pre_hook_results,
-                    refusal_reasons=_refusal_reasons,
-                    refusal_notices=_refusal_notices,
-                )
-                return _Flow.CONTINUE
+        if await _pre_tool_hooks_refused(turn, event, validated_tool):
+            return _Flow.CONTINUE
         # always=False — Kiro Crew owns trust scope; per-call request_permission
         # is required for PreToolUse hooks to run on every tool invocation.
         approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
