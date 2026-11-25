@@ -328,7 +328,14 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     ),
     "_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),
     "_channel_reply": ("function", False, "(self, channel_id: 'str') -> \"'ReplyFn'\""),
-    "_channel_turns": ("function", False, "(self, images: 'Sequence[str]' = ()) -> 'ChannelTurns'"),
+    "_channel_turns": (
+        "function",
+        False,
+        (
+            "(self, images: 'Sequence[str]' = (), title_thread: 'str | None' = None) "
+            "-> 'ChannelTurns'"
+        ),
+    ),
     "_configured_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_drain_queue": ("function", True, "(self, session_key: 'str') -> 'None'"),
     "_enqueue_with_receipt": (
@@ -450,7 +457,8 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         (
             "(self, session_key: 'str', user_text: 'str', reply_text: 'str', is_new: 'bool', "
             "agent: 'str | None' = None, mirror_mids: 'tuple[str, str] | None' = None, "
-            "extra_row: 'tuple[str, str, str, str | None] | None' = None) -> 'None'"
+            "extra_row: 'tuple[str, str, str, str | None] | None' = None, "
+            "auto_title_pending: 'bool' = False) -> 'None'"
         ),
     ),
     "_prune_model_pickers": ("function", False, "(self, now: 'float') -> 'None'"),
@@ -471,7 +479,10 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_record_turn": (
         "function",
         True,
-        "(self, record: 'TurnRecord', images: 'Sequence[str]' = ()) -> 'None'",
+        (
+            "(self, record: 'TurnRecord', images: 'Sequence[str]' = (), "
+            "title_thread: 'str | None' = None) -> 'None'"
+        ),
     ),
     "_render_config": ("function", False, "(self) -> 'tuple[bool, bool, bool]'"),
     "_resolve_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),

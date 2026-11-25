@@ -7,6 +7,7 @@ preview. Routing is in ``test_discord_sessions_routing.py``, binding state in
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -1017,16 +1018,32 @@ async def test_cold_resume_does_not_stamp_channel_or_retitle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_own_session_still_gets_new_session_bookkeeping() -> None:
-    """The guard must not disable bookkeeping for Discord's OWN conversation."""
+async def test_own_session_still_gets_new_session_bookkeeping(monkeypatch) -> None:
+    """The guard must not disable bookkeeping for Discord's OWN conversation.
+
+    Its name is owed by the auto-title turn, which replaces the fallback name.
+    """
+    from kiro_crew.messaging import auto_title
+
+    named: list[str] = []
+
+    async def _name(_sessions: Any, _log: Any, key: str, *_a: Any, **_kw: Any) -> str:
+        named.append(key)
+        return ""
+
+    monkeypatch.setattr(auto_title, "maybe_auto_title", _name)
+    auto_title.reset()
     log = _log()
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
     sessions.is_new_result = True
 
     await dispatcher.handle_message(_message("hello there"))
+    await asyncio.sleep(0)
 
     assert [key for key, _ in getattr(sessions, "set_channel_calls", [])] == [sessions.last_key]
-    assert [key for key, _ in getattr(log, "titles_set", [])] == [sessions.last_key]
+    assert named == [sessions.last_key]
+    assert getattr(log, "titles_set", []) == []
+    auto_title.reset()
 
 
 @pytest.mark.asyncio

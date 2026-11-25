@@ -400,6 +400,9 @@ from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest an
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
 )
+from conftest_resets_discord import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_discord_thread_titles,
+)
 
 # MCP-gateway per-test resets, split from conftest_resets for the file-line cap.
 from conftest_resets_gateway import (  # noqa: E402,F401 -- bound for pytest and importers

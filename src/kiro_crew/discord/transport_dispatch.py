@@ -384,7 +384,9 @@ class DiscordDispatcher:
         # ``messaging/queue_drain.py``.
         register_drain(_CHANNEL, self._drain_queue)
 
-    def _channel_turns(self, images: Sequence[str] = ()) -> ChannelTurns:
+    def _channel_turns(
+        self, images: Sequence[str] = (), title_thread: str | None = None
+    ) -> ChannelTurns:
         """The shared turn pipeline, with Discord's ledger, notice and surfacing as adapters.
 
         Built per message from the dispatcher's LIVE attributes (``sessions``,
@@ -395,6 +397,8 @@ class DiscordDispatcher:
         declared, not forked: each ``DISCORD_DRIFT`` member is retired by a ruling.
         *images* are the pictures downloaded for the message, which the ledger keeps
         with the row; read when the row is written, after the turn fetched them.
+        *title_thread* is where the ledger's auto-title applies the name it lands
+        (see ``_record_turn``).
         """
         return ChannelTurns(
             _CHANNEL,
@@ -402,7 +406,7 @@ class DiscordDispatcher:
             ctx_builder=self.ctx_builder,
             dispatcher=self,
             agent=self._resolve_agent,
-            record=lambda record: self._record_turn(record, images),
+            record=lambda record: self._record_turn(record, images, title_thread),
             notice=lambda where, key, provider: self._maybe_notice(
                 where[0], where[1], key, provider
             ),
@@ -1019,7 +1023,12 @@ class DiscordDispatcher:
 
         _pick_before = self._model_pref.get(scope_id)
         try:
-            outcome = await self._channel_turns(attachment_images).answer(
+            outcome = await self._channel_turns(
+                attachment_images,
+                # A resumed session is named where it lives; a native one here,
+                # and its thread follows the name when the bot opened it.
+                None if resumed_key is not None else thread_id,
+            ).answer(
                 Asker(
                     session_key,
                     chan_id,
