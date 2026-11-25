@@ -102,6 +102,8 @@ export type PopoutMsg =
   | { t: 'pong'; id: string }
   | { t: 'focus'; id: string }
   | { t: 'bring-back'; id: string }
+  // Main → the popout for `id`: show `path` (the feature's `onNavigate` decides how).
+  | { t: 'navigate'; id: string; path: string }
   // Navigation-intent handshake (popout → main). Two-phase claim so that with
   // several main dashboard tabs open, exactly ONE performs the navigation:
   // the popout broadcasts a request, every main offers, the popout picks the
@@ -190,8 +192,13 @@ export interface PopoutController {
    * deep link to the gone entity would only report it missing.
    */
   closeSelf(): void
-  /** Register THIS window as the live popout for `id` (responder role). Returns cleanup. */
-  registerPopout(id: string): () => void
+  /**
+   * Register THIS window as the live popout for `id` (responder role). Returns
+   * cleanup. `onNavigate` receives the path of each {@link navigatePopout} for `id`.
+   */
+  registerPopout(id: string, onNavigate?: (path: string) => void): () => void
+  /** Ask the popout window for `id` to show `path` (its `onNavigate`); focus is separate. */
+  navigatePopout(id: string, path: string): void
   /**
    * From inside a popout: forward a navigation intent to a main dashboard
    * window (claim handshake picks exactly one). When no main claims it within
@@ -228,6 +235,8 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   let mainSubscribers = 0
   /** Non-null when THIS window is itself a popout (drives the responder role). */
   let selfId: string | null = null
+  /** The popout's `registerPopout` navigate handler. */
+  let selfNavigate: ((path: string) => void) | null = null
   /** Handles for popouts THIS window opened — lets us focus/close them directly. */
   const handles = new Map<string, Window | null>()
   /**
@@ -308,6 +317,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
         return
       }
       if (msg.t === 'bring-back' && msg.id === selfId) { returnSelfToMain(); return }
+      if (msg.t === 'navigate' && msg.id === selfId) { selfNavigate?.(msg.path); return }
     } else if (msg.t === 'bring-back') {
       opts.onBringBackObserved?.(msg.id)
       return
@@ -511,9 +521,10 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     }
   }
 
-  function registerPopout(id: string): () => void {
+  function registerPopout(id: string, onNavigate?: (path: string) => void): () => void {
     ensureChannel()
     selfId = id
+    selfNavigate = onNavigate ?? null
     post({ t: 'open', id })
     const announceClose = () => post({ t: 'close', id })
     window.addEventListener('beforeunload', announceClose)
@@ -522,8 +533,12 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
       window.removeEventListener('beforeunload', announceClose)
       window.removeEventListener('pagehide', announceClose)
       announceClose()
-      if (selfId === id) selfId = null
+      if (selfId === id) { selfId = null; selfNavigate = null }
     }
+  }
+
+  function navigatePopout(id: string, path: string): void {
+    post({ t: 'navigate', id, path })
   }
 
   /** Unguessable-enough id for the claim handshake (no security role — just collision avoidance). */
@@ -616,6 +631,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     stopHeartbeat()
     mainSubscribers = 0
     selfId = null
+    selfNavigate = null
     handles.clear()
     navigate = (url: string) => window.location.assign(withBase(url))
     windowOpen = (url: string, target: string) => { window.open(url, target) }
@@ -626,7 +642,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   return {
     subscribe, getSnapshot, openPopout, focusPopout, bringBack,
-    isSelfPopout, returnSelfToMain, closeSelf, registerPopout,
+    isSelfPopout, returnSelfToMain, closeSelf, registerPopout, navigatePopout,
     forwardToMain, setNavIntentHandler,
     __setNavigateForTests, __setWindowOpenForTests, __resetForTests,
   }

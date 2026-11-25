@@ -24,19 +24,34 @@
  * Opening in the browser is always the host's own button, run inside the user's
  * click, so it is never an asynchronous open a popup blocker refuses.
  *
+ * An entry with `page` instead of `entry` opens no dialog and no frame: opening it
+ * in the app goes to the app's own page with the link in its `page.param` query
+ * parameter (the same URL rule). A pop-out of that page is sent there and focused;
+ * otherwise this window navigates in-app, after the page on screen agrees to be
+ * left. An app's page (or a core pop-out page) cannot be asked that, so from one
+ * the link stays a link unless the destination is popped out. A pop-out loads the
+ * new address, replacing what its page held.
+ *
  * @module linkOpen/LinkOpenLayer
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { MoreHorizontal } from 'lucide-react'
+import { pathOpenerLink } from '../apps/pathOpener'
 import ErrorNotice from '../components/ErrorNotice'
 import Modal from '../components/Modal'
+import { useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { Btn } from '../components/ui'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
 import { copyToClipboard } from '../utils/clipboard'
+import { useAppPopouts } from '../hooks/useAppPopouts'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { openExternal } from '../hooks/useFrameOpenLink'
+import { hasPopoutPage } from '../pages/corePopoutPages'
+import { navigatePopout } from '../utils/appPopout'
+import { appRouteOf } from '../utils/appPopoutRoute'
 import { i18nT } from '../i18n/t'
 import { freshRate, isRelayMessage, messageBytes, MAX_HOST_MESSAGE_BYTES, readInvocationMessage, takeMessage, type OfferKind } from '../appFrame/frameProtocol'
 import { HostInvocation } from '../appFrame/invocation'
@@ -136,18 +151,49 @@ export default function LinkOpenLayer() {
   openersRef.current = openers
   const [asking, setAsking] = useState<HeldLink | null>(null)
   const [opened, setOpened] = useState<HeldLink | null>(null)
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+  const leave = useGuardedLeave()
+  const { isPoppedOut, focus } = useAppPopouts()
+  // An app's page, or a core pop-out page, registers no leave check, so a page
+  // entry never leaves one for another page.
+  const onUnguardedPage = appRouteOf(pathname, hasPopoutPage) !== null
+  // Open `held` in its app: the app's page for a page entry, else the dialog.
+  const openInApp = (held: HeldLink) => {
+    const page = held.opener.page
+    if (!page) { setOpened(held); return }
+    const path = pathOpenerLink(page, held.opener.fullUrl ? held.href : withoutQuery(held.href))
+    if (isPoppedOut(page.route)) {
+      navigatePopout(page.route, path)
+      focus(page.route)
+    } else if (!onUnguardedPage) {
+      leave(() => navigate(path), path)
+    } else {
+      // The pop-out closed while the question was open: the browser, in this click.
+      openExternal(held.href)
+    }
+  }
+  const openInAppRef = useRef(openInApp)
+  openInAppRef.current = openInApp
+  // Whether the host takes the click: a page entry's only where it can open.
+  const holds = (held: HeldLink) => {
+    const page = held.opener.page
+    return !page || !onUnguardedPage || isPoppedOut(page.route)
+  }
+  const holdsRef = useRef(holds)
+  holdsRef.current = holds
 
   useEffect(() => {
     if (!openers.length) return
     const onClick = (e: MouseEvent) => {
       const held = heldLinkOf(e, openersRef.current)
-      if (!held) return
+      if (!held || !holdsRef.current(held)) return
       const remembered = rememberedChoice(held.opener.key, held.host)
       // A remembered "browser" is an ordinary link again.
       if (remembered === 'browser') return
       e.preventDefault()
       e.stopPropagation()
-      if (remembered === 'app') setOpened(held)
+      if (remembered === 'app') openInAppRef.current(held)
       else setAsking(held)
     }
     document.addEventListener('click', onClick, true)
@@ -178,7 +224,7 @@ export default function LinkOpenLayer() {
           onOpenInApp={(always) => {
             if (always) rememberChoice(asking.opener.key, asking.host, 'app')
             setAsking(null)
-            setOpened(asking)
+            openInApp(asking)
           }}
           onOpenInBrowser={(always) => {
             if (always) rememberChoice(asking.opener.key, asking.host, 'browser')
