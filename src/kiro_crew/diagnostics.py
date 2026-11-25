@@ -1212,9 +1212,9 @@ _INSTALL_OPTIONS = {
 _CHANNEL_OPTIONS = release_channel.CHANNEL_FORM_OPTIONS
 
 
-#: ``versions.txt``'s ``version_alignment:`` in a bundle the gateway collects: its own
-#: files are not the selected package of a side-by-side install (a promoted update
-#: whose restart was put off, a desktop update), so comparing them would read aligned.
+#: ``versions.txt``'s ``version_alignment:`` in a bundle the gateway collects, but for an
+#: update it staged itself: its files are not the selected package of a side-by-side
+#: install (an update promoted from the CLI, a desktop update), so they would read aligned.
 _ALIGNMENT_NOT_CHECKED = (
     "not checked (collected inside the gateway, which cannot read a side-by-side"
     " install's selected package; `kirocrew doctor --bundle` compares them)"
@@ -1437,8 +1437,8 @@ def collect_bundle(
             (no full gateway / chat logs) for a lighter, lower-sensitivity zip.
         output_dir: where to write the zip. Defaults to ``<data_home>/diagnostics``.
         version_alignment: the running gateway's version against the selected
-            package's, as ``kirocrew doctor --bundle`` reads it. None, the
-            dashboard's collector, records it as not checked.
+            package's, as ``kirocrew doctor --bundle`` (or the dashboard, for an
+            update the gateway staged) reads it. None records it as not checked.
 
     Returns:
         :class:`BundleResult` with the zip path and a pre-filled issue URL.

@@ -539,18 +539,24 @@ def _doctor_running_version(port: int, issues: list[str]) -> None:
 def _bundle_version_alignment() -> str:
     """The ``version_alignment:`` line ``kirocrew doctor --bundle`` puts in ``versions.txt``.
 
-    ``kirocrew status``'s ``Version:`` text for the ``running:`` row's two readings,
-    with no age: ``/api/health`` carries no start time.
+    ``kirocrew status``'s ``Version:`` text for the ``running:`` row's two readings.
+    ``/api/health`` carries no start time, so only when they differ is ``/api/status``
+    read as the owner, as ``kirocrew status`` reads it, for the mismatch age; when
+    that sign-in fails the line has no age, as on status.
     """
     # In-function: a family binds no project module at module scope (the facade rule).
-    from kiro_crew.cli_server import _format_version_line
+    from kiro_crew.cli_server import _format_version_line, _owner_status
     from kiro_crew.port_resolution import resolve_client_port
     from kiro_crew.service import live_target
 
     port = resolve_client_port(None)
-    return _format_version_line(
-        {"version": _running_gateway_version(port)}, live_target.selected_version()[0], None
-    )
+    running = _running_gateway_version(port)
+    selected, changed_at = live_target.selected_version()
+    if running and selected and running != selected:
+        data = _owner_status(port)
+        if isinstance(data, dict) and data.get("version"):
+            return _format_version_line(data, selected, changed_at)
+    return _format_version_line({"version": running}, selected, None)
 
 
 def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str]) -> None:

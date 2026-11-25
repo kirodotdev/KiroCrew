@@ -32,6 +32,32 @@ def _diagnostics_dir():
     return config_dir() / "diagnostics"
 
 
+def _staged_update_alignment() -> str | None:
+    """``versions.txt``'s ``version_alignment:`` for an update this gateway staged.
+
+    The one side-by-side update known in here: the restart-ready note names it, no
+    live-target pointer sends the next start elsewhere, and ``restart_reaches``
+    confirms a restart still runs it, since a later install can move the stable
+    link without clearing the note. None (not checked) otherwise.
+    """
+    # In-function: the gateway has these loaded already, and the package imports
+    # this module at init time.
+    from kiro_crew import update_restart_ready
+    from kiro_crew.cli_server import _format_version_line
+    from kiro_crew.platform import wheel_apply
+    from kiro_crew.service import live_target
+
+    note = update_restart_ready.current()
+    if note is None or note.reason != update_restart_ready.REASON_STAGED or not note.version:
+        return None
+    try:
+        if live_target.read_target() is not None or not wheel_apply.restart_reaches(note.version):
+            return None
+    except Exception:  # noqa: BLE001 -- one unreadable line must not fail the bundle
+        return None
+    return _format_version_line({"version": diagnostics.__version__}, note.version, note.since)
+
+
 def _sel():
     """Late-binding sel() for test monkeypatch compatibility."""
     # circular import: the parent package `kiro_crew.dashboard.handlers` imports
@@ -101,11 +127,13 @@ async def api_diagnostics_collect(request: web.Request) -> web.Response:
     # before the collector reads the owner's logs.
     await _audit_collect_allowed(include_logs)
     try:
+        alignment = await asyncio.to_thread(_staged_update_alignment)
         result = await asyncio.to_thread(
             diagnostics.collect_bundle,
             note=note,
             include_logs=include_logs,
             output_dir=_diagnostics_dir(),
+            version_alignment=alignment,
         )
     except Exception:  # pragma: no cover - defensive
         logger.exception("diagnostics collection failed")
