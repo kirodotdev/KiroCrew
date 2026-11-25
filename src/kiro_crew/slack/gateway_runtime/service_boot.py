@@ -1560,7 +1560,7 @@ async def run(self: GatewayOrchestrator) -> None:
         # a credential, which is never printed here.
         from kiro_crew.dashboard.headless import print_client_access
 
-        print_client_access(self._dashboard_port)
+        print_client_access(self._dashboard_port, self._cfg.dashboard.entry_port)
     elif not self._no_dashboard:
         try:
             host = resolve_dashboard_host(self._local_only, self._configured_host)

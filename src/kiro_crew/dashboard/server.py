@@ -1047,6 +1047,24 @@ async def start_dashboard(
         _served_port = port or _dashboard_sock.getsockname()[1]
         app["served_port"] = _served_port
 
+        # Loaded before the app backends start, so a dashboard.entry_port value
+        # that can never be served stops the start before any backend is spawned
+        # and before the gateway's own port serves. The bind, and its refusal of a
+        # port in use, stay in entry_gate.start after the gateway's own site.
+        # Off the loop: the load reads and validates config.json from disk.
+        _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        from kiro_crew.dashboard import entry_gate
+
+        # The SSM port counts only when its listener is configured to run.
+        _entry_ssm_port = (
+            _cfg.dashboard.shared_crew.ssm_port
+            if _shared_crew_preview and _cfg.dashboard.shared_crew.ssm
+            else None
+        )
+        entry_gate.configured_port(
+            _cfg.dashboard.entry_port, _dashboard_sock.getsockname()[1], _entry_ssm_port
+        )
+
         await _start_app_backends(app, state)
 
         # Edition-contributed dashboard routes + background services (CPP
@@ -1109,7 +1127,6 @@ async def start_dashboard(
         # Off by default; resolved in a thread so the daemon call cannot stall the
         # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
         # validated.
-        _cfg = KiroCrewConfig.load()
         _ts_cfg = _cfg.dashboard.tailscale
         _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
         _tailnet_trust = await _resolve_tailnet_trust(_cfg)
@@ -1215,6 +1232,10 @@ async def start_dashboard(
 
             app[HEADLESS_KEY] = True
 
+        # The entry port's gate holder, empty until the port is bound after the
+        # gateway's own (dashboard/entry_gate.py).
+        _entry_ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
+
         # The ordered chain and the dashboard_url token-auth invariant live with the
         # headless chain in one owner, so the two cannot drift apart unseen.
         _install_dashboard_middlewares(
@@ -1308,6 +1329,16 @@ async def start_dashboard(
         # socket's own kernel-assigned name.
         site = web.SockSite(runner, _dashboard_sock)
         await site.start()
+        # The entry port, when the owner set one. Inside this guard: a port that
+        # cannot be bound stops the start, and the cleanup below closes what was
+        # opened.
+        await entry_gate.start(
+            _entry_ref,
+            runner,
+            _cfg.dashboard.entry_port,
+            _dashboard_sock.getsockname()[1],
+            ssm_port=_entry_ssm_port,
+        )
     except BaseException:
         # Every post-reservation failure must release both the app processes and
         # the socket before another process can claim this trusted origin.

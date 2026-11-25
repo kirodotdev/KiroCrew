@@ -5266,6 +5266,32 @@ Returns the effective config for a channel:
 }
 ```
 
+`dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
+proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
+bind address is not configurable. It is for Linux and macOS only for now: on
+Windows a non-zero value stops the start of the regular or the headless
+`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
+while the SSM listener is configured to run, stops that start too
+(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+nor opens the port: it logs a warning and starts.
+The shared config validation replaces a wrong-typed value (for example `8443.5`,
+`"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It
+logs `Config: type mismatch at 'dashboard.entry_port': ...; using default`.
+Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
+float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
+A wrong value stops the start before any app backend is spawned. A port that
+cannot be bound also stops the gateway's start. The port opens in the regular and
+the headless `kirocrew gateway` only. The proxy must send a `Host` that names loopback
+(`127.0.0.1`, `[::1]` or `localhost`); the entry port answers a request to a Crew
+API route with any other `Host` with `400`, and many proxies pass the client's `Host` through unless told otherwise. The
+value is one per data home, so a second gateway started on the same data home
+(another `--port`) finds the entry port held and does not start (`EntryPortError`).
+`PATCH /api/config/kirocrew` does not change the key: `READONLY_REASONS` lists it
+read-only with reason `reach`, as it does `tunnel.enabled`, so it is set in the config
+file or with `kirocrew config set`.
+See [dashboard-token-auth.md](dashboard-token-auth.md) (*Entry port*).
+
 The `dashboard.url` field supplies the browser-facing/reverse-proxy origin and,
 when present, a candidate port; its origin is added to the CSRF/WebSocket allowlist.
 It does **not** widen the TCP bind in the public build, which remains
