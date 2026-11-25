@@ -4745,8 +4745,9 @@ and every gap fails closed:
   without a permission request would otherwise leave no row.
 
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
-a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode,
-whose seeded `permission` `"*": "ask"` already makes each call ask; kiro-cli
+a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude; opencode,
+whose seeded `permission` `"*": "ask"` already makes each call ask; goose, whose
+seeded `approve` mode on a goose home Crew builds for the spawn does the same; kiro-cli
 enforces the field itself and must never join) the direct `AcpClient` records both
 from the spec its session array was projected from (`acp/spec_tools_allowlists.py`:
 `spec_shell_allowlist` with no KAS policy, so an `allowedTools` naming the shell

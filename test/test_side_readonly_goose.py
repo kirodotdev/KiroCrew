@@ -247,7 +247,8 @@ def test_a_normal_turn_event_is_unchanged_by_the_side_mapping(extension, tool, r
     """Off a side session nothing is mapped: the event equals the one main built."""
     event = _goose_event(extension, tool, raw, side_read_only=False)
     assert event.harness_builtin_tool == ""
-    assert event.mcp_server_name == ("" if tool == "shell" else extension)
+    builtin = extension == "developer" and tool in ("shell", "write", "edit")
+    assert event.mcp_server_name == ("" if builtin else extension)
     side = _goose_event(extension, tool, raw, side_read_only=True)
     if side.harness_builtin_tool:
         # A proven side read differs from the normal event in exactly these three.
@@ -301,6 +302,7 @@ def test_the_side_home_leaves_out_permission_yaml_and_extensions(tmp_path):
     assert yaml.safe_load(copied.read_text(encoding="utf-8")) == {
         "GOOSE_PROVIDER": "openai",
         "GOOSE_MODEL": "stub",
+        "extensions": {"summon": {"enabled": False}, "extensionmanager": {"enabled": False}},
     }
     assert not (root / "data").exists()
 
@@ -325,7 +327,7 @@ def test_the_side_home_needs_no_user_config(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     root = build_side_goose_root(tmp_path / "absent", scratch)
-    assert list((root / "config").iterdir()) == []
+    assert [p.name for p in (root / "config").iterdir()] == ["config.yaml"]
 
 
 @_posix_home
@@ -338,7 +340,7 @@ def test_a_case_variant_of_permission_yaml_is_not_linked(tmp_path, name):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     root = build_side_goose_root(source, scratch)
-    assert list((root / "config").iterdir()) == []
+    assert [p.name for p in (root / "config").iterdir()] == ["config.yaml"]
 
 
 @_posix_home
@@ -449,13 +451,14 @@ async def test_a_side_session_is_spawned_on_its_own_goose_home(monkeypatch, tmp_
     assert session._extra_env["GOOSE_MODE"] == "approve"
 
 
+@_posix_home
 @pytest.mark.asyncio
-async def test_a_normal_session_keeps_the_users_goose_home(monkeypatch, tmp_path):
+async def test_a_normal_session_gets_a_session_home_not_the_side_one(monkeypatch, tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     env = await _launch_env(monkeypatch, tmp_path, _Session(side_read_only=False, scratch=scratch))
-    assert "GOOSE_PATH_ROOT" not in env
-    assert list(scratch.iterdir()) == []
+    assert Path(env["GOOSE_PATH_ROOT"]) == scratch / "goose-session-root"
+    assert [p.name for p in scratch.iterdir()] == ["goose-session-root"]
 
 
 @_posix_home

@@ -430,7 +430,7 @@ and effort selection, the full `session/request_permission` flow) works. So
 - **`toolsSettings` shell and write allowlists are enforced at Crew's gate.**
   claude reads neither `shell.denyByDefault`/`allowedCommands` nor
   `fs_write.fallbackAction: "deny"`/`allowedPaths`, so for a backend in
-  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode) the client reads
+  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude, opencode and goose) the client reads
   them from the spec `_resolve_session_mcp_servers` projected (or reads the spec
   again when the array is withheld), through `acp/spec_tools_allowlists.py` and the
   KAS readers it wraps, and `_build_permission_event` stamps them on every request
