@@ -5397,8 +5397,9 @@ writer, and the `SkillsLoader` watcher applies it live (no restart): the loader'
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
-to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, for a card that
+could carry the list; none can today: `resolve_setting` refuses a `str_list` key `no_write_path`
+before any value is read (see crew-mode).
 
 ### Default context discovery
 
