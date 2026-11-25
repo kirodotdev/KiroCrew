@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.discord.client import DiscordClient
 from kiro_crew.discord.commands import application_command_payload
-from kiro_crew.discord.transport import DiscordTransport
+from kiro_crew.discord.transport import DiscordTransport, resolve_owner_id
 from kiro_crew.discord.transport_dispatch import _CHANNEL, DiscordDispatcher
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.messaging.queue_drain import unregister_drain
@@ -126,8 +126,8 @@ def _publish_slash_commands(client: "DiscordClient") -> None:
 _PENDING_REGISTRATIONS: set[asyncio.Task[None]] = set()
 
 
-def _reopen_owner_dm(client: "DiscordClient", allowed_ids: set[str]) -> None:
-    """Re-open the sole owner's DM in the background, so its pairing is known again.
+def _reopen_owner_dm(client: "DiscordClient", owner: str) -> None:
+    """Re-open the owner's DM in the background, so its pairing is known again.
 
     The ``DM channel -> user`` pairing lives in this process only, and the owner-DM
     predicate refuses a session mirrored to a DM it cannot place
@@ -135,11 +135,12 @@ def _reopen_owner_dm(client: "DiscordClient", allowed_ids: set[str]) -> None:
     linked to the owner's DM before a restart could not reach any of its workers
     until the owner wrote into the DM. ``create_dm_channel`` is the call the
     dashboard's connect row makes to open that DM, and it records the pairing from
-    Discord's own answer. Fired as a task for the reason the slash menu is.
+    Discord's own answer. Fired as a task for the reason the slash menu is. *owner*
+    is :func:`~kiro_crew.discord.transport.resolve_owner_id`'s answer; ``""``
+    (nobody is the owner) opens nothing.
     """
-    if len(allowed_ids) != 1:
+    if not owner:
         return
-    (owner,) = allowed_ids
 
     async def _reopen() -> None:
         try:
@@ -347,7 +348,9 @@ async def _reconnect_locked(
         orch._discord_bot_token = token
     if never_ready:
         _publish_slash_commands(client)
-        _reopen_owner_dm(client, {str(u) for u in dc.allowed_user_ids})
+        _reopen_owner_dm(
+            client, resolve_owner_id(dc.owner_id, {str(u) for u in dc.allowed_user_ids})
+        )
     logger.info(
         "Discord reconnected in place (%s%s)",
         "new token, " if new_token else "",
@@ -390,6 +393,8 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
         allowed_threads: set[str] = set(getattr(orch, "_discord_allowed_thread_ids", []) or [])
         allowed_channels: set[str] = set(getattr(orch, "_discord_allowed_channel_ids", []) or [])
         auto_thread = bool(getattr(orch, "_discord_auto_thread", True))
+        owner_id = getattr(getattr(orch._cfg, "discord", None), "owner_id", "")
+        owner_id = owner_id if isinstance(owner_id, str) else ""
         if not allowed_ids:
             logger.warning(
                 "Discord: allowed_user_ids is empty — the bot is reachable by "
@@ -425,6 +430,7 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
             auto_thread=auto_thread,
             on_thread_created=dispatcher.register_allowed_thread,
             dispatch=_dispatch,
+            owner_id=owner_id,
         )
         # Inbound: Gateway WS -> transport.receive (authorize + normalize)
         # -> dispatcher.handle_message (drive the turn on the shared TurnDriver).
@@ -480,7 +486,7 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
                     client.fatal_error or "gateway not READY within 15s (check bot token/network)"
                 )
         _publish_slash_commands(client)
-        _reopen_owner_dm(client, allowed_ids)
+        _reopen_owner_dm(client, resolve_owner_id(owner_id, allowed_ids))
         logger.info("Discord channel started (transport path, Gateway WebSocket).")
         return client
     except Exception as exc:

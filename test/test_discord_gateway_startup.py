@@ -372,6 +372,30 @@ class TestOwnerDm:
         await _finish_registrations()
         assert opened == expected
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("owner_id", "expected"), [("u2", ["u2"]), ("u3", [])], ids=["allowed", "not-allowed"]
+    )
+    async def test_a_named_owners_dm_is_reopened_beside_other_allowed_users(
+        self, registry, monkeypatch, owner_id, expected
+    ) -> None:
+        """``discord.owner_id`` names the owner among several allowed users, never outside them."""
+        opened: list[str] = []
+
+        async def _create_dm_channel(self: Any, user_id: str) -> str:
+            opened.append(user_id)
+            return "dm-1"
+
+        monkeypatch.setattr(_Client, "create_dm_channel", _create_dm_channel, raising=False)
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(approval_mode="interactive"),
+            discord=SimpleNamespace(owner_id=owner_id),
+        )
+        await _start(_orch(_discord_allowed_user_ids=["u1", "u2"], _cfg=cfg))
+        await _finish_registrations()
+        assert opened == expected
+        assert _Transport.instances[-1].kwargs["owner_id"] == owner_id
+
 
 class TestApprovalMode:
     @pytest.mark.parametrize(

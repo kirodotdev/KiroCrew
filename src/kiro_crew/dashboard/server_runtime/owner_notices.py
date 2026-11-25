@@ -117,9 +117,22 @@ async def _notify_owner_channels(state: DashboardState, safe_text: str) -> None:
     channel_type, transport, target = candidates[0]
     if not target.available:
         return
+    # A channel with an explicit owner setting (Discord's ``owner_id``) has
+    # already named its owner: the lone candidate must be that owner, and an
+    # owner it cannot name (not allow-listed) leaves nobody. Imported here: owner
+    # functions run on the facade's globals, where this module's imports are not bound.
+    from kiro_crew.messaging.transport import explicit_owner
+
+    def _named_elsewhere() -> bool:
+        named = explicit_owner(transport)
+        return named is not None and target.target_id != named
+
+    if _named_elsewhere():
+        return
     try:
         resolved = await transport.resolve_configured_target(target.target_id)
-        if not resolved:
+        # Asked again after the await: a reload may have named another owner.
+        if not resolved or _named_elsewhere():
             return
         conversation_id, thread_id = resolved
         await transport.send_message(conversation_id, safe_text, thread_id)

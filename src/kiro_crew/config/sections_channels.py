@@ -621,6 +621,17 @@ class DiscordConfig:
             tags=["discord"],
         ),
     )
+    owner_id: str = field(
+        default="",
+        metadata=_meta(
+            "Owner ID",
+            "Discord user ID (snowflake) of the Crew's owner, the one allowed user "
+            "who may run owner-only commands such as !sessions and !bot. It must "
+            "also be in allowed_user_ids: this setting admits nobody. Empty = the "
+            "only allowed user when exactly one is listed, otherwise nobody.",
+            tags=["discord"],
+        ),
+    )
     allowed_thread_ids: list[str] = field(
         default_factory=list,
         metadata=_meta(

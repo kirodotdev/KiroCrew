@@ -60,13 +60,15 @@ _NOT_FROM_JSON: dict[tuple[str, str], str] = {
     ("teams", "app_password"): "env-only credential, never read from config.json",
 }
 
-#: Enum-validated fields, with a VALID non-default probe. Listed rather than
-#: exempted: an exemption removes coverage, and these are exactly the fields where
-#: a rejected arbitrary probe is indistinguishable from a field the loader never
-#: read — which is the bug this file exists to catch.
+#: Enum- or shape-validated fields, with a VALID non-default probe. Listed rather
+#: than exempted: an exemption removes coverage, and these are exactly the fields
+#: where a rejected arbitrary probe is indistinguishable from a field the loader
+#: never read — which is the bug this file exists to catch.
 _ENUM_PROBES: dict[tuple[str, str], str] = {
     ("imessage", "service"): "sms",
     ("telegram", "forum_activation"): "mention",
+    # A Discord snowflake: the loader drops a non-digit value to "".
+    ("discord", "owner_id"): "123456789012345678",
 }
 
 #: Fields whose loader CLAMPS to a range, so the probe has to land inside it. A

@@ -499,7 +499,7 @@ class TestReconnectDiscord:
         monkeypatch.setattr(
             discord_gateway,
             "_reopen_owner_dm",
-            lambda c, ids: boot_steps.append(f"dm:{sorted(ids)}"),
+            lambda c, owner: boot_steps.append(f"dm:{owner}"),
         )
         client = _StubClient(guild=True)
         client.application_id = ""  # READY never landed at boot
@@ -507,7 +507,23 @@ class TestReconnectDiscord:
         _saved(monkeypatch, _cfg(threads=["234567890123456789"]), OLD_TOKEN)
         assert await discord_gateway.reconnect_discord(_orch(client)) is True
         assert client.reconnects == [{"token": None, "guild": True}]
-        assert boot_steps == ["menu", "dm:['42']"]
+        assert boot_steps == ["menu", "dm:42"]
+
+    @pytest.mark.asyncio
+    async def test_the_revive_reopens_a_named_owners_dm(self, monkeypatch) -> None:
+        """``discord.owner_id`` names the owner beside another allowed user, as at boot."""
+        opened: list[str] = []
+        monkeypatch.setattr(discord_gateway, "_publish_slash_commands", lambda c: None)
+        monkeypatch.setattr(discord_gateway, "_reopen_owner_dm", lambda c, o: opened.append(o))
+        client = _StubClient(guild=True)
+        client.application_id = ""
+        client.fatal_error = "gateway close 4014 (check bot token/intents)"
+        cfg = _cfg(threads=["234567890123456789"])
+        cfg.discord.allowed_user_ids = ["42", "43"]
+        cfg.discord.owner_id = "43"
+        _saved(monkeypatch, cfg, OLD_TOKEN)
+        assert await discord_gateway.reconnect_discord(_orch(client)) is True
+        assert opened == ["43"]
 
     @pytest.mark.asyncio
     async def test_a_client_that_reached_ready_does_not_republish(self, monkeypatch) -> None:

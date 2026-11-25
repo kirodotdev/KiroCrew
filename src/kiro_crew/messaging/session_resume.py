@@ -950,12 +950,15 @@ class SessionResumeController:
         query: str = "",
         native_key: str = "",
         choices: tuple[SessionChoice, ...] | None = None,
+        still_owner: Callable[[], bool] | None = None,
     ) -> tuple[str, str] | None:
         """List eligible sessions and register only a picker that reached the surface.
 
         *choices*, when given, is the list to offer instead of the history search
         (a channel's ``!bot`` passes its Bots' threads); every other step is the
-        same. Returns ``(nonce, message_id)`` of the registered picker, else None.
+        same. *still_owner*, when given, re-asks the owner question right before
+        the list is posted, for a channel whose owner can change while the listing
+        is read. Returns ``(nonce, message_id)`` of the registered picker, else None.
         """
         operation = f"{self.channel_type}.sessions_data_access"
         if not is_owner:
@@ -1009,6 +1012,9 @@ class SessionResumeController:
             await surface.say(surface.no_choices(query) + note)
             return None
 
+        if still_owner is not None and not still_owner():
+            await surface.say(surface.owner_refusal)
+            return None
         self.pickers.purge()
         self.pickers.drop_for(picker_owner)
         nonce = self.pickers.mint()
@@ -1035,8 +1041,14 @@ class SessionResumeController:
         index: int,
         link: ChannelLink,
         replace_outbound_keys: frozenset[str] = frozenset(),
+        still_owner: Callable[[], bool] | None = None,
     ) -> SessionChoice | None:
-        """Consume one picker press and atomically claim its inbound binding."""
+        """Consume one picker press and atomically claim its inbound binding.
+
+        *still_owner*, when given, re-asks the owner question inside the commit,
+        for a channel whose owner can change during the awaits before it: a pick
+        whose presser stopped being the owner writes nothing.
+        """
         if not is_owner:
             sel().log_api_access(
                 caller=caller,
@@ -1197,6 +1209,9 @@ class SessionResumeController:
                 nonlocal claimed, stored_row, selected_original, selected_was_inbound
                 nonlocal late_conflict
                 with self.sessions.batched_save():
+                    if still_owner is not None and not still_owner():
+                        late_conflict = surface.choice_owner_refusal
+                        return
                     # Re-derived INSIDE the lock, not reused from the loop. Anything
                     # read before this thread acquired ``_MAP_LOCK`` may already be
                     # stale: the dashboard and other channels bind without taking

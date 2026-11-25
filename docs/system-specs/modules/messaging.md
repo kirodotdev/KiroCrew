@@ -1372,7 +1372,11 @@ sound and deliberately out of scope here.
 differ by two channels.** `channel_type` names a conversation -- the calling session's, or an
 explicit `target_id` -- and infers no recipient. A channel `session` infers one via
 `_owner_dm_target`, whose safety claim is that the agent can only reach somebody the
-USER configured. The inference itself is `messaging.transport.sole_direct_target`
+USER configured. The rule is `messaging.transport.owner_direct_target`: a channel
+with an explicit owner setting the way Slack has `owner_id` (Discord's
+`discord.owner_id`, through `MessagingTransport.explicit_owner_target`) names that
+owner, only as one of its own configured, available `user:` targets; every other
+channel infers it with `sole_direct_target`
 (exactly one configured `user:` target among `configured_targets()`, named only
 while it is available, else nobody: an unavailable one still counts, so who has
 written to the bot never decides who the owner is),
@@ -4370,8 +4374,9 @@ skipped rather than sent, because Discord rejects the ENTIRE array on one bad
 row. `gateway.py` fires it as a background task rather than awaiting it: the
 product is discoverability alone, the gateway boot path must not grow an awaited
 network step, and the `!` text commands are the floor if it fails. For the same
-reason, when `discord.allowed_user_ids` holds exactly one user, `gateway.py`
-re-opens that owner's DM in the background once READY (`_reopen_owner_dm`, the
+reason, when Discord names an owner (`discord.owner_id`, else the only entry in
+`discord.allowed_user_ids`), `gateway.py` re-opens that owner's DM in the
+background once READY (`_reopen_owner_dm`, the
 same `create_dm_channel` call the dashboard's connect row makes): the DM-channel
 to user pairing lives only in the client's memory, and without it a session
 mirrored to the owner's DM before a restart is refused by the owner-DM check
@@ -6294,8 +6299,9 @@ whose `Action.Submit` returns as an ordinary message activity, so it needs no `i
 handler — plus its own display redaction and command spellings. Three properties are
 Teams-specific and load-bearing:
 
-- **Owner-only, and STRICTER than Discord's rule.** Discord requires exactly one
-  configured user id. Teams' allow-list routinely holds several people, and a dashboard
+- **Owner-only, and STRICTER than Discord's rule.** Discord's owner is
+  `discord.owner_id` while that id is allow-listed, or the only configured user id
+  when the setting is empty. Teams' allow-list routinely holds several people, and a dashboard
   session is the operator's whole working transcript, so listing is refused unless
   `teams.allowed_emails` holds exactly one identity. With more than one it refuses
   everybody rather than picking the first entry — the same premise that scopes nothing

@@ -24,9 +24,9 @@ if TYPE_CHECKING:
         delivery_confirmed,
         display_safe_for,
         logger,
+        owner_direct_target,
         redact_via_context,
         render_options_as_text,
-        sole_direct_target,
     )
 
 
@@ -40,8 +40,9 @@ def _owner_dm_target(transport: Any) -> str:
     Teams reach only someone who has written to the bot) still counts toward the
     one, and is never the answer.
 
-    No channel carries a separate "owner" field the way Slack's ``owner_id`` does,
-    so an owner can only be inferred, and this REFUSES to infer one from an
+    A channel with an explicit owner setting the way Slack has ``owner_id``
+    (Discord's ``discord.owner_id``) names that owner. Without one an owner can
+    only be inferred, and this REFUSES to infer one from an
     ambiguous list: a target is returned only when the channel advertises exactly
     ONE direct target and it is available. Picking the first of several would send
     private agent output to whichever allow-listed person happened to sort first,
@@ -50,7 +51,7 @@ def _owner_dm_target(transport: Any) -> str:
     single answer the caller degrades to the dashboard notification, which reaches
     the operator without guessing who they are.
 
-    The inference itself is :func:`~kiro_crew.messaging.transport.sole_direct_target`,
+    The rule itself is :func:`~kiro_crew.messaging.transport.owner_direct_target`,
     shared with session control's owner-DM audience predicate so the two surfaces
     name the same human as the owner; this wrapper adds only the enumeration guard
     and the send-path logging.
@@ -60,7 +61,7 @@ def _owner_dm_target(transport: Any) -> str:
     except Exception:
         logger.warning("send_message: could not enumerate channel targets", exc_info=True)
         return ""
-    target = sole_direct_target(targets)
+    target = owner_direct_target(transport, targets)
     if target:
         return target
     direct_count = sum(
@@ -273,6 +274,17 @@ async def _deliver_channel_dm(
                 break
         else:
             return False, "channel_delivery_failed", _aborted(index, "governance would not settle")
+        # The part is for the channel's OWNER, so the channel must still name this
+        # target as its owner: a reload that moved ownership to someone else (an
+        # explicit ``owner_id`` change, or a roster that now names nobody) stops the
+        # remainder, even though the old owner may still be allow-listed.
+        if _owner_dm_target(live_transport) != target_id:
+            logger.info("send_message: the %s owner changed mid-send", channel_type)
+            return (
+                False,
+                "channel_not_permitted",
+                _aborted(index, f"the {channel_type} owner changed"),
+            )
         if _authorize_recipient(
             live_transport,
             channel_type,

@@ -352,6 +352,23 @@ class TestPerPartOnTheOwnerDmLeg:
         assert (sent, code) == (False, "channel_not_permitted")
 
     @pytest.mark.asyncio
+    async def test_an_owner_reassigned_mid_dm_stops_the_remainder(self, mock_sel):
+        """The old owner stays allow-listed, but the channel now names someone else."""
+        transport, delivered = _parted_leg_transport()
+        transport.configured_targets.return_value = [
+            ConfiguredChannelTarget("user:123", "DM"),
+            ConfiguredChannelTarget("user:456", "DM"),
+        ]
+        transport.explicit_owner_target = lambda: "user:456" if delivered["any"] else "user:123"
+
+        with _governance(True):
+            sent, code, detail = await _owner_dm(transport)
+
+        assert transport.send_message.await_count == 1
+        assert (sent, code) == (False, "channel_not_permitted")
+        assert "owner changed" in detail and "aborted before part 2 of " in detail
+
+    @pytest.mark.asyncio
     async def test_a_body_that_renders_to_no_part_is_still_authorized(self, mock_sel):
         """A bare ``[OPTIONS:]`` trailer renders to nothing, so no part is ever
         sent: the recipient is still decided, rather than reporting a send."""

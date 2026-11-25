@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
+from kiro_crew.discord.transport import resolve_owner_id
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.renderer import _default_redactor
@@ -160,7 +162,8 @@ def _picker_components(nonce: str, choices: tuple[SessionChoice, ...]) -> list[d
 
 class _DiscordResumeSurface:
     owner_refusal = (
-        "🔒 `!sessions` requires exactly one configured " "`discord.allowed_user_ids` entry."
+        "🔒 `!sessions` is owner-only. The owner is `discord.owner_id`, or the only "
+        "`discord.allowed_user_ids` entry when that setting is empty."
     )
     choice_owner_refusal = "🔒 Session resume is owner-only."
     choice_expired = "⌛ This session picker expired. Run `!sessions` again."
@@ -253,7 +256,10 @@ class _DiscordResumeSurface:
 class _DiscordBotSurface(_DiscordResumeSurface):
     """The ``!bot`` listing: the same picker and bind, worded for Bots."""
 
-    owner_refusal = "🔒 `!bot` requires exactly one configured " "`discord.allowed_user_ids` entry."
+    owner_refusal = (
+        "🔒 `!bot` is owner-only. The owner is `discord.owner_id`, or the only "
+        "`discord.allowed_user_ids` entry when that setting is empty."
+    )
 
     def no_choices(self, query: str) -> str:
         normalized = " ".join(query.split())
@@ -287,10 +293,12 @@ class DiscordSessionResume:
         sessions: "SessionManager",
         conv_log: "ConversationLog | None",
         allowed_user_ids: set[str],
+        owner_id: object = "",
     ) -> None:
         self.sessions = sessions
         self.conv_log = conv_log
-        self.owner_id = next(iter(allowed_user_ids)) if len(allowed_user_ids) == 1 else ""
+        self.owner_id = ""
+        self.reconfigure(allowed_user_ids, owner_id)
         self._controller = SessionResumeController(
             sessions,
             conv_log,
@@ -314,16 +322,23 @@ class DiscordSessionResume:
     def _push_slots(self) -> None:
         self._controller.push_slots()
 
-    def reconfigure(self, allowed_user_ids: set[str]) -> None:
-        """Re-derive ``owner_id`` from a reloaded ``discord.allowed_user_ids``.
+    def reconfigure(self, allowed_user_ids: set[str], owner_id: object = "") -> None:
+        """Re-derive ``owner_id`` from a reloaded ``discord.owner_id`` and allow-list.
 
         The copy of the allow-list that decides who may list dashboard sessions,
         so it moves with the dispatcher's roster on the same reload: an operator
-        who adds a second identity loses ``!sessions`` immediately, not at the
-        next restart. Same one-identity rule as construction -- none or several
-        leaves ``owner_id`` empty and ``is_owner`` refuses everyone.
+        who adds a second identity without naming an owner, or who removes the
+        named owner from the allow-list, loses ``!sessions`` immediately, not at
+        the next restart. See :func:`~kiro_crew.discord.transport.resolve_owner_id`;
+        with no owner, ``is_owner`` refuses everyone.
         """
-        self.owner_id = next(iter(allowed_user_ids)) if len(allowed_user_ids) == 1 else ""
+        configured = owner_id if isinstance(owner_id, str) else ""
+        self.owner_id = resolve_owner_id(configured, allowed_user_ids)
+        if configured and not self.owner_id:
+            logger.warning(
+                "discord: owner_id is not in allowed_user_ids, so nobody is the owner "
+                "and owner-only commands are refused"
+            )
 
     def is_owner(self, user_id: str) -> bool:
         return bool(self.owner_id) and user_id == self.owner_id
@@ -399,6 +414,7 @@ class DiscordSessionResume:
             query=query,
             native_key=native_key,
             choices=choices,
+            still_owner=lambda: self.is_owner(user_id),
         )
 
     async def show_bot_picker(
@@ -431,6 +447,7 @@ class DiscordSessionResume:
             # The key is internal, so the picker's copy is written as for no query.
             query="" if key is not None else query,
             choices=choices,
+            still_owner=lambda: self.is_owner(user_id),
         )
         if posted is None or not query.strip() or len(choices) != 1:
             return
@@ -468,6 +485,9 @@ class DiscordSessionResume:
                 native_key=native_key,
             )
             found = tuple(listed)
+        if not self.is_owner(user_id):
+            # Asked again after the reads: a reload may have named another owner.
+            return ()
         sel().log_api_access(
             caller=user_id,
             operation="discord.sessions_data_access",
@@ -573,9 +593,12 @@ class DiscordSessionResume:
             index=index,
             link=link,
             replace_outbound_keys=same_bucket_origin_keys(self.sessions, link, native_key),
+            still_owner=lambda: self.is_owner(user_id),
         )
         if choice is not None:
-            await self._replay(client, channel_id, choice.key)
+            await self._replay(
+                client, channel_id, choice.key, still_owner=lambda: self.is_owner(user_id)
+            )
 
     @staticmethod
     def _parse_choice(custom_id: str) -> tuple[str, int]:
@@ -593,7 +616,10 @@ class DiscordSessionResume:
         client: "DiscordClient",
         channel_id: str,
         session_key: str,
+        *,
+        still_owner: Callable[[], bool],
     ) -> None:
+        """Replay the last messages of *session_key*, stopping once *still_owner* says no."""
         if self.conv_log is None:
             return
         try:
@@ -617,6 +643,9 @@ class DiscordSessionResume:
             )
             if role not in {"user", "assistant"} or not content:
                 continue
+            if not still_owner():
+                # A reload named another owner since the pick: replay no more.
+                return
             icon = "🧑" if role == "user" else "🤖"
             try:
                 # The icon gets its OWN line: on the body's first line it would

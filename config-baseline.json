@@ -10033,6 +10033,7 @@
         "enabled": false,
         "bot_token": "",
         "allowed_user_ids": [],
+        "owner_id": "",
         "allowed_thread_ids": [],
         "allowed_channel_ids": [],
         "auto_thread": true,
@@ -10104,6 +10105,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "discord.owner_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Owner ID",
+      "help": "Discord user ID (snowflake) of the Crew's owner, the one allowed user who may run owner-only commands such as !sessions and !bot. It must also be in allowed_user_ids: this setting admits nobody. Empty = the only allowed user when exactly one is listed, otherwise nobody.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "discord.allowed_thread_ids",

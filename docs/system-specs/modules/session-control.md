@@ -2279,7 +2279,9 @@ facts, and any it cannot establish answers **false**.
    `unified` bucket names no peer; the legacy two-segment Slack shape does not
    parse; a surface outside the set fails closed by construction.
 2. The channel's **live** transport names exactly one owner and it is that peer:
-   `messaging.transport.sole_direct_target(transport.configured_targets())`, the
+   `messaging.transport.owner_direct_target(transport, transport.configured_targets())`,
+   which takes a channel's explicit owner setting (Discord's `discord.owner_id`)
+   when it has one and otherwise infers with `sole_direct_target`, the
    same one-identity rule `/sessions` and the proactive owner DM apply, shared with
    `_owner_dm_target` so the two surfaces name the same human. An allow-list is a
    list of people permitted to talk to the agent, not a claim that any of them is
@@ -2385,7 +2387,8 @@ facts, and any it cannot establish answers **false**.
    DM whose pairing a gateway restart dropped, until the DM is re-opened or its
    peer writes into it. That is `MIRROR_PEER_NOT_ON_RECORD`, the counterpart of
    `ORIGIN_NOT_ON_RECORD`: it names both causes and states the remedy for the DM
-   it may be and for nothing else. With exactly one allow-listed user, the gateway
+   it may be and for nothing else. When Discord names an owner (`discord.owner_id`,
+   else exactly one allow-listed user), the gateway
    re-opens that user's DM once Discord is READY (`discord.gateway._reopen_owner_dm`,
    the `create_dm_channel` call the connect row makes), so a restart drops the
    owner's pairing only until then and a conductor whose tab or Bot thread mirrors

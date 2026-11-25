@@ -359,7 +359,7 @@ from kiro_crew.messaging.renderer import (  # noqa: F401
 from kiro_crew.messaging.transport import (  # noqa: F401
     DM_TARGET_PREFIX,
     delivery_confirmed,
-    sole_direct_target,
+    owner_direct_target,
 )
 from kiro_crew.milestones import record_when as record_milestone_when  # noqa: F401
 from kiro_crew.notifications.bus import (  # noqa: F401

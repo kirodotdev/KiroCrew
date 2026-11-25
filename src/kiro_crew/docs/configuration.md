@@ -1249,6 +1249,7 @@ See [Discord](discord-integration.md).
 | Key | Description | Default |
 |-----|-------------|---------|
 | `discord.enabled` | Enable the Discord channel (Gateway WebSocket, DMs plus optional allow-listed server threads). Requires DISCORD_BOT_TOKEN (env/.env) or discord.bot_token. | false |
+| `discord.owner_id` | Discord user ID of the Crew's owner, the one allowed user who may run owner-only commands such as `!sessions` and `!bot`. It must also be in `discord.allowed_user_ids`. Empty = the only allowed user when exactly one is listed, otherwise nobody. | empty |
 | `discord.allowed_thread_ids` | Discord server thread IDs where approved users may run the agent. Empty = DMs only. A server channel is denied unless it is listed in allowed_channel_ids, and a turn there still runs in a thread. | empty |
 | `discord.allowed_channel_ids` | Discord server channels where approved users may start a new agent thread. Requires auto_thread=true: with auto_thread off, messages in these channels are ignored. | empty |
 | `discord.soft_threshold_pct` | Prompt the user to !compact or !new when context passes this percentage. | 80 |
