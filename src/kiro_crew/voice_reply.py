@@ -34,6 +34,7 @@ from kiro_crew import aws_consent, platform_compat, speech_providers
 from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.emoji_list import STANDARD_EMOJIS
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
@@ -748,10 +749,10 @@ async def _synthesize_system(
     engine, bin_path = resolved
 
     # Coerced at the one consumer rather than at each config reader: the value
-    # arrives raw from config.json, where a hand-edited `"system_voice": []` is
-    # possible, and every engine here would break on it differently — SAPI's
-    # `_ps_quote` raises AttributeError, and the two argv engines raise TypeError
-    # inside the spawn. An unusable name degrades to the engine's own default.
+    # arrives raw from config.json, where a hand-edited `"system_voice": 7` is
+    # possible, and every engine here would break on it — SAPI's `_spill_text`
+    # raises TypeError, and so do the two argv engines inside the spawn. An
+    # unusable name degrades to the engine's own default.
     voice = voice if isinstance(voice, str) else ""
 
     path = await asyncio.to_thread(_new_wav_path)
@@ -838,7 +839,7 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
     terminate the string.
     """
     select_voice = (
-        f"$v=[IO.File]::ReadAllText({_ps_quote(voice_path)},[Text.Encoding]::UTF8);"
+        f"$v=[IO.File]::ReadAllText({powershell_single_quoted(voice_path)},[Text.Encoding]::UTF8);"
         "$s.SelectVoice($v);"
         if voice_path
         else ""
@@ -846,7 +847,7 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
     script = (
         "$ErrorActionPreference='Stop';"
         "Add-Type -AssemblyName System.Speech;"
-        f"$t=[IO.File]::ReadAllText({_ps_quote(text_path)},[Text.Encoding]::UTF8);"
+        f"$t=[IO.File]::ReadAllText({powershell_single_quoted(text_path)},[Text.Encoding]::UTF8);"
         "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
         "try{"
         f"{select_voice}"
@@ -857,16 +858,11 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
         "22050,"
         "[System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen,"
         "[System.Speech.AudioFormat.AudioChannel]::Mono);"
-        f"$s.SetOutputToWaveFile({_ps_quote(out_path)},$f);"
+        f"$s.SetOutputToWaveFile({powershell_single_quoted(out_path)},$f);"
         "$s.Speak($t);"
         "}finally{$s.Dispose()}"
     )
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-
-
-def _ps_quote(value: str) -> str:
-    """Return *value* as a PowerShell single-quoted literal."""
-    return "'" + value.replace("'", "''") + "'"
 
 
 # macOS `say -v '?'` pads the voice name with at least two spaces before the
