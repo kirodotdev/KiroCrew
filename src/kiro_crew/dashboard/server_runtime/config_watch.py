@@ -113,22 +113,45 @@ def _register_config_watch(
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
 
+    # The value each model applier last saw its rebuild refuse, keyed by config path.
+    refused_values: dict[str, object] = {}
+
+    async def _rebuild_specs(key: str, value: object) -> bool:
+        """Rebuild the agent specs for *key* now at *value*; whether the rebuild wrote.
+
+        The shared-home guard writes a denied audit row on every rebuild it refuses,
+        and a refusal can last the whole process (a linked worktree, a data home
+        beside another install's specs), so the watcher's retry would write one per
+        tick. A retry of a refused value therefore asks the guard read-only first and
+        skips the rebuild while it still declines: the saved value's refusal is
+        audited once, and a retry that only re-checks it writes nothing. The retry
+        still runs every tick, so a refusal that clears is applied on the next one.
+        """
+        from kiro_crew.agent import _decline_shared_agent_home, rebuild_agent_config_reporting
+
+        if key in refused_values and refused_values[key] == value:
+            if await asyncio.to_thread(_decline_shared_agent_home, audit=False) is not None:
+                return False
+        refused_values.pop(key, None)
+        _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
+        if not wrote:
+            refused_values[key] = value
+        return wrote
+
     async def _apply_background_model(change: ConfigChange) -> None:
         # The background role model is baked into the lite / heartbeat kiro specs
         # at agent-build time, so a change must rewrite them to take effect. The
         # subagent role is read live at spawn and needs no rebuild.
         if not change.touched("agent.role_models.background"):
             return
-        from kiro_crew.agent import rebuild_agent_config_reporting
-
         # Raised, never swallowed: ConfigWatch retries only an applier that
         # raises, so a failed or unwritten rebuild would otherwise leave the
         # specs on the previous background model until a restart. Same contract
         # as the agent.model applier, a shared-home refusal (wrote=False)
         # included. PlatformCompositionError raises here too; the previous spec
         # stays.
-        _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
-        if not wrote:
+        background = change.new.agent.role_models.get("background")
+        if not await _rebuild_specs("agent.role_models.background", background):
             raise RuntimeError(
                 "background agent spec rebuild did not write (shared agent home "
                 "refused, or the existing spec could not be read)"
@@ -152,8 +175,6 @@ def _register_config_watch(
             return
         nonlocal default_model_failure_notified
         try:
-            from kiro_crew.agent import rebuild_agent_config_reporting
-
             # ``rebuild_agent_config_reporting`` returns ``wrote=False`` — WITHOUT
             # writing — when the shared-home guard refuses to rewrite this
             # instance's spec or the existing spec could not be read. That is a
@@ -163,8 +184,7 @@ def _register_config_watch(
             # "rebuilt" while new sessions still run the previous model. Route a
             # refusal into the failure branch below so it notifies once and defers
             # for the watcher's retry, the same as any other unwritten spec.
-            _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
-            if not wrote:
+            if not await _rebuild_specs("agent.model", change.new.agent.model):
                 raise RuntimeError(
                     "agent spec rebuild did not write (shared agent home refused, "
                     "or the existing spec could not be read); config saved but "
