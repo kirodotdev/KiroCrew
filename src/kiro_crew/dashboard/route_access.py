@@ -64,6 +64,8 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE
     ),
+    # Owner gate (handlers_instances_gate._guard); writes nothing.
+    ("GET", "/api/instances/bots"): RouteAccess("instances.bots.read", UNSTABLE),
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
