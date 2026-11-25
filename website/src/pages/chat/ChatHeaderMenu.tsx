@@ -195,6 +195,11 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                   loading={serversQ.isPending}
                   sessionReport={sessionReport}
                 />
+                {/* An answer with no servers says so, in McpInfoButton's words,
+                    rather than leaving the heading over nothing. */}
+                {serversQ.isSuccess && servers.length === 0 && (
+                  <div className="text-muted text-[12px] italic">{i18nT('pages.chat.mcpInfoButton.none_loaded')}</div>
+                )}
                 {/* A refused read says so, with the hand-off as its own menu row,
                     instead of staying on "Loading". */}
                 {serversQ.isError && (

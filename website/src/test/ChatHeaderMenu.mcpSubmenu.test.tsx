@@ -116,6 +116,15 @@ describe('ChatHeaderMenu — MCP submenu and colour-pick close', () => {
     expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
   })
 
+  it('says there are no servers when the answer is empty', async () => {
+    vi.mocked(api.mcpActive).mockResolvedValueOnce([])
+    renderMenu()
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText('None loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+  })
+
   it('drops the earlier list when a later read fails', async () => {
     const utils = renderMenu()
     const sub = await screen.findByText('MCP servers')
