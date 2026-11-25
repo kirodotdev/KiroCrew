@@ -40,7 +40,7 @@ from kiro_crew.history import (
     parse_search_query,
     transcript_stem,
 )
-from kiro_crew.history_search import search_coverage_note
+from kiro_crew.history_search import search_coverage_note, semantic_coverage_note
 from kiro_crew.messaging.link import (
     UNBIND_REASON_ORIGIN_REBIND,
     UNBIND_REASON_USER_UNLINK,
@@ -73,6 +73,8 @@ PICKER_REGISTRY_MAX = 100
 #: Title budget. The picker label and any notice that quotes a title use the SAME
 #: limit, so the string a detach notice names is the one the user picked.
 TITLE_LIMIT = 76
+#: Prefix of a picker button whose session matched by meaning, not by the words typed.
+RELATED_MARKER = "Related: "
 
 #: Settlement owed once a refusal has actually been delivered.
 SETTLE_NOTHING = "nothing"  # record persists; refuse again next message
@@ -155,10 +157,18 @@ class ResumeReleaseError(RuntimeError):
 
 @dataclass(frozen=True)
 class SessionChoice:
-    """One offered session: its canonical key and the label the user sees."""
+    """One offered session: its canonical key, its title, and whether it matched by meaning."""
 
     key: str
     title: str
+    #: The search found it by meaning, not by the query's words (RFC session semantic
+    #: search 8.2). Shown on the button only; a resume notice quotes the bare title.
+    related: bool = False
+
+    @property
+    def label(self) -> str:
+        """The text the picker's button shows: the title, marked when it matched by meaning."""
+        return f"{RELATED_MARKER}{self.title}" if self.related else self.title
 
 
 @dataclass(frozen=True)
@@ -367,6 +377,33 @@ def same_bucket_origin_keys(sessions: Any, link: ChannelLink, native_key: str) -
     return frozenset(keys)
 
 
+def _may_offer_filter(sessions: Any | None, native_key: str) -> Callable[[dict], bool]:
+    """A cheap superset of the offer check below, for the meaning leg's cap.
+
+    It runs on the search's worker thread, so it reads no session map: a dashboard
+    row qualifies by its key, and with a native key a row whose transcript stem is
+    that bucket's stem, or extends it after ``_``, the shape every generation of the
+    bucket has. The loop in :func:`resolve_session_choices` still makes the
+    authoritative check, so a row this admits by a stem fold collision is dropped
+    there; what this prevents is ineligible sessions using up the leg's rows.
+    """
+    bucket = native_generation_bucket(native_key) if sessions is not None and native_key else ""
+    bucket_stem = transcript_stem(bucket) if bucket else ""
+
+    def may_offer(row: dict) -> bool:
+        if is_incognito_transcript(row.get("memory_mode")):
+            return False
+        raw_key = str(row.get("key") or "")
+        if history_dashboard_key(raw_key) is not None:
+            return True
+        if not bucket_stem:
+            return False
+        stem = transcript_stem(raw_key)
+        return stem == bucket_stem or stem.startswith(bucket_stem + "_")
+
+    return may_offer
+
+
 async def resolve_session_choices(
     conv_log: Any,
     query: str,
@@ -380,8 +417,8 @@ async def resolve_session_choices(
     """The offerable sessions for *query* (newest-first when blank), the total, and a note.
 
     The note is ``""`` unless the content search's scan window left older sessions
-    unsearched, in which case it says so in one line the picker shows beside the
-    choices or the empty-result message.
+    unsearched or the meaning index is still being built, in which case it says so
+    in one line the picker shows beside the choices or the empty-result message.
 
     Reuses the SAME search the dashboard uses (``search_sessions``): it matches message
     CONTENT with a title boost and length-normalised ranking, so a phrase the user
@@ -402,10 +439,17 @@ async def resolve_session_choices(
     normalized = " ".join(query.casefold().split())
     coverage_note = ""
     if normalized:
-        rows = await asyncio.to_thread(conv_log.search_sessions, query, fetch_limit)
+        rows = await asyncio.to_thread(
+            conv_log.search_sessions,
+            query,
+            fetch_limit,
+            meaning_accept=_may_offer_filter(sessions, native_key),
+        )
         # Read before the title fallback below can replace the rows: the content
         # search is what the window bounded, whatever the fallback then finds.
-        coverage_note = search_coverage_note(rows)
+        coverage_note = " ".join(
+            note for note in (search_coverage_note(rows), semantic_coverage_note(rows)) if note
+        )
         # Off the loop too: the parse may ask the Chinese dictionary, whose first
         # use loads it.
         needles, phrase, floor = await asyncio.to_thread(parse_search_query, normalized)
@@ -416,24 +460,32 @@ async def resolve_session_choices(
             n.word for n in needles
         )
         # A title-only match cannot prove excluded text is absent from content,
-        # so queries with exclusions cannot use this fallback.
-        if not rows and multi_word and not any(needle.excluded for needle in needles):
+        # so queries with exclusions cannot use this fallback. Rows the meaning leg
+        # alone found do not count as hits: the leg returns its nearest sessions for
+        # any query, so they would keep a typed title from ever being looked up.
+        text_hit = any(isinstance(row, dict) and row.get("match", "text") == "text" for row in rows)
+        if not text_hit and multi_word and not any(needle.excluded for needle in needles):
             # search_sessions matches multi-word queries needle-wise, so out-of-order
             # words DO resolve. What it cannot reach is a session older than its scan
             # window, so this unbounded TITLE match is the last resort for a long-lived
-            # install -- only on zero hits, so the shared search stays authoritative
+            # install -- only on zero text hits, so the shared search stays authoritative
             # and two rankers never run in parallel. The gate comes from the SAME parse
             # (needles_match_text), not a second whitespace tokenization: a spaceless
             # CJK query has no spaces to split on, so a word-count test never fired for
             # it and the fallback demanded the literal title substring.
             listed = await asyncio.to_thread(conv_log.list_sessions_indexed)
-            rows = [
+            titled = [
                 row
                 for row in listed
                 if isinstance(row, dict)
                 and needles_match_text(
                     needles, " ".join(str(row.get("title") or "").casefold().split()), floor
                 )
+            ]
+            # Title matches lead; the meaning rows follow them, each session once.
+            named = {row.get("key") for row in titled}
+            rows = titled + [
+                row for row in rows if isinstance(row, dict) and row.get("key") not in named
             ]
     else:
         rows = await asyncio.to_thread(conv_log.list_sessions_indexed)
@@ -456,7 +508,7 @@ async def resolve_session_choices(
         seen.add(key)
         raw_title = str(row.get("title") or key.removeprefix("dashboard:"))
         title = display_safe(" ".join(raw_title.split()), TITLE_LIMIT) or "Untitled session"
-        eligible.append(SessionChoice(key=key, title=title))
+        eligible.append(SessionChoice(key=key, title=title, related=row.get("match") == "meaning"))
     return eligible[:limit], len(eligible), coverage_note
 
 

@@ -57,7 +57,8 @@ def chunk_messages(
     """Chunks of every message in *texts*, in order. Whitespace-only text yields none.
 
     A chunk's ``message_index`` is the position of its message in *texts*. The
-    chunk pass passes ``_iter_message_texts``, so that is the reader that resolves it.
+    chunk pass passes ``_iter_message_texts(key, roles=CHUNK_ROLES)``, so that is the
+    reader that resolves it.
     """
     chunks: list[Chunk] = []
     for index, text in enumerate(texts):

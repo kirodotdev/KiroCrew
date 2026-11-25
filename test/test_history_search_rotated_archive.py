@@ -149,6 +149,30 @@ def test_an_archive_record_past_the_cap_is_skipped_and_the_rest_still_ranks(tmp_
     assert any("tamarind" in t for t in texts)
 
 
+def test_a_role_filter_drops_the_archives_tool_rows_too(tmp_path):
+    """The meaning leg's chunks come from user and assistant rows only, the live
+    file's and the archive's alike."""
+    from kiro_crew import history_archive_text
+
+    log = ConversationLog(base_dir=tmp_path)
+    log.append("alpha", "tool", "guava tool output that rotates out first")
+    for i in range(20):
+        log.append("alpha", "user", f"filler message number {i:02d} with enough text to rotate")
+    assert list((tmp_path / "archive").glob("alpha__*.jsonl")), "fixture must rotate"
+
+    every = list(history_archive_text.iter_rotated_texts(tmp_path, "alpha"))
+    dialogue = list(
+        history_archive_text.iter_rotated_texts(
+            tmp_path, "alpha", roles=history_vectors_index.CHUNK_ROLES
+        )
+    )
+    meaning = list(log._iter_message_texts("alpha", roles=history_vectors_index.CHUNK_ROLES))
+
+    assert any("guava" in t for t in every)
+    assert not any("guava" in t for t in dialogue + meaning)
+    assert any("filler" in t for t in dialogue)
+
+
 def test_semantic_chunks_stored_before_the_archive_was_read_are_rebuilt(tmp_path):
     # A store filled by an earlier build holds the live file's chunks only, under
     # the bare tokenizer signature, and the live file's stat still matches them.
@@ -226,8 +250,8 @@ def test_an_index_pass_that_read_an_expired_segment_cannot_restore_it_after_the_
     read_done, go, progress = threading.Event(), threading.Event(), threading.Event()
     real_iter = history_search.iter_rotated_texts
 
-    def paused_iter(base_dir, key):
-        texts = list(real_iter(base_dir, key))
+    def paused_iter(base_dir, key, **kwargs):
+        texts = list(real_iter(base_dir, key, **kwargs))
         if key == "alpha" and threading.current_thread() is worker:
             read_done.set()
             assert go.wait(FALLBACK_TIMEOUT_SECS)

@@ -58,7 +58,7 @@ def _picker_keyboard(nonce: str, choices: tuple[SessionChoice, ...]) -> dict:
             or len(callback_data.encode("ascii")) > _CALLBACK_DATA_MAX_BYTES
         ):
             raise ValueError("session picker callback_data exceeds Telegram's limit")
-        label = _safe_telegram_text(f"{index + 1}. {choice.title}", _BUTTON_LABEL_MAX_CHARS)
+        label = _safe_telegram_text(f"{index + 1}. {choice.label}", _BUTTON_LABEL_MAX_CHARS)
         rows.append([{"text": label, "callback_data": callback_data}])
     return {"inline_keyboard": rows}
 

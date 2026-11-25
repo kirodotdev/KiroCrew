@@ -98,7 +98,7 @@ async def test_sessions_cjk_query_reaches_title_fallback() -> None:
 class _OutsideTheWindowLog(_ConversationLog):
     """A shared search that finds nothing, as for a session older than its scan window."""
 
-    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+    def search_sessions(self, query: str, limit: int = 50, **_kwargs) -> list[dict]:
         self.search_calls.append((query, limit))
         return []
 

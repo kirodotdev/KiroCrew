@@ -38,18 +38,36 @@ INDEXED, WITHHELD, GONE, RETRY = "indexed", "withheld", "gone", "retry"
 #:
 #: 2: the size-rotated archive head is read before the live file. Rows stored
 #: before held the live file only, and its unchanged stat still vouches for them.
-CORPUS_VERSION = 2
+#: 3: only user and assistant rows are cut (``CHUNK_ROLES``). Rows stored before
+#: counted tool and system rows in ``message_index``, so they address other text.
+CORPUS_VERSION = 3
 
 
 def chunker_value(tokenizer: "Tokenizer") -> str:
     """The value ``session_state.chunker`` holds for rows *tokenizer* chunked now."""
-    return f"{tokenizer.signature}|corpus:{CORPUS_VERSION}"
+    return _chunker_for(tokenizer.signature)
+
+
+def current_chunker_value() -> str:
+    """:func:`chunker_value` for the tokenizer usable now, read without loading it;
+    ``""`` while no model is usable."""
+    return _chunker_for(tokenizer_signature())
+
+
+def _chunker_for(signature: str) -> str:
+    return f"{signature}|corpus:{CORPUS_VERSION}" if signature else ""
 
 
 class Tokenizer(NamedTuple):
     count_tokens: Callable[[str], int]
     #: Names the model file and the bound, so a change of either re-chunks.
     signature: str
+
+
+#: The rows a chunk is cut from: the ones ``search_chat_history`` and
+#: ``get_chat_session`` show, so no meaning excerpt can come from a tool or system row.
+#: Part of what ``CORPUS_VERSION`` names, so a change moves that too.
+CHUNK_ROLES = frozenset({"user", "assistant"})
 
 
 def vector_store_for(sessions_dir: Path) -> SessionVectorStore:
@@ -176,7 +194,7 @@ def chunk_session(
                 store.drop([key])
                 return WITHHELD
             try:
-                texts = list(log._iter_message_texts(key))
+                texts = list(log._iter_message_texts(key, roles=CHUNK_ROLES))
             except OSError:
                 return RETRY
             chunks = chunk_messages(texts, tokenizer.count_tokens)
