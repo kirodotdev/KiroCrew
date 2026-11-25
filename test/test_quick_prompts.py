@@ -42,6 +42,7 @@ from kiro_crew.quick_prompts import (
     QUICK_PROMPTS,
     expand_quick_prompt,
     reserved_user_prompts,
+    user_quick_prompt,
     user_quick_prompt_menu,
 )
 from kiro_crew.skills import SkillsLoader
@@ -298,6 +299,37 @@ class TestUserQuickPrompts:
 
         assert expand_quick_prompt("/cr x") is None
         assert user_quick_prompt_menu() == []
+
+    def test_a_prompt_saved_with_a_bom_keeps_its_opt_in(self, prompts_dir):
+        # A file saved "UTF-8 with BOM" reads exactly like its plain twin: the
+        # mark must not hide the column-0 fence, and must not reach the body.
+        plain = _opted_in("Say hello to {arg}.", "demo").encode("utf-8")
+        (prompts_dir / "plainlf.md").write_bytes(plain)
+        (prompts_dir / "bomlf.md").write_bytes(b"\xef\xbb\xbf" + plain)
+        (prompts_dir / "bomcrlf.md").write_bytes(b"\xef\xbb\xbf" + plain.replace(b"\n", b"\r\n"))
+
+        assert user_quick_prompt("/bomlf") == user_quick_prompt("/plainlf")
+        assert user_quick_prompt("/bomcrlf") == user_quick_prompt("/plainlf")
+        expanded = expand_quick_prompt("/bomlf world")
+        assert expanded == "[QUICK PROMPT /bomlf]\nSay hello to world.\n"
+        assert "\ufeff" not in expanded
+        assert [row["name"] for row in user_quick_prompt_menu()] == [
+            "/bomcrlf",
+            "/bomlf",
+            "/plainlf",
+        ]
+
+    def test_a_bom_prompt_without_the_flag_is_still_ordinary_text(self, prompts_dir):
+        (prompts_dir / "cr.md").write_bytes(b"\xef\xbb\xbf---\ndescription: x\n---\nReview.\n")
+
+        assert user_quick_prompt("/cr") is None
+        assert expand_quick_prompt("/cr x") is None
+        assert user_quick_prompt_menu() == []
+
+    def test_a_shadowed_bom_prompt_is_still_reported(self, prompts_dir):
+        (prompts_dir / "fork.md").write_bytes(b"\xef\xbb\xbf" + _opted_in("Mine.").encode("utf-8"))
+
+        assert [p.name for p in reserved_user_prompts()] == ["fork.md"]
 
     def test_a_reserved_name_is_never_a_user_prompt(self, prompts_dir):
         for name in ("help", "new", "review", "plain"):

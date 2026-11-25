@@ -266,7 +266,12 @@ def _read_user_prompt(path: Path, root: str) -> UserQuickPrompt | None:
         return None
     if raw is None:
         return None
-    text = raw.decode("utf-8", errors="replace")
+    # ``utf-8-sig`` drops one leading byte-order mark, which a file saved
+    # "UTF-8 with BOM" (Notepad, PowerShell ``Set-Content -Encoding UTF8``)
+    # carries. Left in, the mark sits in front of the column-0 ``---`` fence,
+    # so the frontmatter parses as empty and the opt-in is lost; it would also
+    # land in the spliced body. A file without the mark decodes as before.
+    text = raw.decode("utf-8-sig", errors="replace")
     try:
         meta = parse_frontmatter(text, SKILL_LOADER)
     except ValueError:
