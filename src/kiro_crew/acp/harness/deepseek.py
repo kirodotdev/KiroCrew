@@ -699,9 +699,25 @@ class DeepseekLaunch(ProcessAdapter):
         self._nonce = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the binary, mask it, compose and seal the gate, and prove it loads."""
+        """Refuse or mask, resolve the binary, compose and seal the gate, prove it loads."""
         assert ctx.session is not None, "the DeepSeek Harness is launched for one session"
         session = cast(DeepseekProcessSession, ctx.session)
+        # The refuse-then-mask preflight every ENFORCED harness takes, and FIRST for
+        # the reason the pi adapter gives: the read-back below starts a child of this
+        # harness, and it must not run outside the mask the session runs under. It
+        # also comes before the binary lookup, so a host that refuses the session
+        # never names an install command for a binary it cannot run. The
+        # mask is gated on ``tool_gate.ENFORCED_ROUTINGS``, which this harness is
+        # inside, and NOTHING of its own is spared from it: both of its credential
+        # leaves stay masked for the whole process tree, because its provider key
+        # arrives as an environment variable from Crew's vault
+        # (``agent.deepseek_env``, :meth:`prepare_spawn_env`) rather than from a file
+        # the child can open -- ``agent_sdk/host_auth`` declares
+        # ``adapter_own_leaves=()`` for it.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         deepseek_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
             self.backend
         )
@@ -715,21 +731,6 @@ class DeepseekLaunch(ProcessAdapter):
         # (session control and the panel). See ``providers/mirrors/registry`` for
         # the projection this harness declares.
         await session._prepare_session_mcp()
-        #
-        # The refuse-then-mask preflight every ENFORCED harness takes, and FIRST for
-        # the reason the pi adapter gives: the read-back below starts a child of this
-        # harness, and it must not run outside the mask the session runs under. The
-        # mask is gated on ``tool_gate.ENFORCED_ROUTINGS``, which this harness is
-        # inside, and NOTHING of its own is spared from it: both of its credential
-        # leaves stay masked for the whole process tree, because its provider key
-        # arrives as an environment variable from Crew's vault
-        # (``agent.deepseek_env``, :meth:`prepare_spawn_env`) rather than from a file
-        # the child can open -- ``agent_sdk/host_auth`` declares
-        # ``adapter_own_leaves=()`` for it.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
-        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         #
         # The gate, and the READ-BACK that is what this harness's Routing member
         # promises. This harness runs no gate of its own that decides a tool call,
