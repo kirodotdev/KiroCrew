@@ -81,6 +81,10 @@ def _as_job(row: dict) -> SimpleNamespace:
         owner_approval_mode=row.get("owner_approval_mode", ""),
         session_key=row.get("session_key", ""),
         agent_id=row.get("agent_id", ""),
+        member_id=row.get("member_id", ""),
+        memory_store=row.get("memory_store", ""),
+        execution_context=row.get("execution_context"),
+        agent_sequence=row.get("agent_sequence", []),
         approval_grant=row.get("approval_grant", ""),
     )
 

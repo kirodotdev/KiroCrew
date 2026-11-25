@@ -1214,6 +1214,29 @@ def test_pre_identity_member_schedules_are_captured_once(members, tmp_path, capl
     assert (store_dir / "crons.json").read_bytes() == before
 
 
+def test_the_capture_keeps_a_signed_grant_signed_and_an_unsigned_one_unsigned(members, tmp_path):
+    import json
+
+    from kiro_crew.cron_service import approval_grant
+    from kiro_crew.cron_service.fields import job_fire_approval_mode
+    from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
+    from kiro_crew.cron_service.store import _job_from_record
+
+    store_dir = tmp_path / "cron-store"
+    store_dir.mkdir()
+    signed = _insider_record("signed", "alice", approval_mode="auto")
+    assert approval_grant.sign_record(signed)
+    unsigned = _insider_record("unsigned", "alice", approval_mode="auto")
+    _write_crons(store_dir / "crons.json", [signed, unsigned])
+
+    assert migrate_legacy_member_schedules(store_dir) == ["signed", "unsigned"]
+
+    saved = json.loads((store_dir / "crons.json").read_text(encoding="utf-8"))["jobs"]
+    assert job_fire_approval_mode(_job_from_record(saved[0])) == "auto"
+    assert "approval_grant" not in saved[1]
+    assert job_fire_approval_mode(_job_from_record(saved[1])) == ""
+
+
 def test_the_schedule_capture_never_raises(members, tmp_path):
     from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
 

@@ -4,16 +4,20 @@ Two stored fields let a job's fire auto-approve its tool calls: the job's own
 ``approval_mode == "auto"`` (the owner's switch) and the Bot owner grant
 (``owner_member_id`` with ``owner_approval_mode``, see ``owner_grant``). Each
 gateway write that sets either one also stores ``approval_grant``: an
-HMAC-SHA256 over who the job runs as and those approval fields
-(:data:`_SIGNED_FIELDS`). At fire time the grant counts only while that MAC
-matches (:func:`holds`).
+HMAC-SHA256 over those approval fields and every field that picks who or what
+a fire runs as (:data:`_SIGNED_FIELDS`: ``id``, ``approval_mode``,
+``owner_member_id``, ``owner_approval_mode``, ``session_key``, ``agent_id``,
+``member_id``, ``memory_store``, ``execution_context``, ``agent_sequence``),
+read the same way from a raw store record and from the job decoded from it.
+At fire time the grant counts only while that MAC matches (:func:`holds`).
 
 The key comes from the persisted dashboard token-signing key under a label of
 its own. That key file is masked in every sandbox, so a process in a sandbox
 cannot sign. A record written or edited by hand, or a MAC copied from another
 job, therefore matches nothing: the job keeps loading and running, but it fires
 interactive (every tool call asks). Nothing is deleted, refused or rewritten on
-load.
+load; a load in a process that holds the key logs one warning naming those jobs
+(``store_sync._load``), and a process without the key says nothing.
 
 Jobs stored before this field existed get their MAC once, at start, from
 :func:`sign_existing_grants`. Its marker lives in a directory the sandbox
@@ -30,6 +34,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +43,8 @@ logger = logging.getLogger("kiro_crew.cron")
 
 _MAC_LABEL = b"kiro-crew cron approval grant v1"
 
-#: The job fields the MAC covers, in signing order.
+#: The job fields the MAC covers, in signing order: its approval fields and every
+#: field that picks who or what a fire runs as.
 _SIGNED_FIELDS = (
     "id",
     "approval_mode",
@@ -46,7 +52,14 @@ _SIGNED_FIELDS = (
     "owner_approval_mode",
     "session_key",
     "agent_id",
+    "member_id",
+    "memory_store",
+    "execution_context",
+    "agent_sequence",
 )
+
+#: A stored grant this module could have written: lower-case hex SHA-256.
+_MAC_SHAPE = re.compile(r"[0-9a-f]{64}")
 
 #: The data-home directory holding the one-time signing pass's marker. Hidden in
 #: every sandbox (``sandbox_leaves._CREW_HIDDEN_LEAVES``).
@@ -67,9 +80,27 @@ def _key() -> bytes | None:
     return hmac.new(secret, _MAC_LABEL, hashlib.sha256).digest()
 
 
+def _raw(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
 def _value(obj: Any, name: str) -> str:
     """Field *name* of a store record (dict) or a ``CronJob``; a non-string reads as ""."""
-    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, "")
+    value = _raw(obj, name)
+    return value if isinstance(value, str) else ""
+
+
+def _signed_value(obj: Any, name: str) -> Any:
+    """Field *name* as the MAC reads it, the same for a raw record and its decoded job.
+
+    ``execution_context`` is the dict or None; ``agent_sequence`` the list of its
+    string items (as ``identity._identity_job`` reads it); every other field a str.
+    """
+    value = _raw(obj, name)
+    if name == "execution_context":
+        return value if isinstance(value, dict) else None
+    if name == "agent_sequence":
+        return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
     return value if isinstance(value, str) else ""
 
 
@@ -87,8 +118,13 @@ def mac(obj: Any) -> str | None:
     key = _key()
     if key is None:
         return None
-    text = json.dumps([_value(obj, f) for f in _SIGNED_FIELDS], separators=(",", ":"))
-    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()
+    text = json.dumps(
+        [_signed_value(obj, f) for f in _SIGNED_FIELDS],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hmac.new(key, text.encode("ascii"), hashlib.sha256).hexdigest()
 
 
 def holds(obj: Any) -> bool:
@@ -96,7 +132,8 @@ def holds(obj: Any) -> bool:
     if not carries_grant(obj):
         return False
     stored = _value(obj, "approval_grant")
-    if not stored:
+    # Any other value (empty, odd length, non-ASCII) was not written here.
+    if not _MAC_SHAPE.fullmatch(stored):
         return False
     expected = mac(obj)
     if expected is None:

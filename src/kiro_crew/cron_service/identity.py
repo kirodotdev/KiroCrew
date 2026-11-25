@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.cron_service import approval_grant
+
 if TYPE_CHECKING:
     from kiro_crew.cron_service.model import CronJob
     from kiro_crew.execution_context import ExecutionContext
@@ -472,8 +474,12 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
                         exc_info=True,
                     )
                     continue
+                # A grant the gateway signed stays signed over the new capture.
+                held = approval_grant.holds(record)
                 record["execution_context"] = execution.to_record()
                 record["member_id"] = execution.member_id or ""
+                if held:
+                    approval_grant.sign_record(record)
                 migrated.append(job.id)
             if migrated:
                 atomic_write(path, json.dumps(data, indent=2))
@@ -745,10 +751,14 @@ def migrate_member_named_template_schedules(store_dir: Path) -> list[str]:
                         exc_info=True,
                     )
                     continue
+                # A grant the gateway signed stays signed over the moved capture.
+                held = approval_grant.holds(record)
                 record["agent_id"] = ""
                 record["execution_context"] = new.to_record()
                 record["member_id"] = new.member_id or ""
                 record["memory_store"] = new.store.legacy_name
+                if held:
+                    approval_grant.sign_record(record)
                 moved.append(job.id)
             if moved:
                 atomic_write(path, json.dumps(data, indent=2))

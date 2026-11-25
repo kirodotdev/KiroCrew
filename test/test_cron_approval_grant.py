@@ -19,7 +19,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import sandbox_leaves
 from kiro_crew.cron import CronService
-from kiro_crew.cron_service import approval_grant, owner_grant
+from kiro_crew.cron_service import approval_grant, owner_grant, store
 from kiro_crew.cron_service.fields import job_fire_approval_mode
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
 
@@ -176,11 +176,11 @@ def test_a_process_with_no_key_signs_nothing_and_erases_nothing(tmp_path, monkey
     )
     grant = _row(tmp_path, signed.id)["approval_grant"]
 
-    monkeypatch.setattr(approval_grant, "_key", lambda: None)
-    unsigned = CronService(base_dir=tmp_path).add_job(
-        name="b", message="go", every_secs=3600, approval_mode="auto"
-    )
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(approval_grant, "_key", lambda: None)
+        unsigned = CronService(base_dir=tmp_path).add_job(
+            name="b", message="go", every_secs=3600, approval_mode="auto"
+        )
 
     assert "approval_grant" not in _row(tmp_path, unsigned.id)
     assert job_fire_approval_mode(_reload(tmp_path, unsigned.id)) == ""
@@ -232,14 +232,13 @@ def test_the_start_pass_runs_once(tmp_path) -> None:
 
 def test_the_start_pass_waits_for_a_key(tmp_path, monkeypatch) -> None:
     auto_id, _ = _older_store(tmp_path)
-    monkeypatch.setattr(approval_grant, "_key", lambda: None)
-
-    assert approval_grant.sign_existing_grants(tmp_path) == []
+    with monkeypatch.context() as mp:
+        mp.setattr(approval_grant, "_key", lambda: None)
+        assert approval_grant.sign_existing_grants(tmp_path) == []
     assert not (
         tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.MIGRATION_MARKER
     ).exists()
 
-    monkeypatch.undo()
     assert approval_grant.sign_existing_grants(tmp_path) != []
     assert job_fire_approval_mode(_reload(tmp_path, auto_id)) == "auto"
 
@@ -258,3 +257,109 @@ def test_a_bot_grant_holds_only_once_the_gateway_signed_it(tmp_path) -> None:
 
     assert owner_grant.owner_grant_holds(unsigned, _worker(), _config())
     assert owner_grant.fire_approval_mode(unsigned, _worker(), _config()) == "auto"
+
+
+def test_a_signed_raw_record_holds_once_decoded(tmp_path) -> None:
+    """``sign_record`` on a raw dict and ``holds`` on the job decoded from it agree."""
+    record = {
+        "id": "r1",
+        "name": "r",
+        "message": "go",
+        "schedule": {"kind": "every", "every_secs": 3600},
+        "approval_mode": "auto",
+        "session_key": "dashboard:slot1",
+        "agent_id": "kirocrew",
+        "member_id": "m-1",
+        "memory_store": "member-m-1",
+        "execution_context": {"member_id": "m-1", "store": {"store_id": "s"}, "z": [1, "\u00e9"]},
+        "agent_sequence": ["a", "b"],
+    }
+    assert approval_grant.sign_record(record)
+
+    (job,) = store.decode_jobs(
+        json.dumps({"version": store._STORE_VERSION, "jobs": [record]}).encode()
+    )
+
+    assert approval_grant.holds(job)
+    assert job_fire_approval_mode(job) == "auto"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"agent_sequence": ["kirocrew", "other"]},
+        {"execution_context": {"member_id": "m-other"}},
+        {"member_id": "m-other"},
+        {"memory_store": "member-other"},
+    ],
+    ids=("agent_sequence", "execution_context", "member_id", "memory_store"),
+)
+def test_a_hand_edit_of_what_a_signed_job_runs_as_fires_interactive(tmp_path, fields) -> None:
+    job = CronService(base_dir=tmp_path).add_job(
+        name="a", message="go", every_secs=3600, approval_mode="auto"
+    )
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+    _rewrite(tmp_path, job.id, **fields)
+
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == ""
+
+
+@pytest.mark.parametrize("stored", ["\u00e9", 12345, ["x"]], ids=("non-ascii", "int", "list"))
+def test_an_odd_stored_grant_is_kept_fires_interactive_and_is_signed_at_start(
+    tmp_path, stored
+) -> None:
+    job = CronService(base_dir=tmp_path).add_job(
+        name="a", message="go", every_secs=3600, approval_mode="auto"
+    )
+    _rewrite(tmp_path, job.id, approval_grant=stored)
+
+    reloaded = _reload(tmp_path, job.id)
+    assert reloaded.approval_mode == "auto"
+    assert not approval_grant.holds(_row(tmp_path, job.id))
+    assert job_fire_approval_mode(reloaded) == ""
+
+    assert approval_grant.sign_existing_grants(tmp_path) == [job.id]
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+
+
+def test_a_failed_save_puts_the_previous_grant_back(tmp_path, monkeypatch) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+    live = svc.get_job(job.id)
+    assert live is not None
+    grant = live.approval_grant
+    assert grant
+
+    def _refuse(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr("kiro_crew.atomic_write.atomic_write", _refuse)
+        with pytest.raises(OSError):
+            svc.update_job(job.id, approval_mode="")
+
+    assert (live.approval_mode, live.approval_grant) == ("auto", grant)
+    assert job_fire_approval_mode(live) == "auto"
+
+
+def test_a_load_with_the_key_names_each_unsigned_grant_once(tmp_path, caplog) -> None:
+    job = CronService(base_dir=tmp_path).add_job(name="a", message="go", every_secs=3600)
+    _rewrite(tmp_path, job.id, approval_mode="auto")
+
+    with caplog.at_level("WARNING", logger="kiro_crew.cron"):
+        CronService(base_dir=tmp_path)
+
+    lines = [r.getMessage() for r in caplog.records if "did not sign" in r.getMessage()]
+    assert len(lines) == 1
+    assert job.id in lines[0] and "Schedule page or the CLI" in lines[0]
+
+
+def test_a_load_without_the_key_says_nothing(tmp_path, caplog, monkeypatch) -> None:
+    job = CronService(base_dir=tmp_path).add_job(name="a", message="go", every_secs=3600)
+    _rewrite(tmp_path, job.id, approval_mode="auto")
+
+    with monkeypatch.context() as mp, caplog.at_level("WARNING", logger="kiro_crew.cron"):
+        mp.setattr(approval_grant, "_key", lambda: None)
+        CronService(base_dir=tmp_path)
+
+    assert not [r for r in caplog.records if "did not sign" in r.getMessage()]

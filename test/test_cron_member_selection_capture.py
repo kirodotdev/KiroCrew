@@ -466,6 +466,24 @@ def test_start_moves_a_member_named_template_schedule_onto_the_member(
     assert _crons_bytes() == before
 
 
+def test_the_move_keeps_a_signed_auto_grant(member_with_distinct_template):
+    """The move rewrites signed fields; a grant the gateway signed is signed again."""
+    from kiro_crew.cron_service.fields import job_fire_approval_mode
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    job = CronService(base_dir=config_dir()).add_job(
+        "daily", "task", every_secs=60, agent_id="SampleMemberAgent", approval_mode="auto"
+    )
+    bind_session_execution(f"cron:{job.id}", _capture(job))
+    assert job_fire_approval_mode(_only_job()) == "auto"
+
+    assert migrate_member_named_template_schedules(config_dir()) == [job.id]
+
+    moved = _only_job()
+    assert (moved.agent_id, moved.member_id) == ("", "samplememberagent")
+    assert job_fire_approval_mode(moved) == "auto"
+
+
 def test_a_session_already_moved_does_not_hold_the_schedule_back(member_with_distinct_template):
     """A start whose schedule write failed after the session moved: the next one
     finishes the move."""

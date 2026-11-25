@@ -377,6 +377,22 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._jobs = document.jobs
         self._announced_pauses = disk_pauses
         self._keep_store_document(document)
+        # A grant the gateway did not sign is kept but not honored. Said once
+        # per load, and only by a process holding the key: a sandboxed one
+        # cannot tell a signed grant from an unsigned one.
+        unsigned = [
+            job.id
+            for job in document.jobs
+            if approval_grant.carries_grant(job) and not job.grant_held
+        ]
+        if unsigned and approval_grant._key() is not None:
+            logger.warning(
+                "%d cron job(s) store an approval grant the gateway did not sign (%s): "
+                "they ask for each tool call until auto is turned on again from the "
+                "Schedule page or the CLI",
+                len(unsigned),
+                ", ".join(unsigned),
+            )
         if not settled:
             # Saves keep the older version, so a load that can read the config
             # still settles these jobs (zone_default_migration).
@@ -496,28 +512,35 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     # Re-sign each job this process trusts, so a gateway change to who it runs
     # as (adopt, release, update) keeps its grant. A job not held keeps the MAC
     # it was loaded with: a process without the key must not erase a valid one.
-    for job in written:
-        if job.grant_held:
-            approval_grant.sign(job)
-    document = encode_store(
-        written,
-        version=self._store_version,
-        extra=store_extra_for_save(
-            self._store_extra,
-            written,
-            deferred=self._store_version == DEFERRED_STORE_VERSION,
-            skipped=self._skipped_records,
-        ),
-        unknown_fields=self._unknown_fields,
-        skipped=self._skipped_records,
-    )
-    # Atomic write: unique tmp → fsync → rename, then sync the directory so
-    # the rename itself survives a sudden host restart. Without both syncs a
-    # save that returned can come back as an empty or missing crons.json.
+    # These are the live jobs, so a save that fails puts each previous MAC back
+    # (a caller's own rollback restores only the fields it set).
+    previous = [(job, job.approval_grant) for job in written if job.grant_held]
     # Deferred import to avoid a circular dependency.
     from kiro_crew.atomic_write import atomic_write, fsync_dir
 
-    atomic_write(self._path, document, fsync=True)
+    try:
+        for job, _ in previous:
+            approval_grant.sign(job)
+        document = encode_store(
+            written,
+            version=self._store_version,
+            extra=store_extra_for_save(
+                self._store_extra,
+                written,
+                deferred=self._store_version == DEFERRED_STORE_VERSION,
+                skipped=self._skipped_records,
+            ),
+            unknown_fields=self._unknown_fields,
+            skipped=self._skipped_records,
+        )
+        # Atomic write: unique tmp → fsync → rename, then sync the directory so
+        # the rename itself survives a sudden host restart. Without both syncs a
+        # save that returned can come back as an empty or missing crons.json.
+        atomic_write(self._path, document, fsync=True)
+    except BaseException:
+        for job, grant in previous:
+            job.approval_grant = grant
+        raise
     # Best-effort: the replace has already published the new store, so a
     # filesystem that refuses a directory fsync must not turn a committed
     # save into a reported failure.
