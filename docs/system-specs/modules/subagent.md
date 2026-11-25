@@ -1780,10 +1780,11 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   check only narrows what the spec grants; it never widens a governance denial.
 - **Refusal**: a policy refusal before the row is persisted, audited as
   `outcome="denied"`, with `error_code=agent_not_available`
-  (`subagent.AGENT_NOT_AVAILABLE_CODE`) and prose naming the parent, the key
-  and the allowed globs (grammar-checked, redacted, bounded like every rendered
-  roster). `spawn_run` short-circuits the rest of a wave on this code exactly
-  as it does on `agent_not_found`.
+  (`subagent.AGENT_NOT_AVAILABLE_CODE`) and prose naming the parent,
+  `availableAgents` (the setting's own name, which every sub-agent spelling
+  shares) and the allowed globs (grammar-checked, redacted, bounded like every
+  rendered roster). `spawn_run` short-circuits the rest of a wave on this code
+  exactly as it does on `agent_not_found`.
 - **Not covered yet**: a project-scope parent whose project directory the
   gate cannot resolve (see "Unresolved parent = surfaced" above) is audited,
   not refused. The advisory spawn-tool roster and the Slack cron default
