@@ -36,6 +36,22 @@ def _vet(snap: Path):
     return vetted, summary
 
 
+def _vetting_sees_os_path(monkeypatch, **overrides) -> None:
+    """Give ``archive_config_vetting`` an ``os.path`` with *overrides*, and no one else.
+
+    The ``os.path`` module is shared by every thread in the worker. ``isabs`` answering
+    False there makes ``Path.resolve()`` anchor an absolute ``KIROCREW_HOME`` at the
+    working directory, and ``config_dir()`` then creates it inside the checkout.
+    """
+    import types
+
+    from kiro_crew import archive_config_vetting
+
+    path = types.SimpleNamespace(**{**vars(os.path), **overrides})
+    vetting_os = types.SimpleNamespace(**{**vars(os), "path": path})
+    monkeypatch.setattr(archive_config_vetting, "os", vetting_os)
+
+
 @pytest.mark.parametrize("key", ["../x", "a/b", "..", ".", "a\\b", "a\nb"])
 def test_a_roster_key_that_is_not_one_path_component_skips_the_config(tmp_path, key):
     snap = _stage(tmp_path, {"agents": {key: {"member_id": "ok"}}})
@@ -249,22 +265,18 @@ def test_the_overlay_config_local_json_is_held_to_the_same_workspace_rule(tmp_pa
 def test_a_rooted_or_drive_folder_is_kept_on_every_platform(_floor_monkeypatch, workspace_dir):
     """Kept where Windows or the OS reads it as absolute; on POSIX the backslash forms are one
     name inside the data home."""
-    import os
-
     from kiro_crew.archive_config_vetting import _dir_outside_roots
 
-    _floor_monkeypatch.setattr(os.path, "isabs", lambda p: False)
+    _vetting_sees_os_path(_floor_monkeypatch, isabs=lambda p: False)
     assert _dir_outside_roots(workspace_dir, ["/w", "/data/Crew"]) is False
 
 
 def test_workspace_containment_compares_case_the_way_the_platform_does(_floor_monkeypatch):
     """On a case-insensitive platform a differently cased spelling of a root is inside it."""
-    import os
-
     from kiro_crew.archive_config_vetting import _dir_outside_roots
 
     roots = ["/w", "/data/Crew"]
     case_sensitive = os.path.normcase("A") == "A"  # False on Windows, where it lowercases
     assert _dir_outside_roots("../CREW/x", roots) is case_sensitive
-    _floor_monkeypatch.setattr(os.path, "normcase", lambda p: p.lower())
+    _vetting_sees_os_path(_floor_monkeypatch, normcase=lambda p: p.lower())
     assert _dir_outside_roots("../CREW/x", roots) is False
