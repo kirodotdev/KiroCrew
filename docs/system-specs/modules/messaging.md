@@ -4109,6 +4109,14 @@ announcement thread (type 10/11, the only kinds `create_thread_from_message`
 makes) whose `owner_id` is this bot and whose `parent_id` is in
 `allowed_channel_ids`, with the sender still in `allowed_user_ids`; both rosters
 are read when the answer arrives, so a reload during the lookup refuses the grant.
+The same lookup also admits a forum post, which a person opens, not this bot: a
+public thread (type 11) whose `parent_id` is in `allowed_channel_ids` and which
+Discord reports as a forum or media channel (`DiscordClient.is_forum_channel`,
+types 15/16, cached like `is_thread_channel`), whose `owner_id` is in
+`allowed_user_ids`, with `auto_thread` on. The sender, the opener, the parent,
+`auto_thread` and the revoked set are re-read after both lookups, and the grant
+is audited as `discord_transport.forum_post` / `forum_post_authorized`. A post an
+outsider opened stays refused even when an allowed user replies in it.
 The same path covers a thread create whose response was lost: when the retry is
 answered `400` with code `160004` (a thread already exists for that message),
 `create_thread_from_message` returns `""` and grants nothing, and the transport

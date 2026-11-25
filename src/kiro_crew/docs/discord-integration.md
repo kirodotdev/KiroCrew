@@ -11,12 +11,15 @@ behind NAT and firewalls with no webhook, public address, or inbound port.
 | **DMs** | Responds to messages from an allow-listed user. No `@mention` needed. |
 | **Approved server threads** | Responds when both the sender's user ID and the exact thread ID are allow-listed. Everyone who can view the thread can read replies and tool output. |
 | **Allowed server channels** | Opt-in. An allow-listed user's message in an allow-listed channel opens a fresh public thread and the turn runs there, never in the shared channel itself. Off unless you add channel IDs. |
+| **Allowed forum channels** | Opt-in, through the same `allowed_channel_ids` list. Each post an allow-listed user opens in the forum is its own session, answered in the post. A post someone else opened stays ignored, even when an allow-listed user replies in it. Needs `auto_thread` on, like allowed channels. |
 | **Every other server channel** | Ignored, including a channel ID entered in the *thread* allow-list by mistake: Kiro Crew verifies the Discord channel type before running a turn. |
 | **Unknown users, threads or channels** | Denied. Security-relevant attempts are audited; unrelated guild chatter is discarded silently. Empty user allow-list denies everything; empty thread and channel allow-lists mean DMs only. |
 
 Discord represents threads as specialized guild channels with their own channel
-IDs. Forum posts are threads too. Group DMs are different and are not supported
-by Discord's bot API.
+IDs. Forum posts are threads too: add one post's ID to `allowed_thread_ids`, or
+the forum's own ID to `allowed_channel_ids` to answer every post an allow-listed
+user opens there (media channels work the same way). Group DMs are different and
+are not supported by Discord's bot API.
 
 ## Setup
 
@@ -141,7 +144,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 | Gateway closes with 4004 | Bad or reset token | Reset the token, update `.env`, restart |
 | Gateway closes with 4014 after adding a thread | Message Content Intent is disabled | Enable it on the Bot page, then restart |
 | DMs are ignored | User ID is missing/wrong | Add the numeric user ID; inspect `kirocrew security events` |
-| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart. A thread a person opened needs its ID in `allowed_thread_ids` |
+| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread. For a forum post: the forum is not in `allowed_channel_ids`, or the post's opener is not in `allowed_user_ids` | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart. A thread a person opened outside an allowed forum needs its ID in `allowed_thread_ids` |
 | Parent channel is ignored | The channel is not in `allowed_channel_ids` | Use an approved thread, or add the parent channel ID to `allowed_channel_ids` to open public turn threads |
 | Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
 | Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
@@ -173,6 +176,14 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   the gateway. A config reload alone keeps those threads answering until the
   next restart. Removing one thread's ID from `allowed_thread_ids` stops that
   thread at once, and the bot does not re-admit it until the next restart.
+- **Forum posts follow the same rules.** A post in an allowed forum is admitted
+  once Discord confirms the parent is a forum and the post's opener is in
+  `allowed_user_ids`. Like an allowed channel, a forum needs `auto_thread` on:
+  with it off, its posts get no reply. The grant is recorded in the audit log
+  (`forum_post_authorized`) and survives a restart the same way. Removing the
+  forum or the opener takes effect at the next restart; to stop one post at
+  once, add its ID to `allowed_thread_ids` and then remove it. Anyone who can
+  see the forum can read every admitted post.
 - **Slash commands answer privately.** Every `/` command reply is ephemeral, so
   only the person who ran it sees it, which is what keeps a refusal, a status
   line or the `/model` list out of a shared thread. A reply that is not ready
