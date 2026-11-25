@@ -50,7 +50,8 @@ class _PendingApproval:
     """A native tool-approval prompt awaiting its click.
 
     ``requester`` is the Slack user whose turn asked; a shared user may answer only
-    a prompt whose requester they are (empty: only the owner may answer it).
+    a prompt whose requester they are, Trust included (empty: only the owner may
+    answer it).
     """
 
     __slots__ = ("provider", "request_id", "session_key", "future", "requester")
@@ -94,8 +95,9 @@ class _LinkedApproval:
     cannot grant Trust.
 
     ``requester`` is the shared user whose Slack message opened the turn that asked
-    (:mod:`kiro_crew.slack.turn_requester`); they may answer this prompt too, never
-    with Trust. Empty: only the owner may answer it.
+    (:mod:`kiro_crew.slack.turn_requester`); they may answer this prompt too, Trust
+    included (still only where ``trust_grantable`` holds). Empty: only the owner may
+    answer it.
     """
 
     __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future", "requester")
@@ -660,7 +662,8 @@ async def _grant_late_trust(
 
     Replicates handle_message's session-key derivation (the thread, then a linked
     dashboard session's override), and grants only to an allowed user who owns the
-    thread. Returns ``_ACTION_TRUST`` on a grant and ``None`` on every refusal, each
+    thread: a shared user's Trust needs the live prompt their turn posted, so their
+    late click is refused before this. Returns ``_ACTION_TRUST`` on a grant and ``None`` on every refusal, each
     audited.
     """
     if not is_allowed_user(user_id):

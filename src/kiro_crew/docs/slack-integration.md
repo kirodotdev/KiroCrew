@@ -331,12 +331,14 @@ confirmed by Slack: remove them, or fix what their row says, first.
   counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
   `!title`, `!compact`, answer question cards, answer the tool-approval
-  prompts their own turns post, and send or edit the review-mode draft of their
-  own turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  prompts their own turns post (Approve, Reject, and **Trust session** where
+  the card offers it, which turns on the same per-session Trust the owner's
+  click does; the audit log names who clicked), and send or edit the review-mode draft of their own
+  turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
   call a background sub-agent makes, the approval prompt goes to the owner.
-- **What stays the owner's.** The access list and the switch; Trust, YOLO and
-  approval-mode changes (a shared user's Trust click is refused); approving a
-  prompt someone else's turn posted; `!dashboard` and other dashboard links; every
+- **What stays the owner's.** The access list and the switch; YOLO and
+  approval-mode changes; answering (Trust included) a prompt someone else's turn
+  posted, or one that is no longer waiting; `!dashboard` and other dashboard links; every
   other `!` command, including `!channel` and agent overrides, and the
   `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
   agent's own commands such as `/agent`, `/model` or `/tools`); the `/kirocrew`

@@ -417,8 +417,10 @@ def test_the_openers_session_relinked_to_a_plain_thread_is_not_theirs_as_request
         dstate._slots = {slot_key: slot}
         dstate.resolve_slot_approval = MagicMock(return_value=True)
         note_turn_requester(turn, SHARED)  # type: ignore[arg-type]
+        # A live card's prompt future, as the dashboard registers it.
+        prompt = asyncio.get_running_loop().create_future()
         _linked_approvals["C0PLAIN:600.000001"] = _LinkedApproval(
-            "7", f"dashboard:{slot_key}", False, slot_key, None, SHARED
+            "7", f"dashboard:{slot_key}", False, slot_key, prompt, SHARED
         )
         with patch.object(handler, "_dashboard_state", dstate):
             return await handle_interaction("C0PLAIN", "600.000001", "approve_tool", user_id=SHARED)
