@@ -138,6 +138,29 @@ def _reset_conductor_thread_notices():
 
 
 @per_test_guard
+def _reset_thread_messages():
+    """Forget which threads a message landed in.
+
+    ``kiro_crew.slack.stream_window`` keeps that process-global, keyed by
+    ``(channel, thread)``, and a turn's step list moves below a message recorded
+    after its stream opened. Tests reuse those ids, so each starts with no thread
+    recorded. Looked up in ``sys.modules`` so a run that never imported it pays
+    nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.stream_window")
+        if module is not None:
+            module._thread_message_no.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")

@@ -166,6 +166,12 @@ Authorization: owner and allowed users. Unauthorized callers get
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear inline by name.
 
+When you send a message the bot picks up in the thread while a turn is still
+running its steps, the next step continues in a new message below yours, so the
+latest thing in the thread is what the agent is doing now. A step that was
+running is closed above with "continues below". Once the reply itself is being
+written it stays in one message, above yours.
+
 With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
 ("is working on your request") your message gets no reaction; elsewhere it gets 👀
 while it is answered, removed when the reply lands (the reply is the done signal).

@@ -31,6 +31,7 @@ from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token, tag_
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.session_lifecycle import hand_queue_to_successor
+from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -381,6 +382,19 @@ def resume_held_slack_drains(orch: GatewayOrchestrator) -> None:
     """Start every queue drain held while Slack was down. Call with a client published."""
     for session_key in sorted(_held_while_slack_down.pop(orch, set())):
         _spawn_tracked(_drain_slack_queue(orch, session_key), owner=orch)
+
+
+async def _mark_queued(orch: GatewayOrchestrator, channel: str, msg_ts: str) -> None:
+    """Put the ⏳ reaction on a message that waits behind a running turn.
+
+    Cosmetic: the message is queued either way. ``_dispatch_queued`` takes the
+    reaction off when the message's own turn starts.
+    """
+    if orch.slack and not code_channel_no_reactions(channel):
+        try:
+            await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
+        except Exception:
+            logger.debug("Failed to add queue reaction", exc_info=True)
 
 
 def _take_queued(orch: GatewayOrchestrator, session_key: str) -> list[tuple[str, str, dict]]:

@@ -114,7 +114,6 @@ from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
 from kiro_crew.slack.code_channels.actions import EVENT as CODE_CHANNEL_ACTION_EVENT
 from kiro_crew.slack.code_channels.actions import dispatch as dispatch_code_channel_action
-from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
@@ -170,6 +169,7 @@ from kiro_crew.slack.shared_access import prime_shared_user
 # The proxy-selecting subclass under the SDK client's name, which is this
 # module's patch surface for the Socket Mode client.
 from kiro_crew.slack.socket_mode_proxy import ProxySelectingSocketModeClient as WSSocketModeClient
+from kiro_crew.slack.stream_window import note_thread_message
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key, handle_message_transport
 from kiro_crew.start_priority import person_priority
 from kiro_crew.stats import Stats
@@ -1064,6 +1064,9 @@ async def _route_message(
     # from poisoning the cache before the `app_mention` event arrives.
     if seen.check_and_add(msg_ts):
         return
+    if thread_ts:
+        # A turn running in this thread draws its next step below this message.
+        note_thread_message(channel, thread_ts)
 
     # What the user sent, captured BEFORE transcription and file ingestion
     # rewrite ``text``. The shutdown spool records this, never the ingested form,
@@ -1616,11 +1619,7 @@ async def _route_message(
         logger.info(
             "Message %s queued for busy session %s (session_obj=%s)", msg_ts, session_key, _queued
         )
-        if orch.slack and not code_channel_no_reactions(channel):
-            try:
-                await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
-            except Exception:
-                logger.debug("Failed to add queue reaction", exc_info=True)
+        await _mark_queued(orch, channel, msg_ts)
         # NOTE: do NOT _cleanup_attachment_temps() here — clean_text references
         # these paths. The historical image_temp_paths queue key transfers cleanup
         # ownership to _dispatch_queued after the turn runs.
@@ -1645,11 +1644,7 @@ async def _route_message(
         **_queue_tags(sender_id, channel, shared=_shared_sender),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
-        if orch.slack and not code_channel_no_reactions(channel):
-            try:
-                await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
-            except Exception:
-                logger.debug("Failed to add queue reaction", exc_info=True)
+        await _mark_queued(orch, channel, msg_ts)
         # See the force=True branch above: cleanup is deferred to
         # _dispatch_queued so every queued attachment path remains valid.
         return
@@ -1903,6 +1898,7 @@ from kiro_crew.slack.events_queue import _dispatch_queued  # noqa: E402
 from kiro_crew.slack.events_queue import _drain_slack_queue  # noqa: E402
 from kiro_crew.slack.events_queue import _entry_owner  # noqa: E402
 from kiro_crew.slack.events_queue import _key_busy  # noqa: E402
+from kiro_crew.slack.events_queue import _mark_queued  # noqa: E402
 from kiro_crew.slack.events_queue import _queue_tags  # noqa: E402
 from kiro_crew.slack.events_queue import _resolve_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _settle_stop_hold  # noqa: E402
@@ -1997,4 +1993,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         handle_slash as code_channel_slash,
     )
     from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
+    from kiro_crew.slack.code_channels.binding import (  # noqa: F401
+        no_reactions as code_channel_no_reactions,
+    )
 # isort: on

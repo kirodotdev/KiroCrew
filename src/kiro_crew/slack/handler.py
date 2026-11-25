@@ -474,6 +474,8 @@ from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
 )
 from kiro_crew.slack.stream_window import (  # noqa: F401 - read by the owners
     CONTINUES_BELOW,
+    message_landed_since,
+    messages_noted,
     stream_clock,
     stream_due_for_renewal,
 )
