@@ -1,12 +1,12 @@
 """Install advice for the optional dependency extras.
 
-``kirocrew`` is NOT published on any index, so the obvious advice --
-``pip install "kirocrew[feishu]"`` -- is not merely unhelpful, it cannot resolve
-at all: pip fails with *No matching distribution found for kirocrew* however the
-user installed Kiro Crew. On a hypothetical index it would be worse than an
-error, because installing ``kirocrew[extra]`` REPLACES an editable/source
-install with a released wheel -- the command reports success while swapping the
-gateway out from under the user.
+Kiro Crew is not on PyPI, and a different project named ``kirocrew`` is. So the
+obvious advice -- ``pip install "kirocrew[feishu]"`` -- is not merely unhelpful:
+a pip index lookup for that name can pick that project instead of Kiro Crew.
+From an index that does host Kiro Crew it would still be wrong, because
+installing ``kirocrew[extra]`` REPLACES an editable/source install with a
+released wheel -- the command reports success while swapping the gateway out
+from under the user.
 
 So the advice names the extra's own distributions with the pins declared in
 ``setup.cfg``. Those resolve from PyPI for every install layout, and they add
