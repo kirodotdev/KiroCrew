@@ -989,7 +989,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
     handleCancelQueued, handleCancelAllQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
-    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
+    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, steerEscape,
   } = useBusyTurnControls({
     activeSlot,
     messageQuote,
@@ -1326,7 +1326,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               cardOwnsRecovery={cardOwnsRecovery} resumeAfterSignIn={resumeAfterSignIn} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
               endQuoteFlight={endQuoteFlight} flyingQuote={flyingQuote} inputAreaRef={inputAreaRef} isAtBottom={isAtBottom} answerQuestionCard={answerQuestionCard}
               handleCancelQueued={handleCancelQueued} handleCancelAllQueued={handleCancelAllQueued} handleEditQueued={handleEditQueued} handleEditOpenQueued={handleEditOpenQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
-              keepQuestionAnswer={keepQuestionAnswer} queuedMessages={queuedMessages} queuePendingIds={queuePendingIds} steer={steer} stopTurn={stopTurn} systemDeliveryCount={systemDeliveryCount}
+              keepQuestionAnswer={keepQuestionAnswer} queuedMessages={queuedMessages} queuePendingIds={queuePendingIds} steer={steer} stopTurn={stopTurn} steerEscape={activeSlotRemoteBound ? undefined : steerEscape} systemDeliveryCount={systemDeliveryCount}
               handleEditLastRequest={handleEditLastRequest} composerOptimizing={composerOptimizing} handleOptimizingChange={handleOptimizingChange} memorySwitching={memorySwitching}
               // Crew Mode is chosen on the welcome state: while it is on neither the
               // memory-mode chip nor the Crew Mode chip is offered. Until the first

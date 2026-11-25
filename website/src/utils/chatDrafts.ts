@@ -134,6 +134,26 @@ export function mergeRecoveredDraft(keep: string | null | undefined, payload: st
   return mergeIntoDraft(existing, payload)
 }
 
+/** The blank lines at the start of a draft, up to the first line with text.
+ *  Each match ends at a newline, so the indentation of that first line stays. */
+const LEADING_BLANK_LINES = /^(?:[^\S\r\n]*\r?\n)+/
+
+/**
+ * Put recovered text IN FRONT of whatever the composer already holds.
+ *
+ * `mergeRecoveredDraft` with the opposite order and the same exact-duplicate
+ * guard. Escape takes back pending steers newest first, so putting each one in
+ * front rebuilds them in the order they were sent, above the draft. Only the
+ * newlines between the two go, because the paragraph break supplies them.
+ */
+export function prependRecoveredDraft(keep: string | null | undefined, payload: string): string {
+  const existing = keep ?? ''
+  if (existing.trim() && existing.trim() === payload.trim()) return existing
+  if (!existing.trim()) return payload
+  if (!payload.trim()) return existing
+  return payload.replace(TRAILING_NEWLINES, '') + PARAGRAPH_BREAK + existing.replace(LEADING_BLANK_LINES, '')
+}
+
 /**
  * The text the user typed while a new session was being created, or null.
  *

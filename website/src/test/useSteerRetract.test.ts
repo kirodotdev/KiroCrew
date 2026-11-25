@@ -11,6 +11,7 @@ const TAKE_BACKS_KEY = 'mc-steer-take-backs'
 const storedTakeBacks = () => JSON.parse(localStorage.getItem(TAKE_BACKS_KEY) ?? '{}') as Record<string, unknown>
 
 import {
+  BUSY_RETRY_DELAYS_MS,
   __resetSteerTakeBacksForTests,
   useSteerRetract,
   type SteerRetractOptions,
@@ -640,7 +641,8 @@ describe('useSteerRetract', () => {
 
     expect(restoreDraft).toHaveBeenCalledTimes(1)
     expect(restoreDraft.mock.calls[0][0]).toBe(content)
-    expect(restoreDraft.mock.calls[0]).toHaveLength(3)
+    expect(restoreDraft.mock.calls[0][3]).toBeUndefined()
+    expect(restoreDraft.mock.calls[0][4]).toBe('append')
   })
 
   it.each(['unsend', 'queue'] as const)('leaves the composer alone for a taken-back %s', (action) => {
@@ -1016,5 +1018,137 @@ describe('useSteerRetract', () => {
     expect(retractSteer).toHaveBeenCalledTimes(3)
     expect(slotA.hook.result.current.pending).toEqual({ 'm-2': 'queue' })
     expect(slotB.hook.result.current.pending).toEqual({ 'm-1': 'queue' })
+  })
+})
+
+// The answer each take-back hands its caller, the prepended Edit, and the busy
+// retry: what the composer's Escape (useSteerEscape) builds on.
+describe('useSteerRetract: request outcome, placement and busy retry', () => {
+  const busy = () => new ApiError(409, 'busy', JSON.stringify({ code: 'steer_retract_busy' }))
+
+  async function outcomeOf(hook: ReturnType<typeof setup>['hook'], action: 'edit' | 'unsend' = 'edit', mid = 'm-1') {
+    let result: Promise<string> = Promise.resolve('')
+    act(() => { result = hook.result.current.onSteerAction(mid, action) })
+    let outcome = ''
+    await act(async () => { outcome = await result })
+    return outcome
+  }
+
+  it('resolves accepted once the route arms the take-back', async () => {
+    const { hook } = setup([row({ steerState: 'written' })])
+    expect(await outcomeOf(hook)).toBe('accepted')
+    expect(retractSteer).toHaveBeenCalledWith('test', 'm-1', 'edit')
+  })
+
+  it('resolves not_pending when the turn read the steer first, refused on busy, unknown when the request is lost', async () => {
+    retractSteer.mockRejectedValueOnce(new ApiError(409, 'gone', JSON.stringify({ code: 'steer_not_pending' })))
+    const first = setup([row({ steerState: 'written' })])
+    expect(await outcomeOf(first.hook, 'unsend')).toBe('not_pending')
+    first.hook.unmount()
+
+    __resetSteerTakeBacksForTests()
+    localStorage.clear()
+    retractSteer.mockRejectedValueOnce(busy())
+    const second = setup([row({ steerState: 'written' })])
+    expect(await outcomeOf(second.hook, 'unsend')).toBe('refused')
+    expect(second.hook.result.current.refusals['m-1']).toEqual({ refusal: 'busy', action: 'unsend' })
+    second.hook.unmount()
+
+    __resetSteerTakeBacksForTests()
+    localStorage.clear()
+    retractSteer.mockRejectedValueOnce(new TypeError('connection lost'))
+    const third = setup([row({ steerState: 'written' })])
+    expect(await outcomeOf(third.hook, 'unsend')).toBe('unknown')
+    expect(third.hook.result.current.pending).toEqual({ 'm-1': 'unsend' })
+  })
+
+  it('resolves not_sent, sending nothing, for a row it cannot find or while another take-back runs here', async () => {
+    retractSteer.mockImplementation(() => new Promise(() => {}))
+    const { hook } = setup([row({ steerState: 'written' }), row({ mid: 'm-2', steerState: 'written' }, 'second')])
+    expect(await outcomeOf(hook, 'edit', 'missing')).toBe('not_sent')
+    act(() => { void hook.result.current.onSteerAction('m-1', 'edit') })
+    expect(await outcomeOf(hook, 'edit', 'm-2')).toBe('not_sent')
+    expect(retractSteer).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.pending).toEqual({ 'm-1': 'edit' })
+  })
+
+  it('puts a prepended Edit in front of the draft, and keeps that through a reload', () => {
+    retractSteer.mockImplementation(() => new Promise(() => {}))
+    const first = setup([row({ steerState: 'written' })])
+    act(() => { void first.hook.result.current.onSteerAction('m-1', 'edit', { prepend: true }) })
+    expect(storedTakeBacks().test).toMatchObject({ mid: 'm-1', action: 'edit', prepend: true })
+    first.hook.unmount()
+    __resetSteerTakeBacksForTests()
+
+    const reloaded = setup([row({ steerState: 'retracted', steerRetractAction: 'edit' })])
+    expect(reloaded.restoreDraft).toHaveBeenCalledTimes(1)
+    expect(reloaded.restoreDraft.mock.calls[0][0]).toBe('read @notes.md')
+    expect(reloaded.restoreDraft.mock.calls[0][4]).toBe('prepend')
+  })
+
+  it('drops a stored record whose prepend mark is not true', () => {
+    const record = { slot: 'test', mid: 'm-1', action: 'edit', content: 'x', observedRunning: true, requestFailed: false }
+    localStorage.setItem(TAKE_BACKS_KEY, JSON.stringify({ test: record }))
+    const kept = setup([row({ steerState: 'written' })])
+    expect(kept.hook.result.current.pending).toEqual({ 'm-1': 'edit' })
+    kept.hook.unmount()
+    __resetSteerTakeBacksForTests()
+
+    localStorage.setItem(TAKE_BACKS_KEY, JSON.stringify({ test: { ...record, prepend: 'yes' } }))
+    const dropped = setup([row({ steerState: 'written' })])
+    expect(dropped.hook.result.current.pending).toEqual({})
+  })
+
+  it('asks again after a busy answer, with the row still in flight, and resolves accepted', async () => {
+    vi.useFakeTimers()
+    retractSteer.mockRejectedValueOnce(busy()).mockResolvedValueOnce({ ok: true, pending: true })
+    const { hook } = setup([row({ steerState: 'written' })])
+    let result: Promise<string> = Promise.resolve('')
+    act(() => { result = hook.result.current.onSteerAction('m-1', 'edit', { retryBusy: true }) })
+    await act(async () => { await Promise.resolve() })
+    expect(retractSteer).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.pending).toEqual({ 'm-1': 'edit' })
+    expect(hook.result.current.refusals).toEqual({})
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(BUSY_RETRY_DELAYS_MS[0]) })
+    expect(retractSteer).toHaveBeenCalledTimes(2)
+    let outcome = ''
+    await act(async () => { outcome = await result })
+    expect(outcome).toBe('accepted')
+    expect(hook.result.current.refusals).toEqual({})
+  })
+
+  it('shows busy and resolves refused once every retry was busy', async () => {
+    vi.useFakeTimers()
+    retractSteer.mockRejectedValue(busy())
+    const { hook } = setup([row({ steerState: 'written' })])
+    let result: Promise<string> = Promise.resolve('')
+    act(() => { result = hook.result.current.onSteerAction('m-1', 'edit', { retryBusy: true }) })
+    for (const delay of BUSY_RETRY_DELAYS_MS) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay) })
+    }
+    let outcome = ''
+    await act(async () => { outcome = await result })
+    expect(outcome).toBe('refused')
+    expect(retractSteer).toHaveBeenCalledTimes(BUSY_RETRY_DELAYS_MS.length + 1)
+    expect(hook.result.current.refusals['m-1']).toEqual({ refusal: 'busy', action: 'edit' })
+    expect(hook.result.current.pending).toEqual({})
+  })
+
+  it('does not ask again for a take-back that settled during the wait', async () => {
+    vi.useFakeTimers()
+    retractSteer.mockRejectedValue(busy())
+    const { hook } = setup([row({ steerState: 'written' })])
+    let result: Promise<string> = Promise.resolve('')
+    act(() => { result = hook.result.current.onSteerAction('m-1', 'edit', { retryBusy: true }) })
+    await act(async () => { await Promise.resolve() })
+    hook.rerender({ messages: [row({ steerState: 'consumed' })] })
+    expect(hook.result.current.pending).toEqual({})
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(BUSY_RETRY_DELAYS_MS[0]) })
+    let outcome = ''
+    await act(async () => { outcome = await result })
+    expect(outcome).toBe('not_sent')
+    expect(retractSteer).toHaveBeenCalledTimes(1)
   })
 })

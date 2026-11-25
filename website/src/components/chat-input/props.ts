@@ -9,6 +9,7 @@ import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
 import type { MemorySource } from '../../lib/agentMemorySource'
+import type { SteerEscape } from './stopKey'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
@@ -324,6 +325,9 @@ export interface ChatInputProps {
    *  preparation lock): the chip shows a spinner and announces it (#20351). */
   projectSwitching?: boolean
   onStop?: () => void
+  /** The steers the running turn has not read yet: Escape takes them back one
+   *  per press before it stops the turn. Absent where a steer cannot be taken back. */
+  steerEscape?: SteerEscape
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the
    * dead send button becomes a Continue control instead. Offered on any idle

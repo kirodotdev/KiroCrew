@@ -4153,6 +4153,29 @@ the two can reach the turn before them. A
 resend that fails leaves its steer pending for the teardown's requeue. Pinned by
 `test_steer_retract.py` and `test_steer_clear_handle.py`.
 
+**Escape takes back a pending steer (`chat-input/stopKey.ts`,
+`hooks/useSteerEscape.ts`).** In the message box, Escape takes back the newest
+steer whose row offers a take-back, with Edit, before it stops the turn. Each
+press takes back one, and its text goes in front of the draft, so presses made
+one per steer bring the steers back in the order they were sent. The row
+controls' Edit still puts its text after the draft. The press that takes back
+the last pending steer also does what a press with none pending does: it stops
+the turn, or, with "Require a second Escape to stop the turn" on, it arms the
+stop so the next press stops. A stop already under way takes nothing more from a
+take-back press, and a hard stop takes nothing back. The page sends one
+take-back at a time per chat, as the route allows: a later press waits until the
+earlier take-back settles on its row, and a `busy` answer is asked again after
+150, 300, 600 and 1,200 ms before the row shows it. The stop an Escape asks for
+is sent only after each take-back queued before it is armed (`202`), because a
+steer still pending when its turn ends runs as the next turn. A refused or
+unanswered take-back drops the presses queued behind it and that stop. A press
+made before the composer's steer echo gives its row an id is kept and sent when
+the echo arrives, or dropped when the row does not offer a take-back. While a
+steer can be taken back, the composer shows "Esc to take back your message", or
+"Esc to take back your message and stop" when that press also stops. Pinned by
+`composerStopKey.test.ts`, `useSteerEscape.test.ts` and
+`useSteerRetract.test.ts`.
+
 **A manual `/compact` takes no steer.** That turn runs the compaction, not a
 prompt, so a steer would reach nothing the model reads. `_begin_compact_command`
 sets `slot._compact_command_turn` just before the command is sent (cleared in

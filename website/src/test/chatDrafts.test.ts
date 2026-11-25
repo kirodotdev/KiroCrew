@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, mergeReplyIntoDraft, saveDrafts, setDraft, appendTypedText, typedDuringCreate, chatPageShouldConsumeHandoff, __resetForTests } from '../utils/chatDrafts'
+import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, mergeReplyIntoDraft, prependRecoveredDraft, saveDrafts, setDraft, appendTypedText, typedDuringCreate, chatPageShouldConsumeHandoff, __resetForTests } from '../utils/chatDrafts'
 import { DRAFT_MAX_STORE_BYTES } from '../utils/draftConstants'
 
 describe('chatDrafts', () => {
@@ -334,6 +334,33 @@ describe('draft merges keep the draft verbatim except for the newlines they repl
     // treating that as already restored drops the message the user must retry.
     expect(mergeRecoveredDraft('please run tests first', 'run tests'))
       .toBe('please run tests first\n\nrun tests')
+  })
+})
+
+/* Escape's take-back: each steer it takes back goes in front, so the steers come
+   back in the order they were sent, above the draft. */
+describe('prependRecoveredDraft', () => {
+  it('puts the payload in front of the draft, a paragraph apart', () => {
+    expect(prependRecoveredDraft('my draft', 'the steer')).toBe('the steer\n\nmy draft')
+    expect(prependRecoveredDraft('', 'the steer')).toBe('the steer')
+    expect(prependRecoveredDraft('   \n ', 'the steer')).toBe('the steer')
+    expect(prependRecoveredDraft('my draft', '  \n')).toBe('my draft')
+  })
+
+  it('rebuilds steers taken back newest first in the order they were sent', () => {
+    const afterNewest = prependRecoveredDraft('draft', 'second steer')
+    expect(prependRecoveredDraft(afterNewest, 'first steer')).toBe('first steer\n\nsecond steer\n\ndraft')
+  })
+
+  it('does not duplicate a payload the composer already holds, and dedupes on equality only', () => {
+    expect(prependRecoveredDraft(' same text\n', 'same text ')).toBe(' same text\n')
+    expect(prependRecoveredDraft('please run tests first', 'run tests')).toBe('run tests\n\nplease run tests first')
+  })
+
+  it('drops only the newlines between the two, keeping the draft\'s first-line indentation and the payload\'s hard break', () => {
+    expect(prependRecoveredDraft('\n  \n    indented draft', 'steer')).toBe('steer\n\n    indented draft')
+    expect(prependRecoveredDraft('draft', 'steer  \n\n')).toBe('steer  \n\ndraft')
+    expect(prependRecoveredDraft('draft', 'steer\r\n')).toBe('steer\n\ndraft')
   })
 })
 

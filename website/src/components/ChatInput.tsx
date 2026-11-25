@@ -86,7 +86,7 @@ import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-i
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
-import { useComposerStopKey } from './chat-input/stopKey'
+import { ESCAPE_HINT_KEY, useComposerStopKey } from './chat-input/stopKey'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
@@ -232,6 +232,7 @@ function ChatInput({
   compacting = false,
   stopDeclined = false,
   onStop,
+  steerEscape,
   continuable = false,
   continueIsRecovery = false,
   resumeAfterSignIn = false,
@@ -753,12 +754,12 @@ function ChatInput({
     () => (promptOptimizer ? () => { if (connected) optimizeUnlessLocked() } : undefined),
     [promptOptimizer, connected, optimizeUnlessLocked],
   )
-  // Escape stops the running turn when the prompt box is focused (issue #22315),
+  // Escape takes back a pending steer, or stops the running turn, when the prompt box is focused (issue #22315),
   // yielding to a picker, dictation, an approval, a dialog, IME composition or
   // an Escape that stopped voice read-back. Wired into BOTH editors: the textarea's keydown and the rich-text editor's
   // Escape command, so the binding holds with "Style Markdown While Typing" on.
-  const { stopTurnOnEscape, escapeArmed } = useComposerStopKey({
-    slotKey: slotId, isRunning, stopState, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
+  const { stopTurnOnEscape, escapeHint } = useComposerStopKey({
+    slotKey: slotId, isRunning, stopState, onStop, steerEscape, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
     optimizingRef, onCancelOptimize: cancelOptimize,
   })
   // While an optimize runs the rich-text editor is not editable, so Lexical
@@ -1819,7 +1820,7 @@ function ChatInput({
               </button>
               )}
             </>)}
-            {escapeArmed && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="escape-stop-armed-hint">{i18nT('components.chatInput.esc_again_to_stop')}</span>}
+            {escapeHint && (escapeHint === 'again_to_stop' || !richDropsKeys) && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid={escapeHint === 'again_to_stop' ? 'escape-stop-armed-hint' : 'escape-steer-take-back-hint'}>{i18nT(ESCAPE_HINT_KEY[escapeHint])}</span>}
           </div>
         </div>
 

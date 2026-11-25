@@ -9,12 +9,13 @@ import { mintSendId, type SendReceipt } from '../../../chat-core/transport/sendT
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
-import { useSteerRetract } from '../../../hooks/useSteerRetract'
+import { useSteerRetract, type SteerRestorePlacement } from '../../../hooks/useSteerRetract'
+import { useSteerEscape } from '../../../hooks/useSteerEscape'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
 import { appendMessage, appendSlotMessage, capturePendingAskId, requestStop, selectComposerBusy, selectSendConfirmed, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { mergeIntoDraft, mergeRecoveredDraft, prependRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { restoreToComposer } from '../../../utils/composerRestore'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
@@ -332,20 +333,21 @@ export function useBusyTurnControls({
   // removes its recovery record after this callback, so a reload between this
   // effect and the composer's next commit must still find the restored draft.
   const restoreQueuedDraft = useCallback(
-    (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => {
+    (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote, placement: SteerRestorePlacement = 'append') => {
+      const merge = placement === 'prepend' ? prependRecoveredDraft : mergeRecoveredDraft
       // The stash carries the quote the send consumed: back as a staged card
       // when the stage is free, else in the restored text.
       const recoveredText = messageQuote.recoverInto(text, quote ?? null)
       const slot = composerSlotRef.current
       if (!slot) {
-        setInput(prev => mergeRecoveredDraft(prev, recoveredText))
+        setInput(prev => merge(prev, recoveredText))
         return false
       }
       // During a slot-switch commit the composer store already holds the
       // incoming draft, but its refs still hold the outgoing one. Persist from
       // the incoming slot stores, and merge the visible value through the
       // composer store's pure updater so neither path can copy the old chat.
-      const restoredText = mergeRecoveredDraft(drafts.current[slot], recoveredText)
+      const restoredText = merge(drafts.current[slot], recoveredText)
       const slotFiles = fileDrafts.current[slot] ?? []
       const restoredFiles = files.length
         ? [...new Set([...slotFiles, ...files])]
@@ -357,7 +359,7 @@ export function useBusyTurnControls({
       // hand-deleted mention left a stale chip the next send re-attached.
       if (aliases) mergeSlotTokens(slot, aliases)
       const stored = saveDrafts()
-      setInput(prev => mergeRecoveredDraft(prev, recoveredText))
+      setInput(prev => merge(prev, recoveredText))
       // Chips MERGE like the text does: paths join whatever is already staged,
       // deduped, so a re-send serializes each attachment exactly once.
       if (files.length) {
@@ -442,6 +444,17 @@ export function useBusyTurnControls({
       () => press(true),
     )
   }
+  // The composer's Escape takes the pending steers back one per press, newest
+  // first, and holds its stop until those take-backs are armed.
+  const steerEscape = useSteerEscape({
+    slot: activeSlot,
+    messages,
+    slotRunning,
+    stopState: currentSlot?.stop_state,
+    onSteerAction: handleSteerAction,
+    pending: steerActionPending,
+    stop: stopTurn,
+  })
   /** A question card's answer that could not be delivered (a 404): kept for an explicit retry. */
   const keepQuestionAnswer = (text: string, questions?: { question: string }[]) => {
     // A 404 means the blocked wait is gone and the card has
@@ -503,6 +516,6 @@ export function useBusyTurnControls({
   return {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
     handleCancelQueued, handleCancelAllQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
-    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
+    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, steerEscape,
   }
 }

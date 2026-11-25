@@ -22,6 +22,32 @@ export interface SteerRetractRefusalNotice {
   action: SteerRetractAction
 }
 
+/** Where an Edit's text goes in the composer: after the draft, or in front of it. */
+export type SteerRestorePlacement = 'append' | 'prepend'
+
+/** How one take-back request ended, as far as the request itself can tell. */
+export type SteerRetractRequestOutcome =
+  /** The route armed the take-back, so the turn's end takes the steer back too. */
+  | 'accepted'
+  /** The steer was no longer pending: the turn read it, or its turn ended first. */
+  | 'not_pending'
+  /** The route refused it, and the row's notice says why. */
+  | 'refused'
+  /** The request failed before its outcome was known. */
+  | 'unknown'
+  /** No request was sent: no such row, another take-back holds the slot, or the
+   *  text could not be saved first. */
+  | 'not_sent'
+
+/** What the caller asks of one take-back beyond its action. */
+export interface SteerRetractActionOptions {
+  /** An Edit's text goes in front of the composer's draft instead of after it. */
+  prepend?: boolean
+  /** A `busy` refusal is asked again after a short wait, up to
+   *  `BUSY_RETRY_DELAYS_MS.length` times, before the row shows it. */
+  retryBusy?: boolean
+}
+
 /** A take-back in flight: what was asked, and the row as it stood when asked, so
  *  an Edit can put the text back in the composer once the row says it was taken. */
 interface PendingTakeBack {
@@ -32,7 +58,14 @@ interface PendingTakeBack {
   meta: Record<string, unknown> | undefined
   observedRunning: boolean
   requestFailed: boolean
+  /** Set when an Edit's text goes in front of the draft. */
+  prepend?: true
 }
+
+/** The waits before each retry of a `busy` take-back. The gateway answers `busy`
+ *  while it writes a steer, which includes sending again the steers the last
+ *  take-back's clear dropped, and that write takes a round trip to the agent. */
+export const BUSY_RETRY_DELAYS_MS: readonly number[] = [150, 300, 600, 1200]
 
 const TAKE_BACKS_STORAGE_KEY = 'mc-steer-take-backs'
 const TAKE_BACKS_TIMESTAMPS_KEY = `${TAKE_BACKS_STORAGE_KEY}-ts`
@@ -50,6 +83,7 @@ function sanitizePendingTakeBack(value: unknown): PendingTakeBack | null {
     typeof record.requestFailed !== 'boolean'
   ) return null
   if (record.meta !== undefined && (!record.meta || typeof record.meta !== 'object' || Array.isArray(record.meta))) return null
+  if (record.prepend !== undefined && record.prepend !== true) return null
   return {
     slot: record.slot,
     mid: record.mid,
@@ -58,6 +92,7 @@ function sanitizePendingTakeBack(value: unknown): PendingTakeBack | null {
     meta: record.meta ? { ...(record.meta as Record<string, unknown>) } : undefined,
     observedRunning: record.observedRunning,
     requestFailed: record.requestFailed,
+    ...(record.prepend === true ? { prepend: true as const } : {}),
   }
 }
 
@@ -95,8 +130,9 @@ export interface SteerRetractOptions {
   /** Whether this slot's history fetch has settled. Defaults true for store-free hosts. */
   transcriptAuthoritative?: boolean
   slotRunning: boolean
-  /** Merge a taken-back steer's text, attachments and quote into the composer. */
-  restoreDraft: (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => boolean | void
+  /** Merge a taken-back steer's text, attachments and quote into the composer,
+   *  after the draft unless `placement` is `'prepend'`. */
+  restoreDraft: (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote, placement?: SteerRestorePlacement) => boolean | void
   /** The paths the composer has staged right now (see `useQueuedMessageActions`). */
   stagedFiles?: () => readonly string[]
   /** The composer's project root (see `useQueuedMessageActions`). */
@@ -104,7 +140,7 @@ export interface SteerRetractOptions {
 }
 
 export interface SteerRetract {
-  onSteerAction: (mid: string, action: SteerRetractAction) => void
+  onSteerAction: (mid: string, action: SteerRetractAction, options?: SteerRetractActionOptions) => Promise<SteerRetractRequestOutcome>
   /** The action in flight for each row `mid`. */
   pending: Readonly<Record<string, SteerRetractAction>>
   /** Why the last take-back of each row `mid` did not happen. */
@@ -297,7 +333,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
       stagedFilesRef.current?.(),
       projectRef.current?.(),
     )
-    const stored = restoreDraftRef.current(text, files, aliases)
+    const stored = restoreDraftRef.current(text, files, aliases, undefined, taken.prepend ? 'prepend' : 'append')
     revealComposer()
     return stored
   }, [])
@@ -308,21 +344,22 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
     settle(taken, undefined, stored === false)
   }, [restore, settle])
 
-  const onSteerAction = useCallback((mid: string, action: SteerRetractAction) => {
-    if (!slot) return
+  const onSteerAction = useCallback((mid: string, action: SteerRetractAction, options: SteerRetractActionOptions = {}) => new Promise<SteerRetractRequestOutcome>(resolve => {
+    if (!slot) { resolve('not_sent'); return }
     // Without a cross-tab lock another tab can overwrite the record that holds the only copy of an Edit's text.
     if (action === 'edit' && !takeBackLocks()) {
       setPending(prev => without(prev, mid))
       setRefusals(prev => ({ ...prev, [mid]: { refusal: 'failed', action } }))
       setRequestFailures(prev => without(prev, mid))
+      resolve('not_sent')
       return
     }
     withTakeBackLock(() => {
-      if (slotRef.current !== slot) return
+      if (slotRef.current !== slot) { resolve('not_sent'); return }
       const active = pendingTakeBackBySlot.get(slot)
-      if (active && locallyStartedTakeBackBySlot.get(slot) === active) return
+      if (active && locallyStartedTakeBackBySlot.get(slot) === active) { resolve('not_sent'); return }
       const row = messagesRef.current.find(m => m.meta?.mid === mid)
-      if (!row) return
+      if (!row) { resolve('not_sent'); return }
       const outstanding = active ?? storedTakeBackForSlot(slot)
       if (outstanding) {
         // A stored take-back may hold the only copy of an Edit's text, so refuse before replacing it:
@@ -331,6 +368,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
         setPending(prev => without(prev, mid))
         setRefusals(prev => ({ ...prev, [mid]: { refusal, action } }))
         setRequestFailures(prev => without(prev, mid))
+        resolve('not_sent')
         return
       }
       const taken: PendingTakeBack = {
@@ -341,6 +379,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
         meta: row.meta,
         observedRunning: slotRunningRef.current,
         requestFailed: false,
+        ...(options.prepend ? { prepend: true as const } : {}),
       }
       const initiallyStored = persistTakeBack(taken)
       if (action === 'edit' && !initiallyStored) {
@@ -348,16 +387,27 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
         setPending(prev => without(prev, mid))
         setRefusals(prev => ({ ...prev, [mid]: { refusal: 'failed', action } }))
         setRequestFailures(prev => without(prev, mid))
+        resolve('not_sent')
         return
       }
       locallyStartedTakeBackBySlot.set(slot, taken)
       setPending({ [mid]: action })
       setRefusals(prev => without(prev, mid))
       setRequestFailures(prev => without(prev, mid))
-      api.retractSteer(slot, mid, action).catch((err: unknown) => {
+      const request = (retriesLeft: number): Promise<void> => api.retractSteer(slot, mid, action).then(() => resolve('accepted'), (err: unknown) => {
         const refusal = definitiveRefusalOf(err)
+        if (refusal === 'busy' && retriesLeft > 0) {
+          // The row keeps its in-flight line through the wait. A take-back that
+          // settled meanwhile (its row moved on, or its turn ended) is not asked again.
+          setTimeout(() => {
+            if (pendingTakeBackBySlot.get(taken.slot) !== taken) { resolve('not_sent'); return }
+            void request(retriesLeft - 1)
+          }, BUSY_RETRY_DELAYS_MS[BUSY_RETRY_DELAYS_MS.length - retriesLeft])
+          return
+        }
         if (refusal !== undefined) {
           settle(taken, refusal)
+          resolve(refusal === null ? 'not_pending' : 'refused')
           return
         }
         withTakeBackLock(() => {
@@ -369,9 +419,11 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
           persistTakeBack(taken)
           if (slotRef.current === taken.slot) setRequestFailures({ [taken.mid]: true })
         })
+        resolve('unknown')
       })
+      void request(options.retryBusy ? BUSY_RETRY_DELAYS_MS.length : 0)
     })
-  }, [slot, settle])
+  }), [slot, settle])
 
   useEffect(() => {
     setPending(pendingForSlot(slot))

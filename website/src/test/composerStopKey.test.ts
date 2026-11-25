@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import type { RefObject } from 'react'
-import { ESCAPE_STOP_ARM_MS, useComposerStopKey, type StopKeyEvent } from '../components/chat-input/stopKey'
+import { ESCAPE_STOP_ARM_MS, useComposerStopKey, type SteerEscape, type SteerEscapeVerdict, type StopKeyEvent } from '../components/chat-input/stopKey'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
 
 type Opts = Parameters<typeof useComposerStopKey>[0]
@@ -296,5 +296,199 @@ describe('useComposerStopKey: a second Escape required', () => {
     expect(result.current.escapeArmed).toBe(false)
     press(result)
     expect(onStop).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A steer the running turn has not read comes before the stop: each Escape takes
+// back the newest one, and the press that takes back the last one goes on as a
+// press with none pending would (stop, or arm with a second Escape required).
+describe('useComposerStopKey: pending steers', () => {
+  beforeEach(() => { localStorage.clear() })
+  afterEach(() => { vi.useRealTimers(); localStorage.clear() })
+
+  function steerEscape(verdicts: SteerEscapeVerdict[], counts = { offered: 1, reachable: 1 }) {
+    const left = [...verdicts]
+    return { ...counts, takeBack: vi.fn((): SteerEscapeVerdict => left.shift() ?? 'none'), stop: vi.fn() } satisfies SteerEscape
+  }
+  type Hook = { current: ReturnType<typeof useComposerStopKey> }
+  function press(result: Hook, e = fakeEvent()): boolean {
+    let claimed = false
+    act(() => { claimed = result.current.stopTurnOnEscape(e, { native: new KeyboardEvent('keydown', { key: 'Escape' }), composing: false }) })
+    return claimed
+  }
+
+  it('takes back the last steer and stops the turn on one press, through the steer stop', () => {
+    const onStop = vi.fn()
+    const steer = steerEscape(['last'])
+    const { claimed, e } = run(base({ onStop, steerEscape: steer }))
+    expect(claimed).toBe(true)
+    expect(e.preventDefault).toHaveBeenCalledTimes(1)
+    expect(steer.takeBack).toHaveBeenCalledTimes(1)
+    expect(steer.stop).toHaveBeenCalledTimes(1)
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('only takes back a steer while others stay pending', () => {
+    const onStop = vi.fn()
+    const steer = steerEscape(['more'], { offered: 2, reachable: 2 })
+    const { claimed } = run(base({ onStop, steerEscape: steer }))
+    expect(claimed).toBe(true)
+    expect(steer.takeBack).toHaveBeenCalledTimes(1)
+    expect(steer.stop).not.toHaveBeenCalled()
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('two steers: the first press takes one back, the second takes the other back and stops', () => {
+    const steer = steerEscape(['more', 'last'], { offered: 2, reachable: 2 })
+    const { result } = renderHook(() => useComposerStopKey(base({ steerEscape: steer })))
+    press(result)
+    expect(steer.stop).not.toHaveBeenCalled()
+    press(result)
+    expect(steer.takeBack).toHaveBeenCalledTimes(2)
+    expect(steer.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops through the steer stop when no steer is left to take back', () => {
+    const onStop = vi.fn()
+    const steer = steerEscape([], { offered: 0, reachable: 0 })
+    const { claimed } = run(base({ onStop, steerEscape: steer }))
+    expect(claimed).toBe(true)
+    expect(steer.takeBack).toHaveBeenCalledTimes(1)
+    expect(steer.stop).toHaveBeenCalledTimes(1)
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('takes nothing back on a held Escape', () => {
+    const steer = steerEscape(['last'])
+    const e = fakeEvent(true)
+    const { claimed } = run(base({ steerEscape: steer }), e)
+    expect(claimed).toBe(true)
+    expect(e.preventDefault).toHaveBeenCalledTimes(1)
+    expect(steer.takeBack).not.toHaveBeenCalled()
+    expect(steer.stop).not.toHaveBeenCalled()
+  })
+
+  it('leaves Escape to every claimant ahead of the turn, and takes nothing back with no turn running', () => {
+    const steer = steerEscape(['last', 'last', 'last', 'last', 'last', 'last', 'last', 'last', 'last'])
+    expect(run(base({ steerEscape: steer, anyPickerOpenRef: pickerRef(true) })).claimed).toBe(false)
+    expect(run(base({ steerEscape: steer }), fakeEvent(), true).claimed).toBe(false)
+    const spoken = new KeyboardEvent('keydown', { key: 'Escape' })
+    noteEscapeStoppedSpeech(spoken)
+    expect(run(base({ steerEscape: steer }), fakeEvent(), false, spoken).claimed).toBe(false)
+    expect(run(base({ steerEscape: steer, voiceRecording: true })).claimed).toBe(false)
+    expect(run(base({ steerEscape: steer, hasApproval: true })).claimed).toBe(false)
+    expect(run(base({ steerEscape: steer, approvalNudgeActive: true })).claimed).toBe(false)
+    const onCancelOptimize = vi.fn()
+    expect(run(base({ steerEscape: steer, optimizingRef: { current: true }, onCancelOptimize })).claimed).toBe(true)
+    expect(onCancelOptimize).toHaveBeenCalledTimes(1)
+    expect(run(base({ steerEscape: steer, isRunning: false })).claimed).toBe(false)
+    const owner = document.createElement('div')
+    owner.setAttribute('data-escape-owner', '')
+    document.body.appendChild(owner)
+    try {
+      expect(run(base({ steerEscape: steer })).claimed).toBe(false)
+    } finally {
+      document.body.removeChild(owner)
+    }
+    expect(steer.takeBack).not.toHaveBeenCalled()
+    expect(steer.stop).not.toHaveBeenCalled()
+  })
+
+  it('takes back the last steer without stopping again while a stop is under way', () => {
+    const onStop = vi.fn()
+    const steer = steerEscape(['last'])
+    const { claimed } = run(base({ onStop, steerEscape: steer, stopState: 'soft_pending' }))
+    expect(claimed).toBe(true)
+    expect(steer.takeBack).toHaveBeenCalledTimes(1)
+    expect(steer.stop).not.toHaveBeenCalled()
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  describe('with a second Escape required', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+    })
+
+    it('one steer: the take-back press arms, and the next press stops', () => {
+      const steer = steerEscape(['last'])
+      const { result } = renderHook(() => useComposerStopKey(base({ steerEscape: steer })))
+      expect(press(result)).toBe(true)
+      expect(steer.stop).not.toHaveBeenCalled()
+      expect(result.current.escapeArmed).toBe(true)
+      expect(press(result)).toBe(true)
+      expect(steer.stop).toHaveBeenCalledTimes(1)
+      expect(result.current.escapeArmed).toBe(false)
+    })
+
+    it('two steers: three presses, and only the press after the last take-back stops', () => {
+      const steer = steerEscape(['more', 'last'], { offered: 2, reachable: 2 })
+      const { result } = renderHook(() => useComposerStopKey(base({ steerEscape: steer })))
+      press(result)
+      expect(result.current.escapeArmed).toBe(false)
+      press(result)
+      expect(result.current.escapeArmed).toBe(true)
+      expect(steer.stop).not.toHaveBeenCalled()
+      press(result)
+      expect(steer.takeBack).toHaveBeenCalledTimes(3)
+      expect(steer.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('a take-back press opens the window again from its own press', () => {
+      const steer = steerEscape(['none', 'last'])
+      const { result } = renderHook(() => useComposerStopKey(base({ steerEscape: steer })))
+      press(result)
+      expect(result.current.escapeArmed).toBe(true)
+      act(() => { vi.advanceTimersByTime(ESCAPE_STOP_ARM_MS - 500) })
+      press(result)
+      act(() => { vi.advanceTimersByTime(ESCAPE_STOP_ARM_MS - 1) })
+      expect(result.current.escapeArmed).toBe(true)
+      press(result)
+      expect(steer.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('a lapsed window after the take-back needs a new arming press', () => {
+      const steer = steerEscape(['last'])
+      const { result } = renderHook(() => useComposerStopKey(base({ steerEscape: steer })))
+      press(result)
+      act(() => { vi.advanceTimersByTime(ESCAPE_STOP_ARM_MS) })
+      expect(result.current.escapeArmed).toBe(false)
+      press(result)
+      expect(steer.stop).not.toHaveBeenCalled()
+      expect(result.current.escapeArmed).toBe(true)
+    })
+  })
+
+  describe('the hint', () => {
+    const hintOf = (opts: Opts) => renderHook(() => useComposerStopKey(opts)).result.current.escapeHint
+
+    it('says a press takes back the message and stops when that press does both', () => {
+      expect(hintOf(base({ steerEscape: steerEscape([]) }))).toBe('take_back_and_stop')
+    })
+
+    it('says a press only takes back the message while another steer would stay pending, a stop is under way, or a second Escape is required', () => {
+      expect(hintOf(base({ steerEscape: steerEscape([], { offered: 2, reachable: 2 }) }))).toBe('take_back')
+      expect(hintOf(base({ steerEscape: steerEscape([], { offered: 1, reachable: 2 }) }))).toBe('take_back')
+      expect(hintOf(base({ steerEscape: steerEscape([]), stopState: 'soft_pending' }))).toBe('take_back')
+      localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+      expect(hintOf(base({ steerEscape: steerEscape([]) }))).toBe('take_back')
+    })
+
+    it('shows nothing for a steer no press can take back yet, or with no turn running', () => {
+      expect(hintOf(base({ steerEscape: steerEscape([], { offered: 0, reachable: 1 }) }))).toBeNull()
+      expect(hintOf(base({ steerEscape: steerEscape([]), isRunning: false }))).toBeNull()
+      expect(hintOf(base())).toBeNull()
+    })
+
+    it('says "again to stop" while armed, and a steer to take back outranks it', () => {
+      vi.useFakeTimers()
+      localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+      const steer = steerEscape([], { offered: 0, reachable: 0 })
+      const { result, rerender } = renderHook(props => useComposerStopKey(props), { initialProps: base({ steerEscape: steer }) })
+      press(result)
+      expect(result.current.escapeHint).toBe('again_to_stop')
+      rerender(base({ steerEscape: { ...steer, offered: 1, reachable: 1 } }))
+      expect(result.current.escapeHint).toBe('take_back')
+    })
   })
 })

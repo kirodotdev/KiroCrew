@@ -3,6 +3,7 @@ import { anotherEscapeOwnerIsOpen } from './escapeOwners'
 import { escapeStoppedSpeech } from '../../utils/speechStopKey'
 import { isEscalationState } from '../../utils/stopDebounce'
 import { loadChatConfig } from '../../pages/chat/ChatSettings'
+import { useChatSetting } from '../../hooks/useChatSetting'
 
 /* Escape-to-stop for the composer (issue #22315). The CLI binds Esc to cancel
    the streaming turn; the dashboard had only the Stop button. This hook is the
@@ -19,11 +20,50 @@ import { loadChatConfig } from '../../pages/chat/ChatSettings'
    "Require a second Escape to stop the turn" (Settings, Chat, issue #23462) is
    off by default. When on, the first Escape only arms: the composer shows
    "Esc again to stop", and a second Escape inside ESCAPE_STOP_ARM_MS stops.
-   A lapsed window disarms and sends nothing. */
+   A lapsed window disarms and sends nothing.
+
+   A steer the running turn has not read yet comes before the stop: each Escape
+   takes back the newest one with Edit, and its text returns to the message box
+   (`SteerEscape`, implemented by hooks/useSteerEscape). The press that takes
+   back the last pending steer also does what a press with none pending does: it
+   stops the turn, or, with the second-Escape setting on, only arms, so the next
+   Escape stops. While a stop is under way, a take-back press does nothing more. */
 
 /** How long a first Escape stays armed: the hint's lifetime, and the only
  *  window in which a second Escape stops the turn. */
 export const ESCAPE_STOP_ARM_MS = 2000
+
+/** What one Escape press did to the pending steers. */
+export type SteerEscapeVerdict =
+  /** No steer this press can take back: the press goes on to the stop. */
+  | 'none'
+  /** It took one back, and more remain. */
+  | 'more'
+  /** It took back the last one. */
+  | 'last'
+
+/** The page's steers that the running turn has not read yet, as Escape sees them. */
+export interface SteerEscape {
+  /** Pending steers whose row offers a take-back and that no press has asked for. */
+  offered: number
+  /** `offered`, plus the composer's own steers still waiting for their echo. */
+  reachable: number
+  /** Takes back the newest steer Escape can still reach. */
+  takeBack: () => SteerEscapeVerdict
+  /** The stop the Stop button runs, sent once every take-back an Escape asked
+   *  for can no longer let its steer run. */
+  stop: () => void
+}
+
+/** What the composer's Escape hint says about the next Escape. */
+export type EscapeHint = 'take_back' | 'take_back_and_stop' | 'again_to_stop'
+
+/** The catalog key for each `EscapeHint`. */
+export const ESCAPE_HINT_KEY: Readonly<Record<EscapeHint, string>> = {
+  take_back: 'components.chatInput.esc_to_take_back_message',
+  take_back_and_stop: 'components.chatInput.esc_to_take_back_message_and_stop',
+  again_to_stop: 'components.chatInput.esc_again_to_stop',
+}
 
 /** The part of an Escape keydown the gate reads. Both React's synthetic event
  *  (textarea) and the native event Lexical hands its Escape command fit it. */
@@ -41,7 +81,7 @@ export interface StopKeyContext {
 /** Run on a bare Escape. Returns true when the gate claimed the key. */
 export type StopTurnOnEscape = (e: StopKeyEvent, key: StopKeyContext) => boolean
 
-export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize }: {
+export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, steerEscape, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize }: {
   /** The session this composer is showing. One composer instance serves
    *  every session, so a switch must drop the armed press. */
   slotKey?: string | null
@@ -53,6 +93,9 @@ export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, anyP
   /** The Stop protocol the button runs (soft cancel, then force kill on a
    *  second press after the arm window). Absent on a surface with no stop. */
   onStop?: () => void
+  /** The slot's steers the turn has not read yet. Absent on a surface that
+   *  cannot take a steer back; its Escape stops the turn through `onStop`. */
+  steerEscape?: SteerEscape
   /** Any trigger picker (/ @ $ path) is open: it owns Escape to close. */
   anyPickerOpenRef: React.RefObject<boolean>
   /** A dictation is recording or draining: voice.ts owns Escape to discard. */
@@ -65,7 +108,7 @@ export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, anyP
   /** A prompt optimize is in flight: Escape cancels it, as its Cancel button does. */
   optimizingRef?: React.RefObject<boolean>
   onCancelOptimize?: () => void
-}): { stopTurnOnEscape: StopTurnOnEscape; escapeArmed: boolean } {
+}): { stopTurnOnEscape: StopTurnOnEscape; escapeArmed: boolean; escapeHint: EscapeHint | null } {
   // The pending timer IS the armed state; `escapeArmed` mirrors it for the hint.
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [escapeArmed, setEscapeArmed] = useState(false)
@@ -74,7 +117,15 @@ export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, anyP
     armTimerRef.current = null
     setEscapeArmed(false)
   }, [])
+  // Starts the window again when it is already open: a take-back press arms
+  // from its own press, whatever an earlier press left.
+  const arm = useCallback(() => {
+    if (armTimerRef.current) clearTimeout(armTimerRef.current)
+    armTimerRef.current = setTimeout(disarm, ESCAPE_STOP_ARM_MS)
+    setEscapeArmed(true)
+  }, [disarm])
   const stopping = isEscalationState(stopState)
+  const doubleEscapeToStop = useChatSetting('doubleEscapeToStop')
   // A stop that got under way (the Stop button), or a turn that ended, takes
   // the armed press with it, so neither a stale hint nor a stale arm survives.
   useEffect(() => { if (!isRunning || stopping) disarm() }, [isRunning, stopping, disarm])
@@ -132,15 +183,30 @@ export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, anyP
     // that this Escape is spent. A SECOND deliberate Escape after the arm
     // window force-kills, because onStop carries the press protocol.
     e.preventDefault()
+    const stop = steerEscape?.stop ?? onStop
+    // A pending steer comes before the stop. The press that takes back the last
+    // one goes on as a press with none pending would.
+    const took = steerEscape?.takeBack() ?? 'none'
+    if (took !== 'none') {
+      if (took === 'last' && !stopping) {
+        if (loadChatConfig().doubleEscapeToStop) arm()
+        else { disarm(); stop() }
+      }
+      return true
+    }
     // Second Escape opted in: a first press with no stop under way only arms.
     if (!stopping && !armTimerRef.current && loadChatConfig().doubleEscapeToStop) {
-      armTimerRef.current = setTimeout(disarm, ESCAPE_STOP_ARM_MS)
-      setEscapeArmed(true)
+      arm()
       return true
     }
     disarm()
-    onStop()
+    stop()
     return true
-  }, [isRunning, stopping, disarm, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize])
-  return { stopTurnOnEscape, escapeArmed }
+  }, [isRunning, stopping, arm, disarm, onStop, steerEscape, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize])
+  // A steer to take back outranks the armed hint: it is what the next press does.
+  const steerHint: EscapeHint | null = isRunning && onStop && steerEscape && steerEscape.offered > 0
+    ? (steerEscape.reachable === 1 && !stopping && !doubleEscapeToStop ? 'take_back_and_stop' : 'take_back')
+    : null
+  const escapeHint = steerHint ?? (escapeArmed ? 'again_to_stop' : null)
+  return { stopTurnOnEscape, escapeArmed, escapeHint }
 }

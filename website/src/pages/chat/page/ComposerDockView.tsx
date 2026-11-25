@@ -80,6 +80,7 @@ import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
 import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { stagedProjectTurnKey } from '../../../components/chat-input/stagedProject'
+import type { SteerEscape } from '../../../components/chat-input/stopKey'
 import type { QueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 
 /**
@@ -293,6 +294,7 @@ interface ComposerDockViewProps {
   queuePendingIds: ReadonlySet<string>
   steer: (opts?: { auto?: boolean; text?: string; }) => void
   stopTurn: () => void
+  steerEscape?: SteerEscape
   systemDeliveryCount: number
   handleEditLastRequest: () => void
   composerOptimizing: boolean
@@ -362,7 +364,7 @@ export default function ComposerDockView({
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, approveForMe, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleCancelAllQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
-  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
+  queuePendingIds, steer, stopTurn, steerEscape, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, agentPickerKept = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
@@ -847,6 +849,7 @@ export default function ComposerDockView({
               onContinue={handleContinue}
               continuing={continuing}
               onStop={stopTurn}
+              steerEscape={steerEscape}
               isQueued={slotStopping}
               stopState={currentSlot?.stop_state}
               compacting={!!currentSlot?.compacting}

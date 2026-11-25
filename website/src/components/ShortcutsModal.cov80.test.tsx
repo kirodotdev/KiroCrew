@@ -202,6 +202,14 @@ describe('ShortcutsModal & subcomponents', () => {
     expect(stopRow()).toBeUndefined()
   })
 
+  it('lists Esc for taking back an unread steer whether or not a second Escape is required', () => {
+    const takeBackRow = () => groupShortcuts('actions', true).find(s => s.id === 'take-back-steer')
+    expect(takeBackRow()).toMatchObject({ key: 'Escape', group: 'actions' })
+    expect(shortcutLabel(takeBackRow()!)).toBe("Take back a steer the agent hasn't read")
+    saveChatConfig({ ...loadChatConfig(), doubleEscapeToStop: true })
+    expect(takeBackRow()).toMatchObject({ key: 'Escape', group: 'actions' })
+  })
+
   it('handles Escape key: clears search input first, then closes modal', () => {
     const onClose = vi.fn()
     renderWithQuery(<ShortcutsModal onClose={onClose} />)

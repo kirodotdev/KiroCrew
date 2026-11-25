@@ -325,6 +325,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
   // Reused: the composer's Stop button, which this key presses.
   'stop-turn': 'components.chatInput.stop_generation',
+  'take-back-steer': 'hooks.useKeyboardShortcuts.take_back_steer',
   'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',
   'notification-next': 'hooks.useKeyboardShortcuts.next_notification',
   'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
