@@ -352,7 +352,8 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
         )
         # A stored grant holds only with the nonce the gateway stored for it.
         # Attached before the jobs are published, so no fire sees one without it.
-        approval_grant.attach_nonces(document.jobs, self._dir)
+        # The store's own directory, read off the path _load already needs.
+        approval_grant.attach_nonces(document.jobs, self._path.parent)
         # decode_store skips a malformed record with a warning and keeps an
         # object a snapshot restore accepts for _save to write back; only a file
         # with nothing parseable resets the whole store.
