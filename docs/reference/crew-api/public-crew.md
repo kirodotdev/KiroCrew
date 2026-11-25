@@ -10,7 +10,7 @@ Capability negotiation.
 
 | About | This endpoint |
 |---|---|
-| Status | Available now: owner only |
+| Status | Available now: owner and apps |
 | Tier | Public |
 | Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with any credential the user granted it. |
@@ -63,7 +63,7 @@ Instance information.
 
 | About | This endpoint |
 |---|---|
-| Status | Available now: owner only |
+| Status | Available now: owner and apps |
 | Tier | Public |
 | Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with any credential the user granted it. |

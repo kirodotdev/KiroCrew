@@ -555,7 +555,9 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
      grant or an agent. The app list comes only from `models_for_grant`;
      it reads no owner catalog. It also holds `GET /v1/crew/grant`
      (`crew_api_grant_self`), which answers an app credential with the grant it
-     was issued for and no other. This is the one
+     was issued for and no other, and `GET /v1/crew/info` and
+     `GET /v1/crew/capabilities` (`crew_api_instance`), which answer it with the
+     instance and with what its grant can use. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
      (the peer pin, the link exchange, the installed-app allowlist). A route joins
@@ -645,7 +647,10 @@ judged by the path alone (`test_app_scope_finds_a_templated_public_owner_route_b
 also passes `app_route`, so a verified app credential from local authorization is
 judged by the route's row in place of the owner gate. The app is served an empty
 list until a route lets an app run a Bot in its grant or an agent;
-`models_for_grant` builds that list without reading the owner's catalog. Any other
+`models_for_grant` builds that list without reading the owner's catalog.
+`GET /v1/crew/info` and `GET /v1/crew/capabilities` pass `app_route` the same way;
+their handlers ask for the machine owner only when the request carries no verified
+app credential. Any other
 caller, an installed app's token included, gets
 `403 owner_only`, including a valid app credential whose API allowlist excludes
 the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
