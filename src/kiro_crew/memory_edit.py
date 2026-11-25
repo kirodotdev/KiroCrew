@@ -383,22 +383,23 @@ _SUMMARY_CACHE: dict[tuple, tuple[tuple, list[dict]]] = {}
 _SUMMARY_CACHE_SIZE = 4
 
 
-#: Largest page a ``summary`` read may ask for.
-SUMMARY_PAGE_MAX = 1000
+# Facet counts per store snapshot, kind and filter set. Each entry holds the summary
+# list it was counted from, so a write, which builds a new list, is always a miss.
+_FACET_CACHE: dict[tuple, tuple[list[dict], dict]] = {}
+_FACET_CACHE_SIZE = 32
 
-# What an entry's ``summary`` carries: everything but the pass's own position and match.
-_SUMMARY_FIELDS = (
-    "kind",
-    "id",
-    "key",
-    "created_at",
-    "updated_at",
-    "confidence",
-    "importance",
-    "facets",
-    "search",
-    "ref",
-)
+
+def _cached_facets(everything: list[dict], filters: dict, kind: str) -> dict:
+    key = (id(everything), kind, json.dumps(filters, sort_keys=True))
+    hit = _FACET_CACHE.get(key)
+    if hit is not None and hit[0] is everything:
+        return hit[1]
+    counts = memory_record_facets.count_facets(everything, filters, kind)
+    _FACET_CACHE.pop(key, None)
+    while len(_FACET_CACHE) >= _FACET_CACHE_SIZE:
+        _FACET_CACHE.pop(next(iter(_FACET_CACHE)))
+    _FACET_CACHE[key] = (everything, counts)
+    return counts
 
 
 def _cached_summaries(store: Any, base: dict) -> list[dict]:
@@ -447,29 +448,21 @@ def list_records(
     sort: str | None = None,
     descending: bool = True,
     facets: bool = False,
-    summary: bool = False,
 ) -> dict:
     """One page of records, in ``kind, id`` order unless *sort* names another.
 
     *sort* is one of ``memory_record_facets.SORTS``; ``match`` needs search words.
     With *facets*, the body also carries ``facets``: per group, how many rows each
-    value would list (see ``memory_record_facets.count_facets``). With *summary*,
-    each entry also carries the ``summary`` the list sorts, filters and counts by
-    (facets, dates, scores and folded search text), so a page that has loaded every
-    record can do those itself (``memoryLocalList.ts``).
+    value would list (see ``memory_record_facets.count_facets``), cached until the
+    store next changes.
     """
     query = _query(query)
-    # The background load of every record (*summary*) reads bigger pages.
-    most = SUMMARY_PAGE_MAX if summary else 100
-    if isinstance(limit, bool) or isinstance(offset, bool) or not 1 <= limit <= most or offset < 0:
-        raise MemoryEditError(f"Use a page size of 1–{most} and a non-negative offset.")
+    if isinstance(limit, bool) or isinstance(offset, bool) or not 1 <= limit <= 100 or offset < 0:
+        raise MemoryEditError("Use a page size of 1–100 and a non-negative offset.")
     if sort is not None and sort not in memory_record_facets.SORTS:
         raise MemoryEditError("Sort by updated, created, confidence, importance, key or match.")
     if sort == "match" and not query["q"]:
         raise MemoryEditError("Best match needs search words.")
-    summary_wanted = summary
-    if summary_wanted and sort is None:
-        sort = "updated"
     if sort is None and not facets:
         entries, total = [], 0
         with store._db_lock:
@@ -514,8 +507,6 @@ def list_records(
             if row is not None:
                 if sort == "match":
                     row["match"] = listed_summary["match"]
-                if summary_wanted:
-                    row["summary"] = {k: listed_summary[k] for k in _SUMMARY_FIELDS}
                 entries.append(row)
     body: dict[str, Any] = {
         "entries": entries,
@@ -523,7 +514,7 @@ def list_records(
         "has_more": len(listed) > offset + limit,
     }
     if facets:
-        body["facets"] = memory_record_facets.count_facets(everything, filters, query["kind"])
+        body["facets"] = _cached_facets(everything, filters, query["kind"])
     return body
 
 

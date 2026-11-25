@@ -25198,7 +25198,6 @@
     "scroll_more": "Role para ver mais",
     "graph_selected": "{{formatted}} selecionados",
     "show_in_memories": "Ver em Memórias",
-    "loaded_progress": "{{loaded}} / {{total}} carregados",
     "filters_width": "Largura dos filtros",
     "select": "Selecionar",
     "select_limit_hint": "Até {{limit}} por vez",

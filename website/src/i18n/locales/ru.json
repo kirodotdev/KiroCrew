@@ -25800,7 +25800,6 @@
     "scroll_more": "Прокрути, чтобы увидеть больше",
     "graph_selected": "Выбрано: {{formatted}}",
     "show_in_memories": "Показать в памяти",
-    "loaded_progress": "Загружено {{loaded}} / {{total}}",
     "filters_width": "Ширина панели фильтров",
     "select": "Выбрать",
     "select_limit_hint": "Не больше {{limit}} за раз",

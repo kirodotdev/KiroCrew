@@ -44,7 +44,6 @@ _RECORD_PARAMS = {
     "sort",
     "order",
     "facets",
-    "summary",
     "ref",
     "conf_min",
     "conf_max",
@@ -74,9 +73,6 @@ async def api_memory_records(request: web.Request) -> web.Response:
         want_facets = request.query.get("facets", "0")
         if want_facets not in ("0", "1"):
             raise memory_edit.MemoryEditError("Facets must be 0 or 1.")
-        want_summary = request.query.get("summary", "0")
-        if want_summary not in ("0", "1"):
-            raise memory_edit.MemoryEditError("Summary must be 0 or 1.")
         filters: dict = {
             group: request.query.getall(group)
             for group in memory_record_facets.FACET_GROUPS
@@ -108,7 +104,6 @@ async def api_memory_records(request: web.Request) -> web.Response:
             sort=sort,
             descending=direction == "desc",
             facets=want_facets == "1",
-            summary=want_summary == "1",
         )
     except memory_edit.MemoryEditError as exc:
         return _error(exc)

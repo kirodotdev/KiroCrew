@@ -148,9 +148,7 @@ describe('private member memory lifecycle', () => {
     sessionStorage.setItem(`kirocrew:memory-page-view:${MEMBER_STORE}`, savedFilter)
     const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
     const target = { kind: 'directive', id: key, key, value_json: JSON.stringify({ rule: 'The saved member lesson' }), text: 'The saved member lesson', revision: 'a'.repeat(64) }
-    api.memoryRecords.mockImplementation(async (store: string, query: { q: string; kind: string }, _offset: number, _limit: number, view?: { summary?: boolean }) => {
-      // This store answers one search only, so the background load of every record cannot serve it.
-      if (view?.summary) throw new Error('not served')
+    api.memoryRecords.mockImplementation(async (store: string, query: { q: string; kind: string }) => {
       const entries = store === MEMBER_STORE && query.q === key && query.kind === 'directive' ? [target] : []
       return { entries, total: entries.length, has_more: false }
     })

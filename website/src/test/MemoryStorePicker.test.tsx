@@ -244,7 +244,7 @@ describe('memory store picker — the listing', () => {
     // serve the previous store's cached rows and never appear here.
     await waitFor(() => expect(api.memoryPreferences).toHaveBeenCalledWith(CREW_STORE))
     expect(api.memoryProjects).toHaveBeenCalledWith(CREW_STORE)
-    expect(api.memoryRecords).toHaveBeenCalledWith(CREW_STORE, { q: '', kind: 'all' }, 0, 50, { sort: 'updated', order: 'desc', facets: true })
+    expect(api.memoryRecords).toHaveBeenCalledWith(CREW_STORE, { q: '', kind: 'all' }, 0, 50, { sort: 'updated', order: 'desc' })
     expect(api.memoryHistory).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     expect(api.lessons).not.toHaveBeenCalled()

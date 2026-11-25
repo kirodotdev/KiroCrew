@@ -2,25 +2,25 @@
  * The memory page's Memories tab for one store: one list of facts, lessons and
  * experiences with search, kind pills, sort, live facet filters, a detail panel,
  * multi-select edits and Test recall.
+ *
+ * The server does every filter, sort, search and count and sends one page at a
+ * time; the next page loads as the end of the list scrolls near.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ChevronLeft, ChevronRight, ListChecks, Replace, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react'
+import { ListChecks, Replace, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react'
 import { api } from '../../../api/client'
 import { Btn, Card, EmptyState, IconButton, Input, Skeleton } from '../../../components/ui'
 import { PanelLeftLight } from '../../../components/icons/panels'
 import { savePrefExplicitly } from '../../../lib/uiPrefs'
 import { safeGetItem } from '../../../utils/safeStorage'
 import ErrorNotice from '../../../components/ErrorNotice'
-import { localPage } from './memoryLocalList'
-import { useAllMemoryRecords } from './useAllMemoryRecords'
 import type { MemoryJump } from './memoryJump'
 import { FilterRail, RAIL_MAX, RAIL_MIN } from './MemoryRail'
 import { MemoryDetailSlide } from './MemoryDetailSlide'
 import Modal from '../../../components/Modal'
 import { useIsMobile } from '../../../hooks/useIsMobile'
-import { usePagerFocus } from '../../../hooks/usePagerFocus'
 import { fmtNumber } from '../../../i18n/format'
 import { queryReadFailed } from '../../../utils/queryReadFailed'
 import type { MemoryRecordFacetGroup, MemoryRecordQuery, MemoryRecordSort } from '../../../types/memoryEditing'
@@ -33,6 +33,8 @@ import { MemoryRecordDetail } from './MemoryRecordDetail'
 import { MemoryRecallDialog } from './MemoryRecallDialog'
 
 const PAGE_SIZE = 50
+// The next page starts loading while the list's end is this far below the view.
+const LOAD_AHEAD = '800px 0px'
 /** '1' while the wide filter rail is hidden; absent (the default) shows it. */
 export const FILTERS_COLLAPSED_KEY = 'kirocrew:memory-filters-collapsed'
 export const FILTERS_WIDTH_KEY = 'kirocrew:memory-filters-width'
@@ -70,11 +72,9 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
   useEffect(() => { if (!landing) saveView(store, view) }, [store, view, landing])
   useEffect(() => {
     if (input.trim() === view.q) return
-    const timer = setTimeout(() => { setView(old => ({ ...old, q: input.trim(), sort: input.trim() && !old.q ? 'match' : old.sort })); setPage(0) }, 250)
+    const timer = setTimeout(() => setView(old => ({ ...old, q: input.trim(), sort: input.trim() && !old.q ? 'match' : old.sort })), 250)
     return () => clearTimeout(timer)
   }, [input, view.q])
-  const [page, setPage] = useState(0)
-  const pager = usePagerFocus()
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [railOpen, setRailOpenState] = useState(() => safeGetItem(FILTERS_COLLAPSED_KEY) !== '1')
   const setRailOpen = (open: boolean) => { setRailOpenState(open); savePrefExplicitly(FILTERS_COLLAPSED_KEY, open ? '0' : '1') }
@@ -100,17 +100,13 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
     const filters = filtersForKind(view.filters, view.kind)
     return activeFilterCount(filters) ? { q: view.q, kind: view.kind, filters } : { q: view.q, kind: view.kind }
   }, [view.q, view.kind, view.filters])
-  // Every record loads in the background, newest first; once all are here the
-  // list filters, sorts and searches them itself, with no request per change.
-  const loadedAll = useAllMemoryRecords(store)
-  const local = useMemo(() => loadedAll.records ? localPage(loadedAll.records, query, page * PAGE_SIZE, PAGE_SIZE, sort, view.order !== 'asc') : null, [loadedAll.records, query, page, sort, view.order])
-  // Until then the server answers each view, so a click is quick while it loads.
-  const records = useQuery({
-    queryKey: ['memory-records', store, query, page, sort, view.order],
-    queryFn: () => api.memoryRecords(store, query, page * PAGE_SIZE, PAGE_SIZE, { sort, order: view.order }),
+  const records = useInfiniteQuery({
+    queryKey: ['memory-records', store, query, sort, view.order],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => api.memoryRecords(store, query, pageParam, PAGE_SIZE, { sort, order: view.order }),
+    getNextPageParam: (last, pages) => last.has_more ? pages.length * PAGE_SIZE : undefined,
     retry: memoryQueryRetry,
     placeholderData: previous => previous,
-    enabled: !local,
   })
   // The counts load on their own, so the first rows never wait for them. The
   // previous counts stay while new ones load, so the pills and filters do not jump.
@@ -119,15 +115,23 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
     queryFn: () => api.memoryRecords(store, query, 0, 1, { sort: 'updated', order: 'desc', facets: true }),
     retry: memoryQueryRetry,
     placeholderData: previous => previous,
-    enabled: !local,
   })
   // A previous answer's rows belong to another view and are not shown.
-  const shownPage = local ?? records.data
-  const searching = input.trim() !== view.q || (!local && (records.isPending || records.isPlaceholderData))
-  const rows = searching || (!local && records.error) ? [] : shownPage?.entries || []
-  const facets = local ? local.facets : counts.data?.facets
-  const total = shownPage?.total || 0
-  useEffect(() => { if (shownPage && page > 0 && page * PAGE_SIZE >= shownPage.total) setPage(Math.max(0, Math.ceil(shownPage.total / PAGE_SIZE) - 1)) }, [shownPage, page])
+  const searching = input.trim() !== view.q || records.isPending || records.isPlaceholderData
+  const pages = records.data?.pages
+  const rows = useMemo(() => searching || records.error ? [] : (pages || []).flatMap(page => page.entries), [searching, records.error, pages])
+  const facets = counts.data?.facets
+  const total = pages?.[0]?.total || 0
+  // The next page loads as the end of the list comes near the view.
+  const end = useRef<HTMLDivElement>(null)
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = records
+  useEffect(() => {
+    const node = end.current
+    if (!node || !hasNextPage || isFetchingNextPage || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) void fetchNextPage() }, { rootMargin: LOAD_AHEAD })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, rows.length])
   const detail = rows.find(row => recordIdentity(row) === detailKey) ?? null
   const [jumpFocus, setJumpFocus] = useState<string | null>(null)
   // A selection from the graph replaces the search, kind and filters: it names exact
@@ -136,7 +140,6 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
     if (!jump) return
     setInput('')
     setView(old => ({ ...old, q: '', kind: 'all', filters: { ref: jump.refs } }))
-    setPage(0)
     const open = jump.open ? recordIdentity(jump.open) : null
     setDetailKey(open); setJumpFocus(open); focusScrolled.current = false
   }, [jump])
@@ -159,7 +162,7 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
   const [feedback, setFeedback] = useState('')
   const edit = useMemoryRecordEdit({
     store, refresh,
-    onApplied: changed => { setFeedback(t('memoryEditing.applied', { count: fmtNumber(changed) })); setPage(0); onSelectingChange(false); refresh() },
+    onApplied: changed => { setFeedback(t('memoryEditing.applied', { count: fmtNumber(changed) })); onSelectingChange(false); refresh() },
     selection: picked.forEdit,
   })
   const dirty = !!edit.intent || !!all || selectedCount > 0
@@ -175,7 +178,7 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
   // A filter, search or kind change while rows are picked would hide them; the
   // selection belongs to the list it was made in.
   const locked = !!all
-  const change = (next: Partial<ListView>) => { if (locked) return; setView(old => ({ ...old, ...next })); setPage(0) }
+  const change = (next: Partial<ListView>) => { if (locked) return; setView(old => ({ ...old, ...next })) }
   const onToggleFilter = (group: MemoryRecordFacetGroup, value: string) => change({ filters: toggleFilter(view.filters, group, value) })
   const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => setView(old => { if (locked) return old; const filters = { ...old.filters }; if (value === undefined) delete filters[bound]; else filters[bound] = value; return { ...old, filters } })
   const clearFilters = () => change({ filters: {} })
@@ -218,7 +221,6 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
       {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onSelectingChange(true)}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
       {!phone && privateMemory && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onRecallOpenChange(true)}><Sparkles className="lucide-inline" />{t('memoryPage.test_recall')}</Btn>}
     </div></div>}
-    {loadedAll.loading && loadedAll.total > PAGE_SIZE && <p role="status" className="text-[12px] tabular-nums text-muted">{t('memoryPage.loaded_progress', { loaded: fmtNumber(loadedAll.loaded), total: fmtNumber(loadedAll.total) })}</p>}
     <KindPills wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={(kind: KindTab) => change({ kind })} />
     <ActiveFilters filters={filtersForKind(view.filters, view.kind)} onToggle={onToggleFilter} onRange={onRange} onClear={clearFilters} onClearRefs={() => { setJumpFocus(null); change({ filters: Object.fromEntries(Object.entries(view.filters).filter(([key]) => key !== 'ref')) }) }} />
   </div>
@@ -243,7 +245,10 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
           onEdit={() => edit.begin({ type: 'set', row })} onForget={() => edit.begin({ type: 'forget', row })} />,
       ])}
     </ul>}
-    {!searching && !records.error && total > PAGE_SIZE && <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(page * PAGE_SIZE + 1), to: fmtNumber(page * PAGE_SIZE + rows.length), total: fmtNumber(total) })}</span><div className="flex gap-2"><Btn ref={pager.prevRef} aria-label={t('memoryEditing.previous')} className="min-h-11 min-w-11 justify-center sm:min-h-8 sm:min-w-8" disabled={page === 0} onClick={() => { setPage(value => value - 1); pager.pressedPrev() }}><ChevronLeft className="lucide-inline" /></Btn><Btn ref={pager.nextRef} aria-label={t('memoryEditing.next')} className="min-h-11 min-w-11 justify-center sm:min-h-8 sm:min-w-8" disabled={!shownPage?.has_more} onClick={() => { setPage(value => value + 1); pager.pressedNext() }}><ChevronRight className="lucide-inline" /></Btn></div></div>}
+    {/* Watched for the next page; it sits under the last row. */}
+    {hasNextPage && !searching && <div ref={end} aria-hidden="true" className="h-px" />}
+    {isFetchingNextPage && <ul role="status" aria-label={t('pages.overview.memoryTab.loading')} className="m-0 list-none divide-y divide-border rounded-2xl border border-border bg-card p-0">{[0, 1].map(index => <li key={index} className="space-y-2 px-4 py-4"><Skeleton className="h-3.5 w-4/5 motion-reduce:animate-none" /><Skeleton className="h-4 w-1/2 motion-reduce:animate-none" /></li>)}</ul>}
+    {!searching && !records.error && total > PAGE_SIZE && <p className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(1), to: fmtNumber(rows.length), total: fmtNumber(total) })}</p>}
   </div>
 
   const detailPanel = detail && <MemoryRecordDetail store={store} row={detail} phone={phone} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }} onClose={() => setDetailKey(null)}

@@ -23994,7 +23994,6 @@
     "scroll_more": "滚动查看更多",
     "graph_selected": "已选 {{formatted}} 条",
     "show_in_memories": "在记忆中查看",
-    "loaded_progress": "已加载 {{loaded}} / {{total}}",
     "filters_width": "筛选栏宽度",
     "select": "选择",
     "select_limit_hint": "一次最多 {{limit}} 条",

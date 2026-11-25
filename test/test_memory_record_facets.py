@@ -258,28 +258,42 @@ def test_a_repeated_listing_reuses_its_pass_until_the_store_changes(
     assert "user.editor" in _ids(after)
 
 
-def test_a_ref_filter_lists_exactly_the_named_records_and_summaries_carry_them(
-    store,  # noqa: F811
-):
+def test_a_ref_filter_lists_exactly_the_named_records(store):  # noqa: F811
     _seed(store)
     ref = memory_record_facets.record_ref
     wanted = [ref("directive", "lesson.a"), ref("fact", "user.timezone")]
     body = memory_edit.list_records(
-        store, {"filters": {"ref": wanted}}, sort="updated", facets=True, summary=True
+        store, {"filters": {"ref": wanted}}, sort="updated", facets=True
     )
     assert sorted(_ids(body)) == ["lesson.a", "user.timezone"]
     assert body["facets"]["kind"] == {"directive": 1, "fact": 1}
-    assert {entry["summary"]["ref"] for entry in body["entries"]} == set(wanted)
-    assert all("search" in entry["summary"] for entry in body["entries"])
     with pytest.raises(memory_edit.MemoryEditError):
         memory_edit.list_records(store, {"filters": {"ref": ["not-a-ref"]}}, sort="updated")
 
 
-def test_only_a_summary_read_takes_pages_past_one_hundred(store):  # noqa: F811
+def test_no_page_is_larger_than_one_hundred(store):  # noqa: F811
     _seed(store)
-    body = memory_edit.list_records(store, {}, sort="updated", summary=True, limit=1000)
-    assert body["total"] == len(body["entries"])
     with pytest.raises(memory_edit.MemoryEditError):
         memory_edit.list_records(store, {}, sort="updated", limit=101)
-    with pytest.raises(memory_edit.MemoryEditError):
-        memory_edit.list_records(store, {}, sort="updated", summary=True, limit=1001)
+
+
+def test_counts_are_reused_until_the_store_changes(store, monkeypatch):  # noqa: F811
+    _seed(store)
+    counted = []
+    real = memory_record_facets.count_facets
+    monkeypatch.setattr(
+        memory_record_facets,
+        "count_facets",
+        lambda *args: counted.append(1) or real(*args),
+    )
+    tool = {"filters": {"category": ["tool"]}}
+    first = memory_edit.list_records(store, tool, sort="updated", facets=True)
+    again = memory_edit.list_records(store, tool, sort="key", offset=0, facets=True)
+    assert len(counted) == 1 and again["facets"] == first["facets"]
+    # Another filter set is counted on its own.
+    memory_edit.list_records(store, {}, sort="updated", facets=True)
+    assert len(counted) == 2
+    _lesson(store, "lesson.d", "Rebase before push", "tool", "always", confidence=0.9)
+    after = memory_edit.list_records(store, tool, sort="updated", facets=True)
+    assert len(counted) == 3
+    assert after["facets"]["category"]["tool"] == first["facets"]["category"]["tool"] + 1

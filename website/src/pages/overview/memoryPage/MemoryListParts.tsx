@@ -250,8 +250,10 @@ export function RecordRow({ row, sort, selecting, selected, selectDisabled, open
   const negative = row.kind === 'directive' ? lessonFacts(row).negative : undefined
   const pending = row.metadata?.pending_conflicts || 0
   // The first and last rows take the list's inner corner radius (16 px less its
-  // 1 px border), so the saved and open tints follow the rounded corners.
-  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
+  // 1 px border), so the saved and open tints follow the rounded corners. An
+  // off-screen row is neither laid out nor painted (`content-visibility`), so a
+  // list scrolled thousands of rows deep stays as quick as its first page.
+  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
     {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
     <div className="min-w-0 space-y-1.5">
       {focus && <p className="flex items-center gap-1 text-[12px] font-medium text-ok-text"><Check className="lucide-inline" aria-hidden="true" />{t('memoryPage.just_saved')}</p>}

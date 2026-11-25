@@ -1889,14 +1889,14 @@ record keeps its full source. The list reads its rows and its counts as two
 requests, so the first rows never wait for the counts, and the server keeps the
 last few searches' row summaries (`memory_edit._cached_summaries`) until the
 store changes, so a filter, sort or page reads only the rows it shows.
-Opening a store also loads every record in the background, newest first, 1,000 a
-page (`SUMMARY_PAGE_MAX`; other reads stay at 100) with four requests at once (`useAllMemoryRecords`, `summary=1`, so each
-entry carries the summary the server sorts, filters and counts by, `ref` and
-folded search text included). The first rows come from the server path at once
-and "Loaded N / total" shows while the rest arrive; once all are in, filters,
-sort, search and counts run in the browser (`memoryLocalList.ts`, which mirrors
-`memory_record_facets`), and an edit drops back to the server path until the
-reload ends. Search by meaning always asks the server.
+The browser never holds the whole store: every filter, sort, search, `ref`
+selection and count runs on the server, which sends one page of 50 and exact
+counts. The next page loads as the end of the list scrolls within 800 px of the
+view, and "1–N of total" shows under the rows. The server also keeps the facet
+counts per summary list, kind and filter set (`memory_edit._cached_facets`), so
+a repeated filter is not counted twice; a write builds a new summary list, which
+misses both caches. An off-screen row is neither laid out nor painted
+(`content-visibility: auto`), so a list scrolled deep stays smooth.
 
 A wheel over the rail moves the innermost scroller under the pointer that can
 still move (a value group, then the rail, `MemoryRail.routeWheel`) and never the

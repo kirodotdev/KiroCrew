@@ -12424,7 +12424,6 @@
     "scroll_more": "Scroll to see more",
     "graph_selected": "{{formatted}} selected",
     "show_in_memories": "Show in Memories",
-    "loaded_progress": "Loaded {{loaded}} / {{total}}",
     "filters_width": "Filter width",
     "select": "Select",
     "select_limit_hint": "Up to {{limit}} at a time",

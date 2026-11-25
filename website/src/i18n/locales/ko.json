@@ -23994,7 +23994,6 @@
     "scroll_more": "스크롤해서 더 보기",
     "graph_selected": "{{formatted}}개 선택됨",
     "show_in_memories": "메모리에서 보기",
-    "loaded_progress": "{{loaded}} / {{total}}개 불러옴",
     "filters_width": "필터 영역 너비",
     "select": "선택",
     "select_limit_hint": "한 번에 최대 {{limit}}개",

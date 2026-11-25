@@ -24596,7 +24596,6 @@
     "scroll_more": "Scrollen für mehr",
     "graph_selected": "{{formatted}} ausgewählt",
     "show_in_memories": "In Erinnerungen anzeigen",
-    "loaded_progress": "{{loaded}} / {{total}} geladen",
     "filters_width": "Breite der Filter",
     "select": "Auswählen",
     "select_limit_hint": "Bis zu {{limit}} auf einmal",

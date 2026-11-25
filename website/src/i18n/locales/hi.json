@@ -24596,7 +24596,6 @@
     "scroll_more": "और देखने के लिए स्क्रॉल करो",
     "graph_selected": "{{formatted}} चुने गए",
     "show_in_memories": "मेमोरी में देखो",
-    "loaded_progress": "{{loaded}} / {{total}} लोड हुए",
     "filters_width": "फ़िल्टर की चौड़ाई",
     "select": "चुनो",
     "select_limit_hint": "एक बार में {{limit}} तक",

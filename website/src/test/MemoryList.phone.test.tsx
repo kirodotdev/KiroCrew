@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
 /**
@@ -281,7 +281,7 @@ describe('scrolling and animating the wide rail', () => {
     api.memoryRecords.mockResolvedValue({ entries: [LESSON], total: 1, has_more: false, facets: { ...FACETS, scope: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`pkg/${i}`, 30 - i])) } })
     renderWithProviders(<List />)
     const rail = await screen.findByRole('complementary', { name: 'Filters' })
-    const group = within(within(rail).getByRole('region', { name: /Scope/ })).getByTestId('facet-group-scroll')
+    const group = within(await within(rail).findByRole('region', { name: /Scope/ })).getByTestId('facet-group-scroll')
     expect(group).toHaveClass('overscroll-contain')
     scrollBox(rail, 2000, 600)
     scrollBox(group, 960, 512)
@@ -305,7 +305,7 @@ describe('scrolling and animating the wide rail', () => {
     try {
       renderWithProviders(<List />)
       const rail = await screen.findByRole('complementary', { name: 'Filters' })
-      const scope = within(rail).getByRole('region', { name: /Scope/ })
+      const scope = await within(rail).findByRole('region', { name: /Scope/ })
       const hint = await within(scope).findByTestId('facet-group-more')
       expect(hint.tagName).toBe('P')
       expect(hint.parentElement!.contains(within(scope).getByTestId('facet-group-scroll').parentElement!)).toBe(true)
@@ -353,24 +353,32 @@ describe('a hand-off from the graph', () => {
   })
 })
 
-describe('the background load of every record', () => {
-  it('shows the first rows from the server, then filters locally with no request once all are in', async () => {
-    const summary = { kind: 'directive', id: 'lesson.tool', key: 'lesson.tool', created_at: '2026-11-01', updated_at: '2026-11-20', confidence: 0.95, importance: null, search: 'lesson.tool work in a worktree', ref: 'aaaaaaaaaa',
-      facets: { category: 'tool', applies: 'always', scope: '', source: 'user_explicit', surface: null, crew: null, tag: [] } }
-    api.memoryRecords.mockImplementation(async (_s: string, _q: unknown, _o: number, _l: number, view?: { summary?: boolean }) => view?.summary
-      ? { entries: [{ ...LESSON, summary }], total: 1, has_more: false }
-      : { entries: [LESSON], total: 1, has_more: false, facets: FACETS })
-    renderWithProviders(<List />)
-    await screen.findByText('Work in a worktree')
-    await waitFor(() => expect(api.memoryRecords.mock.calls.some(call => call[4]?.summary)).toBe(true))
-    // Local counts replace the server's once every record is here.
-    const rail = await screen.findByRole('complementary', { name: 'Filters' })
-    await waitFor(() => expect(within(rail).getByRole('checkbox', { name: 'Tool' })).toBeInTheDocument())
-    const before = api.memoryRecords.mock.calls.length
-    fireEvent.click(within(rail).getByRole('checkbox', { name: 'Tool' }))
-    expect(await screen.findByText('Work in a worktree')).toBeInTheDocument()
-    fireEvent.click(within(rail).getByRole('checkbox', { name: 'Tool' }))
-    expect(api.memoryRecords.mock.calls.length).toBe(before)
+describe('server pages as the list scrolls', () => {
+  it('asks for the next page only when the end comes near, and a filter starts again from the first', async () => {
+    const page = (offset: number) => Array.from({ length: offset ? 20 : 50 }, (_, i) => ({ ...LESSON, id: `lesson.n${offset + i}`, key: `lesson.n${offset + i}`, text: `Rule ${offset + i}`, value_json: JSON.stringify({ rule: `Rule ${offset + i}`, category: 'tool', applies: 'always' }) }))
+    api.memoryRecords.mockImplementation(async (_s: string, _q: unknown, offset: number, limit: number) => limit === 1
+      ? { entries: [], total: 70, has_more: true, facets: FACETS }
+      : { entries: page(offset), total: 70, has_more: offset === 0 })
+    const watched: IntersectionObserverCallback[] = []
+    const original = globalThis.IntersectionObserver
+    globalThis.IntersectionObserver = class { constructor(callback: IntersectionObserverCallback) { watched.push(callback) } observe() {} disconnect() {} unobserve() {} takeRecords() { return [] } } as unknown as typeof IntersectionObserver
+    try {
+      renderWithProviders(<List />)
+      await screen.findByText('Rule 49')
+      const pageCalls = () => api.memoryRecords.mock.calls.filter(call => call[3] === 50)
+      expect(pageCalls().map(call => call[2])).toEqual([0])
+      // The end of the list scrolls near: the next page loads under the first.
+      act(() => watched.at(-1)!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver))
+      await screen.findByText('Rule 69')
+      expect(screen.getByText('Rule 0')).toBeInTheDocument()
+      expect(pageCalls().map(call => call[2])).toEqual([0, 50])
+      expect(screen.getByText('1–70 of 70')).toBeInTheDocument()
+      // A new filter reads from the start again.
+      const rail = await screen.findByRole('complementary', { name: 'Filters' })
+      fireEvent.click(await within(rail).findByRole('checkbox', { name: 'Tool' }))
+      await waitFor(() => expect(pageCalls().at(-1)![2]).toBe(0))
+      expect(pageCalls().at(-1)![1]).toEqual({ q: '', kind: 'all', filters: { category: ['tool'] } })
+    } finally { globalThis.IntersectionObserver = original }
   })
 })
 
