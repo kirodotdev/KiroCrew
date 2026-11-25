@@ -943,6 +943,8 @@ export interface PendingApproval {
   request_id: string
   /** "1" when the slot approve route would honor a `trust` decision for it. */
   trust_grantable?: string
+  /** "1" on a security-rule override card: only the session's own chat can allow it. */
+  deny_override?: string
 }
 
 export interface SubagentInfo {

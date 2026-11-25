@@ -309,10 +309,12 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
         <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono"><ApprovalInputText text={typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''} /></pre>
         {/* A gone approval has nothing left to answer: no buttons, no help on them. */}
         {!expired && <>
+          {item.denyOverride && <p className="text-[12px] text-warn" data-testid="attention-override-hint">{t('commandCenter.override_help')}</p>}
           <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>
           <p className="text-[12px] text-muted">{t('commandCenter.shared_request_help')}</p>
           <div className="flex gap-2">
-            <Btn primary className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>
+            {/* The server takes an override card's allow only in its session's chat. */}
+            {!item.denyOverride && <Btn primary className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>}
             <Btn className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'reject_once' })}>{t('commandCenter.reject')}</Btn>
           </div>
         </>}

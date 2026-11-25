@@ -93,6 +93,20 @@ describe("a crewmate's chat: its sessions' tool approvals", () => {
     expect(api.crewWorkerApprove).toHaveBeenCalledWith(MATE, 'm1', action, 'rid-m1', 'mid-m1', '')
   })
 
+  it("opens a session's security-rule override card through the host's own session opener", async () => {
+    // The Mates page shows its sessions in its own pane, so a bare slot switch
+    // would leave the thread on screen and the override choices out of reach.
+    api.crewWorkers.mockResolvedValue({ root: MATE, workers: [] })
+    const onOpenSession = vi.fn()
+    const slots = [{ key: MATE, mode: 'member' }, { ...waiting('m1', { mate_root: MATE }), pending_approval_info: { ...info('m1'), deny_override: '1' } }]
+    // A worker slot left active from /chat must not hide the way to it here.
+    await mount(<MateApprovalCards root={MATE} onOpenSession={onOpenSession} />, slots, { activeSlot: 'm1' })
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open chat' }))
+    expect(onOpenSession).toHaveBeenCalledWith('m1')
+    expect(api.crewWorkerApprove).not.toHaveBeenCalled()
+  })
+
   it("reads no worker list while nothing of the mate's waits", async () => {
     await mount(<MateApprovalCards root={MATE} />, [{ key: MATE, mode: 'member' }, waiting('m2', { mate_root: 'member-research' })])
     expect(screen.queryByTestId('crew-approval-cards')).toBeNull()

@@ -3,7 +3,7 @@ import { useId, useMemo, useState, type RefObject, type Dispatch, type SetStateA
 import { OverlayPortal } from '../../../components/overlayRoot'
 import { Undo2 } from 'lucide-react'
 import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
-import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot } from '../../../lib/crewMode'
+import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot, isDenyOverrideCard } from '../../../lib/crewMode'
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from '../../../components/crew/CrewWorkerComposerGate'
 import { useCrewRoot } from '../../../components/crew/useCrewRoot'
@@ -33,7 +33,7 @@ import { useModelsAuthRequired } from '../../../providers/modelListHealth'
 import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
-import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
+import { dismissFollowupItem, pendingApprovalIn, type FollowupItem } from '../../../store/chatSlice'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { FOLLOWUP_START_SENDS_KEY } from '../followupStartSends'
 import { Input } from '../../../components/ui'
@@ -367,6 +367,9 @@ export default function ComposerDockView({
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
+  // The approval card this composer shows: a worker's own chat answers it only
+  // when it is a security-rule override card.
+  const shownApproval = useMemo(() => pendingApprovalIn(messages), [messages])
   // "Send follow-ups with one click": browser-local, off unless stored as '1'
   // (followupStartSends.ts). The card renders its footer and its Start mode
   // from this one value.
@@ -637,7 +640,7 @@ export default function ComposerDockView({
                 <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   {crewWorkerView ? (
                     <CrewWorkerComposerGate root={steerWorkerRoot} worker={activeSlot} workerTitle={steerWorker ?? ''}
-                      waitingForApproval={!!currentSlot?.pending_approval} />
+                      waitingForApproval={!!currentSlot?.pending_approval && !isDenyOverrideCard(shownApproval)} />
                   ) : (
                     // Without the gate (a build without conductor mode, LTS) a send the server
                     // still took as a steer can come back unrecorded: say so here.
@@ -692,8 +695,9 @@ export default function ComposerDockView({
                 : crewModeSwitching ? i18nT(crewModeSwitching === 'on' ? 'components.crewMode.switching_on' : 'components.crewMode.switching_off')
                   : steerRootClosed ? '' : undefined}
               // A worker's approval band (Allow once / Trust / Reject) is not drawn:
-              // the conductor's approval card is the one place it is decided.
-              slotApprovalChrome={crewApprovalDecidableHere({ crew_root: crewWorkerView ? steerWorkerRoot : '' }, 'worker_main_pane')}
+              // the conductor's approval card is the one place it is decided, except
+              // a security-rule override, which only this chat can allow.
+              slotApprovalChrome={crewApprovalDecidableHere({ crew_root: crewWorkerView ? steerWorkerRoot : '' }, 'worker_main_pane', shownApproval)}
               // A worker's composer: a running turn takes the text as a steer
               // (no queue choice to make). The placeholder stays the normal one.
               {...(steerWorker !== undefined ? { busyMode: 'steer-only' as const } : {})}
