@@ -502,6 +502,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.security.argv_floor_hosts", "_OWN_HOST_RESOLVE_IN_FLIGHT"): "host names",
     ("kiro_crew.security.argv_floor_hosts", "_OWN_HOST_RESOLVE_NEXT_TRY"): "host probe clock",
     ("kiro_crew.security.argv_floor_hosts", "_OWN_HOST_RESOLVE_STAMP"): "host probe clock",
+    # The host's last sampled memory-and-disk posture: every sample replaces it
+    # with the free space measured then, so two boots hold different readings.
+    ("kiro_crew.notifications.resource_pressure", "_current_posture"): "host reading",
     # Per-boot objects the next boot replaces wholesale before any read; they
     # hold references, not home-derived decisions a later request would act on.
     ("kiro_crew.apps.builtins.auto_improvement.backend.crew", "_runtime"): "replaced per boot",
