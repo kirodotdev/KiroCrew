@@ -1732,23 +1732,26 @@ async def test_a_cancelled_mark_leaves_no_marker(
         assert not _marker(dump.path).exists()
 
 
-@pytest.mark.parametrize(
-    "identity", [("9.9.9", "/opt/kc/9.9.9"), ("unknown", "unknown")], ids=["known", "unknown"]
-)
+@pytest.mark.parametrize("unknown", [False, True], ids=["known", "unknown"])
 def test_open_dump_file_header_names_its_build(
-    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, identity: tuple[str, str]
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, unknown: bool
 ) -> None:
     """The build sits on the first line; the header keeps its 4 lines."""
-    from kiro_crew import install_liveness
+    import kiro_crew
 
-    monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", identity)
+    version = kiro_crew.__version__
+    install = str(Path(kiro_crew.__file__).resolve().parent)
+    if unknown:
+        from kiro_crew import install_liveness
+
+        version = install = "unknown"
+        monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", (version, install))
     with opened_dump_file(dumps_dir) as dump_file:
-        content = dump_file.path.read_text(encoding="utf-8")
-        lines = content.splitlines()
-        assert len(lines) == crash_dump_store._HEADER_LINES
+        lines = dump_file.path.read_text(encoding="utf-8").splitlines()
         assert lines[0].endswith(
-            f"{crash_dump_store._CLEAN_EXIT_AWARE_TOKEN} version={identity[0]} install={identity[1]}"
+            f"{crash_dump_store._CLEAN_EXIT_AWARE_TOKEN} version={version} install={install}"
         )
+        assert len(lines) == crash_dump_store._HEADER_LINES
         assert crash_dump_store._PID_LINE_RE.match(lines[1])
         assert crash_dump_store._is_header_only(dump_file.path)
         # The token still reads: no marker yet, so this build has not exited cleanly.

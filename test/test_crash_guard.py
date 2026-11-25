@@ -499,13 +499,13 @@ class TestNonAsciiCrashRecord:
 class TestRecordNamesItsBuild:
     """A record names the version and install folder that wrote it."""
 
-    def test_record_carries_version_and_install_after_pid(self, tmp_path, monkeypatch):
+    def test_record_carries_version_and_install_after_pid(self, tmp_path):
+        from pathlib import Path
+
         import kiro_crew
-        from kiro_crew import install_liveness
 
         crash_log = tmp_path / "crash.log"
         crash_guard._CRASH_LOG = crash_log
-        monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", ("9.9.9", "/opt/kc/9.9.9"))
 
         crash_guard._write_crash("UNHANDLED EXCEPTION: probe")
 
@@ -513,11 +513,9 @@ class TestRecordNamesItsBuild:
         assert lines[1:3] == ["=" * 72, "UNHANDLED EXCEPTION: probe"]
         assert lines[3].startswith("Time: ")
         assert lines[4].startswith("PID:  ")
-        assert lines[5:8] == ["Version: 9.9.9", "Install: /opt/kc/9.9.9", "-" * 72]
-        # The real identity is this package's own version and resolved folder.
-        version, install = install_liveness._read_build_identity()
-        assert version == kiro_crew.__version__
-        assert install == str(install_liveness._PACKAGE_ROOT)
+        install = str(Path(kiro_crew.__file__).resolve().parent)
+        version_line = f"Version: {kiro_crew.__version__}"
+        assert lines[5:8] == [version_line, f"Install: {install}", "-" * 72]
 
     def test_unreadable_version_writes_unknown(self, tmp_path, monkeypatch):
         import kiro_crew
