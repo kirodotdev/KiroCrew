@@ -147,11 +147,13 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
       {all && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.all_scope', { query: all.query.q || t('memoryV2.filter_all') })}</p>}
       {!all && selectedCount >= MANUAL_LIMIT && <p role="status" className="basis-full text-[12px] text-muted">{t('memoryEditing.selection_limit')}</p>}
       {total > SELECT_ALL_LIMIT && selectedCount > 0 && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.narrow_selection')}</p>}
-    </div> : <div className={`flex min-w-0 gap-2 ${phone ? 'flex-wrap' : 'flex-nowrap'}`} data-testid="memory-toolbar">
+    </div> : <div className="flex min-w-0 flex-wrap gap-2" data-testid="memory-toolbar">
       {/* A phone gives the search box its own row; the filter and sort buttons wrap below it.
           Keyed on the phone layout, not on a width class: a 640-767 px phone would
-          otherwise keep every control on one row and squeeze the search box. */}
-      <label className={`relative min-w-0 flex-1 ${phone ? 'basis-full' : ''}`}>
+          otherwise keep every control on one row and squeeze the search box. A wide
+          screen keeps one row until the search box would drop below 20rem (an open
+          detail panel), then wraps the buttons instead of squeezing it. */}
+      <label className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-[20rem]'}`}>
         <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
         <Input className="min-h-11 w-full pl-9 pr-10 sm:min-h-10" aria-label={t('memoryV2.search')} placeholder={t('memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
         {input && <IconButton aria-label={t('memoryV2.clear_search')} className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center" onClick={clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}

@@ -53,12 +53,12 @@ describe('the memory toolbar', () => {
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('basis-full')
   })
 
-  it('stays on one row on a wide screen', async () => {
+  it('keeps the search box at least 20rem wide on a wide screen', async () => {
     renderWithProviders(<List />)
     const toolbar = await screen.findByTestId('memory-toolbar')
+    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).toHaveClass('min-w-[20rem]')
     // A short placeholder, so it fits beside the mode switch, Select and Test recall.
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' })).toHaveAttribute('placeholder', 'Search memories…')
-    expect(toolbar).toHaveClass('flex-nowrap')
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).not.toHaveClass('basis-full')
   })
 })
