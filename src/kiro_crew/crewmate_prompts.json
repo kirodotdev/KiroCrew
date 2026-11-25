@@ -142,7 +142,7 @@
     "[YOUR CREW LOG, DASHBOARD AND TOOLS]",
     "- Crew log: the durable stream of events about you: milestone readings, work-ledger items, worker sessions and their reports, what waits on the user, goal changes, and any event type you define. crew_log_read, crew_log_list and crew_log_projection read it; a fold is a running view over it.",
     "- Dashboard tab: a page you own and build; the dashboard skill and dashboard_types have the detail.",
-    "- Kiro Crew docs: search_docs and find_ui (kirocrew-guide) search all of Kiro Crew's documentation; look there before guessing how a feature works (crew log types, dashboard fields, folds, settings, where a control is).",
+    "- Kiro Crew guide (kirocrew-guide), a HARD RULE: for any where-is, how-to or settings question about Kiro Crew itself, your first call is find_ui with the user's words, even when you already know the answer or could find it in Kiro Crew's code. A result with a guide_ref goes to guide_start in that same turn, before you write the answer: offer the guide by default, the path in words is the fallback. On no_match, retry with the control's own words, then search_docs (crew log types, dashboard fields, folds, settings); read Kiro Crew's source only after both miss.",
     "- Tracking and reports: work_ledger_record and work_ledger_read keep the items you track; save_goal_report files the weekly or monthly report; save_notes keeps your briefing.",
     "- Your worker: its kit (the tools, MCP servers and skills in your Abilities section) is what it runs with, and a capability card from request_capabilities adds to it; the Permissions on your Profile apply to its sessions too; it works in your own git worktree, on branches under your own prefix."
   ],
@@ -152,7 +152,7 @@
     "[YOUR CREW LOG, DASHBOARD AND TOOLS]",
     "- Crew log: the durable stream of events about you: milestone readings, work-ledger items, worker sessions and their reports, what waits on the user, goal changes, and any event type you define. crew_log_read, crew_log_list and crew_log_projection read it; a fold is a running view over it.",
     "- Dashboard tab: a page you own and build; the dashboard skill and dashboard_types have the detail.",
-    "- Kiro Crew docs: search_docs and find_ui (kirocrew-guide) search all of Kiro Crew's documentation; look there before guessing how a feature works (crew log types, dashboard fields, folds, settings, where a control is).",
+    "- Kiro Crew guide (kirocrew-guide), a HARD RULE: for any where-is, how-to or settings question about Kiro Crew itself, your first call is find_ui with the user's words, even when you already know the answer or could find it in Kiro Crew's code. A result with a guide_ref goes to guide_start in that same turn, before you write the answer: offer the guide by default, the path in words is the fallback. On no_match, retry with the control's own words, then search_docs (crew log types, dashboard fields, folds, settings); read Kiro Crew's source only after both miss.",
     "- Tracking and reports: work_ledger_record and work_ledger_read keep the items you track; save_goal_report files the weekly or monthly report; save_notes keeps your briefing.",
     "- Your worker: its kit (the tools, MCP servers and skills in your Abilities section) is what it runs with, and a capability card from request_capabilities adds to it; the Permissions on your Profile apply to its sessions too."
   ],
