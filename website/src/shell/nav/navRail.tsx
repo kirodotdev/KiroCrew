@@ -19,7 +19,7 @@ import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge, NavRowLayoutKey } from './navRow'
 import { AppRowPopoutAction } from './appRowPopoutAction'
-import { DockMatesSection, useDockMates } from './matesDock'
+import { DockMatesSection, useDockMates, useDockMatesSectionOpen } from './matesDock'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
@@ -45,8 +45,11 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     discoverNavActive, isChat, navRowActive,
   } = shell
   // A docked mate's row is the lit one while its chat is open; lighting the
-  // Mates page row too would mark two rows as "you are here".
+  // Mates page row too would mark two rows as "you are here". With the
+  // section put away that row is gone, so the Mates page row stands in.
   const { openIsDocked } = useDockMates()
+  const [matesSectionOpen, toggleMatesSection] = useDockMatesSectionOpen()
+  const openMateLit = openIsDocked && (effectiveCollapsed || matesSectionOpen)
   // Everything above the bottom block scrolls as ONE region: the menu row, the
   // primary destinations, the starred mates and the Apps list. Its scrollbar is
   // hidden, so the bottom edge fades while anything sits below the fold. The
@@ -71,7 +74,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
       path={n.path}
       label={surfaceLabel(n)}
       icon={n.icon}
-      active={navRowActive(n.path) && !(n.id === 'members' && openIsDocked)}
+      active={navRowActive(n.path) && !(n.id === 'members' && openMateLit)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       // The chat row, while chat is the page on screen, toggles the sessions
@@ -171,7 +174,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
         </div>
-        <DockMatesSection collapsed={effectiveCollapsed} isMobile={isMobile} onNavigate={closeMobileNav} onDragActiveChange={setMateDragActive} />
+        <DockMatesSection collapsed={effectiveCollapsed} isMobile={isMobile} sectionOpen={matesSectionOpen} onToggleSection={toggleMatesSection} onNavigate={closeMobileNav} onDragActiveChange={setMateDragActive} />
         <div className="shrink-0 flex flex-col gap-0.5 px-2">
           {/* Apps section: the old single "Explore" header link split into two
               nav rows — Discover (the storefront, /apps) and Library
