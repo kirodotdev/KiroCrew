@@ -496,7 +496,12 @@ def fallback_exec(args: argparse.Namespace) -> None:
     # passes the same vetting gatewayd applies before it hands a pooled backend
     # the token, and drop it for anything else.
     exec_env.pop(STUB_SESSION_TOKEN_ENV, None)
-    if session_token and _fallback_target_is_own_control_plane(args, target_args, exec_env):
+    # A service manager often exports PYTHONUNBUFFERED to the whole runtime. A
+    # control plane that keeps the token runs without the inherited one, as the
+    # pooled resolver starts it; a declared one stays and still costs the token.
+    vetted_env = {k: v for k, v in exec_env.items() if k != "PYTHONUNBUFFERED" or k in declared_env}
+    if session_token and _fallback_target_is_own_control_plane(args, target_args, vetted_env):
+        exec_env = vetted_env
         exec_env[STUB_SESSION_TOKEN_ENV] = session_token
         # Same defense in depth gatewayd applies to an accepted control plane.
         exec_env["PYTHONSAFEPATH"] = "1"
