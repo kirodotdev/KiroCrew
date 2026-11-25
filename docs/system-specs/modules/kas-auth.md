@@ -872,7 +872,9 @@ engine instead ([aws-control.md](aws-control.md)).
   comes from the store read alone, so a slow or failed `whoami` is unknown, never
   "signed out". With no vault sign-in and a usable kiro-cli one that the relay would run
   on (`kas_route.relay_runs_on_kiro_cli_sign_in`), the card says Kiro Agent is using
-  the Kiro CLI sign-in. Usable (`kiro_cli.usable`) follows the edition: on oss it
+  the Kiro CLI sign-in; when signing in here would also move new chats to the built-in
+  engine (`sign_in_moves_to_engine` on `GET /api/kas-bundle`, the read behind the chat's
+  sign-in card), it says that too. Usable (`kiro_cli.usable`) follows the edition: on oss it
   means stored, the presence rule the relay itself decides by
   (`kas_route.kiro_cli_signed_out`), because kiro-cli renews its own access token when
   it runs, so a token past its lifetime (about an hour) still runs sessions; on an
