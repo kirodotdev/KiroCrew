@@ -271,7 +271,12 @@ class TestBackgroundTurnCap:
         await await_until(asyncio.gather(t1, t2))
 
         assert order == ["first-start", "first-end", "second-start"]
-        assert state.background_turn_stats() == {"cap": 1, "running": 0, "waiting": 0}
+        stats = state.background_turn_stats()
+        assert {k: stats[k] for k in ("cap", "running", "waiting")} == {
+            "cap": 1,
+            "running": 0,
+            "waiting": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_attended_turns_bypass_the_cap_entirely(self, tmp_path) -> None:
@@ -316,6 +321,10 @@ class TestBackgroundTurnCap:
         state = _make_state(tmp_path)
         raw: dict = {}
         monkeypatch.setattr("kiro_crew.dashboard.state._raw_config", lambda: raw)
+        # A host big enough that its memory-sized ceiling is the hard one.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.background_turn_cap.host_static", lambda: (256.0, None)
+        )
 
         assert state.effective_max_background_turns() == DashboardState.MAX_BACKGROUND_TURNS
 
@@ -328,6 +337,11 @@ class TestBackgroundTurnCap:
         ), "the cap must never be configurable above its ceiling"
 
         raw["dashboard"] = {"max_background_turns": 0}
+        assert (
+            state.effective_max_background_turns() == DashboardState.MAX_BACKGROUND_TURNS_CEIL
+        ), "0 is auto: the host's memory-sized ceiling"
+
+        raw["dashboard"] = {"max_background_turns": -3}
         assert state.effective_max_background_turns() == 1, "the cap cannot be disabled"
 
         raw["dashboard"] = {"max_background_turns": "nonsense"}
@@ -418,7 +432,8 @@ class TestBackgroundTurnCap:
         """The wait has to be readable from outside the process."""
         state = _make_state(tmp_path)
         stats = state.background_turn_stats()
-        assert set(stats) == {"cap", "running", "waiting"}
+        assert set(stats) == {"cap", "running", "waiting", "sizing"}
+        assert stats["sizing"]["ceiling"] >= 16, "the ceiling never drops below 16"
         assert "background_turns" in inspect.getsource(DashboardState.status_snapshot)
 
     def test_both_unattended_dispatch_sites_go_through_the_cap(self) -> None:

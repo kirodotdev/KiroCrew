@@ -293,6 +293,13 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
         TOOL_APPROVAL_TIMEOUT_MIN,
         TOOL_APPROVAL_TIMEOUT_MAX,
     ),
+    ("dashboard", "max_background_turns", 0, _sections.BACKGROUND_TURNS_ABSOLUTE_CEIL),
+    (
+        "dashboard",
+        "background_turn_os_reserve_pct",
+        _sections.BACKGROUND_TURN_OS_RESERVE_PCT_MIN,
+        _sections.BACKGROUND_TURN_OS_RESERVE_PCT_MAX,
+    ),
     (
         "dashboard",
         "loop_stall_exit_after_secs",
@@ -1469,6 +1476,30 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
                 LOOP_STALL_EXIT_AFTER_MIN,
                 LOOP_STALL_EXIT_AFTER_MAX,
             )
+        ),
+        max_background_turns=section.read(
+            "max_background_turns",
+            _safe_int,
+            0,
+            _sections.BACKGROUND_TURNS_ABSOLUTE_CEIL,
+        ),
+        background_turn_mem_gb=section.read(
+            "background_turn_mem_gb",
+            _safe_float,
+            _sections.BACKGROUND_TURN_MEM_GB_MIN,
+            _sections.BACKGROUND_TURN_MEM_GB_MAX,
+        ),
+        background_turn_os_reserve_pct=section.read(
+            "background_turn_os_reserve_pct",
+            _safe_int,
+            _sections.BACKGROUND_TURN_OS_RESERVE_PCT_MIN,
+            _sections.BACKGROUND_TURN_OS_RESERVE_PCT_MAX,
+        ),
+        background_turn_os_reserve_gb=section.read(
+            "background_turn_os_reserve_gb",
+            _safe_float,
+            _sections.BACKGROUND_TURN_OS_RESERVE_GB_MIN,
+            _sections.BACKGROUND_TURN_OS_RESERVE_GB_MAX,
         ),
         chat_entry_cache_max_entries=section.read(
             "chat_entry_cache_max_entries",

@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _raw_config, config_dir
+from kiro_crew.dashboard import background_turn_cap
+from kiro_crew.dashboard.background_turn_cap import CapSizing, TurnLimiter
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
 from kiro_crew.dashboard.notification_coordinator import (
@@ -285,57 +287,105 @@ def approval_timeout_for(self: DashboardState, slot: "_ChatSlot") -> float:
     return float(self._APPROVAL_TIMEOUT)
 
 
+def background_turn_sizing(self: DashboardState) -> CapSizing:
+    """Every figure behind the unattended-turn cap, read live.
+
+    Reads ``config.json → dashboard`` (same ``_raw_config`` route
+    ``sandbox.py`` and ``mcp_gateway/pool.py`` use for their tunables) on every
+    call, so an edit from Settings applies without a restart. The ceiling is
+    sized from host memory, between 16 and ``MAX_BACKGROUND_TURNS_CEIL``; see
+    :mod:`kiro_crew.dashboard.background_turn_cap`. Unreadable/garbage config
+    falls back to the defaults rather than failing a turn.
+    """
+    try:
+        section = _raw_config().get("dashboard") or {}
+        if not isinstance(section, Mapping):
+            section = {}
+    except Exception:
+        self._log.debug("background-turn cap config unavailable; using default", exc_info=True)
+        section = {}
+    section = dict(section)
+    section.setdefault("max_background_turns", self.MAX_BACKGROUND_TURNS)
+    total_gb, slice_high_gb = background_turn_cap.host_static()
+    return background_turn_cap.size_cap(section, total_gb=total_gb, slice_high_gb=slice_high_gb)
+
+
 def effective_max_background_turns(self: DashboardState) -> int:
     """Configured cap on concurrent unattended turns.
 
-    Reads ``config.json → dashboard.max_background_turns`` (same
-    ``_raw_config`` route ``sandbox.py`` and ``mcp_gateway/pool.py`` use for
-    their tunables) and clamps to ``[1, MAX_BACKGROUND_TURNS_CEIL]`` so an
-    operator can widen the fleet without editing code but can never remove
-    the bound. Unreadable/garbage config falls back to the default rather
-    than failing a turn.
+    ``dashboard.max_background_turns`` clamped to ``[1, ceiling]``, where the
+    ceiling is sized from host memory and never exceeds
+    ``MAX_BACKGROUND_TURNS_CEIL``; ``0`` asks for the ceiling itself. An
+    operator can widen the fleet without editing code but can never remove the
+    bound.
     """
-    try:
-        raw = (_raw_config().get("dashboard") or {}).get(
-            "max_background_turns", self.MAX_BACKGROUND_TURNS
-        )
-        val = int(raw)
-    except Exception:
-        self._log.debug("background-turn cap config unavailable; using default", exc_info=True)
-        val = self.MAX_BACKGROUND_TURNS
-    return max(1, min(val, self.MAX_BACKGROUND_TURNS_CEIL))
+    return min(self.background_turn_sizing().effective, self.MAX_BACKGROUND_TURNS_CEIL)
 
 
-def _background_turn_sema(self: DashboardState) -> asyncio.Semaphore:
-    """The cap's semaphore, created on first use and resized when idle.
+def _background_turn_admit_extra(self: DashboardState) -> bool:
+    """Whether live memory fits one more turn above the first 16 permits."""
+    now = time.monotonic()
+    cached = getattr(self, "_bg_turn_sizing_cache", None)
+    if cached is None or now - cached[0] > 1.0:
+        # One config read per second, however many grants a burst of
+        # releases asks about.
+        cached = (now, self.background_turn_sizing())
+        self._bg_turn_sizing_cache = cached
+    host, tightest = background_turn_cap.host_live()
+    return background_turn_cap.extra_permit_fits(
+        cached[1], host_available_gb=host, tightest_available_gb=tightest
+    )
+
+
+def _background_turn_sema(self: DashboardState) -> TurnLimiter:
+    """The cap's limiter, created on first use and resized on every read.
 
     Lazy because ``DashboardState`` is constructed before the event loop in
-    some hosts (tests, CLI) and ``asyncio.Semaphore`` binds to the running
-    loop. Resized only while nothing is in flight: in-flight holders own
-    permits on the object they entered, so swapping under them would let the
-    cap be exceeded by the difference.
+    some hosts (tests, CLI). The limiter resizes while
+    turns run: a raise admits queued turns at once and a
+    cut lets running turns finish, so a cap edit never waits for the fleet to
+    drain. Queued turns re-read the cap themselves every
+    ``background_turn_cap.POLL_SECS``.
     """
     eff = self.effective_max_background_turns()
     if self._bg_turn_sema is None:
-        self._bg_turn_sema = asyncio.Semaphore(eff)
+        self._bg_turn_sema = TurnLimiter(
+            eff,
+            refresh=self._refresh_background_turn_cap,
+            admit_extra=self._background_turn_admit_extra,
+        )
         self._bg_turn_cap = eff
-    elif eff != self._bg_turn_cap and not (self._bg_turns_running or self._bg_turns_waiting):
-        self._bg_turn_sema = asyncio.Semaphore(eff)
+    elif eff != self._bg_turn_cap:
+        self._log.info("background-turn cap changed: %d -> %d", self._bg_turn_cap, eff)
         self._bg_turn_cap = eff
+        self._bg_turn_sema.resize(eff)
     return self._bg_turn_sema
 
 
-def background_turn_stats(self: DashboardState) -> dict[str, int]:
+def _refresh_background_turn_cap(self: DashboardState) -> None:
+    """Re-read the cap so a queue no release wakes still sees a config edit."""
+    self._background_turn_sema()
+
+
+def background_turn_stats(self: DashboardState) -> dict[str, Any]:
     """Cap / in-flight / queued counts — the cap's observability surface.
 
     Surfaced in the status payload and asserted by tests, so "the fleet is
     queued behind the cap" is a readable state rather than an invisible
-    stall that looks like a hung worker.
+    stall that looks like a hung worker. ``sizing`` says where the cap came
+    from: the configured count, the host's memory-sized ceiling and the
+    figures behind it.
     """
+    try:
+        sizing: dict[str, Any] | None = self.background_turn_sizing().as_status()
+    except Exception:
+        self._log.debug("background-turn sizing unavailable", exc_info=True)
+        sizing = None
     return {
         "cap": self._bg_turn_cap or self.effective_max_background_turns(),
         "running": self._bg_turns_running,
         "waiting": self._bg_turns_waiting,
+        "sizing": sizing,
     }
 
 

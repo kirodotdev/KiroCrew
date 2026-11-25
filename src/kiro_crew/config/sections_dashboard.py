@@ -167,6 +167,21 @@ LOOP_STALL_EXIT_AFTER_MIN = 10
 LOOP_STALL_EXIT_AFTER_MAX = 300
 LOOP_STALL_EXIT_AFTER_DEFAULT = 25
 LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT = 90
+
+# dashboard.max_background_turns and the three figures that size its ceiling
+# from host memory (dashboard/background_turn_cap.py owns the arithmetic).
+BACKGROUND_TURNS_DEFAULT = 4
+BACKGROUND_TURNS_LEGACY_CEIL = 16
+BACKGROUND_TURNS_ABSOLUTE_CEIL = 64
+BACKGROUND_TURN_MEM_GB_DEFAULT = 2.0
+BACKGROUND_TURN_MEM_GB_MIN = 0.25
+BACKGROUND_TURN_MEM_GB_MAX = 64.0
+BACKGROUND_TURN_OS_RESERVE_PCT_DEFAULT = 10
+BACKGROUND_TURN_OS_RESERVE_PCT_MIN = 5
+BACKGROUND_TURN_OS_RESERVE_PCT_MAX = 50
+BACKGROUND_TURN_OS_RESERVE_GB_DEFAULT = 4.0
+BACKGROUND_TURN_OS_RESERVE_GB_MIN = 1.0
+BACKGROUND_TURN_OS_RESERVE_GB_MAX = 64.0
 _MANAGED_SERVICE_ENV = "KIROCREW_SERVICE_MANAGED"
 
 # dashboard.chat_entry_cache_max_entries / chat_entry_cache_max_bytes -- bounds
@@ -549,6 +564,46 @@ class DashboardConfig:
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
             restart=True,
+        ),
+    )
+    max_background_turns: int = field(
+        default=BACKGROUND_TURNS_DEFAULT,
+        metadata=_meta(
+            "Max Background Turns",
+            "How many unattended turns (app, crew, cron and worker turns) may run at "
+            "once; more wait in line. 0 = auto: as many as this host's memory fits, "
+            "never below 16 and never above 64. A number is capped at that same "
+            "memory-sized ceiling. Turns above 16 also start only while free memory "
+            "still leaves the OS reserve and one turn's memory. Your own chats never "
+            "count. Takes effect within a few seconds; no restart.",
+        ),
+    )
+    background_turn_mem_gb: float = field(
+        default=BACKGROUND_TURN_MEM_GB_DEFAULT,
+        metadata=_meta(
+            "Memory per Background Turn (GB)",
+            "Memory one running background turn is priced at when sizing the Max "
+            "Background Turns ceiling: its agent process, its MCP servers and the "
+            "builds it runs. Lower it to allow more turns, raise it for heavy build "
+            "work. 0.25 to 64. Takes effect within a few seconds; no restart.",
+        ),
+    )
+    background_turn_os_reserve_pct: int = field(
+        default=BACKGROUND_TURN_OS_RESERVE_PCT_DEFAULT,
+        metadata=_meta(
+            "OS Memory Reserve (%)",
+            "Share of RAM kept free of background turns for the operating system "
+            "and the gateway. The reserve is this share or OS Memory Reserve (GB), "
+            "whichever is larger. 5 to 50. Takes effect within a few seconds.",
+        ),
+    )
+    background_turn_os_reserve_gb: float = field(
+        default=BACKGROUND_TURN_OS_RESERVE_GB_DEFAULT,
+        metadata=_meta(
+            "OS Memory Reserve (GB)",
+            "Smallest amount of RAM kept free of background turns, so a small host "
+            "keeps enough for the OS even when the percentage reserve is tiny. 1 to "
+            "64. Takes effect within a few seconds.",
         ),
     )
     chat_entry_cache_max_entries: int = field(
