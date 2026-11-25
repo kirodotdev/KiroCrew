@@ -12175,7 +12175,7 @@
       "toggle_side_terminal": "साइड पैनल का टर्मिनल दिखाएँ/छिपाएँ",
       "previous_terminal": "पिछला टर्मिनल",
       "next_terminal": "अगला टर्मिनल",
-      "clear_terminal": "टर्मिनल साफ़ करें",
+      "clear_terminal": "टर्मिनल साफ़ करो",
       "toggle_dictation_mute": "डिक्टेशन म्यूट या अनम्यूट करो"
     },
     "useNativeNotification": {
