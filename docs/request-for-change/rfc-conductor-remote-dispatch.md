@@ -100,9 +100,10 @@ Six decisions:
   ([#16757](https://github.com/kirodotdev/KiroCrew/pull/16757)) and the
   per-machine sidebar ([#16756](https://github.com/kirodotdev/KiroCrew/pull/16756))
   use exactly these.
-- **Version gate.** `versions_compatible` (`src/kiro_crew/apps/version.py`)
+- **Version compare.** `versions_compatible` (`src/kiro_crew/apps/version.py`)
   matches `major.minor`. `api_instances_capabilities` reports it as
-  `version_match`.
+  `version_match`. Remote dispatch does not refuse on it (owner decision
+  2026-11-25): whether a call works is decided by calling it (§5, Version skew).
 - **Peer headroom.** `resource_status.probe()` (`src/kiro_crew/resource_status.py`)
   returns a `ResourceStatus`: cgroup-clamped `available_gb`, `cpu_count`,
   `load_per_cpu`, a `posture` and its `pressure_gb` / `critical_gb` thresholds.
@@ -580,7 +581,7 @@ ones.
 | Worker stuck on a login | `blocked`, `needs_human`. The conductor redispatches to another crew: on a turn the owner sent, `work_ledger_record action=retire reason=login_blocked`, then `session_create(work_item=)` (§5b). On a wake turn it tells the owner. |
 | Wrong crew (a tool or account the item needs is missing) | The same move, with `reason=wrong_crew`. |
 | Hub restart | Nothing in flight lives on the hub. The item, with its binding history, is on disk; the next read resumes. Snapshots are refetched from `api/chat/headroom`. |
-| Version skew | Every call with a crew checks `versions_compatible` first (`major.minor`). A create whose reply lacks `work_item_id` (a peer that ignored the field) is closed at once and refused as `crew_peer_lacks_work_items`, so a worker never runs unbound. |
+| Version skew | A `major.minor` that differs from the hub's never refuses a call (owner decision 2026-11-25): the hub reads the crew's version, logs one warning per crew and version, and calls. A call the crew does not know is refused `crew_peer_incompatible`, naming both versions: a plain 404 on the route, or a 400 coded `unknown_field`. A JSON 404 (no such session), a 5xx and a network fault keep their own errors. A create whose reply lacks `work_item_id` (a peer that ignored the field) is closed at once and refused as `crew_peer_lacks_work_items`, naming both versions, so a worker never runs unbound. A parameter an old crew could silently ignore needs its own proof in the reply (the `confirm_header` pattern), not a version compare. |
 
 ### 5b. Retire and redispatch
 

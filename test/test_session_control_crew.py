@@ -13,13 +13,15 @@ tunnel carrier. Pinned here:
   slot key never becomes a path;
 * a credential planted in a peer reply reaches the caller redacted;
 * a non-owner caller and a peer slot this caller did not dispatch are refused;
-* nearby inputs: unknown, ambiguous, disconnected and version-skewed crews.
+* nearby inputs: unknown, ambiguous and disconnected crews; a version-skewed crew
+  still dispatches, and a call it does not know names both versions.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -719,18 +721,61 @@ def test_a_disconnected_crew_is_refused_typed(env):
     assert (status, body["code"]) == (503, "proxy_peer_not_connected")
 
 
-def test_a_version_skewed_crew_is_refused_before_any_create(env):
+@pytest.fixture
+def _fresh_skew(monkeypatch):
+    monkeypatch.setattr(crew, "_SKEW_WARNED", set())
+    monkeypatch.setattr(crew, "_PEER_VERSIONS", {})
+
+
+@pytest.mark.parametrize("version", ["0.0.1", "0"])
+def test_a_version_skewed_crew_still_dispatches(env, _fresh_skew, version):
+    env.peer.version = version
+    target = _create(env)
+    assert env.peer.calls[0]["path"] == "api/chat/slots"
+    assert _call(env, "send", crew="lab", target=target, message="go")[0] == 200
+
+
+def test_a_version_skew_warns_once_per_crew_and_version(env, _fresh_skew, caplog):
     env.peer.version = "0.0.1"
-    status, body = _call(env, "create", crew="lab")
-    assert (status, body["code"]) == (409, "crew_version_mismatch")
-    assert env.peer.calls == []
+    with caplog.at_level(logging.WARNING, logger=crew.logger.name):
+        target = _create(env)
+        _call(env, "send", crew="lab", target=target, message="go")
+        _call(env, "stop", crew="lab", target=target)
+    warned = [r for r in caplog.records if "crew_peer_incompatible" in r.getMessage()]
+    assert len(warned) == 1
+    assert "0.0.1" in warned[0].getMessage()
 
 
-def test_a_placeholder_zero_version_is_refused_as_unknown(env):
-    env.peer.version = "0"
-    status, body = _call(env, "create", crew="lab")
-    assert (status, body["code"]) == (409, "crew_version_mismatch")
-    assert "runs an unknown version" in body["error"]
+def test_a_route_the_crew_lacks_names_both_versions(env, _fresh_skew):
+    env.peer.version = "0.0.1"
+    target = _create(env)
+    env.peer.content_type = "text/plain"  # aiohttp's own 404: no such route
+    env.peer.reply("POST", f"api/chat/slots/{target}/stop", 404, None)
+    status, body = _call(env, "stop", crew="lab", target=target)
+    assert (status, body["code"]) == (502, "crew_peer_incompatible")
+    assert "runs 0.0.1" in body["error"] and kiro_crew.__version__ in body["error"]
+
+
+def test_a_field_the_crew_does_not_take_is_a_version_hint(env, _fresh_skew):
+    target = _create(env)
+    env.peer.reply("POST", "api/chat", 400, {"error": "no", "code": "unknown_field"})
+    status, body = _call(env, "send", crew="lab", target=target, message="go")
+    assert (status, body["code"]) == (502, "crew_peer_incompatible")
+
+
+@pytest.mark.parametrize(
+    "status, payload, code",
+    [
+        (404, {"error": "gone", "code": "slot_not_found"}, "crew_slot_not_found"),
+        (500, {"error": "boom"}, "crew_peer_refused"),
+        (400, {"error": "bad", "code": "invalid_steer"}, "crew_peer_refused"),
+    ],
+)
+def test_other_peer_failures_keep_their_codes(env, _fresh_skew, status, payload, code):
+    target = _create(env)
+    env.peer.reply("POST", f"api/chat/slots/{target}/stop", status, payload)
+    _, body = _call(env, "stop", crew="lab", target=target)
+    assert body["code"] == code
 
 
 def test_the_dispatch_cap_refuses_one_more(env, monkeypatch):
