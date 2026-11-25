@@ -177,18 +177,27 @@ def _publish_template_package(
     not be bound elsewhere by the archive (``_staged_held``), must pass the uniqueness
     check and the staged gate (``_check_staged_artifact``) before it is published
     add-only; one that appears meanwhile is judged as one here. Any reason stops the
-    publish and is logged; it never changes the record's row. Never raises: a failure
-    is ``write_failed``.
+    publish and is logged; it never changes the record's row. Never raises: judging a
+    package here when the destination store cannot be opened (any of
+    ``artifacts.STORED_READ_FAILURES``, such as the ``ArtifactError`` of a root under a
+    sensitive path) is ``unreadable_record``, and a failed stage, gate read or publish
+    (``portability_bot_stores._DECODE_FAILURES``) is ``write_failed``.
     """
     from kiro_crew import portability_bot_stores as _stores
-    from kiro_crew.artifacts import slug_is_well_formed
+    from kiro_crew.artifacts import STORED_READ_FAILURES, slug_is_well_formed
 
     package, version, digest = pin
 
     def here() -> str:
         if not owned:
             return _stores._HELD
-        judged = _stores._owned_package(mc, package, bot.slug, version, digest, index)
+        try:
+            judged = _stores._owned_package(mc, package, bot.slug, version, digest, index)
+        except STORED_READ_FAILURES:
+            logger.warning(
+                "import: %r's carried package could not be judged here", bot.slug, exc_info=True
+            )
+            return "unreadable_record"
         return judged.owner or judged.page or index.refusal(package, bot.slug)
 
     try:

@@ -488,8 +488,11 @@ rebuilt. For a record that runs its template, the carried package is first publi
 add-only after the record is in place (`portability_bot_stores._publish_template_package`):
 a package already here is used only for a Bot that was here and only when it is this
 Bot's; otherwise the archive must carry the pinned version and the staged package must
-pass `_staged_held`, `BoundIndex.refusal` and the staged gate. Any refusal there stops the
-publish, never changes the record's row (`restored`, or `page_not_rebuilt` /
+pass `_staged_held`, `BoundIndex.refusal` and the staged gate. A package here that cannot
+be judged because the destination store does not open (`artifacts.STORED_READ_FAILURES`,
+such as a data home whose `artifacts/` resolves under a sensitive path) is
+`unreadable_record`, and a failed stage or publish is `write_failed`; nothing there
+raises. Any refusal there stops the publish, never changes the record's row (`restored`, or `page_not_rebuilt` /
 `artifact_missing` when the template is not served), and leaves that package's retained
 pins not rebuilt. A kept record reads `restored` when this brought something back (a
 retained page rebuilt, or a template record's package published). When some retained pin

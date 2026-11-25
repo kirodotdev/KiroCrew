@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -47,10 +48,12 @@ from test_portability_bot_stores import (  # noqa: F401 - _catalog is an autouse
     _Source,
 )
 
+from conftest import make_dir_link
 from kiro_crew import portability_bot_stores as stores
 from kiro_crew import portability_bot_types
 from kiro_crew.agent_panel import panel_dir
 from kiro_crew.artifact_store import dashboard_package as dp
+from kiro_crew.artifact_store.model import ArtifactError
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard_templates import instance
@@ -497,6 +500,97 @@ def test_a_kept_template_record_whose_package_came_back_is_restored(
     assert (data_home() / "artifacts" / applied.package / "meta.json").is_file()
     assert store_notices == {}
     assert row["notices"] == []
+
+
+def _template_bot_with_briefing(homes: Homes) -> tuple[MadeBot, str]:
+    """Atlas on home a, rolled back to its template with a briefing; its package slug."""
+    homes.use("a")
+    atlas = create_bot("Atlas")
+    applied = apply_dashboard(atlas, '<p data-dashboard-field="goal">board</p>')
+    instance.rollback(atlas.slug, 1)
+    (data_home() / "members" / atlas.slug / "briefing.md").write_text("brief\n", encoding="utf-8")
+    return atlas, applied.package
+
+
+def _refuse_artifact_root() -> list[str]:
+    """Move the data home's ``artifacts/`` under its sensitive ``diag/`` and link it back.
+
+    ``ArtifactStore(<home>/artifacts)`` then refuses its root (``ArtifactError``), while
+    every name under ``artifacts/`` still resolves. Returns what ``artifacts/`` lists.
+    """
+    mc = data_home()
+    (mc / "diag").mkdir(exist_ok=True)
+    os.replace(mc / "artifacts", mc / "diag" / "arts")
+    make_dir_link(mc / "artifacts", mc / "diag" / "arts")
+    with pytest.raises(ArtifactError):
+        ArtifactStore(mc / "artifacts")
+    return sorted(p.name for p in (mc / "artifacts").iterdir())
+
+
+def _store_refusals(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        rec
+        for rec in caplog.records
+        if rec.name == stores.__name__
+        and rec.levelno == logging.WARNING
+        and rec.exc_info
+        and isinstance(rec.exc_info[1], ArtifactError)
+    ]
+
+
+def test_a_template_record_installed_where_the_store_refuses_its_root_is_restored(
+    homes: Homes,
+    tmp_path: Path,
+    store_notices: dict[str, list[str]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    atlas, package = _template_bot_with_briefing(homes)
+    archive = export_archive(tmp_path / "a.zip")
+    homes.use("b")
+    first = _row(apply_import_zip(archive, mode="replace"), "Atlas")
+    assert (first["dashboard"], first["briefing"]) == ("restored", "restored")
+    mc = data_home()
+    assert (mc / "artifacts" / package / "meta.json").is_file()
+    shutil.rmtree(mc / "members" / atlas.slug)
+    _drop_pages(atlas.slug)
+    listed = _refuse_artifact_root()
+    store_notices.clear()
+    caplog.set_level(logging.WARNING, logger=stores.__name__)
+    row = _row(apply_import_zip(archive, mode="replace"), "Atlas")
+    assert (row["dashboard"], row["briefing"]) == ("restored", "restored")
+    assert not row["part_reasons"].get("dashboard") and not row["part_reasons"].get("briefing")
+    member = mc / "members" / atlas.slug
+    assert (member / "dashboard" / "instance.json").is_file()
+    assert (member / "briefing.md").read_text(encoding="utf-8") == "brief\n"
+    assert store_notices.get("Atlas") == [OLDER]
+    assert row["notices"] == [OLDER]
+    assert sorted(p.name for p in (mc / "artifacts").iterdir()) == listed
+    assert not list(panel_dir().glob(f"{atlas.slug}.dashboard-page.*.json"))
+    assert _store_refusals(caplog)
+
+
+def test_a_kept_template_record_where_the_store_refuses_its_root_stays_kept(
+    homes: Homes,
+    tmp_path: Path,
+    store_notices: dict[str, list[str]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    atlas, _package = _template_bot_with_briefing(homes)
+    archive = export_archive(tmp_path / "a.zip")
+    mc = data_home()
+    (mc / "members" / atlas.slug / "briefing.md").unlink()
+    _drop_pages(atlas.slug)
+    listed = _refuse_artifact_root()
+    caplog.set_level(logging.WARNING, logger=stores.__name__)
+    row = _row(apply_import_zip(archive, mode="merge"), "Atlas")
+    assert (row["dashboard"], row["briefing"]) == ("kept", "restored")
+    assert not row["part_reasons"].get("dashboard") and not row["part_reasons"].get("briefing")
+    assert (mc / "members" / atlas.slug / "briefing.md").read_text(encoding="utf-8") == "brief\n"
+    assert store_notices.get("Atlas") == [OLDER]
+    assert row["notices"] == [OLDER]
+    assert sorted(p.name for p in (mc / "artifacts").iterdir()) == listed
+    assert not list(panel_dir().glob(f"{atlas.slug}.dashboard-page.*.json"))
+    assert _store_refusals(caplog)
 
 
 # Archive and destination bytes that would make a reader raise instead of refusing.
