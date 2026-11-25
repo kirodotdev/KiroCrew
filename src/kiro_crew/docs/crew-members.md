@@ -196,19 +196,19 @@ kirocrew agent create --name oncall-2 --display-name "On-call 2" --kiro-agent ki
 kirocrew agent update oncall --workspace incidents
 kirocrew agent update oncall --display-name "On-call"
 kirocrew agent update oncall --model <model-id>
-kirocrew agent update oncall --model ""
+kirocrew agent update oncall --model=
 kirocrew agent delete oncall
 ```
 
 `--model` (on `create` and `update`) sets the Bot's default model, and
-`--model ""` or `--model auto` clears it so the Bot inherits again;
+`--model=` or `--model auto` clears it so the Bot inherits again;
 `agent list` shows the pin, or `(inherit)`. The CLI refuses an id that is not
 shaped like a model id, and a registry spelling kiro-cli does not serve (it
 names the served one). It cannot check whether your account serves an id, since
 that needs a running session; the crew editor in the dashboard does check.
 
 Renaming changes only the name a Bot shows: its agent name, short name,
-chat, schedules and memory stay where they are, and `--display-name ""` goes
+chat, schedules and memory stay where they are, and `--display-name=` goes
 back to showing the agent name. A name another Bot already shows is
 refused, as is one with line breaks or hidden characters. A Bot can also
 take a new name itself: tell it in its own chat what to call it, and it renames
