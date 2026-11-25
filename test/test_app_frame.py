@@ -217,8 +217,11 @@ def bootstrap_results() -> dict[str, Any]:
             + "\n})();\n"
         )
     script += "console.log(JSON.stringify(results));"
+    # On stdin, not `-e`: two copies of the bootstrap pass Windows' 32767-character
+    # command-line limit (WinError 206).
     out = subprocess.run(
-        [node, "--input-type=module", "-e", script],
+        [node, "--input-type=module"],
+        input=script,
         capture_output=True,
         text=True,
         encoding="utf-8",
