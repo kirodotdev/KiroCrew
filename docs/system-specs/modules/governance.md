@@ -4365,7 +4365,12 @@ the subagent admission gate and `resolve_parent_policy`, and the Trust buttons o
 messaging transports (`messaging.session_trust.add_trusted_session`, the Slack and
 Telegram press handlers, the typed Trust reply's grant in `deliver_verdict`, a channel's `trust`
 decision): a press there approves the one tool. A crewmate's unset or stored Profile
-mode is clamped to the highest permitted mode (`clamp_session_mode`). Read sites mask
+mode is clamped to the highest permitted mode (`clamp_session_mode`), and so is the
+owner's stored start mode for a plain New chat (`dashboard.default_approval_mode`,
+seeded by `dashboard/chat_default_mode.py`): a denied Reads leaves the chat on Normal,
+the create still succeeds, and its reply carries `default_mode_refused: "policy"`. A
+verdict still being installed is waited out first (`ensure_resolved`), so a passing
+deny is never what the chat starts on. Read sites mask
 a grant made before the deny: `_ChatSlot._trust` / `._trust_reads` read back only what
 the policy permits, `SessionManager.get_approval_policy` returns `""` for a stored
 `"auto"` unless a session-wide YOLO grant is live, `is_session_trusted`, a channel's

@@ -93,7 +93,7 @@ async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | un
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
   { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
@@ -135,6 +135,12 @@ export const createSlot = createAsyncThunk<
     // it (an app's launch, a hand-off, a recreated slot) keeps today's unfiled
     // placement instead of moving into another folder and its project. A
     // folder or project named on the same call still wins over the default.
+    // The person's stored approval start mode (`dashboard.default_approval_mode`)
+    // is OPT-IN too: every plain New chat entry point asks for it, either
+    // through `crewModeDefault` or on its own (`startModeDefault`, for the
+    // New Incognito / Temporary and first-message creates that conductor mode
+    // does not apply to), so an app's launch or a hand-off keeps Normal.
+    const startModeDefault = typeof opts === 'object' && (opts.startModeDefault === true || opts.crewModeDefault === true)
     const useDefaultFolder = typeof opts === 'object' && opts.defaultFolder === true
       && opts.folder_id === undefined && !project
     // Capture the active slot and its move count BEFORE the (potentially slow)
@@ -149,7 +155,7 @@ export const createSlot = createAsyncThunk<
     // can read or write memory.
     let config: NewChatConfig | undefined
     const memory_mode = requestedMemoryMode || await resolveDefaultMemoryMode(async () => (config = await api.dashboardConfig() as NewChatConfig))
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot, startModeDefault)
     // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
     // chat entry points pass it, so an app's launch or a hand-off never lands on
     // the conductor.
