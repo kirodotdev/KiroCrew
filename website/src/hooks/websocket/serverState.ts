@@ -107,7 +107,7 @@ const ARTIFACT_TARGETS: readonly RefreshTarget[] = [
 ]
 
 // The server list the MCP Servers table and the Connections page show. Exact:
-// `['mcp-servers', agent]` is the chat header's per-agent list, another read
+// `['mcp-servers', agent, slot]` is the chat header's per-agent list, another read
 // (`/api/mcp/active`) that its menu re-runs each time it opens.
 const MCP_SERVERS_TARGET: RefreshTarget = { queryKey: ['mcp-servers'], exact: true }
 

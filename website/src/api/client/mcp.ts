@@ -151,7 +151,15 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
     mcpCustomUpdate: (name: string, spec: import('../../types').McpCustomSpec) =>
       put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string; agent_spec_rewritten?: boolean }>,
-    mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
+    /** `slot` names the chat whose live session's backend the server asks; the
+     *  backend is never sent from here. */
+    mcpActive: (agent?: string, slot?: string) => {
+      const params = new URLSearchParams()
+      if (agent) params.set('agent', agent)
+      if (slot) params.set('slot', slot)
+      const query = params.toString()
+      return fetch('/api/mcp/active' + (query ? `?${query}` : '')).then(j)
+    },
     mcpProbe: () => post('/api/mcp/probe').then(j),
     mcpProbeOne: (name: string) =>
       post(`/api/mcp/probe/${encodeURIComponent(name)}`).then(j) as Promise<McpServer>,

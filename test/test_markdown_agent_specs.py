@@ -1220,9 +1220,9 @@ def test_active_mcp_endpoint_lookup_tolerates_a_null_server_map(
     monkeypatch.setattr(mcp_handlers, "kiro_agents_dir_path", lambda: agents_dir)
     (agents_dir / "nullbot.md").write_text("---\nname: nullbot\nmcpServers: null\n---\nhi\n")
     (agents_dir / "bot.md").write_text(_md("bot", mcpServers={"srv": {"command": "x"}}))
-    assert mcp_handlers._agent_mcp_server_names("nullbot") == []
-    assert mcp_handlers._agent_mcp_server_names("bot") == ["srv"]
-    assert mcp_handlers._agent_mcp_server_names("absent") is None
+    assert mcp_handlers._agent_mcp_server_names("nullbot", "") == []
+    assert mcp_handlers._agent_mcp_server_names("bot", "") == ["srv"]
+    assert mcp_handlers._agent_mcp_server_names("absent", "") is None
 
 
 def test_crew_context_opt_out_is_read_from_markdown(
