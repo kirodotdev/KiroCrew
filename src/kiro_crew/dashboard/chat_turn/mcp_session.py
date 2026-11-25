@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
-    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
 )
 from kiro_crew.config.loader import oauth_endpoints_path
@@ -453,19 +452,20 @@ def _mcp_may_need_sign_in_notice(names: list[str], more: int) -> str:
 def _notice_mcp_may_need_sign_in(
     state: "DashboardState", slot: "_ChatSlot", payload: dict[str, Any] | None, provider: Any
 ) -> None:
-    """One row per chat on opencode naming the servers its report lists in ``sign_in_suspected``.
+    """One row per chat naming the servers its report lists in ``sign_in_suspected``.
 
-    opencode sends no sign-in frame, so that list is what Crew's credential-free
-    probe found (:mod:`kiro_crew.acp.mcp_sign_in_probe`).
+    Only where the harness has ``SessionCapabilities.reports_mcp_sign_in_suspects``
+    (opencode): it sends no sign-in frame, so that list is what Crew's
+    credential-free probe found (:mod:`kiro_crew.acp.mcp_sign_in_probe`).
     The server may already be signed in through opencode itself, so the row says
     "may", never that the server is broken. Best-effort: a row that cannot be
     built is skipped.
     """
     try:
-        on_opencode = capabilities_of(provider).backend == ACP_BACKEND_OPENCODE
+        reports = capabilities_of(provider).reports_mcp_sign_in_suspects
         names = [
             _redact_acp_string(name)
-            for name in ((payload or {}).get("sign_in_suspected") or () if on_opencode else ())
+            for name in ((payload or {}).get("sign_in_suspected") or () if reports else ())
             if isinstance(name, str) and name
         ]
         names = [name for name in names if name]
