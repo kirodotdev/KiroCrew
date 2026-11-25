@@ -239,6 +239,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import channel_handler  # noqa: F401 - read by the owners
 from kiro_crew.slack import script_hooks as slack_script_hooks  # noqa: F401 - read by the owners
 from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
     _Reset as _TurnScopeReset,
@@ -396,6 +397,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _persist_channel_config,
     _read_thread_overrides,
     _recorded_selection,
+    _route_linked_thread,
     _set_default_agent,
     adopt_dashboard_thread_agent,
     adopt_default_agent,

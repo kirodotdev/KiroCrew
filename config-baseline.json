@@ -13945,6 +13945,20 @@
       "defaultValue": ""
     },
     {
+      "path": "slack_channels.*.bot",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Channel Bot",
+      "help": "Crew Bot (a config.agents key) whose own chat answers every thread in this channel (empty = none). Set with !channel bot <name>.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "slack_channels.*.thread_follow",
       "kind": "core",
       "type": "boolean",

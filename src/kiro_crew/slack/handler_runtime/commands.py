@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         bots_text,
         build_timing_footer,
         canonical_key,
+        channel_handler,
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
@@ -1063,14 +1064,7 @@ async def _bang_bot(
     outlives a restart and beats the channel's pin. Open to any allowed user
     (the sender gate's allowed-user list).
     """
-    from kiro_crew.slack import conductor_thread
-
-    # A Conductor thread keeps its conductor for good (the one Bot-versus-Conductor rule).
-    locked = conductor_thread.switch_refusal("!bot", channel, reply_ts, session_key)
-    if locked:
-        await slack.post_message(channel, locked, reply_ts)
-        return ""
-    from kiro_crew.slack import bot_chat
+    from kiro_crew.slack import bot_chat, conductor_thread
 
     parts = cmd_text.split(maxsplit=1)
     typed = parts[1].strip() if len(parts) > 1 else ""
@@ -1078,6 +1072,20 @@ async def _bang_bot(
     # on ``off``, and that command ends at the leave: nothing that can refuse runs after
     # the unlink. Another Bot is refused until then, so the thread stays where it was.
     joined = bot_chat.joined_bot_chat(_dashboard_state, reply_ts)
+    # A thread that joined a Bot's chat before its channel got a Channel Bot or Channel
+    # Conductor keeps that chat (``channel_handler.claim``), so its ``off`` still leaves.
+    leaves = (
+        joined is not None
+        and typed.lower() == "off"
+        and joined is not channel_handler.handler_slot(_dashboard_state, channel)
+    )
+    # A Conductor thread keeps its conductor for good (the one Bot-versus-Conductor rule).
+    locked = (
+        "" if leaves else conductor_thread.switch_refusal("!bot", channel, reply_ts, session_key)
+    )
+    if locked:
+        await slack.post_message(channel, locked, reply_ts)
+        return ""
     incoming_keys = bot_chat.privacy_sources(_dashboard_state, joined, session_key)
     if joined is not None:
         # The transport routes a joined thread under the Bot chat's dashboard key; the
@@ -1422,7 +1430,7 @@ async def _bang_allowlist(
     return ""
 
 
-# ── !channel always|mention|observe|off / !channel agent <name> (owner-only) ──
+# ── !channel always|mention|observe|off / agent / bot / conductor (owner-only) ──
 async def _bang_channel(
     cmd_text: str,
     slack: SlackClientOps,
@@ -1451,71 +1459,30 @@ async def _bang_channel(
     if len(parts) == 1:
         cfg = KiroCrewConfig.load()
         ch_cfg = cfg.channel_config(channel)
-        agent_info = f", agent=*{ch_cfg.agent}*" if ch_cfg.agent else ""
-        await slack.post_message(
-            channel,
-            f"Channel `{channel}` activation: *{ch_cfg.activation}*{agent_info}\n"
-            f"Usage: `!channel always|mention|observe|off` or `!channel agent <name|off>`",
-            reply_ts,
-        )
+        line = f"{channel_handler.status_line(channel)} Channel activation: *{ch_cfg.activation}*."
+        await slack.post_message(channel, f"{line}\n{channel_handler.CHANNEL_USAGE}", reply_ts)
         return ""
 
     subcmd = parts[1].lower()
 
-    # !channel agent <name|off>
-    if subcmd == "agent":
-        if len(parts) < 3:
-            await slack.post_message(
-                channel, "Usage: `!channel agent <name>` or `!channel agent off`", reply_ts
-            )
-            return ""
-        # The name is the whole remainder, so a multi-word Bot display name stays whole.
-        agent_name = cmd_text.split(maxsplit=2)[2].strip()
-        if agent_name.lower() == "off":
-            agent_name = ""
-        else:
-            project = _thread_projects.get(session_key)
-
-            def _channel_agent(typed: str) -> str | None:
-                # A Bot key runs the channel as that Bot (channel_crew), so an exact key
-                # wins; a Bot named only by case or display name is matched last.
-                if typed in crew_bots():
-                    return typed
-                return _resolve_agent_name(typed, project) or resolve_bot_name(typed)
-
-            resolved = await asyncio.to_thread(_channel_agent, agent_name)
-            if not resolved:
-                names = await asyncio.to_thread(_list_all_agent_names)
-                bots = await asyncio.to_thread(bots_text)
-                await slack.post_message(
-                    channel,
-                    f"Unknown agent `{agent_name}`. Available: {names}. Crew Bots: {bots}",
-                    reply_ts,
-                )
-                return ""
-            agent_name = resolved
-        try:
-            await run_config_write(_persist_channel_config, channel, agent=agent_name)
-        except ValueError as e:
-            await slack.post_message(channel, f"❌ {e}", reply_ts)
-            return ""
-        _reload_orch_cfg()
-        sel().log_api_access(
-            caller=user_id,
-            operation="slack.channel_agent",
-            outcome="allowed",
-            source="slack",
-            resources=f"{channel}:{agent_name or 'default'}",
+    if subcmd == "bot":
+        return await channel_handler.set_bot(cmd_text, slack, channel, reply_ts, user_id, sessions)
+    if subcmd == "conductor":
+        return await channel_handler.set_conductor(
+            parts, slack, channel, reply_ts, msg_ts, session_key, user_id, sessions
         )
-        label = f"*{agent_name}*" if agent_name else "default"
-        await slack.post_message(channel, f"Agent for this channel: {label}", reply_ts)
-        return ""
+
+    if subcmd == "agent":
+        return await channel_handler.set_agent(
+            cmd_text, slack, channel, reply_ts, session_key, user_id
+        )
 
     # !channel always|mention|observe|off
     if subcmd not in _VALID_ACTIVATIONS:
         await slack.post_message(
             channel,
-            f"Invalid mode `{subcmd}`. Use: `always`, `mention`, `observe`, or `off`.",
+            f"Invalid mode `{subcmd}`. Use: `always`, `mention`, `observe`, or `off`.\n"
+            f"{channel_handler.CHANNEL_USAGE}",
             reply_ts,
         )
         return ""

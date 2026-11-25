@@ -994,7 +994,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cancelled_messages": "ecbdff98df1658e87972dc20679d6c3eb80d050a383a74f39f4ee06478c68c3a",
     "cancelled_stop_reason": "a24c47eb133c63a44845abb8afaf8d25134dbac28e52823a8dcb22c5ee3124e8",
     "cmd_allowed_denied": "0802fc63efe6e37f62e532419b17548240110c89100b8b4925703f80306e2621",
-    "cmd_allowlist_and_channel": "0b64b0c42209ad4e75596212067a1b7fd2c7dabdba488324355a4cdcca3f9d43",
+    "cmd_allowlist_and_channel": "a756d98a28c63b04a2a1c2f89b2a2634e3259e8d3db5ad237315c9d47dde7cbb",
     "cmd_compact": "b70200b397f2c31b14e23658e410ed24509d3db9a8581262cd721a2892793431",
     "cmd_dashboard_bad_duration": "38a7cb5332a1ba5ff255ec3303f56379bdd35ad259fede729cbba8f807d1b162",
     "cmd_link_to_dashboard_unavailable": "3a7c8916de8eec9ddf603e7ccaaa8d892e682a9f5d7a56783277ea8e64955fdd",

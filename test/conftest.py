@@ -427,6 +427,8 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_emojis,
     _clean_slack_thread_state,
     _enterprise_bypass,
+    _reset_channel_handler_locks,
+    _reset_channel_handler_threads,
     _reset_code_channel_audience,
     _reset_code_channel_senders,
     _reset_conductor_thread_notices,

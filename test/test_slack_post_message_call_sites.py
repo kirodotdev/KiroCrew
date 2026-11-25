@@ -77,6 +77,11 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
+    "slack/channel_handler.py": (
+        1,
+        "one helper for a Channel Bot's or Channel Conductor's fixed notices and the"
+        " owner's !channel agent replies",
+    ),
     "slack/code_channels/board/publisher.py": (
         1,
         "work board's needs-you reply: needs_you_text escapes already-redacted row fields, "
@@ -87,8 +92,9 @@ BASELINE: dict[str, tuple[int, str]] = {
         "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",
     ),
     "slack/conductor_thread.py": (
-        3,
-        "a Conductor thread's fixed notices: started, ended, a one-way refusal",
+        4,
+        "a Conductor thread's fixed notices: started (a thread's or a channel's),"
+        " ended, a one-way refusal",
     ),
     "slack/events.py": (4, "!stop and !restart notices and the not-authorized refusal"),
     "slack/events_inbound.py": (1, "the fixed !stop notice helper, moved out of events.py"),
@@ -114,7 +120,7 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        98,
+        94,
         "slash and text command replies: fixed status and help text, the"
         " channel-agent link refusal, the !channel and !voice global"
         " config-save refusals, the !voice global usage reply, the !bot"

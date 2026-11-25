@@ -154,6 +154,30 @@ async def test_a_thread_owned_by_a_closed_dashboard_chat_is_pointed_at_the_picke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handler_kind", ["bot", "conductor"])
+async def test_a_thread_in_a_channel_with_a_bot_or_conductor_is_pointed_at_the_picker(
+    monkeypatch: pytest.MonkeyPatch, handler_kind
+):
+    # The channel's one chat answers this thread's next message, so a grant on the
+    # thread's own session would say Trust is on while every tool still asks.
+    from kiro_crew.slack import channel_handler
+
+    if handler_kind == "bot":
+        monkeypatch.setattr(channel_handler, "channel_bot", lambda _c: "helper")
+    else:
+        monkeypatch.setattr(channel_handler, "channel_conductor", lambda _c: object())
+    state = MagicMock()
+    state.get_linked_slot.return_value = None
+    assert await _run("", state=state) == thread_trust.LINKED_TEXT
+    assert KEY not in session_trust._trusted_sessions
+    # A grant made before the channel had a Bot or Conductor can still be seen and removed.
+    session_trust.add_trusted_session(KEY, strict=True)
+    assert await _run("status", state=state) == thread_trust.STATUS_ON_TEXT
+    assert await _run("off", state=state) == thread_trust.OFF_TEXT
+    assert KEY not in session_trust._trusted_sessions
+
+
+@pytest.mark.asyncio
 async def test_an_unlinked_thread_is_granted_with_the_dashboard_running():
     state = MagicMock()
     state.get_linked_slot.return_value = None

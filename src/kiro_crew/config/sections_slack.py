@@ -560,6 +560,14 @@ class ChannelConfig:
         default="",
         metadata=_meta("Agent", "Agent override for this channel (empty = default)."),
     )
+    bot: str = field(
+        default="",
+        metadata=_meta(
+            "Channel Bot",
+            "Crew Bot (a config.agents key) whose own chat answers every thread in this "
+            "channel (empty = none). Set with !channel bot <name>.",
+        ),
+    )
     thread_follow: bool = field(
         default=True,
         metadata=_meta(
@@ -592,6 +600,7 @@ class ChannelConfig:
         return cls(
             activation=activation,
             agent=agent,
+            bot=section.get("bot"),
             thread_follow=section.get("thread_follow"),
             # A mark that names another agent is stale (the agent was changed by
             # another writer since): the agent is the owner's, so the mark is dropped.

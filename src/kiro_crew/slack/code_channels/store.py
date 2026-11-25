@@ -160,6 +160,15 @@ class Binding:
     ended thread admits no more dispatch and never becomes a plain thread again.
     Its ``opener`` is the shared user who started it, if one did: the one person
     besides the owner it admits.
+
+    **A Channel Conductor** (``channel_wide=True``, also a thread binding) is the
+    Conductor of every thread in its channel: its anchor is the thread it is
+    answering now, and :meth:`CodeChannelStore.move_thread_binding` moves it, with
+    the session's Slack link, to the thread the owner writes in next
+    (:mod:`kiro_crew.slack.channel_handler`). One per channel. It is never
+    stamped ended: :meth:`CodeChannelStore.drop_channel_conductor` removes its
+    row, so the thread it answered last is an ordinary thread of the channel.
+    It has no ``opener``: only the owner starts one.
     """
 
     channel_id: str
@@ -181,6 +190,7 @@ class Binding:
     room: str = ""
     ended_at: float = 0.0
     opener: str = ""
+    channel_wide: bool = False
 
     @property
     def origin_link(self) -> tuple[str, str] | None:
@@ -1099,6 +1109,58 @@ class CodeChannelStore:
             stored = Binding(**{**asdict(binding), "created_at": binding.created_at or time.time()})
             self._commit(thread_bindings={**self._thread_bindings, key: stored})
             return stored
+
+    def move_thread_binding(self, channel_id: str, from_ts: str, to_ts: str) -> Binding:
+        """Move a live Channel Conductor's binding from thread *from_ts* to *to_ts*.
+
+        One commit: the row leaves its old key and is filed under the new one, so
+        the thread it answers is always the one its anchor names. Refused
+        (:class:`StoreWriteError`) unless *from_ts* holds a live ``channel_wide``
+        binding, and for a target thread that is bound, quarantined, a code
+        channel's anchor or a revoked one. A thread a dropped Channel Conductor
+        answered last holds none of these, so the next one moves there.
+        """
+        old_key = thread_key(channel_id, from_ts)
+        new_key = thread_key(channel_id, to_ts)
+        with self._lock:
+            self._ensure_loaded()
+            existing = self._thread_bindings.get(old_key)
+            if existing is None or not existing.channel_wide or existing.ended_at:
+                raise StoreWriteError(f"channel conductor {old_key}: not a live channel conductor")
+            if from_ts == to_ts:
+                return existing
+            if new_key in self._quarantined_threads or new_key in self._thread_bindings:
+                raise StoreWriteError(f"channel conductor {new_key}: the thread is bound")
+            if any(b.anchor_ts == to_ts for b in self._bindings.values()) or any(
+                r.anchor_ts == to_ts for r in self._revoked.values()
+            ):
+                raise StoreWriteError(f"channel conductor {new_key}: the thread is fenced")
+            moved = Binding(**{**asdict(existing), "anchor_ts": to_ts})
+            threads = {k: v for k, v in self._thread_bindings.items() if k != old_key}
+            self._commit(thread_bindings={**threads, new_key: moved})
+            return moved
+
+    def drop_channel_conductor(self, channel_id: str, anchor_ts: str) -> Binding | None:
+        """Remove the Channel Conductor's row at *anchor_ts*; the removed row, or None.
+
+        One commit. Its session key is retired, so a worker its session created
+        stays a code-channel worker for good, and nothing goes into ``revoked``:
+        the anchor is an ordinary thread of the channel again. None when that
+        thread has no row; refused (:class:`StoreWriteError`) for a row that is
+        not ``channel_wide``.
+        """
+        key = thread_key(channel_id, anchor_ts)
+        with self._lock:
+            self._ensure_loaded()
+            existing = self._thread_bindings.get(key)
+            if existing is None:
+                return None
+            if not existing.channel_wide:
+                raise StoreWriteError(f"conductor thread {key}: not a channel conductor")
+            self._commit(
+                thread_bindings={k: v for k, v in self._thread_bindings.items() if k != key}
+            )
+            return existing
 
     def end_thread_binding(
         self, channel_id: str, anchor_ts: str, *, at: float | None = None
