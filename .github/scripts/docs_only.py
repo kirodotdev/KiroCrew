@@ -17,7 +17,6 @@ cannot disagree about which PRs qualify:
 Prose docs are exactly these paths:
 
     docs/**/*.md
-    src/kiro_crew/docs/**/*.md
     website/docs/**/*.md
     README.md            (repository root only)
     CONTRIBUTING.md      (repository root only)
@@ -25,6 +24,14 @@ Prose docs are exactly these paths:
 Anything else, including a script or an asset under ``docs/``, means the diff
 is NOT docs-only. A rename counts both its old and its new path, so moving code
 into ``docs/`` is not docs-only either.
+
+Markdown under ``src/`` is package data, not prose: ``setup.cfg``
+(``[options.package_data]``) and ``MANIFEST.in`` ship it in the wheel, and
+product code reads it at run time (``src/kiro_crew/docs/*.md`` through
+``mcp_guide.search_docs`` and the tips catalog). A change to it changes what
+Build Wheel produces, and can fail a test that reaches the page through product
+code and so names no doc, which ``readers`` cannot find. No doc tree lies under
+``src/``, so such a change runs everything.
 
 Usage:
     docs_only.py classify [--expect-files N] < input
@@ -64,7 +71,8 @@ import sys
 # The compare endpoint lists at most 300 files; a larger PR is never excused.
 MAX_FILES = 250
 
-_DOC_TREES = ("docs/", "src/kiro_crew/docs/", "website/docs/")
+# None under ``src/``: what ships in the package is not prose (module doc).
+_DOC_TREES = ("docs/", "website/docs/")
 _ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})
 
 # A test can read any doc without naming it: by globbing or filtering on the

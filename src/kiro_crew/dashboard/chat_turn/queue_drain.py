@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY, batch_prompt_on_channel
 from kiro_crew.dashboard.chat_delivery import (
     BACKGROUND_START_TASKS,
+    EXPANSIONS_OFF_META_KEY,
     MIRROR_REPLY_ONLY_META_KEY,
     START_BACKGROUND_META_KEY,
 )
@@ -1368,6 +1369,11 @@ async def _start_next_queued_turn(
     _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
         (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
     )
+    # A chat option tap's label, read the same way: a merge never mixes stamped
+    # and unstamped entries, so typed mentions are never kept as text.
+    _expansions_off = bool(_drained_meta.pop(EXPANSIONS_OFF_META_KEY, False)) or any(
+        (item.get("meta") or {}).get(EXPANSIONS_OFF_META_KEY) is True for item in consumed
+    )
     # Start and mirror plumbing too, read per entry below; neither says anything about the row.
     _drained_meta.pop(START_BACKGROUND_META_KEY, None)
     _drained_meta.pop(MIRROR_REPLY_ONLY_META_KEY, None)
@@ -1551,6 +1557,8 @@ async def _start_next_queued_turn(
         )
     if _commands_off:
         _run_kwargs["_commands_off"] = True
+    if _expansions_off:
+        _run_kwargs["_expansions_off"] = True
     # A verbatim replay of a dashboard prompt that died before its mirror echo:
     # set only when every consumed entry carries the stamp, so it is echoed once.
     if _batch_recovery_echo_owed(consumed):

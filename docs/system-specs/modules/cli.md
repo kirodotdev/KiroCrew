@@ -3328,7 +3328,18 @@ pins the contract.
     listed drop-in that sets `Restart=` and daemon-reload in the matching scope
     (`sudo systemctl daemon-reload` for system, `systemctl --user daemon-reload`
     for user); the base-unit remedy remains the fallback. With no loaded
-    drop-ins, the line is unchanged.
+    drop-ins, the line is unchanged. A fourth read asks for the LOADED
+    `ExecStart`: when its program resolves inside the installer's fixed venv
+    (`crew-venv`) while `crew-venv-current` resolves to another managed tree,
+    an in-app update installed a version no service start runs, and one line
+    names the loaded path, the linked tree and the remedy: the linked tree's own
+    `crew-venv-current/bin/kirocrew service install`, its path shell-quoted,
+    which writes the unit through the link. It is printed without sudo: a
+    root `HOME` resolves another data home, and the re-render would then name
+    the versioned tree. For the per-user unit the remedy is to point
+    `ExecStart=` at that path in the reported `FragmentPath`, quoted the way
+    systemd reads it (`%` doubled), and `systemctl --user daemon-reload`. A
+    link that names the installer's venv itself (no update yet) makes no claim.
     `kirocrew doctor` repeats these lines, each
     naming its scope, as `unit:` rows of its Managed Service section
     (`service.controller.stale_unit_notes`; empty off systemd), and the

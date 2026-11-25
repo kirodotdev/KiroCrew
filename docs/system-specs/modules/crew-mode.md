@@ -2376,6 +2376,33 @@ thread open) are the same `CrewmateRowBody` read through the same `signalsOf`
 resolver, so the full roster, the folded switcher and the status filter never
 disagree about who is parked on a question, on watch, or holding a goal.
 
+A Bot whose agent file is gone is marked, never dropped. An uninstalled package
+or a deleted file leaves the Bot's row in the config, bound to an agent nothing
+declares, and that row still holds its memory, chats and schedules. `GET
+/api/members` ships `agent_missing: true` on such a row and omits the key on
+every other (`dashboard/members_roster_agent.members_missing_agent`, one thread
+hop for the roster). It rescans the agents directories first, then names a row
+when a complete user-level scan leaves the installed snapshot without the row's
+template and its own crewmate file is absent on disk. An existing crewmate file
+is never marked, even if it could not be parsed or its directory could not be
+listed; a stat error names nobody. That is absence, not the removal
+`reset_dangling_default_agent` waits for, so
+the mark still shows after a restart; it changes nothing, so absence is enough.
+A row on the managed `kirocrew` template or a kiro-cli built-in agent, and a row
+whose template the edition or its own workspace supplies, is never named; an
+empty snapshot or partial user-level scan names nobody. The roster row draws
+an **Agent missing** chip (`CrewmateRowBody`), and the Bot's thread says why it cannot
+reply, naming the row's `kiro_agent` as a value when it is non-empty (never a
+file path), and how to bring the agent back (for an app's agent, enable it or
+disable and re-enable it in Apps › Library, as `missing_agent_reason` says;
+otherwise reinstall what provided it, or put its file back). Beside that it
+offers **Delete bot…**, with a line that shows only alongside the button: it
+opens the delete step, and deleting removes the Bot with its picture and goal
+check-ins and keeps its memory and past chats. The button opens the Bot editor
+on its Danger zone (`useMembersPageCrewEditor.openCrewDangerZone`), for every
+Bot but the default one, which cannot be deleted. The delete is still
+the editor's own two-step confirm; nothing deletes a Bot for the person.
+
 Unread is also the one signal drawn OUTSIDE the closed chip. Under it,
 in the header's floating band, hangs one small Glass pill per Bot with an
 unread message who is not the open one (`crewmate-switcher-unread-pill`, roster

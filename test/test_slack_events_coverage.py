@@ -1332,10 +1332,12 @@ class TestHandleSlash:
         ]
 
     @pytest.mark.asyncio
-    async def test_a_shared_user_is_refused_the_slash_command(self, _mock_sel, _real_sel):
-        """A shared user (slack.shared_access) drives work by message, never by slash."""
+    @pytest.mark.parametrize("text", ["status", "yolo on", "approval trust"])
+    async def test_a_shared_user_is_refused_the_slash_command(self, _mock_sel, _real_sel, text):
+        """A shared user (slack.shared_access) drives work by message, never by slash:
+        YOLO and approval-mode changes stay the owner's."""
         orch = _make_orch()
-        payload = {"command": "/kirocrew", "user_id": "U_SHARED", "text": "status"}
+        payload = {"command": "/kirocrew", "user_id": "U_SHARED", "text": text}
         with (
             patch("kiro_crew.slack.events.is_shared_user", return_value=True),
             patch("kiro_crew.slack.events.is_shared_listed", return_value=True),
@@ -1343,7 +1345,7 @@ class TestHandleSlash:
             await ev._handle_slash(orch, payload)
             await _drain(orch)
         assert _audit_rows(_real_sel, "slack.slash_command") == [
-            ("U_SHARED", "denied", "status", "unauthorized sender")
+            ("U_SHARED", "denied", text, "unauthorized sender")
         ]
 
     @pytest.mark.asyncio

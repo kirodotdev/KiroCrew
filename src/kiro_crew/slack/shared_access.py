@@ -303,7 +303,7 @@ async def check(client: Any, user_id: str, *, owner_id: str, verify: bool) -> Ve
 SHARED_OWNER_ONLY_TEXT = "Blocked: Only the bot owner can do that."
 
 #: The buttons a shared user may press: tool approvals (the handler admits only
-#: the requester's own prompt and never their Trust), the review-mode draft of
+#: the requester's own prompt, Trust on it included), the review-mode draft of
 #: their own turn (the handler admits only the requester or the owner), question
 #: cards (an answer is a new message, as if typed; refused in a code channel but the
 #: one they opened), Approve / Reject on a helper agent's card in a code channel (the
@@ -373,8 +373,8 @@ def shared_command_refused(user_id: str, text: str, *, modifiers: bool = True) -
 def shared_action_permitted(action_id: str) -> bool:
     """Whether a shared user may press the button *action_id* at all.
 
-    Trust is let through to its handler only so the refusal is answered there,
-    where the pending prompt is known; a shared user never grants Trust.
+    A tool-approval press (Trust included) is let through to its handler, which
+    knows the pending prompt and admits only the person whose turn posted it.
     """
     return action_id in _SHARED_ACTIONS or action_id.startswith(_SHARED_ACTION_PREFIXES)
 

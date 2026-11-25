@@ -361,6 +361,18 @@ class TestUserQuickPrompts:
         assert "[QUICK PROMPT /cr]\nReview the retry path." in msg
         assert span[0] == span[1]
 
+    def test_a_tapped_label_keeps_its_token(self, tmp_path, prompts_dir):
+        """A chat option tap's label is sent as written: the model wrote it."""
+        (prompts_dir / "cr.md").write_text(_opted_in("Review {arg}."), encoding="utf-8")
+        tapped = "/cr the retry path"
+
+        msg, _ = _make_builder(tmp_path).build_message(
+            tapped, is_new_session=False, user_text_range=(0, len(tapped)), quick_prompts=False
+        )
+
+        assert "[QUICK PROMPT" not in msg
+        assert tapped in msg
+
 
 class TestNotForwardedToTheHarness:
     """Under the ``claude_code`` provider ANY leading slash is forwarded to the

@@ -722,22 +722,22 @@ async def dispatch(payload: dict) -> None:
         approval_key, press_nonce = split_approval_token(
             action.get("value", "") or action_id.rsplit("_", 1)[-1]
         )
-        # A shared user answers only their own turn's prompt and never grants
-        # Trust; the prompt stays pending for the person it belongs to.
+        # A shared user answers only their own turn's prompt, Trust included; the
+        # prompt stays pending for the person it belongs to.
         _asker = getattr(SlackApprovalDecider._REGISTRY.get(str(approval_key)), "requester", "")
-        if is_shared_listed(user_id) and (pressed_trust or _asker != user_id):
+        if is_shared_listed(user_id) and _asker != user_id:
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.transport_tool_approval",
                 outcome="denied",
                 source="slack",
                 resources=f"approval_key={approval_key}",
-                error="trust is owner-only" if pressed_trust else "not the requester",
+                error="not the requester",
             )
             # Who can answer, while this card's window is still open; a closed or
             # stale one is answered by nobody, so say that instead.
             _live = bool(SlackApprovalDecider.session_for(approval_key, nonce=press_nonce))
-            _why = _owner_only_text(pressed_trust, _asker) if _live else APPROVAL_NOT_WAITING_TEXT
+            _why = _owner_only_text(_asker) if _live else APPROVAL_NOT_WAITING_TEXT
             _thread = payload.get("message", {}).get("thread_ts") or ""
             await _tell_user(channel, user_id, _thread, _why)
             return
@@ -771,7 +771,13 @@ async def dispatch(payload: dict) -> None:
         # say "trusted" only when the grant really took: under a ``permission_mode``
         # deny of ``trust`` the press approves this one tool.
         is_trust = False
-        if pressed_trust and trust_permitted():
+        # Asked again after the channels await: a shared user removed during it
+        # widens nothing.
+        if (
+            pressed_trust
+            and trust_permitted()
+            and (is_allowed_user(user_id) or is_shared_user(user_id))
+        ):
             sess_key = SlackApprovalDecider.session_for(approval_key, nonce=press_nonce)
             # No live prompt answers to this press, so there is no session to widen.
             # Granting on the empty key would escalate whatever later reads it.
@@ -1221,9 +1227,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         APPROVAL_OWNER_OR_ASKER_TEXT,
     )
     from kiro_crew.slack.interactions_approvals import APPROVAL_OWNER_ONLY_TEXT  # noqa: F401
-    from kiro_crew.slack.interactions_approvals import (  # noqa: F401
-        APPROVAL_TRUST_OWNER_ONLY_TEXT,
-    )
     from kiro_crew.slack.interactions_approvals import _REVIEW_AUTH_DENIED_MSG  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _refused_press_text  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_ROOT_SUFFIX  # noqa: F401

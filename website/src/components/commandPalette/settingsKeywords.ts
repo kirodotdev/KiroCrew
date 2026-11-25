@@ -331,6 +331,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'display.reuse-the-current-terminal': ['same terminal window', 'reuse terminal tab', 'copy command to terminal'],
   'display.reverse-trackpad-swipe': ['natural scrolling', 'invert swipe', 'swipe direction'],
   'display.show-channels': ['hide channels', 'channels in left rail', 'remove channels from sidebar'],
+  'display.show-discover-in-the-sidebar': ['hide discover', 'discover in left rail', 'remove discover from sidebar'],
   'display.show-search-in-the-top-bar': ['search bar', 'top bar search', 'hide search box'],
   'display.show-task-runner': ['hide task runner', 'task runner in left rail', 'turn off task runner'],
   'display.show-tray-icon': ['tray icon', 'menu bar icon', 'hide tray icon', 'system tray icon'],

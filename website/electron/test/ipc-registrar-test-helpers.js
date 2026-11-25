@@ -90,6 +90,11 @@ function makeHotkeyStub() {
     state,
     module: {
       DEFAULT_GLOBAL_HOTKEY,
+      // Stands in for the real check, which global-hotkey.test.js covers: ""
+      // and anything starting "Alt+" pass, the rest is refused.
+      parseRecordedHotkey(value) {
+        return value === "" || (typeof value === "string" && value.startsWith("Alt+")) ? value : null;
+      },
       createSummonHandler(deps) {
         state.summonDeps = deps;
         return () => { state.summonCalls += 1; };
@@ -534,6 +539,7 @@ const SHELL_HANDLES = [
   "gateway:can-restart",
   "gateway:restart",
   "global-hotkey:get",
+  "global-hotkey:set",
   "image:copy-at",
   "local-gateway:get",
   "local-gateway:set",

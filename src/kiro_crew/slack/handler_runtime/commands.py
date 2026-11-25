@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         bind_bot_memory,
         bots_text,
         build_timing_footer,
+        canonical_key,
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
@@ -129,6 +130,7 @@ async def _handle_slash_command(
         "!allowlist": _bang_allowlist,
         "!channel": _bang_channel,
         "!title": _bang_title,
+        "!trust": _bang_trust,
     }.get(cmd)
     if handler is not None:
         return await handler(
@@ -149,6 +151,40 @@ async def _handle_slash_command(
         f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
         reply_ts,
     )
+    return ""
+
+
+# ── !trust / !trust off / !trust status ──
+async def _bang_trust(
+    cmd_text: str,
+    slack: SlackClientOps,
+    sessions: SessionManager,
+    channel: str,
+    reply_ts: str,
+    msg_ts: str,
+    session_key: str,
+    user_id: str,
+    conversation_log: ConversationLog | None,
+) -> str:
+    """Put this thread's session on Trust, or take it off (owner-only)."""
+    from kiro_crew.slack import thread_trust
+
+    # The session the thread's turns run on: a thread a dashboard chat was sent
+    # to belongs to that chat's session, which the native path's key does not
+    # name (the transport path has already resolved it to the same owner).
+    owner = sessions.get_session_for_thread(reply_ts)
+    if isinstance(owner, str) and owner and owner != canonical_key(reply_ts):
+        session_key = owner
+    parts = cmd_text.split(maxsplit=1)
+    reply = await thread_trust.handle(
+        parts[1] if len(parts) > 1 else "",
+        state=_dashboard_state,
+        session_key=session_key,
+        channel=channel,
+        reply_ts=reply_ts,
+        user=user_id,
+    )
+    await slack.post_message(channel, reply, reply_ts)
     return ""
 
 
