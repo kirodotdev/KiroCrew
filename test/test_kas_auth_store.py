@@ -220,7 +220,7 @@ def test_load_non_object_envelope_returns_none(tmp_path: Path):
     # (test_kas_auth_store_lost_key.py).
     store.save(_token())
     assert store.load("social") is not None
-    assert [p.read_text() for p in vault.glob("secrets.enc.unreadable-*")] == ["[1, 2, 3]"]
+    assert [p.read_text() for p in vault.glob("secrets.enc.corrupt-*")] == ["[1, 2, 3]"]
 
 
 def test_load_malformed_token_json_returns_none(tmp_path: Path):

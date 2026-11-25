@@ -33,7 +33,7 @@ def _vault_dir(tmp_path: Path) -> Path:
 
 
 def _set_aside(vault: Path, stem: str) -> list[Path]:
-    return sorted(vault.glob(f"{stem}.unreadable-*"))
+    return sorted(vault.glob(f"{stem}.corrupt-*"))
 
 
 def _sign_in(store: TokenStore, token: KasToken) -> None:
@@ -106,7 +106,7 @@ def test_a_readable_vault_is_never_set_aside(tmp_path: Path):
 
     assert store.load("builder_id").access_token == "at-old"
     assert store.load("external_idp").access_token == "at-ext"
-    assert list(vault.glob("*.unreadable-*")) == []
+    assert list(vault.glob("*.corrupt-*")) == []
     assert (vault / ".vault_key").read_bytes() == key
 
 
@@ -126,4 +126,33 @@ def test_a_key_that_cannot_be_read_is_not_a_lost_key(tmp_path: Path, monkeypatch
         with pytest.raises(TokenStoreError):
             store.save(_token())
     assert (vault / "secrets.enc").read_bytes() == old
-    assert list(vault.glob("*.unreadable-*")) == []
+    assert list(vault.glob("*.corrupt-*")) == []
+
+
+def test_a_key_rename_that_fails_leaves_a_recoverable_vault(tmp_path: Path, monkeypatch):
+    """The bad key moves first, so a failed set-aside leaves both files in place."""
+    import kiro_crew.auth.store as store_mod
+
+    store, old = _signed_in_store(tmp_path)
+    vault = _vault_dir(tmp_path)
+    (vault / ".vault_key").write_bytes(b"short")
+    real = store_mod.os.replace
+
+    def replace(src, dst):
+        if Path(src).name == ".vault_key":
+            raise PermissionError(errno.EACCES, "held open", str(src))
+        return real(src, dst)
+
+    with monkeypatch.context() as m:
+        m.setattr(store_mod.os, "replace", replace)
+        with pytest.raises(TokenStoreError):
+            store.save(_token())
+    assert (vault / "secrets.enc").exists(), "the store must not move before its bad key"
+    assert (vault / "secrets.enc").read_bytes() == old
+    assert list(vault.glob("*.corrupt-*")) == []  # nothing moved, no placeholder left
+
+    _sign_in(store, _token())
+
+    assert store.load("builder_id").access_token == "at-new"
+    assert [b.read_bytes() for b in _set_aside(vault, "secrets.enc")] == [old]
+    assert [b.read_bytes() for b in _set_aside(vault, ".vault_key")] == [b"short"]

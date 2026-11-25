@@ -39,6 +39,7 @@ from kiro_crew.platform_compat import (
     release_lock,
 )
 from kiro_crew.secrets import SecretVault
+from kiro_crew.sqlite_quarantine import reserve_quarantine_name
 
 logger = logging.getLogger(__name__)
 
@@ -186,14 +187,15 @@ def _parse_dt(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _free_backup_name(path: Path, stamp: str) -> Path:
-    """``<path>.unreadable-<stamp>``, with a counter when that name is taken."""
-    candidate = path.with_name(f"{path.name}.unreadable-{stamp}")
-    n = 1
-    while os.path.lexists(candidate):
-        n += 1
-        candidate = path.with_name(f"{path.name}.unreadable-{stamp}-{n}")
-    return candidate
+def _keep_aside(path: Path) -> Path:
+    """Rename ``path`` to a reserved ``<name>.corrupt-<UTC time>`` beside it."""
+    target = reserve_quarantine_name(path)
+    try:
+        os.replace(path, target)
+    except OSError:
+        target.unlink(missing_ok=True)
+        raise
+    return target
 
 
 class TokenStoreError(Exception):
@@ -366,7 +368,7 @@ class TokenStore:
         Unopenable means ``secrets.enc`` exists and its key file is missing or is not
         a 32-byte key, or the store is not a vault envelope. The vault refuses to mint
         a key over an existing store, so without this every later sign-in fails to
-        save. The files are renamed to ``<name>.unreadable-<UTC time>`` beside the
+        save. The files are renamed to ``<name>.corrupt-<UTC time>`` beside the
         vault, never deleted, so a restored key can still open the old one. A key file
         that exists but cannot be read (a lock, a privacy prompt) is NOT lost: the
         files stay where they are and the save reports the failure.
@@ -393,16 +395,16 @@ class TokenStore:
                     reason = "store is not a vault"
                 else:
                     return False
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             # A key of the wrong length opens nothing, so it moves with its store.
-            moves = [store_path] if key_size in (None, 32) else [store_path, key_path]
-            for path in moves:
-                os.replace(path, _free_backup_name(path, stamp))
+            # The key moves FIRST: if the store's rename then fails, the next
+            # sign-in finds a store with no key and recovers; the other order
+            # would leave a bad key with no store, which no later save replaces.
+            moves = [store_path] if key_size in (None, 32) else [key_path, store_path]
+            kept = [_keep_aside(path) for path in moves]
         logger.warning(
-            "KAS sign-in vault could not be opened (%s); kept it as *.unreadable-%s "
-            "and started a new one",
+            "KAS sign-in vault could not be opened (%s); kept it as %s and started a new one",
             reason,
-            stamp,
+            ", ".join(p.name for p in kept),
         )
         return True
 
