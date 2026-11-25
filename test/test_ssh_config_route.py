@@ -567,12 +567,153 @@ def test_each_form_uses_the_live_address_guard(
         "ssh -T -W %h:%p jump.example",
         "ssh -W %h:%p jump.example extra",
         "ssh -i key -J jump.example -W %h:%p jump.example",
-        "aws ssm start-session --target %h",
         "ssh -W %h:%p jump.example;true",
+        # A plain program that never dials %h, or names another destination too.
+        "corp-proxy connect jump.example",
+        "nc -U %h",
+        "socat - UNIX-CONNECT:%h",
+        "socat - UNIX:%h",
+        "socat - ABSTRACT-CONNECT:%h",
+        "ncat --unixsock %h",
+        "nc -X connect %h %p",
+        "corp-proxy --target=%h",
+        "socat - OPEN:%h",
+        "nc -x 127.0.0.1:3128 %h %p",
+        "nc -x127.0.0.1:3128 %h %p",
+        "nc -x ::1:3128 %h %p",
+        "nc -x proxy.example:3128 %h %p",
+        "nc -x localhost %h %p",
+        "nc -xlocalhost %h %p",
+        "nc -w10 %h %p",
+        "nc -w 0 %h %p",
+        "socat - TCP:localhost:22,bind=%h",
+        "corp-proxy --via=203.0.113.55 %h",
+        "corp-proxy --via=::1 %h",
+        "corp-proxy --via=me@localhost %h",
+        "nc %h.other.example %p",
+        "nc other-%h %p",
+        # Percent tokens other than %h and %p name other hosts or local state.
+        "nc %l %p",
+        "nc %h %p %n",
+        "nc %%h %p",
+        "corp-proxy --user=%r %h",
+        # Shell syntax, quoting and expansion are not one plain argv.
+        "nc %h %p;true",
+        "nc %h %p|tee",
+        "nc %h %p>/tmp/x",
+        "nc $HOST %h",
+        "nc %h `id`",
+        "sh -c 'nc %h %p'",
+        '"nc" %h %p',
+        "~/bin/proxy %h",
+        "nc %h* %p",
+        # Clients that route through ssh config qualify only as ssh -W, also
+        # behind a program that runs them.
+        "/usr/bin/ssh %h",
+        "scp %h",
+        "SFTP.EXE %h",
+        "rsync %h",
+        "autossh -W %h:%p jump",
+        "exec ssh -W %h:%p jump",
+        "env ssh %h",
+        "busybox ssh %h",
+        "timeout ssh -W %h:%p jump",
+        "env FOO=1 nc %h %p",
+        "-nc %h %p",
+        "nc",
     ],
 )
 def test_other_proxy_commands_are_refused(config_dir, ssh_g, command):
     ssh_g.stdout = _effective(proxycommand=command)
+    assert ssh_config_route.route_is_not_self(HOST) is False
+
+
+_PLAIN_PROXY_COMMANDS = [
+    "/usr/local/bin/corp-proxy proxy %h",
+    "nc %h %p",
+    "/usr/bin/socat - TCP:%h:%p",
+    "socat STDIO tcp4:%h:%p",
+    "ncat %h:%p",
+]
+
+
+@pytest.mark.parametrize(
+    "command", ["nc -x selfproxy %h %p", "nc -x flaky %h %p", "corp-proxy selfproxy %h"]
+)
+def test_a_plain_proxy_word_dns_maps_to_this_machine_refuses(
+    config_dir, ssh_g, monkeypatch, command
+):
+    def _gai(name, *_args, **_kwargs):
+        if name == "selfproxy":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        if name == "flaky":
+            raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+        raise socket.gaierror(socket.EAI_NONAME, "no such name")
+
+    monkeypatch.setattr(ssh_config_route.socket, "getaddrinfo", _gai)
+    ssh_g.stdout = _effective(proxycommand=command)
+    assert ssh_config_route.route_is_not_self(HOST) is False
+
+
+@pytest.mark.parametrize("command", _PLAIN_PROXY_COMMANDS)
+@pytest.mark.parametrize("hostname", [HOST, "far.example", "198.51.100.9", "2001:db8::9"])
+def test_a_plain_proxy_command_to_a_remote_name_is_cleared(config_dir, ssh_g, command, hostname):
+    ssh_g.stdout = _effective(hostname=hostname, proxycommand=command)
+    assert ssh_config_route.route_is_not_self(HOST) is True
+
+
+def test_a_wildcard_proxy_command_block_clears_its_hosts(config_dir, ssh_g):
+    # A proxy tool's generated block: every matching host goes through the proxy.
+    (config_dir / "config").write_text(
+        "Host *.example\n  ProxyCommand=/usr/local/bin/corp-proxy proxy %h\n"
+        "  ServerAliveInterval 15\n  User someone\n",
+        encoding="utf-8",
+    )
+    ssh_g.stdout = _effective(hostname=HOST, proxycommand="/usr/local/bin/corp-proxy proxy %h")
+    assert ssh_config_route.route_is_not_self(HOST) is True
+
+
+@pytest.mark.parametrize(
+    "hostname", ["tcp:127.0.0.1:22", "unix-connect:a.sock", "abstract-connect:x.y", "a.b:22"]
+)
+@pytest.mark.parametrize("command", ["socat - %h", "socat %h -", "nc %h %p"])
+def test_a_plain_proxy_command_refuses_a_final_hostname_with_an_address_type(
+    config_dir, ssh_g, hostname, command
+):
+    ssh_g.stdout = _effective(hostname=hostname, proxycommand=command)
+    assert ssh_config_route.route_is_not_self(HOST) is False
+
+
+@pytest.mark.parametrize("hostname", ["i-0123456789abcdef0", "desktop", "desktop."])
+def test_a_plain_proxy_command_needs_a_dotted_or_ip_final_hostname(config_dir, ssh_g, hostname):
+    # A dotless HostName may be an id only the proxy can map, so it is not a proof.
+    ssh_g.stdout = _effective(hostname=hostname, proxycommand="aws ssm start-session --target %h")
+    assert ssh_config_route.route_is_not_self(HOST) is False
+
+
+@pytest.mark.parametrize(
+    "hostname", ["localhost", "127.0.0.1", "203.0.113.55", "crew-host.example", "own.example"]
+)
+def test_a_plain_proxy_command_to_this_machine_refuses(config_dir, ssh_g, monkeypatch, hostname):
+    monkeypatch.setattr(
+        argv_floor_hosts,
+        "_own_host_names",
+        lambda: frozenset({"203.0.113.55", "crew-host.example"}),
+    )
+    dns = {"own.example": "203.0.113.55"}
+
+    def _gai(name, *_args, **_kwargs):
+        if name not in dns:
+            raise socket.gaierror(socket.EAI_NONAME, "no such name")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (dns[name], 0))]
+
+    monkeypatch.setattr(ssh_config_route.socket, "getaddrinfo", _gai)
+    ssh_g.stdout = _effective(hostname=hostname, proxycommand="nc %h %p")
+    assert ssh_config_route.route_is_not_self(HOST) is False
+
+
+def test_a_plain_proxy_command_with_a_proxy_jump_refuses(config_dir, ssh_g):
+    ssh_g.stdout = _effective(proxycommand="nc %h %p", proxyjump="jump.example")
     assert ssh_config_route.route_is_not_self(HOST) is False
 
 
