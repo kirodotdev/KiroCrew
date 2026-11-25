@@ -430,6 +430,25 @@ and an immediate wake would stop it, and notify, on every pass; so a budget that
 runs out during a user turn in the slot, or while the gateway is down, still waits
 for the deadline.
 
+The cycle cap is also enforced only when `_timer` wakes, so an arm that follows a
+turn wakes a prompt loop whose cap is spent within `_CAP_STOP_GRACE_SECS` (two
+minutes) and keeps its deadline: the turn-end re-arm (`notify_turn_complete`,
+directly or deferred past a fire window, which also carries an approval answered
+inside that window) and a channel loop's own re-arm after its inline turn. Not at
+once, because Research Lab uses the cap as its planned cycle count and ends its own
+loop a few seconds after the last cycle; a stop that beat it would post a cycle-cap
+notice on every normal finish. A budget spent at a post-turn arm still waits (that
+residual is kept); the cap's grace is safe there because a post-turn arm is never a
+revival, so a revived capped loop takes the grace once per turn in its slot, not
+once per reconciler pass. Every other arm keeps the deadline, for the reason a spent
+budget does: a revival through `update()` (an app reconciler re-arms a cap-stopped
+loop without zeroing its count), a settings update, `start()` after a restart, a
+rollback re-arm and a reconciler rescue; one of these inside the grace replaces it
+with the deadline. A structured monitor and a person-wait hold keep it too. A capped
+work-ledger watch with open items is extended at that wake and re-armed toward its
+unchanged deadline; one whose open items all wait on a person holds there, which
+moves its deadline one interval past the wake.
+
 A prompt-path work-ledger watch is the one loop whose own bounds do not end it
 while its subject is live. When `_timer` finds the cycle cap or the runtime
 budget spent on a running loop that observes a work ledger

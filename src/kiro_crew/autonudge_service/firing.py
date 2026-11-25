@@ -828,7 +828,7 @@ async def _finish_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # after the previous turn finished; the busy-skip + backoff above
     # handles any overlap.
     if is_channel_key(loop.slot_key) and loop.active and loop.id in self._loops:
-        self._arm_from_deadline(loop)
+        self._arm_from_deadline(loop, after_turn=True)
 
 
 # How much one automatic extension of a work-ledger watch adds: a quarter of the

@@ -176,7 +176,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_apply_monitor_user_stop": ("method", "0d02c6c3b88e"),
     "_apply_staged_monitor": ("method", "1eecbc416bc8"),
     "_arm_and_announce_deadline": ("method", "fa9fb3019298"),
-    "_arm_from_deadline": ("method", "fa9fb3019298"),
+    "_arm_from_deadline": ("method", "5302b33936a0"),
     "_arm_timer": ("method", "e290ef84f151"),
     "_begin_maintenance_quiesce": ("method", "f7956b1e6531"),
     "_cancel_timer": ("method", "bbb2f1624984"),
