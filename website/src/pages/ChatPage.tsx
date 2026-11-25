@@ -4,6 +4,8 @@ import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
@@ -638,6 +640,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Auto-scroll during streaming — only when pinned to bottom
   const lastMsg = messages[messages.length - 1]
   const isStreaming = lastMsg?.role === 'streaming'
+  // Text for the transcript's one live region (TranscriptScrollShell's
+  // `announcement`), spoken when a turn lands and released shortly after. The
+  // turn is read as running while the slot runs, not only while a row streams:
+  // a turn of several model calls finalizes each segment into an `assistant`
+  // row mid-turn, and reading that as the landing would speak partial text.
+  const pendingApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const tailUserSpeaker = useUserRowSpeaker(
+    lastMsg?.meta ?? undefined,
+    activeSlot ?? undefined,
+    lastMsg?.content,
+    connected ? sessionTitles : undefined,
+  )
+  const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker)
   // Follow-up option chips and the ownership of the text they append.
   const {
     followUpOptions, followUpSourceKey, followUpMulti,
@@ -665,7 +680,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
     messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
-    setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
+    setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason, announceSent,
   })
 
   // Submit inline document comments to the session the file was opened from,
@@ -931,7 +946,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     effectiveSidebarWidth, toggleAct, handleSpeak, handleApplyPlan,
   } = useMessageActions({
     dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
-    tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
+    tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating, announceSent,
     // The same document test appShell's `isEmbed` makes, plus the pop-out session window: a companion chat renders on its host's route.
     embedChatFrame: embedMode === 'chat' && (popout || location.pathname.startsWith('/embed/')),
   })
@@ -1014,6 +1029,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch,
     onSlashRefused: reportSlashRefusal,
     showActionError,
+    announceSent,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
   // decision for the active slot (never the flipped chord), including a worker
@@ -1288,7 +1304,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               footerToolsReturned={footerToolsReturned}
               liveFoot={<EngineSubagentLiveCard slot={activeSlot} running={slotRunning} turnMark={`${currentSlot?.turn_gen ?? ''}:${currentSlot?.turn ?? ''}`} />}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
-              spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
+              spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement} announcement={announcement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
             />
             <ConductorModeEffect />
