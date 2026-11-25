@@ -26,6 +26,7 @@ from kiro_crew.feishu import streaming_card as sc
 from kiro_crew.feishu.client import CardApiError
 from kiro_crew.feishu.streaming_card import StreamingCardSession
 from kiro_crew.testing.synthetic_credentials import github_classic
+from kiro_crew.testing.wait import await_until
 
 _LOGGER = "kiro_crew.feishu.streaming_card"
 
@@ -313,8 +314,9 @@ class TestOptimizeCardMarkdown:
     def test_demoting_an_image_never_joins_the_text_around_it(self) -> None:
         """Deleting the image outright would join its two neighbours into one
         word, which can rebuild a credential a scanner only ever saw split."""
-        out = sc.optimize_card_markdown("AKIA![x](https://e.com/y.png)IOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        token = github_classic()
+        out = sc.optimize_card_markdown(f"{token[:8]}![x](https://e.com/y.png){token[8:]}")
+        assert token not in out
 
     def test_a_feishu_image_key_is_kept(self) -> None:
         text = "![alt](img_v2_abc)"
@@ -726,7 +728,7 @@ class TestConcurrentFlushes:
         async def gated(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
             if _kind(method, path) == "push" and not entered.is_set():
                 entered.set()
-                await asyncio.wait_for(release.wait(), timeout=5)
+                await await_until(release, what="the test releasing the first push")
             return await real_card_api(method, path, body)
 
         client.card_api = gated  # type: ignore[method-assign]
@@ -735,7 +737,7 @@ class TestConcurrentFlushes:
         first = asyncio.create_task(session.push("first", force=True))
         second: asyncio.Task[Any] | None = None
         try:
-            await asyncio.wait_for(entered.wait(), timeout=5)  # first holds the lock
+            await await_until(entered, what="the first push holding the lock")
             second = asyncio.create_task(session.push("second", force=True))
 
             # Wait for the second call to be genuinely queued ON the lock. Yielding
@@ -749,7 +751,7 @@ class TestConcurrentFlushes:
                 pytest.fail("the second flush never queued on the lock")
 
             release.set()
-            await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+            await await_until(asyncio.gather(first, second), what="both pushes finishing")
         finally:
             release.set()
             for task in (first, second):
