@@ -23881,6 +23881,8 @@
     "restart_interrupts": "게이트웨이를 다시 시작하면 진행 중인 대화와 예약된 작업이 잠시 중단됩니다."
   },
   "memoryEditing": {
+    "edited": "수정됨",
+    "current": "현재",
     "adjust": "편집 조정",
     "after": "변경 후",
     "all_scope": "‘{{query}}’에 일치하는 모든 기록을 선택했습니다. 필터를 바꾸려면 선택을 해제하세요.",
@@ -23922,7 +23924,6 @@
     "original_reference": "원본 참조",
     "history": "변경 이력",
     "proposal": "제안된 변경",
-    "accepted": "기록된 변경",
     "use_proposal": "제안된 값 사용",
     "no_history": "아직 기록된 변경 이력이 없습니다.",
     "review_proposals": "제안 검토 ({{count}})",
@@ -23935,8 +23936,7 @@
     "restore_hint": "복원하면 이 값이 새 버전으로 저장됩니다. 이전 버전은 기록에 남습니다.",
     "restored": "복원된 버전",
     "restore_now": "현재",
-    "restore_after": "복원 후",
-    "current_version": "현재 버전"
+    "restore_after": "복원 후"
   },
   "memoryPage": {
     "applies_always": "모든 세션",
@@ -23973,7 +23973,6 @@
     "match_hint": "검색어와 얼마나 일치하는지",
     "match_value": "일치도 {{value}}",
     "more_actions": "추가 작업",
-    "new_lesson": "새 학습 내용",
     "new_memory": "새 기억",
     "new_memory_hint": "이미 있는 키에는 새 값이 들어갑니다.",
     "open_recovery": "복구 열기",
@@ -23993,6 +23992,9 @@
     "scope_all_repos": "모든 저장소",
     "search_filters": "필터 검색",
     "scroll_more": "스크롤해서 더 보기",
+    "graph_selected": "{{formatted}}개 선택됨",
+    "show_in_memories": "메모리에서 보기",
+    "loaded_progress": "{{loaded}} / {{total}}개 불러옴",
     "filters_width": "필터 영역 너비",
     "select": "선택",
     "select_limit_hint": "한 번에 최대 {{limit}}개",

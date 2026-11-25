@@ -23881,6 +23881,8 @@
     "restart_interrupts": "重启网关会短暂中断正在进行的对话和计划任务。"
   },
   "memoryEditing": {
+    "edited": "已修改",
+    "current": "当前",
     "adjust": "调整修改",
     "after": "修改后",
     "all_scope": "已选中“{{query}}”的全部匹配记录。清空选择后可更改筛选条件。",
@@ -23922,7 +23924,6 @@
     "original_reference": "原始记录引用",
     "history": "修订历史",
     "proposal": "建议修改",
-    "accepted": "已记录的修改",
     "use_proposal": "使用建议值",
     "no_history": "尚无修订记录。",
     "review_proposals": "审阅建议（{{count}}）",
@@ -23935,8 +23936,7 @@
     "restore_hint": "恢复会把这个值保存为新版本。较早的版本仍保留在历史中。",
     "restored": "已恢复的版本",
     "restore_now": "当前",
-    "restore_after": "恢复后",
-    "current_version": "当前版本"
+    "restore_after": "恢复后"
   },
   "memoryPage": {
     "applies_always": "每次会话",
@@ -23973,7 +23973,6 @@
     "match_hint": "与搜索词的匹配程度",
     "match_value": "匹配度 {{value}}",
     "more_actions": "更多操作",
-    "new_lesson": "新建经验",
     "new_memory": "新建记忆",
     "new_memory_hint": "已存在的键会改用新值。",
     "open_recovery": "打开恢复",
@@ -23993,6 +23992,9 @@
     "scope_all_repos": "所有仓库",
     "search_filters": "搜索筛选项",
     "scroll_more": "滚动查看更多",
+    "graph_selected": "已选 {{formatted}} 条",
+    "show_in_memories": "在记忆中查看",
+    "loaded_progress": "已加载 {{loaded}} / {{total}}",
     "filters_width": "筛选栏宽度",
     "select": "选择",
     "select_limit_hint": "一次最多 {{limit}} 条",

@@ -763,7 +763,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
     <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate canRecall={false} onCreated={() => { void showLessons('load') }}
       memories={controls => <>
         {/* With vector memory off the store has no records to list; its lessons are the card below. */}
-        {!(vectorSettled && !vectorActive) && <MemoryList store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
+        {!(vectorSettled && !vectorActive) && <MemoryList jump={controls.jump} store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
           selecting={controls.selecting} onSelectingChange={controls.setSelecting} recallOpen={controls.recallOpen} onRecallOpenChange={controls.setRecallOpen}
           onDirtyChange={setRecordDirty} onRecovery={() => controls.openTab('recovery')} />}
         {!vectorActive && (

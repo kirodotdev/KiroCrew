@@ -25085,6 +25085,8 @@
     "restart_interrupts": "Le redémarrage de la passerelle interrompt brièvement les conversations actives et les tâches planifiées."
   },
   "memoryEditing": {
+    "edited": "Modifié",
+    "current": "Actuel",
     "adjust": "Ajuster la modification",
     "after": "Après",
     "all_scope": "Tous les résultats pour « {{query}} » sont sélectionnés. Effacez la sélection pour modifier les filtres.",
@@ -25126,7 +25128,6 @@
     "original_reference": "Référence d’origine",
     "history": "Historique des révisions",
     "proposal": "Modification proposée",
-    "accepted": "Modification enregistrée",
     "use_proposal": "Utiliser la valeur proposée",
     "no_history": "Aucune révision enregistrée.",
     "review_proposals": "Examiner les propositions ({{count}})",
@@ -25139,8 +25140,7 @@
     "restore_hint": "La restauration enregistre cette valeur comme une nouvelle version. Les versions antérieures restent dans l'historique.",
     "restored": "Version restaurée",
     "restore_now": "Maintenant",
-    "restore_after": "Après restauration",
-    "current_version": "Version actuelle"
+    "restore_after": "Après restauration"
   },
   "memoryPage": {
     "applies_always": "Chaque session",
@@ -25177,7 +25177,6 @@
     "match_hint": "Proximité avec tes mots de recherche",
     "match_value": "Correspondance {{value}}",
     "more_actions": "Plus d’actions",
-    "new_lesson": "Nouvelle leçon",
     "new_memory": "Nouveau souvenir",
     "new_memory_hint": "Une clé qui existe déjà prend la nouvelle valeur.",
     "open_recovery": "Ouvrir Récupération",
@@ -25197,6 +25196,9 @@
     "scope_all_repos": "Tous les dépôts",
     "search_filters": "Rechercher dans les filtres",
     "scroll_more": "Fais défiler pour voir la suite",
+    "graph_selected": "{{formatted}} sélectionnés",
+    "show_in_memories": "Voir dans Mémoires",
+    "loaded_progress": "{{loaded}} / {{total}} chargés",
     "filters_width": "Largeur des filtres",
     "select": "Sélectionner",
     "select_limit_hint": "Jusqu’à {{limit}} à la fois",

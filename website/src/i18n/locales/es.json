@@ -25085,6 +25085,8 @@
     "restart_interrupts": "Reiniciar la puerta de enlace interrumpe brevemente las conversaciones activas y el trabajo programado."
   },
   "memoryEditing": {
+    "edited": "Editado",
+    "current": "Actual",
     "adjust": "Ajustar modificación",
     "after": "Después",
     "all_scope": "Se seleccionaron todos los resultados de «{{query}}». Borra la selección para cambiar los filtros.",
@@ -25126,7 +25128,6 @@
     "original_reference": "Referencia original",
     "history": "Historial de revisiones",
     "proposal": "Cambio propuesto",
-    "accepted": "Cambio registrado",
     "use_proposal": "Usar valor propuesto",
     "no_history": "Todavía no hay revisiones registradas.",
     "review_proposals": "Revisar propuestas ({{count}})",
@@ -25139,8 +25140,7 @@
     "restore_hint": "Al restaurar, este valor se guarda como una versión nueva. Las versiones anteriores siguen en el historial.",
     "restored": "Versión restaurada",
     "restore_now": "Ahora",
-    "restore_after": "Tras restaurar",
-    "current_version": "Versión actual"
+    "restore_after": "Tras restaurar"
   },
   "memoryPage": {
     "applies_always": "Cada sesión",
@@ -25177,7 +25177,6 @@
     "match_hint": "Cuánto coincide con tus palabras de búsqueda",
     "match_value": "Coincidencia {{value}}",
     "more_actions": "Más acciones",
-    "new_lesson": "Nueva lección",
     "new_memory": "Nuevo recuerdo",
     "new_memory_hint": "Una clave que ya existe recibe el valor nuevo.",
     "open_recovery": "Abrir Recuperación",
@@ -25197,6 +25196,9 @@
     "scope_all_repos": "Todos los repositorios",
     "search_filters": "Buscar filtros",
     "scroll_more": "Desplázate para ver más",
+    "graph_selected": "{{formatted}} seleccionados",
+    "show_in_memories": "Ver en Memorias",
+    "loaded_progress": "{{loaded}} / {{total}} cargados",
     "filters_width": "Ancho de los filtros",
     "select": "Seleccionar",
     "select_limit_hint": "Hasta {{limit}} a la vez",

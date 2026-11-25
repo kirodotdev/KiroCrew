@@ -211,28 +211,35 @@ export function MemoryStoreSwitcher({ store, onStoreChange }: { store: string; o
   // Never show a private directory name as the bot: a V2 store waits for its owner.
   const pending = !selected || (selected.memory_version === 2 && !selected.owner_member)
   const name = pending ? i18nT('pages.overview.memoryTab.loading') : selected.is_default ? i18nT('memoryPage.global_memory') : selected.owner_member || selected.name
+  // The whole pill is the picker's trigger: the face, both lines, the chevron and the
+  // padding all open the list, with one hover and focus state.
+  const face = <span className="flex min-w-0 items-center gap-1.5 py-1 pl-1.5 text-left sm:gap-2.5 sm:pl-2.5">
+    <MemoryStoreAvatar summary={pending ? undefined : selected} size={28} />
+    <span className="min-w-0">
+      <span className="block truncate px-1">{name}</span>
+      {/* B2: what the two kinds of store are, on the line that names this one's kind. */}
+      {!pending && <span className="block truncate px-1 text-[11px] font-normal leading-4 text-muted" title={i18nT('memoryV2.picker_explanation')}>{i18nT(selected.is_default ? 'memoryPage.every_chat' : 'memoryPage.bot_memory')}</span>}
+    </span>
+  </span>
   return (
-    <div data-testid="memory-store-switcher" className="flex min-h-12 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border bg-card py-1 pl-1.5 pr-0.5 sm:gap-2.5 sm:pl-2.5 sm:pr-1">
-      <MemoryStoreAvatar summary={pending ? undefined : selected} size={28} />
-      <div className="min-w-0">
+    <div data-testid="memory-store-switcher" className="flex min-h-12 min-w-0 max-w-full cursor-pointer items-center rounded-lg border border-border bg-card transition-colors hover:bg-bg-hover focus-within:border-accent [&_*]:cursor-pointer">
+      <div className="min-w-0 flex-1">
         <SimpleSelect
           aria-label={i18nT('pages.overview.memoryStoreCard.memory_store')}
           title={selected ? storeLabel(selected) : undefined}
-          className="h-auto min-h-0 gap-1 border-none bg-transparent px-1 py-0 text-[15px] font-semibold leading-5 shadow-none"
+          className="h-auto min-h-12 w-full gap-1 rounded-lg border-none bg-transparent py-0 pl-0 pr-1.5 text-[15px] font-semibold leading-5 shadow-none sm:pr-2"
           options={rows.map(s => s.name)}
           optionLabels={rows.map(storeLabel)}
           optionIcons={rows.map(s => <MemoryStoreAvatar key={s.name} summary={s} />)}
           // The trigger hugs the short name, so the list sizes to its longest store
           // label instead (up to 22rem, then each row truncates with a tooltip).
           contentClassName="w-max min-w-[var(--radix-select-trigger-width)] max-w-[min(22rem,calc(100vw-2rem))]"
-          triggerContent={<span className="block truncate">{name}</span>}
+          triggerContent={face}
           triggerFallback={name}
           value={shown}
           onChange={pick}
           disabled={rows.length === 0}
         />
-        {/* B2: what the two kinds of store are, on the line that names this one's kind. */}
-        {!pending && <span className="block truncate px-1 text-[11px] leading-4 text-muted" title={i18nT('memoryV2.picker_explanation')}>{i18nT(selected.is_default ? 'memoryPage.every_chat' : 'memoryPage.bot_memory')}</span>}
       </div>
     </div>
   )

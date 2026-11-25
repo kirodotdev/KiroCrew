@@ -10,11 +10,13 @@ import Modal from '../../../components/Modal'
 import { fmtDateTimeNumeric } from '../../../i18n/format'
 import type { MemoryRecord } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_LABELS, RecordHistory, RecordProvenance, memoryRecordBody } from '../memoryRecordParts'
-import { SCOPE_UNUSABLE, facetLabel, lessonFacts, recordTags } from './memoryListView'
-import { ScoreChip } from './MemoryListParts'
+import { SCOPE_UNUSABLE, facetLabel, lessonFacts, recordTags, sourceGroup } from './memoryListView'
+import { FilterChip, fmtScore, type ChipFilter } from './MemoryListParts'
 
-export function MemoryRecordDetail({ store, row, phone, onClose, onEdit, onForget, onRestore, onKeepCurrent, onProposal }: {
+export function MemoryRecordDetail({ store, row, phone, chip, onClose, onEdit, onForget, onRestore, onKeepCurrent, onProposal }: {
   store: string; row: MemoryRecord; phone: boolean
+  /** Tags filter the list, as they do in its rows. */
+  chip?: ChipFilter
   onClose: () => void; onEdit: () => void; onForget: () => void
   onRestore: (revisionId: number) => void; onKeepCurrent: () => void; onProposal: (proposal: MemoryRecord, operation: 'set' | 'forget') => void
 }) {
@@ -28,9 +30,9 @@ export function MemoryRecordDetail({ store, row, phone, onClose, onEdit, onForge
     fields.push([t('memoryPage.facet_applies'), facetLabel('applies', lesson.applies)])
     fields.push([t('pages.overview.memoryTab.scope'), <span className={lesson.scope === SCOPE_UNUSABLE ? 'text-warn-text' : 'break-all'}>{facetLabel('scope', lesson.scope)}</span>])
   }
-  if (score !== null) fields.push([t(row.kind === 'episode' ? 'memoryPage.facet_importance' : 'memoryPage.facet_confidence'), <ScoreChip value={score} label={row.kind === 'episode' ? 'importance' : 'confidence'} />])
-  if (row.kind === 'episode' && recordTags(row).length) fields.push([t('memoryPage.facet_tags'), recordTags(row).map(tag => `#${tag}`).join('  ')])
-  fields.push([t('pages.overview.memoryTab.source'), facetLabel('source', row.source || '')])
+  if (score !== null) fields.push([t(row.kind === 'episode' ? 'memoryPage.facet_importance' : 'memoryPage.facet_confidence'), <span className={`tabular-nums ${row.kind !== 'episode' && score < 0.5 ? 'text-danger-text' : ''}`}>{fmtScore(score)}</span>])
+  if (row.kind === 'episode' && recordTags(row).length) fields.push([t('memoryPage.facet_tags'), <span className="flex flex-wrap gap-1.5">{recordTags(row).map(tag => <FilterChip key={tag} group="tag" value={tag} tone="bg-bg-hover px-2 text-muted" chip={chip}>#{tag}</FilterChip>)}</span>])
+  fields.push([t('pages.overview.memoryTab.source'), <span title={row.source || undefined}>{facetLabel('source', sourceGroup(row.source))}</span>])
   if (row.created_at) fields.push([t('memoryPage.field_created'), fmtDateTimeNumeric(row.created_at)])
   if (row.updated_at && row.updated_at !== row.created_at) fields.push([t('memoryPage.field_updated'), fmtDateTimeNumeric(row.updated_at)])
   const body = <div className="space-y-4">
@@ -41,7 +43,7 @@ export function MemoryRecordDetail({ store, row, phone, onClose, onEdit, onForge
     <dl className="m-0 grid gap-x-3 gap-y-2.5 text-[13px] leading-5" style={{ gridTemplateColumns: '96px minmax(0,1fr)' }}>
       {fields.map(([label, value]) => [<dt key={`${label}:k`} className="text-muted">{label}</dt>, <dd key={label} className="m-0 min-w-0 text-text">{value}</dd>])}
     </dl>
-    <RecordProvenance row={row} />
+    <RecordProvenance row={row} source={false} />
     <RecordHistory store={store} row={row} onRestore={onRestore} onKeepCurrent={onKeepCurrent} onProposal={onProposal} />
   </div>
   const actions = <div className="flex flex-wrap gap-2">
@@ -49,7 +51,7 @@ export function MemoryRecordDetail({ store, row, phone, onClose, onEdit, onForge
     <Btn danger className="min-h-11" disabled={!row.revision} onClick={onForget}>{t('memoryV2.forget')}</Btn>
   </div>
   if (phone) return <Modal open title={title} onClose={onClose} footer={actions}>{body}</Modal>
-  return <aside aria-label={title} className="w-[360px] shrink-0 space-y-4 self-start rounded-2xl border border-border bg-card p-5" data-testid="memory-record-detail">
+  return <aside aria-label={title} className="w-full space-y-4 rounded-2xl border border-border bg-card p-5" data-testid="memory-record-detail">
     <div className="flex items-center justify-between gap-2"><h3 className="m-0 text-[15px] font-semibold text-text">{title}</h3><IconButton aria-label={t('components.modal.close')} className="flex h-8 w-8 items-center justify-center" onClick={onClose}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>
     {body}
     <div className="border-t border-border pt-3">{actions}</div>

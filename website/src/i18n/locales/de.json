@@ -24483,6 +24483,8 @@
     "restart_interrupts": "Ein Neustart des Gateways unterbricht aktive Unterhaltungen und geplante Aufgaben kurzzeitig."
   },
   "memoryEditing": {
+    "edited": "Bearbeitet",
+    "current": "Aktuell",
     "adjust": "Änderung anpassen",
     "after": "Nachher",
     "all_scope": "Alle Treffer für „{{query}}“ sind ausgewählt. Auswahl aufheben, um Filter zu ändern.",
@@ -24524,7 +24526,6 @@
     "original_reference": "Ursprüngliche Referenz",
     "history": "Änderungsverlauf",
     "proposal": "Vorgeschlagene Änderung",
-    "accepted": "Gespeicherte Änderung",
     "use_proposal": "Vorgeschlagenen Wert verwenden",
     "no_history": "Noch keine Änderungen gespeichert.",
     "review_proposals": "Vorschläge prüfen ({{count}})",
@@ -24537,8 +24538,7 @@
     "restore_hint": "Beim Wiederherstellen wird dieser Wert als neue Version gespeichert. Frühere Versionen bleiben im Verlauf.",
     "restored": "Wiederhergestellte Version",
     "restore_now": "Jetzt",
-    "restore_after": "Nach dem Wiederherstellen",
-    "current_version": "Aktuelle Version"
+    "restore_after": "Nach dem Wiederherstellen"
   },
   "memoryPage": {
     "applies_always": "In jeder Sitzung",
@@ -24575,7 +24575,6 @@
     "match_hint": "Wie gut dies zu deinen Suchwörtern passt",
     "match_value": "Treffer {{value}}",
     "more_actions": "Weitere Aktionen",
-    "new_lesson": "Neue Lektion",
     "new_memory": "Neue Erinnerung",
     "new_memory_hint": "Ein vorhandener Schlüssel erhält den neuen Wert.",
     "open_recovery": "Wiederherstellung öffnen",
@@ -24595,6 +24594,9 @@
     "scope_all_repos": "Alle Repos",
     "search_filters": "Filter durchsuchen",
     "scroll_more": "Scrollen für mehr",
+    "graph_selected": "{{formatted}} ausgewählt",
+    "show_in_memories": "In Erinnerungen anzeigen",
+    "loaded_progress": "{{loaded}} / {{total}} geladen",
     "filters_width": "Breite der Filter",
     "select": "Auswählen",
     "select_limit_hint": "Bis zu {{limit}} auf einmal",

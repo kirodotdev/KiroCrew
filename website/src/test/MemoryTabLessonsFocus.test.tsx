@@ -139,6 +139,21 @@ describe('?focus=lessons', () => {
     await waitFor(() => expect(leave()).toBe(false))
   })
 
+  it('creates facts and lessons from the one New memory form, and the ⋯ menu offers no create action', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'New memory' }))
+    const dialog = screen.getByRole('dialog', { name: 'New memory' })
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Lesson' }))
+    expect(within(dialog).getByRole('textbox', { name: 'Rule' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('textbox', { name: 'Memory key' })).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Save lesson' })).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New memory' })).toBeNull())
+    // Global memory has nothing else for the ⋯ menu, so it is not drawn.
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /^New/ })).toBeNull()
+  })
+
   it('counts a typed lesson that was not added yet as unsaved work', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     const rule = await screen.findByRole('textbox', { name: 'Rule' })

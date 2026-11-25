@@ -3,7 +3,9 @@ export type MemoryRecordKind = 'fact' | 'directive' | 'episode'
 export type MemoryRecordFacetGroup = 'category' | 'applies' | 'scope' | 'source' | 'surface' | 'crew' | 'tag'
 /** Facet filters plus the confidence range; part of the query, so "select all
  *  matching" reaches exactly the filtered rows. */
-export type MemoryRecordFilters = Partial<Record<MemoryRecordFacetGroup, string[]>> & { conf_min?: number; conf_max?: number }
+export type MemoryRecordFilters = Partial<Record<MemoryRecordFacetGroup, string[]>> & { conf_min?: number; conf_max?: number
+  /** Exactly these records (`memory_record_facets.record_ref`): a graph selection. */
+  ref?: string[] }
 export type MemoryRecordQuery = { q: string; kind: MemoryRecordKind | 'all'; filters?: MemoryRecordFilters }
 export type MemoryRecordSort = 'updated' | 'created' | 'confidence' | 'importance' | 'key' | 'match'
 /** Per group, how many rows each value would list (`kind` counts ignore the kind). */
@@ -19,6 +21,14 @@ export type MemoryRecord = {
   match?: number
   revision: string
   metadata?: { revision?: number; category?: string; subject?: string; predicate?: string; status?: string; source_ref?: string; email_addresses?: string[]; pending_conflicts?: number }
+  /** What the list sorts, filters and counts this record by, on a `summary=1` page. */
+  summary?: MemoryRecordSummary
+}
+/** The server's light form of a record (`memory_edit._summary`): facet values, dates, scores and folded search text. */
+export type MemoryRecordSummary = {
+  kind: MemoryRecordKind; id: string; key: string; created_at: string; updated_at: string
+  confidence: number | null; importance: number | null; search: string; ref: string
+  facets: { category: string | null; applies: string | null; scope: string | null; source: string; surface: string | null; crew: string | null; tag: string[] }
 }
 export type MemoryRecordRef = { kind: MemoryRecordKind; id: string }
 export type MemoryRecordSelection = { items: (MemoryRecordRef & { revision: string })[] }

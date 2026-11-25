@@ -12311,6 +12311,8 @@
     "restart_interrupts": "Restarting the gateway briefly interrupts active conversations and scheduled work."
   },
   "memoryEditing": {
+    "edited": "Edited",
+    "current": "Current",
     "adjust": "Adjust edit",
     "after": "After",
     "all_scope": "All matching records selected for “{{query}}”. Clear selection to change filters.",
@@ -12352,7 +12354,6 @@
     "original_reference": "Original reference",
     "history": "Revision history",
     "proposal": "Proposed change",
-    "accepted": "Recorded change",
     "use_proposal": "Use proposed value",
     "no_history": "No recorded revisions yet.",
     "review_proposals": "Review proposals ({{count}})",
@@ -12365,8 +12366,7 @@
     "restore_hint": "Restoring saves this value as a new version. Earlier versions stay in the history.",
     "restored": "Restored version",
     "restore_now": "Now",
-    "restore_after": "After restoring",
-    "current_version": "Current version"
+    "restore_after": "After restoring"
   },
   "memoryPage": {
     "applies_always": "Every session",
@@ -12403,7 +12403,6 @@
     "match_hint": "How closely this matches your search words",
     "match_value": "Match {{value}}",
     "more_actions": "More actions",
-    "new_lesson": "New lesson",
     "new_memory": "New memory",
     "new_memory_hint": "A key that exists already gets the new value.",
     "open_recovery": "Open Recovery",
@@ -12423,6 +12422,9 @@
     "scope_all_repos": "All repos",
     "search_filters": "Search filters",
     "scroll_more": "Scroll to see more",
+    "graph_selected": "{{formatted}} selected",
+    "show_in_memories": "Show in Memories",
+    "loaded_progress": "Loaded {{loaded}} / {{total}}",
     "filters_width": "Filter width",
     "select": "Select",
     "select_limit_hint": "Up to {{limit}} at a time",

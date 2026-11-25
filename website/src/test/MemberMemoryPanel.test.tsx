@@ -148,7 +148,9 @@ describe('private member memory lifecycle', () => {
     sessionStorage.setItem(`kirocrew:memory-page-view:${MEMBER_STORE}`, savedFilter)
     const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
     const target = { kind: 'directive', id: key, key, value_json: JSON.stringify({ rule: 'The saved member lesson' }), text: 'The saved member lesson', revision: 'a'.repeat(64) }
-    api.memoryRecords.mockImplementation(async (store: string, query: { q: string; kind: string }) => {
+    api.memoryRecords.mockImplementation(async (store: string, query: { q: string; kind: string }, _offset: number, _limit: number, view?: { summary?: boolean }) => {
+      // This store answers one search only, so the background load of every record cannot serve it.
+      if (view?.summary) throw new Error('not served')
       const entries = store === MEMBER_STORE && query.q === key && query.kind === 'directive' ? [target] : []
       return { entries, total: entries.length, has_more: false }
     })
@@ -318,6 +320,27 @@ describe('private member memory lifecycle', () => {
     expect(api.memoryGraph).not.toHaveBeenCalled()
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0, ctrlKey: false })
     await waitFor(() => expect(api.memoryGraph).toHaveBeenCalledWith(MEMBER_STORE))
+  })
+
+  it('opens the store picker from anywhere on its pill: the face and the subtitle too', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await loaded()
+    const switcher = screen.getByTestId('memory-store-switcher')
+    const trigger = screen.getByRole('combobox', { name: 'Memory store' })
+    // One button holds the face, both lines and the chevron, with one hover state.
+    expect(trigger).toContainElement(switcher.querySelector('img'))
+    expect(trigger).toContainElement(within(switcher).getByText('Bot memory'))
+    expect(switcher).toHaveClass('cursor-pointer', 'hover:bg-bg-hover')
+    for (const part of [switcher.querySelector('img')!, within(switcher).getByText('Bot memory')]) {
+      fireEvent.pointerDown(part, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(part)
+      expect(await screen.findByRole('option', { name: 'writer · Member memory (V2)' })).toBeInTheDocument()
+      fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull())
+    }
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(await screen.findByRole('listbox')).toBeInTheDocument()
   })
 
   it('draws the store picker with the toolbar radius and a list as wide as its longest store', async () => {

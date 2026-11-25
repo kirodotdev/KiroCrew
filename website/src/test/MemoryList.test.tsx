@@ -134,13 +134,38 @@ describe('the memory list', () => {
     renderWithProviders(<List />)
     fireEvent.click((await screen.findAllByRole('button', { name: 'View details' }))[0])
     const detail = screen.getByTestId('memory-record-detail')
+    // It slides in: visible once its first frame opens it.
+    await waitFor(() => expect(detail).toBeVisible())
     expect(within(detail).getByRole('heading', { name: 'Lesson · Tool' })).toBeVisible()
     expect(within(detail).getByText('lesson.tool')).toBeVisible()
     expect(within(detail).getByText('Applies')).toBeVisible()
     expect(within(detail).getByText('All repos')).toBeVisible()
-    expect(within(detail).getByText('Confidence 0.95')).toBeVisible()
+    // The value beside its label, once: no score chip, one timestamp, no reference line.
+    expect(within(detail).getByText('0.95')).toBeVisible()
+    expect(within(detail).queryByText('Confidence 0.95')).toBeNull()
+    expect(within(detail).queryByText(/^Original reference/)).toBeNull()
+    expect(detail.querySelectorAll('time')).toHaveLength(0)
     await waitFor(() => expect(api.memoryRecordHistory).toHaveBeenCalledWith(STORE, expect.objectContaining({ kind: 'directive', id: 'lesson.tool' }), 25, 0))
     fireEvent.click(within(detail).getByRole('button', { name: 'Close' }))
-    expect(screen.queryByTestId('memory-record-detail')).toBeNull()
+    // It slides back out, then leaves.
+    expect(screen.getByTestId('memory-detail-slide')).toHaveAttribute('aria-hidden', 'true')
+    await waitFor(() => expect(screen.queryByTestId('memory-record-detail')).toBeNull())
+  })
+
+  it('slides the detail panel in and out, crossfades a switch, and snaps under reduced motion', async () => {
+    renderWithProviders(<List />)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'View details' }))[0])
+    const slide = screen.getByTestId('memory-detail-slide')
+    expect(slide.className).toContain('transition-[width,margin]')
+    expect(slide.className).toContain('motion-reduce:transition-none')
+    expect(slide.style.transitionDuration).toBe('225ms')
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia
+    try {
+      fireEvent.click(within(screen.getByTestId('memory-record-detail')).getByRole('button', { name: 'Close' }))
+      expect(screen.queryByTestId('memory-detail-slide')).toBeNull()
+    } finally {
+      window.matchMedia = original
+    }
   })
 })

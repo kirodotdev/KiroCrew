@@ -5,19 +5,22 @@
  * the panels with their own cards.
  */
 import { useState, type ReactNode } from 'react'
+import { MemoryJumpContext, type MemoryJump } from './memoryJump'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Copy, Lightbulb, ListChecks, MoreHorizontal, Plus, Settings, Sparkles, X } from 'lucide-react'
+import { Copy, ListChecks, MoreHorizontal, Plus, Settings, Sparkles, X } from 'lucide-react'
 import { Btn, IconButton } from '../../../components/ui'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { MEMORY_QUERY_PREFIXES } from '../MemoryStoreCard'
-import { NewLessonDialog, NewMemoryDialog } from './MemoryNewDialogs'
+import { NewMemoryDialog } from './MemoryNewDialogs'
 import { MemoryActionSheet, type SheetAction } from './MemoryActionSheet'
 
 export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'settings'
-export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; recallOpen: boolean; setRecallOpen: (open: boolean) => void; openTab: (tab: MemoryPageTab) => void }
+export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; recallOpen: boolean; setRecallOpen: (open: boolean) => void; openTab: (tab: MemoryPageTab) => void
+  /** The Graph tab's last hand-off to the list. */
+  jump: MemoryJump | null }
 const TABS: [MemoryPageTab, string][] = [
   ['memories', 'memoryV2.tab_memories'], ['graph', 'memoryPage.tab_graph'], ['profile', 'memoryV2.tab_profile'], ['recovery', 'memoryV2.tab_recovery'],
   ['failures', 'memoryPage.tab_failures'], ['settings', 'memoryPage.tab_settings'],
@@ -58,12 +61,14 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   const [visited, setVisited] = useState<Set<MemoryPageTab>>(() => new Set([initialTab]))
   const [selecting, setSelecting] = useState(false)
   const [recallOpen, setRecallOpen] = useState(false)
-  const [creating, setCreating] = useState<'memory' | 'lesson' | null>(null)
+  const [creating, setCreating] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [saved, setSaved] = useState('')
   const open = (next: MemoryPageTab) => { setTab(next); setVisited(old => new Set([...old, next])) }
+  const [jump, setJump] = useState<MemoryJump | null>(null)
+  const jumpTo = (refs: string[], record?: MemoryJump['open']) => { setJump(old => ({ refs, open: record, seq: (old?.seq || 0) + 1 })); open('memories') }
   const created = (message: string) => {
-    setCreating(null); setSaved(message)
+    setCreating(false); setSaved(message)
     void client.invalidateQueries({ queryKey: ['memory-records'] })
     for (const prefix of MEMORY_QUERY_PREFIXES) void client.invalidateQueries({ queryKey: prefix })
     onCreated?.()
@@ -75,7 +80,6 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   ] : []
   // Rare actions live in ⋯ on every width.
   const createActions: SheetAction[] = [
-    ...(canCreate ? [{ key: 'lesson', icon: Lightbulb, label: t('memoryPage.new_lesson'), run: () => setCreating('lesson') }] : []),
     ...(onCopy ? [{ key: 'copy', icon: Copy, label: t('memoryPage.copy_from'), run: onCopy, disabled: copyDisabled }] : []),
   ]
   const more = listActions.length + createActions.length > 0
@@ -86,7 +90,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
       <div className="flex min-w-0 items-center justify-between gap-1.5 sm:gap-2">
         <div className="min-w-0">{switcher}</div>
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {canCreate && <Btn primary className="min-h-11 sm:min-h-9" onClick={() => setCreating('memory')}><Plus className="lucide-inline" />{t('memoryPage.new_memory')}</Btn>}
+          {canCreate && <Btn primary className="min-h-11 sm:min-h-9" onClick={() => setCreating(true)}><Plus className="lucide-inline" />{t('memoryPage.new_memory')}</Btn>}
           {more && (phone
             ? <IconButton aria-label={t('memoryPage.more_actions')} aria-haspopup="dialog" className={moreButtonClass} onClick={() => setSheetOpen(true)}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton>
             : <DropdownMenu>
@@ -101,6 +105,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
       {notices}
     </header>
     {saved && <div role="status" className="flex items-center gap-2 rounded-lg bg-ok-subtle px-3 py-2 text-[13px] text-ok-text"><span className="min-w-0 flex-1 break-words">{saved}</span><IconButton aria-label={t('components.errorNotice.dismiss')} className="flex h-8 w-8 items-center justify-center" onClick={() => setSaved('')}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>}
+    <MemoryJumpContext.Provider value={jumpTo}>
     <Tabs variant="underline" layoutId={`memory-page-tabs-${id}`} value={tab} onValueChange={value => open(value as MemoryPageTab)}>
       {/* A phone scrolls the tab row sideways when the tabs do not fit. */}
       <TabsList aria-label={t('memoryV2.title', { member: label })} className={`mb-4 ${phone ? 'overflow-x-auto overflow-y-hidden [scrollbar-width:none]' : ''}`}>
@@ -112,15 +117,15 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
           </TabsTrigger>
         })}
       </TabsList>
-      {panel('memories', memories({ selecting, setSelecting, recallOpen, setRecallOpen, openTab: open }))}
+      {panel('memories', memories({ selecting, setSelecting, recallOpen, setRecallOpen, openTab: open, jump }))}
       {panel('graph', panels.graph)}
       {panel('profile', panels.profile)}
       {panel('recovery', panels.recovery)}
       {panel('failures', panels.failures)}
       {panel('settings', panels.settings)}
     </Tabs>
+    </MemoryJumpContext.Provider>
     {sheetOpen && <MemoryActionSheet title={label} groups={[listActions, createActions]} onClose={() => setSheetOpen(false)} />}
-    {creating === 'memory' && <NewMemoryDialog onDirtyChange={onDraftChange} onClose={() => setCreating(null)} onSaved={key => created(t('memoryPage.saved_key', { key }))} />}
-    {creating === 'lesson' && <NewLessonDialog onDirtyChange={onDraftChange} onClose={() => setCreating(null)} onSaved={() => created(t('pages.overview.memoryFailuresCard.lesson_saved'))} />}
+    {creating && <NewMemoryDialog onDirtyChange={onDraftChange} onClose={() => setCreating(false)} onSaved={key => created(t('memoryPage.saved_key', { key }))} onLessonSaved={() => created(t('pages.overview.memoryFailuresCard.lesson_saved'))} />}
   </div>
 }

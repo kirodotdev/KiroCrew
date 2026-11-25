@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Network as NetworkIcon, RefreshCw } from 'lucide-react'
 import Graph from 'graphology'
@@ -12,6 +12,10 @@ import { errMessage } from '../../utils/thunkError'
 import { queryReadFailed } from '../../utils/queryReadFailed'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
+import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
+import { useJumpToMemories } from './memoryPage/memoryJump'
+import { attachGraphGestures, insideBox, type Box } from './memoryGraphGestures'
 // Hex per group, fed straight to sigma's WebGL node program.
 const GROUP_COLORS: Record<string, string> = {
   preference: '#3b82f6',
@@ -58,7 +62,11 @@ const GROUP_DOT_COLOR: Record<string, string> = {
   history: '#9ca3af',
 }
 
-interface GraphNode { id: string; label: string; group: string; title: string }
+interface GraphNode { id: string; label: string; group: string; title: string
+  /** The memory row a fact or lesson node draws (`memory_graph._add`). */
+  record?: { kind: 'fact' | 'directive'; id: string; ref: string } }
+/** Smallest canvas height; otherwise it fills the window below its toolbar. */
+const MIN_CANVAS = 420
 interface GraphEdge { from: string; to: string }
 /** Which capped populations the server left rows out of (`/api/memory/graph`). */
 interface GraphPartial { semantic?: boolean; lessons?: boolean }
@@ -75,6 +83,13 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
   // Latest filter/search for the reducer closure (avoids rebuilding sigma).
   const filterRef = useRef<string | null>(null)
   const searchRef = useRef('')
+  const jump = useJumpToMemories()
+  const jumpRef = useRef(jump)
+  jumpRef.current = jump
+  const touch = useIsTouchDevice()
+  const [box, setBox] = useState<Box | null>(null)
+  const [picked, setPicked] = useState<GraphNode[]>([])
+  const [height, setHeight] = useState(MIN_CANVAS)
 
   // A failed read must reach the query: folding it into an empty graph showed
   // "no memory data" in front of an outage, with nothing to retry.
@@ -123,6 +138,7 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
     let sigma: Sigma | undefined
     let aborted = false
     let themeObserver: MutationObserver | undefined
+    let detachGestures: (() => void) | undefined
 
     // Read theme-aware colors from the design-system CSS vars on <html> so the
     // graph is legible in BOTH light and dark modes (the Knowledge Graph tab
@@ -224,6 +240,9 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
           // gated on move (they are heavier and zoom-thresholded anyway).
           hideEdgesOnMove: false,
           hideLabelsOnMove: true,
+          // Desktop pans and zooms through memoryGraphGestures; touch keeps sigma's own.
+          enableCameraPanning: touch,
+          enableCameraZooming: touch,
           // Dim/recolor without rebuilding the graph: the reducer reads the live
           // filter/search refs on every render.
           nodeReducer: (_nodeKey, data) => {
@@ -238,10 +257,33 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
         })
         sigma.on('clickNode', ({ node }) => {
           const n = nodes.find(x => x.id === node)
+          // A memory node opens that memory in the Memories tab; any other node shows its card.
+          if (n?.record && jumpRef.current) { jumpRef.current([n.record.ref], { kind: n.record.kind, id: n.record.id }); return }
           setSelected(n || null)
         })
         sigma.on('clickStage', () => setSelected(null))
+        let hovered = false
+        sigma.on('enterNode', () => { hovered = true })
+        sigma.on('leaveNode', () => { hovered = false })
         sigmaRef.current = sigma
+        if (!touch) {
+          const live = sigma
+          detachGestures = attachGraphGestures(container, live, {
+            overNode: () => hovered,
+            onBox: setBox,
+            onClear: () => { setPicked([]); setBox(null) },
+            onSelect: area => {
+              const g = graphRef.current
+              if (!g) return
+              const flt = filterRef.current
+              const srch = searchRef.current
+              const points = nodes.filter(n => n.record && g.hasNode(n.id) && (!flt || n.group === flt) && (!srch || n.label.toLowerCase().includes(srch)))
+                .map(n => ({ id: n.id, at: live.graphToViewport({ x: g.getNodeAttribute(n.id, 'x') as number, y: g.getNodeAttribute(n.id, 'y') as number }) }))
+              const ids = new Set(insideBox(points, area))
+              setPicked(nodes.filter(n => ids.has(n.id)))
+            },
+          })
+        }
         // Recolor live when the user switches light/dark (the app flips
         // <html data-theme>, so the CSS vars we read above change value).
         themeObserver = new MutationObserver(() => {
@@ -301,11 +343,13 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
     return () => {
       aborted = true
       themeObserver?.disconnect()
+      detachGestures?.()
+      setPicked([]); setBox(null)
       if (sigma) { try { sigma.kill() } catch { /* noop */ } }
       sigmaRef.current = null
       graphRef.current = null
     }
-  }, [nodes, edges])
+  }, [nodes, edges, touch])
 
   // Filter/search just refresh the existing sigma (re-runs the reducer); no
   // graph rebuild, no per-node mutation loop.
@@ -314,6 +358,30 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
     searchRef.current = search.toLowerCase()
     sigmaRef.current?.refresh()
   }, [filter, search, nodes])
+
+  // The canvas fills the window below it (at least MIN_CANVAS), follows its box as
+  // the window or the filter rail changes it, and re-fits the graph to the new size.
+  useLayoutEffect(() => {
+    const box = containerRef.current
+    if (!box) return
+    let page: HTMLElement | null = box.parentElement
+    while (page && !/(auto|scroll)/.test(getComputedStyle(page).overflowY)) page = page.parentElement
+    const fit = () => {
+      const bottom = page ? page.getBoundingClientRect().bottom : window.innerHeight
+      setHeight(Math.max(MIN_CANVAS, Math.floor(bottom - box.getBoundingClientRect().top - 32)))
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      const sigma = sigmaRef.current
+      if (!sigma) return
+      sigma.resize()
+      sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1 })
+      sigma.refresh()
+    })
+    observer?.observe(box)
+    return () => { window.removeEventListener('resize', fit); observer?.disconnect() }
+  }, [nodes.length])
 
   const counts = nodes.reduce<Record<string, number>>((acc, n) => {
     acc[n.group] = (acc[n.group] || 0) + 1
@@ -349,7 +417,7 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
   if (nodes.length === 0) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.no_memory_data_to_visualize_add_preferences_proj')}</p></Card>
 
   return (<>
-    <Card>
+    <Card className="mb-0 max-w-none">
       <CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')} <InfoTip text={i18nT('pages.overview.memoryGraphTab.gpu_rendered_visualization_of_all_kirocrew_memor')} />
         <Btn onClick={() => load()} className="ml-2"><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.refresh')}</Btn>
       </CardTitle>
@@ -368,7 +436,14 @@ export default function MemoryGraphTab({ store = '' }: { store?: string }) {
       {partial && (
         <p className="text-muted text-sm mb-2" role="note" data-testid="memory-graph-partial">{i18nT('pages.overview.memoryGraphTab.partial_notice')}</p>
       )}
-      <div ref={containerRef} className="w-full border border-border rounded-md bg-bg-elevated" style={{ height: '500px' }} />
+      <div className="relative">
+        <div ref={containerRef} data-testid="memory-graph-canvas" className="w-full overflow-hidden rounded-md border border-border bg-bg-elevated" style={{ height }} />
+        {box && <div aria-hidden="true" data-testid="memory-graph-box" className="pointer-events-none absolute rounded-sm border border-accent bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]" style={{ left: box.x, top: box.y, width: box.width, height: box.height }} />}
+        {picked.length > 0 && <div role="status" className="absolute left-3 top-3 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-[13px] text-text shadow-sm">
+          <span className="tabular-nums">{i18nT('memoryPage.graph_selected', { count: picked.length, formatted: fmtNumber(picked.length) })}</span>
+          {jump && <Btn primary className="min-h-8 whitespace-nowrap" onClick={() => jump(picked.flatMap(n => n.record ? [n.record.ref] : []))}>{i18nT('memoryPage.show_in_memories')}</Btn>}
+        </div>}
+      </div>
       {selected && (
         <div className="mt-3 p-3 bg-bg-elevated border border-border rounded-md">
           <div className="flex items-center gap-2 mb-1">

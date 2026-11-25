@@ -23881,6 +23881,8 @@
     "restart_interrupts": "ゲートウェイを再起動すると、進行中の会話とスケジュール済みの作業が一時的に中断されます。"
   },
   "memoryEditing": {
+    "edited": "編集済み",
+    "current": "現在",
     "adjust": "編集を調整",
     "after": "変更後",
     "all_scope": "「{{query}}」に一致するすべてのレコードを選択しています。フィルターを変更するには選択を解除してください。",
@@ -23922,7 +23924,6 @@
     "original_reference": "元の参照",
     "history": "変更履歴",
     "proposal": "提案された変更",
-    "accepted": "記録された変更",
     "use_proposal": "提案された値を使用",
     "no_history": "変更履歴はまだありません。",
     "review_proposals": "提案を確認 ({{count}})",
@@ -23935,8 +23936,7 @@
     "restore_hint": "復元すると、この値が新しいバージョンとして保存されます。以前のバージョンは履歴に残ります。",
     "restored": "復元されたバージョン",
     "restore_now": "現在",
-    "restore_after": "復元後",
-    "current_version": "現在のバージョン"
+    "restore_after": "復元後"
   },
   "memoryPage": {
     "applies_always": "毎回のセッション",
@@ -23973,7 +23973,6 @@
     "match_hint": "検索語とどれだけ一致しているか",
     "match_value": "一致度 {{value}}",
     "more_actions": "その他の操作",
-    "new_lesson": "新しいレッスン",
     "new_memory": "新しい記憶",
     "new_memory_hint": "既存のキーには新しい値が入ります。",
     "open_recovery": "復旧を開く",
@@ -23993,6 +23992,9 @@
     "scope_all_repos": "すべてのリポジトリ",
     "search_filters": "フィルターを検索",
     "scroll_more": "スクロールして続きを表示",
+    "graph_selected": "{{formatted}} 件を選択",
+    "show_in_memories": "メモリーで表示",
+    "loaded_progress": "{{loaded}} / {{total}} 件を読み込み済み",
     "filters_width": "フィルター欄の幅",
     "select": "選択",
     "select_limit_hint": "一度に {{limit}} 件まで",

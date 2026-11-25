@@ -62,7 +62,7 @@ export const saveView = (store: string, view: ListView) => safeSetSessionItem(VI
 /** The filters that apply to a kind pill: a lesson facet means nothing on the Experiences pill. */
 export function filtersForKind(filters: MemoryRecordFilters, kind: KindTab): MemoryRecordFilters {
   if (kind === 'all') return filters
-  const out: MemoryRecordFilters = {}
+  const out: MemoryRecordFilters = filters.ref?.length ? { ref: filters.ref } : {}
   for (const group of FACET_GROUPS) if (filters[group]?.length && GROUP_KINDS[group].includes(kind)) out[group] = filters[group]
   if (kind !== 'episode') { out.conf_min = filters.conf_min; out.conf_max = filters.conf_max }
   if (out.conf_min === undefined) delete out.conf_min
@@ -70,7 +70,7 @@ export function filtersForKind(filters: MemoryRecordFilters, kind: KindTab): Mem
   return out
 }
 export const activeFilterCount = (filters: MemoryRecordFilters) =>
-  FACET_GROUPS.reduce((count, group) => count + (filters[group]?.length || 0), 0) + (filters.conf_min !== undefined || filters.conf_max !== undefined ? 1 : 0)
+  FACET_GROUPS.reduce((count, group) => count + (filters[group]?.length || 0), 0) + (filters.conf_min !== undefined || filters.conf_max !== undefined ? 1 : 0) + (filters.ref?.length ? 1 : 0)
 
 export function toggleFilter(filters: MemoryRecordFilters, group: MemoryRecordFacetGroup, value: string): MemoryRecordFilters {
   const current = filters[group] || []

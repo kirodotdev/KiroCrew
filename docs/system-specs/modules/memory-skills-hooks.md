@@ -1888,7 +1888,36 @@ Source counts an origin written as `<prefix>:<id>` under its prefix
 record keeps its full source. The list reads its rows and its counts as two
 requests, so the first rows never wait for the counts, and the server keeps the
 last few searches' row summaries (`memory_edit._cached_summaries`) until the
-store changes, so a filter, sort or page reads only the rows it shows. A row's filterable
+store changes, so a filter, sort or page reads only the rows it shows.
+Opening a store also loads every record in the background, newest first, 1,000 a
+page (`SUMMARY_PAGE_MAX`; other reads stay at 100) with four requests at once (`useAllMemoryRecords`, `summary=1`, so each
+entry carries the summary the server sorts, filters and counts by, `ref` and
+folded search text included). The first rows come from the server path at once
+and "Loaded N / total" shows while the rest arrive; once all are in, filters,
+sort, search and counts run in the browser (`memoryLocalList.ts`, which mirrors
+`memory_record_facets`), and an edit drops back to the server path until the
+reload ends. Search by meaning always asks the server.
+
+A wheel over the rail moves the innermost scroller under the pointer that can
+still move (a value group, then the rail, `MemoryRail.routeWheel`) and never the
+page; the rail's height is the part of its scroll area in view, so its end is
+always reachable. The rail and the record detail open and shut over 225 ms
+(width with the list reflowing beside it, the content clipped; the detail also
+slides and fades, and switching records only crossfades); reduced motion snaps.
+`ref` filters to exact records by ten hex digits of `sha1("kind:id")`
+(`memory_record_facets.record_ref`, at most 500), the Graph tab's hand-off: a
+fact or lesson node carries its `record`, a click on one opens that memory in the
+Memories tab, and a box drawn on empty canvas offers "N selected" and Show in
+Memories, which replaces the list's search, kind and filters with one removable
+chip. The Graph fills the content width and the window height below it (at least
+420 px) and re-fits on resize. On desktop it follows the Figma model: wheel or
+two-finger swipe pans, pinch or Ctrl/Cmd + wheel zooms at the pointer, drag on
+empty canvas selects, Space + drag or middle-drag pans; touch keeps sigma's own
+pan and pinch. Tags are filter toggles in rows and in the detail panel, which
+shows each score as its bare value, the grouped source label (raw source on
+hover), one Created time and plain-text revisions ("Edited · time", "Current").
+New memory saves a fact or a lesson, picked at the top of its form; the ⋯ menu
+has no create action. A row's filterable
 chips (lesson category, applies, scope, tags, source) are toggle buttons that
 tick or clear that value in its group without opening the row.
 

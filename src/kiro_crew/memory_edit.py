@@ -74,7 +74,7 @@ def _normalized(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
 
-_FILTER_KEYS = {*memory_record_facets.FACET_GROUPS, "conf_min", "conf_max"}
+_FILTER_KEYS = {*memory_record_facets.FACET_GROUPS, "ref", "conf_min", "conf_max"}
 
 
 def _query(raw: Any) -> dict:
@@ -272,7 +272,8 @@ def _rows(
             if query["kind"] != "all" and row["kind"] != query["kind"]:
                 continue
             folded = ""
-            if tokens:
+            # A summary carries the search text too, so the page can search a loaded store itself.
+            if tokens or summaries:
                 text = row["text"]
                 if row["value_json"] is not None:
                     try:
@@ -281,7 +282,7 @@ def _rows(
                         pass
                 searchable = f"{row['key'] or ''} {text} {row['tags']} {row['_m_category'] or ''} {row['_m_subject'] or ''} {row['_m_predicate'] or ''}"
                 folded = _normalized(searchable)
-                if not all(token in folded for token in tokens):
+                if tokens and not all(token in folded for token in tokens):
                     continue
             if summaries or filters:
                 summary = _summary(store, row, tokens, folded)
@@ -349,6 +350,8 @@ def _summary(store: Any, row: Any, tokens: list[str], folded: str) -> dict:
         "confidence": score if kind != "episode" and score is not None else None,
         "importance": score if kind == "episode" and score is not None else None,
         "match": memory_record_facets.match_score(tokens, _normalized(row["key"] or ""), folded),
+        "search": folded,
+        "ref": memory_record_facets.record_ref(kind, row["id"]),
         "facets": memory_record_facets.summary_facets(
             kind,
             row["value_json"],
@@ -378,6 +381,24 @@ def _read_snapshot(store: Any):
 # A filter click, a sort or the next page then skips the pass over every row.
 _SUMMARY_CACHE: dict[tuple, tuple[tuple, list[dict]]] = {}
 _SUMMARY_CACHE_SIZE = 4
+
+
+#: Largest page a ``summary`` read may ask for.
+SUMMARY_PAGE_MAX = 1000
+
+# What an entry's ``summary`` carries: everything but the pass's own position and match.
+_SUMMARY_FIELDS = (
+    "kind",
+    "id",
+    "key",
+    "created_at",
+    "updated_at",
+    "confidence",
+    "importance",
+    "facets",
+    "search",
+    "ref",
+)
 
 
 def _cached_summaries(store: Any, base: dict) -> list[dict]:
@@ -426,20 +447,29 @@ def list_records(
     sort: str | None = None,
     descending: bool = True,
     facets: bool = False,
+    summary: bool = False,
 ) -> dict:
     """One page of records, in ``kind, id`` order unless *sort* names another.
 
     *sort* is one of ``memory_record_facets.SORTS``; ``match`` needs search words.
     With *facets*, the body also carries ``facets``: per group, how many rows each
-    value would list (see ``memory_record_facets.count_facets``).
+    value would list (see ``memory_record_facets.count_facets``). With *summary*,
+    each entry also carries the ``summary`` the list sorts, filters and counts by
+    (facets, dates, scores and folded search text), so a page that has loaded every
+    record can do those itself (``memoryLocalList.ts``).
     """
     query = _query(query)
-    if isinstance(limit, bool) or isinstance(offset, bool) or not 1 <= limit <= 100 or offset < 0:
-        raise MemoryEditError("Use a page size of 1–100 and a non-negative offset.")
+    # The background load of every record (*summary*) reads bigger pages.
+    most = SUMMARY_PAGE_MAX if summary else 100
+    if isinstance(limit, bool) or isinstance(offset, bool) or not 1 <= limit <= most or offset < 0:
+        raise MemoryEditError(f"Use a page size of 1–{most} and a non-negative offset.")
     if sort is not None and sort not in memory_record_facets.SORTS:
         raise MemoryEditError("Sort by updated, created, confidence, importance, key or match.")
     if sort == "match" and not query["q"]:
         raise MemoryEditError("Best match needs search words.")
+    summary_wanted = summary
+    if summary_wanted and sort is None:
+        sort = "updated"
     if sort is None and not facets:
         entries, total = [], 0
         with store._db_lock:
@@ -479,11 +509,13 @@ def list_records(
                     _conflict_count(store, row)
                     assembled[position] = row
         entries = []
-        for summary in window:
-            row = assembled.get(summary["position"])
+        for listed_summary in window:
+            row = assembled.get(listed_summary["position"])
             if row is not None:
                 if sort == "match":
-                    row["match"] = summary["match"]
+                    row["match"] = listed_summary["match"]
+                if summary_wanted:
+                    row["summary"] = {k: listed_summary[k] for k in _SUMMARY_FIELDS}
                 entries.append(row)
     body: dict[str, Any] = {
         "entries": entries,

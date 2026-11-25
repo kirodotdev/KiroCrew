@@ -25085,6 +25085,8 @@
     "restart_interrupts": "Il riavvio del gateway interrompe brevemente le conversazioni attive e il lavoro pianificato."
   },
   "memoryEditing": {
+    "edited": "Modificato",
+    "current": "Attuale",
     "adjust": "Modifica bozza",
     "after": "Dopo",
     "all_scope": "Selezionati tutti i record corrispondenti a “{{query}}”. Annulla la selezione per cambiare i filtri.",
@@ -25126,7 +25128,6 @@
     "original_reference": "Riferimento originale",
     "history": "Cronologia revisioni",
     "proposal": "Modifica proposta",
-    "accepted": "Modifica registrata",
     "use_proposal": "Usa valore proposto",
     "no_history": "Nessuna revisione registrata.",
     "review_proposals": "Esamina proposte ({{count}})",
@@ -25139,8 +25140,7 @@
     "restore_hint": "Il ripristino salva questo valore come nuova versione. Le versioni precedenti restano nella cronologia.",
     "restored": "Versione ripristinata",
     "restore_now": "Ora",
-    "restore_after": "Dopo il ripristino",
-    "current_version": "Versione attuale"
+    "restore_after": "Dopo il ripristino"
   },
   "memoryPage": {
     "applies_always": "In ogni sessione",
@@ -25177,7 +25177,6 @@
     "match_hint": "Quanto corrisponde alle tue parole di ricerca",
     "match_value": "Corrispondenza {{value}}",
     "more_actions": "Altre azioni",
-    "new_lesson": "Nuova lezione",
     "new_memory": "Nuovo ricordo",
     "new_memory_hint": "Una chiave che esiste già riceve il nuovo valore.",
     "open_recovery": "Apri Recupero",
@@ -25197,6 +25196,9 @@
     "scope_all_repos": "Tutti i repository",
     "search_filters": "Cerca nei filtri",
     "scroll_more": "Scorri per vedere altro",
+    "graph_selected": "{{formatted}} selezionati",
+    "show_in_memories": "Mostra in Memorie",
+    "loaded_progress": "{{loaded}} / {{total}} caricati",
     "filters_width": "Larghezza dei filtri",
     "select": "Seleziona",
     "select_limit_hint": "Fino a {{limit}} alla volta",

@@ -13,7 +13,7 @@ import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEdit
 import type { ClientTransport } from './transport'
 
 /** How the memory page orders a record list and whether it asks for facet counts. */
-export type MemoryRecordView = { sort?: MemoryRecordSort; order?: 'asc' | 'desc'; facets?: boolean }
+export type MemoryRecordView = { sort?: MemoryRecordSort; order?: 'asc' | 'desc'; facets?: boolean; summary?: boolean }
 
 /** `GET /api/memory/records`'s query string: each facet value is a repeated parameter. */
 export function memoryRecordParams(store: string, query: MemoryRecordQuery, offset: number, limit: number, view: MemoryRecordView = {}): URLSearchParams {
@@ -21,8 +21,10 @@ export function memoryRecordParams(store: string, query: MemoryRecordQuery, offs
   if (view.sort) params.set('sort', view.sort)
   if (view.sort && view.order) params.set('order', view.order)
   if (view.facets) params.set('facets', '1')
+  if (view.summary) params.set('summary', '1')
   const filters = query.filters || {}
   for (const group of ['category', 'applies', 'scope', 'source', 'surface', 'crew', 'tag'] as const) for (const value of filters[group] || []) params.append(group, value)
+  for (const ref of filters.ref || []) params.append('ref', ref)
   if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
   if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
   return params

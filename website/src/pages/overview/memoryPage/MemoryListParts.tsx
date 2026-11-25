@@ -110,9 +110,13 @@ function GroupScroll({ capped, children }: { capped: boolean; children: ReactNod
   // After every render: the values or their count may have changed the height.
   useLayoutEffect(check)
   if (!capped) return <>{children}</>
-  return <div className="relative">
-    <div ref={ref} onScroll={check} className="max-h-[32rem] overflow-y-auto" data-testid="facet-group-scroll">{children}</div>
-    {more && <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-end justify-center bg-gradient-to-t from-bg to-transparent pb-0.5 text-[11px] text-muted">{t('memoryPage.scroll_more')}</div>}
+  // The fade sits over the last rows; the hint has a row of its own below them.
+  return <div>
+    <div className="relative">
+      <div ref={ref} onScroll={check} data-scroll="y" className="max-h-[32rem] overflow-y-auto overscroll-contain" data-testid="facet-group-scroll">{children}</div>
+      {more && <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-bg to-transparent" />}
+    </div>
+    {more && <p aria-hidden="true" className="pt-0.5 text-right text-[11px] leading-4 text-muted" data-testid="facet-group-more">{t('memoryPage.scroll_more')}</p>}
   </div>
 }
 
@@ -171,9 +175,11 @@ export function FilterPanel({ view, facets, trailing, capped = false, onToggle, 
 }
 
 /** One removable chip per ticked filter value, and Clear all. */
-export function ActiveFilters({ filters, onToggle, onRange, onClear }: { filters: MemoryRecordFilters; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void }) {
+export function ActiveFilters({ filters, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void }) {
   const { t } = useTranslation()
   const chips = FACET_GROUPS.flatMap(group => (filters[group] || []).map(value => ({ key: `${group}:${value}`, label: facetLabel(group, value), remove: () => onToggle(group, value) })))
+  // A graph selection is one chip: removing it brings the whole list back.
+  if (filters.ref?.length && onClearRefs) chips.unshift({ key: 'ref', label: t('memoryPage.graph_selected', { count: filters.ref.length, formatted: fmtNumber(filters.ref.length) }), remove: onClearRefs })
   if (filters.conf_min !== undefined || filters.conf_max !== undefined) chips.push({ key: 'conf', label: t('memoryPage.confidence_range', { low: fmtScore(filters.conf_min ?? 0), high: fmtScore(filters.conf_max ?? 1) }), remove: () => { onRange('conf_min', undefined); onRange('conf_max', undefined) } })
   if (!chips.length) return null
   return <div className="flex flex-wrap items-center gap-x-1 gap-y-0">
@@ -204,7 +210,7 @@ export type ChipFilter = { filters: MemoryRecordFilters; onToggle: (group: Memor
 /** A row chip that is also a filter: a press ticks its value in the matching
  *  group, a second press clears it, and the row behind it does not open. A touch
  *  screen gets a 44 px hit area around the 22 px chip. */
-function FilterChip({ group, value, tone, chip, title, children }: { group: MemoryRecordFacetGroup; value: string; tone: string; chip?: ChipFilter; title?: string; children: ReactNode }) {
+export function FilterChip({ group, value, tone, chip, title, children }: { group: MemoryRecordFacetGroup; value: string; tone: string; chip?: ChipFilter; title?: string; children: ReactNode }) {
   if (!chip) return <span className={`${CHIP} ${tone}`} title={title}>{children}</span>
   const on = !!chip.filters[group]?.includes(value)
   return <button type="button" aria-pressed={on} title={title} onClick={event => { event.stopPropagation(); chip.onToggle(group, value) }}

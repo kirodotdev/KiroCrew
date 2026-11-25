@@ -14,7 +14,9 @@ range, not a facet: facts and lessons carry it, experiences do not.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any
 
 from kiro_crew.lesson_validation import LESSON_APPLIES_UNSTATED, LESSON_APPLIES_VALUES
@@ -28,7 +30,21 @@ SOURCE_UNKNOWN = "unknown"
 FACET_GROUPS = ("category", "applies", "scope", "source", "surface", "crew", "tag")
 SORTS = ("updated", "created", "confidence", "importance", "key", "match")
 _MAX_VALUES = 50
+# A graph selection: at most this many record refs (the graph draws at most 400 records).
+_MAX_REFS = 500
+_REF = re.compile(r"[0-9a-f]{10}")
 _MAX_VALUE_LENGTH = 512
+
+
+def record_ref(kind: str, record_id: Any) -> str:
+    """A short, URL-safe name for one record: ten hex digits of ``sha1("kind:id")``.
+
+    A graph selection names its records by these, so hundreds of them fit in one
+    query string (``GET /api/memory/records?ref=…``).
+    """
+    return hashlib.sha1(f"{kind}:{record_id or ''}".encode(), usedforsecurity=False).hexdigest()[
+        :10
+    ]
 
 
 class FacetError(ValueError):
@@ -152,6 +168,12 @@ def parse_filters(raw: dict[str, Any]) -> dict[str, Any]:
             values = _values(raw[group], group)
             if values:
                 filters[group] = values
+    if "ref" in raw:
+        refs = raw["ref"] if isinstance(raw["ref"], list) else [raw["ref"]]
+        if len(refs) > _MAX_REFS or not all(isinstance(r, str) and _REF.fullmatch(r) for r in refs):
+            raise FacetError(f"Use at most {_MAX_REFS} record refs of ten hex digits.")
+        if refs:
+            filters["ref"] = list(dict.fromkeys(refs))
     low = _bound(raw["conf_min"], "conf_min") if "conf_min" in raw else None
     high = _bound(raw["conf_max"], "conf_max") if "conf_max" in raw else None
     if low is not None and high is not None and low > high:
@@ -175,6 +197,8 @@ def matches(summary: dict[str, Any], filters: dict[str, Any], *, skip: str | Non
                 return False
         elif facets[group] not in wanted:
             return False
+    if "ref" in filters and summary.get("ref") not in filters["ref"]:
+        return False
     if "conf_min" in filters or "conf_max" in filters:
         confidence = summary["confidence"]
         if confidence is None:

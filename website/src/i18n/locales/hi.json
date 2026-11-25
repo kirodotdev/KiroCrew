@@ -24483,6 +24483,8 @@
     "restart_interrupts": "गेटवे को फिर शुरू करने से सक्रिय बातचीत और निर्धारित काम थोड़ी देर के लिए रुकते हैं।"
   },
   "memoryEditing": {
+    "edited": "बदला गया",
+    "current": "मौजूदा",
     "adjust": "संपादन समायोजित करें",
     "after": "बाद में",
     "all_scope": "“{{query}}” से मेल खाने वाले सभी रिकॉर्ड चुने गए हैं। फ़िल्टर बदलने के लिए चयन हटाएँ।",
@@ -24524,7 +24526,6 @@
     "original_reference": "मूल संदर्भ",
     "history": "संशोधन इतिहास",
     "proposal": "प्रस्तावित बदलाव",
-    "accepted": "दर्ज बदलाव",
     "use_proposal": "प्रस्तावित मान इस्तेमाल करें",
     "no_history": "अभी कोई संशोधन दर्ज नहीं है।",
     "review_proposals": "प्रस्तावों की समीक्षा करें ({{count}})",
@@ -24537,8 +24538,7 @@
     "restore_hint": "पुनर्स्थापित करने से यह मान एक नए संस्करण के रूप में सहेजा जाता है। पुराने संस्करण इतिहास में बने रहते हैं।",
     "restored": "पुनर्स्थापित संस्करण",
     "restore_now": "अभी",
-    "restore_after": "वापस लाने के बाद",
-    "current_version": "मौजूदा संस्करण"
+    "restore_after": "वापस लाने के बाद"
   },
   "memoryPage": {
     "applies_always": "हर सत्र",
@@ -24575,7 +24575,6 @@
     "match_hint": "यह तुम्हारे खोज शब्दों से कितना मिलता है",
     "match_value": "मेल {{value}}",
     "more_actions": "और कार्रवाइयाँ",
-    "new_lesson": "नई सीख",
     "new_memory": "नई स्मृति",
     "new_memory_hint": "जो कुंजी पहले से है, उसे नया मान मिलता है।",
     "open_recovery": "पुनर्प्राप्ति खोलो",
@@ -24595,6 +24594,9 @@
     "scope_all_repos": "सभी रिपो",
     "search_filters": "फ़िल्टर खोजें",
     "scroll_more": "और देखने के लिए स्क्रॉल करो",
+    "graph_selected": "{{formatted}} चुने गए",
+    "show_in_memories": "मेमोरी में देखो",
+    "loaded_progress": "{{loaded}} / {{total}} लोड हुए",
     "filters_width": "फ़िल्टर की चौड़ाई",
     "select": "चुनो",
     "select_limit_hint": "एक बार में {{limit}} तक",

@@ -256,3 +256,30 @@ def test_a_repeated_listing_reuses_its_pass_until_the_store_changes(
     assert len(passes) == 2
     assert after["total"] == first["total"] + 1
     assert "user.editor" in _ids(after)
+
+
+def test_a_ref_filter_lists_exactly_the_named_records_and_summaries_carry_them(
+    store,  # noqa: F811
+):
+    _seed(store)
+    ref = memory_record_facets.record_ref
+    wanted = [ref("directive", "lesson.a"), ref("fact", "user.timezone")]
+    body = memory_edit.list_records(
+        store, {"filters": {"ref": wanted}}, sort="updated", facets=True, summary=True
+    )
+    assert sorted(_ids(body)) == ["lesson.a", "user.timezone"]
+    assert body["facets"]["kind"] == {"directive": 1, "fact": 1}
+    assert {entry["summary"]["ref"] for entry in body["entries"]} == set(wanted)
+    assert all("search" in entry["summary"] for entry in body["entries"])
+    with pytest.raises(memory_edit.MemoryEditError):
+        memory_edit.list_records(store, {"filters": {"ref": ["not-a-ref"]}}, sort="updated")
+
+
+def test_only_a_summary_read_takes_pages_past_one_hundred(store):  # noqa: F811
+    _seed(store)
+    body = memory_edit.list_records(store, {}, sort="updated", summary=True, limit=1000)
+    assert body["total"] == len(body["entries"])
+    with pytest.raises(memory_edit.MemoryEditError):
+        memory_edit.list_records(store, {}, sort="updated", limit=101)
+    with pytest.raises(memory_edit.MemoryEditError):
+        memory_edit.list_records(store, {}, sort="updated", summary=True, limit=1001)

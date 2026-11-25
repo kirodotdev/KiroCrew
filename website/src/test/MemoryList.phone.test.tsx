@@ -105,7 +105,7 @@ describe('the filter sheet', () => {
     const sheet = await screen.findByRole('dialog', { name: 'Filters' })
     const find = within(sheet).getByRole('searchbox', { name: 'Search filters' })
     fireEvent.change(find, { target: { value: 'SRC' } })
-    expect(within(sheet).getByRole('checkbox', { name: 'src/kiro_crew' })).toBeVisible()
+    await waitFor(() => expect(within(sheet).getByRole('checkbox', { name: 'src/kiro_crew' })).toBeVisible())
     expect(within(sheet).getByRole('checkbox', { name: 'website/src/pages' })).toBeVisible()
     expect(within(sheet).queryByRole('checkbox', { name: 'Tool' })).toBeNull()
     expect(within(sheet).queryByRole('checkbox', { name: 'All repos' })).toBeNull()
@@ -145,7 +145,8 @@ describe('the filter sheet', () => {
     await screen.findByText('Work in a worktree')
     expect(screen.queryByRole('complementary', { name: 'Filters' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
-    expect(await screen.findByRole('complementary', { name: 'Filters' })).toBeVisible()
+    // It animates open: visible once its first frame widens it.
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'Filters' })).toBeVisible())
     expect(localStorage.getItem('kirocrew:memory-filters-collapsed')).toBe('0')
   })
 
@@ -199,8 +200,10 @@ describe('the wide filter rail', () => {
   it('stays in view, as tall as the window, with confidence at the top', async () => {
     renderWithProviders(<List />)
     const rail = await screen.findByRole('complementary', { name: 'Filters' })
-    expect(rail.parentElement).toHaveClass('sticky', 'self-start')
-    expect(rail).toHaveClass('max-h-[calc(100dvh-6rem)]', 'overflow-y-auto')
+    expect(screen.getByTestId('filter-rail')).toHaveClass('sticky', 'self-start')
+    // As tall as the part of its scroll area in view, and scrolling on its own.
+    expect(rail).toHaveClass('overflow-y-auto', 'overscroll-contain')
+    expect(rail.style.maxHeight).not.toBe('')
     const sections = within(rail).getAllByRole('region')
     expect(sections[0]).toHaveAccessibleName(/Confidence/)
   })
@@ -258,5 +261,138 @@ describe('a chat session source', () => {
     expect(within(chip).getByText('Learned from chat')).toHaveAttribute('title', 'consolidation:dashboard:chat-12-1790000012')
     fireEvent.click(chip)
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { source: ['consolidation'] } }))
+  })
+})
+
+describe('scrolling and animating the wide rail', () => {
+  /** Give `el` a scroll height, a box height and a position. */
+  const scrollBox = (el: HTMLElement, scrollHeight: number, clientHeight: number, scrollTop = 0) => {
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight })
+    Object.defineProperty(el, 'scrollTop', { configurable: true, writable: true, value: scrollTop })
+  }
+  const wheel = (target: Element, deltaY: number) => {
+    const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true })
+    target.dispatchEvent(event)
+    return event
+  }
+
+  it('moves the group under the pointer first, then the rail, and never the page', async () => {
+    api.memoryRecords.mockResolvedValue({ entries: [LESSON], total: 1, has_more: false, facets: { ...FACETS, scope: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`pkg/${i}`, 30 - i])) } })
+    renderWithProviders(<List />)
+    const rail = await screen.findByRole('complementary', { name: 'Filters' })
+    const group = within(within(rail).getByRole('region', { name: /Scope/ })).getByTestId('facet-group-scroll')
+    expect(group).toHaveClass('overscroll-contain')
+    scrollBox(rail, 2000, 600)
+    scrollBox(group, 960, 512)
+    const event = wheel(within(group).getAllByRole('checkbox')[0], 100)
+    expect(event.defaultPrevented).toBe(true)
+    expect(group.scrollTop).toBe(100)
+    expect(rail.scrollTop).toBe(0)
+    group.scrollTop = 448
+    wheel(within(group).getAllByRole('checkbox')[0], 100)
+    expect(group.scrollTop).toBe(448)
+    expect(rail.scrollTop).toBe(100)
+    // Over a heading between groups, the rail moves.
+    wheel(within(rail).getAllByRole('region')[0], 50)
+    expect(rail.scrollTop).toBe(150)
+  })
+
+  it('gives the scroll hint a row of its own under the fade', async () => {
+    api.memoryRecords.mockResolvedValue({ entries: [LESSON], total: 1, has_more: false, facets: { ...FACETS, scope: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`pkg/${i}`, 30 - i])) } })
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.dataset.testid === 'facet-group-scroll' ? 960 : 0 } })
+    try {
+      renderWithProviders(<List />)
+      const rail = await screen.findByRole('complementary', { name: 'Filters' })
+      const scope = within(rail).getByRole('region', { name: /Scope/ })
+      const hint = await within(scope).findByTestId('facet-group-more')
+      expect(hint.tagName).toBe('P')
+      expect(hint.parentElement!.contains(within(scope).getByTestId('facet-group-scroll').parentElement!)).toBe(true)
+      expect(hint.closest('[data-testid="facet-group-scroll"]')).toBeNull()
+    } finally {
+      if (sh) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh)
+    }
+  })
+
+  it('animates open and shut, and snaps under reduced motion', async () => {
+    renderWithProviders(<List />)
+    await screen.findByRole('complementary', { name: 'Filters' })
+    const shell = screen.getByTestId('filter-rail')
+    expect(shell.className).toMatch(/transition-\[width,margin,opacity\]/)
+    expect(shell.className).toContain('motion-reduce:transition-none')
+    expect(shell.style.transitionDuration).toBe('225ms')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }))
+    // Shutting: still drawn while it narrows, but already out of reach.
+    expect(screen.getByTestId('filter-rail')).toHaveAttribute('aria-hidden', 'true')
+    await waitFor(() => expect(screen.queryByTestId('filter-rail')).toBeNull())
+  })
+
+  it('removes the rail at once when the user asks for less motion', async () => {
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia
+    try {
+      renderWithProviders(<List />)
+      await screen.findByRole('complementary', { name: 'Filters' })
+      fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }))
+      expect(screen.queryByTestId('filter-rail')).toBeNull()
+    } finally {
+      window.matchMedia = original
+    }
+  })
+})
+
+describe('a hand-off from the graph', () => {
+  it('lists exactly the picked records with one chip, opens a single one, and the chip brings the list back', async () => {
+    const view = renderWithProviders(<List jump={{ refs: ['aaaaaaaaaa'], open: { kind: 'directive', id: 'lesson.tool' }, seq: 1 }} />)
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { ref: ['aaaaaaaaaa'] } }))
+    expect(await screen.findByTestId('memory-record-detail')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove filter: 1 selected' }))
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all' }))
+    view.unmount()
+  })
+})
+
+describe('the background load of every record', () => {
+  it('shows the first rows from the server, then filters locally with no request once all are in', async () => {
+    const summary = { kind: 'directive', id: 'lesson.tool', key: 'lesson.tool', created_at: '2026-11-01', updated_at: '2026-11-20', confidence: 0.95, importance: null, search: 'lesson.tool work in a worktree', ref: 'aaaaaaaaaa',
+      facets: { category: 'tool', applies: 'always', scope: '', source: 'user_explicit', surface: null, crew: null, tag: [] } }
+    api.memoryRecords.mockImplementation(async (_s: string, _q: unknown, _o: number, _l: number, view?: { summary?: boolean }) => view?.summary
+      ? { entries: [{ ...LESSON, summary }], total: 1, has_more: false }
+      : { entries: [LESSON], total: 1, has_more: false, facets: FACETS })
+    renderWithProviders(<List />)
+    await screen.findByText('Work in a worktree')
+    await waitFor(() => expect(api.memoryRecords.mock.calls.some(call => call[4]?.summary)).toBe(true))
+    // Local counts replace the server's once every record is here.
+    const rail = await screen.findByRole('complementary', { name: 'Filters' })
+    await waitFor(() => expect(within(rail).getByRole('checkbox', { name: 'Tool' })).toBeInTheDocument())
+    const before = api.memoryRecords.mock.calls.length
+    fireEvent.click(within(rail).getByRole('checkbox', { name: 'Tool' }))
+    expect(await screen.findByText('Work in a worktree')).toBeInTheDocument()
+    fireEvent.click(within(rail).getByRole('checkbox', { name: 'Tool' }))
+    expect(api.memoryRecords.mock.calls.length).toBe(before)
+  })
+})
+
+describe('tags as filters', () => {
+  const EPISODE = { kind: 'episode', id: 'ep-9', text: 'Shipped the insider build', tags: '["release"]', importance: 0.6, source: 'consolidation:dashboard:chat-1-1', updated_at: '2026-11-13T10:00:00Z', created_at: '2026-11-13T10:00:00Z', revision: 'c'.repeat(64) }
+
+  it('ticks the rail from a row tag without opening the row, and from the detail panel too', async () => {
+    api.memoryRecords.mockResolvedValue({ entries: [EPISODE], total: 1, has_more: false, facets: { ...FACETS, tag: { release: 1 } } })
+    renderWithProviders(<List />)
+    const rows = await screen.findByRole('list', { name: 'Memories' })
+    fireEvent.click(await within(rows).findByRole('button', { name: '#release' }))
+    expect(screen.queryByTestId('memory-record-detail')).toBeNull()
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { tag: ['release'] } }))
+    const rail = screen.getByRole('complementary', { name: 'Filters' })
+    await waitFor(() => expect(within(rail).getByRole('checkbox', { name: '#release' })).toBeChecked())
+    // Ticking it off in the rail clears the row tag's pressed state.
+    fireEvent.click(within(rail).getByRole('checkbox', { name: '#release' }))
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all' }))
+    fireEvent.click(within(screen.getByRole('list', { name: 'Memories' })).getByRole('button', { name: 'View details' }))
+    const detail = await screen.findByTestId('memory-record-detail')
+    expect(within(detail).getByText('Learned from chat')).toHaveAttribute('title', 'consolidation:dashboard:chat-1-1')
+    fireEvent.click(within(detail).getByRole('button', { name: '#release' }))
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { tag: ['release'] } }))
   })
 })
