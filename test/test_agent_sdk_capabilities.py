@@ -94,6 +94,7 @@ CAPABILITY_FIELDS = (
     "crew_sends_persona_prompt",
     "loads_steering_natively",
     "keeps_prompt_on_unlanded_turn",
+    "ends_turn_on_permission_reject",
     "keeps_session_across_compaction",
 )
 
