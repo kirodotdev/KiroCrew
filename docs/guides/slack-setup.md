@@ -699,7 +699,10 @@ A dashboard chat session can be linked to a Slack thread for two-way sync.
 3. A new thread is posted in that conversation, titled from the session title
    (falling back to a snippet of the first prompt), followed by the opening
    turn, a gap marker when turns were skipped, and the last five turns (user and
-   assistant) as context. Titles and message text are redacted before posting
+   assistant) as context. Titles and message text are redacted before posting.
+   A pasted image or attached file in the first prompt or a replayed prompt is
+   named (`Image: <name>`, `File: <name>`), never shown as a path on the
+   gateway host
 4. The menu then shows a "Connected" row for the link, plus actions to post a
    reminder into the thread or to unlink
 

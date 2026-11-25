@@ -635,6 +635,16 @@ The public-internet notes above apply here too: put an auth layer in front of
 the proxy, and change settings over SSH, since proxied requests stay
 read-only.
 
+To expose only the Crew API (no dashboard page, no cookie), point the proxy at
+the entry port instead: set `dashboard.entry_port` to a port from 1024 to 65535
+with `kirocrew config set` and restart. The gateway then also listens on that
+port on `127.0.0.1` and `::1`. It serves Crew API routes only, refuses Owner
+routes, and treats every request as forwarded. The proxy must send a `Host` of
+`127.0.0.1`, `[::1]` or `localhost`; any other `Host` gets `400`. Linux and
+macOS only for now. See
+[dashboard-token-auth.md](../system-specs/modules/dashboard-token-auth.md)
+(*Entry port*).
+
 ### Getting a link on your phone
 
 1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
