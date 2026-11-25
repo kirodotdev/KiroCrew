@@ -286,6 +286,8 @@ class DiscordDispatcher:
     _handle_status = _commands._handle_status
     _channel_reply = _commands._channel_reply
     _run_reply_command = _commands._run_reply_command
+    _apply_privacy_mode = _commands._apply_privacy_mode
+    _recorded_mode_refusal = _commands._recorded_mode_refusal
 
     # transport_dispatch_interactions.py
     on_interaction = _interactions.on_interaction
@@ -307,6 +309,7 @@ class DiscordDispatcher:
     # transport_dispatch_ledger.py
     _record_turn = _ledger._record_turn
     _session_restricted = _ledger._session_restricted
+    _blocks_memory_reads = _ledger._blocks_memory_reads
     _uploads_restricted = _ledger._uploads_restricted
     _persist_turn = _ledger._persist_turn
 
@@ -404,6 +407,7 @@ class DiscordDispatcher:
             ),
             surface=self._surface_own_session,
             restricted=self._session_restricted,
+            blocks_reads=self._blocks_memory_reads,
             conv_log=self.conv_log,
             slot_state=lambda: getattr(self._session_resume, "dashboard_state", None),
             # ``_APPROVAL_REGISTRY`` is ``DiscordApprovalDecider`` under a second
@@ -561,9 +565,13 @@ class DiscordDispatcher:
             route=inbound_route,
             # A private command is never spooled: the restart notice quotes the
             # spooled text back into the conversation, where a thread reads it.
+            # Nor is a `!temporary` / `!incognito` message: its mode is not on yet,
+            # and the spool would keep the text the modifier promised not to save.
             restricted=(
                 True
-                if monitor_completion is not None or reply is not None
+                if monitor_completion is not None
+                or reply is not None
+                or (interpret_commands and _commands.is_privacy_message(msg.text))
                 else _refused_turn_restricted
             ),
         ):
@@ -756,6 +764,51 @@ class DiscordDispatcher:
                 agent_reply += "\n\nLooking for a Bot? Send `!bot` in a DM."
             await say(agent_reply)
             return monitor_result
+        # `!temporary` / `!incognito` (Slack's modifiers, on the shared
+        # ``privacy_mode``). The mode is applied to the key the turn finally runs
+        # under, after the idle/daily rotation below: marking the pre-rotation key
+        # would leave the turn unprotected while reporting success. A bare modifier
+        # rotates first for the same reason, then only marks.
+        privacy_request: str | None = None
+        # A caption on an attachment is never a command, but a modifier there still
+        # applies, as on Slack: the file is the turn's content, and dropping the
+        # mode would record the very message the user asked to keep private.
+        lead = parse_command(text) if interpret_commands else None
+        if cmd not in _commands._PRIVACY_COMMANDS and msg.attachments:
+            cmd = lead if lead in _commands._PRIVACY_COMMANDS else cmd
+        if (
+            interpret_commands
+            and cmd not in _commands._PRIVACY_COMMANDS
+            and _commands.is_privacy_message(text)
+        ):
+            # `!queue !incognito <msg>` would queue or steer the words with no mode on.
+            await say(_commands._PRIVACY_PREFIXED_REFUSAL)
+            return monitor_result
+        if cmd in _commands._PRIVACY_COMMANDS:
+            if route.resumed_key is not None:
+                await say(_commands._PRIVACY_RESUMED_REFUSAL)
+                return monitor_result
+            if self.sessions.is_busy(self._session_key(user_id, thread_id)):
+                await say(_commands._PRIVACY_BUSY_REFUSAL.format(mode=cmd))
+                return monitor_result
+            rest = parse_command_argument(text)
+            if not rest and not msg.attachments:
+                self._conv.maybe_rotate(
+                    scope_id,
+                    time.time(),
+                    idle_minutes=int(self._live_cfg().messaging.idle_reset_minutes),
+                    daily_reset_hour=int(self._live_cfg().messaging.daily_reset_hour),
+                )
+                applied = await self._apply_privacy_mode(
+                    cmd, self._session_key(user_id, thread_id), user_id, say
+                )
+                if applied is False:
+                    # Already on, so apply_mode said nothing; silence reads as failure.
+                    await say(_commands.privacy_mode.notice(cmd))
+                return monitor_result
+            privacy_request = cmd
+            text = rest
+            cmd = None
         # A lone `!queue` / `!steer` is a directive missing its message body, and
         # an unrecognized `!token` is a mistyped command. Both would otherwise be
         # forwarded verbatim, and the model answers the literal string — which
@@ -800,6 +853,11 @@ class DiscordDispatcher:
             await self.client.send_message(channel_id, _STALE_OPTIONS_REFUSAL)
             return monitor_result
         if self.sessions.is_busy(session_key):
+            if privacy_request is not None:
+                # Checked above too; a turn that started since must not take the
+                # message into its queue or steer with no mode on.
+                await say(_commands._PRIVACY_BUSY_REFUSAL.format(mode=privacy_request))
+                return monitor_result
             if origin_tag:
                 # A tagged press must never enter the busy path: `_handle_busy`
                 # enqueues BARE TEXT and the drain replays it without the tag,
@@ -861,6 +919,13 @@ class DiscordDispatcher:
             # A wake belongs to the conversation's OWN session; a resumed session's
             # surface owns its turns.
             return MonitorDispatchResult.UNAVAILABLE
+        if (
+            privacy_request is not None
+            and await self._apply_privacy_mode(privacy_request, session_key, user_id, say) is None
+        ):
+            # Refused, audited and announced by apply_mode: running the message
+            # with the mode dropped is the leak the modifier exists to prevent.
+            return monitor_result
         decider = (
             DiscordApprovalDecider(session_key=session_key)
             if self.approval_mode == APPROVAL_INTERACTIVE
