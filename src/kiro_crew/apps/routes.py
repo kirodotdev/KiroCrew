@@ -171,6 +171,7 @@ from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
 from kiro_crew.apps.routes_bot_grants import handle_bot_grants
 from kiro_crew.apps.routes_enable import handle_disable_app, handle_enable_app, handle_open_app
 from kiro_crew.apps.routes_install import (
+    apply_app_update,
     handle_install_app,
     handle_register_external,
     handle_update_app,
@@ -442,8 +443,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_builtin_config,
     )
     from kiro_crew.apps.routes_install import (  # noqa: F401
+        _locked_preflight,
         _resync_app_crons_after_update,
+        _startup_refusal_body,
         _update_app,
+        _update_from_path,
+        _update_from_registry,
     )
     from kiro_crew.apps.routes_kiro import (  # noqa: F401
         _KIRO_READ_CHUNK,
@@ -456,6 +461,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
         _announce_app_ui_changed,
+        _announce_app_ui_changed_to,
         _app_may_enable_after_install,
         _app_may_run_after_install,
         _awaits_consent,
@@ -464,6 +470,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _client_install_manifest,
         _deregister_app_off_loop,
         _note_on_enable_failed_after_update,
+        _note_on_enable_failed_after_update_to,
         _prune_dropped_resources,
         _read_app_record,
         _redact_warning,
@@ -471,6 +478,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _register_app_off_loop,
         _reinstall_from_registry,
         _rerun_on_enable_after_update,
+        _rerun_on_enable_after_update_to,
         _restore_app_after_failed_update,
         _run_on_enable_script,
         _start_backend_after_install,

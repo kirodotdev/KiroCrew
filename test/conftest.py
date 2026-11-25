@@ -385,6 +385,9 @@ from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and imp
 from conftest_resets_app_registry import (  # noqa: E402,F401 -- bound for pytest and importers
     _no_host_ssh_agent_in_registry_git_env,
 )
+from conftest_resets_apps import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_app_auto_update_state,
+)
 from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_bot_chat_app_tools_state,
 )

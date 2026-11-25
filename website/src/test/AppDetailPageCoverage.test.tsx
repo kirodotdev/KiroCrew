@@ -52,6 +52,9 @@ vi.mock('../api/client', () => ({
     members: (...a: unknown[]) => members(...a),
     // The browsing sites card reads its own list; an empty one draws nothing.
     getAppBrowserSites: () => Promise.resolve({ sites: [], active: [] }),
+    // The Updates card reads app_updates; a config with none follows the default.
+    kirocrewConfig: () => Promise.resolve({}),
+    patchConfig: vi.fn(),
   },
 }))
 

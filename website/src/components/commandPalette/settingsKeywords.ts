@@ -28,6 +28,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   // both listed; "auto-update on restart" is the name both switches shipped under.
   'about.install-app-updates-automatically': ['auto update', 'auto-update', 'automatic updates', 'auto update on restart', 'auto-update on restart', 'auto download', 'app updates', 'turn off auto update', 'stop automatic updates'],
   'about.release-notes': ['release notes', 'releases', 'changelog', 'change log', "what's new", 'whats new', 'what changed'],
+  'about.update-apps-automatically': ['update installed apps', 'auto update apps', 'auto-update apps', 'automatic app updates', 'keep apps up to date', 'update my apps', 'app store updates', 'stop apps updating'],
   'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta', 'preview builds', 'switch to nightly'],
   'about.update-the-gateway-automatically': ['auto update', 'auto-update', 'automatic updates', 'gateway updates', 'auto update on restart', 'auto-update on restart', 'install updates', 'update check', 'turn off auto update', 'stop automatic updates', 'disable updates', 'update installed restart'],
   'about.version': ['version', 'about', 'build', 'what version', 'licence', 'license', 'check for updates', 'which version am i on'],

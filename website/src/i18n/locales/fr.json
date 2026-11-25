@@ -12834,7 +12834,15 @@
       "browser_sites_add_back_title": "Rajouter ce site ?",
       "browser_sites_restore_risk": "L'agent de l'application pourra alors ouvrir, lire, saisir du texte et cliquer sur ces pages dans ton navigateur, connecté avec ton compte, sans demander à chaque fois. N'autorise qu'un site de confiance.",
       "bots_scope_tools": "Permet à un Bot que tu coches pour cette app d'utiliser ses outils dans son propre chat. Les autres Bots ne changent pas.",
-      "bots_scope_tools_preview_off": "Avant d'activer <preview>Outils d'app dans les chats des Bots</preview> dans Aperçus de fonctionnalités, les Bots cochés ne recevront pas les outils de cette app."
+      "bots_scope_tools_preview_off": "Avant d'activer <preview>Outils d'app dans les chats des Bots</preview> dans Aperçus de fonctionnalités, les Bots cochés ne recevront pas les outils de cette app.",
+      "auto_update_title": "Mises à jour",
+      "auto_update_label": "Mettre à jour automatiquement",
+      "auto_update_hint": "Toujours installe les nouvelles versions de cette application sans demander. Jamais la garde à cette version. Une mise à jour qui demande de nouvelles autorisations attend toujours ton accord.",
+      "auto_update_follow_on": "Comme Mises à jour des applications installées (activé)",
+      "auto_update_follow_off": "Comme Mises à jour des applications installées (désactivé)",
+      "auto_update_always": "Toujours",
+      "auto_update_never": "Jamais",
+      "auto_update_save_failed": "Impossible d'enregistrer le réglage de mise à jour de cette application."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",
@@ -23451,6 +23459,13 @@
         "row_label": "Masquer les sessions ouvertes par {{app}}",
         "failed_to_save": "Impossible d’enregistrer le masquage pour {{app}}.",
         "config_load_failed": "Impossible de charger les masquages enregistrés pour tes applications. Les interrupteurs restent indisponibles jusqu’à leur chargement."
+      },
+      "appUpdates": {
+        "title": "Mises à jour des applications installées",
+        "mode_label": "Mettre à jour les applications automatiquement",
+        "mode_hint": "Vérifie toutes les 6 heures et installe les nouvelles versions dès que l'application est inactive. Les mises à jour qui demandent de nouvelles autorisations attendent ton accord.",
+        "save_failed": "Impossible d'enregistrer le réglage de mise à jour des applications.",
+        "load_failed": "Impossible de charger les réglages de mise à jour des applications."
       }
     },
     "settingsPage": {

@@ -316,6 +316,14 @@ class PublishConfig:
     )
 
 
+#: ``app_updates.mode`` values. ``off`` keeps the one bell note per new version
+#: and ``on`` applies the update.
+APP_UPDATE_MODES = ("off", "on")
+
+#: ``apps.<name>.auto_update`` values: follow the global mode, always, never.
+APP_AUTO_UPDATE_OVERRIDES = ("", "always", "never")
+
+
 @dataclass
 class AppSettingsConfig:
     """The user's own settings for one installed app, ``apps.<name>``."""
@@ -342,6 +350,33 @@ class AppSettingsConfig:
             "unread, and the notes those sessions post arrive silenced. A tool "
             "approval, a question for you and a failed turn still reach you. "
             "Your own sessions are unaffected.",
+        ),
+    )
+    auto_update: str = field(
+        default="",
+        metadata=_meta(
+            "Update automatically",
+            "Overrides 'Update apps automatically' for this app. Empty follows the "
+            "global setting, 'always' updates this app automatically whatever the "
+            "global setting says, and 'never' keeps it at its installed version.",
+            enum=list(APP_AUTO_UPDATE_OVERRIDES),
+        ),
+    )
+
+
+@dataclass
+class AppUpdatesConfig:
+    """How installed apps are kept current, ``app_updates``."""
+
+    mode: str = field(
+        default="off",
+        metadata=_meta(
+            "Update apps automatically",
+            "'off' tells you once when a new version of an installed app is "
+            "published. 'on' checks every 6 hours and installs it once the app is "
+            "idle, through the same steps as the Update button. An update that asks "
+            "for new permissions always waits for you.",
+            enum=list(APP_UPDATE_MODES),
         ),
     )
 

@@ -12834,7 +12834,15 @@
       "browser_sites_add_back_title": "Adicionar este site de volta?",
       "browser_sites_restore_risk": "Depois, o agente do próprio app poderá abrir, ler, digitar e clicar nestas páginas no seu navegador, com a sua sessão, sem perguntar a cada vez. Permita só um site em que você confia.",
       "bots_scope_tools": "Permite a um Bot que você marcar para este app usar suas ferramentas no próprio chat. Outros Bots não mudam.",
-      "bots_scope_tools_preview_off": "Antes de ativar <preview>Ferramentas de apps nos chats de Bots</preview> em Prévias de recursos, os Bots marcados não receberão as ferramentas deste app."
+      "bots_scope_tools_preview_off": "Antes de ativar <preview>Ferramentas de apps nos chats de Bots</preview> em Prévias de recursos, os Bots marcados não receberão as ferramentas deste app.",
+      "auto_update_title": "Atualizações",
+      "auto_update_label": "Atualizar automaticamente",
+      "auto_update_hint": "Sempre instala novas versões deste app sem perguntar. Nunca o mantém nesta versão. Uma atualização que pede novas permissões sempre espera por você.",
+      "auto_update_follow_on": "Igual a Atualizações de apps instalados (ligado)",
+      "auto_update_follow_off": "Igual a Atualizações de apps instalados (desligado)",
+      "auto_update_always": "Sempre",
+      "auto_update_never": "Nunca",
+      "auto_update_save_failed": "Não foi possível salvar a configuração de atualização deste app."
     },
     "appPage": {
       "loading_app": "Carregando app…",
@@ -23451,6 +23459,13 @@
         "row_label": "Silenciar sessões que {{app}} abre",
         "failed_to_save": "Não foi possível salvar o silenciamento de {{app}}.",
         "config_load_failed": "Não foi possível carregar os silenciamentos salvos dos seus apps. Os interruptores ficam indisponíveis até serem carregados."
+      },
+      "appUpdates": {
+        "title": "Atualizações de apps instalados",
+        "mode_label": "Atualizar apps automaticamente",
+        "mode_hint": "Verifica a cada 6 horas e instala as versões novas quando o app está ocioso. Atualizações que pedem novas permissões esperam por você.",
+        "save_failed": "Não foi possível salvar a configuração de atualização de apps.",
+        "load_failed": "Não foi possível carregar as configurações de atualização de apps."
       }
     },
     "settingsPage": {

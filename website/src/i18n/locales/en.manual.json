@@ -5792,7 +5792,15 @@
       "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
       "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open.",
       "bots_scope_tools": "Lets a bot you tick for this app use its tools in its own chat. Other bots don't change.",
-      "bots_scope_tools_preview_off": "Off until you turn on <preview>App tools in bot chats</preview>."
+      "bots_scope_tools_preview_off": "Off until you turn on <preview>App tools in bot chats</preview>.",
+      "auto_update_title": "Updates",
+      "auto_update_label": "Update automatically",
+      "auto_update_hint": "Always installs new versions of this app without asking. Never keeps it at this version. An update that asks for new permissions always waits for you.",
+      "auto_update_follow_on": "Same as Installed app updates (on)",
+      "auto_update_follow_off": "Same as Installed app updates (off)",
+      "auto_update_always": "Always",
+      "auto_update_never": "Never",
+      "auto_update_save_failed": "Couldn't save the update setting for this app."
     },
     "appsPage": {
       "all_apps": "All apps",
@@ -11387,6 +11395,13 @@
         "row_label": "Mute sessions {{app}} opens",
         "failed_to_save": "Couldn't save the mute for {{app}}.",
         "config_load_failed": "Couldn't load your saved app mutes. The switches are unavailable until they load."
+      },
+      "appUpdates": {
+        "title": "Installed app updates",
+        "mode_label": "Update apps automatically",
+        "mode_hint": "Checks every 6 hours and installs new versions once the app is idle. Updates that ask for new permissions wait for you.",
+        "save_failed": "Couldn't save the app update setting.",
+        "load_failed": "Couldn't load the app update settings."
       },
       "releases": {
         "whats_new_in": "What's new in {{version}}",

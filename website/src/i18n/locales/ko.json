@@ -12278,7 +12278,15 @@
       "browser_sites_add_back_title": "이 탐색 사이트를 다시 추가할까요?",
       "browser_sites_restore_risk": "그러면 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다. 신뢰하는 사이트만 허용하세요.",
       "bots_scope_tools": "이 앱에 체크한 Bot이 자기 채팅에서 그 도구를 사용할 수 있도록 합니다. 다른 Bot은 변경되지 않습니다.",
-      "bots_scope_tools_preview_off": "기능 미리 보기에서 <preview>Bot 채팅의 앱 도구</preview>를 켜기 전까지, 체크한 Bot은 이 앱의 도구를 받지 못합니다."
+      "bots_scope_tools_preview_off": "기능 미리 보기에서 <preview>Bot 채팅의 앱 도구</preview>를 켜기 전까지, 체크한 Bot은 이 앱의 도구를 받지 못합니다.",
+      "auto_update_title": "업데이트",
+      "auto_update_label": "자동 업데이트",
+      "auto_update_hint": "항상: 묻지 않고 이 앱의 새 버전을 설치합니다. 안 함: 이 버전으로 유지합니다. 새 권한을 요청하는 업데이트는 항상 사용자의 확인을 기다립니다.",
+      "auto_update_follow_on": "설치된 앱 업데이트와 같게(켬)",
+      "auto_update_follow_off": "설치된 앱 업데이트와 같게(끔)",
+      "auto_update_always": "항상",
+      "auto_update_never": "안 함",
+      "auto_update_save_failed": "이 앱의 업데이트 설정을 저장하지 못했습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -22313,6 +22321,13 @@
         "row_label": "{{app}}이(가) 여는 세션 음소거",
         "failed_to_save": "{{app}}의 음소거 설정을 저장하지 못했습니다.",
         "config_load_failed": "저장된 앱 음소거 설정을 불러오지 못했습니다. 불러올 때까지 스위치를 사용할 수 없습니다."
+      },
+      "appUpdates": {
+        "title": "설치된 앱 업데이트",
+        "mode_label": "앱 자동 업데이트",
+        "mode_hint": "6시간마다 확인하고 앱이 유휴 상태일 때 새 버전을 설치합니다. 새 권한을 요청하는 업데이트는 사용자의 확인을 기다립니다.",
+        "save_failed": "앱 업데이트 설정을 저장하지 못했습니다.",
+        "load_failed": "앱 업데이트 설정을 불러오지 못했습니다."
       }
     },
     "settingsPage": {
