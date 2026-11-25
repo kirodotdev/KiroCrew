@@ -513,17 +513,42 @@ _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 #: ``fullmatch``: a ``$`` anchor would also accept a trailing newline.
 _CLOCK_TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 
+#: One decimal degree of a ``latitude, longitude`` pair. The pair is split on its
+#: comma and each side stripped of spaces first, so the pattern has no repeated
+#: run to backtrack over.
+_DEGREES_RE = re.compile(r"[+-]?[0-9]{1,3}(?:\.[0-9]+)?")
 
-def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
+
+def _is_location(value: object) -> bool:
+    """True for a ``latitude, longitude`` pair on Earth, at most 64 characters.
+
+    The shape the dashboard's ``parseLocation`` (``website/src/utils/themeSchedule.ts``)
+    reads. Spaces only around the numbers, so a pasted newline or tab is refused as
+    the time fields refuse one.
+    """
+    if not isinstance(value, str) or len(value) > 64:
+        return False
+    parts = [part.strip(" ") for part in value.split(",")]
+    if len(parts) != 2 or not all(_DEGREES_RE.fullmatch(part) for part in parts):
+        return False
+    return abs(float(parts[0])) <= 90 and abs(float(parts[1])) <= 180
+
+
+def _theme_payload(cfg: KiroCrewConfig, *, authenticated: bool = True) -> dict[str, object]:
     """Workspace display preferences shared by the boot + config endpoints.
 
     One builder for all four response sites so a newly-added preference cannot
-    be surfaced by some of them and silently omitted by the rest.
+    be surfaced by some of them and silently omitted by the rest. The
+    unauthenticated boot route passes ``authenticated=False``: the saved
+    sunrise-and-sunset location is where the user is, so it is served only behind
+    the token, by ``GET /api/config/theme``.
     """
-    return {
+    payload: dict[str, object] = {
         "mode": cfg.dashboard.theme_mode or "",
         "schedule_light": cfg.dashboard.theme_schedule_light or "",
         "schedule_dark": cfg.dashboard.theme_schedule_dark or "",
+        "schedule_source": cfg.dashboard.theme_schedule_source or "",
+        "schedule_location": cfg.dashboard.theme_schedule_location or "",
         "color": cfg.dashboard.theme_color or "",
         "language": cfg.dashboard.language or "",
         "translucent_panels": cfg.dashboard.translucent_panels or "",
@@ -531,6 +556,9 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "import_onboarded": cfg.dashboard.import_onboarded,
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
+    if not authenticated:
+        del payload["schedule_location"]
+    return payload
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:
@@ -538,20 +566,23 @@ async def api_theme_boot(request: web.Request) -> web.Response:
 
     Unauthenticated (same boundary as /api/health) so the SPA can read the
     workspace theme and UI language before the token flow completes. Contains
-    no secrets — only workspace-level display preferences and onboarding flags.
+    no secrets — only workspace-level display preferences and onboarding flags,
+    without the saved sunrise-and-sunset location (``_theme_payload``).
     """
     # Off the loop: the payload reads config files and the policy profiles.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
+    return web.json_response(
+        await asyncio.to_thread(functools.partial(_theme_payload, cfg, authenticated=False))
+    )
 
 
 async def api_theme_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/theme — read or update workspace display settings.
 
     GET returns the current config. PUT accepts
-    {mode?, schedule_light?, schedule_dark?, color?, language?, translucent_panels?,
-    onboarded?, import_onboarded?, privacy_acked?, privacy_ack_version?,
-    crewmates_onboarded?} and persists ONLY those ``dashboard.*`` keys.
+    {mode?, schedule_light?, schedule_dark?, schedule_source?, schedule_location?,
+    color?, language?, translucent_panels?, onboarded?, import_onboarded?,
+    privacy_acked?, privacy_ack_version?, crewmates_onboarded?} and persists ONLY those ``dashboard.*`` keys.
 
     The PUT is a locked delta read-modify-write, never a whole-document
     ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
@@ -594,6 +625,18 @@ async def api_theme_config(request: web.Request) -> web.Response:
             if value != "" and not (isinstance(value, str) and _CLOCK_TIME_RE.fullmatch(value)):
                 raise web.HTTPBadRequest(text=f"{key} must be '' or a 24-hour HH:MM time")
             updates[f"theme_{key}"] = value
+    if "schedule_source" in body:
+        source = body["schedule_source"]
+        if source not in ("", "times", "sun"):
+            raise web.HTTPBadRequest(text="schedule_source must be '', 'times', or 'sun'")
+        updates["theme_schedule_source"] = source
+    if "schedule_location" in body:
+        location = body["schedule_location"]
+        if location != "" and not _is_location(location):
+            raise web.HTTPBadRequest(
+                text="schedule_location must be '' or 'latitude, longitude' in degrees"
+            )
+        updates["theme_schedule_location"] = location.strip()
     if "color" in body:
         color = body["color"]
         if not isinstance(color, str) or len(color) > 64:

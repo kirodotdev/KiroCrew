@@ -1154,3 +1154,76 @@ describe('DisplayPanel – Scheduled mode times', () => {
     expect(setSchedule).toHaveBeenCalledWith({ light: '07:00', dark: '19:00' })
   })
 })
+
+describe('DisplayPanel – Scheduled mode sunrise and sunset', () => {
+  beforeEach(() => {
+    displaySub = 'theme'
+    vi.clearAllMocks()
+  })
+
+  it('picking Sunrise and sunset saves the source and keeps the times', () => {
+    const setSchedule = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00' },
+      setSchedule,
+    }))
+    renderPanel()
+    fireEvent.click(screen.getByRole('radio', { name: /Sunrise and sunset/ }))
+    expect(setSchedule).toHaveBeenCalledWith({ light: '07:00', dark: '19:00', source: 'sun' })
+  })
+
+  it('saves a valid location on blur, refuses an invalid one with a notice, and clears an empty one', () => {
+    const setSchedule = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00', source: 'sun', location: '51.51, -0.13' },
+      setSchedule,
+    }))
+    renderPanel()
+    expect(screen.queryByLabelText('Light from')).not.toBeInTheDocument()
+    const location = screen.getByLabelText('Location')
+    expect(location).toHaveValue('51.51, -0.13')
+
+    fireEvent.change(location, { target: { value: '91, 0' } })
+    fireEvent.blur(location)
+    expect(setSchedule).not.toHaveBeenCalled()
+    expect(screen.getByText('Type a latitude from -90 to 90, a comma, then a longitude from -180 to 180.')).toBeInTheDocument()
+    expect(location).toHaveAttribute('aria-invalid', 'true')
+    expect(location).toHaveValue('91, 0')
+
+    fireEvent.change(location, { target: { value: ' -33.87, 151.21 ' } })
+    fireEvent.blur(location)
+    expect(setSchedule).toHaveBeenLastCalledWith({ light: '07:00', dark: '19:00', source: 'sun', location: '-33.87, 151.21' })
+    expect(screen.queryByText(/Type a latitude/)).not.toBeInTheDocument()
+
+    fireEvent.change(location, { target: { value: '' } })
+    fireEvent.blur(location)
+    expect(setSchedule).toHaveBeenLastCalledWith({ light: '07:00', dark: '19:00', source: 'sun', location: undefined })
+  })
+})
+
+describe('DisplayPanel – Scheduled mode location read failure', () => {
+  beforeEach(() => {
+    displaySub = 'theme'
+    vi.clearAllMocks()
+  })
+
+  it('shows the failed read under Location with a Retry button', () => {
+    const retryScheduleLocation = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00', source: 'sun' },
+      setSchedule: vi.fn(),
+      scheduleLocationLoadFailed: true,
+      retryScheduleLocation,
+    }))
+    renderPanel()
+    expect(screen.getByText(/Couldn't load the saved location/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retryScheduleLocation).toHaveBeenCalledTimes(1)
+  })
+})

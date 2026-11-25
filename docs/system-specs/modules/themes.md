@@ -465,7 +465,7 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Mode switch (Auto / Light / Dark / Scheduled, with Scheduled's two times) + single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Mode switch (Auto / Light / Dark / Scheduled, with Scheduled's two times or its sunrise-and-sunset location) + single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Mode preference
@@ -479,6 +479,16 @@ A manual pick replaces the schedule and keeps its times. First run's look step
 offers Auto, Light and Dark only, because Scheduled needs the two times. A
 schedule save the workspace refuses shows an inline notice under the two times;
 this device keeps the new times, and leaving a time field saves them again.
+
+Scheduled has a second source, *Sunrise and sunset* (`theme_schedule_source` =
+`sun`): light while the sun is above the horizon at `theme_schedule_location`, a
+typed `latitude, longitude`. The device works it out from the instant with the
+Astronomical Almanac's low-precision solar position (within about two minutes of
+published times); nothing is looked up and no location permission is asked, so
+a time zone change on the device cannot move it. A polar day is light all day and
+a polar night dark. Until a valid location is saved, the sun source keeps to the
+two times. A typed location that is not one stays in the field with an inline
+notice and is not saved; an empty one clears it.
 
 - **One resolver.** `website/src/utils/themeSchedule.ts` has no imports, so the
   crew companion and Mochi windows, which paint from `localStorage["mc-theme"]`,

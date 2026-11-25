@@ -10973,6 +10973,8 @@
         "theme_mode": "",
         "theme_schedule_light": "",
         "theme_schedule_dark": "",
+        "theme_schedule_source": "",
+        "theme_schedule_location": "",
         "sso_login_flags": "",
         "theme_color": "",
         "instance_label": "",
@@ -12629,6 +12631,38 @@
       "tags": [],
       "label": "Theme Schedule Dark",
       "help": "24-hour HH:MM at which the 'schedule' theme mode turns dark, read in the time zone of the device showing the dashboard. Empty = never set (19:00).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.theme_schedule_source",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Theme Schedule Source",
+      "help": "What the 'schedule' theme mode follows: 'times' (theme_schedule_light and theme_schedule_dark) or 'sun' (light from local sunrise to sunset at theme_schedule_location). Empty = never chosen ('times').",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "times",
+        "sun"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.theme_schedule_location",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Theme Schedule Location",
+      "help": "'latitude, longitude' in decimal degrees (for example '51.51, -0.13') whose sunrise and sunset the 'sun' schedule source follows. The device showing the dashboard works the times out itself; nothing is looked up. Empty = none (the 'sun' source keeps to the two times).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

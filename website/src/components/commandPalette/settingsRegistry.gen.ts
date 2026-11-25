@@ -3110,6 +3110,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.theme_schedule_light"
   },
   {
+    "id": "display.location",
+    "label": "Location",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_location",
+    "hint": "Latitude and longitude in degrees. This device works out sunrise and sunset; nothing is looked up. Until you set one, the Light from and Dark from times apply.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_location"
+  },
+  {
     "id": "display.minimize-to-tray",
     "label": "Minimize to tray",
     "labelKey": "pages.settings.displayPanel.minimize_to_tray",
@@ -3317,6 +3330,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "remote-editor"
     },
     "configKey": "dashboard.remote_editor.host"
+  },
+  {
+    "id": "display.switch-at",
+    "label": "Switch at",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_source",
+    "hint": "Scheduled mode follows the two times you set, or local sunrise and sunset.",
+    "tab": "display",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_source"
   },
   {
     "id": "display.theme",

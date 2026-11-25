@@ -46,6 +46,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
     themeDetail: (slug: string) => fetch('/api/themes/' + encodeURIComponent(slug)).then(j),
     // Workspace theme config (server-authoritative)
     themeBoot: () => fetch('/api/theme/boot').then(j),
+    /** The same payload behind the token, plus what boot leaves out (the sun schedule's location). */
+    themeConfig: () => fetch('/api/config/theme').then(j),
     updateThemeConfig: (body: {
       mode?: string
       color?: string
@@ -56,6 +58,10 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       /** Scheduled mode's switch times, 24-hour `HH:MM`; '' means never saved. */
       schedule_light?: string
       schedule_dark?: string
+      /** What Scheduled follows: 'times' or 'sun'; '' means never chosen (times). */
+      schedule_source?: string
+      /** `latitude, longitude` for the 'sun' source; '' means none. */
+      schedule_location?: string
       onboarded?: boolean
       import_onboarded?: boolean
     }) =>

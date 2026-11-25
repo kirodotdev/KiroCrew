@@ -1827,6 +1827,14 @@
       "configKey": "dashboard.theme_schedule_light"
     },
     {
+      "id": "display.location",
+      "label": "Location",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_location",
+      "hint": "Latitude and longitude in degrees. This device works out sunrise and sunset; nothing is looked up. Until you set one, the Light from and Dark from times apply.",
+      "configKey": "dashboard.theme_schedule_location"
+    },
+    {
       "id": "display.minimize-to-tray",
       "label": "Minimize to tray",
       "tab": "display",
@@ -1947,6 +1955,14 @@
       "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.host",
       "description": "The name after Host in ~/.ssh/config on the computer you’re using, like dev-box. Every computer you open this dashboard from needs that name.",
       "configKey": "dashboard.remote_editor.host"
+    },
+    {
+      "id": "display.switch-at",
+      "label": "Switch at",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_source",
+      "hint": "Scheduled mode follows the two times you set, or local sunrise and sunset.",
+      "configKey": "dashboard.theme_schedule_source"
     },
     {
       "id": "display.theme",

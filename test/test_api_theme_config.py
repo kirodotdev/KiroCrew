@@ -24,6 +24,8 @@ def _make_cfg(
     translucent_panels: str = "",
     theme_schedule_light: str = "",
     theme_schedule_dark: str = "",
+    theme_schedule_source: str = "",
+    theme_schedule_location: str = "",
 ):
     """Build a mock KiroCrewConfig with dashboard display fields.
 
@@ -42,6 +44,8 @@ def _make_cfg(
     cfg.dashboard.translucent_panels = translucent_panels
     cfg.dashboard.theme_schedule_light = theme_schedule_light
     cfg.dashboard.theme_schedule_dark = theme_schedule_dark
+    cfg.dashboard.theme_schedule_source = theme_schedule_source
+    cfg.dashboard.theme_schedule_location = theme_schedule_location
     return cfg
 
 
@@ -85,6 +89,7 @@ async def test_theme_boot_returns_defaults() -> None:
         "mode": "",
         "schedule_light": "",
         "schedule_dark": "",
+        "schedule_source": "",
         "color": "",
         "language": "",
         "translucent_panels": "",
@@ -113,6 +118,7 @@ async def test_theme_boot_returns_configured_values() -> None:
         "mode": "dark",
         "schedule_light": "",
         "schedule_dark": "",
+        "schedule_source": "",
         "color": "kiro",
         "language": "",
         "translucent_panels": "on",
@@ -120,6 +126,25 @@ async def test_theme_boot_returns_configured_values() -> None:
         "import_onboarded": True,
         "crewmates_onboarded": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_theme_boot_leaves_out_the_saved_location() -> None:
+    """The boot route answers without a token, so it never carries where the user is.
+
+    The authenticated GET /api/config/theme still returns it.
+    """
+    cfg = _make_cfg(theme_schedule_source="sun", theme_schedule_location="51.51, -0.13")
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        boot = json.loads((await core_mod.api_theme_boot(MagicMock(spec=web.Request))).body)
+        req = _owner_request()
+        req.method = "GET"
+        config = json.loads((await core_mod.api_theme_config(req)).body)
+    assert boot["schedule_source"] == "sun"
+    assert "schedule_location" not in boot
+    assert "51.51" not in json.dumps(boot)
+    assert config["schedule_location"] == "51.51, -0.13"
 
 
 @pytest.mark.asyncio
@@ -141,6 +166,8 @@ async def test_theme_config_get() -> None:
         "mode": "light",
         "schedule_light": "",
         "schedule_dark": "",
+        "schedule_source": "",
+        "schedule_location": "",
         "color": "emerald",
         "language": "",
         "translucent_panels": "",
@@ -209,6 +236,8 @@ async def test_theme_config_put_updates_and_persists(cfg_file: Path) -> None:
         "mode": "dark",
         "schedule_light": "",
         "schedule_dark": "",
+        "schedule_source": "",
+        "schedule_location": "",
         "color": "monokai",
         "language": "",
         "translucent_panels": "",
@@ -360,6 +389,27 @@ async def test_theme_config_put_persists_a_schedule(cfg_file: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_theme_config_put_persists_a_sun_schedule(cfg_file: Path) -> None:
+    """The sunrise-and-sunset source and its location are stored with the times.
+
+    A southern-hemisphere and a polar location are as valid as any other; the
+    location is stored trimmed, and '' clears it.
+    """
+    _write(cfg_file, {})
+    for location in ("-33.87, 151.21", "69.65,18.96", "  51.5, -0.13 "):
+        resp = await _put({"schedule_source": "sun", "schedule_location": location})
+        assert resp.status == 200
+        dashboard = _read(cfg_file)["dashboard"]
+        assert dashboard["theme_schedule_source"] == "sun"
+        assert dashboard["theme_schedule_location"] == location.strip()
+        body = json.loads(resp.body)
+        assert (body["schedule_source"], body["schedule_location"]) == ("sun", location.strip())
+    resp = await _put({"schedule_source": "times", "schedule_location": ""})
+    body = json.loads(resp.body)
+    assert (body["schedule_source"], body["schedule_location"]) == ("times", "")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body",
     [
@@ -370,6 +420,14 @@ async def test_theme_config_put_persists_a_schedule(cfg_file: Path) -> None:
         {"schedule_dark": "19:00:00"},
         {"schedule_dark": "19:00\n"},
         {"schedule_light": 700},
+        {"schedule_source": "sunrise"},
+        # A location is a latitude from -90 to 90 and a longitude from -180 to 180.
+        {"schedule_location": "91, 0"},
+        {"schedule_location": "0, 181"},
+        {"schedule_location": "51.5"},
+        {"schedule_location": "London"},
+        {"schedule_location": "51.5, -0.13\n"},
+        {"schedule_location": [51.5, -0.13]},
         # A bool is the shape a client would reach for first; it is refused so
         # the stored value is always one of the three strings the loader reads.
         {"translucent_panels": True},
@@ -397,6 +455,13 @@ async def test_theme_config_put_persists_a_schedule(cfg_file: Path) -> None:
         "schedule_seconds",
         "schedule_trailing_newline",
         "schedule_int",
+        "schedule_source_unknown",
+        "schedule_location_latitude_91",
+        "schedule_location_longitude_181",
+        "schedule_location_one_number",
+        "schedule_location_place_name",
+        "schedule_location_trailing_newline",
+        "schedule_location_list",
         "translucent_panels_bool",
         "translucent_panels_word",
         "onboarded",

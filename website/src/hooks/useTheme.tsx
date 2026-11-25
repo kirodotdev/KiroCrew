@@ -24,7 +24,7 @@ import {
   scheduledMode,
   type ThemeSchedule,
 } from '../utils/themeSchedule'
-import { useThemeSchedule } from './useThemeSchedule'
+import { useThemeSchedule, type ThemeScheduleBody } from './useThemeSchedule'
 import { useThemeModeOverride } from './themeModeOverride'
 import {
   adoptServerLiquidGlass,
@@ -537,6 +537,11 @@ export interface ThemeContextValue {
   setSchedule: (schedule: ThemeSchedule) => void
   /** The last `setSchedule` save was refused; this device still uses those times. */
   scheduleSaveFailed: boolean
+  /** The signed-in read of the workspace's sunrise-and-sunset location failed. */
+  scheduleLocationLoadFailed: boolean
+  /** That read is running (first try or `retryScheduleLocation`). */
+  scheduleLocationLoading: boolean
+  retryScheduleLocation: () => void
   colorTheme: ColorTheme
   setColorTheme: (t: ColorTheme) => void
   /**
@@ -1118,7 +1123,7 @@ function useThemeState(): ThemeContextValue {
   })
   // Its own observer: a mode or colour write right after would drop this save's onError.
   const { mutate: persistSchedule } = useMutation({
-    mutationFn: (body: { schedule_light: string; schedule_dark: string }) => api.updateThemeConfig(body),
+    mutationFn: (body: ThemeScheduleBody) => api.updateThemeConfig(body),
   })
   const { schedule, setSchedule, adoptSchedule, saveFailed: scheduleSaveFailed } = useThemeSchedule(mode, setResolved, persistSchedule)
 
@@ -1130,6 +1135,31 @@ function useThemeState(): ThemeContextValue {
     staleTime: Infinity,  // only need it once on mount
     retry: false,         // if server unavailable, fall back to localStorage silently
   })
+  // The sun schedule's location is kept off the unauthenticated boot read, so a
+  // second browser takes it from the signed-in config read once boot is applied.
+  const { data: configData, isError: scheduleLocationLoadFailed, refetch: refetchConfig, isFetching: scheduleLocationLoading } = useQuery({
+    queryKey: ['theme-config'],
+    queryFn: () => api.themeConfig(),
+    enabled: themeBootReady && schedule.source === 'sun',
+    staleTime: Infinity,
+    retry: retryPolicy,
+    retryDelay: retryDelayPolicy,
+  })
+  const servedLocation = typeof configData?.schedule_location === 'string' ? configData.schedule_location : null
+  // A location saved on this device after the read began is newer than its
+  // answer. A time or source edit is not, so the read can still fill it in.
+  const locationEditedRef = useRef(false)
+  const setScheduleHere = useCallback((next: ThemeSchedule) => {
+    if (next.location !== schedule.location) locationEditedRef.current = true
+    setSchedule(next)
+  }, [setSchedule, schedule.location])
+  const retryScheduleLocation = useCallback(() => { void refetchConfig() }, [refetchConfig])
+  useEffect(() => {
+    if (servedLocation === null || locationEditedRef.current) return
+    adoptSchedule(s => (servedLocation || undefined) === s.location
+      ? s
+      : normalizeThemeSchedule(s.light, s.dark, s.source, servedLocation))
+  }, [servedLocation, adoptSchedule])
   // A read that failed has nothing to apply, so the boot is done the moment it
   // settles. Set the flag while rendering (React re-runs this component before it
   // commits) instead of from the effect below, a second commit that changed nothing.
@@ -1174,8 +1204,10 @@ function useThemeState(): ThemeContextValue {
       ? 'keep'
       : needsLegacyMigration ? 'migrate' : 'adopt'
     // Saved as a pair; a workspace that never saved one keeps this browser's.
-    const servedSchedule = bootData.schedule_light || bootData.schedule_dark
-      ? normalizeThemeSchedule(bootData.schedule_light, bootData.schedule_dark)
+    // Boot carries no location (it is served without a token), so this browser's
+    // own copy holds until the signed-in read below answers.
+    const servedSchedule = bootData.schedule_light || bootData.schedule_dark || bootData.schedule_source
+      ? normalizeThemeSchedule(bootData.schedule_light, bootData.schedule_dark, bootData.schedule_source, schedule.location)
       : null
     if (servedSchedule) adoptSchedule(servedSchedule)
     if (modeChanged) {
@@ -1611,8 +1643,11 @@ function useThemeState(): ThemeContextValue {
     cycle: cycleMode,
     setTheme: setMode_,
     schedule,
-    setSchedule,
+    setSchedule: setScheduleHere,
     scheduleSaveFailed,
+    scheduleLocationLoadFailed,
+    scheduleLocationLoading,
+    retryScheduleLocation,
     colorTheme,
     setColorTheme,
     themeSwitching,

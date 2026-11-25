@@ -1105,6 +1105,26 @@ class DashboardConfig:
             "(19:00).",
         ),
     )
+    theme_schedule_source: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Source",
+            "What the 'schedule' theme mode follows: 'times' (theme_schedule_light "
+            "and theme_schedule_dark) or 'sun' (light from local sunrise to sunset "
+            "at theme_schedule_location). Empty = never chosen ('times').",
+            enum=["", "times", "sun"],
+        ),
+    )
+    theme_schedule_location: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Location",
+            "'latitude, longitude' in decimal degrees (for example '51.51, -0.13') "
+            "whose sunrise and sunset the 'sun' schedule source follows. The device "
+            "showing the dashboard works the times out itself; nothing is looked up. "
+            "Empty = none (the 'sun' source keeps to the two times).",
+        ),
+    )
     sso_login_flags: str = field(
         default="",
         metadata=_meta(

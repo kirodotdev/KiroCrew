@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen, Clock } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen, Clock, Sunrise } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -49,7 +49,7 @@ import { ChannelsSetting } from './ChannelsSetting'
 import ErrorNotice from '../../components/ErrorNotice'
 import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import type { ThemeSchedule } from '../../utils/themeSchedule'
+import { parseLocation, type ThemeSchedule, type ThemeScheduleSource } from '../../utils/themeSchedule'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
@@ -125,6 +125,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     schedule,
     setSchedule,
     scheduleSaveFailed,
+    scheduleLocationLoadFailed,
+    scheduleLocationLoading,
+    retryScheduleLocation,
     colorTheme,
     setColorTheme,
     allThemes,
@@ -147,6 +150,21 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     setScheduleDraft({})
     const changed = next.light !== schedule.light || next.dark !== schedule.dark
     if (next.light && next.dark && (changed || scheduleSaveFailed)) setSchedule(next)
+  }
+  // The sunrise-and-sunset location, saved on blur like the times. A typed value
+  // that is not a latitude and longitude stays in the field with a notice and is
+  // not saved; an empty one clears the location.
+  const [locationDraft, setLocationDraft] = useState<string | null>(null)
+  const [locationInvalid, setLocationInvalid] = useState(false)
+  const commitLocation = () => {
+    const typed = (locationDraft ?? schedule.location ?? '').trim()
+    if (typed !== '' && !parseLocation(typed)) {
+      setLocationInvalid(true)
+      return
+    }
+    setLocationDraft(null)
+    setLocationInvalid(false)
+    if (typed !== (schedule.location ?? '') || scheduleSaveFailed) setSchedule({ ...schedule, location: typed || undefined })
   }
   // The load-error notice is shown only for a pack that is actually unstyled.
   // `installedThemeLoadFailed` is derived in the provider from the selection,
@@ -1398,10 +1416,40 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={v => setTheme(v as ModePreference)} />
           {preference === 'schedule' && (
             <>
-              <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_light_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_light_from_hint')} value={scheduleDraft.light ?? schedule.light}
-                onChange={light => setScheduleDraft(d => ({ ...d, light }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_light" />
-              <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_dark_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_dark_from_hint')} value={scheduleDraft.dark ?? schedule.dark}
-                onChange={dark => setScheduleDraft(d => ({ ...d, dark }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_dark" />
+              <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.theme_schedule_source')} hint={i18nT('pages.settings.displayPanel.theme_schedule_source_hint')} value={schedule.source ?? 'times'}
+                options={[
+                  { value: 'times', label: i18nT('pages.settings.displayPanel.theme_schedule_source_times'), icon: <Clock className="w-3.5 h-3.5" /> },
+                  { value: 'sun', label: i18nT('pages.settings.displayPanel.theme_schedule_source_sun'), icon: <Sunrise className="w-3.5 h-3.5" /> },
+                ]}
+                onChange={source => setSchedule({ ...schedule, source: source as ThemeScheduleSource })} configKey="dashboard.theme_schedule_source" />
+              {schedule.source === 'sun' ? (
+                <>
+                  <SettingsInput label={i18nT('pages.settings.displayPanel.theme_schedule_location')} hint={i18nT('pages.settings.displayPanel.theme_schedule_location_hint')} placeholder={i18nT('pages.settings.displayPanel.theme_schedule_location_placeholder')}
+                    value={locationDraft ?? schedule.location ?? ''} onChange={setLocationDraft} onBlur={commitLocation} configKey="dashboard.theme_schedule_location"
+                    invalidMessageId={locationInvalid ? 'theme-schedule-location-invalid' : undefined} />
+                  {locationInvalid && (
+                    // A typing hint, not a failed save: plain text the field points at.
+                    <span id="theme-schedule-location-invalid" role="status" className="text-[12px] text-muted">{i18nT('pages.settings.displayPanel.theme_schedule_location_invalid')}</span>
+                  )}
+                  {/* No hand-off, as for the save notice below: navigating away
+                      would discard this panel's drafts. The button is the retry. */}
+                  {scheduleLocationLoadFailed && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ErrorNotice variant="inline" message={i18nT('pages.settings.displayPanel.theme_schedule_location_load_failed')} />
+                      <Btn type="button" disabled={scheduleLocationLoading} aria-busy={scheduleLocationLoading || undefined} onClick={retryScheduleLocation}>
+                        {i18nT('pages.settings.displayPanel.theme_schedule_location_retry')}
+                      </Btn>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_light_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_light_from_hint')} value={scheduleDraft.light ?? schedule.light}
+                    onChange={light => setScheduleDraft(d => ({ ...d, light }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_light" />
+                  <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_dark_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_dark_from_hint')} value={scheduleDraft.dark ?? schedule.dark}
+                    onChange={dark => setScheduleDraft(d => ({ ...d, dark }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_dark" />
+                </>
+              )}
               {/* No hand-off: navigating away would discard `scheduleDraft`,
                   `shellDraft` or `installValue` on this panel. Leaving a time
                   field is the retry. */}
