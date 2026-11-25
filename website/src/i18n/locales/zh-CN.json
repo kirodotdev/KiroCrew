@@ -11569,9 +11569,9 @@
       "unmute_short": "取消静音"
     },
     "promptStash": {
-      "badge_full_hint": "暂存区已满。请先丢弃或恢复一条草稿，再暂存新的草稿；在空白输入框中按 {{chord}} 可恢复最近一条。",
+      "badge_full_hint": "暂存区已满。请先丢弃或恢复一条草稿，再暂存新的草稿；在空白输入框中按 {{chord}} 可列出全部草稿。",
       "badge_full_hint_touch": "暂存区已满。请先丢弃或恢复一条草稿，再暂存新的草稿；两者都在 {{menu}} 菜单中。",
-      "badge_hint": "此聊天中暂存的草稿。在空白输入框中按 {{chord}} 可恢复最近一条。",
+      "badge_hint": "此聊天中暂存的草稿。在空白输入框中按 {{chord}} 可恢复一条。",
       "badge_hint_touch": "此聊天中暂存的草稿。可通过 {{menu}} 菜单恢复最近一条。",
       "badge_other": "已暂存 {{count}} 条草稿",
       "empty": "没有暂存的草稿。输入框中有内容时按 {{chord}} 即可暂存。",
@@ -11579,7 +11579,7 @@
       "full": "暂存区已满（{{max}} 条草稿）。要腾出空间，请丢弃一条暂存的草稿。",
       "menu_restore": "恢复暂存的草稿",
       "menu_restore_has_draft": "请先暂存或发送当前草稿。",
-      "menu_restore_desc_other": "已暂存 {{count}} 条，恢复最近一条。在空白输入框中按 {{chord}} 效果相同。",
+      "menu_restore_desc_other": "已暂存 {{count}} 条，恢复最近一条。在空白输入框中按 {{chord}}，有多条时可自行选择。",
       "menu_stash": "暂存草稿",
       "menu_stash_desc": "暂存文本并清空输入框（{{chord}}）。",
       "notice_attachments": "请移除附件后再暂存或恢复。",
@@ -11590,7 +11590,7 @@
       "restored_other": "已恢复暂存的草稿。仍有 {{count}} 条暂存。",
       "save_failed": "无法暂存草稿：浏览器存储已满或不可用。草稿仍保留在输入框中。",
       "shortcut_label": "暂存草稿，或在空白输入框中恢复草稿",
-      "stashed_other": "草稿已暂存。当前共暂存 {{count}} 条；在空白输入框中按 {{chord}} 可恢复最近一条。",
+      "stashed_other": "草稿已暂存。当前共暂存 {{count}} 条；在空白输入框中按 {{chord}} 可恢复，有多条时可选择一条。",
       "stashed_touch_other": "草稿已暂存。当前共暂存 {{count}} 条；可通过 {{menu}} 菜单恢复最近一条。",
       "too_large": "无法暂存：暂存区已达到大小上限。草稿仍保留在输入框中。要腾出空间，请丢弃一条暂存的草稿。",
       "too_large_single": "无法暂存：此草稿超过了暂存区的大小上限。草稿仍保留在输入框中。",
@@ -11604,7 +11604,9 @@
       "undo_discard": "撤销",
       "discard_failed": "无法丢弃草稿：浏览器存储不可用。草稿仍在暂存区中。",
       "undo_failed": "无法将草稿放回暂存区：暂存区已满或浏览器存储不可用。",
-      "discarded_other": "已丢弃暂存的草稿。仍有 {{count}} 条暂存。"
+      "discarded_other": "已丢弃暂存的草稿。仍有 {{count}} 条暂存。",
+      "picker_label": "暂存的草稿",
+      "picker_hint": "↑ ↓ 移动 · Enter 恢复 · Delete 丢弃 · Esc 关闭"
     },
     "globalChatSearch": {
       "title": "搜索所有聊天",

@@ -12093,9 +12093,9 @@
       "unmute_short": "Ativar"
     },
     "promptStash": {
-      "badge_full_hint": "Não cabem mais rascunhos. Descarte ou recupere um antes de guardar outro; {{chord}} com a caixa de texto vazia recupera o último.",
+      "badge_full_hint": "Não cabem mais rascunhos. Descarte ou recupere um antes de guardar outro; {{chord}} com a caixa de texto vazia mostra a lista.",
       "badge_full_hint_touch": "Não cabem mais rascunhos. Descarte ou recupere um antes de guardar outro; as duas opções estão no menu {{menu}}.",
-      "badge_hint": "Rascunhos guardados deste chat. {{chord}} com a caixa de texto vazia recupera o último.",
+      "badge_hint": "Rascunhos guardados deste chat. {{chord}} com a caixa de texto vazia recupera um.",
       "badge_hint_touch": "Rascunhos guardados deste chat. Recupere o último pelo menu {{menu}}.",
       "badge_many": "{{count}} rascunhos guardados",
       "badge_one": "{{count}} rascunho guardado",
@@ -12105,9 +12105,9 @@
       "full": "Não cabem mais rascunhos (máximo de {{max}}). Descarte um rascunho guardado para liberar espaço.",
       "menu_restore": "Recuperar rascunho guardado",
       "menu_restore_has_draft": "Guarde ou envie seu rascunho primeiro.",
-      "menu_restore_desc_many": "{{count}} rascunhos guardados; o último volta. {{chord}} com a caixa de texto vazia faz o mesmo.",
+      "menu_restore_desc_many": "{{count}} rascunhos guardados; o último volta. Com {{chord}} e a caixa de texto vazia, você escolhe.",
       "menu_restore_desc_one": "{{count}} rascunho guardado. {{chord}} com a caixa de texto vazia faz o mesmo.",
-      "menu_restore_desc_other": "{{count}} rascunhos guardados; o último volta. {{chord}} com a caixa de texto vazia faz o mesmo.",
+      "menu_restore_desc_other": "{{count}} rascunhos guardados; o último volta. Com {{chord}} e a caixa de texto vazia, você escolhe.",
       "menu_stash": "Guardar rascunho",
       "menu_stash_desc": "Guarda o texto e esvazia a caixa de texto ({{chord}}).",
       "notice_attachments": "Remova os anexos para guardar ou recuperar.",
@@ -12120,9 +12120,9 @@
       "restored_other": "Rascunho recuperado. Restam {{count}} rascunhos guardados.",
       "save_failed": "Não foi possível guardar o rascunho: o armazenamento do navegador está cheio ou indisponível. Seu rascunho continua na caixa de texto.",
       "shortcut_label": "Guardar o rascunho ou recuperá-lo numa caixa de texto vazia",
-      "stashed_many": "Rascunho guardado. Há {{count}} rascunhos guardados; pressione {{chord}} com a caixa de texto vazia para recuperar o último.",
+      "stashed_many": "Rascunho guardado. Há {{count}} rascunhos guardados; pressione {{chord}} com a caixa de texto vazia para escolher um.",
       "stashed_one": "Rascunho guardado. Há {{count}} rascunho guardado; pressione {{chord}} com a caixa de texto vazia para recuperá-lo.",
-      "stashed_other": "Rascunho guardado. Há {{count}} rascunhos guardados; pressione {{chord}} com a caixa de texto vazia para recuperar o último.",
+      "stashed_other": "Rascunho guardado. Há {{count}} rascunhos guardados; pressione {{chord}} com a caixa de texto vazia para escolher um.",
       "stashed_touch_many": "Rascunho guardado. Há {{count}} rascunhos guardados; recupere o último pelo menu {{menu}}.",
       "stashed_touch_one": "Rascunho guardado. Há {{count}} rascunho guardado; recupere-o pelo menu {{menu}}.",
       "stashed_touch_other": "Rascunho guardado. Há {{count}} rascunhos guardados; recupere o último pelo menu {{menu}}.",
@@ -12146,7 +12146,9 @@
       "undo_failed": "Não foi possível guardar o rascunho de novo: não há espaço ou o armazenamento do navegador não está disponível.",
       "discarded_many": "Rascunho descartado. Restam {{count}} rascunhos guardados.",
       "discarded_one": "Rascunho descartado. Resta {{count}} rascunho guardado.",
-      "discarded_other": "Rascunho descartado. Restam {{count}} rascunhos guardados."
+      "discarded_other": "Rascunho descartado. Restam {{count}} rascunhos guardados.",
+      "picker_label": "Rascunhos guardados",
+      "picker_hint": "↑ ↓ para mover · Enter para recuperar · Delete para descartar · Esc para fechar"
     },
     "globalChatSearch": {
       "title": "Pesquisar em todos os chats",

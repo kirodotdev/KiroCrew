@@ -20,6 +20,11 @@
  * pending, both actions refuse and leave the draft and the stack untouched,
  * so the chord can neither restore text over a user's files nor stash the text
  * while leaving the files behind.
+ *
+ * With two or more drafts visible, the chord in an empty composer opens a list
+ * of them (`pickerEntries`, newest first) instead of restoring the latest; the
+ * list restores or discards the chosen entry through the same bodies the menu
+ * rows use for the latest.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
@@ -139,6 +144,14 @@ export interface PromptStashState {
   /** Put the last discarded entry back with its original id and time, so it
    *  returns to the same place in the stack. */
   undoDiscard: () => void
+  /** The drafts the chord's list offers, newest first, or `null` while the
+   *  list is closed. It follows storage while open and closes when emptied. */
+  pickerEntries: PromptStashEntry[] | null
+  /** Restore this entry, as `restoreLatest` does for the latest, and close the list. */
+  restoreEntry: (id: string) => void
+  /** Discard this entry, as `discardLatest` does for the latest; the list stays open on the rest. */
+  discardEntry: (id: string) => void
+  closePicker: () => void
   onKeyDown: (e: React.KeyboardEvent) => void
 }
 
@@ -220,6 +233,14 @@ export function usePromptStash({
   }, [])
   const countStored = useCallback((slot: string) => visibleStored(slot).length, [visibleStored])
   const [count, setCount] = useState(() => (slotKey ? countStored(slotKey) : 0))
+  const [pickerEntries, setPickerEntries] = useState<PromptStashEntry[] | null>(null)
+  /** Re-read the count from storage, and the open list with it. */
+  const syncStored = useCallback((slot: string) => {
+    const list = visibleStored(slot)
+    setCount(list.length)
+    setPickerEntries(prev => (prev === null ? prev : list.length > 0 ? [...list].reverse() : null))
+  }, [visibleStored])
+  const closePicker = useCallback(() => setPickerEntries(null), [])
   // The live region announces a DOM change, not a value. A refusal repeated
   // with the same text (two chord presses at the cap) would otherwise be a
   // no-op state update that React bails out of, leaving the text node as it
@@ -291,12 +312,18 @@ export function usePromptStash({
     if (slotKey) parked.delete(slotKey)
     switchDraftRef.current = currentDraft.current
     setCount(slotKey ? countStored(slotKey) : 0)
+    closePicker()
     setAnnouncement('')
     setError('')
     setNotice('')
     setReclaimKeys(clearedReclaim)
     setDiscarded(null)
-  }, [countStored, setAnnouncement, slotKey])
+  }, [closePicker, countStored, setAnnouncement, slotKey])
+
+  // The list offers drafts for an empty, live composer only.
+  useEffect(() => {
+    if (inert || attachmentCount > 0 || !isDraftEmpty(value, blocks)) closePicker()
+  }, [attachmentCount, blocks, closePicker, inert, value])
 
   // Any write to this slot's entries changes the count shown here: another
   // tab's (`storage`, which never fires in the writing document) or another
@@ -306,12 +333,12 @@ export function usePromptStash({
     const prefix = promptStashKey(slotKey)
     const onStorage = (e: StorageEvent) => {
       if (e.key === null || e.key.startsWith(prefix)) {
-        setCount(countStored(slotKey))
+        syncStored(slotKey)
       }
     }
     const onLocal = (e: Event) => {
       const keys = (e as CustomEvent<{ keys?: string[] }>).detail?.keys ?? []
-      if (keys.some(key => key.startsWith(prefix))) setCount(countStored(slotKey))
+      if (keys.some(key => key.startsWith(prefix))) syncStored(slotKey)
     }
     window.addEventListener('storage', onStorage)
     window.addEventListener(PROMPT_STASH_CHANGED_EVENT, onLocal)
@@ -319,7 +346,7 @@ export function usePromptStash({
       window.removeEventListener('storage', onStorage)
       window.removeEventListener(PROMPT_STASH_CHANGED_EVENT, onLocal)
     }
-  }, [countStored, slotKey])
+  }, [slotKey, syncStored])
 
   // A claim's draft back in the composer as it left: re-arm its entry. An
   // empty composer, or the draft the session switch found, may still be
@@ -409,8 +436,9 @@ export function usePromptStash({
    *  cleared: the user restored it and decided against it. Otherwise it is the
    *  entry restore would return next, and the composer is left alone; copies in
    *  flight are never candidates (`visibleStored`), nor is an edited restored
-   *  draft, whose edits exist only in the composer. */
-  const discardLatest = useCallback(() => {
+   *  draft, whose edits exist only in the composer. With `targetId` (the list)
+   *  it is that entry, and the composer is left alone. */
+  const discardFrom = useCallback((targetId?: string) => {
     if (!slotKey || inert) return
     const operationSlot = slotKey
     const operationValue = value
@@ -418,7 +446,8 @@ export function usePromptStash({
     void withPromptStashLock(() => {
       if (!stillCurrent(operationSlot, operationValue, operationBlocks)) return
       const pending = pendingConsumeRef.current
-      const restoredUnchanged = pending !== null
+      const restoredUnchanged = targetId === undefined
+        && pending !== null
         && pending.slot === operationSlot
         && pending.value === operationValue
         && sameBlocks(pending.blocks, operationBlocks)
@@ -426,8 +455,8 @@ export function usePromptStash({
       const list = visibleStored(operationSlot)
       const latest = restoredUnchanged
         ? stored.find(entry => entry.id === pending.id)
-        : list[list.length - 1]
-      if (!latest) { setCount(list.length); return }
+        : targetId === undefined ? list[list.length - 1] : list.find(entry => entry.id === targetId)
+      if (!latest) { syncStored(operationSlot); return }
       if (!removeStashEntry(operationSlot, latest.id)) {
         setError(i18nT('components.promptStash.discard_failed'))
         setAnnouncement('')
@@ -443,7 +472,7 @@ export function usePromptStash({
       const left = countStored(operationSlot)
       setError('')
       setReclaimKeys(clearedReclaim)
-      setCount(left)
+      syncStored(operationSlot)
       setDiscarded({ slot: operationSlot, entry: latest })
       // Like restore: the last draft going says only that, not "0 drafts".
       const message = left === 0
@@ -456,7 +485,9 @@ export function usePromptStash({
         'ok',
       )
     })
-  }, [blocks, countStored, inert, onBlocksChange, onChange, onReseed, setAnnouncement, showNotice, slotKey, stillCurrent, value, visibleStored])
+  }, [blocks, countStored, inert, onBlocksChange, onChange, onReseed, setAnnouncement, showNotice, slotKey, stillCurrent, syncStored, value, visibleStored])
+  const discardLatest = useCallback(() => discardFrom(), [discardFrom])
+  const discardEntry = useCallback((id: string) => discardFrom(id), [discardFrom])
 
   const undoDiscard = useCallback(() => {
     const taken = discarded
@@ -467,7 +498,7 @@ export function usePromptStash({
       if (!mounted.current || currentSlot.current !== taken.slot) return
       // Another tab may have filled the stack since the discard.
       if (loadPromptStash(taken.slot).length >= PROMPT_STASH_MAX || !addStashEntry(taken.slot, taken.entry)) {
-        setCount(countStored(taken.slot))
+        syncStored(taken.slot)
         setError(i18nT('components.promptStash.undo_failed'))
         setAnnouncement('')
         setNotice('')
@@ -475,12 +506,12 @@ export function usePromptStash({
       }
       setDiscarded(prev => (prev === taken ? null : prev))
       setError('')
-      setCount(countStored(taken.slot))
+      syncStored(taken.slot)
       const message = i18nT('components.promptStash.discard_undone')
       setAnnouncement(message)
       showNotice(message, { value: currentDraft.current.value, blocks: currentDraft.current.blocks.length }, 'ok')
     })
-  }, [countStored, discarded, setAnnouncement, showNotice])
+  }, [discarded, setAnnouncement, showNotice, syncStored])
 
   /** Re-read, decide and mutate under the slot lock. The keyboard handler may
    *  already have read the stack to claim the chord synchronously. */
@@ -574,7 +605,8 @@ export function usePromptStash({
     stashFrom()
   }, [attachmentCount, blocks, inert, refuseForAttachments, slotKey, stashFrom, value])
 
-  const restoreLatest = useCallback(() => {
+  /** Restore `targetId` (the list's choice), or the latest without one. */
+  const restoreFrom = useCallback((targetId?: string) => {
     if (!slotKey || inert || !isDraftEmpty(value, blocks)) return
     if (attachmentCount > 0) { refuseForAttachments(); return }
     const operationSlot = slotKey
@@ -583,7 +615,10 @@ export function usePromptStash({
     void withPromptStashLock(() => {
       if (!stillCurrent(operationSlot, operationValue, operationBlocks)) return
       const list = visibleStored(operationSlot)
-      const latest = list[list.length - 1]
+      const latest = targetId === undefined ? list[list.length - 1] : list.find(entry => entry.id === targetId)
+      // The chosen entry is gone (another tab took it): the composer is left
+      // alone and the count is re-read.
+      if (!latest && targetId !== undefined) { syncStored(operationSlot); return }
       if (!latest) {
         setCount(0)
         const emptyText = touch
@@ -596,6 +631,7 @@ export function usePromptStash({
         return
       }
       const left = list.length - 1
+      setPickerEntries(null)
       returnedClaimRef.current = null
       pendingConsumeRef.current = {
         slot: operationSlot,
@@ -620,7 +656,9 @@ export function usePromptStash({
       // not only in the live region.
       showNotice(restoredText, { value: latest.text, blocks: latest.blocks.length }, 'ok')
     })
-  }, [attachmentCount, blocks, chordLabel, inert, onBlocksChange, onChange, onReseed, refuseForAttachments, setAnnouncement, showNotice, slotKey, stillCurrent, touch, value, visibleStored, menuGlyph])
+  }, [attachmentCount, blocks, chordLabel, inert, onBlocksChange, onChange, onReseed, refuseForAttachments, setAnnouncement, showNotice, slotKey, stillCurrent, syncStored, touch, value, visibleStored, menuGlyph])
+  const restoreLatest = useCallback(() => restoreFrom(), [restoreFrom])
+  const restoreEntry = useCallback((id: string) => restoreFrom(id), [restoreFrom])
 
   const trackSend = useCallback((send: () => PromptStashSendResult) => {
     const pending = pendingConsumeRef.current
@@ -648,7 +686,7 @@ export function usePromptStash({
         // an unmount or slot switch. Anything else leaves the entry stored and
         // shown again: a failed send's text may exist only in pane state.
         if (delivered) removeStashEntry(claim.slot, claim.id)
-        if (mounted.current && currentSlot.current === claim.slot) setCount(countStored(claim.slot))
+        if (mounted.current && currentSlot.current === claim.slot) syncStored(claim.slot)
       })
     }
     const verdict = result as Promise<boolean> | undefined
@@ -658,7 +696,7 @@ export function usePromptStash({
       // No signal from this host: never assume delivery.
       settle(false)
     }
-  }, [countStored])
+  }, [syncStored])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!slotKey || inert || e.defaultPrevented || !isStashChord(e.nativeEvent)) return
@@ -687,12 +725,17 @@ export function usePromptStash({
       suppressSaveDialogAfterOtherHandlers()
     }
     if (repeat) return
+    if (plan === 'restore') {
+      // Several drafts: let the user choose. One comes back at once.
+      const visible = visibleStored(slotKey)
+      if (visible.length >= 2) { setPickerEntries([...visible].reverse()); return }
+    }
     if (plan === 'none' || plan === 'restore') {
       restoreLatest()
       return
     }
     stashFrom()
-  }, [attachmentCount, blocks, inert, refuseForAttachments, restoreLatest, slotKey, stashFrom, value])
+  }, [attachmentCount, blocks, inert, refuseForAttachments, restoreLatest, slotKey, stashFrom, value, visibleStored])
 
   const full = count >= PROMPT_STASH_MAX
   const draftEmpty = isDraftEmpty(value, blocks)
@@ -730,6 +773,10 @@ export function usePromptStash({
     discardLatest,
     canUndoDiscard: discarded !== null && discarded.slot === slotKey,
     undoDiscard,
+    pickerEntries,
+    restoreEntry,
+    discardEntry,
+    closePicker,
     onKeyDown,
   }
 }
