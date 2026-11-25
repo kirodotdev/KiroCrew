@@ -567,8 +567,8 @@ class IngestionPipeline:
             holder.get("source_name"), holder.get("source_type"))
         return job_id
 
-    def _source_is_auto_added(self, source_id: str) -> bool:
-        """True when this source was registered automatically, not chosen by the user.
+    def _source_requires_redaction(self, source_id: str) -> bool:
+        """True for auto-added content or a source explicitly opting into redaction.
 
         Read from the source row's own properties rather than passed in, because every
         auto path (today the agent aggregate) already marks itself and a caller-supplied flag would be one more thing each
@@ -586,7 +586,8 @@ class IngestionPipeline:
             props = json.loads(row["properties"])
         except (TypeError, ValueError):
             return False
-        return bool(isinstance(props, dict) and props.get(AUTO_ADDED_PROP))
+        return bool(isinstance(props, dict) and (
+            props.get(AUTO_ADDED_PROP) or props.get("redact_secrets") is True))
 
     def _outranks_holder(self, source_id: str | None, holder_type: str) -> bool:
         """True when the incoming source must win over the current holder.
@@ -929,11 +930,12 @@ class IngestionPipeline:
         if meta.get('format') == 'error':
             raise RuntimeError(f"Failed to read {path}: {meta.get('error')}")
 
-        # Content the user never explicitly chose to index gets its secrets scrubbed
-        # BEFORE anything else sees it. A hand-registered folder is a deliberate act;
+        # Auto-added content and sources opting into redaction are scrubbed
+        # BEFORE anything else sees them. A hand-registered folder is a deliberate act;
         # an auto-registered one is not, so a credential sitting in a project runbook
         # would otherwise reach the extraction worker and the index without anyone
-        # having agreed to it. This is the same scrub the artifact path already applies
+        # having agreed to it. Confirmed batch sources explicitly opt into the same scrub,
+        # without being marked auto-registered. The artifact path also applies this
         # to its body, in the same position -- ahead of the hash, so the stored text
         # and its identity agree and a re-scan is stable.
         # Offloaded like every other store touch in this method: the helper is a
@@ -941,7 +943,7 @@ class IngestionPipeline:
         # interprocedural take no name-based AST scan can see. Kept out of an
         # `and` chain so the offloaded call's return type is inferred on its own.
         if source_id:
-            if await asyncio.to_thread(self._source_is_auto_added, source_id):
+            if await asyncio.to_thread(self._source_requires_redaction, source_id):
                 text = _redact_for_ingest(text)
 
         # 2. Hash check + source resolution

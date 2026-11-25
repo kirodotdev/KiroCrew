@@ -120,6 +120,8 @@ def extract_evidence(
     def pick(*keys: str) -> dict[str, Any]:
         return {k: data[k] for k in keys if isinstance(data.get(k), (str, int, bool))}
 
+    if kind == "knowledge.import_sources":
+        return pick("id")
     if kind == KIND_SCHEDULE_CREATE or (
         # Step 1 is a legacy card's schedule; the goal write it is now answers
         # no ``id``, so the pick stays empty there.
@@ -464,6 +466,8 @@ def result_summary(
 
     *failed_step* is the apply step a ``partial`` card stopped at, when known.
     """
+    if kind == "knowledge.import_sources" and status == "applied":
+        return "Submitted prepared sources for indexing; verify file status and retrieval"
     if kind == KIND_CREWMATE_DASHBOARD_PAGE and status in ("applied", "cancelled", "expired"):
         name = params.get("member")
         if status == "applied":
@@ -643,6 +647,8 @@ def describe_manual_change(
 #: needs (a capability preview, an OAuth poll).
 HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("POST", "/api/knowledge/sources"),
+        ("POST", "/api/knowledge/sources/{id}/confirm"),
         ("PATCH", "/api/config/kirocrew"),
         ("PUT", "/api/dashboard/config"),
         ("POST", "/api/crons"),
@@ -703,6 +709,9 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: saved script is code, not a setting, and an ordinary save from the Workflows
 #: tab stays off the hook entirely, so neither writes a memory line.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
+    # Source paths and content belong to Knowledge, not Global memory.
+    ("POST", "/api/knowledge/sources"),
+    ("POST", "/api/knowledge/sources/{id}/confirm"),
     # A launch line is code, never described in Global memory; the card itself
     # is the record.
     ("POST", "/api/agents/detail/{name}/mcp-additions"),
@@ -879,6 +888,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import change_card_knowledge as _knowledge_import  # noqa: F401
     from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401

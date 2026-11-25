@@ -3362,7 +3362,12 @@ through the credential redactor as a second line of defence. `list_change_kinds`
 `allowedTools` grants on every agent (`agent._GUIDE_AUTO_GRANTS`)
 because none of them can change anything: the strict-internal
 `/api/cards/agent/*` routes use the guide's caller checks and only create or read
-a card in the caller's own slot. `search_docs(query? | page, offset?)` on the
+a card in the caller's own slot. The `knowledge.import_sources` kind previews up
+to four prepared local document/code roots without starting a scan. Normal owner
+Apply registers and confirms them through native Knowledge routes; see the
+Knowledge module spec and packaged Knowledge Library guide for filtering,
+estimates, idempotent reuse and partial-failure handling.
+`search_docs(query? | page, offset?)` on the
 same server is a read of the packaged user docs (`kiro_crew/docs/*.md`, pages
 named from the directory's own listing so no caller string becomes a path; up to
 5 results with 3 matching lines, pages in 12,000-character chunks). A query is

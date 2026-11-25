@@ -38,6 +38,7 @@ export const CARD_KINDS = [
   'trust.app',
   'denied_command',
   'folder.steering',
+  'knowledge.import_sources',
   'workflow.save',
   'workflow.update',
 ] as const
