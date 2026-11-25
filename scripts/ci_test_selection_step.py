@@ -91,6 +91,10 @@ class NoBundle(Exception):
     """No trusted bundle could be read; the message is the verdict's reason."""
 
 
+class RateLimited(NoBundle):
+    """GitHub refused a request for a rate limit; the message names which."""
+
+
 class NothingPublished(NoBundle):
     """GitHub answered, and no trusted run holds a live artifact: not a failed read."""
 
@@ -150,7 +154,9 @@ def _json(get: Get, url: str, token: str) -> Any:
     status, headers, body = get(url, token)
     if status != 200:
         limit = red.rate_limit((status, headers, body), time.time())
-        raise NoBundle(f"{limit[0]} rate limit" if limit else f"HTTP {status} from the API")
+        if limit:
+            raise RateLimited(f"{limit[0]} rate limit")
+        raise NoBundle(f"HTTP {status} from the API")
     return json.loads(body.decode("utf-8"))
 
 
@@ -216,7 +222,9 @@ def download(
         status, headers, body = get(headers["location"], "")
     if status != 200:
         limit = red.rate_limit((status, headers, body), time.time())
-        raise NoBundle(f"{limit[0]} rate limit" if limit else f"HTTP {status} for the archive")
+        if limit:
+            raise RateLimited(f"{limit[0]} rate limit")
+        raise NoBundle(f"HTTP {status} for the archive")
     if len(body) > most:
         raise NoBundle(f"the archive is over {most} bytes")
     return body

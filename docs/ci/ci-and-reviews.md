@@ -788,6 +788,12 @@ Turning selection off on them is safe.
   ledger is found, and when a read fails or the restored file is not a ledger,
   the pass fails and uploads nothing. Rows older than 90 days are dropped at
   restore.
+- **A red pass is filed.** A pass that fails (a read that failed, a restored
+  file that is not a ledger, no ledger found where one was kept, a script
+  error, the job's timeout) is a red scheduled run, and
+  `scheduled-failure-watch.yml` opens or bumps one issue for the workflow. A
+  pass that kept out of a low pool is green and files nothing: it is the
+  intended outcome, several times on a busy night.
 
 A dispatch takes `since` (the first UTC day of runs to list; verdicts older
 than a week are gone), `restore_run` (restore from that run of this workflow,

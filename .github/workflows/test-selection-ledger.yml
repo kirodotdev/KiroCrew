@@ -20,7 +20,8 @@ name: Test Selection Ledger
 # hour's pool holds 7,500 beyond them. Under that it reads nothing, uploads
 # nothing and ends green with a notice, since keeping out of a low pool is
 # what it should do; it never waits for a reset, and the next tick reads what
-# this one did not. A failed read or a restored file that is no ledger is red. The
+# this one did not. A failed read or a restored file that is no ledger is red,
+# and scheduled-failure-watch.yml files a red scheduled pass as an issue. The
 # ticks sit in the hours the pool is fullest and keep clear of the red-cause
 # census (07:17 UTC).
 

@@ -166,16 +166,20 @@ def _night(
     out = tmp_path / f"night-{len(list(tmp_path.glob('night-*')))}"
     out.mkdir()
     run = Pass(fresh)
-    lines = night.night(out, {**ENV, **env}, api, run, TODAY, tmp_path)
+    lines = night.night(out, {**ENV, **env}, api, run, TODAY, tmp_path, pool=lambda: None)
     return lines, out, run
 
 
-def _tick(tmp_path: Path, api: Api, run: Pass, **env: str) -> tuple[int, Path, dict[str, str], str]:
+def _tick(
+    tmp_path: Path, api: Api, run: Pass, low: str | None = None, **env: str
+) -> tuple[int, Path, dict[str, str], str]:
     """One run of the script as the workflow starts it: exit, directory, outputs, summary."""
     out = tmp_path / f"tick-{len(list(tmp_path.glob('tick-*')))}"
     output, summary = out.with_suffix(".output"), out.with_suffix(".md")
     files = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
-    status = night.main(["--out", str(out)], {**ENV, **files, **env}, api, run, TODAY)
+    status = night.main(
+        ["--out", str(out)], {**ENV, **files, **env}, api, run, TODAY, pool=lambda: low
+    )
     outputs = (
         dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
         if output.exists()
@@ -335,7 +339,6 @@ def test_a_person_can_name_the_run_or_start_empty_and_the_summary_says_so(
 
 def _refusals() -> dict[str, tuple[Any, str]]:
     """Name -> (the API to restore from, a part of the one line that refuses)."""
-    limited = (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1"}, b"")
     good = _lines([_row(1)])
 
     def listing(answer: Any) -> Api:
@@ -347,7 +350,6 @@ def _refusals() -> dict[str, tuple[Any, str]]:
         return Api((_run(70), archive))
 
     return {
-        "the listing is refused for a rate limit": (listing(limited), "primary rate limit"),
         "the listing fails": (listing((502, {}, b"")), "HTTP 502"),
         "the listing is not one": (listing((200, {}, b'{"runs": []}')), "did not return a list"),
         "not an archive": (holding(b"not a zip"), "unreadable archive"),
@@ -405,7 +407,8 @@ def test_a_cut_pass_keeps_its_rows_and_an_unknown_exit_fails(
     assert status == 0 and outputs == {"upload": "true"}
     assert ledger.read_ledger(out / night.LEDGER_NAME) == [_row(1), _row(2)]
     assert "ended early on a failed read" in summary
-    # A pass the pool was too low for reports nothing: there is nothing new to report.
+    # A pool that falls under the reserve after the restore: the ledger's own check
+    # ends the pass, and there is nothing new to report.
     run = Pass([_row(2)], ledger.EXIT_REFUSED)
     status, out, outputs, summary = _tick(tmp_path, Api(held), run)
     assert status == 0 and outputs == {} and len(run.calls) == 1
@@ -414,6 +417,31 @@ def test_a_cut_pass_keeps_its_rows_and_an_unknown_exit_fails(
     status, out, outputs, summary = _tick(tmp_path, Api(held), Pass([], 1))
     assert status == 1 and outputs == {}
     capsys.readouterr()
+
+
+def test_a_low_pool_is_met_before_the_restore_and_is_not_a_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    held = (_run(70), _ledger_zip(_row(1)))
+    # The pool is read first: under the reserve, not one request is made, the restore's included.
+    api, run = Api(held), Pass([_row(2)])
+    status, out, outputs, summary = _tick(tmp_path, api, run, low="the REST pool has 10 requests")
+    printed = capsys.readouterr().out
+    assert status == 0 and outputs == {} and api.sent == [] and run.calls == []
+    assert printed.count("::notice::") == 1 and "::error::" not in printed
+    assert "was not started: the REST pool has 10 requests" in printed
+    assert summary.strip() == printed.split("::notice::", 1)[1].strip()
+    # A pool spent between that read and the restore refuses the restore's own request:
+    # the pass kept out, as it would have a moment earlier. It is not a failed read.
+    limited = (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1"}, b"")
+    api, run = Api(held), Pass([_row(2)])
+    api.listing = limited
+    status, out, outputs, summary = _tick(tmp_path, api, run)
+    printed = capsys.readouterr().out
+    assert status == 0 and outputs == {} and run.calls == [] and api.reads() == 1
+    assert printed.count("::notice::") == 1 and "::error::" not in printed
+    assert "refused the restore's request for a primary rate limit" in printed
+    assert not (out / night.LEDGER_NAME).exists()
 
 
 def test_the_first_day_listed_is_two_days_back_or_the_one_a_person_gave(tmp_path: Path) -> None:

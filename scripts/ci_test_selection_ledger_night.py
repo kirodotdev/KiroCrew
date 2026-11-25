@@ -45,12 +45,14 @@ the first line says how many.
 What a pass spends
 ------------------
 The restore's requests (three as a rule, one more for each run looked back
-through) count against `MAX_CALLS`, the most a pass makes. The ledger reads no
-run unless the hour's pool holds `RESERVE` beyond what the pass may spend.
-Below that the pass does not start: a notice says what the pool has, nothing is
-uploaded, and the exit is 0, because a pass that keeps out of a low pool did
-what it should. It never waits for a reset; a later tick reads the rest. The
-report reads the ledger file alone.
+through) count against `MAX_CALLS`, the most a pass makes. The hour's pool is
+read first, from `/rate_limit`, which costs nothing: unless it holds `RESERVE`
+beyond what the pass may spend, the pass does not start, the restore included.
+A notice says what the pool has, nothing is uploaded, and the exit is 0,
+because a pass that keeps out of a low pool did what it should. A request the
+restore makes that GitHub refuses for a rate limit ends the pass the same way.
+It never waits for a reset; a later tick reads the rest. The report reads the
+ledger file alone.
 
 Trust
 -----
@@ -105,6 +107,8 @@ _BRANCH = re.compile(r"[A-Za-z0-9_./-]{1,200}")
 BY_HAND = "dispatch this workflow with `restore_run` set to a run that holds one, or `start_empty`"
 
 RunLedger = Callable[[list[str]], int]
+# Why the pool is too low for a pass to start, None when it is not.
+Pool = Callable[[], "str | None"]
 
 
 class Refused(Exception):
@@ -202,6 +206,10 @@ def restore(get: step.Get, env: Mapping[str, str], path: Path, today: datetime) 
         text = step.member(archive, LEDGER_NAME, alone=False, most=MAX_LEDGER_BYTES)
     except step.NothingPublished as nothing:
         return f"The ledger starts empty tonight: {nothing}. Earlier days of data are not in it."
+    except step.RateLimited as limited:
+        raise NotStarted(
+            kept_out(f"GitHub refused the restore's request for a {limited}")
+        ) from limited
     except step.NoBundle as error:
         raise Refused(f"the last ledger could not be restored: {error}") from error
     except (ValueError, KeyError, TypeError, AttributeError) as error:
@@ -214,6 +222,14 @@ def restore(get: step.Get, env: Mapping[str, str], path: Path, today: datetime) 
     return (
         f"The ledger continues from run {run['id']} ({ledger.cell(run.get('created_at'))})"
         f"{hand}: {kept} rows{old}."
+    )
+
+
+def kept_out(why: str) -> str:
+    """The one line of a pass that kept out of a low pool."""
+    return (
+        f"Test-selection miss ledger: this pass was not started: {why}. "
+        "Nothing was read or uploaded; a later pass reads these runs."
     )
 
 
@@ -234,6 +250,7 @@ def night(
     run_ledger: RunLedger,
     today: datetime,
     root: Path = REPO_ROOT,
+    pool: Pool | None = None,
 ) -> list[str]:
     """One pass into `out`; the lines that head the summary.
 
@@ -242,6 +259,9 @@ def night(
     """
     path = out / LEDGER_NAME
     since = since_day(env, today)
+    low = (pool or ledger.Budget(MAX_CALLS, RESERVE, root).refusal)()
+    if low:
+        raise NotStarted(kept_out(low))
     counted = Counted(get)
     lines = [restore(counted, env, path, today)]
     # An empty ledger is still a file: the next pass restores what this one uploads.
@@ -255,9 +275,10 @@ def night(
         )
         if read == ledger.EXIT_REFUSED:
             raise NotStarted(
-                "Test-selection miss ledger: this pass was not started, the hour's REST pool "
-                f"being under the {RESERVE} requests it keeps plus the {MAX_CALLS} it may spend. "
-                "Nothing was read or uploaded; a later pass reads these runs."
+                kept_out(
+                    f"the hour's REST pool fell under the {RESERVE} requests it keeps plus "
+                    f"the {MAX_CALLS} it may spend"
+                )
             )
         if read == ledger.EXIT_NOT_RECORDED:
             lines.append(
@@ -293,6 +314,7 @@ def main(
     get: step.Get | None = None,
     run_ledger: RunLedger = ledger.main,
     today: datetime | None = None,
+    pool: Pool | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("--out", required=True, help="directory the artifact's files go to")
@@ -303,7 +325,7 @@ def main(
     out.mkdir(parents=True, exist_ok=True)
     status = 0
     try:
-        night(out, env, get, run_ledger, today or datetime.now(timezone.utc))
+        night(out, env, get, run_ledger, today or datetime.now(timezone.utc), pool=pool)
         text = (out / SUMMARY_NAME).read_text(encoding="utf-8")
         # The one signal the upload step reads: what `out` holds may be continued.
         _append(env.get("GITHUB_OUTPUT"), "upload=true\n")
