@@ -324,7 +324,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     ),
     "_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),
     "_channel_reply": ("function", False, "(self, channel_id: 'str') -> \"'ReplyFn'\""),
-    "_channel_turns": ("function", False, "(self) -> 'ChannelTurns'"),
+    "_channel_turns": ("function", False, "(self, images: 'Sequence[str]' = ()) -> 'ChannelTurns'"),
     "_configured_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_drain_queue": ("function", True, "(self, session_key: 'str') -> 'None'"),
     "_enqueue_with_receipt": (
@@ -459,7 +459,11 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         ),
     ),
     "_receipt_surface": ("function", False, "(self, channel_id: 'str') -> 'ReceiptSurface'"),
-    "_record_turn": ("function", True, "(self, record: 'TurnRecord') -> 'None'"),
+    "_record_turn": (
+        "function",
+        True,
+        "(self, record: 'TurnRecord', images: 'Sequence[str]' = ()) -> 'None'",
+    ),
     "_render_config": ("function", False, "(self) -> 'tuple[bool, bool]'"),
     "_resolve_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_routing_turn": (
@@ -820,7 +824,14 @@ def test_every_owner_logs_under_the_facades_name() -> None:
         for value in vars(_owner(stem)).values()
         if isinstance(value, logging.Logger)
     }
-    assert set(loggers) == {"commands", "interactions", "midturn", "model_picker", "spawn_approval"}
+    assert set(loggers) == {
+        "commands",
+        "interactions",
+        "ledger",
+        "midturn",
+        "model_picker",
+        "spawn_approval",
+    }
     assert {logger.name for logger in loggers.values()} == {FACADE}
     assert td.logger is logging.getLogger(FACADE)
 
