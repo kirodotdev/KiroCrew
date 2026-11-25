@@ -50,6 +50,8 @@ import glob
 import hashlib
 import json
 import logging
+import os
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -118,14 +120,60 @@ def skill_names(globs: list[str]) -> set[str]:
     return names
 
 
+def _kas_names(globs: list[str]) -> set[str]:
+    """The ``name`` KAS's own front-matter reading (:func:`_kas_front_matter`) gives
+    each skill file *globs* match, read through the sensitive-path fence."""
+    # Deferred like this module's other ``kiro_crew`` imports: ``kas_agents`` imports
+    # this module at load, and ``hooks`` is the hook-runtime facade it need not load.
+    from kiro_crew.hooks import safe_read_prefix
+
+    names: set[str] = set()
+    for path in _matched_files(globs):
+        raw = safe_read_prefix(str(path), _MAX_COPY_BYTES)
+        if raw is None:
+            continue
+        front, _ = _kas_front_matter(raw.decode("utf-8", errors="replace"))
+        name = (front or {}).get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
 def _default_tree_globs(work_dir: str | Path | None) -> list[str]:
-    """The skill trees KAS loads for every session, whatever the agent maps."""
+    """The default skill trees Crew admits: ``~/.kiro/skills``, and the workspace's
+    ``.kiro/skills`` only when Crew's project-skill trust admits it. KAS loads
+    more than this (:func:`_kas_tree_globs`)."""
     from kiro_crew.config import paths
     from kiro_crew.skills import project_skill_tree_present
 
     globs = [str(paths.kiro_home() / "skills" / "*" / "SKILL.md")]
     if work_dir and project_skill_tree_present(work_dir):
         globs.append(str(Path(work_dir) / ".kiro" / "skills" / "*" / "SKILL.md"))
+    return globs
+
+
+def _unadmitted_workspace_tree(work_dir: str | Path | None) -> bool:
+    """Whether the workspace has a ``.kiro/skills`` tree Crew has not admitted.
+
+    KAS loads that tree for every session whatever Crew's trust store says, so a
+    scope that leans on "KAS loads the default trees anyway" would offer it.
+    """
+    # Deferred like _default_tree_globs' own import, so both read the trust answer
+    # from ``kiro_crew.skills`` at call time and cannot disagree on one tree.
+    from kiro_crew.skills import project_skill_tree_present
+
+    if not work_dir or project_skill_tree_present(work_dir):
+        return False
+    return os.path.lexists(Path(work_dir) / ".kiro" / "skills")
+
+
+def _kas_tree_globs(work_dir: str | Path | None) -> list[str]:
+    """The skill trees KAS loads for every session, whatever the agent maps or
+    Crew's trust store admits."""
+    globs = _default_tree_globs(work_dir)
+    if _unadmitted_workspace_tree(work_dir):
+        tree = glob.escape(str(Path(str(work_dir)) / ".kiro" / "skills"))
+        globs.append(str(Path(tree) / "*" / "SKILL.md"))
     return globs
 
 
@@ -173,7 +221,9 @@ def scope_globs(
 
     ``None`` is the whole catalog (an unmapped template in ``WHOLE_CATALOG_TEMPLATES``:
     ``kirocrew``, ``kirocrew-worker`` and the crewmate's conductor and worker)
-    or a scope that is exactly the default trees KAS loads by itself.
+    or a scope that is exactly the default trees KAS loads by itself. Neither is
+    ``None`` while the workspace holds a skill tree Crew has not admitted: the
+    scope is then the trees Crew admits, so the rule denies the workspace's.
 
     The scope is read from *spec*, the spec this session is projected with, and
     from nothing else. Never re-resolved by name: a checkout spec that shadows a
@@ -187,7 +237,10 @@ def scope_globs(
     """
     globs = _spec_globs(agent, spec, agents_dir / f"{agent}.json", work_dir)
     if globs is None or _inherits_default_trees(agent, spec, globs, work_dir):
-        return None
+        if not _unadmitted_workspace_tree(work_dir):
+            return None
+        if globs is None:
+            globs = _default_tree_globs(work_dir)
     return [*globs, *_allowed_default_tree_skills(spec, work_dir)]
 
 
@@ -280,16 +333,22 @@ def skill_scope_rules(
     """
     if globs is None:
         return []
-    names = sorted(n for n in skill_names(globs) | also_allowed if _literal(n))
+    # KAS keys the deny on the name its own front-matter parser reads, which can
+    # differ from Crew's (``name: a # b`` is ``a`` to YAML), so both readings count.
+    kas_names = _kas_names(globs)
+    names = sorted(n for n in skill_names(globs) | kas_names | also_allowed if _literal(n))
     if not names:
         return [{"capability": SKILL_CAPABILITY, "effect": "deny"}]
     if len(names) <= _MAX_PATTERNS_PER_RULE:
         return [{"capability": SKILL_CAPABILITY, "exclude": names, "effect": "deny"}]
-    in_scope = set(names)
+    in_scope = set(names) | kas_names
+    kas_trees = _kas_tree_globs(work_dir)
     # Only literal names become ``match`` entries: KAS reads them as globs, so a
     # name like ``*`` would deny the in-scope skills too. Such a skill stays offered.
     outside = sorted(
-        n for n in skill_names(_default_tree_globs(work_dir)) if n not in in_scope and _literal(n)
+        n
+        for n in skill_names(kas_trees) | _kas_names(kas_trees)
+        if n not in in_scope and _literal(n)
     )
     logger.info(
         "KAS skill scope maps %d skills, over the %d an exclude list may hold; "
@@ -359,27 +418,185 @@ class SkillCopy(NamedTuple):
 
 @functools.cache
 def _kas_yaml_loader() -> type:
-    """A YAML loader closer to js-yaml's: it refuses a duplicate key, and reads
-    ``1e3`` as a number (YAML 1.2), as KAS does."""
+    """A YAML loader reading plain scalars as js-yaml's CORE schema does, as KAS
+    does: only null, ``true`` / ``false``, integers and floats are typed, so a
+    ``yes`` or an ISO date stays a string and ``<<`` is a plain key, not a
+    merge. It refuses a duplicate key, resolves an alias and reads a key that is
+    not a string as its JavaScript string (:func:`_js_yaml_key`), as js-yaml does.
+
+    With no merge, an alias shares its node and the loaded value is no larger
+    than the document; :func:`_kas_front_matter` keeps only its string fields."""
     import yaml  # type: ignore[import-untyped]
 
-    from kiro_crew.yaml_safe import NoAliasSafeLoader
-
-    class _Loader(NoAliasSafeLoader):  # type: ignore[misc]
+    class _Loader(yaml.SafeLoader):  # type: ignore[misc]
         def construct_mapping(self, node: Any, deep: bool = False) -> Any:
-            seen: set[Any] = set()
-            for key_node, _ in node.value:
-                key = self.construct_object(key_node, deep=deep)
-                if key in seen:
+            if not isinstance(node, yaml.MappingNode):
+                raise yaml.constructor.ConstructorError(
+                    None, None, "expected a mapping node", node.start_mark
+                )
+            mapping: dict[Any, Any] = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=True)
+                if not isinstance(key, str):
+                    # One budget for the whole document, however many such keys.
+                    budget = self.__dict__.setdefault("_key_budget", [_MAX_COPY_BYTES])
+                    key = _js_yaml_key(key, budget)
+                if key in mapping:
                     raise yaml.constructor.ConstructorError(
                         None, None, "duplicated mapping key", key_node.start_mark
                     )
-                seen.add(key)
-            return super().construct_mapping(node, deep=deep)
+                mapping[key] = self.construct_object(value_node, deep=deep)
+            return mapping
 
-    # PyYAML asks a resolver's pattern only for ``.match(value)``.
+    # PyYAML's own resolvers are YAML 1.1's (``yes``, timestamps, merge,
+    # sexagesimal): none is kept. PyYAML asks a resolver only for ``.match(value)``,
+    # and tries them in the order they are added.
+    _Loader.yaml_implicit_resolvers = {}
+    _Loader.add_implicit_resolver("tag:yaml.org,2002:null", _Yaml12Null(), [*"~nN", ""])
+    _Loader.add_implicit_resolver("tag:yaml.org,2002:bool", _Yaml12Bool(), list("tTfF"))
+    _Loader.add_implicit_resolver("tag:yaml.org,2002:int", _Yaml12Int(), list("-+0123456789"))
     _Loader.add_implicit_resolver("tag:yaml.org,2002:float", _Yaml12Float(), list("-+0123456789."))
+    # PyYAML's int constructor is 1.1's too (``09`` is a bad octal): CORE reads
+    # leading zeros as decimal. An explicit ``!!int`` reaches it unmatched.
+    _Loader.add_constructor("tag:yaml.org,2002:int", _construct_yaml12_int)
     return _Loader
+
+
+_JS_YAML_INT_BASES = {"b": (2, "01"), "x": (16, "0123456789abcdefABCDEF"), "o": (8, "01234567")}
+
+
+def _js_yaml_int(value: str) -> int | float | None:
+    """*value* as js-yaml's CORE ``int`` type reads it, or ``None`` where it
+    refuses it: an optional sign, then ``0b`` / ``0x`` / ``0o`` and digits of
+    that base, or decimal digits (leading zeros allowed); ``_`` may separate
+    digits but not lead a decimal or end any form."""
+    sign = -1 if value[:1] == "-" else 1
+    body = value[1:] if value[:1] in ("+", "-") else value
+    base, digits = 10, "0123456789"
+    if body[:1] == "0" and body[1:2] in _JS_YAML_INT_BASES:
+        base, digits = _JS_YAML_INT_BASES[body[1:2]]
+        body = body[2:]
+    elif body[:1] == "0" and body[1:2] == "_":
+        return None
+    elif body[:1] == "_":
+        return None
+    plain = body.replace("_", "")
+    if not plain or body.endswith("_") or any(c not in digits for c in plain):
+        return None
+    try:
+        return sign * int(plain, base)
+    except ValueError:
+        # Past Python's int-from-text digit limit (decimal only): read it as
+        # js-yaml's number does, which a long one rounds or makes infinite.
+        return sign * float(plain)
+
+
+class _KeyTooLong(Exception):
+    """The document's non-string keys spent their string budget."""
+
+
+def _js_string(value: Any, out: list[str], budget: list[int]) -> None:
+    """Append JavaScript's ``String(value)`` of a loaded YAML value to *out*."""
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            if i:
+                out.append(",")
+            if item is not None:
+                _js_string(item, out, budget)
+        part = ""
+    elif isinstance(value, dict):
+        part = "[object Object]"
+    elif value is None:
+        part = "null"
+    elif isinstance(value, bool):
+        part = "true" if value else "false"
+    elif isinstance(value, (int, float)):
+        part = _js_number(value)
+    else:
+        part = str(value)
+    out.append(part)
+    budget[0] -= len(part) + 1
+    if budget[0] < 0:
+        raise _KeyTooLong
+
+
+def _js_number(value: int | float) -> str:
+    """JavaScript's ``String()`` of the number js-yaml makes of *value*."""
+    try:
+        number = float(value)
+    except OverflowError:
+        number = float("inf") if value > 0 else float("-inf")
+    if number != number:
+        return "NaN"
+    if number in (float("inf"), float("-inf")):
+        return "Infinity" if number > 0 else "-Infinity"
+    if number == 0:
+        return "0"
+    # The shortest round-trip digits, placed as ECMAScript's Number::toString does.
+    _, digit_tuple, exp = Decimal(repr(abs(number))).normalize().as_tuple()
+    digits = "".join(map(str, digit_tuple))
+    k, n = len(digits), int(exp) + len(digits)
+    if k <= n <= 21:
+        text = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        text = f"{digits[:n]}.{digits[n:]}"
+    elif -6 < n <= 0:
+        text = f"0.{'0' * -n}{digits}"
+    else:
+        mantissa = digits if k == 1 else f"{digits[0]}.{digits[1:]}"
+        text = f"{mantissa}e{'+' if n > 0 else '-'}{abs(n - 1)}"
+    return text if number > 0 else f"-{text}"
+
+
+def _js_yaml_key(value: Any, budget: list[int]) -> Any:
+    """The key js-yaml stores for a mapping key that is not a string: its ``String()``
+    (``true`` is ``"true"``, ``1`` is ``"1"``, ``[a, b]`` is ``"a,b"``).
+
+    *budget* bounds the document's such keys together (aliases can nest one far
+    past the text). A key past it is kept as one equal to no other, so its
+    duplicate goes unrefused: Crew may then read a name KAS refuses, and deny one
+    name more, never one fewer."""
+    out: list[str] = []
+    try:
+        _js_string(value, out, budget)
+    except _KeyTooLong:
+        return object()
+    return "".join(out)
+
+
+def _construct_yaml12_int(loader: Any, node: Any) -> int | float:
+    """The integer an implicit (:class:`_Yaml12Int`) or explicit ``!!int`` names."""
+    value = loader.construct_scalar(node)
+    number = _js_yaml_int(value)
+    if number is None:
+        raise ValueError(f"not a YAML core-schema integer: {value!r}")
+    return number
+
+
+class _Yaml12Null:
+    """YAML 1.2's core-schema null."""
+
+    def match(self, value: str) -> bool:
+        return value in ("", "~", "null", "Null", "NULL")
+
+
+class _Yaml12Bool:
+    """YAML 1.2's core-schema booleans."""
+
+    def match(self, value: str) -> bool:
+        return value in ("true", "True", "TRUE", "false", "False", "FALSE")
+
+
+class _Yaml12Int:
+    """YAML 1.2's core-schema integers: an optional sign and decimal digits, or
+    ``0x`` and hex digits. (``0o17`` stays a string here; KAS refuses such a skill
+    as it reads an integer, so Crew only over-counts it.)"""
+
+    def match(self, value: str) -> bool:
+        if value[:2] == "0x":
+            return len(value) > 2 and all(c in "0123456789abcdefABCDEF" for c in value[2:])
+        i = 1 if value[:1] in ("+", "-") else 0
+        return _digits(value, i) == len(value) > i
 
 
 def _digits(text: str, i: int) -> int:
@@ -392,10 +609,12 @@ def _digits(text: str, i: int) -> int:
 class _Yaml12Float:
     """YAML 1.2's plain float form, which PyYAML's 1.1 resolver misses (``1e3``):
     an optional sign, then ``.5``, ``5`` or ``5.`` / ``5.5``, then an optional
-    exponent ``e`` / ``E``, optional sign, digits."""
+    exponent ``e`` / ``E``, optional sign, digits; or ``.inf`` / ``.nan``."""
 
     def match(self, value: str) -> bool:
         i = 1 if value[:1] in ("+", "-") else 0
+        if value[i:] in (".inf", ".Inf", ".INF") or value in (".nan", ".NaN", ".NAN"):
+            return True
         if value[i : i + 1] == ".":
             end = _digits(value, i + 1)
             if end == i + 1:
@@ -435,9 +654,12 @@ def _load_one_yaml(matter: str) -> Any:
         loader.dispose()
 
 
+_KAS_STRING_FIELDS = ("name", "description", "license", "compatibility")
+
+
 def _kas_front_matter(text: str) -> tuple[dict[str, Any] | None, str]:
     """KAS's reading of *text*: ``(front matter, body)``, the front matter ``None``
-    when KAS finds none or refuses it.
+    when KAS finds none or refuses it. The front matter keeps only its string fields.
 
     Follows ``utils/front-matter`` (``extractFrontMatter`` and ``parseFrontMatter``
     with ``SkillFrontMatterSchema``): an opening ``---`` not followed by a fourth
@@ -468,9 +690,6 @@ def _kas_front_matter(text: str) -> tuple[dict[str, Any] | None, str]:
         if language == "json":
             data = json.loads(matter)
         elif language in ("", "yaml", "yml"):
-            # shortcut: PyYAML reads YAML 1.1 (``yes`` is a bool) where js-yaml's
-            # CORE schema reads 1.2, and aliases are refused here; such a skill gets
-            # a copy KAS did not need. Swap in a 1.2 reader if one is reported.
             data = _load_one_yaml(matter)
         else:
             return None, body
@@ -478,12 +697,12 @@ def _kas_front_matter(text: str) -> tuple[dict[str, Any] | None, str]:
         return None, body
     if not isinstance(data, dict) or not data:
         return None, body
-    if any(
-        k in data and not isinstance(data[k], str)
-        for k in ("name", "description", "license", "compatibility")
-    ) or ("metadata" in data and not isinstance(data["metadata"], dict)):
+    if any(k in data and not isinstance(data[k], str) for k in _KAS_STRING_FIELDS) or (
+        "metadata" in data and not isinstance(data["metadata"], dict)
+    ):
         return None, body
-    return data, body
+    # Only the string fields are kept: an aliased value is shared, not copied.
+    return {k: v for k, v in data.items() if k in _KAS_STRING_FIELDS}, body
 
 
 def _utf16_len(text: str) -> int:
@@ -717,8 +936,8 @@ def _kept_skill_read(path: Path) -> tuple[int, str, dict[str, Any] | None, str] 
         front, body = _kas_front_matter(text)
         return len(raw), text, front, body
 
-    # The body and the front matter are both read out of the text (no YAML alias
-    # is accepted), so three times the text bounds all three.
+    # The body and the front matter's string fields are both read out of the text
+    # (an aliased string is shared, not copied), so three times the text bounds all three.
     return reuse(
         ("skill-read", str(path)),
         read,

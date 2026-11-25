@@ -205,6 +205,141 @@ async def test_a_scope_past_the_exclude_bound_denies_by_name_and_keeps_parity(ho
     assert len(_kas_offers(kiro, entry)) == count
 
 
+def _kas_offers_with_workspace(kiro: Path, checkout: Path, entry: dict) -> set[str]:
+    """:func:`_kas_offers` over the catalog KAS really loads: the workspace's tree
+    too, which KAS reads whatever Crew's project-skill trust says."""
+    rules = (entry.get("permissions") or {}).get("rules", [])
+    catalog = _kas_catalog(kiro, entry)
+    catalog |= kas_skill_scope.skill_names([str(checkout / ".kiro" / "skills" / "*" / "SKILL.md")])
+    return {n for n in catalog if not _denied(rules, n)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent, spec",
+    [("kirocrew-worker", {"tools": ["*"]}), ("plain", {"tools": ["fs_read"]})],
+)
+async def test_an_untrusted_workspace_skill_tree_is_denied_to_a_default_tree_scope(
+    home, agent, spec
+):
+    kiro, checkout, _package = home
+    _skill(checkout / ".kiro" / "skills", "foreign")
+    _agent(kiro, agent, spec)
+
+    entry = await _entry(agent, checkout)
+
+    assert _kas_offers_with_workspace(kiro, checkout, entry) == {f"global-{i}" for i in range(5)}
+
+
+@pytest.mark.asyncio
+async def test_an_untrusted_workspace_tree_keeps_an_admitted_skill_by_its_kas_name(home):
+    kiro, checkout, _package = home
+    # KAS's YAML reads ``deploy``; Crew's reader keeps the comment.
+    (_skill(kiro / "skills", "deploy")).write_text(
+        "---\nname: deploy # helper\ndescription: d\n---\nbody\n", encoding="utf-8"
+    )
+    _skill(checkout / ".kiro" / "skills", "foreign")
+    _agent(kiro, "kirocrew-worker", {"tools": ["*"]})
+
+    entry = await _entry("kirocrew-worker", checkout)
+
+    rules = entry["permissions"]["rules"]
+    assert not _denied(rules, "deploy")
+    assert _denied(rules, "foreign")
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_workspace_skill_tree_keeps_a_default_tree_scope_unruled(
+    home, monkeypatch
+):
+    import kiro_crew.skills as skills_mod
+
+    kiro, checkout, _package = home
+    _skill(checkout / ".kiro" / "skills", "trusted")
+    _agent(kiro, "kirocrew-worker", {"tools": ["*"]})
+    monkeypatch.setattr(skills_mod, "project_skill_tree_present", lambda _dir: True)
+
+    entry = await _entry("kirocrew-worker", checkout)
+
+    # Only the skill rules: an entry mounting the sub-agent tool may carry others.
+    rules = (entry.get("permissions") or {}).get("rules") or []
+    assert [r for r in rules if r.get("capability") == "skill"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "front",
+    [
+        None,
+        # KAS's YAML reads ``foreign``; a reader that keeps the comment does not.
+        "---\nname: foreign # note\ndescription: d\n---\nbody\n",
+        "---\nm: &m {a: 1}\nname: foreign # note\ndescription: d\nmetadata: *m\n---\nbody\n",
+        # CORE reads ``09`` as decimal, where PyYAML's 1.1 constructor refuses it.
+        "---\nname: foreign # note\ndescription: d\nmetadata: {version: 09}\n---\nbody\n",
+        # An explicit ``!!int`` in a form CORE's constructor reads.
+        "---\nname: foreign # note\ndescription: d\nmetadata: {v: !!int 0o17, w: !!int -0x1f}\n"
+        "---\nbody\n",
+        # A sequence key, which js-yaml reads as its string.
+        "---\nname: foreign # note\ndescription: d\nmetadata: {[a, b]: 1}\n---\nbody\n",
+        # Keys js-yaml stores as "true" and "1", which Python's ``True == 1`` would merge.
+        "---\nname: foreign # note\ndescription: d\nmetadata: {true: 1, 1: 2}\n---\nbody\n",
+        # Past Python's int-from-text digit limit, which js-yaml does not have.
+        "---\nname: foreign # note\ndescription: d\nmetadata: {v: " + "9" * 5000 + "}\n---\nbody\n",
+        '---json\n{"name": "foreign", "description": "d"}\n---\nbody\n',
+    ],
+)
+async def test_a_scope_past_the_exclude_bound_denies_an_untrusted_workspace_skill(home, front):
+    kiro, checkout, package = home
+    path = _skill(checkout / ".kiro" / "skills", "foreign" if front is None else "dir")
+    if front is not None:
+        path.write_text(front, encoding="utf-8")
+    count = kas_skill_scope._MAX_PATTERNS_PER_RULE + 1
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(count):
+        _skill(package, f"wide-{i:03d}")
+
+    entry = await _entry("wide", checkout)
+
+    offered = _kas_offers_with_workspace(kiro, checkout, entry)
+    denied = {n for r in entry["permissions"]["rules"] for n in r.get("match", [])}
+    assert "foreign" in denied
+    assert "foreign" not in offered
+    assert len(offered) == count
+
+
+@pytest.mark.asyncio
+async def test_a_scope_past_the_exclude_bound_denies_a_workspace_skill_under_a_glob_path(
+    home, tmp_path
+):
+    kiro, _checkout, package = home
+    checkout = tmp_path / "proj[1]"
+    _skill(checkout / ".kiro" / "skills", "foreign")
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(kas_skill_scope._MAX_PATTERNS_PER_RULE + 1):
+        _skill(package, f"wide-{i:03d}")
+
+    entry = await _entry("wide", checkout)
+
+    assert _denied(entry["permissions"]["rules"], "foreign")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["yes", "2026-01-01"])
+async def test_a_scope_past_the_exclude_bound_denies_a_yaml_1_1_typed_name(home, name):
+    kiro, checkout, package = home
+    _skill(checkout / ".kiro" / "skills", "dir").write_text(
+        f"---\nname: {name} # note\ndescription: d\n---\nbody\n", encoding="utf-8"
+    )
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(kas_skill_scope._MAX_PATTERNS_PER_RULE + 1):
+        _skill(package, f"wide-{i:03d}")
+
+    entry = await _entry("wide", checkout)
+
+    # KAS's CORE schema reads a string, where PyYAML's 1.1 reads a bool or a date.
+    assert _denied(entry["permissions"]["rules"], name)
+
+
 _SCOPE_FAILED = "could not work out which skills"
 
 
@@ -544,6 +679,138 @@ async def test_two_names_for_one_skill_never_share_a_copy_file(home):
 def test_front_matter_js_yaml_refuses_counts_as_refused(head):
     front, _ = kas_skill_scope._kas_front_matter(f"---\n{head}\n---\nb\n")
     assert not kas_skill_scope._kas_loads(front, native=False)
+
+
+@pytest.mark.parametrize(
+    "head, name",
+    [
+        ("name: yes # note\ndescription: d", "yes"),
+        ("name: on\ndescription: d", "on"),
+        ("x: &n deploy\nname: *n\ndescription: d", "deploy"),
+        ("m: &m {a: 1}\nname: a # c\ndescription: d\nmetadata: *m", "a"),
+        ("name: 2026-01-01\ndescription: d", "2026-01-01"),
+        ("name: 1-2\ndescription: d", "1-2"),
+        ("name: n\ndescription: 1:20", "n"),
+        ("name: n\ndescription: d\nmetadata: {version: 09, id: 0x1f}", "n"),
+    ],
+)
+def test_front_matter_reads_the_name_js_yaml_reads(head, name):
+    front, _ = kas_skill_scope._kas_front_matter(f"---\n{head}\n---\nb\n")
+    assert front is not None and front["name"] == name
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "name: 12\ndescription: d",
+        "name: 0x1f\ndescription: d",
+        "name: ~\ndescription: d",
+        "name: true\ndescription: d",
+        "name: a\ndescription: d\nlicense: .inf",
+    ],
+)
+def test_front_matter_a_core_schema_scalar_is_typed(head):
+    front, _ = kas_skill_scope._kas_front_matter(f"---\n{head}\n---\nb\n")
+    assert front is None
+
+
+@pytest.mark.parametrize(
+    "value, number",
+    [
+        ("09", 9),
+        ("-0x1f", -31),
+        ("0o17", 15),
+        ("+0b1_01", 5),
+        ("1_000", 1000),
+        ("0", 0),
+        ("9" * 5000, float("inf")),
+        ("0_1", None),
+        ("_1", None),
+        ("1_", None),
+        ("0x", None),
+        ("0o8", None),
+        ("abc", None),
+        ("", None),
+    ],
+)
+def test_js_yaml_int_reads_core_integers(value, number):
+    assert kas_skill_scope._js_yaml_int(value) == number
+
+
+@pytest.mark.parametrize(
+    "metadata, key",
+    [
+        ("{[a, b]: 1}", "a,b"),
+        ("{[a, [b, ~], {c: 1}, 2, true, 1.5]: 1}", "a,b,,[object Object],2,true,1.5"),
+        ("{{x: 1}: 1}", "[object Object]"),
+        ("{true: 1}", "true"),
+        ("{1: 1}", "1"),
+        ("{~: 1}", "null"),
+        ("{1.0: 1}", "1"),
+        ("{1e-7: 1}", "1e-7"),
+    ],
+)
+def test_front_matter_a_non_string_key_is_its_js_string(metadata, key):
+    front, _ = kas_skill_scope._kas_front_matter(
+        f"---\nname: n\ndescription: d\nmetadata: {metadata}\n---\nb\n"
+    )
+    assert front is not None and front["name"] == "n"
+    loaded = kas_skill_scope._load_one_yaml(f"metadata: {metadata}")
+    assert list(loaded["metadata"]) == [key]
+
+
+@pytest.mark.parametrize(
+    "metadata, kept",
+    [
+        ('{[a, b]: 1, "a,b": 2}', False),
+        ('{1: 1, "1": 2}', False),
+        ("{1: 1, 1.0: 2}", False),
+        ("{true: 1, 1: 2}", True),
+        ("{0: 1, false: 2, ~: 3}", True),
+    ],
+)
+def test_front_matter_a_key_is_a_duplicate_as_js_yaml_reads_it(metadata, kept):
+    front, _ = kas_skill_scope._kas_front_matter(
+        f"---\nname: n\ndescription: d\nmetadata: {metadata}\n---\nb\n"
+    )
+    assert (front is not None) is kept
+
+
+@pytest.mark.parametrize(
+    "value, text",
+    [
+        (0, "0"),
+        (-0.0, "0"),
+        (15, "15"),
+        (-31, "-31"),
+        (1.5, "1.5"),
+        (0.000001, "0.000001"),
+        (1e-7, "1e-7"),
+        (1e21, "1e+21"),
+        (123456789012345678901, "123456789012345680000"),
+        (1.25e22, "1.25e+22"),
+        (10**400, "Infinity"),
+        (float("-inf"), "-Infinity"),
+        (float("nan"), "NaN"),
+    ],
+)
+def test_js_number_is_javascripts_string(value, text):
+    assert kas_skill_scope._js_number(value) == text
+
+
+def test_a_composite_key_past_the_budget_equals_no_other_key():
+    nested = "a: &a [x, x]\n"
+    for i in range(1, 30):
+        nested += f"a{i}: &a{i} [*a{i - 1 if i > 1 else ''}, *a{i - 1 if i > 1 else ''}]\n"
+    loaded = kas_skill_scope._load_one_yaml(nested + "m: {[*a29]: 1, [*a29]: 2}\n")
+    assert len(loaded["m"]) == 2
+
+
+def test_front_matter_a_merge_key_is_a_plain_key():
+    front, _ = kas_skill_scope._kas_front_matter(
+        "---\nb: &b {name: a}\n<<: *b\ndescription: d\n---\nb\n"
+    )
+    assert front == {"description": "d"}
 
 
 @pytest.mark.asyncio
