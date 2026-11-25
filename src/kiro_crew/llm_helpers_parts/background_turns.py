@@ -476,10 +476,37 @@ def _record_background_crew_log(
         )
 
 
+def _native_session_id(client: Any) -> str:
+    """The backend session id *client* is on, or ``""`` when it names none."""
+    sid = getattr(client, "session_id", "")
+    return sid if isinstance(sid, str) else ""
+
+
+async def _delete_retired_record(client: Any, session_id: str) -> None:
+    """Delete the backend record of a helper conversation that was just retired.
+
+    A retired process keeps a persistent session's record so ``session/load`` can
+    resume it, but a helper conversation is never resumed. On codex that record is
+    the thread's rollout, which Codex clients list as a chat. Only *session_id*'s
+    record goes, through the provider's ``cleanup_session``. Never raises
+    ``Exception``.
+    """
+    cleanup = getattr(client, "cleanup_session", None)
+    if not session_id or not callable(cleanup):
+        return
+    try:
+        await cleanup(session_id)
+    except Exception:
+        logger.warning(
+            "deleting the record of retired session %s failed", session_id, exc_info=True
+        )
+
+
 async def _cleanup_memory_consolidation_session(
-    sessions: Any, key: str, memory_store: str, log: Any
+    sessions: Any, key: str, memory_store: str, log: Any, client: Any = None
 ) -> None:
     """Retire one generated runtime before removing its private artifacts."""
+    session_id = _native_session_id(client)
     try:
         await sessions.remove(key)
     except Exception:
@@ -488,6 +515,7 @@ async def _cleanup_memory_consolidation_session(
         # deleting authority while the process survives would be unsafe.
         logger.debug("memory consolidation session retirement failed", exc_info=True)
         return
+    await _delete_retired_record(client, session_id)
     try:
 
         # remove() waits for retirement but preserves resumable mappings. This
@@ -510,7 +538,10 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     ``NotImplementedError``), ``reset`` replaces the process,
     and the key's stateless classification means the next turn starts with no
     history. The same two steps ``WorkerPool.reset`` uses for a reused pool
-    worker.
+    worker. After the reset, the ended conversation's backend record is deleted
+    (:func:`_delete_retired_record`): on codex, whose live process cannot swap
+    conversations, this is the path every job takes. A reset that raised keeps
+    the record, since its process may still run.
 
     Logs at INFO which path ran, once per call. Never raises ``Exception``.
     """
@@ -527,6 +558,7 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
         else:
             logger.info("Background session %s: fresh conversation on the same runtime", key)
             return
+    session_id = _native_session_id(client)
     try:
         await sessions.reset(key, ends_conversation=True)
     except Exception:
@@ -534,6 +566,7 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
             "Background session %s: could not start a fresh conversation", key, exc_info=True
         )
         return
+    await _delete_retired_record(client, session_id)
     logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
 
 
@@ -796,7 +829,7 @@ async def background_turn(
         except Exception:
             logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
-            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log, client)
         raise
     if unconfirmed:
         logger.warning(
@@ -821,7 +854,7 @@ async def background_turn(
             except Exception:
                 logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
-            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log, client)
         raise _lite_spec_refusal(key)
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
@@ -914,7 +947,9 @@ async def background_turn(
         finally:
             try:
                 if memory_store:
-                    await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+                    await _cleanup_memory_consolidation_session(
+                        sessions, key, memory_store, log, client
+                    )
                 elif fresh:
                     # The fresh conversation above already emptied the context.
                     pass
