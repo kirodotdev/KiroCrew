@@ -107,7 +107,8 @@ describe('ChatInput: Optimize Before Sending', () => {
     renderWithProviders(<Host initial={ORIGINAL} onSend={onSend} />)
 
     pressEnter()
-    await screen.findByTestId('optimize-error')
+    const error = await screen.findByTestId('optimize-error')
+    expect(error.parentElement!.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(screen.getByLabelText('Message input')).toHaveValue(ORIGINAL)
     expect(onSend).not.toHaveBeenCalled()
 
@@ -158,6 +159,8 @@ describe('ChatInput: Optimize Before Sending', () => {
     const busy = await screen.findByTestId('optimize-busy')
     expect(busy).toHaveTextContent('Optimizing another chat — please wait')
     expect(busy).toHaveAttribute('role', 'status')
+    // Drawn on a thick glass pane: the transcript under the dock stays behind it.
+    expect(busy.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(screen.queryByTestId('optimize-error')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(onSend).not.toHaveBeenCalled()

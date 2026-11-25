@@ -405,6 +405,9 @@ describe('ChatInput', () => {
     it('shows prefill hint when enabled', () => {
       renderWithProviders(<ChatInput {...defaultProps} prefillHint />)
       expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
+      expect(screen.getByText(/Prompt pre-filled/).parentElement!.className).toMatch(/\bglass-thick\b.*\bglass-accent\b/)
+      // Inset inside the composer's pane, so its corner stays inside the composer's.
+      expect(screen.getByText(/Prompt pre-filled/).parentElement).toHaveClass('m-1.5')
     })
 
     it('does not show prefill hint by default', () => {
