@@ -73,16 +73,22 @@ What the selector falls back on (prints nothing, exit 3)
   map of the old set cannot describe;
 * any `conftest.py`: it reaches every test below it;
 * a non-`.py` file anywhere, or a `.py` file outside `src/` and `test/`
-  (workflows, scripts, config, docs): tests read those as data, and the plugin
-  records only code that ran;
+  (workflows, scripts, config, data): tests read those as data, and the plugin
+  records only code that ran. The exception is a modified path whose readers
+  CI can already name, a prose doc outside `src/` or a frontend path
+  (`scripts/ci_test_data_readers.py`): it adds those test files to the
+  selection and no fall-back. Added, deleted or renamed, such a path falls
+  back like any other, and so does one whose reader scan finds nothing (a
+  dead scan and a working one look the same);
 * a `.py` file the map never saw executed in a test, unless it is itself a
   test file;
 * an empty always-run guard tier (`leaf_test_scope.corpus_gates`): a dead scan
   and a working one look the same, so an empty one forfeits the reduction.
 
 Otherwise the selection is: every changed test file, every test file the map
-links to a changed file, and the guard tier (tests that read the test tree as
-data), which is always added.
+links to a changed file, the readers of every changed doc and frontend path,
+and the guard tier (tests that read the test tree as data), which is always
+added.
 
 Function level
 --------------
@@ -122,7 +128,7 @@ import zlib
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 # The sibling under the same package this module was loaded from: `scripts.` in
 # the tests, top-level when run as a script, so no path edit and no second copy.
@@ -150,12 +156,26 @@ CORE_REACH = 0.5
 CACHES = frozenset({"cache", "lru_cache", "cached_property"})
 
 
+Changes = list[tuple[str, list[str]]]
+
+
+class DataRule(Protocol):
+    """Names the test files that read a changed non-code path (`ci_test_data_readers`)."""
+
+    def covers(self, path: str) -> bool: ...
+
+    def tests(self, paths: Iterable[str]) -> set[str]: ...
+
+
 class Selection(NamedTuple):
-    """The verdict for one diff: test files, or `full=True` with the reasons."""
+    """The verdict for one diff: test files, or `full=True` with the reasons.
+
+    `readers` is the part of `tests` that reads a changed doc or frontend path."""
 
     full: bool
     tests: list[str]
     reasons: list[str]
+    readers: tuple[str, ...] = ()
 
 
 def merge_parts(parts: Iterable[Mapping[str, Any]], commit: str) -> dict[str, Any]:
@@ -357,15 +377,35 @@ def is_test_file(path: str) -> bool:
     return path.startswith(TESTPATHS) and name.startswith("test_") and name.endswith(".py")
 
 
+def data_rows(changes: Changes, rule: DataRule | None) -> tuple[Changes, list[str]]:
+    """Split a diff into the rows the fall-back rules judge and the paths with known readers.
+
+    A modified path `rule` covers leaves the diff; with no rule every row stays.
+    """
+    if rule is None:
+        return changes, []
+    rest: Changes = []
+    data: list[str] = []
+    for status, paths in changes:
+        if status == "M" and paths and rule.covers(paths[-1]):
+            data.append(paths[-1])
+        else:
+            rest.append((status, paths))
+    return rest, data
+
+
 def select(
-    changes: list[tuple[str, list[str]]],
+    changes: Changes,
     test_map: Mapping[str, Any],
     guard_tier: list[str],
     functions: Mapping[str, set[str] | None] | None = None,
+    rule: DataRule | None = None,
 ) -> Selection:
     """Apply the fall-back rules in the module docstring to one diff; `functions`
-    is `changed_functions` of it, when the diff has a base and a head."""
+    is `changed_functions` of it, when the diff has a base and a head, and `rule`
+    names the readers of its docs and frontend paths."""
     reasons: list[str] = []
+    changes, data = data_rows(changes, rule)
     tests = sorted(test_map["tests"])
     files: Mapping[str, list[int]] = test_map["files"]
     chosen: set[str] = set()
@@ -386,9 +426,23 @@ def select(
             reasons.append(f"{path}: no test executed it")
     if not guard_tier:
         reasons.append("guard tier is empty: refusing to reduce")
+    # The reader scans read the whole test tree, so they run for a diff nothing
+    # else sends to the full suite.
+    readers = rule.tests(data) if rule is not None and data and not reasons else set()
+    if data and not reasons and not readers:
+        reasons.append(f"{data[0]}: its reader scan found no test file: refusing to reduce")
     if reasons:
         return Selection(True, [], reasons)
-    return Selection(False, sorted(chosen | set(guard_tier)), [])
+    return Selection(False, sorted(chosen | set(guard_tier) | readers), [], tuple(sorted(readers)))
+
+
+def data_rule(root: Path) -> DataRule:
+    """The rule that names the readers of a changed doc or frontend path in `root`."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from ci_test_data_readers import DataRule as Rule  # noqa: E402  (reused, not copied)
+
+    found: DataRule = Rule(root)
+    return found
 
 
 def guard_tier(root: Path) -> list[str]:
@@ -628,7 +682,7 @@ def _cmd_select(args: argparse.Namespace) -> int:
     else:
         print("select needs --base and --head, or --name-status", file=sys.stderr)
         return 2
-    result = select(changes, test_map, guard_tier(root), functions)
+    result = select(changes, test_map, guard_tier(root), functions, data_rule(root))
     if args.json:
         print(json.dumps({**result._asdict(), "share": share(result, test_map)}))
         return FULL if result.full else 0
