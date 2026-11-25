@@ -40,6 +40,7 @@ from kiro_crew.dashboard.change_cards import (
 from kiro_crew.dashboard.handlers import change_cards as routes
 from kiro_crew.dashboard.handlers import crewmate_import_files as files_route
 from kiro_crew.dashboard.state_parts.slot_directory import _normalize_slot_key
+from kiro_crew.security import paths
 
 world = change_cards_helpers.world
 
@@ -634,9 +635,9 @@ async def _press(c, store: CardStore, card_id: str, op: str = "apply") -> list[i
             step["method"], path, json=body or None, headers=_card_headers(card, op=op, step=i)
         )
         statuses.append(r.status)
-        responses.append(await r.json())
         if r.status >= 300:
             break
+        responses.append(await r.json())
         card = store.public(store.get(card_id))
     return statuses
 
@@ -859,6 +860,26 @@ def test_the_press_writes_carried_files_only_into_the_new_crewmate(world, monkey
     # Applied: the staged copy is gone.
     with pytest.raises(crewmate_stage.StageError):
         crewmate_stage.load(sha)
+
+
+def test_a_resolver_stall_over_the_data_home_still_adds_the_carried_script_cron(
+    world, monkeypatch, tmp_path
+):
+    # The script check runs off the event loop, where the path gate answers inline:
+    # a stall cooldown over the data home's prefix is not a refusal there.
+    store, writes = CardStore(tmp_path / "c.json"), _Writes()
+
+    async def go(c, app):
+        card_id = await _raise(c, _zip(_carrying()))
+        paths._mark_stalled(paths._stall_prefix(str(tmp_path / "home")), 2.0)
+        return card_id, await _press(c, store, card_id), app
+
+    card_id, statuses, app = _go(world, store, writes, monkeypatch, tmp_path, go)
+    assert statuses == [200, 200, 200, 200, 200]
+    (job,) = app["state"].crons.jobs.values()
+    assert job.enabled is False
+    assert job.script == f"{tmp_path / 'home' / 'crons' / 'imported' / 'm1' / 'run.py'}:main"
+    assert store.get(card_id)["status"] == "applied"
 
 
 def test_a_staged_copy_swapped_after_the_card_refuses_the_file_step(world, monkeypatch, tmp_path):
