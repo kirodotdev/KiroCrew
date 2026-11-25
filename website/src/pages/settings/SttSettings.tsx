@@ -1326,7 +1326,7 @@ export default function SttSettings({ cardIndex }: {
           <button
             type="button"
             onClick={grantMicAccess}
-            className="-mt-1 mb-1 text-[12px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 self-start"
+            className="-mt-1 mb-1 text-[12px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 self-start focus-visible:rounded-md"
           >
             {i18nT('pages.settings.sttSettings.allow_microphone_access_to_show_device_names')}
           </button>

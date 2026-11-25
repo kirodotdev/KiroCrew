@@ -325,7 +325,7 @@
      Settings capsule keep an opaque, delimited box. */
   .liquid-glass{ background:var(--bg-elevated) !important }
   .liquid-glass{ outline:1px solid var(--border) !important; outline-offset:-1px }
-  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:var(--lg-focus-offset, 2px) !important }
   /* The solid fill above is the host's own background (the tint layer is
      hidden with the rest), so the picked chip and the incognito chip re-assert
      their hue on the solid surface. */
@@ -390,7 +390,7 @@
   .topbar-glass,.glass-surface{ background:var(--bg) !important }
   .liquid-glass{ background:var(--bg-elevated) !important }
   .liquid-glass{ outline:1px solid var(--border) !important; outline-offset:-1px }
-  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:var(--lg-focus-offset, 2px) !important }
   .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
   .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
@@ -411,7 +411,7 @@
   html[data-reduce-transparency="on"] .topbar-glass,html[data-reduce-transparency="on"] .glass-surface{ background:var(--bg) !important }
   html[data-reduce-transparency="on"] .liquid-glass{ background:var(--bg-elevated) !important }
   html[data-reduce-transparency="on"] .liquid-glass{ outline:1px solid var(--border) !important; outline-offset:-1px }
-  html[data-reduce-transparency="on"] .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  html[data-reduce-transparency="on"] .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:var(--lg-focus-offset, 2px) !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
@@ -430,7 +430,7 @@
   /* The pane outline above is !important, so it would beat the base-layer
      :focus-visible ring on the chips / memory chip / jump button, which are
      glass buttons; keyboard focus re-asserts the ring inside the same block. */
-  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
+  .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:var(--lg-focus-offset, 2px) !important }
   :root{ --glass-edge:var(--text) }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
 }

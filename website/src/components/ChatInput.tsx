@@ -1701,7 +1701,7 @@ function ChatInput({
                 also owns the flex sizing so the scroller keeps filling the
                 row. */}
             <div className="relative min-w-0 flex-1">
-              <div ref={attachControlRow} data-testid="composer-control-row" data-fade-left={controlRowEdges.left ? 'true' : undefined} data-fade-right={controlRowEdges.right ? 'true' : undefined} className="edge-fade-x flex items-center gap-0.5 overflow-x-auto">
+              <div ref={attachControlRow} data-testid="composer-control-row" data-fade-left={controlRowEdges.left ? 'true' : undefined} data-fade-right={controlRowEdges.right ? 'true' : undefined} className="edge-fade-x flex items-center gap-0.5 overflow-x-auto py-1 -my-1 [&_:focus-visible]:outline-offset-[-2px]">
 
               {onAutomationClick && (
                 <SessionAutomationPopover

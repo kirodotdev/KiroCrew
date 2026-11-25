@@ -411,7 +411,7 @@ export function useTranscriptRendering({
     return (
       <MessageSearchScope key={key} messageIdx={i}>
       <div ref={quoteMark && isJumpTarget(m, highlightTs, jumpMid) && isJumpTarget(m, quoteMark.ts, quoteMark.mid) ? quoteMarkRef(quoteMark.quoted) : undefined} data-jump-target={isJumpTarget(m, landedTs, jumpMid) || isJumpTarget(m, highlightTs, jumpMid) ? m.ts : undefined} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${isJumpTarget(m, landedTs, jumpMid) ? 'animate-msg-landed rounded-lg' : isJumpTarget(m, highlightTs, jumpMid) ? 'animate-msg-highlight rounded-lg' : ''}`}>
-        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
+        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full pb-1 -mb-1 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
           {isUser ? (
             <UserMessage
               content={m.content}
