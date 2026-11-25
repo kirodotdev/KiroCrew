@@ -65,6 +65,7 @@ _INCOGNITO_ALIASES = frozenset({"/incognito"})
 # the message reaches the model as chat text, which reads as "the feature isn't
 # installed" rather than "you typed it wrong".
 _AGENT_ALIASES = frozenset(("/agent", "/agents"))
+_BOT_ALIASES = frozenset(("/bots", "/bot"))
 _STATUS_ALIASES = frozenset(("/status",))
 # Liveness shortcut, matching the Slack transport path's bare ``ping``.
 _PING_ALIASES = frozenset(("/ping",))
@@ -137,6 +138,8 @@ def parse_command(text: str, bot_username: str = "") -> str | None:
         return "incognito"
     if cmd in _AGENT_ALIASES:
         return "agent"
+    if cmd in _BOT_ALIASES:
+        return "bot"
     if cmd in _STATUS_ALIASES:
         return "status"
     if cmd in _PING_ALIASES:
@@ -243,6 +246,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("compact", "Compress the context when it gets long"),
     ("model", "Choose the model from a list"),
     ("agent", "Choose the agent from a list"),
+    ("bots", "Run this chat or Topic as one of your Bots"),
     ("status", "Show runtime stats"),
     ("session", "Find and resume a conversation"),
     ("cron", "Manage scheduled jobs (list / pause / resume / remove)"),

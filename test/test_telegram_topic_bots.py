@@ -1,7 +1,7 @@
 """A Telegram conversation (a DM or a forum Topic) can run as a Bot.
 
-``/agent`` offers the Bots (``config.agents`` keys) beside the templates, and a
-Bot picked there runs the route AS that Bot: its kiro agent mode, workspace and
+``/bots`` offers the Bots (``config.agents`` keys), ``/agent`` keeps offering the
+templates, and a Bot picked runs the route AS that Bot: its kiro agent mode, workspace and
 member identity reach ``get_or_create`` and the context builder gets the Bot's
 template, the same collapse Slack's ``!bot`` uses (``slack/channel_crew.py``).
 So each Topic of one forum can talk to its own Bot.
@@ -61,55 +61,76 @@ def test_a_long_bot_name_is_cut_to_the_button_limit(monkeypatch: pytest.MonkeyPa
     assert label.endswith("…")
 
 
-def test_bots_come_first_and_a_shared_name_is_listed_once_as_the_bot() -> None:
-    labels: dict[str, str] = {}
-    names = pickers._picker_entries(["kirocrew-lite", _BOT], labels, {_BOT: "🤖 Home Bot"})
-
-    assert names == [_BOT, "kirocrew-lite"]
-    assert labels[_BOT] == "🤖 Home Bot"
-
-
-def test_the_agent_picker_offers_bots(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bots_lists_only_the_bots(monkeypatch: pytest.MonkeyPatch) -> None:
     prime_live("agent", default_agent="")
     d, client, _sessions = _dispatcher({7})
     monkeypatch.setattr(type(d), "_installed_agent_names", staticmethod(lambda: ["kirocrew-lite"]))
     _bots(monkeypatch, {"default": "", _BOT: "Home Bot"})
+
+    asyncio.run(d.handle_message(_dm("/bots")))
+
+    text, markup = client.sent[-1]
+    assert text.startswith("Current Bot: ")
+    assert [row[0]["text"] for row in markup["inline_keyboard"]] == [
+        "• Default (kirocrew)",
+        "🤖 Home Bot",
+    ]
+
+
+def test_agent_keeps_listing_only_the_templates(monkeypatch: pytest.MonkeyPatch) -> None:
+    prime_live("agent", default_agent="")
+    d, client, _sessions = _dispatcher({7})
+    monkeypatch.setattr(type(d), "_installed_agent_names", staticmethod(lambda: ["kirocrew-lite"]))
+    _bots(monkeypatch, {_BOT: "Home Bot"})
 
     asyncio.run(d.handle_message(_dm("/agent")))
 
     _text, markup = client.sent[-1]
     assert [row[0]["text"] for row in markup["inline_keyboard"]] == [
         "• Default (kirocrew)",
-        "🤖 Home Bot",
         "kirocrew-lite",
     ]
 
 
-def test_a_failed_bot_lookup_still_shows_the_templates(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("command", ["/bots", "/bot"])
+def test_bots_with_no_bots_says_where_to_make_one(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
     prime_live("agent", default_agent="")
     d, client, _sessions = _dispatcher({7})
-    monkeypatch.setattr(type(d), "_installed_agent_names", staticmethod(lambda: ["kirocrew-lite"]))
+    _bots(monkeypatch, {"default": ""})
+
+    asyncio.run(d.handle_message(_dm(command)))
+
+    assert "No Bots yet" in client.sent[-1][0]
+
+
+def test_a_failed_bot_lookup_shows_no_bot_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    prime_live("agent", default_agent="")
+    d, client, _sessions = _dispatcher({7})
 
     def _boom() -> dict[str, str]:
         raise RuntimeError("config unreadable")
 
     monkeypatch.setattr(pickers, "_bot_rows", _boom)
 
-    asyncio.run(d.handle_message(_dm("/agent")))
+    asyncio.run(d.handle_message(_dm("/bots")))
 
-    _text, markup = client.sent[-1]
-    assert [row[0]["text"] for row in markup["inline_keyboard"]] == [
-        "• Default (kirocrew)",
-        "kirocrew-lite",
-    ]
+    assert "No Bots yet" in client.sent[-1][0]
+
+
+def test_bots_is_in_the_command_menu() -> None:
+    from kiro_crew.telegram.commands import COMMAND_SPEC, parse_command
+
+    assert "bots" in dict(COMMAND_SPEC)
+    assert parse_command("/bots") == parse_command("/bot") == "bot"
 
 
 def test_pressing_a_bot_sets_the_routes_agent_to_the_bot(monkeypatch: pytest.MonkeyPatch) -> None:
     prime_live("agent", default_agent="")
     d, client, _sessions = _dispatcher({7})
-    monkeypatch.setattr(type(d), "_installed_agent_names", staticmethod(lambda: []))
     _bots(monkeypatch, {_BOT: "Home Bot"})
-    asyncio.run(d.handle_message(_dm("/agent")))
+    asyncio.run(d.handle_message(_dm("/bots")))
 
     asyncio.run(d.on_callback(_press("g:1")))
 

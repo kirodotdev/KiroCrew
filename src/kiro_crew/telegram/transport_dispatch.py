@@ -749,6 +749,9 @@ class TelegramDispatcher:
         if cmd == "agent":
             await self._handle_agent(route, chat_id, parse_command_argument(text))
             return
+        if cmd == "bot":
+            await self._handle_bot(route, chat_id, parse_command_argument(text))
+            return
         # A privacy modifier is DEFERRED, not applied here. The session key this
         # early in the ladder is the pre-rotation one, and the idle/daily rotation
         # below can mint a different key for the very turn the user is asking to
@@ -1190,6 +1193,7 @@ class TelegramDispatcher:
     _agent_labels = staticmethod(_pickers._agent_labels)
     _agent_choices = _pickers._agent_choices
     _handle_agent = _pickers._handle_agent
+    _handle_bot = _pickers._handle_bot
     _apply_agent = _pickers._apply_agent
 
     # ── /title and the service-backed commands ─────────────────────────────

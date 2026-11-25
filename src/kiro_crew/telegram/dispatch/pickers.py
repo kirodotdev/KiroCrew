@@ -399,9 +399,9 @@ _DEFAULT_BOT = "default"
 
 
 def _bot_rows() -> dict[str, str]:
-    """The Bots the picker offers, ``config.agents`` key -> button label.
+    """The Bots ``/bots`` offers, ``config.agents`` key -> button label.
 
-    A Bot picked here runs the route's conversation AS that Bot (its mode,
+    A Bot picked there runs the route's conversation AS that Bot (its mode,
     workspace and memory), the collapse Slack's ``!bot`` uses
     (``slack/channel_crew.py``), so each forum Topic can talk to its own Bot.
     The label is the Bot's display name, else its key, marked so a Bot reads
@@ -418,16 +418,6 @@ def _bot_rows() -> dict[str, str]:
             label = label[: _AGENT_LABEL_MAX - 1] + "…"
         rows[key] = label
     return rows
-
-
-def _picker_entries(names: list[str], labels: dict[str, str], bots: dict[str, str]) -> list[str]:
-    """Bots first, then the templates no Bot shares a name with, with *labels* updated.
-
-    A name that is both a template and a Bot runs as the Bot at turn time (a
-    ``config.agents`` key always collapses), so it is listed once, as the Bot.
-    """
-    labels.update(bots)
-    return [*bots, *(name for name in names if name not in bots)]
 
 
 #: The name ``agent_capabilities`` gives a crew's private copy of a template.
@@ -479,7 +469,26 @@ def _agent_choices(
 async def _handle_agent(
     self: TelegramDispatcher, route: tuple[str, str], chat_id: int, arg: str
 ) -> None:
-    """Post the agent keyboard, or report the current pick when there is none.
+    """``/agent``: the template picker."""
+    await _post_agent_picker(self, route, chat_id, arg, bots=False)
+
+
+async def _handle_bot(
+    self: TelegramDispatcher, route: tuple[str, str], chat_id: int, arg: str
+) -> None:
+    """``/bots``: the Bot picker.
+
+    The same keyboard, pick and switch as ``/agent``, listing the owner's Bots
+    instead of the templates: a Bot is a ``config.agents`` key, which the turn
+    runs AS the Bot (``turn_engine``), so each forum Topic can have its own.
+    """
+    await _post_agent_picker(self, route, chat_id, arg, bots=True)
+
+
+async def _post_agent_picker(
+    self: TelegramDispatcher, route: tuple[str, str], chat_id: int, arg: str, *, bots: bool
+) -> None:
+    """Post the agent (or Bot) keyboard, or report the current pick when there is none.
 
     Button-only, for the same reason ``/model`` is: a free-text agent name is
     a guess at something the user cannot enumerate, and a typo lands as a
@@ -487,27 +496,33 @@ async def _handle_agent(
     """
     assert self.client is not None
     thread = self._route_thread(route)
-    try:
-        names = await asyncio.to_thread(self._installed_agent_names)
-    except Exception:
-        logger.warning("telegram /agent: agent discovery failed", exc_info=True)
-        names = []
-    try:
-        labels = await asyncio.to_thread(self._agent_labels) if names else {}
-    except Exception:
-        # A label lookup failure costs readability only, never the picker.
-        logger.warning("telegram /agent: agent label lookup failed", exc_info=True)
-        labels = {}
-    try:
-        bots = await asyncio.to_thread(_bot_rows)
-    except Exception:
-        # A Bot lookup failure costs the Bot rows only, never the template picker.
-        logger.warning("telegram /agent: bot lookup failed", exc_info=True)
-        bots = {}
-    names = _picker_entries(names, labels, bots)
+    command, noun = ("/bots", "Bot") if bots else ("/agent", "agent")
+    names: list[str]
+    labels: dict[str, str]
+    if bots:
+        try:
+            labels = await asyncio.to_thread(_bot_rows)
+        except Exception:
+            logger.warning("telegram /bots: bot lookup failed", exc_info=True)
+            labels = {}
+        names = list(labels)
+        empty = "No Bots yet. Create one on the Bots page of the dashboard."
+    else:
+        try:
+            names = await asyncio.to_thread(self._installed_agent_names)
+        except Exception:
+            logger.warning("telegram /agent: agent discovery failed", exc_info=True)
+            names = []
+        try:
+            labels = await asyncio.to_thread(self._agent_labels) if names else {}
+        except Exception:
+            # A label lookup failure costs readability only, never the picker.
+            logger.warning("telegram /agent: agent label lookup failed", exc_info=True)
+            labels = {}
+        empty = "No agent list available on this machine."
     choices = self._agent_choices(names, labels)
     if len(choices) <= 1:
-        await self._reply(chat_id, "No agent list available on this machine.", thread=thread)
+        await self._reply(chat_id, empty, thread=thread)
         return
     current = self._agent_picks.get(route)
     # With no pick the conversation runs the default it pinned, and the Default
@@ -517,9 +532,9 @@ async def _handle_agent(
     current_label = next(
         (label for aid, label in choices if aid == marked), current or f"Default ({running})"
     )
-    header = f"Current agent: {current_label}\nPick one:"
+    header = f"Current {noun}: {current_label}\nPick one:"
     if arg.strip():
-        header = f"/agent takes no argument — pick from the list.\n\n{header}"
+        header = f"{command} takes no argument — pick from the list.\n\n{header}"
     keyboard = [
         [{"text": f"{'• ' if aid == marked else ''}{label}", "callback_data": f"g:{index}"}]
         for index, (aid, label) in enumerate(choices)
