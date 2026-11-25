@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -16,7 +17,7 @@ const path = require("node:path");
 // assertion covers one piece a refactor could silently drop while every other
 // test stays green.
 describe("window lifecycle fullscreen bounds-settle wiring", () => {
-  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+  const WINDOW_LIFECYCLE_JS = readSource(
     path.join(__dirname, "..", "window-lifecycle.js"),
     "utf8",
   );

@@ -470,6 +470,17 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("externalTerminalAPI", {
   open: (grant) => ipcRenderer.invoke("external-terminal:open", String(grant || "")),
 });
 
+// Connected computers (29949). `share` names one of this gateway's Remote Crew
+// connections and resolves { ok, grant?, error? } after the main process ran
+// the native confirm, folder picker and per-tool ticks and its own desktop
+// host wrote the grant. Nothing else crosses: no folder, crew name or tool
+// list. Rejects for a window whose gateway is not this machine's. Exposed only
+// while the preview was on at launch (window-lifecycle.js passes the argument)
+// and never to a remote gateway's window.
+if (!REMOTE_GATEWAY && process.argv.includes("--kc-connected-computers")) contextBridge.exposeInMainWorld("connectedComputersAPI", {
+  share: (instanceId) => ipcRenderer.invoke("connected-computers:share", String(instanceId || "")),
+});
+
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
 // Chromium's per-origin zoom (the thing Cmd/Ctrl +/- changes) is not
 // reachable from page JS, so the renderer round-trips through main.js.

@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -188,7 +189,7 @@ test("client-only: the failure dialog derives its log pane from that one bit", (
   // foreign-holder refusal: that launch did probe the port and logged the
   // holder's pid and command, so its log is evidence, not an earlier run's.
   const source = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8").replace(/\r\n/g, "\n"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8").replace(/\r\n/g, "\n"))
     .join("\n");
   assert.match(source, /const showLog = configuredShowLog \?\? !localGatewayOff;/);
   assert.deepStrictEqual(
@@ -207,7 +208,7 @@ test("client-only: the local-start offer routes through a re-exec on a crew's po
   // in place; client-only on a crew's port -> offer while a re-exec is
   // possible; noRetry -> no offer.
   const source = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8").replace(/\r\n/g, "\n"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8").replace(/\r\n/g, "\n"))
     .join("\n");
   assert.match(source, /const enableButton = offerLocalStart && !noRetry/);
   assert.match(source, /offerLocalStart: canOfferLocalStart\(localGatewayOff, remoteTarget\)/);
@@ -383,7 +384,7 @@ test("launch port: an unusable KIROCREW_PORT takes the normal decision, not the 
   // collision selectLaunchPort is there to avoid. Every launch with no usable
   // port of its own therefore reaches the same selection. The warning stays: the
   // value was given and ignored.
-  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const source = readSource(path.join(__dirname, "..", "main.js"), "utf8");
   // The env value is resolved ABOVE the migration, because both readers need it:
   // an override is the port this launch binds, so it is also the port a legacy
   // crew must be keyed under.

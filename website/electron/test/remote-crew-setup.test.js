@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 
 const { EventEmitter } = require("node:events");
@@ -191,7 +192,7 @@ test("saveRemoteCrewConfig writes nothing when the form is refused", () => {
 
 test("the failure dialog offers the crew form and retries once it is saved", () => {
   const source = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
 
   assert.match(
@@ -237,7 +238,7 @@ test("the failure dialog offers the crew form and retries once it is saved", () 
 });
 
 test("one parser and one writer serve both surfaces", () => {
-  const lifecycle = fs.readFileSync(
+  const lifecycle = readSource(
     path.join(__dirname, "..", "window-lifecycle.js"),
     "utf8",
   );
@@ -678,12 +679,12 @@ test("the Developer panel's local-gateway help names the tunnel option verbatim 
   // locale pointing at a control that no longer exists. en-XA is the
   // generated pseudolocale and mangles it by design.
   const { TUNNEL_OPTION_LABEL } = require("../remote-crew-setup");
-  const menuSource = fs.readFileSync(path.join(__dirname, "..", "app-menu.js"), "utf8");
+  const menuSource = readSource(path.join(__dirname, "..", "app-menu.js"), "utf8");
   const MENU_LABEL = /label: "(Set Remote Host…)"/.exec(menuSource)?.[1];
   assert.ok(MENU_LABEL, "app-menu.js no longer has a Set Remote Host… item");
   const dir = path.join(__dirname, "..", "..", "src", "i18n", "locales");
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "en-XA.json" && f !== "en.manual.json")) {
-    const catalog = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+    const catalog = JSON.parse(readSource(path.join(dir, file), "utf8"));
     const text = catalog.pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers;
     assert.ok(text.includes(TUNNEL_OPTION_LABEL), `${file} does not quote "${TUNNEL_OPTION_LABEL}"`);
     // The menu item the copy sends the user to; read from the menu source so
@@ -693,9 +694,9 @@ test("the Developer panel's local-gateway help names the tunnel option verbatim 
 });
 
 test("the local-gateway guide link targets a heading that exists in the remote guide (#3810)", () => {
-  const panel = fs.readFileSync(path.join(__dirname, "..", "..", "src", "pages", "settings", "DeveloperPanel.tsx"), "utf8");
+  const panel = readSource(path.join(__dirname, "..", "..", "src", "pages", "settings", "DeveloperPanel.tsx"), "utf8");
   const anchor = /LOCAL_GATEWAY_TUNNEL_GUIDE = '[^'#]*remote-and-mobile\.md#([a-z0-9-]+)'/.exec(panel)[1];
-  const guide = fs.readFileSync(path.join(__dirname, "..", "..", "..", "docs", "guides", "remote-and-mobile.md"), "utf8");
+  const guide = readSource(path.join(__dirname, "..", "..", "..", "docs", "guides", "remote-and-mobile.md"), "utf8");
   // GitHub's slug: lowercase, drop punctuation except hyphens, spaces to hyphens.
   const slugs = guide.split("\n").filter((l) => /^#{1,6} /.test(l))
     .map((l) => l.replace(/^#+ /, "").toLowerCase().replace(/[^\p{L}\p{N} -]/gu, "").replace(/ /g, "-"));

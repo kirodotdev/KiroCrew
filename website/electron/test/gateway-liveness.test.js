@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { createLivenessMonitor } = require("../gateway-liveness");
@@ -269,7 +270,7 @@ test("the supervisor polls liveness with the wider probe, not the boot poll's ch
   // would silently reintroduce the 2s budget.
   const fs = require("node:fs");
   const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
+  const source = readSource(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
   const start = source.indexOf("function startLivenessMonitor(");
   assert.ok(start >= 0, "startLivenessMonitor exists");
   const body = source.slice(start, source.indexOf("livenessMonitor.start();", start));

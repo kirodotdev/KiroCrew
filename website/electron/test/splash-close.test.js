@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 //
 // The un-closable splash (#11859). loading.html is painted into the MAIN
@@ -36,9 +37,9 @@ const SUPERVISOR_FILES = [
   "gateway-supervisor.js",
 ];
 
-const LOADING_HTML = fs.readFileSync(path.join(__dirname, "..", "loading.html"), "utf8");
-const PRELOAD_JS = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
-const WINDOW_LIFECYCLE_JS = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+const LOADING_HTML = readSource(path.join(__dirname, "..", "loading.html"), "utf8");
+const PRELOAD_JS = readSource(path.join(__dirname, "..", "preload.js"), "utf8");
+const WINDOW_LIFECYCLE_JS = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
 
 // The wording the page shows when it is not the main window (and when it does
 // not know): closing a connection window destroys it and its connect loop, and
@@ -143,7 +144,7 @@ describe("window-control admission for the splash", () => {
     const senders = fs
       .readdirSync(shellDir)
       .filter((f) => f.endsWith(".html"))
-      .filter((f) => /windowControl\(/.test(fs.readFileSync(path.join(shellDir, f), "utf8")));
+      .filter((f) => /windowControl\(/.test(readSource(path.join(shellDir, f), "utf8")));
     assert.deepEqual(senders, ["loading.html"]);
   });
 
@@ -339,7 +340,7 @@ describe("loading.html carries its own close control", () => {
 // or an IPC send (the splash loads asynchronously and can miss one).
 describe("loading.html reveals the exit on reconnect, and on a cold boot only after a stall", () => {
   const SUPERVISOR_JS = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
   const fnBody = (name) => {
     const m = SUPERVISOR_JS.match(
@@ -408,7 +409,7 @@ describe("loading.html reveals the exit on reconnect, and on a cold boot only af
 // main window's splash and the page words its hint from that flag.
 describe("the supervisor marks the main window's splash as primary", () => {
   const SUPERVISOR_JS = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
 
   // splashQuery evaluated as written, with mainWindow(), the stored theme

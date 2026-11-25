@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -159,7 +160,7 @@ describe("browserPanelUnderCursor", () => {
 });
 
 describe("swipe relay wiring", () => {
-  const read = (rel) => fs.readFileSync(path.join(__dirname, "..", rel), "utf8");
+  const read = (rel) => readSource(path.join(__dirname, "..", rel), "utf8");
 
   it("every dashboard window arms the relay on its dashboard webContents", () => {
     const src = read("window-lifecycle.js");
