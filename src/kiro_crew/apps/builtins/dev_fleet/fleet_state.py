@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import os
@@ -1033,10 +1034,10 @@ def _dir_size_bytes(path: str) -> int | None:
     junction could make the walk recurse forever (there is no cycle guard or
     timeout on this walk otherwise), or walk through an ancestor-style
     junction's target -- e.g. one pointing at a network share -- resolving paths
-    and authenticating as this process. A hard-linked FILE is still counted
-    once via the ``(st_dev, st_ino)`` dedup below. Any unreadable subtree is
-    skipped rather than aborting the measurement; only a root that is not a
-    directory at all is unmeasurable and reports None.
+    and authenticating as this process. A hard-linked FILE is counted once via
+    the ``(st_dev, st_ino)`` dedup below (identity from ``os.lstat`` on Windows),
+    unless no identity can be read. An unreadable subtree is skipped; only a root
+    that is not a directory at all is unmeasurable and reports None.
 
     Returns APPARENT size, where ``du`` reports ALLOCATED blocks, so the two can
     differ by the slack of the last block per file. That is acceptable for a
@@ -1057,13 +1058,7 @@ def _dir_size_bytes(path: str) -> int | None:
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    # A junction is a reparse point, not a symlink, so
-                    # follow_symlinks=False alone does not exclude it --
-                    # is_dir() still reports True and a naive push would walk
-                    # THROUGH the junction's target with no cycle guard and
-                    # no timeout on this walk. is_link_or_junction() checks
-                    # the reparse tag directly, so it catches what
-                    # follow_symlinks cannot.
+                    # is_dir() is True for a junction; this reads its reparse tag.
                     if is_link_or_junction(entry.path):
                         continue
                     stack.append(entry.path)
@@ -1071,12 +1066,17 @@ def _dir_size_bytes(path: str) -> int | None:
                 st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
+            size = st.st_size  # the cached size, as main counts it
+            if not st.st_ino and not st.st_nlink:  # Windows' cached stat zeroes all three
+                with contextlib.suppress(OSError):  # only the dedup is lost
+                    found = os.lstat(entry.path)
+                    st = found if found.st_ino else st  # no inode, no identity: count it
             if st.st_nlink > 1:
                 key = (st.st_dev, st.st_ino)
                 if key in seen:
                     continue
                 seen.add(key)
-            total += st.st_size
+            total += size
     return total
 
 
