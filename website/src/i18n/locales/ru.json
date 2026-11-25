@@ -26102,6 +26102,8 @@
     "capabilities_body": "Возможности, с которыми работает этот Bot. Разреши автозапуск в разделе «Одобрения».",
     "capabilities_headline": "Что умеет {{name}}",
     "open_capabilities": "Посмотреть возможности",
+    "more_on_profile": "Сессии, цели и разрешения {{name}} находятся в профиле.",
+    "open_profile": "Открыть профиль",
     "section_capabilities": "Возможности",
     "band_directions": "Указания по поведению",
     "band_resources": "Ресурсы",

@@ -25497,6 +25497,8 @@
     "capabilities_body": "As habilidades com que este Bot trabalha. Conceda a execução automática em Aprovações.",
     "capabilities_headline": "O que {{name}} pode fazer",
     "open_capabilities": "Ver habilidades",
+    "more_on_profile": "As sessões, metas e permissões de {{name}} estão no perfil.",
+    "open_profile": "Abrir perfil",
     "section_capabilities": "Habilidades",
     "band_directions": "Diretrizes de comportamento",
     "band_resources": "Recursos",

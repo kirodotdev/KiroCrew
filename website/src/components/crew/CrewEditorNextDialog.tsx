@@ -305,6 +305,7 @@ export default function CrewEditorNextDialog({
   ctl,
   initialSection,
   onSectionChange,
+  onOpenProfile,
 }: {
   ctl: CrewEditorController
   /** The section to show when the editor opens on a crewmate (a deep link's
@@ -313,6 +314,11 @@ export default function CrewEditorNextDialog({
   /** Told which section is showing while the editor is open, and `null` once it
    *  closes, so a host can report guide facts about it. */
   onSectionChange?: (section: NextSection | null) => void
+  /** Opens the edited bot's Profile card on its Profile tab, and closes this
+   *  editor. The card holds the settings this editor does not (its sessions
+   *  and their list switch, goals, permission, harness, workers), so General
+   *  points there. Run through the editor's leave guard. */
+  onOpenProfile?: (name: string) => void
 }) {
   // Which sidebar section is showing. Local; hook declared before any early
   // return so hook order stays stable.
@@ -664,6 +670,24 @@ export default function CrewEditorNextDialog({
                       )}
                     </div>
                   </div>
+
+                  {/* The bot's other settings page: a person looking here for
+                      its sessions or permission finds the way to them. */}
+                  {onOpenProfile && (
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-accent px-3 py-2.5" data-testid="next-open-profile-row">
+                      <span className="min-w-0 flex-1 break-words text-[12px] text-muted">
+                        {i18nT('crewEditorNext.more_on_profile', { name: displayName.trim() || editing })}
+                      </span>
+                      <Btn
+                        className="shrink-0"
+                        onClick={() => ctl.leaveGate(() => onOpenProfile(editing))}
+                        disabled={navBlocked}
+                        data-testid="next-open-profile"
+                      >
+                        {i18nT('crewEditorNext.open_profile')}
+                      </Btn>
+                    </div>
+                  )}
 
                   {/* Single clean column — each field is itself: label on top,
                       control, hint below. No side-by-side columns, no row

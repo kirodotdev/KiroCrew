@@ -24287,6 +24287,8 @@
     "capabilities_body": "この Bot が使う能力です。自動実行は「承認」で許可します。",
     "capabilities_headline": "{{name}} ができること",
     "open_capabilities": "能力を表示",
+    "more_on_profile": "{{name}} のセッション、目標、権限はプロフィールにあります。",
+    "open_profile": "プロフィールを開く",
     "section_capabilities": "能力",
     "band_directions": "行動指示",
     "band_resources": "リソース",

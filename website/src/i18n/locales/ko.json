@@ -24287,6 +24287,8 @@
     "capabilities_body": "이 Bot이 사용하는 능력입니다. 자동 실행은 승인에서 허용하세요.",
     "capabilities_headline": "{{name}}이(가) 할 수 있는 일",
     "open_capabilities": "능력 보기",
+    "more_on_profile": "{{name}}의 세션, 목표, 권한은 프로필에 있습니다.",
+    "open_profile": "프로필 열기",
     "section_capabilities": "능력",
     "band_directions": "행동 지침",
     "band_resources": "리소스",

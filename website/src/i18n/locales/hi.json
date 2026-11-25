@@ -24892,6 +24892,8 @@
     "capabilities_body": "वे क्षमताएँ जिनके साथ यह Bot काम करता है। स्वीकृतियाँ में स्वतः चलाने की अनुमति दो।",
     "capabilities_headline": "{{name}} क्या कर सकता है",
     "open_capabilities": "क्षमताएँ देखो",
+    "more_on_profile": "{{name}} के सेशन, लक्ष्य और अनुमति उसकी प्रोफ़ाइल में हैं।",
+    "open_profile": "प्रोफ़ाइल खोलो",
     "section_capabilities": "क्षमताएँ",
     "band_directions": "व्यवहार निर्देश",
     "band_resources": "संसाधन",

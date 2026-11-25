@@ -12663,6 +12663,8 @@
     "section_general": "General",
     "section_capabilities": "Abilities",
     "open_capabilities": "View abilities",
+    "more_on_profile": "{{name}}'s sessions, goals and permission are on its profile.",
+    "open_profile": "Open profile",
     "section_memory": "Memory",
     "section_danger": "Danger Zone",
     "tab_tools": "Tools",

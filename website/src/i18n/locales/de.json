@@ -24892,6 +24892,8 @@
     "capabilities_body": "Die Fähigkeiten, mit denen dieser Bot arbeitet. Erlaube die automatische Ausführung unter „Freigaben“.",
     "capabilities_headline": "Was {{name}} kann",
     "open_capabilities": "Fähigkeiten ansehen",
+    "more_on_profile": "Sitzungen, Ziele und Berechtigung von {{name}} findest du im Profil.",
+    "open_profile": "Profil öffnen",
     "section_capabilities": "Fähigkeiten",
     "band_directions": "Verhaltensanweisungen",
     "band_resources": "Ressourcen",
