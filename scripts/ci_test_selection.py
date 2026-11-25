@@ -527,9 +527,15 @@ def run(args: argparse.Namespace, grep: Grep = git_grep) -> dict[str, Any]:
         resolved, body = bounded(lambda: _score_args(args, grep), args.timeout)
         meta.update(resolved)
     except Exception as exc:  # noqa: BLE001  (the scorer never fails a job)
-        body = full_verdict(f"{type(exc).__name__}: {exc}")
-        body["windows"] = windows.full(f"linux_full: {body['reason']}")
+        return unscored(meta, f"{type(exc).__name__}: {exc}")
     return {"schema": SCHEMA, **meta, **body}
+
+
+def unscored(meta: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    """The whole verdict for a diff that was not scored: `full` on both systems, and why."""
+    body = full_verdict(reason)
+    body["windows"] = windows.full(f"linux_full: {reason}")
+    return {"schema": SCHEMA, "bundle_commit": None, **meta, **body}
 
 
 def main(argv: list[str] | None = None) -> int:
