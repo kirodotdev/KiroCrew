@@ -23,6 +23,13 @@ record Resume all dropped whose hand-backs have not finished
 holds them again (as :func:`keep_pending` does) and the next Resume all
 continues them.
 
+An owed turn the file refused (:func:`owe_turn`) is kept in memory only, beside
+the stored records and out of them: readers see both, every write first tries to
+store both, and a write the size cap refuses with them stores the records alone,
+so a write that shrinks the file always fits. While another Continue or a Resume
+all can still be undone (:func:`continuing`), no write stores them: that undo
+needs the room it freed back.
+
 The routes in ``dashboard/handlers/crew_pause.py`` write it; the queue drain,
 the sends, the autonudge fire and ``session_create`` read it. Reads are in
 memory and take no lock: each write publishes a new map, never
@@ -37,9 +44,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
@@ -50,14 +58,25 @@ logger = logging.getLogger(__name__)
 MAX_FILE_BYTES = 256 * 1024
 
 _lock = threading.Lock()
+#: What readers see: the stored records with the memory-only owed turns added.
 _records: dict[str, dict[str, Any]] = {}
+#: What the file holds (or what the last write that the disk refused would have).
+_stored: dict[str, dict[str, Any]] = {}
+#: Per root, per field (``stopped``, ``owed``), the owed turns the pause file
+#: refused (:func:`owe_turn`): in memory only, never in :data:`_stored`.
+#: :func:`_ensure_loaded` empties it whenever the data home changes.
+_memory_only: dict[str, dict[str, list[str]]] = {}  # process-cache-ok: reset per data home
+#: The members whose Continue is between :func:`continuing` and its outcome.
+#: Changed on the event loop only; :func:`_commit` reads it under ``_lock``.
+_continuing: set[str] = set()
 #: Per root, the stopped members of a record a Resume all dropped, until their
 #: hand-backs finish: a turn its dispatch gate ends meanwhile is still continued
 #: by that Resume. Stored with the records, so a restart does not lose them.
 _resuming: dict[str, list[str]] = {}
 _loaded_from: Path | None = None
-#: The live records hold an owed turn the pause file refused (:func:`owe_turn`).
-#: Every write stores the whole map, so the next one that succeeds stores it.
+#: The live state holds a Resume all hand-back the disk refused
+#: (:func:`forget_resuming`). Every write stores the whole map, so the next one
+#: that succeeds stores it.
 _unsaved = False
 
 
@@ -128,7 +147,7 @@ def _ensure_loaded() -> None:
         logger.warning("crew pause: could not read %s; no crew is paused", path, exc_info=True)
     # The file's ``resuming`` stays until the next write, which stores the
     # records it was folded into instead.
-    _publish(records, {})
+    _publish(records, {}, {})
     _loaded_from = path
 
 
@@ -191,50 +210,133 @@ def _live() -> dict[str, dict[str, Any]]:
     return _records
 
 
-def _commit(
-    records: dict[str, dict[str, Any]], resuming: dict[str, list[str]] | None = None
-) -> None:
-    """Write *records* and *resuming* (the live one when omitted), then publish them.
-
-    Caller holds ``_lock``. Written first and published after: a write that
-    fails raises with the live state unchanged, so memory and the file never
-    disagree.
-    """
-    if resuming is None:
-        resuming = _resuming
-    path = _path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _body(records: dict[str, dict[str, Any]], resuming: dict[str, list[str]]) -> str | None:
+    """The file *records* and *resuming* make, ``None`` when it would pass the cap."""
     doc: dict[str, Any] = {"paused": records}
     if resuming:
         doc["resuming"] = resuming
     body = json.dumps(doc, sort_keys=True, indent=1) + "\n"
-    if len(body.encode("utf-8")) > MAX_FILE_BYTES:
+    return body if len(body.encode("utf-8")) <= MAX_FILE_BYTES else None
+
+
+def _commit(
+    records: dict[str, dict[str, Any]],
+    resuming: dict[str, list[str]] | None = None,
+    memory_only: dict[str, dict[str, list[str]]] | None = None,
+    *,
+    undo: dict[str, dict[str, Any]] | None = None,
+    own: str = "",
+) -> None:
+    """Write *records* and *resuming* (the live one when omitted), then publish them.
+
+    Caller holds ``_lock``. *records* never holds a memory-only owed turn; the
+    write stores *memory_only* (the live one when omitted) with them when the
+    file fits it, and *records* alone when it does not. It stores none while a
+    Continue or a Resume all other than *own* (the member of this write's
+    Continue, or the root of its Resume all) can still be undone: that undo
+    writes back into the room it freed. A write that may be undone
+    (:func:`release`, :func:`resume`) passes as *undo* the stored records the
+    undo writes back: it stores *memory_only* only when those records fit with it
+    too, so it does not spend the room it frees itself, and a turn only the disk
+    refused is still stored by the next write. Written first and published after:
+    a write that fails raises with the live state unchanged, so memory and the
+    file never disagree.
+    """
+    global _unsaved
+    if resuming is None:
+        resuming = _resuming
+    memory_only = _prune(_memory_only if memory_only is None else memory_only, records)
+    undoing = (_continuing | set(resuming)) - {own}
+    body = None
+    if (
+        memory_only
+        and not undoing
+        and (undo is None or _body(_merge(undo, memory_only), resuming) is not None)
+    ):
+        merged = _merge(records, memory_only)
+        body = _body(merged, resuming)
+        if body is not None:
+            records, memory_only = merged, {}
+    if body is None:
+        body = _body(records, resuming)
+    if body is None:
         # The loader ignores a bigger file as damaged, so writing one would drop
         # every stored pause at the next restart: refuse it, live state unchanged.
         raise OSError(f"crew pause: the pause file would exceed {MAX_FILE_BYTES} bytes")
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(path, body, mode=0o600, restrict_to_owner=True, newline="\n")
-    global _unsaved
     _unsaved = False
-    _publish(records, resuming)
+    _publish(records, resuming, memory_only)
 
 
 def _publish(
-    records: dict[str, dict[str, Any]], resuming: dict[str, list[str]] | None = None
+    records: dict[str, dict[str, Any]],
+    resuming: dict[str, list[str]] | None = None,
+    memory_only: dict[str, dict[str, list[str]]] | None = None,
 ) -> None:
-    """Make *records* (and *resuming*, when given) the live state. Caller holds ``_lock``.
+    """Make *records* (and *resuming*, *memory_only*, when given) the live state.
 
-    A new object replaces the old one, which readers may still be reading.
+    Caller holds ``_lock``. A new object replaces the old one, which readers may
+    still be reading. A memory-only turn whose record is gone goes with it.
     """
-    global _records, _resuming
-    _records = records
+    global _records, _stored, _resuming, _memory_only
+    _stored = records
+    _memory_only = _prune(_memory_only if memory_only is None else memory_only, records)
+    _records = _merge(records, _memory_only) if _memory_only else records
     if resuming is not None:
         _resuming = resuming
 
 
+def _prune(
+    memory_only: dict[str, dict[str, list[str]]], records: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, list[str]]]:
+    """*memory_only* without what *records* stores already, empty fields, or roots it lacks.
+
+    A key the stored record holds in the same field is stored, so it is never
+    memory only: a release and rehold of it puts it back in the file.
+    """
+    out: dict[str, dict[str, list[str]]] = {}
+    for root, fields in memory_only.items():
+        if root not in records:
+            continue
+        stored = records[root]
+        kept = {
+            field: left
+            for field, keys in fields.items()
+            if (left := sorted(set(keys) - set(stored.get(field) or [])))
+        }
+        if kept:
+            out[root] = kept
+    return out
+
+
+def _merge(
+    records: dict[str, dict[str, Any]], memory_only: dict[str, dict[str, list[str]]]
+) -> dict[str, dict[str, Any]]:
+    """A new map: *records* with each root's memory-only turns added."""
+    out = dict(records)
+    for root, fields in memory_only.items():
+        if root not in out:
+            continue
+        rec = dict(out[root])
+        for field, keys in fields.items():
+            rec[field] = sorted(set(rec.get(field) or []) | set(keys))
+        out[root] = rec
+    return out
+
+
 def _copy_records() -> dict[str, dict[str, Any]]:
+    """A copy of the stored records, without the memory-only turns, to edit and commit."""
     return {
         root: {k: list(v) if isinstance(v, list) else v for k, v in rec.items()}
-        for root, rec in _records.items()
+        for root, rec in _stored.items()
+    }
+
+
+def _copy_memory_only() -> dict[str, dict[str, list[str]]]:
+    return {
+        root: {f: list(keys) for f, keys in fields.items()} for root, fields in _memory_only.items()
     }
 
 
@@ -296,33 +398,38 @@ def owe_turn(slot_key: str) -> bool:
     finished handing its stopped members back. ``False`` means the hold was lifted
     with nothing owed, so the gate lets the turn run.
     """
-    global _unsaved
     with _lock:
         _ensure_loaded()
         records = _copy_records()
-        changed = False
-        for root, rec in records.items():
+        added: dict[str, list[str]] = {}
+        for root, rec in _records.items():
             owes = slot_key in rec["held"] or _is_root_of(slot_key, root, rec)
             if not owes:
                 continue
             for field in ("stopped", "owed"):
-                if slot_key not in rec.setdefault(field, []):
-                    rec[field] = sorted([*rec[field], slot_key])
-                    changed = True
-        if changed or _unsaved:
+                if slot_key not in rec.get(field, []):
+                    stored = records[root].setdefault(field, [])
+                    records[root][field] = sorted([*stored, slot_key])
+                    added.setdefault(root, []).append(field)
+        if added or _unsaved or _memory_only:
             try:
                 _commit(records)
             except OSError:
                 # The gate ends the turn either way, so a write the disk or the
-                # size cap refuses keeps the obligation in memory, marked unsaved:
-                # Resume all still continues it, and the next write (any pause
-                # write, or this gate's next refusal) retries storing it.
+                # size cap refuses keeps the obligation in memory only, beside the
+                # stored records: Resume all still continues it, the next write
+                # (any pause write, or this gate's next refusal) retries storing
+                # it, and a write the cap refuses with it stores the rest alone.
                 # shortcut: a restart before a write succeeds forgets it, as main
                 # always did; store it elsewhere if that ever shows up.
                 logger.warning("crew pause: owed turn of %s kept in memory only", slot_key)
-                _unsaved = True
-                _publish(records)
-        if any(slot_key in rec.get("owed", []) for rec in records.values()):
+                memory_only = _copy_memory_only()
+                for root, fields in added.items():
+                    for field in fields:
+                        keys = memory_only.setdefault(root, {}).setdefault(field, [])
+                        keys.append(slot_key)
+                _publish(_stored, None, memory_only)
+        if any(slot_key in rec.get("owed", []) for rec in _records.values()):
             return True
         # The record is gone, but the Resume all that dropped it continues this
         # member once its turn has ended: end it rather than run it twice.
@@ -335,34 +442,51 @@ def forget_resuming(
     root: str = "",
     pending: list[str] | None = None,
     root_pending: bool = False,
+    memory_only: Iterable[str] = (),
 ) -> bool:
     """Resume all is done with *keys*: a later gate runs their turns instead of ending them.
 
     *pending* (and *root* itself when *root_pending*) were not handed back: they
     are held again under *root*, as :func:`keep_pending` does, in the SAME write,
-    so at no moment, on disk or in memory, are they owed by nobody. BLOCKING
-    (one small file write). Answers whether the file holds the result. A write
-    the disk refuses still applies in memory (the gate must stop ending these
-    turns), marked unsaved so the next write stores it, and answers False so the
-    caller reports it; until then the file still names them as resuming, so a
-    restart holds them again rather than losing them.
+    so at no moment, on disk or in memory, are they owed by nobody, except at the
+    cap: a stop in *memory_only* (what :func:`resume` names, one the file had
+    refused before this Resume all) that the file cannot fit comes back in memory
+    only, as it was. BLOCKING (one small file write). Answers whether the file
+    holds the result. A write the disk refuses still applies in memory (the gate
+    must stop ending these turns), marked unsaved so the next write stores it, and
+    answers False so the caller reports it; until then the file still names them
+    as resuming, so a restart holds them again rather than losing them.
     """
     global _unsaved
     with _lock:
         _ensure_loaded()
         records = _copy_records()
-        if pending or root_pending:
-            _hold_pending(records, root, pending or [], root_pending=root_pending)
+        unsaved = _copy_memory_only()
         drop = set(keys)
         resuming = {r: kept for r, old in _resuming.items() if (kept := sorted(set(old) - drop))}
-        if resuming == _resuming and records == _records and not _unsaved:
+        if pending or root_pending:
+            before = set((records.get(root) or {}).get("stopped") or [])
+            _hold_pending(records, root, pending or [], root_pending=root_pending)
+            rec = records[root]
+            back = (set(rec["stopped"]) - before) & set(memory_only)
+            if back and _body(records, resuming) is None:
+                logger.warning("crew pause: stop of %s kept in memory only", sorted(back))
+                rec["stopped"] = sorted(set(rec["stopped"]) - back)
+                fields = unsaved.setdefault(root, {})
+                fields["stopped"] = sorted(set(fields.get("stopped") or []) | back)
+        if (
+            resuming == _resuming
+            and records == _stored
+            and unsaved == _memory_only
+            and not _unsaved
+        ):
             return True
         try:
-            _commit(records, resuming)
+            _commit(records, resuming, unsaved)
         except OSError:
             logger.warning("crew pause: resume hand-back of %s kept in memory only", keys)
             _unsaved = True
-            _publish(records, resuming)
+            _publish(records, resuming, unsaved)
             return False
         return True
 
@@ -371,18 +495,25 @@ def resume(root: str) -> dict[str, Any] | None:
     """Drop *root*'s record and return it, ``None`` when it was not paused. BLOCKING.
 
     Its stopped members are stored as resuming in the same write, until
-    :func:`forget_resuming` says they were handed back.
+    :func:`forget_resuming` says they were handed back. ``memory_only``, when
+    present, names the stopped members whose stop the file had refused.
     """
     with _lock:
         _ensure_loaded()
         records = _copy_records()
         rec = records.pop(root, None)
         if rec is not None:
+            # Its memory-only owed turns are continued too, stored now as resuming.
+            unsaved = (_memory_only.get(root) or {}).get("stopped")
+            rec = _merge({root: rec}, _memory_only)[root]
             resuming = dict(_resuming)
             stopped = set(rec.get("stopped") or [])
             if stopped:
                 resuming[root] = sorted(set(resuming.get(root) or []) | stopped)
-            _commit(records, resuming)
+            # Only stopped members can be held again (forget_resuming's pending).
+            _commit(records, resuming, undo=_stored if stopped else None, own=root)
+            if unsaved:
+                rec["memory_only"] = sorted(unsaved)
         return rec
 
 
@@ -401,29 +532,56 @@ def release(slot_key: str) -> dict[str, dict[str, Any]]:
     It stays in the crew, so it still opens no new session while the pause stands.
     Returns what it took away, ``{root: {"fields": [...], "dropped": record}}``
     (empty when it held nothing; ``dropped`` is the whole record when this was its
-    last obligation and it ended), so a Continue that is then refused can
-    :func:`rehold` it.
+    last obligation and it ended, and ``memory_only``, when present, names the
+    owed turns it took that the file had refused), so a Continue that is then
+    refused can :func:`rehold` it.
     """
     with _lock:
         _ensure_loaded()
         records = _copy_records()
+        memory_only = _copy_memory_only()
         removed: dict[str, dict[str, Any]] = {}
         before = _copy_records()
+        before_memory_only = _copy_memory_only()
         for root, rec in list(records.items()):
+            unsaved = memory_only.get(root, {})
             for field in ("held", "stopped", "owed"):
-                if slot_key in rec.get(field, []):
-                    rec[field] = [k for k in rec[field] if k != slot_key]
-                    removed.setdefault(root, {"fields": [], "dropped": None})["fields"].append(
-                        field
-                    )
-            if rec.get("root_released") and not rec["held"] and not rec["stopped"]:
+                in_memory = slot_key in unsaved.get(field, [])
+                if slot_key not in rec.get(field, []) and not in_memory:
+                    continue
+                rec[field] = [k for k in rec.get(field, []) if k != slot_key]
+                taken = removed.setdefault(root, {"fields": [], "dropped": None})
+                taken["fields"].append(field)
+                if in_memory:
+                    unsaved[field] = [k for k in unsaved[field] if k != slot_key]
+                    taken.setdefault("memory_only", {})[field] = [slot_key]
+            stopped = rec["stopped"] or unsaved.get("stopped")
+            if rec.get("root_released") and not rec["held"] and not stopped:
                 # The root runs again and its last held member was continued: done.
                 del records[root]
                 if root in removed:
                     removed[root]["dropped"] = before[root]
+                    if before_memory_only.get(root):
+                        removed[root]["memory_only"] = before_memory_only[root]
         if removed:
-            _commit(records)
+            _commit(records, None, memory_only, undo=before, own=slot_key)
         return removed
+
+
+@contextmanager
+def continuing(slot_key: str) -> Iterator[None]:
+    """Keep the room *slot_key*'s Continue frees until that Continue is decided.
+
+    Opened before :func:`release` and closed once the Continue is accepted,
+    refused and put back (:func:`rehold`), or failed: until then a write for
+    anyone else stores no memory-only owed turn in the room the release freed.
+    A Resume all needs none: :data:`_resuming` marks it.
+    """
+    _continuing.add(slot_key)
+    try:
+        yield
+    finally:
+        _continuing.discard(slot_key)
 
 
 def rehold(slot_key: str, removed: dict[str, dict[str, Any]]) -> None:
@@ -432,29 +590,39 @@ def rehold(slot_key: str, removed: dict[str, dict[str, Any]]) -> None:
     For a Continue that was refused: the pause still owes that member its
     hand-back. A record the release itself ended comes back whole (a newer
     Pause all for that root keeps its own record, with this member added); a
-    record a Resume all dropped meanwhile is not recreated.
+    record a Resume all dropped meanwhile is not recreated. An owed turn the
+    pause file had refused comes back in memory only, as it was.
     """
     with _lock:
         _ensure_loaded()
         records = _copy_records()
+        memory_only = _copy_memory_only()
         changed = False
         for root, taken in removed.items():
             rec = records.get(root)
             dropped = taken.get("dropped")
+            unsaved_taken = taken.get("memory_only") or {}
             if rec is None and dropped is not None:
                 records[root] = {
                     k: list(v) if isinstance(v, list) else v for k, v in dropped.items()
                 }
+                if unsaved_taken:
+                    memory_only[root] = {f: list(keys) for f, keys in unsaved_taken.items()}
                 changed = True
                 continue
             if rec is None:
                 continue
+            unsaved = memory_only.setdefault(root, {})
             for field in taken.get("fields") or []:
-                if slot_key not in rec.setdefault(field, []):
+                if slot_key in rec.setdefault(field, []) or slot_key in unsaved.get(field, []):
+                    continue
+                if slot_key in unsaved_taken.get(field, []):
+                    unsaved[field] = sorted([*unsaved.get(field, []), slot_key])
+                else:
                     rec[field] = sorted([*rec[field], slot_key])
-                    changed = True
+                changed = True
         if changed:
-            _commit(records)
+            _commit(records, None, memory_only, own=slot_key)
 
 
 def _is_root_of(key: str, root: str, rec: dict[str, Any]) -> bool:
