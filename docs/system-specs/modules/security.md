@@ -6435,7 +6435,11 @@ for a noted call (`recheck`). Off that host, or with the address
 unreadable, the op is refused with `trust_scope_changed` and never touches the
 page; the agent's retry gets a card unless that host is trusted too. An op with
 no note of its own runs unchecked, so a note left by a call that never reached
-the route refuses nothing but an identical call.
+the route refuses nothing but an identical call. A `js` that "Trust all tools"
+or a live YOLO covers (`browser_card_ask.trusts_all_tools`, read by the route)
+runs on any host past a note the trusted-pattern rung made (`by_grant`), which is
+taken and never checked; a note a person's card click made, or one on a call only
+an `act` grant covers, keeps the check.
 
 **A program grant does not cover a write redirect.** A shell segment that sends
 output through a redirect to a real target (`> file`, `>> file`, `&> file`,

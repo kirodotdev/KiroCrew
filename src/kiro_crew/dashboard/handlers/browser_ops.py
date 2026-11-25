@@ -1286,6 +1286,11 @@ async def run_browser_op(
     granted_host = (
         "" if approval else browser_card_ask.site_grant_host(state, session_key, op, args, request)
     )
+    # A js that session-wide trust or a live YOLO covers runs on any host, so the op
+    # never re-checks a host note the trusted-pattern rung left for it.
+    session_trust = not approval and browser_card_ask.trusts_all_tools(
+        state, session_key, op, request
+    )
     ctx.upload_grant_host = granted_host if op == "upload" else ""
     # The caller as the tool gate names it: an agent- or app-bound profile narrows too.
     slot = (getattr(state, "_slots", None) or {}).get(key)
@@ -1350,6 +1355,7 @@ async def run_browser_op(
                 caller_key=session_key,
                 sites=sites,
                 granted_host=granted_host,
+                session_trust=session_trust,
             )
     finally:
         _OP_LOCK.release()
@@ -1513,6 +1519,7 @@ async def _fenced_op(
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
     granted_host: str = "",
+    session_trust: bool = False,
 ) -> dict[str, Any] | object:
     """:func:`_run_fenced_op`, with any unreported popup tab move on its answer.
 
@@ -1532,6 +1539,7 @@ async def _fenced_op(
         caller_key=caller_key,
         sites=sites,
         granted_host=granted_host,
+        session_trust=session_trust,
     )
     if op == "ask":
         # A quick ask's text is its outcome alone (``mcp_tools.browser._ask_text``),
@@ -1553,6 +1561,7 @@ async def _run_fenced_op(
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
     granted_host: str = "",
+    session_trust: bool = False,
 ) -> dict[str, Any] | object:
     """Bind, run, follow -- under both locks.
 
@@ -1576,7 +1585,18 @@ async def _run_fenced_op(
 
     try:
         return await _bound_op(
-            request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites, granted_host
+            request,
+            hub,
+            key,
+            supervisor,
+            ctx,
+            op,
+            args,
+            budget,
+            caller_key,
+            sites,
+            granted_host,
+            session_trust,
         )
     finally:
         relay = getattr(supervisor, "relay", None)
@@ -1597,6 +1617,7 @@ async def _bound_op(
     caller_key: str,
     sites: tuple[str, ...],
     granted_host: str = "",
+    session_trust: bool = False,
 ) -> dict[str, Any] | object:
     async def _bind() -> dict[str, Any] | None:
         # The bind comes first: it records the context this op browses in, which
@@ -1626,7 +1647,9 @@ async def _bound_op(
             return _HELD
         # The call's own host-grant note, taken once whatever this op's answer, so
         # a later identical call never inherits it.
-        noted_host = browser_host_trust.take_host_approval(key, op, args)
+        noted_host = browser_host_trust.take_host_approval(
+            key, op, args, session_trust=session_trust
+        )
         # An upload the route let through on an act grant is checked the same way.
         noted_host = granted_host or noted_host
         if op == "ask":

@@ -302,8 +302,8 @@ async def test_two_pending_approvals_are_each_checked_against_their_own_host():
 
 def test_a_note_keeps_a_digest_of_the_call_not_its_arguments():
     _note("a.example", "act", "type", ref="e1", text="x" * 100_000)
-    ((digest, host),) = bht._pending["chat-1"]
-    assert len(digest) == 32 and host == "a.example"
+    ((digest, host, by_grant),) = bht._pending["chat-1"]
+    assert len(digest) == 32 and host == "a.example" and not by_grant
     assert bht.take_host_approval("chat-1", "type", {"ref": "e1", "text": "x" * 100_000})
 
 
@@ -500,8 +500,9 @@ async def test_the_call_that_makes_the_site_grant_is_checked_too(tmp_path, page,
     )
     await _run_answered(h, run_chat, state, slot, answerer)
     client.approve_tool.assert_any_call("req-1")
-    # A site-trust click is noted for the route; a plain approval is not.
-    noted = bht.take_host_approval(slot.key, "click", {"ref": "e3"})
+    # A site-trust click is noted for the route, checked even under session-wide
+    # trust; a plain approval is not noted.
+    noted = bht.take_host_approval(slot.key, "click", {"ref": "e3"}, session_trust=True)
     assert noted == ("a.example" if grants else None)
 
 

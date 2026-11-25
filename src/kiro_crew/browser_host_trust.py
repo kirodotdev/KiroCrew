@@ -24,7 +24,8 @@ rung's, or the card click that made the grant) is noted here against the call
 it approved (:func:`note_host_approval`). The op route takes the note of every
 call it binds (:func:`take_host_approval`) and checks the tab's real address
 before a noted call runs (:func:`recheck`): off that host, the op is refused
-with ``trust_scope_changed`` and the agent's retry meets a card.
+with ``trust_scope_changed`` and the agent's retry meets a card. Only a rung's
+note on a call session-wide trust covers goes unchecked.
 
 Only the chat's own call by its verified identity, on a harness whose
 subagent calls carry their own session, gets a key: a subagent (a native KAS
@@ -232,8 +233,9 @@ def page_url_for(event: Any, session_key: str, client: Any, state: Any) -> str |
 # ── The op route's re-check ─────────────────────────────────────────────────
 
 _pending_lock = threading.Lock()
-#: Live hub key -> ``(call digest, host)`` per host-grant approval not yet run, oldest first.
-_pending: dict[str, list[tuple[bytes, str]]] = {}
+#: Live hub key -> ``(call digest, host, made by the rung)`` per host-grant approval not
+#: yet run, oldest first.
+_pending: dict[str, list[tuple[bytes, str, bool]]] = {}
 #: Most sessions remembered; the oldest go first.
 _PENDING_CAP = 4096
 #: Most approvals remembered per session; the oldest go first.
@@ -246,12 +248,15 @@ def _call_digest(op: str, args: dict[str, Any]) -> bytes:
     return hashlib.sha256(canonical.encode("utf-8")).digest()
 
 
-def note_host_approval(session_key: str, key: str, raw_params: object) -> bool:
+def note_host_approval(
+    session_key: str, key: str, raw_params: object, *, by_grant: bool = False
+) -> bool:
     """Remember that a host grant approved the ``browser`` call *raw_params* of *session_key*.
 
     *key* is the matched call's trust key; a key that is not a host key notes
-    nothing. The note binds that call (a digest of its op and arguments, as the
-    route will receive them), so only that call is checked and every other op is not.
+    nothing. *by_grant* marks the trusted-pattern rung's note (:func:`take_host_approval`).
+    The note binds that call (a digest of its op and arguments, as the route will
+    receive them), so only that call is checked and every other op is not.
     shortcut: the call carries no id the route sees, so two pending approvals of the
     same op with the same arguments are told apart only by order; a note whose call
     never reaches the route waits for an identical call and refuses it if the tab is
@@ -272,7 +277,7 @@ def note_host_approval(session_key: str, key: str, raw_params: object) -> bool:
     live = browser_session_key(session_key)
     # Bounded at the store too; a longer host is no key ``page_host`` made, and
     # its note can only refuse.
-    note = (_call_digest(*call), host[: _MAX_HOST + 8])
+    note = (_call_digest(*call), host[: _MAX_HOST + 8], by_grant)
     with _pending_lock:
         notes = _pending.get(live)
         if notes is None:
@@ -302,17 +307,24 @@ def site_grant_covers(key: str, slot: Any) -> bool:
     return matches_trusted_pattern(key, live) is not None
 
 
-def take_host_approval(live_key: str, op: str, args: dict[str, Any]) -> str | None:
-    """The host the oldest pending approval of this call named, removed; ``None`` if none."""
+def take_host_approval(
+    live_key: str, op: str, args: dict[str, Any], *, session_trust: bool = False
+) -> str | None:
+    """The host the oldest pending approval of this call named, removed; ``None`` if none.
+
+    ``None`` too for a *by_grant* note when *session_trust* covers the call: the rung
+    never runs in a card's turn or for a held call, so trust approved that call too. A
+    card click's note keeps its host.
+    """
     call = _call_digest(op, args)
     with _pending_lock:
         notes = _pending.get(live_key) or []
-        for i, (noted, host) in enumerate(notes):
+        for i, (noted, host, by_grant) in enumerate(notes):
             if noted == call:
                 del notes[i]
                 if not notes:
                     del _pending[live_key]
-                return host
+                return None if session_trust and by_grant else host
     return None
 
 

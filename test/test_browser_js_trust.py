@@ -8,6 +8,7 @@ a Dashboard card's turn, and for ``cdp`` and ``http_get`` whatever is trusted.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,8 @@ from test_browser_card_ask import _State
 from test_browser_ops_route import _install, _no_stream, _Supervisor
 
 from kiro_crew import browser_host_trust as bht
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.browser_harness import live_hub as hub_mod
 from kiro_crew.dashboard.handlers import browser_ops as mod
 
@@ -73,6 +76,23 @@ def _ran(sup: _Supervisor, op: str) -> bool:
     if op == "js":
         return any(h == "js" and kw.get("expression") == _JS["expression"] for h, kw in sup.calls)
     return any(h == op for h, _kw in sup.calls)
+
+
+async def _rung_approves_js_on(tmp_path: Any, host: str) -> None:
+    """A dashboard turn's ``js`` call that the trusted-pattern rung approves on *host*'s act grant."""
+    from test_browser_host_trust import _browser
+    from test_browser_host_trust import _call as _params
+    from test_browser_host_trust import _context_builder, _run_answered, _turn_harness
+
+    h, run_chat = _turn_harness()
+    state, client = h._make_state(tmp_path, context_builder=_context_builder(h))
+    client.capabilities = capabilities_for(ACP_BACKEND_KAS)
+    slot = h._make_slot("chat-1")
+    slot._trusted_patterns.add(bht.grant_pattern(bht.trust_key(host, "act")))
+    h._set_stream(client, [_browser(h, "req-1", _params("js", **_JS)), h._complete_event()])
+    _page(_PAGE)
+    await _run_answered(h, run_chat, state, slot, asyncio.ensure_future(asyncio.sleep(0)))
+    client.approve_tool.assert_any_call("req-1")
 
 
 async def _call(
@@ -171,6 +191,50 @@ async def test_a_site_grant_never_narrows_trust_all_tools(
     answer, sup = await _call(monkeypatch, state, tab_url="https://other.example/")
     assert state.opened == [] and answer.get("code") != bht.SCOPE_CHANGED_CODE
     assert _ran(sup, "js")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param(lambda: _state(_trust=True), id="trust-all-tools"),
+        pytest.param(lambda: _state(yolo=True), id="yolo"),
+    ],
+)
+async def test_session_trust_runs_js_whose_host_note_names_the_page_it_left(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, state: Any
+) -> None:
+    # The permission path's site-grant rung approves this call on app.example and
+    # notes the host before session-wide trust is read; the tab moves on since.
+    await _rung_approves_js_on(tmp_path, "app.example")
+    built = _with_grant(state(), "app.example", "act")
+    answer, sup = await _call(monkeypatch, built, tab_url="https://other.example/")
+    assert built.opened == [] and answer.get("code") != bht.SCOPE_CHANGED_CODE
+    assert _ran(sup, "js")
+    # The note is spent, so a later identical call never inherits it.
+    assert bht.take_host_approval(bht.browser_session_key(_SESSION), "js", _JS) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param(lambda: _state(_trust=True), id="trust-all-tools"),
+        pytest.param(lambda: _state(yolo=True), id="yolo"),
+    ],
+)
+async def test_session_trust_keeps_the_host_check_of_a_card_click_s_note(
+    monkeypatch: pytest.MonkeyPatch, state: Any
+) -> None:
+    # A person approved this js on app.example's card (a held Bot limit drew it):
+    # session-wide trust never widens that host-scoped approval.
+    built = _with_grant(state(), "app.example", "act")
+    key = bht.trust_key("app.example", "act")
+    assert bht.note_host_approval(_SESSION, key, {"op": "js", "args": _JS})
+    answer, sup = await _call(monkeypatch, built, tab_url="https://other.example/")
+    assert answer["code"] == bht.SCOPE_CHANGED_CODE and built.opened == []
+    assert not _ran(sup, "js")
+    assert bht.take_host_approval(bht.browser_session_key(_SESSION), "js", _JS) is None
 
 
 @pytest.mark.asyncio

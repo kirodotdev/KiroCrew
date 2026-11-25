@@ -1497,7 +1497,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         # A host grant: the op route checks the tab is still on that host. A note that
         # cannot be kept leaves the call to the card instead.
         if matched and not _browser_host_trust.note_host_approval(
-            session_key, _tp_command, event.raw_tool_params
+            session_key, _tp_command, event.raw_tool_params, by_grant=True
         ):
             matched = None
         if matched:
