@@ -52,7 +52,6 @@ from typing import Any
 
 from kiro_crew.browser_harness.budgets import CHANGE_AFTER_S, CHANGE_BEFORE_S
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
-from kiro_crew.browser_harness.nav_guard import guarded_move as _guarded_move
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 from kiro_crew.browser_snapshots import prune as prune_snapshots
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -729,6 +728,16 @@ async def navigate_to(ctx: OpContext, url: str, *, label: str) -> dict[str, Any]
         return refused
     await _arm_console(ctx)
     return {"ok": True, "url": committed["url"], "title": committed.get("title", "")}
+
+
+async def _guarded_move(
+    ctx: OpContext, move: Callable[[], Awaitable[dict[str, Any]]]
+) -> dict[str, Any]:
+    """:func:`~kiro_crew.browser_harness.nav_guard.guarded_move`, imported at the call so
+    loading this module (the MCP listing does) does not load the guard."""
+    from kiro_crew.browser_harness.nav_guard import guarded_move
+
+    return await guarded_move(ctx, move)
 
 
 async def _refuse_committed_url(
