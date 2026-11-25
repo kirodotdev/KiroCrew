@@ -475,13 +475,20 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *(t for t in _relocated_crew_targets(app_readonly_leaves) if _sealed(t)),
         )
     )
-    # kiro-cli's own trusted files ride one host field: its agents tree and its user MCP
-    # registry, each sealed read-only with its parents guarded against rename. The spawn
-    # folder's project MCP files get their own field (``PlanHost.project_mcp_targets``).
-    # Call-time import: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
+    # kiro-cli's own trusted files ride one host field: its agents tree, its user MCP
+    # registry and every installed app's ``app.json`` (it names the MCP servers that app
+    # brings, and only the gateway's own app install and update writes it), each sealed
+    # read-only with its parents guarded against rename. The spawn folder's project MCP
+    # files get their own field (``PlanHost.project_mcp_targets``).
+    # Call-time imports: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
+    from kiro_crew.app_manifest_files import app_manifest_targets
     from kiro_crew.project_mcp_files import project_mcp_targets
 
-    kiro_cli_targets = (*_resolved_kiro_agents_targets(), *_resolved_kiro_mcp_registry_targets())
+    kiro_cli_targets = (
+        *_resolved_kiro_agents_targets(),
+        *_resolved_kiro_mcp_registry_targets(),
+        *app_manifest_targets(home),
+    )
     kiro_agents_targets = tuple(dict.fromkeys(kiro_cli_targets))
     project_targets = tuple(
         t for t in project_mcp_targets(request.project_folder) if t not in kiro_cli_targets
