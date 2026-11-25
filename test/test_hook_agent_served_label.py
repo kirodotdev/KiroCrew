@@ -28,6 +28,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers import hooks as hooks_handlers
 from kiro_crew.essential_delivery import EssentialDelivery
+from kiro_crew.history import ConversationLog
 from kiro_crew.memory import MemoryStore
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.skills import SkillsLoader
@@ -181,3 +182,16 @@ def test_a_hook_turn_carries_no_options_guidance(unmapped_custom):
     builder, project = unmapped_custom
     prompt = _hook_turn(builder, _ServedProvider(PROVIDER_ACP, project))
     assert "(If presenting choices, end with [OPTIONS:" not in prompt
+
+
+def test_a_new_hook_session_reads_none_of_its_keys_logged_history(unmapped_custom, tmp_path):
+    """A hook session is one-shot, so what the key's history holds from an earlier
+    turn (a sub-agent's injected report) stays out of a new session's prompt."""
+    builder, project = unmapped_custom
+    builder.conversation_log = ConversationLog(base_dir=tmp_path / "history")
+    builder.conversation_log.append("hook:served-label", "user", "probe-41891 report arrived")
+    builder.conversation_log.append(
+        "hook:served-label", "assistant", "Noted the probe-41891 report."
+    )
+    prompt = _hook_turn(builder, _ServedProvider(PROVIDER_ACP, project))
+    assert "probe-41891" not in prompt

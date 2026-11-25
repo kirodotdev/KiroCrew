@@ -206,8 +206,8 @@ async def _eval_response(provider: _Scripted, _tmp_path) -> str:
 
 
 async def _hook_result(provider: _Scripted, _tmp_path) -> str:
-    # ``is_new=False`` skips the context build; the stream loop is the one a resumed turn
-    # on a reused ``sessionKey`` runs.
+    # ``is_new=False`` skips the context build; the stream loop is the one a turn on an
+    # adopted live session runs.
     state = MagicMock()
     state.sessions.get_or_create = AsyncMock(return_value=(provider, False, False))
     with patch("kiro_crew.context.session_store_for_turn", AsyncMock(return_value="")):
