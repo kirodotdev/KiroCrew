@@ -296,7 +296,11 @@ route, listener, provider, or data destination is involved.
 ## Gateway restart
 
 The dashboard restart endpoint (`POST /api/restart`, the Restart buttons) runs
-`handlers/updates_apply.py::_restart_gateway`; no update apply does. It coalesces duplicate requests and
+`handlers/updates_apply.py::_restart_gateway`; no update apply does. So does the
+CLI's in-place restart of a supervised gateway, through the restart mode of
+`POST /api/restart/when-idle` ([slack-gateway](slack-gateway.md)); both start it
+through one helper,
+`_start_gateway_restart`. It coalesces duplicate requests and
 validates the composed stable launcher before saving history or closing sessions.
 An invalid explicit launcher reports an error without draining; no launcher keeps
 the existing Python/managed-venv path. The launcher receives the original CLI

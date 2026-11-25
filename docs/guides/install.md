@@ -927,7 +927,11 @@ On a Linux host that systemd did not boot (no `/run/systemd/system`, as in a
 container whose PID 1 is something else, or WSL without systemd),
 `service install` refuses before anything is written, because no system unit
 could start there. Run `kirocrew gateway` under that host's own supervisor or
-boot script instead.
+boot script instead. On Linux and macOS, `kirocrew restart` keeps that gateway
+under its supervisor when the supervisor runs it inside its own process group
+with no terminal on stdin, as a supervisor script or loop does: the gateway
+restarts itself in place, with the same pid. Any other gateway is stopped and
+started again detached, as before.
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
