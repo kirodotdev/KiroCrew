@@ -13623,7 +13623,9 @@
         "chip_stalled_other": "{{count}} 个代理可能已停滞",
         "more_running_normally_count_other": "另有 {{count}} 个正常运行中…",
         "engine_stops_with_answer": "在对话内运行的子代理，会在你停止回答时一并停止。",
-        "stop_all_and_answer": "全部停止并停止回答"
+        "stop_all_and_answer": "全部停止并停止回答",
+        "older_runs_not_shown_other": "另有 {{count}} 个较早的未显示",
+        "some_finished_runs_not_shown": "部分已完成的运行未显示"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",

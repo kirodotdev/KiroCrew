@@ -13623,7 +13623,9 @@
         "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性",
         "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…",
         "engine_stops_with_answer": "チャット内で動くサブエージェントは、応答を停止すると一緒に停止します。",
-        "stop_all_and_answer": "すべてと応答を停止"
+        "stop_all_and_answer": "すべてと応答を停止",
+        "older_runs_not_shown_other": "+{{count}} 件の古い実行は非表示",
+        "some_finished_runs_not_shown": "完了した実行の一部は非表示"
       },
       "subagentQueued": {
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",

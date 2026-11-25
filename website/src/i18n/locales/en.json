@@ -7798,7 +7798,10 @@
         "more_running_normally_count_one": "{{count}} more running normally…",
         "more_running_normally_count_other": "{{count}} more running normally…",
         "engine_stops_with_answer": "Sub-agents that run inside the chat stop when you stop the answer.",
-        "stop_all_and_answer": "Stop all and the answer"
+        "stop_all_and_answer": "Stop all and the answer",
+        "older_runs_not_shown_one": "+{{count}} older not shown",
+        "older_runs_not_shown_other": "+{{count}} older not shown",
+        "some_finished_runs_not_shown": "Some finished runs not shown"
       },
       "subagentQueued": {
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",

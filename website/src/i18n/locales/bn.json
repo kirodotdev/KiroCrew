@@ -13949,7 +13949,10 @@
         "more_running_normally_count_one": "আরও {{count}}টি স্বাভাবিকভাবে চলছে…",
         "more_running_normally_count_other": "আরও {{count}}টি স্বাভাবিকভাবে চলছে…",
         "engine_stops_with_answer": "চ্যাটের ভিতরে চলা সাব-এজেন্টরা থামে যখন তুমি উত্তরটি থামাও।",
-        "stop_all_and_answer": "সব এবং উত্তরটি থামান"
+        "stop_all_and_answer": "সব এবং উত্তরটি থামান",
+        "older_runs_not_shown_one": "আরও {{count}}টি পুরোনো দেখানো হয়নি",
+        "older_runs_not_shown_other": "আরও {{count}}টি পুরোনো দেখানো হয়নি",
+        "some_finished_runs_not_shown": "কিছু সম্পন্ন রান দেখানো হয়নি"
       },
       "subagentQueued": {
         "low_memory": "শুরু হওয়ার অপেক্ষায় — {{required}} ফাঁকা মেমোরি প্রয়োজন, এখন {{available}} ফাঁকা; চালিয়ে যেতে মেমোরি খালি করো",

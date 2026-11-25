@@ -14601,7 +14601,12 @@
         "more_running_normally_count_many": "ещё {{count}} выполняются нормально…",
         "more_running_normally_count_other": "ещё {{count}} выполняются нормально…",
         "engine_stops_with_answer": "Субагенты, работающие внутри чата, останавливаются, когда ты останавливаешь ответ.",
-        "stop_all_and_answer": "Остановить все и ответ"
+        "stop_all_and_answer": "Остановить все и ответ",
+        "older_runs_not_shown_one": "+{{count}} более ранний не показан",
+        "older_runs_not_shown_few": "+{{count}} более ранних не показаны",
+        "older_runs_not_shown_many": "+{{count}} более ранних не показано",
+        "older_runs_not_shown_other": "+{{count}} более ранних не показано",
+        "some_finished_runs_not_shown": "Некоторые завершённые запуски не показаны"
       },
       "subagentQueued": {
         "low_memory": "ожидание запуска — требуется {{required}} свободной памяти, сейчас свободно {{available}}; освободи память, чтобы продолжить",
