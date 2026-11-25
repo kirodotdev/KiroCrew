@@ -7,6 +7,7 @@ False only on evidence the process is gone.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 from unittest.mock import AsyncMock, call, patch
@@ -27,7 +28,7 @@ from cron_reaper_helpers import (
 
 from kiro_crew import platform_compat
 from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronService
-from kiro_crew.process_identity import ProcessHandle, process_survived
+from kiro_crew.process_identity import ProcessHandle, failure_name, process_survived
 
 #: Every cron reaper suite pins a healthy free-memory reading (see
 #: ``ample_host_free_memory``): ``test_cron_reaper.py`` fires cron jobs through the
@@ -342,6 +343,69 @@ class TestALiveWindowsRootIsKilledThroughItsPinnedHandle:
             "; kill failed: Windows tree cleanup incomplete for pid 9090: OSError: Windows process "
             "tree did not drain before the deadline"
         ) in (job.last_error or "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("drain", "root", "errors"),
+        [
+            pytest.param(
+                [platform_compat.WindowsTreeDrainPending(root_pid=9292, pending=3)],
+                "pid 9292",
+                0,
+                id="live-root-pending",
+            ),
+            pytest.param(
+                [False, platform_compat.WindowsTreeDrainPending(root_pid=9292, pending=3)],
+                "exited pid 9292",
+                0,
+                id="exited-root-pending",
+            ),
+            # Any other drain failure keeps both ERROR lines: the drain's and the kill's.
+            pytest.param([OSError("Access is denied")], "pid 9292", 2, id="any-other-drain-error"),
+        ],
+    )
+    async def test_a_pending_drain_is_one_warning_and_still_a_failed_kill(
+        self,
+        drain: list[Any],
+        root: str,
+        errors: int,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A pending drain is one WARNING and no ERROR, any other drain failure stays two ERRORs, and the failure is unchanged."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._sessions = _mock_sessions()
+        self._windows_live_root(svc, "cron:win-live6", 9292, monkeypatch)
+        children, start_id, sweep = _kill_path_stubs()
+
+        with (
+            caplog.at_level(logging.WARNING, logger="kiro_crew.process_identity"),
+            children,
+            start_id,
+            sweep,
+            patch("kiro_crew.platform_compat.windows_tree_cleanup_pending", return_value=True),
+            patch("kiro_crew.platform_compat.kill_process_tree_pinned", side_effect=drain),
+        ):
+            failure = await svc._sigkill_session(
+                "cron:win-live6", _handle_of(svc, "cron:win-live6")
+            )
+
+        assert failure == f"Windows tree cleanup incomplete for {root}: {failure_name(drain[-1])}"
+        records = [r for r in caplog.records if r.name == "kiro_crew.process_identity"]
+        assert sum(r.levelno >= logging.ERROR for r in records) == errors
+        pending = [(r.levelno, r.getMessage()) for r in records if "drain pass" in r.getMessage()]
+        assert pending == (
+            [
+                (
+                    logging.WARNING,
+                    f"Reaper: Windows tree of {root} did not finish one bounded drain pass for "
+                    "cron:win-live6 (3 member(s) pending cleanup); its handles stay pinned and "
+                    "the cleanup sweep keeps reaping it",
+                )
+            ]
+            if errors == 0
+            else []
+        )
 
     @pytest.mark.asyncio
     async def test_the_pinned_drain_runs_off_the_event_loop(
