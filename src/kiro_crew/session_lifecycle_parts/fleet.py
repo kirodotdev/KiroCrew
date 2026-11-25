@@ -210,9 +210,13 @@ async def reload_provider_factory(
             await record_sessions_ended(
                 [stale_key for stale_key, _ in stale], end_reason=END_REASON_RETIRED
             )
+
     # Shutdown remains outside both locks. Queue unlinking and companion
     # runtime release are intentionally not added to this historical path.
-    for key, sess in stale:
+    # Concurrent, as ``reset_sessions`` shuts its drained providers down: each
+    # shutdown waits out its runtime's exit, so in series a reset answered only
+    # after the sum of them (about 25 s for nine idle chats on one approval).
+    async def _shutdown(key: str, sess: Any) -> None:
         try:
             await sess.provider.shutdown()
         except Exception:
@@ -221,6 +225,8 @@ async def reload_provider_factory(
                 key,
                 exc_info=True,
             )
+
+    await asyncio.gather(*(_shutdown(key, sess) for key, sess in stale))
 
     def forget_deferred_reset(done: asyncio.Task[Any], key: str) -> None:
         pending = owner._deferred_resets.get(key)

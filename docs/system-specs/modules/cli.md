@@ -2253,7 +2253,9 @@ are talking to:
    `KIROCREW_PORT=<pod-port>` while the inherited `KIROCREW_BOUND_PORT`
    still names the spawning live gateway, and the bound value outranking it
    would walk pod `token`/`status`/`logout` into the live plane.
-   (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright.)
+   (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright, and
+   drops every inherited temp or scratch key that points under the caller's
+   scratch root, `agent_scratch.drop_inherited_scratch_env`.)
 3. `KIROCREW_BOUND_PORT`, when it parses as an int — the port the parent
    gateway actually bound, exported once, the moment the port is reserved
    (`dashboard.server._reserve_dashboard_port`); only the headless

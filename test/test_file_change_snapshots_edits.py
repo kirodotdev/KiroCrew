@@ -1247,6 +1247,53 @@ class TestFailedWriteRecordsNoChange:
         assert (entry["before"], entry["after"]) == ("old\n", "half")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["str-replace-block", "str-replace-disk", "create"])
+    @pytest.mark.parametrize("appears", [False, True], ids=["still-absent", "appears"])
+    async def test_a_failed_write_to_a_missing_path(self, short_tmp_dir, shape, appears):
+        # Nothing at the path before the call, so a failure that leaves nothing
+        # there changed nothing and shows no chip. A file that turns up was
+        # written, so its path stays: as an unverified write after a strReplace,
+        # as the change itself after a create, whose content block is its before.
+        f = short_tmp_dir / "no-such-dir" / "cfg"
+        if shape == "create":
+            call = _write_call(1, f, "")[0]
+        else:
+            call = _str_replace_call("call-1", f, "value = 1", "value = 2")
+            if shape == "str-replace-disk":
+                call.diff_old_text = None
+        events: list[AcpEvent | Do] = [call]
+        if appears:
+            events.append(Do(lambda ctx: (f.parent.mkdir(), f.write_text("half"))))
+        record = await _snapshot_turn(*events, _result("call-1", "failed"), *_LANDS)
+        meta = _persisted_meta(record, "done")
+        if not appears:
+            assert "file_changes" not in meta
+            return
+        (entry,) = meta["file_changes"]
+        if shape == "create":
+            assert (entry["before"], entry["after"]) == ("", "half")
+        else:
+            _assert_unverified(entry)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_create_under_a_home_spelling_keeps_its_change(
+        self, short_tmp_dir, monkeypatch
+    ):
+        # "~/cfg" names a file that exists: the absence probe reads the same
+        # file the snapshot read, so the partial write still shows.
+        # Path.home() reads USERPROFILE on Windows and never HOME; pin both.
+        monkeypatch.setenv("HOME", str(short_tmp_dir))
+        monkeypatch.setenv("USERPROFILE", str(short_tmp_dir))
+        f = short_tmp_dir / "cfg"
+        f.write_text("old\n")
+        call = _write_call(1, Path("~/cfg"), "old\n")[0]
+        record = await _snapshot_turn(
+            call, Do(lambda ctx: f.write_text("half")), _result("call-1", "failed"), *_LANDS
+        )
+        (entry,) = _persisted_meta(record, "done")["file_changes"]
+        assert (entry["before"], entry["after"]) == ("old\n", "half")
+
+    @pytest.mark.asyncio
     async def test_the_same_edit_completing_still_shows_its_diff(self, short_tmp_dir):
         f = short_tmp_dir / "cfg"
         f.write_text(self.DISK)

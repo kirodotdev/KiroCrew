@@ -245,8 +245,10 @@ async def test_a_chat_opened_with_the_preview_off_gains_no_engine_mark_when_it_i
 
     [spawn] = [f.payload for f in turn.frames("subagent_spawn")]
     assert "engine" not in spawn
+    # The approval card's display fields are not an engine mark: every KAS chat's
+    # card names the sub-agent that asked (engine_subagent_cards.approval_card_fields).
     [card] = turn.approval_cards
-    assert "asked_by_subagent" not in card["meta"]
+    assert card["meta"]["asked_by_subagent"] == "kirocrew-helper"
 
 
 @pytest.mark.asyncio

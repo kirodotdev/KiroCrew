@@ -2149,7 +2149,11 @@ old-daemon compatibility.
 `_spawns_own_control_plane` vetting gatewayd applies before it hands a pooled
 backend the token: control-plane name, managed binary by real path, exact args,
 no loader or `PYTHON*` overlay in the child env (Kiro Crew's own pinned UTF-8
-values excepted), and no import root shadowing `kiro_crew`. A kept token also
+values excepted), and no import root shadowing `kiro_crew`. The env vetted
+there is the one a kept token's child gets: it has no inherited
+`PYTHONUNBUFFERED`, which a service manager often exports to the whole runtime
+and the pooled resolver removes too, while a declared one stays and still costs
+the token. A target that loses the token keeps its env unchanged. A kept token also
 gets `PYTHONSAFEPATH` (and `PYTHONNOUSERSITE` unless user-site holds this
 package). Every other target has the token removed, so a third-party binary
 never inherits it. Without the token a fallback control plane relies on the
@@ -5370,6 +5374,26 @@ generator refuses an unknown id, a registered id in `SEARCH_TERMS` (its terms
 belong in the descriptor), an unknown locale, an empty list, a blank, repeated
 or over-60-character term, more than 16 terms per locale, and a term that only
 repeats a label already searched in that locale.
+
+A setting's English words are the command palette's, in
+`website/src/components/commandPalette/settingsKeywords.ts`: one list for both
+searches, and `SEARCH_TERMS` refuses English for a `setting:` id (its other
+locales stay there). Every setting needs an entry (`settingsKeywords.test.ts`).
+The generator keeps a palette word as a find_ui term only when it has two or
+more words, does not repeat this setting's label or an earlier spelling of the
+same words, is not another location's English label or curated term, and is
+not a run of whole words inside another location's English label or alias
+that makes up at least 60% of that label's words ("bot token" on WeCom is left
+out because "Discord bot token" contains it, so find_ui shows the tie; "amazon
+polly" stays, since find_ui would not answer it with "AWS Profile (Amazon
+Polly)"). A one-word entry is kept only when
+`GUIDE_ONE_WORD_TERMS` in the same file names it for that setting (Theme keeps
+"colors", "colours" and "appearance"); every word listed there must also be in
+the setting's palette list. Such a word skips the word-run rule (Theme's
+"colors" stays although "Sidebar Colors" contains it), and the other rules
+still apply. So
+give each setting at least one phrase that passes those rules;
+`test_every_setting_has_english_search_words` fails when none survives.
 
 Then run `npm run gen:ui` and commit the regenerated index. The label is read
 from the site, never written in the descriptor: visible text minus nested

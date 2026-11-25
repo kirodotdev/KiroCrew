@@ -7,9 +7,10 @@
  * is what the panel renders to explain the gap between N and the rows the
  * user can see (#11103):
  *
- * - `onTarget`        -- already on the picked model; the backend reports
- *                        these as `unchanged`. Rendered as the
- *                        `bulk-model-on-target` line.
+ * - `onTarget`        -- already on the picked model, and on the picked effort
+ *                        when one is picked; the backend reports these as
+ *                        `unchanged`. Rendered as the `bulk-model-on-target`
+ *                        line, which names them (`onTargetKeys`).
  * - `skippedRunning`  -- running and NOT on the pick, while "Skip running
  *                        sessions" is ticked. The checkbox label renders
  *                        `runningOffTarget`, which is this same set whether or
@@ -17,35 +18,57 @@
  *                        already on the pick is counted twice on screen.
  *
  * The buckets are disjoint and, with `affected`, cover every slot, in the
- * server's own order (`api_chat_slots_model` checks the model before the busy
- * state, so a running slot already on the target is `onTarget`). A new reason
- * to exclude a session has to add a bucket here and a surface in the panel;
- * the partition test fails if one is filtered out without a bucket.
+ * server's own order (`api_chat_slots_model` checks the model and effort before
+ * the busy state, so a running slot already on the target is `onTarget`). A new
+ * reason to exclude a session has to add a bucket here and a surface in the
+ * panel; the partition test fails if one is filtered out without a bucket.
  */
 
 export interface BulkSwitchSlot {
   key: string
   model?: string | null
   running?: boolean
+  reasoning_effort?: string | null
+  /** `'remote'` marks a relay archive, whose effort the backend leaves alone. */
+  executor?: string
 }
 
 export interface BulkSwitchPartition {
   affected: number
   onTarget: number
+  /** The `onTarget` sessions' keys, so the panel can name them. */
+  onTargetKeys: string[]
   skippedRunning: number
   /** Running sessions not on the pick: what the skip checkbox counts. */
   runningOffTarget: number
+  /** The `runningOffTarget` sessions whose MODEL changes. Only these lose their
+   *  current reply when they are not skipped: an effort-only change waits for
+   *  the session's next start instead. */
+  runningModelChange: number
 }
 
+/** `effortPick` undefined leaves every session's effort alone; a level sets it. */
 export function partitionBulkSwitch(
   slots: readonly BulkSwitchSlot[],
   pick: string,
   skipRunning: boolean,
+  effortPick?: string,
 ): BulkSwitchPartition {
-  const out: BulkSwitchPartition = { affected: 0, onTarget: 0, skippedRunning: 0, runningOffTarget: 0 }
+  const out: BulkSwitchPartition = {
+    affected: 0, onTarget: 0, onTargetKeys: [], skippedRunning: 0, runningOffTarget: 0, runningModelChange: 0,
+  }
   for (const s of slots) {
-    if ((s.model ?? '') === pick) { out.onTarget++; continue }
-    if (s.running) out.runningOffTarget++
+    const modelChanges = (s.model ?? '') !== pick
+    const effortChanges = effortPick !== undefined && (s.reasoning_effort ?? '') !== effortPick && s.executor !== 'remote'
+    if (!modelChanges && !effortChanges) {
+      out.onTarget++
+      out.onTargetKeys.push(s.key)
+      continue
+    }
+    if (s.running) {
+      out.runningOffTarget++
+      if (modelChanges) out.runningModelChange++
+    }
     if (skipRunning && s.running) out.skippedRunning++
     else out.affected++
   }

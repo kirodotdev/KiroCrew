@@ -290,11 +290,11 @@ wrote. Credits use the same source as the branch
 
 | What | Where | State |
 |---|---|---|
-| Owner-set cap on a Bot's open worker sessions, per Bot: `max_workers`, 0 (No limit) by default, 1-32, set on the Bot's settings page; `session_create`, `session_revive` and `session_fork` are refused `bot_worker_cap_reached` | [#37381](https://github.com/kirodotdev/KiroCrew/pull/37381) | open, not merged |
+| Owner-set cap on a Bot's open worker sessions, per Bot: `max_workers`, 0 (No limit) by default, 1-32, set on the Bot's settings page; `session_create`, `session_revive` and `session_fork` are refused `bot_worker_cap_reached` | [#37381](https://github.com/kirodotdev/KiroCrew/pull/37381) | merged 2026-11-15 |
 | Count a Bot worker's children on other templates toward that cap | [#37538](https://github.com/kirodotdev/KiroCrew/issues/37538) | open issue, deferred from #37381 |
-| Write the plan's concurrency as `concurrency_cap` before the first create (row 3) | [#37652](https://github.com/kirodotdev/KiroCrew/pull/37652) | open; waits on open decision 7 |
-| An owner's remark is a suggestion unless the owner says it is a rule; ask once and name the cost before saving it as a rule (row 11) | [#37651](https://github.com/kirodotdev/KiroCrew/pull/37651) | open, not merged |
-| Park findings that the goal's "Done when" does not need, in the goal text (row 10) | [#37648](https://github.com/kirodotdev/KiroCrew/pull/37648) | open, not merged |
+| Write the plan's concurrency as `concurrency_cap` before the first create (row 3) | [#37652](https://github.com/kirodotdev/KiroCrew/pull/37652) | closed unmerged 2026-11-16; waits on open decision 7 |
+| An owner's remark is a suggestion unless the owner says it is a rule; ask once and name the cost before saving it as a rule (row 11) | [#37651](https://github.com/kirodotdev/KiroCrew/pull/37651) | merged 2026-11-15 |
+| Park findings that the goal's "Done when" does not need, in the goal text (row 10) | [#37648](https://github.com/kirodotdev/KiroCrew/pull/37648) | merged 2026-11-15 |
 | Credits the Bot's workers used, on the Goals tab (row 12) | branch `crew/slack/goal-cost-on-goals-tab` | proposal-adjacent, not shipped |
 | Subagent credit attribution, then a loop credit cap | [#35488](https://github.com/kirodotdev/KiroCrew/pull/35488) | open RFC |
 

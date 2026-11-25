@@ -8048,7 +8048,28 @@ requested page are assembled (`memory_edit._rows(..., page=...)`): a match
 outside the page has no fingerprint computed and its metadata row is not read,
 and with no search term its value is not decoded either. A search reads the
 three metadata fields it matches on (category, subject, predicate) through one
-join in the listing query, not one query per record. `POST /api/memory/records/refresh` resolves up to 500 exact
+join in the listing query, not one query per record.
+
+The memory page also sends `sort` (`updated`, `created`, `confidence`,
+`importance`, `key`, or `match`, which needs search words), `order`
+(`asc`/`desc`), `facets=1`, the repeatable facet filters `category`, `applies`,
+`scope`, `source` and `tag`, and the confidence range `conf_min`/`conf_max`
+(0–1). `memory_record_facets` owns their meaning. A lesson's category, applies
+tier and repo scope are read with the lesson tier's own helpers, so the page
+cannot disagree with injection. An unusable stored scope has the facet value
+`:unusable`, which no admissible scope can equal (a scope never holds `:`). Facet filters are part of the record query (`q`, `kind`,
+`filters`), so a "select all matching" preview reaches exactly the filtered
+rows. With a sort or facets, the listing makes one light pass that yields a
+summary per search match (`_rows(..., summaries=True)`). It then filters,
+counts and sorts those summaries and assembles only the requested page. Each
+facet group is counted with every other filter applied but its own, and the
+kind counts ignore the kind, so each tab shows what it would list. Rows that
+have no confidence (experiences) or no importance (facts and lessons) always
+come last under that sort, newest first, whichever way it runs. `match` is a
+word score from 0 to 1, with a key hit weighted above a text hit, and each
+entry of a `match` page carries it.
+
+`POST /api/memory/records/refresh` resolves up to 500 exact
 identities after a concurrent change without discarding the user's draft. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
 under the same normalized selector and selection caps as preview; deleted or

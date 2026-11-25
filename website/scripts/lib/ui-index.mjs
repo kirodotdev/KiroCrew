@@ -732,7 +732,19 @@ export function buildUiIndex(inputs) {
       errors.push(`SEARCH_TERMS names registered location '${id}'; put its terms in its descriptor`)
       continue
     }
+    if (id.startsWith('setting:') && terms && typeof terms === 'object' && Object.hasOwn(terms, 'en')) {
+      errors.push(`SEARCH_TERMS '${id}' lists English terms; a setting's English words live in settingsKeywords.ts`)
+      continue
+    }
     termSources.push([id, terms, 'SEARCH_TERMS'])
+  }
+  // English words a descriptor or SEARCH_TERMS already gives some location:
+  // that curated choice keeps the word.
+  const claimed = new Set(termSources.flatMap(([, t]) => (Array.isArray(t?.en) ? t.en : [])).filter((w) => typeof w === 'string').map(foldTerm))
+  for (const [id, en] of settingTermsFromKeywords(inputs, locations, claimed, errors)) {
+    const i = termSources.findIndex(([tid]) => tid === id)
+    if (i >= 0) termSources[i] = [id, { en, ...termSources[i][1] }, 'SEARCH_TERMS + settingsKeywords.ts']
+    else termSources.push([id, { en }, 'settingsKeywords.ts'])
   }
   for (const [id, terms, origin] of termSources) {
     const loc = locations.get(id)
@@ -990,6 +1002,106 @@ const MAX_TERM_CHARS = 60
 /** Approximates the search's normalization (NFKC, casefold, punctuation as space). */
 function foldTerm(text) {
   return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
+}
+
+/**
+ * Each setting's English search terms, from the command palette's list
+ * (settingsKeywords.ts), so one list feeds both searches. The palette matches
+ * literally and keeps spellings that differ only in punctuation ("auto update",
+ * "auto-update"); find_ui folds them, so only the first is kept. A one-word
+ * entry stays palette-only (see below) unless GUIDE_ONE_WORD_TERMS
+ * (`inputs.guideOneWords`) names it for that setting; every word it names
+ * must be in the setting's palette list. A word that
+ * only repeats this setting's label is left out (the label is searched
+ * already), and so is a word that is another location's English name or one of
+ * its curated search terms (`claimed`): there it would tie with that location
+ * and point at the wrong place. A word that is a whole-word run inside another
+ * location's English label or alias ("bot token" inside "Discord bot token")
+ * is left out too when it is at least 60% of that label's words, so find_ui
+ * shows the tie instead of picking this setting; words GUIDE_ONE_WORD_TERMS
+ * names skip only that last check.
+ */
+function settingTermsFromKeywords(inputs, locations, claimed, errors) {
+  const en = inputs.catalogs.en ?? {}
+  const formsOf = (loc) => [loc.label_key, ...(loc.alias_keys ?? [])]
+    .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : en[k]))
+    .filter((v) => typeof v === 'string')
+    .map((v) => foldTerm(v.replaceAll('{{productName}}', inputs.productName)))
+  const namedBy = new Map()
+  for (const loc of locations.values()) {
+    for (const f of formsOf(loc)) (namedBy.get(f) ?? namedBy.set(f, new Set()).get(f)).add(loc.id)
+  }
+  // True when `folded` is a whole-word run inside another location's English
+  // label or alias ("bot token" inside "Discord bot token") that find_ui
+  // would answer with that location. find_ui drops a match that explains less
+  // than 60% of the label (_MIN_COVERAGE in ui_index_match.py), so a phrase
+  // inside a long label ("amazon polly" in "AWS Profile (Amazon Polly)") finds
+  // nothing there and stays this setting's term.
+  // shortcut: counts every word, where find_ui skips stopwords; mirror its
+  // stopwords here if a needed term is dropped or a tie is missed.
+  const inOtherName = (folded, ownId) => {
+    const needle = ` ${folded} `
+    const words = folded.split(' ').length
+    for (const [form, ids] of namedBy) {
+      if (![...ids].some((id) => id !== ownId) || !` ${form} `.includes(needle)) continue
+      if (words / form.split(' ').length >= 0.6) return true
+    }
+    return false
+  }
+  const keepOneWord = new Map()
+  for (const [settingId, words] of Object.entries(inputs.guideOneWords ?? {})) {
+    if (!locations.has(`setting:${settingId}`)) {
+      errors.push(`GUIDE_ONE_WORD_TERMS names unknown setting '${settingId}'`)
+      continue
+    }
+    const listed = new Set((inputs.settingKeywords?.[settingId] ?? []).filter((w) => typeof w === 'string').map(foldTerm))
+    const keep = new Set()
+    for (const w of Array.isArray(words) ? words : [words]) {
+      if (typeof w !== 'string' || !listed.has(foldTerm(w))) {
+        errors.push(`GUIDE_ONE_WORD_TERMS '${settingId}': '${w}' is not in its SETTINGS_KEYWORDS list`)
+        continue
+      }
+      keep.add(foldTerm(w))
+    }
+    keepOneWord.set(settingId, keep)
+  }
+  const out = new Map()
+  for (const [settingId, words] of Object.entries(inputs.settingKeywords ?? {})) {
+    const id = `setting:${settingId}`
+    const loc = locations.get(id)
+    if (!loc) {
+      errors.push(`settingsKeywords.ts names unknown setting '${settingId}'`)
+      continue
+    }
+    if (!Array.isArray(words)) {
+      errors.push(`settingsKeywords.ts '${settingId}': words must be a list`)
+      continue
+    }
+    const seen = new Set()
+    const kept = []
+    for (const w of words) {
+      if (typeof w !== 'string' || !foldTerm(w)) {
+        kept.push(w) // validateTerms reports it
+        continue
+      }
+      const folded = foldTerm(w)
+      // One word, hyphenated or not ("apps", "per-app"), is a typeahead
+      // fragment: find_ui answers a whole one-word term with confidence, so a
+      // bare question would land here, unless GUIDE_ONE_WORD_TERMS keeps it.
+      const handPicked = keepOneWord.get(settingId)?.has(folded)
+      const oneWord = !/\s/.test(w.trim()) && !handPicked
+      if (oneWord || seen.has(folded) || namedBy.has(folded) || claimed.has(folded)) continue
+      // Part of another location's name: find_ui would answer it with this
+      // setting alone and hide the location it names. GUIDE_ONE_WORD_TERMS
+      // words are chosen by hand and skip this check (Theme's "colors" vs
+      // "Sidebar Colors").
+      if (!handPicked && inOtherName(folded, id)) continue
+      seen.add(folded)
+      kept.push(w)
+    }
+    if (kept.length) out.set(id, kept)
+  }
+  return out
 }
 
 /**

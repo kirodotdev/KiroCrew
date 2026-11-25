@@ -2086,14 +2086,18 @@ row is written). A child's call request names its asker in
 `_meta.kiro.requester.subagent.agentName` when the engine reports it, read into
 `AcpEvent.requesting_subagent` (`session_handle_native_children.kas_requesting_subagent`,
 kept to `REQUESTER_NAME_CAP` plus the same lookahead; the card cuts it).
-In an engine turn the permission row's meta takes two more keys
+In every KAS turn, the `kas_subagents` preview on or off, the permission row's meta
+takes two more keys
 (`approval_card_fields`): `subagent_task` (the task, redacted, `APPROVAL_TASK_MAX`) and
 `asked_by_subagent` (the asker). The composer's approval bar draws them as a plain
 text "Task:" line and an "Asked by sub-agent" chip beside "Raised by"
-(`components/chat-input/ApprovalSubagent.tsx`). No gate, grant, trust key, Slack
-mirror or audit reads either key; an engine that does not name the asker (the
-bundled 0.66.117) leaves the card as it was, and outside an engine turn neither key
-is written. Tests: `test_engine_subagent_approval_card.py`,
+(`components/chat-input/ApprovalSubagent.tsx`). The preview does not gate them: a
+KAS dispatch's request carries only its `Sub-agent: <name>` title, and the dispatch
+frame never reaches the tool-input cache (`_handle_kas_subagent` routes it to the
+roster), so without the task the card had nothing under its title. No gate, grant,
+trust key, Slack mirror or audit reads either key; an engine that does not name the
+asker (the bundled 0.66.117) leaves the card as it was, and only KAS writes either
+input, so no other harness's card gains one. Tests: `test_engine_subagent_approval_card.py`,
 `website/src/test/ChatInput.engineSubagentApproval.test.tsx`.
 
 ### Kiro Crew's own generated specs are not sub-agents

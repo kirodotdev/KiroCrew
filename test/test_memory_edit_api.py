@@ -195,3 +195,44 @@ async def test_private_store_unavailable_never_returns_global_records(env, monke
     )
     assert response.status == 503
     assert json.loads(response.text)["code"] == "store_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_record_listing_sorts_filters_and_counts_facets(env):
+    tier = env.tiers[""]
+    tier.set_semantic("user.a", "first", 0.9, "user_explicit")
+    tier.set_semantic("user.b", "second", 1.0, "taskrunner")
+    query = {
+        "store": "default",
+        "sort": "confidence",
+        "order": "asc",
+        "facets": "1",
+        "source": "user_explicit",
+    }
+    response = await memory_edit.api_memory_records(request(env, query=query, owner=True))
+    assert response.status == 200, response.text
+    payload = json.loads(response.text)
+    assert [entry["id"] for entry in payload["entries"]] == ["user.a"]
+    assert payload["facets"]["source"] == {"user_explicit": 1, "taskrunner": 1}
+    for bad in ({"order": "up"}, {"facets": "yes"}, {"sort": "size"}, {"conf_min": "x"}):
+        refused = await memory_edit.api_memory_records(
+            request(env, query={"store": "default", **bad}, owner=True)
+        )
+        assert refused.status == 400
+
+
+@pytest.mark.asyncio
+async def test_a_facet_value_holding_a_credential_is_not_returned(env):
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    secret = github_classic()
+    value = {"rule": "Use the CI token", "category": "tool", "applies": "always"}
+    env.tiers[""].set_semantic("lesson.leak", {**value, "repo_scope": secret}, 1.0, "user_explicit")
+    env.tiers[""].set_semantic(
+        "lesson.ok", {**value, "repo_scope": "website"}, 1.0, "user_explicit"
+    )
+    query = {"store": "default", "facets": "1"}
+    response = await memory_edit.api_memory_records(request(env, query=query, owner=True))
+    assert response.status == 200, response.text
+    assert secret not in response.text
+    assert json.loads(response.text)["facets"]["scope"] == {"website": 1}
