@@ -57,6 +57,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -331,6 +332,14 @@ class SessionCapabilities:
     #: reject, and a clean ending is not read as one.
     ends_turn_on_permission_reject: bool
 
+    #: Whether the harness names a Crew tool in its tool calls only by a fused
+    #: ``<server>_<tool>`` name, so a sub-agent's tool dispatch reads that name as
+    #: Crew's only for a server the session handed the harness.
+    #:
+    #: True for pi and claude. False everywhere else, an unknown backend
+    #: included: there no handed server list is read at dispatch.
+    names_crew_tools_by_fused_name: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -377,6 +386,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         loads_steering_natively=backend == ACP_BACKEND_KAS,
         keeps_prompt_on_unlanded_turn=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
         ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
+        names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -419,6 +429,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     loads_steering_natively=False,
     keeps_prompt_on_unlanded_turn=False,
     ends_turn_on_permission_reject=False,
+    names_crew_tools_by_fused_name=False,
     keeps_session_across_compaction=False,
 )
 
