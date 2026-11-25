@@ -157,7 +157,7 @@ class TestKasPanelProjection:
         assert f"@{MEMBER_PANEL_SERVER}" not in dispatch_only["tools"]
 
         both = to_client_custom_agent(
-            "a", dict(self.SPEC), "p", member_dispatch=True, crew_panel=True
+            "a", dict(self.SPEC), "p", member_dispatch=True, crew_panel=True, session_key=MEMBER_KEY
         )
         assert f"@{MEMBER_PANEL_SERVER}" in both["tools"]
         assert f"@{MEMBER_DISPATCH_SERVER}" in both["tools"]

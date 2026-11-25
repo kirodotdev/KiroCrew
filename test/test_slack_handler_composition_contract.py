@@ -249,8 +249,10 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``line_start`` on ``_filter_options_brackets`` (whether the text already sent
 #: ends a line, so a marker line is held from its start), and the keyword-only
 #: ``requester`` on ``post_linked_approval`` (the shared user whose message opened
-#: the linked slot's turn may answer its card).
-_BASE_SHAPE_DIGEST = "d6e87e1f52186fff15748ad776850b08a7da656862364e4501cdac468ec4a59a"
+#: the linked slot's turn may answer its card), and the keyword-only
+#: ``thread_trust`` on ``post_linked_approval`` and ``_build_approval_blocks`` (a
+#: Conductor thread's conductor's card reads "Trust this thread").
+_BASE_SHAPE_DIGEST = "fc8ec146418aa93d86018bd577305dde64ccc0f7653b48086015588f15aaf893"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

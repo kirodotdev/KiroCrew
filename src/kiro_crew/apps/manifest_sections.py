@@ -384,6 +384,10 @@ class UIConfig:
     frameSources: list[str] = field(default_factory=list)  # noqa: N815
     #: ``frameSources`` present but not a list of strings. Not serialized.
     bad_frame_sources: bool = False
+    # ESM module, under the same ``ui/`` base as ``entry``, whose default export the
+    # dashboard mounts on every load once the owner approves it
+    # (``apps.startup_modules``). Empty means undeclared.
+    startup: str = ""
 
     # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
     # ``website/src/components/AppLoadingFallback.tsx``.
@@ -416,6 +420,9 @@ class UIConfig:
             # Emitted only when declared, so a manifest without it keeps producing
             # the identical dict (and the identical signed payload).
             d["loading"] = loading
+        if self.startup:
+            # Only when declared, for the same signed-payload reason as `loading`.
+            d["startup"] = self.startup
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -459,6 +466,8 @@ class UIConfig:
             loading_logo=cls._parse_loading_logo(data.get("loading")),
             frameSources=list(raw_frames) if frames_ok else [],
             bad_frame_sources=not frames_ok,
+            # A non-string (a hand-edited `null` or number) reads as undeclared.
+            startup=data["startup"] if isinstance(data.get("startup"), str) else "",
         )
 
     @classmethod

@@ -6023,6 +6023,11 @@
     "viewPr": "পুল রিকোয়েস্ট"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} চালু করা যায়নি।",
+      "dismiss": "আবার লোড করা পর্যন্ত {{name}} চালু হওয়ার বিজ্ঞপ্তি লুকিয়ে রাখো",
+      "open_app": "{{name}} খোলো"
+    },
     "crewPrFacts": {
       "read": "{{time}}-এ পড়া"
     },
@@ -10125,7 +10130,27 @@
       "updating": "আপডেট হচ্ছে…",
       "updating_and_restarting": "আপডেট ও পুনরায় চালু হচ্ছে…",
       "version_is_available": "{{productName}} <0>{{version}}</0> উপলব্ধ।",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_one": "আরও {{n}}টি",
+      "work_holders_more_other": "আরও {{n}}টি",
+      "work_kind_approval": "অনুমোদনের অপেক্ষায়",
+      "work_kind_callback": "আগত বার্তা",
+      "work_kind_channel_handler": "চ্যানেল বার্তা",
+      "work_kind_other": "অন্য কাজ",
+      "work_kind_queued": "সারিতে থাকা বার্তা",
+      "work_kind_refusal_write": "পাঠানো হচ্ছে এমন উত্তর",
+      "work_kind_script": "নির্ধারিত জব",
+      "work_kind_subagent": "সাব-এজেন্ট",
+      "work_kind_task_runner": "টাস্ক রানার",
+      "work_kind_turn": "চ্যাট টার্ন",
+      "work_kind_unreadable": "যে কাজ যাচাই করা যায়নি",
+      "work_kind_update_build": "আপডেট বিল্ড",
+      "work_kind_workflow": "ওয়ার্কফ্লো",
       "work_running_busy": "এখন রিস্টার্ট করলে চলমান কাজ বাধাগ্রস্ত হবে। সক্রিয় আইটেম: {{active}}।",
+      "work_running_now": "এখন চলছে: {{holders}}।",
       "work_running_quiet": "সম্প্রতি একটি চ্যাটে কার্যকলাপ ছিল, এবং এখন রিস্টার্ট করলে তুমি যে বার্তা লিখছ তা কেটে যেতে পারে। {{minutes}} মিনিট কার্যকলাপ না থাকলে এটি নিরাপদ।",
       "work_running_title": "কাজ এখনও চলছে",
       "you_can_update_anytime_from_settings_about": "যেকোনো সময় সেটিংস → সম্পর্কে থেকে আপডেট করুন।"
@@ -10638,7 +10663,12 @@
       "automatic_https": "এই tailnet-এর জন্য HTTPS চালু হলে Tailscale ব্যক্তিগত সার্টিফিকেট স্বয়ংক্রিয়ভাবে তৈরি ও নবায়ন করে।",
       "setting_up": "ফোন অ্যাক্সেস সেট আপ করা হচ্ছে…",
       "setup_action": "সেট আপ করে QR দেখান",
-      "setup_timeout": "ফোন অ্যাক্সেস প্রস্তুত হয়নি। সেটআপ পরীক্ষা করে আবার চেষ্টা করুন।"
+      "setup_timeout": "ফোন অ্যাক্সেস প্রস্তুত হয়নি। সেটআপ পরীক্ষা করে আবার চেষ্টা করুন।",
+      "fix_overrides": "এটা ঠিক করো",
+      "fix_overrides_title": "এই ওভাররাইডগুলো সরাবে?",
+      "fix_overrides_values": "config.local.json-এ <local/> সেট আছে; config.json থেকে <applies/> প্রযোজ্য হবে",
+      "fix_overrides_body": "এরপর প্রতিটি কী config.json-এর মান নেবে এবং সেটআপ আবার চলবে। config.local.json-এর অন্য কোনো কী বদলাবে না।",
+      "fix_overrides_confirm": "সরাও এবং আবার চেষ্টা করো"
     },
     "sessionTabStrip": {
       "close_tab_hint": "এই ট্যাবটি বন্ধ করুন। সেশনটি সাইডবারে থেকে যায়।",
@@ -15186,6 +15216,7 @@
       "jump_to_new_one": "{{count}}টি নতুন · সর্বশেষে যান",
       "jump_to_new_other": "{{count}}টি নতুন · সর্বশেষে যান",
       "could_not_repair_images": "ছবিগুলো মেরামত করা যায়নি",
+      "could_not_edit_and_resend": "সম্পাদনা করে আবার পাঠানো যায়নি",
       "session_closed_elsewhere": "এই চ্যাটটি এই উইন্ডোর বাইরে বন্ধ করা হয়েছে।"
     },
     "chatSidebar": {

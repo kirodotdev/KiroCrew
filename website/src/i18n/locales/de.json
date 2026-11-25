@@ -6023,6 +6023,11 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} konnte nicht gestartet werden.",
+      "dismiss": "Starthinweis für {{name}} bis zum Neuladen ausblenden",
+      "open_app": "{{name}} öffnen"
+    },
     "crewPrFacts": {
       "read": "gelesen {{time}}"
     },
@@ -10125,7 +10130,27 @@
       "updating": "Wird aktualisiert…",
       "updating_and_restarting": "Update wird installiert und neu gestartet…",
       "version_is_available": "{{productName}} <0>{{version}}</0> ist verfügbar.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_one": "{{n}} weiteres",
+      "work_holders_more_other": "{{n}} weitere",
+      "work_kind_approval": "wartet auf Freigabe",
+      "work_kind_callback": "eingehende Nachricht",
+      "work_kind_channel_handler": "Kanalnachricht",
+      "work_kind_other": "andere Arbeit",
+      "work_kind_queued": "wartende Nachrichten",
+      "work_kind_refusal_write": "Antwort wird gesendet",
+      "work_kind_script": "geplanter Job",
+      "work_kind_subagent": "Subagent",
+      "work_kind_task_runner": "Task Runner",
+      "work_kind_turn": "Chat-Antwort",
+      "work_kind_unreadable": "nicht prüfbare Arbeit",
+      "work_kind_update_build": "Update-Build",
+      "work_kind_workflow": "Workflow",
       "work_running_busy": "Ein Neustart würde laufende Arbeit unterbrechen. Aktive Elemente: {{active}}.",
+      "work_running_now": "Läuft gerade: {{holders}}.",
       "work_running_quiet": "In einem Chat war zuletzt Aktivität, und ein Neustart könnte eine Nachricht abschneiden, die du gerade schreibst. Nach {{minutes}} Min. ohne Aktivität ist er unbedenklich.",
       "work_running_title": "Es läuft noch Arbeit",
       "you_can_update_anytime_from_settings_about": "Aktualisiere jederzeit unter Einstellungen → Über."
@@ -10638,7 +10663,12 @@
       "automatic_https": "Nachdem HTTPS für dieses Tailnet aktiviert wurde, erstellt und erneuert Tailscale das private Zertifikat automatisch.",
       "setting_up": "Telefonzugriff wird eingerichtet…",
       "setup_action": "Einrichten & QR-Code anzeigen",
-      "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut."
+      "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut.",
+      "fix_overrides": "Beheben",
+      "fix_overrides_title": "Diese Überschreibungen entfernen?",
+      "fix_overrides_values": "config.local.json setzt <local/>; config.json würde <applies/> anwenden",
+      "fix_overrides_body": "Jeder Schlüssel übernimmt dann seinen Wert aus config.json, und die Einrichtung läuft erneut. Kein anderer Schlüssel in config.local.json ändert sich.",
+      "fix_overrides_confirm": "Entfernen und erneut versuchen"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Schließt diesen Tab. Die Sitzung bleibt in der Seitenleiste.",
@@ -15186,6 +15216,7 @@
       "jump_to_new_one": "{{count}} neue · Zum Ende",
       "jump_to_new_other": "{{count}} neue · Zum Ende",
       "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
+      "could_not_edit_and_resend": "Bearbeiten & erneut senden fehlgeschlagen",
       "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen."
     },
     "chatSidebar": {

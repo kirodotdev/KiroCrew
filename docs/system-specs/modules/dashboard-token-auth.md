@@ -340,6 +340,14 @@ conflicting dotted field names instead of claiming the phone is update-proof.
 The safe base settings already written to `config.json` remain in place; the
 endpoint does not roll them back because the user-owned overlay is the only thing
 preventing them from becoming effective.
+The 409 also carries `overrides`: each listed field that `config.local.json`
+itself sets, with the value it holds there (`local`) and the `config.json` value
+that applies once it is gone (`applies`). The card's **Fix this** shows those in
+a confirm dialog; on confirm it calls `POST /api/tailnet/mobile/clear-overrides`
+with the field names and then retries setup. That route has the same owner-only
+guard as setup, accepts only the four fields setup can name, and deletes exactly
+those keys from `config.local.json` under the config write lock and changes no
+other key there.
 An explicit effective `qr_session_until_restart=false` remains the supported
 timed-session opt-out and is reported as a successful non-persistent setup. A
 retry after removing an override also compares the running gateway's immutable
@@ -709,7 +717,15 @@ Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
 float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
 The startup output of `kirocrew gateway --headless` shows whether the entry port is
 off or gives its `127.0.0.1:<port>` address, the one a proxy on this machine dials;
-the output of `kirocrew restart` has no entry-port line.
+the output of `kirocrew restart` has no entry-port line. The port it prints is the
+one the gateway bound (`entry_gate.bound_port`, read from the gate `entry_gate.start`
+set), not the configured value. When the port is on, the next line says that the
+proxy must send a `Host` that names `127.0.0.1`, `[::1]` or `localhost`
+(`entry_gate.HOST_HINT`), and the log line `entry_gate.start` writes when the port
+opens says the same. Pinned by
+`test_the_printed_credential_command_names_the_bound_port`,
+`test_bound_port_reads_the_gate_the_start_set` and
+`test_a_headless_start_prints_the_bound_entry_port`.
 
 A request arrived on the entry port when its LOCAL socket is that port
 (`entry_gate.EntryGate.owns`), never because of a header. `entry_gate_middleware`

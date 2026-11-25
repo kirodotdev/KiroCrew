@@ -6023,6 +6023,11 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} शुरू नहीं हो सका।",
+      "dismiss": "दोबारा लोड करने तक {{name}} के शुरू होने की सूचना हटाओ",
+      "open_app": "{{name}} खोलो"
+    },
     "crewPrFacts": {
       "read": "{{time}} पर पढ़ा"
     },
@@ -10125,7 +10130,27 @@
       "updating": "अपडेट हो रहा है…",
       "updating_and_restarting": "अपडेट और पुनःआरंभ हो रहा है…",
       "version_is_available": "{{productName}} <0>{{version}}</0> उपलब्ध है।",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_one": "{{n}} और",
+      "work_holders_more_other": "{{n}} और",
+      "work_kind_approval": "मंज़ूरी का इंतज़ार",
+      "work_kind_callback": "आने वाला संदेश",
+      "work_kind_channel_handler": "चैनल संदेश",
+      "work_kind_other": "दूसरा काम",
+      "work_kind_queued": "कतार में संदेश",
+      "work_kind_refusal_write": "भेजा जा रहा जवाब",
+      "work_kind_script": "शेड्यूल किया गया जॉब",
+      "work_kind_subagent": "सब-एजेंट",
+      "work_kind_task_runner": "टास्क रनर",
+      "work_kind_turn": "चैट टर्न",
+      "work_kind_unreadable": "ऐसा काम जिसकी जाँच नहीं हो सकी",
+      "work_kind_update_build": "अपडेट बिल्ड",
+      "work_kind_workflow": "वर्कफ़्लो",
       "work_running_busy": "अभी रीस्टार्ट करने से चल रहा काम बाधित होगा। सक्रिय आइटम: {{active}}।",
+      "work_running_now": "अभी चल रहा है: {{holders}}।",
       "work_running_quiet": "हाल ही में किसी चैट में गतिविधि थी, और अभी रीस्टार्ट करने से तुम जो संदेश लिख रहे हो वह कट सकता है। {{minutes}} मिनट बिना गतिविधि के यह सुरक्षित है।",
       "work_running_title": "काम अभी भी चल रहा है",
       "you_can_update_anytime_from_settings_about": "कभी भी सेटिंग्स → परिचय से अपडेट करें।"
@@ -10638,7 +10663,12 @@
       "automatic_https": "इस tailnet के लिए HTTPS सक्षम होने के बाद Tailscale निजी प्रमाणपत्र अपने-आप बनाता और नवीनीकृत करता है।",
       "setting_up": "फ़ोन एक्सेस सेट अप हो रहा है…",
       "setup_action": "सेट अप करें और QR दिखाएँ",
-      "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।"
+      "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।",
+      "fix_overrides": "इसे ठीक करो",
+      "fix_overrides_title": "क्या ये ओवरराइड हटाने हैं?",
+      "fix_overrides_values": "config.local.json में <local/> सेट है; config.json से <applies/> लागू होगा",
+      "fix_overrides_body": "इसके बाद हर कुंजी config.json का मान लेगी और सेटअप फिर से चलेगा। config.local.json की कोई और कुंजी नहीं बदलेगी।",
+      "fix_overrides_confirm": "हटाओ और फिर से कोशिश करो"
     },
     "sessionTabStrip": {
       "close_tab_hint": "यह टैब बंद करें. सत्र साइडबार में बना रहता है.",
@@ -15186,6 +15216,7 @@
       "jump_to_new_one": "{{count}} नया · नवीनतम पर जाओ",
       "jump_to_new_other": "{{count}} नए · नवीनतम पर जाओ",
       "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं",
+      "could_not_edit_and_resend": "संपादित करके फिर से नहीं भेज सके",
       "session_closed_elsewhere": "यह चैट इस विंडो के बाहर बंद की गई।"
     },
     "chatSidebar": {

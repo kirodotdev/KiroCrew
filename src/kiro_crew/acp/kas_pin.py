@@ -25,12 +25,12 @@ with ``_KAS_TRIGGER_CANONICAL`` in ``agent_materialization/kiro_hooks.py``, with
 regard to case. The table is kiro-agent's ``trigger-names.ts``; a built engine
 carries it as the one frozen object in ``@kiro/agent/dist/server/acp-server.js``
 that holds ``PostFileSave:"PostFileSave"``. Open an issue for any difference no
-open issue already tracks, naming the ``@kiro/agent`` engine version you read: a
-spelling Kiro Crew lacks is a spec hook it refuses, and a new row is more than a
-table edit. Unless the change that adds it guards it, a hook that newly loads
-shifts the number of every hook after it in ``agent_sdk/spec_hooks.py``; the row
-also moves the table's digest pin, and a new trigger changes the trigger counts in
-the docs.
+open issue already tracks and no ``docs/decisions/`` entry settles, naming the
+``@kiro/agent`` engine version you read: a spelling Kiro Crew lacks is a spec hook
+it refuses, and a new row is more than a table edit. Unless the change that adds
+it guards it, a hook that newly loads shifts the number of every hook after it in
+``agent_sdk/spec_hooks.py``; the row also moves the table's digest pin, and a new
+trigger changes the trigger counts in the docs.
 
 ``KIROCREW_KAS_VERSION`` overrides the version the harness looks for (a
 developer testing another engine installed with ``kirocrew kas install

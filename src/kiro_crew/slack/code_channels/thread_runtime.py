@@ -149,6 +149,41 @@ def live_thread_binding(binding: Binding) -> Binding | None:
     return None
 
 
+def conductor_thread_of(slot: Any, cfg: Any = _LIVE) -> Binding | None:
+    """The live Conductor thread whose conductor *slot* is, or None.
+
+    Synchronous, from the loaded snapshot: the thread switch on, and a stored, not
+    ended thread binding at the slot's own Slack link (channel and thread) that
+    names *slot*. The room rules are left to the click's owner gates, which read
+    a fresh room reading first.
+    """
+    cfg = _binding.live_config() if cfg is _LIVE else cfg
+    if not thread_conductor_on(cfg):
+        return None
+    channel = getattr(slot, "_slack_channel", None)
+    anchor = getattr(slot, "_slack_thread_ts", None)
+    key = getattr(slot, "key", None)
+    if not (isinstance(channel, str) and channel and isinstance(anchor, str) and anchor):
+        return None
+    if not (isinstance(key, str) and key):
+        return None
+    try:
+        loaded = store().loaded_thread_bindings()
+    except Exception:
+        logger.debug("conductor thread: store unreadable", exc_info=True)
+        return None
+    for current in loaded or ():
+        if (
+            current.channel_id == channel
+            and current.anchor_ts == anchor
+            and current.session_key == key
+            and is_thread(current)
+            and not current.ended_at
+        ):
+            return current
+    return None
+
+
 def room_refusal(binding: Binding) -> str:
     """Why a thread's room does not admit its runtime now (``""`` when it does).
 

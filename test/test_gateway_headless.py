@@ -786,7 +786,16 @@ async def test_live_get_routes_never_return_a_headless_dashboard(
 
 @pytest.mark.parametrize(
     ("entry_port", "entry_line"),
-    [(None, ""), (0, "   Entry port: off\n"), (8443, "   Entry port: 127.0.0.1:8443\n")],
+    [
+        (None, ""),
+        (0, "   Entry port: off\n"),
+        (
+            8443,
+            "   Entry port: 127.0.0.1:8443\n"
+            "   On the entry port the proxy must send a Host that names 127.0.0.1, [::1] or"
+            " localhost\n",
+        ),
+    ],
 )
 def test_the_printed_credential_command_names_the_bound_port(
     capsys, entry_port, entry_line

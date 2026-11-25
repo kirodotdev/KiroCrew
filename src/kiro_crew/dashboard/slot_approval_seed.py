@@ -94,3 +94,78 @@ def seed_slot_approval(
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.warning("SEL audit failed for approval seed by %s", caller, exc_info=True)
     return True
+
+
+def tighten_slot_approval(
+    state: Any,
+    slot: Any,
+    ceiling: str,
+    *,
+    caller: str,
+    sel: Callable[[], Any] = _default_sel,
+) -> bool:
+    """Hold *slot* (and every slot sharing its session) to at most *ceiling*.
+
+    The lowering twin of :func:`seed_slot_approval`: each slot lands on the stricter
+    of what it holds and *ceiling* (``normal``, then ``trust_reads``, then
+    ``trust``), so nothing is ever raised and a ``trust`` ceiling changes nothing.
+    It reads the grants a slot HOLDS, not what the current policy lets it use, so a
+    grant a policy deny hides now cannot come back past the ceiling when the deny
+    lifts. Like the seed it never touches the process-wide safety override (YOLO)
+    and sweeps no pending approvals, since a lowering approves nothing. The mode it
+    lands on is the seeder's, not the creator's (``_posture_inherited`` False).
+    Returns True when a posture changed. Pure in-memory work, safe on the loop.
+    """
+    if ceiling not in ("normal", "trust_reads"):
+        return False
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    key = effective_session_key(slot)
+    changed = False
+    for sharing in list(state._slots.values()):
+        if effective_session_key(sharing) != key:
+            continue
+        if getattr(sharing, "_trust_held", sharing._trust):
+            sharing._trust = False
+            sharing._trust_card_scoped = False
+            sharing._trust_reads = ceiling == "trust_reads"
+        elif ceiling == "normal" and getattr(sharing, "_trust_reads_held", sharing._trust_reads):
+            sharing._trust_reads = False
+        else:
+            continue
+        sharing._posture_inherited = False
+        changed = True
+    if not changed:
+        return False
+    sync_session_policy(state, slot)
+    try:
+        sel().log_api_access(
+            caller=caller,
+            operation=f"mode_change:{ceiling}",
+            outcome="enabled",
+            resources=slot.key,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.warning("SEL audit failed for approval tighten by %s", caller, exc_info=True)
+    return True
+
+
+def sync_session_policy(state: Any, slot: Any) -> None:
+    """Store *slot*'s session approval policy from what its sharing slots now hold.
+
+    The value a turn's admission writes for its own session
+    (``tool_approval._persistable_session_policy``): ``"auto"`` while a slot on the
+    session holds a trust or a live YOLO grant reaches it, else ``""``. A no-op
+    until the session exists; the runner assigns the policy when it creates one.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return
+    from kiro_crew.dashboard.chat_runner import _persistable_session_policy
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    key = effective_session_key(slot)
+    sharing = [s for s in list(state._slots.values()) if effective_session_key(s) == key]
+    yolo = state.is_yolo_active()
+    auto = any(_persistable_session_policy(s, yolo and state.yolo_reaches(s)) for s in sharing)
+    sessions.set_approval_policy(key, "auto" if auto else "")

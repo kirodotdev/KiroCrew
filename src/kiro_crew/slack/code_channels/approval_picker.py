@@ -155,9 +155,23 @@ WORKER_TRUST_CALL_CONFIRM = {
 #: conductor's chat in the dashboard, and the card names the thread.
 THREAD_UNDO = "Only Kiro Crew's owner can undo it, from the conductor's chat in the dashboard."
 TRUST_THREAD_LABEL = "Trust this thread"
+#: :data:`TRUST_CALL_CONFIRM` for a Conductor thread's conductor's own card.
+TRUST_THREAD_CONFIRM = {
+    "title": {"type": "plain_text", "text": "Trust this thread?"},
+    "text": {
+        "type": "plain_text",
+        "text": (
+            "This approves this call and puts the whole thread on Trust: tools run "
+            f"without asking for this thread's conductor and for {HELPERS}. {THREAD_UNDO}"
+        ),
+    },
+    "confirm": {"type": "plain_text", "text": TRUST_THREAD_LABEL},
+    "deny": {"type": "plain_text", "text": "Cancel"},
+    "style": "danger",
+}
 #: :data:`WORKER_TRUST_CALL_CONFIRM` for a Conductor thread's worker card.
 WORKER_TRUST_THREAD_CONFIRM = {
-    "title": {"type": "plain_text", "text": "Trust this thread?"},
+    **TRUST_THREAD_CONFIRM,
     "text": {
         "type": "plain_text",
         "text": (
@@ -166,9 +180,6 @@ WORKER_TRUST_THREAD_CONFIRM = {
             f"{HELPERS}. {THREAD_UNDO}"
         ),
     },
-    "confirm": {"type": "plain_text", "text": TRUST_THREAD_LABEL},
-    "deny": {"type": "plain_text", "text": "Cancel"},
-    "style": "danger",
 }
 #: The kickoff select applies Normal at once (it only takes grants away). For
 #: Reads or Trust it first replies privately with a button that names the mode:
@@ -887,7 +898,7 @@ async def _settle_own_cards(binding: Binding, keys: list[str], user: str) -> Non
     Only those (*keys*, kept from the runner's delete): a card answered any
     other way meanwhile is deleted by the runner as it always was.
     """
-    line = RAN_UNDER_TRUST.format(user=user)
+    line = thread_runtime.say(binding, RAN_UNDER_TRUST).format(user=user)
     for key in keys:
         await write_card(binding.channel_id, key.split(":", 1)[1], line)
 
@@ -1262,6 +1273,26 @@ def _card_entry(channel: str, msg_ts: str) -> Any | None:
     return _linked_approvals.get(f"{channel}:{msg_ts}")
 
 
+async def _card_thread_binding(
+    channel: str, msg_ts: str, payload: dict[str, Any]
+) -> Binding | None:
+    """The Conductor thread a card at ``channel:msg_ts`` was posted in, or None.
+
+    The card's own ``thread_ts`` (Slack sends it on a threaded message) names the
+    thread; only a stored, not ended thread binding counts. That this card is the
+    thread's conductor's is judged by the caller, as for a code channel's card.
+    """
+    message = payload.get("message") or {}
+    container = payload.get("container") or {}
+    anchor = str(message.get("thread_ts") or container.get("thread_ts") or "")
+    if not anchor or anchor == msg_ts or _card_entry(channel, msg_ts) is None:
+        return None
+    found = await asyncio.to_thread(store().get_thread_binding, channel, anchor)
+    if found is None or not thread_runtime.is_thread(found) or found.ended_at:
+        return None
+    return found
+
+
 async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
     """A click on an approval card's "Trust this channel"; False when the gate is shut.
 
@@ -1272,7 +1303,7 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
     take approves nothing, so a failed escalation is never reported as an
     approval.
     """
-    if not code_channels_on(live_config(orch)):
+    if not thread_runtime.any_runtime_on(live_config(orch)):
         return False
     channel, user, msg_ts, team, _action = _ids(payload)
     resources = f"channel={channel} user={user} via=approval_card message={msg_ts}"
@@ -1281,8 +1312,14 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
         return True
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
-    entry = _card_entry(channel, msg_ts) if binding is not None else None
     state = surface.dashboard_state()
+    if binding is None and channel:
+        # A Conductor thread's conductor card: its channel has no channel
+        # binding, so the card's own thread names the binding.
+        binding = await _card_thread_binding(channel, msg_ts, payload)
+    if binding is not None and not thread_runtime.room_runtime_on(binding, live_config(orch)):
+        return False  # this room's own switch is off: not ours to answer
+    entry = _card_entry(channel, msg_ts) if binding is not None else None
     slot = channel_session(state, binding) if binding is not None else None
     from kiro_crew.dashboard.chat_utils import effective_session_key
 
@@ -1295,6 +1332,8 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         _audit("denied", resources, "not this channel's approval card")
         await _ephemeral(channel, user, NOT_THIS_CARD_TEXT)
         return True
+    # A thread's room reading may have expired: the owner gates below read it.
+    await thread_runtime.prime_room(binding)
     refusal = await authorize(orch, binding, user, team, resources)
     if refusal is not None:
         await _ephemeral(channel, user, refusal)
@@ -1350,11 +1389,9 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         # very future the card was for; nothing is awaited from here to the
         # resolve.
         resolve = getattr(state, "resolve_slot_approval", None)
-        from kiro_crew.slack.code_channels import agent_picker
-
         if (
             _channel_open(binding, orch)
-            and agent_picker._sync_gates(orch, binding, user, team)
+            and _sync_gates(orch, binding, user, team)
             # Still on Trust: a revoke (from any surface) during the awaits
             # after the grant committed approves nothing by hand.
             and current_mode(slot) == "trust"
@@ -1375,7 +1412,8 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         "allowed",
         f"{resources} session={entry.session_key} request={request_id} result=approved",
     )
-    await write_card(channel, msg_ts, TRUSTED_CARD_TEXT.format(user=user))
+    trusted = thread_runtime.say(binding, TRUSTED_CARD_TEXT).format(user=user)
+    await write_card(channel, msg_ts, trusted)
     return True
 
 

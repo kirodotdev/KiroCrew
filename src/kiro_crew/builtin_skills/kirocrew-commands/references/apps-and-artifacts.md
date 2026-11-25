@@ -35,6 +35,8 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew app uninstall NAME` | Uninstall an app and preserve its data directory |
 | `kirocrew app uninstall NAME --purge-data` | Uninstall and explicitly delete the app data directory |
 | `kirocrew app info NAME` | Show app details |
+| `kirocrew app startup NAME` | Approve an app's `ui.startup` module to run on every dashboard load (approves this version, entry and code) |
+| `kirocrew app startup NAME --revoke` | Withdraw the approval |
 | `kirocrew app config NAME` | Read an installed app's config, the same as `get` (needs a running gateway; not on native Windows) |
 | `kirocrew app config NAME get` | Print the app's config |
 | `kirocrew app config NAME set KEY VALUE` | Set one top-level key, taken literally (`a.b` is one key), with VALUE typed as `kirocrew config set` types it (JSON for an object). It runs none of the app's own checks and works only for an app whose config the host stores |

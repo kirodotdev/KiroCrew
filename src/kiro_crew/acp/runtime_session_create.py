@@ -244,11 +244,15 @@ async def create_session(
     the owner is not known yet (a pooled worker claimed later), and the
     ``rekey()`` claim then carries the token.
 
-    ``member_session_key`` marks a crew member's DM session and carries its
-    session key: the dashboard session-control server is mounted as a
-    session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
-    KAS wire agent's projection widens to grant its tools. Empty — every
-    non-member session — leaves both paths byte-identical to before.
+    ``member_session_key`` marks a session that mounts session control and
+    carries its session key: a crew member's DM session, or one of its
+    conducting workers (``members.mounts_session_control``, the provider's
+    test). The dashboard session-control server is mounted as a session-level
+    entry (identity via ``KIROCREW_SESSION_KEY``), and the KAS wire agent's
+    projection widens to grant its tools, the thread's set or the conducting
+    worker's (``kas_agents.to_client_custom_agent``). The crew panel stays the
+    thread's alone (``_mount_member_panel``). Empty — every other session —
+    leaves both paths byte-identical to before.
 
     ``channel_id`` is the channel this session belongs to, and it reaches a
     MIRRORED host's ``mcpServers`` ELEMENTS rather than the process env: a
@@ -342,6 +346,28 @@ async def create_session(
     mcp_json: tuple[str, ...] = ()
     # The KAS crewmate worker's stub names, set beside its one overlay lookup.
     worker_stubs: frozenset[str] | None = None
+    member_withheld = False
+    if member_session_key:
+        # circular import: members' module graph is heavy; resolved at call
+        # time like the projection seams below.
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        # The operator's switch-off of the dashboard server, asked on THIS path
+        # too. ``disabled`` has no per-tool or per-call spelling, so a harness
+        # handed the server cannot refuse a call to it, and the ``tools``
+        # allowlist that keeps a disabled server out of a projected array does
+        # not reach an entry appended here. Only a member session reaches this
+        # branch, so no other host gains a suspension point (H13). Asked before
+        # the array is built, so a mirrored host's projection gives a crewmate
+        # worker the conducting kit only on a start that mounts it, and keyed by
+        # the session, so a worker's Bot's file is read as its spec reads it.
+        member_withheld = await asyncio.to_thread(
+            session_mcp_server_is_disabled,
+            MEMBER_DISPATCH_SERVER,
+            agent or self._agent,
+            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+            session_key=session_key or "",
+        )
     if mcp_servers is None:
         # A mirrored host takes its whole array from the mirror; every other host
         # takes the pooled stubs it always took. Which one is a synchronous
@@ -359,6 +385,7 @@ async def create_session(
                     harness_state is not None
                     and self._harness.permission_surface_owned(harness_state)
                 ),
+                session_control_mounted=bool(member_session_key) and not member_withheld,
                 harness_state=harness_state,
             )
         if mirrored is not None:
@@ -408,7 +435,6 @@ async def create_session(
         # judge against and stays silent -- as the client does with no warmed
         # snapshot.
         stub_token = ""
-    member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
     member_mounted = False
@@ -416,22 +442,8 @@ async def create_session(
     # Kiro construction path is untouched by this capability (H13).
     panel_mounted = False
     if member_session_key:
-        # circular import: members' module graph is heavy; resolved at call
-        # time like the projection seams below.
         from kiro_crew.members import MEMBER_DISPATCH_SERVER, member_dispatch_session_server
 
-        # The operator's switch-off of the dashboard server, asked on THIS path
-        # too. ``disabled`` has no per-tool or per-call spelling, so a harness
-        # handed the server cannot refuse a call to it, and the ``tools``
-        # allowlist that keeps a disabled server out of a projected array does
-        # not reach an entry appended here. Only a member session reaches this
-        # branch, so no other host gains a suspension point (H13).
-        member_withheld = await asyncio.to_thread(
-            session_mcp_server_is_disabled,
-            MEMBER_DISPATCH_SERVER,
-            agent or self._agent,
-            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
-        )
         member_entry = (
             None
             if member_withheld

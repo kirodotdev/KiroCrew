@@ -61,7 +61,11 @@ from kiro_crew.acp.session_provider_shared import (
     teardown_confirmed,
 )
 from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
-from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_HARNESS_OWNED_SESSIONS
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
+    ACP_BACKENDS_MEMBER_DISPATCH,
+)
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
@@ -525,7 +529,15 @@ def _kas_machine_refusal(
 
 
 def _member_session_key(self: AcpProvider) -> str:
-    """This session's key when it is a member DM on a dispatch-capable backend.
+    """This session's key when it mounts session control on a dispatch-capable
+    backend: a member DM, or a Bot worker that conducts
+    (``members.mounts_session_control``). For a worker its thread opened that
+    reads the Bot's switch from the cached config load, the source the worker's
+    spec reads it from (``mate_worker.is_conducting_worker_execution``), so the
+    mount and the spec agree even for a start a save brings at once, ahead of the
+    watcher's copy. Blocking for such a worker: every caller runs it off the loop,
+    and only on a backend in ``ACP_BACKENDS_MEMBER_DISPATCH``; every other backend's
+    caller passes ``""`` without calling it, so the kiro path gains no hop (H13).
 
     Empty for every other session. One resolution rule for BOTH session
     establishment paths (session/new and session/load) — the mount must
@@ -533,14 +545,13 @@ def _member_session_key(self: AcpProvider) -> str:
     thread of its dispatch tools mid-conversation.
     """
     # circular import: members sits above the provider layer.
-    from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_DISPATCH
-    from kiro_crew.members import is_member_session_key
+    from kiro_crew.members import mounts_session_control
 
     skey = getattr(self._client, "_session_key", None)
     if (
         isinstance(skey, str)
         and self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
-        and is_member_session_key(skey)
+        and mounts_session_control(skey)
     ):
         return skey
     return ""
@@ -1140,13 +1151,20 @@ async def _start_kiro_runtime_impl(
                     else None
                 )
                 try:
+                    # Off the loop where a key can exist; every other host stops at the
+                    # membership read, as on create (H13).
+                    member_key = (
+                        await asyncio.to_thread(self._member_session_key)
+                        if self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+                        else ""
+                    )
                     handle = await self._load_session_with_retry(
                         runtime,
                         str(session_file) if session_file else "",
                         resume_sid,
                         session_cwd,
                         agent,
-                        member_session_key=self._member_session_key(),
+                        member_session_key=member_key,
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
                         kas_memory_mode=self.kas_memory_mode,
@@ -1276,11 +1294,19 @@ async def _start_kiro_runtime_impl(
                     elif isinstance(remote, PreparedCloudSession) and session_key:
                         _forget_cloud_placement_when_ended(session_key, runtime)
             try:
+                # Read off the loop only on a backend that can mount session control (a
+                # Bot worker's answer reads its Bot's record); every other host reaches
+                # the membership read and stops, with no thread hop (H13).
+                member_key = (
+                    await asyncio.to_thread(self._member_session_key)
+                    if self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+                    else ""
+                )
                 handle = await runtime.create_session(
                     cwd=session_cwd,
                     agent=agent or None,
                     harness_options=_harness_session_options(self),
-                    member_session_key=self._member_session_key(),
+                    member_session_key=member_key,
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,

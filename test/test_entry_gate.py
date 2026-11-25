@@ -909,6 +909,48 @@ def _record_binds(monkeypatch, reserved_sockets) -> list[tuple[str, int]]:
     return asked
 
 
+def test_bound_port_reads_the_gate_the_start_set() -> None:
+    app = web.Application()
+    assert entry_gate.bound_port(app) == 0
+    ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
+    assert entry_gate.bound_port(app) == 0
+    ref.gate = entry_gate.EntryGate(port=8443)
+    assert entry_gate.bound_port(app) == 8443
+    assert entry_gate.bound_port(None) == 0
+    assert entry_gate.bound_port(MagicMock()) == 0
+
+
+def test_the_host_hint_names_every_host_the_entry_port_accepts() -> None:
+    for host in ("127.0.0.1", "[::1]", "localhost"):
+        assert host in entry_gate.HOST_HINT
+        request = make_mocked_request("GET", MODELS, headers={"Host": f"{host}:8443"})
+        assert entry_gate._names_loopback(request)
+    assert len(entry_gate._LOOPBACK_HOSTS) == 3
+
+
+@_binds
+@pytest.mark.asyncio
+async def test_the_log_line_of_an_open_port_carries_the_host_hint(
+    runner, monkeypatch, reserved_sockets, caplog
+) -> None:
+    _record_binds(monkeypatch, reserved_sockets)
+
+    async def _no_ipv6_loopback(bind_once, port):
+        return None
+
+    # One listener is enough for the log line, on a machine with or without ``::1``.
+    monkeypatch.setattr(entry_gate, "_bind_ipv6_loopback", _no_ipv6_loopback)
+    port = reserved_sockets["127.0.0.1"].getsockname()[1]
+    app = web.Application()
+    ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
+    with caplog.at_level(logging.INFO, logger="kiro_crew.dashboard.entry_gate"):
+        await entry_gate.start(ref, runner, port, 5476)
+    assert entry_gate.bound_port(app) == port
+    opened = [r.getMessage() for r in caplog.records if r.getMessage().startswith("entry port")]
+    assert len(opened) == 1
+    assert opened[0] == f"entry port {port} on 127.0.0.1 (Crew API only); {entry_gate.HOST_HINT}"
+
+
 @_binds
 @_needs_ipv6
 @pytest.mark.asyncio

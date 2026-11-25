@@ -304,8 +304,8 @@ Set `version` to the Kiro Crew version your fleet runs.
 Point `uvx` at the index through uv's own configuration on every client
 machine, for example in the user's `uv.toml` (`~/.config/uv/uv.toml` on macOS
 and Linux, `%APPDATA%\uv\uv.toml` on Windows). Kiro Crew's release CDN serves
-one index per release channel, and each version is listed only on the channel
-that released it (see
+one index per release channel, and each version is listed on the channel that
+released it (the insider index also lists stable releases; see
 [Installing a published wheel with pip](install.md#installing-a-published-wheel-with-pip)),
 so clients that can reach the CDN can put that index directly in `url`. Pick
 the channel in the URL by your fleet's version: `stable` (as below) for a
