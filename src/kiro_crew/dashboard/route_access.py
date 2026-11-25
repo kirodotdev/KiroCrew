@@ -90,6 +90,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/managed-environments/{sandbox_id}/{action}"): RouteAccess(
         "managed_environments.change", UNSTABLE
     ),
+    # Owner dashboard only (handlers/tailnet_mobile.py _guard); removes only the listed
+    # phone-access keys from config.local.json.
+    ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(
+        "tailnet.mobile.clear_overrides", UNSTABLE
+    ),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),

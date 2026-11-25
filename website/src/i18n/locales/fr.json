@@ -10888,7 +10888,12 @@
       "automatic_https": "Une fois HTTPS activé pour ce tailnet, Tailscale crée et renouvelle automatiquement le certificat privé.",
       "setting_up": "Configuration de l’accès mobile…",
       "setup_action": "Configurer et afficher le QR",
-      "setup_timeout": "L’accès mobile n’est pas prêt. Vérifiez la configuration, puis réessayez."
+      "setup_timeout": "L’accès mobile n’est pas prêt. Vérifiez la configuration, puis réessayez.",
+      "fix_overrides": "Corriger",
+      "fix_overrides_title": "Supprimer ces remplacements ?",
+      "fix_overrides_values": "config.local.json définit <local/> ; config.json appliquerait <applies/>",
+      "fix_overrides_body": "Chaque clé reprend alors sa valeur de config.json et la configuration est relancée. Aucune autre clé de config.local.json ne change.",
+      "fix_overrides_confirm": "Supprimer et réessayer"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Ferme cet onglet. La session reste dans la barre latérale.",

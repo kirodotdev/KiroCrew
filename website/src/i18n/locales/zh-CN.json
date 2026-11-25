@@ -10398,7 +10398,12 @@
       "automatic_https": "为此 tailnet 启用 HTTPS 后，Tailscale 会自动创建并续期专用证书。",
       "setting_up": "正在配置手机访问…",
       "setup_action": "一键设置并显示二维码",
-      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。"
+      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。",
+      "fix_overrides": "修复此问题",
+      "fix_overrides_title": "要移除这些覆盖项吗？",
+      "fix_overrides_values": "config.local.json 中为 <local/>；移除后将应用 config.json 的 <applies/>",
+      "fix_overrides_body": "移除后，每个键将改用 config.json 中的值，并重新运行设置。config.local.json 中的其他键不会改变。",
+      "fix_overrides_confirm": "移除并重试"
     },
     "sessionTabStrip": {
       "close_tab_hint": "关闭此标签页。会话仍保留在侧边栏中。",

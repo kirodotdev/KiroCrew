@@ -1941,7 +1941,12 @@
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
       "setting_up": "Setting up phone access…",
       "setup_action": "Set up & show QR",
-      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again."
+      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again.",
+      "fix_overrides": "Fix this",
+      "fix_overrides_title": "Remove these overrides?",
+      "fix_overrides_values": "config.local.json sets <local/>; config.json would apply <applies/>",
+      "fix_overrides_body": "Each key then takes its config.json value, and setup runs again. No other key in config.local.json changes.",
+      "fix_overrides_confirm": "Remove and retry"
     },
     "filePickerMenu": {
       "type_2_chars_to_search_files_enter_held": "Type 2+ chars to search files and folders… — Enter won’t send yet; press Esc, then Enter sends the message",
