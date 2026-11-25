@@ -741,6 +741,45 @@ def test_one_pass_hands_each_agent_its_own_entry(managed, edition):
     assert second["mcpServers"]["edition-vend"] == _EDITION_ENTRY
 
 
+def test_one_pass_keeps_the_reads_every_agent_owner_lookup_repeats():
+    # ``owning_app_for_agent`` keeps each app's declared agents through
+    # ``build_reuse.reuse``, which keeps nothing outside ``one_build``. A skill-view
+    # pass asks it once per agent, so without a block it re-reads every app's
+    # manifest for every agent on every session start.
+    from kiro_crew import build_reuse
+
+    reads = []
+
+    def read():
+        reads.append(1)
+        return ("app", True, frozenset())
+
+    with defaults.one_pass():
+        for _ in range(3):
+            build_reuse.reuse(("app-agents", "/apps/pinger"), read, weight=lambda kept: 1)
+    assert reads == [1]
+    build_reuse.reuse(("app-agents", "/apps/pinger"), read, weight=lambda kept: 1)
+    assert reads == [1, 1], "outside a pass every lookup reads afresh"
+
+
+def test_one_pass_reads_the_app_s_servers_once_for_every_agent(managed, monkeypatch):
+    _install_app(monkeypatch)
+    owned_reads = []
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.mcp_sources._app_owned_mcp_keys",
+        lambda: owned_reads.append(1) or {_APP_KEY: True},
+    )
+    spec = {"tools": ["fs_read", "tool_search"]}
+    with defaults.one_pass():
+        first = defaults.with_default_crew_servers("mine", spec)
+        first["mcpServers"][_APP_KEY]["args"].append("edited")
+        second = defaults.with_default_crew_servers("yours", spec)
+    assert owned_reads == [1]
+    assert second["mcpServers"][_APP_KEY] == _APP_ENTRY, "each agent gets its own entry"
+    defaults.with_default_crew_servers("theirs", spec)
+    assert owned_reads == [1, 1], "outside a pass every call reads afresh"
+
+
 def test_one_pass_asks_the_skill_view_admission_once(managed, edition, projects):
     from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 
