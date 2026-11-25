@@ -1065,7 +1065,7 @@ and it IS selectable.
 | 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it (for the `.venv`, `strands-harness` with `botocore[crt]`, which boto3 needs to read a `login` AWS profile). |
 | 7 selectability | **Selectable**, on `Routing.VERIFIED_GATE_EXTENSION` with `Readback.LOAD_MARKER` — pi's and DeepSeek's member. |
 | 8 live spill | Reached for the turn classes (`test/fixtures/acp_frames/strands/`): a shell call denied then allowed, and an operator project's custom `@tool` and vended `file_editor` each asking. In a dashboard pod the session started and the read-back passed; the model call there needs a credential the sandbox lets the child read (see the provider table in agent-host-contract.md §3). |
-| verified range | Strands CLI **0.2.4** exactly (`STRANDS_VERIFIED_VERSION`); its published package differs from 0.2.3, the release the captures were taken on, only in its version. Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
+| verified range | Strands CLI **0.2.4** exactly (`STRANDS_VERIFIED_VERSION`); its published package differs from 0.2.3, the release the captures were taken on, only in its version. Fail closed on another release: the install row and the spawn refuse it with the pinned install command. Both read the release from `@strands-agents/cli`'s own `package.json` (`strands_installed_version`), in an npm install or in the npm prefix a Volta shim runs (`tools/image/packages` beside Volta's `bin`); an install whose manifest is not found there is let through. |
 
 Three things this run produced that the checklist did not ask for.
 
