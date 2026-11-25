@@ -2,6 +2,7 @@
   "pages.chat.quickAsk.vault_more",
   "components.gitPanel.repos_omitted",
   "components.queueStack.queued_count",
+  "components.updateFoundModal.work_holders_more",
   "apps.designCritique.waitingScreen.title_uploading_screens",
   "apps.designCritique.waitingScreen.title_reading_flow",
   "apps.designCritique.scopingPicker.screens_found_count",

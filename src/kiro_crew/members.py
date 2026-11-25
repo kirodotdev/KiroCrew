@@ -185,6 +185,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         undo_member_self,
         update_member_self,
     )
+    from kiro_crew.members_parts.worker_conducts import (  # noqa: F401
+        _LOGGED_PLAIN,
+        _THREAD_BORN_WORKER_SLOTS,
+        _log_plain,
+        conducting_worker_session,
+        is_thread_born_crewmate_worker,
+        is_thread_born_worker_session,
+        mounts_session_control,
+        note_worker_lineage,
+    )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import json  # noqa: F401
@@ -208,6 +218,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
 _OWNERS = (
     "kiro_crew.members_parts.member_space",
     "kiro_crew.members_parts.member_sessions",
+    "kiro_crew.members_parts.worker_conducts",
     "kiro_crew.members_parts.dm_bindings",
     "kiro_crew.members_parts.self_edit",
     "kiro_crew.members_parts.prompt_layers",

@@ -5851,6 +5851,11 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} 시작에 실패했습니다.",
+      "dismiss": "새로고침할 때까지 {{name}} 시작 알림 닫기",
+      "open_app": "{{name}} 열기"
+    },
     "crewPrFacts": {
       "read": "{{time}}에 확인"
     },
@@ -9885,7 +9890,26 @@
       "updating": "업데이트 중…",
       "updating_and_restarting": "업데이트 및 다시 시작 중…",
       "version_is_available": "{{productName}} <0>{{version}}</0> 버전을 사용할 수 있습니다.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_other": "{{n}}개 더",
+      "work_kind_approval": "승인 대기 중",
+      "work_kind_callback": "수신 메시지",
+      "work_kind_channel_handler": "채널 메시지",
+      "work_kind_other": "기타 작업",
+      "work_kind_queued": "대기 중인 메시지",
+      "work_kind_refusal_write": "전송 중인 답장",
+      "work_kind_script": "예약된 작업",
+      "work_kind_subagent": "서브에이전트",
+      "work_kind_task_runner": "작업 실행기",
+      "work_kind_turn": "채팅 턴",
+      "work_kind_unreadable": "확인할 수 없는 작업",
+      "work_kind_update_build": "업데이트 빌드",
+      "work_kind_workflow": "워크플로",
       "work_running_busy": "지금 재시작하면 실행 중인 작업이 중단됩니다. 활성 항목: {{active}}.",
+      "work_running_now": "실행 중: {{holders}}.",
       "work_running_quiet": "최근 채팅 활동이 있었고, 지금 재시작하면 작성 중인 메시지가 끊길 수 있습니다. {{minutes}}분 동안 활동이 없으면 안전합니다.",
       "work_running_title": "작업이 아직 실행 중입니다",
       "you_can_update_anytime_from_settings_about": "설정 → 정보에서 언제든지 업데이트할 수 있습니다."
@@ -10393,7 +10417,12 @@
       "automatic_https": "이 tailnet에 HTTPS가 활성화되면 Tailscale이 비공개 인증서를 자동으로 만들고 갱신합니다.",
       "setting_up": "휴대폰 액세스를 설정하는 중…",
       "setup_action": "설정하고 QR 표시",
-      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
+      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요.",
+      "fix_overrides": "수정하기",
+      "fix_overrides_title": "이 재정의를 제거하시겠습니까?",
+      "fix_overrides_values": "config.local.json 설정: <local/>, 적용될 config.json 값: <applies/>",
+      "fix_overrides_body": "제거하면 각 키에 config.json 값이 적용되고 설정이 다시 실행됩니다. config.local.json의 다른 키는 바뀌지 않습니다.",
+      "fix_overrides_confirm": "제거 후 다시 시도"
     },
     "sessionTabStrip": {
       "close_tab_hint": "이 탭을 닫습니다. 세션은 사이드바에 남습니다.",
@@ -14818,6 +14847,7 @@
       "your_crewmate": "Bot",
       "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로",
       "could_not_repair_images": "이미지를 복구하지 못했습니다",
+      "could_not_edit_and_resend": "편집 후 다시 보낼 수 없습니다",
       "session_closed_elsewhere": "이 채팅은 이 창 밖에서 닫혔습니다."
     },
     "chatSidebar": {

@@ -791,13 +791,19 @@ def to_client_custom_agent(
     :func:`_project_mcp_servers`. The default is empty, which is correct for a
     caller with no shared gateway: nothing is stubbed, so nothing is subtracted.
 
-    *member_dispatch* widens the projection for a crew member's DM session:
-    ``@kirocrew-dashboard`` joins ``tools`` (the server itself arrives as a
-    session-level entry, but KAS grants only what ``tools`` names), and the
-    member's approval-free dashboard verbs join the ``allowedTools`` input
-    BEFORE the governance ceiling filter — the conductor grant set plus the
-    write verbs the server-side ``created_by`` ownership fence bounds, passed
-    through the same ceiling every other grant crosses.
+    *member_dispatch* widens the projection for a session that mounts session
+    control: ``@kirocrew-dashboard`` joins ``tools`` (the server itself arrives as a
+    session-level entry, but KAS grants only what ``tools`` names). A crew member's
+    DM session on *session_key* (``members.is_member_session_key``) also takes the
+    member's approval-free dashboard verbs, joined to the ``allowedTools`` input
+    BEFORE the governance ceiling filter — the conductor grant set plus the write
+    verbs the server-side ``created_by`` ownership fence bounds, passed through the
+    same ceiling every other grant crosses. Any other mounted session, a caller
+    passing no key included, takes no verb here: a Bot's conducting worker carries
+    its conductor-mode verbs (``agent._CONDUCTOR_DASHBOARD_GRANTS``) on its own spec
+    (``mate_worker_conducts.conducting_worker_kit``), where its Bot's revocations and
+    held limits strip them as they strip every grant, and its seeds and closes go
+    through the own-child exemption.
 
     *crew_panel* widens it the same way for the member's own webview:
     ``@kirocrew-panel`` joins ``tools`` and ``agent._MEMBER_PANEL_GRANTS`` joins
@@ -862,11 +868,17 @@ def to_client_custom_agent(
         # circular import: agent imports the config loader, which sits below
         # this module; resolved at call time like the other heavy seams here.
         from kiro_crew.agent import _MEMBER_DASHBOARD_GRANTS
+        from kiro_crew.members import is_member_session_key
 
-        base_allowed = allowed_tools_input if isinstance(allowed_tools_input, list) else []
-        merged = list(base_allowed)
-        merged.extend(g for g in _MEMBER_DASHBOARD_GRANTS if g not in merged)
-        allowed_tools_input = merged
+        # The member set is the thread's alone, picked by its key and never by the
+        # worker template, so a mounted key this cannot place takes no verb here. A
+        # Bot's conducting worker brings its conductor-mode verbs on its spec, after
+        # its Bot's revocations and held limits have stripped them.
+        if is_member_session_key(session_key):
+            base_allowed = allowed_tools_input if isinstance(allowed_tools_input, list) else []
+            merged = list(base_allowed)
+            merged.extend(g for g in _MEMBER_DASHBOARD_GRANTS if g not in merged)
+            allowed_tools_input = merged
 
     if crew_panel:
         # Same two moves as the block above, and for the same reason: the panel

@@ -280,6 +280,7 @@ async def post_linked_approval(
     slot_key: str = "",
     future: asyncio.Future[str] | None = None,
     channel_trust: bool = False,
+    thread_trust: bool = False,
     requester: str = "",
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
@@ -296,7 +297,8 @@ async def post_linked_approval(
     ``channel_trust`` (a Slack Code channel's own session) adds a secondary
     "Trust this channel" button, answered by
     :mod:`kiro_crew.slack.code_channels.approval_picker` with that module's
-    owner gates; this function grants nothing for it.
+    owner gates; this function grants nothing for it. With ``thread_trust`` too
+    (a Conductor thread's conductor) the button reads "Trust this thread".
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
@@ -337,13 +339,20 @@ async def post_linked_approval(
         tool_name=tool_name,
         mcp_identity_trusted=mcp_identity_trusted,
     )
-    trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
+    # A Conductor thread's card (even in a DM) offers the thread's own Trust, which
+    # reaches its workers, never the per-session one.
+    trust_grantable = (
+        not thread_trust
+        and channel.startswith("D")
+        and _linked_trust_grantable(session_key, request_id)
+    )
     # _build_approval_blocks is typed for AcpEvent but only reads the
     # attributes the shim provides.
     blocks = _build_approval_blocks(
         event,  # type: ignore[arg-type]
         is_dm=trust_grantable,
         channel_trust=channel_trust and not trust_grantable,
+        thread_trust=thread_trust,
     )
     try:
         approval_ts = await slack.post_blocks(
@@ -380,7 +389,12 @@ def mcp_identity_text(server: str, tool: str) -> str:
 
 
 def _build_approval_blocks(
-    event: LLMEvent, is_dm: bool = True, source: str = "", *, channel_trust: bool = False
+    event: LLMEvent,
+    is_dm: bool = True,
+    source: str = "",
+    *,
+    channel_trust: bool = False,
+    thread_trust: bool = False,
 ) -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
@@ -393,6 +407,8 @@ def _build_approval_blocks(
         channel_trust: A Slack Code channel's own session: adds a secondary
             "Trust this channel" button between Approve and Reject (Approve
             stays the one primary button).
+        thread_trust: With *channel_trust*, a Conductor thread's conductor: the
+            button reads "Trust this thread" and its dialog names the thread.
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
@@ -435,16 +451,21 @@ def _build_approval_blocks(
             TRUST_CALL_ACTION_ID,
             TRUST_CALL_CONFIRM,
             TRUST_CALL_LABEL,
+            TRUST_THREAD_CONFIRM,
+            TRUST_THREAD_LABEL,
         )
 
         buttons.append(
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": TRUST_CALL_LABEL},
+                "text": {
+                    "type": "plain_text",
+                    "text": TRUST_THREAD_LABEL if thread_trust else TRUST_CALL_LABEL,
+                },
                 "action_id": TRUST_CALL_ACTION_ID,
                 "value": req_value,
-                # It reaches the whole channel and its running workers: ask first.
-                "confirm": TRUST_CALL_CONFIRM,
+                # It reaches the whole room and its running workers: ask first.
+                "confirm": TRUST_THREAD_CONFIRM if thread_trust else TRUST_CALL_CONFIRM,
             },
         )
     buttons.append(

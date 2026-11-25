@@ -404,6 +404,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
+    BOT_MAX_WORKERS_CONDUCTING,
     BOT_MAX_WORKERS_DEFAULT,
     BOT_MAX_WORKERS_MAX,
     BOT_MAX_WORKERS_MIN,

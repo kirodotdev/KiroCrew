@@ -287,6 +287,26 @@ async def load_session(
     mirrored = None
     # The KAS crewmate worker's stub names, set beside its one overlay lookup.
     worker_stubs: frozenset[str] | None = None
+    member_withheld = False
+    if member_session_key:
+        # circular import: members' module graph is heavy; resolved at call
+        # time, same as create_session().
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        # Asked on the resume path for the reason it is asked on create, and it
+        # matters MORE here: session/load re-initializes the session's servers, so
+        # an unasked question would re-mount a switched-off server onto a
+        # conversation whose session/new withheld it. Asked before the array is
+        # built, so a mirrored host's projection gives a crewmate worker the
+        # conducting kit only on a resume that mounts it, and keyed by the session,
+        # so a worker's Bot's file is read as its spec reads it.
+        member_withheld = await asyncio.to_thread(
+            session_mcp_server_is_disabled,
+            MEMBER_DISPATCH_SERVER,
+            active_agent,
+            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+            session_key=session_key or "",
+        )
     if has_mirror(self.acp_backend):
         mirrored = await self._mirrored_session_mcp(
             active_agent,
@@ -296,6 +316,7 @@ async def load_session(
             permission_surface_owned=(
                 harness_state is not None and self._harness.permission_surface_owned(harness_state)
             ),
+            session_control_mounted=bool(member_session_key) and not member_withheld,
             harness_state=harness_state,
         )
     # The Connection bridge snapshots the array below wrote, for shutdown.
@@ -331,7 +352,6 @@ async def load_session(
         mcp_servers = await self._session_label_elements(
             mcp_servers, active_agent, session_work_dir, session_key
         )
-    member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
     member_mounted = False
@@ -339,20 +359,8 @@ async def load_session(
     # Kiro construction path is untouched by this capability (H13).
     panel_mounted = False
     if member_session_key:
-        # circular import: members' module graph is heavy; resolved at call
-        # time, same as create_session().
         from kiro_crew.members import MEMBER_DISPATCH_SERVER, member_dispatch_session_server
 
-        # Asked on the resume path for the reason it is asked on create, and it
-        # matters MORE here: session/load re-initializes the session's servers, so
-        # an unasked question would re-mount a switched-off server onto a
-        # conversation whose session/new withheld it.
-        member_withheld = await asyncio.to_thread(
-            session_mcp_server_is_disabled,
-            MEMBER_DISPATCH_SERVER,
-            active_agent,
-            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
-        )
         member_entry = (
             None
             if member_withheld

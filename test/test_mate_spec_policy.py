@@ -866,7 +866,7 @@ def test_adding_a_deny_reloads_the_crewmates_idle_worker(home, monkeypatch):
     assert scheduled == ["pixel"]
     reloaded: list[str] = []
 
-    async def reload_if_idle(state, slot):
+    async def reload_if_idle(state, slot, **_kw):
         reloaded.append(slot.key)
         return reload_mod.RELOADED
 

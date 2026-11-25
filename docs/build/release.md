@@ -251,8 +251,9 @@ code.
      alias table of the engine the newest kiro-cli release runs with
      Kiro Crew's, as the paragraph after "Bumping:" in
      `src/kiro_crew/acp/kas_pin.py` describes, and open an issue for any
-     difference no open issue already tracks: that engine can be newer than
-     the pin, and a spelling Kiro Crew lacks is a spec hook it refuses.
+     difference no open issue already tracks and no `docs/decisions/` entry
+     settles: that engine can be newer than the pin, and a spelling Kiro Crew
+     lacks is a spec hook it refuses.
    - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
      `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
      redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged
@@ -596,16 +597,23 @@ and this job downloads no artifacts to race.
 
 Nothing in the repository publishes to PyPI, and `pip install kirocrew` from
 PyPI is not a supported path. `publish-cli.yml` builds a **private static PEP 503
-index** per channel under `feed/<channel>/simple/` and installs go through it:
+index** per channel under `feed/<channel>/simple/`. The channel index carries
+only `kirocrew`, so an install still needs PyPI for the dependencies, and a
+different project named `kirocrew` is on PyPI. pip pools candidates across every
+index it is given and takes the highest version, so the documented installs never
+hand pip the channel index beside PyPI. They use uv with the channel index first
+(uv's default `first-index` strategy takes `kirocrew` only from it), or install
+the signed wheel by direct URL with `#sha256=`
+([install guide](../guides/install.md#installing-a-published-wheel-with-pip)):
 
 ```bash
-pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/insider/simple/
+# kirocrew-uv.toml: [[index]] url = ".../feed/stable/simple/", ignore-error-codes = [403]
+uv tool install --config-file kirocrew-uv.toml kirocrew
 ```
 
-`--extra-index-url` (not `--index-url`) is deliberate: the channel index carries
-only `kirocrew`, so cutting off PyPI would fail on dependency resolution. pip
-verifies the `#sha256=` fragment on each link, giving the same fail-closed
-integrity as the feed. Because CloudFront with OAC does not resolve directory
+The CDN answers 403 for a package it does not host, which is why the index needs
+`ignore-error-codes`. Each link carries a `#sha256=` fragment that the installer
+verifies, giving the same fail-closed integrity as the feed. Because CloudFront with OAC does not resolve directory
 indexes, the workflow uploads both `.../simple/kirocrew/index.html` and the
 literal trailing-slash key `.../simple/kirocrew/` that pip requests, using
 `s3api put-object` (an `s3 cp` to a trailing-slash destination silently writes a
@@ -653,8 +661,8 @@ wheel and `kirocrew kas install`, which stays the fallback and migration path.
   `latest-cli.json`, naming that tag's wheel. `latest-cli.json` itself is never
   changed, because released clients refuse any field they do not know. The
   checksums go to `<prefix>/SHA256SUMS-platform`, and the channel's PEP 503 page
-  lists the platform wheels too, so `pip install kirocrew --extra-index-url ...`
-  takes the platform wheel by tag on its own.
+  lists the platform wheels too, so an install from the channel index takes the
+  platform wheel by tag on its own.
 - **Clients.** `wheel_engine.fetch_verified_manifest` and `cli.sh` read
   `latest-cli.json` first: it names the channel's version. On a host with a tag
   (`wheel_engine_platform.host_wheel_tag`; Linux needs glibc 2.28) they then read

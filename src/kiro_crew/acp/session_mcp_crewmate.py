@@ -20,6 +20,7 @@ def _crewmate_worker_spec(
     spec_policy_honoured: bool = False,
     mcp_tool_limits_honoured: bool = False,
     native_tool_limits_honoured: bool = False,
+    mounted: bool | None = None,
 ) -> dict[str, Any] | None:
     """*spec*, or for a crewmate's worker session the worker spec it runs on.
 
@@ -41,6 +42,8 @@ def _crewmate_worker_spec(
     On a host that applies no ``hooks``, ``permissions`` or ``toolsSettings``
     (*spec_policy_honoured* False, the default), a crewmate file that sets any
     refuses the worker, naming them.
+    *mounted* is whether this session's start mounts session control, handed down
+    to the seam so the conducting kit follows that start; ``None`` reads the switch.
     """
     from kiro_crew.mate_worker import MATE_WORKER_AGENT, WorkerKitUnreadable, worker_session_spec
 
@@ -58,7 +61,36 @@ def _crewmate_worker_spec(
         refuse_spec_policy=not spec_policy_honoured,
         mcp_tool_limits_carried=mcp_tool_limits_honoured,
         native_tool_limits_carried=native_tool_limits_honoured,
+        mounted=mounted,
     )
+
+
+def crewmate_worker_switch_off_spec(
+    agent: str | None, spec: dict[str, Any] | None, session_key: str
+) -> dict[str, Any] | None:
+    """*spec*, or for a crewmate's worker session the spec built for it, read for switch-offs.
+
+    :func:`_crewmate_worker_spec` builds the worker base plus its Bot's file, which is
+    the spec that session's composition reads a whole-server ``disabled`` from, so a
+    server the Bot's file switches off reads as off here too. Built with no limit
+    refused and no conducting kit (``mounted=False``): neither changes a switch-off.
+    Any other agent or no key keeps *spec*, and so does a worker whose spec cannot be
+    built: its start is refused where that spec is projected, and an unreadable
+    source switches nothing off. Blocking.
+    """
+    if not session_key:
+        return spec
+    try:
+        return _crewmate_worker_spec(
+            agent,
+            spec,
+            session_key,
+            tool_limits_honoured=True,
+            spec_policy_honoured=True,
+            mounted=False,
+        )
+    except Exception:  # noqa: BLE001 - an unreadable source switches nothing off
+        return spec
 
 
 def _crewmate_conductor_spec(

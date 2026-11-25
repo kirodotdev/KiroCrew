@@ -465,6 +465,15 @@ class _AnswerStream:
         self.tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
         self.status_dirty = False  # True when status needs reset to base on next text chunk
         self.tool_gap = False
+        # A V2 refusal fallback dropped the refused model's streamed text this
+        # turn (``on_model_fallback``). It forces the final seal to OVERWRITE the
+        # visible copy, because the refused text was already appended to the live
+        # stream and only the redaction-overwrite path rewrites it.
+        self.refused_drop = False
+        # The last refused text dropped above, kept so a refusal the fallback did
+        # NOT recover from still shows the provider's own words rather than an
+        # empty reply (``_deliver_answer`` restores it when nothing answered).
+        self.last_refused = ""
 
     async def rotate(self) -> str | None:
         """Stop the dead stream and start a fresh one. Returns new ts or None.
@@ -1192,6 +1201,60 @@ class _AnswerStream:
             self.active_task_id = ""
         if not self.use_slack_stream:
             self.accumulated += "\n🚫 _Tool use rejected._"
+
+    async def on_model_fallback(self, event: LLMEvent) -> None:
+        """Drop the refused model's streamed text when a V2 refusal hop supersedes it.
+
+        On a content-filter refusal the engine streams the refused model's canned
+        explanation as ordinary ``agent_message_chunk`` text, THEN a
+        ``model_fallback`` hop (``cause: refused``, ``promoted: false``), then the
+        fallback model's real answer (see
+        ``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``). Everything
+        streamed before the hop is the refused model's words, not the turn's
+        answer: this discards it so only the fallback's reply remains, and arms
+        the seal to rewrite the live message, since the refused text was already
+        appended to it. The PROMOTION notice (``promoted: true``) and a
+        throttle/capacity hop (``cause`` other than ``refused``) move nothing
+        visible and are left alone -- a mid-answer throttle hop keeps its partial.
+
+        Best-effort: MUST NOT raise. A raise here would escape into the turn
+        loop's generic ``except Exception`` catch-all and fake a terminal error
+        on a turn that is still answering.
+        """
+        try:
+            notice = event.model_fallback
+            if notice is None or notice.promoted or notice.cause != "refused":
+                return
+            # Keep the refused text in case the fallback never answers, so a
+            # still-refused turn shows the provider's words, not an empty reply.
+            # Only when there is some: a second refused hop or a decline before
+            # any new text must not blank the FIRST refusal's words.
+            if self.accumulated.strip():
+                self.last_refused = self.accumulated
+            self.refused_drop = True
+            # Discard every content-bearing buffer so the fallback's answer opens
+            # a fresh segment. The live-channel state (``stream_ts``,
+            # ``use_slack_stream``, ``delivered``) is untouched: the seal's
+            # overwrite, forced by ``refused_drop``, replaces the refused text on
+            # the single live message in the common case (no rotation, no wait).
+            self.accumulated = ""
+            self.stream_buffer = ""
+            self.bracket_hold = ""
+            self.echo_held = ""  # re-arm the alternation-placeholder hold
+            self.carried = ""
+            # A run held at a ``wait`` boundary, and a for-good delivery loss, are
+            # both refused text here, not answer: drop them so ``_give_back``
+            # cannot put the refused run back on an earlier message and the debt
+            # notice does not claim answer text was lost.
+            self.move_back = None
+            self.debt = False
+            self.line_start = True
+            self.tool_gap = False
+            self.redactor.reset()
+        except Exception:  # noqa: BLE001 — refusal drop is best-effort visibility
+            logger.warning(
+                "Slack on_model_fallback failed — leaving the reply intact", exc_info=True
+            )
 
     async def finish(self, untrimmed: str) -> None:
         """Complete the last task card and send what the stream still holds.

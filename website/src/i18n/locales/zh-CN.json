@@ -5851,6 +5851,11 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} 启动失败。",
+      "dismiss": "在重新加载前隐藏 {{name}} 的启动通知",
+      "open_app": "打开 {{name}}"
+    },
     "crewPrFacts": {
       "read": "{{time}} 读取"
     },
@@ -9885,7 +9890,26 @@
       "updating": "更新中…",
       "updating_and_restarting": "正在更新并重启…",
       "version_is_available": "{{productName}} <0>{{version}}</0> 可以更新。",
+      "work_holder_age": "{{kind}}（{{age}}）",
+      "work_holder_named": "{{name}}（{{kind}}）",
+      "work_holder_named_age": "{{name}}（{{kind}}，{{age}}）",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_other": "还有 {{n}} 项",
+      "work_kind_approval": "等待批准",
+      "work_kind_callback": "传入消息",
+      "work_kind_channel_handler": "频道消息",
+      "work_kind_other": "其他工作",
+      "work_kind_queued": "排队中的消息",
+      "work_kind_refusal_write": "正在发送的回复",
+      "work_kind_script": "定时任务",
+      "work_kind_subagent": "子代理",
+      "work_kind_task_runner": "任务运行器",
+      "work_kind_turn": "聊天轮次",
+      "work_kind_unreadable": "无法检查的工作",
+      "work_kind_update_build": "更新构建",
+      "work_kind_workflow": "工作流",
       "work_running_busy": "现在重启会中断正在运行的工作。活跃项目：{{active}}。",
+      "work_running_now": "正在运行：{{holders}}。",
       "work_running_quiet": "最近有聊天活动，现在重启可能会截断你正在输入的消息。{{minutes}} 分钟无活动后重启才安全。",
       "work_running_title": "仍有工作在运行",
       "you_can_update_anytime_from_settings_about": "可随时在“设置 → 关于”中更新。"
@@ -10393,7 +10417,12 @@
       "automatic_https": "为此 tailnet 启用 HTTPS 后，Tailscale 会自动创建并续期专用证书。",
       "setting_up": "正在配置手机访问…",
       "setup_action": "一键设置并显示二维码",
-      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。"
+      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。",
+      "fix_overrides": "修复此问题",
+      "fix_overrides_title": "要移除这些覆盖项吗？",
+      "fix_overrides_values": "config.local.json 中为 <local/>；移除后将应用 config.json 的 <applies/>",
+      "fix_overrides_body": "移除后，每个键将改用 config.json 中的值，并重新运行设置。config.local.json 中的其他键不会改变。",
+      "fix_overrides_confirm": "移除并重试"
     },
     "sessionTabStrip": {
       "close_tab_hint": "关闭此标签页。会话仍保留在侧边栏中。",
@@ -14818,6 +14847,7 @@
       "your_crewmate": "你的 Bot",
       "jump_to_new_other": "{{count}} 条新 · 跳到最新",
       "could_not_repair_images": "无法修复图片",
+      "could_not_edit_and_resend": "无法编辑并重新发送",
       "session_closed_elsewhere": "此聊天已在此窗口之外关闭。"
     },
     "chatSidebar": {

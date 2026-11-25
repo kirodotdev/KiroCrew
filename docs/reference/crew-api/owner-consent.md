@@ -190,10 +190,10 @@ Errors. The response body is [Error](schemas.md#error); its `error.code` field h
 
 | Status | Codes | Notes |
 |---|---|---|
-| 400 |  | invalid_request: a malformed body or field, or bots of an approval that are not a subset of the requested Bots or name a Bot this Kiro Crew does not have. invalid_scope: the scopes of an approval are empty, repeat a scope, or name a scope the app did not ask for |
+| 400 | `invalid_request`, `invalid_scope` | invalid_request: a malformed body or field, or bots of an approval that are not a subset of the requested Bots or name a Bot this Kiro Crew does not have. invalid_scope: the scopes of an approval are empty, repeat a scope, or name a scope the app did not ask for |
 | 401 | `invalid_token`, `stale_session_reauth` | 401: invalid_token, stale_session_reauth. For the Owner tier: no quota headers. |
 | 403 | `owner_only` | 403: owner_only. A delegated credential, an embed credential, a local app token and a dashboard session that is not the owner's all get this on the Owner tier; /v1 does not hide routes behind 404. |
 | 404 | `not_found`, `model_not_found` | 404: not_found, model_not_found. For embed-credential endpoints: no quota headers. |
-| 409 |  | grant_request_already_resolved: the request was already answered |
+| 409 | `grant_request_already_resolved` | grant_request_already_resolved: the request was already answered |
 | 500 | `internal_error` | 500: internal_error. For embed-credential endpoints: no quota headers. |
 | 503 | `instance_unavailable` | 503: instance_unavailable. For embed-credential endpoints: no quota headers. |

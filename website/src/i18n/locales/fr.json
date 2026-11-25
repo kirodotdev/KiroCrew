@@ -6195,6 +6195,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} n’a pas pu démarrer.",
+      "dismiss": "Masquer l’avis de démarrage de {{name}} jusqu’au rechargement",
+      "open_app": "Ouvrir {{name}}"
+    },
     "crewPrFacts": {
       "read": "lu à {{time}}"
     },
@@ -10365,7 +10370,28 @@
       "updating": "Mise à jour…",
       "updating_and_restarting": "Mise à jour et redémarrage…",
       "version_is_available": "{{productName}} <0>{{version}}</0> est disponible.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_many": "{{n}} autres",
+      "work_holders_more_one": "{{n}} autre",
+      "work_holders_more_other": "{{n}} autres",
+      "work_kind_approval": "en attente d’approbation",
+      "work_kind_callback": "message entrant",
+      "work_kind_channel_handler": "message du canal",
+      "work_kind_other": "autre travail",
+      "work_kind_queued": "messages en attente",
+      "work_kind_refusal_write": "réponse en cours d’envoi",
+      "work_kind_script": "tâche planifiée",
+      "work_kind_subagent": "sous-agent",
+      "work_kind_task_runner": "exécuteur de tâches",
+      "work_kind_turn": "tour de chat",
+      "work_kind_unreadable": "travail impossible à vérifier",
+      "work_kind_update_build": "build de mise à jour",
+      "work_kind_workflow": "flux de travail",
       "work_running_busy": "Redémarrer maintenant interromprait le travail en cours. Éléments actifs : {{active}}.",
+      "work_running_now": "En cours : {{holders}}.",
       "work_running_quiet": "Un chat a été actif récemment, et redémarrer maintenant pourrait couper un message que tu écris. Le redémarrage est sûr après {{minutes}} min sans activité.",
       "work_running_title": "Du travail est encore en cours",
       "you_can_update_anytime_from_settings_about": "Mets à jour à tout moment depuis Réglages → À propos."
@@ -10883,7 +10909,12 @@
       "automatic_https": "Une fois HTTPS activé pour ce tailnet, Tailscale crée et renouvelle automatiquement le certificat privé.",
       "setting_up": "Configuration de l’accès mobile…",
       "setup_action": "Configurer et afficher le QR",
-      "setup_timeout": "L’accès mobile n’est pas prêt. Vérifiez la configuration, puis réessayez."
+      "setup_timeout": "L’accès mobile n’est pas prêt. Vérifiez la configuration, puis réessayez.",
+      "fix_overrides": "Corriger",
+      "fix_overrides_title": "Supprimer ces remplacements ?",
+      "fix_overrides_values": "config.local.json définit <local/> ; config.json appliquerait <applies/>",
+      "fix_overrides_body": "Chaque clé reprend alors sa valeur de config.json et la configuration est relancée. Aucune autre clé de config.local.json ne change.",
+      "fix_overrides_confirm": "Supprimer et réessayer"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Ferme cet onglet. La session reste dans la barre latérale.",
@@ -15554,6 +15585,7 @@
       "jump_to_new_other": "{{count}} nouveaux · Aller en bas",
       "jump_to_new_many": "{{count}} nouveaux · Aller en bas",
       "could_not_repair_images": "Impossible de réparer les images",
+      "could_not_edit_and_resend": "Impossible de modifier et renvoyer",
       "session_closed_elsewhere": "Cette conversation a été fermée en dehors de cette fenêtre."
     },
     "chatSidebar": {

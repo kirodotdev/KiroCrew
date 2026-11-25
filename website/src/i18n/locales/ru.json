@@ -6367,6 +6367,11 @@
     "viewPr": "Пул-реквест"
   },
   "components": {
+    "startupModules": {
+      "failed": "Не удалось запустить {{name}}.",
+      "dismiss": "Скрыть уведомление о запуске {{name}} до перезагрузки страницы",
+      "open_app": "Открыть {{name}}"
+    },
     "crewPrFacts": {
       "read": "прочитано в {{time}}"
     },
@@ -10605,7 +10610,29 @@
       "updating": "Обновление…",
       "updating_and_restarting": "Обновление и перезапуск…",
       "version_is_available": "Доступна версия {{productName}} <0>{{version}}</0>.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_few": "ещё {{n}}",
+      "work_holders_more_many": "ещё {{n}}",
+      "work_holders_more_one": "ещё {{n}}",
+      "work_holders_more_other": "ещё {{n}}",
+      "work_kind_approval": "ждёт подтверждения",
+      "work_kind_callback": "входящее сообщение",
+      "work_kind_channel_handler": "сообщение канала",
+      "work_kind_other": "другая работа",
+      "work_kind_queued": "сообщения в очереди",
+      "work_kind_refusal_write": "отправка ответа",
+      "work_kind_script": "задание по расписанию",
+      "work_kind_subagent": "подагент",
+      "work_kind_task_runner": "исполнитель задач",
+      "work_kind_turn": "ход чата",
+      "work_kind_unreadable": "работа, которую не удалось проверить",
+      "work_kind_update_build": "сборка обновления",
+      "work_kind_workflow": "рабочий процесс",
       "work_running_busy": "Перезапуск сейчас прервёт выполняющуюся работу. Активных элементов: {{active}}.",
+      "work_running_now": "Сейчас выполняется: {{holders}}.",
       "work_running_quiet": "Недавно в чате была активность, и перезапуск сейчас может оборвать сообщение, которое ты пишешь. Через {{minutes}} мин без активности это безопасно.",
       "work_running_title": "Работа ещё выполняется",
       "you_can_update_anytime_from_settings_about": "Обновиться можно в любой момент в разделе «Настройки → О программе»."
@@ -11128,7 +11155,12 @@
       "automatic_https": "После включения HTTPS для этой tailnet Tailscale автоматически создаёт и продлевает закрытый сертификат.",
       "setting_up": "Настраивается доступ с телефона…",
       "setup_action": "Настроить и показать QR",
-      "setup_timeout": "Доступ с телефона не перешёл в состояние готовности. Проверьте настройку и повторите попытку."
+      "setup_timeout": "Доступ с телефона не перешёл в состояние готовности. Проверьте настройку и повторите попытку.",
+      "fix_overrides": "Исправить",
+      "fix_overrides_title": "Удалить эти переопределения?",
+      "fix_overrides_values": "config.local.json задаёт <local/>; config.json применит <applies/>",
+      "fix_overrides_body": "После этого каждый ключ получит значение из config.json, а настройка запустится снова. Другие ключи в config.local.json не изменятся.",
+      "fix_overrides_confirm": "Удалить и повторить"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Закрывает эту вкладку. Сессия останется на боковой панели.",
@@ -15922,6 +15954,7 @@
       "jump_to_new_many": "{{count}} новых · К последним",
       "jump_to_new_other": "{{count}} новых · К последним",
       "could_not_repair_images": "Не удалось восстановить изображения",
+      "could_not_edit_and_resend": "Не удалось изменить и отправить снова",
       "session_closed_elsewhere": "Этот чат закрыли за пределами этого окна."
     },
     "chatSidebar": {

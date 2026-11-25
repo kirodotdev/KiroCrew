@@ -6195,6 +6195,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "startupModules": {
+      "failed": "Impossibile avviare {{name}}.",
+      "dismiss": "Nascondi l’avviso di avvio di {{name}} fino al ricaricamento",
+      "open_app": "Apri {{name}}"
+    },
     "crewPrFacts": {
       "read": "letto alle {{time}}"
     },
@@ -10365,7 +10370,28 @@
       "updating": "Aggiornamento…",
       "updating_and_restarting": "Aggiornamento e riavvio in corso…",
       "version_is_available": "{{productName}} <0>{{version}}</0> è disponibile.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_many": "altri {{n}}",
+      "work_holders_more_one": "{{n}} altro",
+      "work_holders_more_other": "altri {{n}}",
+      "work_kind_approval": "in attesa di approvazione",
+      "work_kind_callback": "messaggio in arrivo",
+      "work_kind_channel_handler": "messaggio del canale",
+      "work_kind_other": "altro lavoro",
+      "work_kind_queued": "messaggi in coda",
+      "work_kind_refusal_write": "risposta in invio",
+      "work_kind_script": "attività pianificata",
+      "work_kind_subagent": "subagente",
+      "work_kind_task_runner": "esecutore di attività",
+      "work_kind_turn": "turno della chat",
+      "work_kind_unreadable": "lavoro non verificabile",
+      "work_kind_update_build": "build dell’aggiornamento",
+      "work_kind_workflow": "workflow",
       "work_running_busy": "Riavviare ora interromperebbe il lavoro in esecuzione. Elementi attivi: {{active}}.",
+      "work_running_now": "In corso: {{holders}}.",
       "work_running_quiet": "Una chat è stata attiva di recente e riavviare ora potrebbe troncare un messaggio che stai scrivendo. Dopo {{minutes}} min senza attività è sicuro.",
       "work_running_title": "Il lavoro è ancora in corso",
       "you_can_update_anytime_from_settings_about": "Aggiorna in qualsiasi momento da Impostazioni → Informazioni."
@@ -10883,7 +10909,12 @@
       "automatic_https": "Dopo aver attivato HTTPS per questa tailnet, Tailscale crea e rinnova automaticamente il certificato privato.",
       "setting_up": "Configurazione dell’accesso dal telefono…",
       "setup_action": "Configura e mostra QR",
-      "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova."
+      "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova.",
+      "fix_overrides": "Correggi",
+      "fix_overrides_title": "Rimuovere queste sostituzioni?",
+      "fix_overrides_values": "config.local.json imposta <local/>; config.json applicherebbe <applies/>",
+      "fix_overrides_body": "Ogni chiave prende quindi il valore di config.json e la configurazione viene eseguita di nuovo. Nessun’altra chiave di config.local.json cambia.",
+      "fix_overrides_confirm": "Rimuovi e riprova"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Chiude questa scheda. La sessione resta nella barra laterale.",
@@ -15554,6 +15585,7 @@
       "jump_to_new_other": "{{count}} nuovi · Vai in fondo",
       "jump_to_new_many": "{{count}} nuovi · Vai in fondo",
       "could_not_repair_images": "Impossibile riparare le immagini",
+      "could_not_edit_and_resend": "Impossibile modificare e reinviare",
       "session_closed_elsewhere": "Questa chat è stata chiusa fuori da questa finestra."
     },
     "chatSidebar": {

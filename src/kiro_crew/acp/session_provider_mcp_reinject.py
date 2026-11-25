@@ -33,6 +33,7 @@ Instance fields read: ``_channel_id``, ``_handle``, ``_runtime``, ``_session_key
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -137,17 +138,6 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
         return
     # Consumed here, before any await: see the docstring.
     self._mcp_reinject_pending = False
-    # The same rule as the provider layer's ``_member_session_key``: a member DM
-    # on a dispatch-capable backend re-mounts its dispatch server on load, and
-    # this load must carry what the first one carried or the thread loses its
-    # tools mid-conversation. Resolved here because the provider layer sits
-    # above this module.
-    member_session_key = ""
-    if runtime.acp_backend in ACP_BACKENDS_MEMBER_DISPATCH and self._session_key:
-        from kiro_crew.members import is_member_session_key
-
-        if is_member_session_key(self._session_key):
-            member_session_key = self._session_key
     agent = old.active_agent or runtime._agent or None
     logger.info(
         "session %s: MCP config changed; re-sending its projection before this turn",
@@ -158,6 +148,27 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
 
     person = getattr(old, "kas_folder_hooks_projected", False) is True
     try:
+        # The same rule as the provider layer's ``_member_session_key``: a member
+        # DM, or a Bot worker that conducts, on a dispatch-capable backend re-mounts
+        # its dispatch server on load, and this load must carry what the first one
+        # carried or the session loses its tools mid-conversation. A worker keeps the
+        # mount only when its start took it (the old handle's
+        # ``member_dispatch_mounted``) and its Bot's switch is still on: a re-inject
+        # never mounts the kit on a worker that started plain, since only a real
+        # start's first turn checks its approval mode against the Bot's Profile,
+        # and a switch turned off reloads it plain. Resolved here because the
+        # provider layer sits above this module, and inside the ``try`` because a
+        # worker's answer reads its Bot's record off the loop: a cancel during that
+        # read restores the consumed mark like any other exit below.
+        member_session_key = ""
+        if runtime.acp_backend in ACP_BACKENDS_MEMBER_DISPATCH and self._session_key:
+            from kiro_crew.members import is_member_session_key, mounts_session_control
+
+            if is_member_session_key(self._session_key) or (
+                getattr(old, "member_dispatch_mounted", None) is True
+                and await asyncio.to_thread(mounts_session_control, self._session_key)
+            ):
+                member_session_key = self._session_key
         with runtime.keep_record_on_teardown(sid), person_turn_claim(person):
             await runtime.evict_session(sid)
             new_handle = await runtime.load_session(
