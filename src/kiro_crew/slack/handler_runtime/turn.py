@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _WORKING,
         CONTEXT_EVENT_COMPACTION,
         EVENT_COMPLETE,
+        EVENT_MODEL_FALLBACK,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
         EVENT_THINKING_CHUNK,
@@ -997,6 +998,12 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 await answer.release_quoted_hold()
                 if await _answer_permission_request(turn, client, event):
                     break
+
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # The engine moved this turn onto another model. On a refusal hop
+                # the refused model's streamed text is dropped here; the delivery
+                # path prepends the fallback notice and overwrites the live copy.
+                await answer.on_model_fallback(event)
 
             elif event.kind == CONTEXT_EVENT_COMPACTION:
                 # The backend compacted the session on its own: the session-start

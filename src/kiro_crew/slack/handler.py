@@ -42,6 +42,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
+    STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.agent_discovery import (
@@ -138,6 +139,7 @@ from kiro_crew.llm_helpers import (
     SESSION_NOT_FOUND_RETRY_NOTICE,
     acp_error_is_session_not_found,
     acp_error_needs_fresh_credentials,
+    annotate_model_fallback,
     credential_give_up_text,
     record_interaction_event,
     save_conversation_turn_off_loop,
@@ -199,6 +201,7 @@ from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
+    EVENT_MODEL_FALLBACK,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,

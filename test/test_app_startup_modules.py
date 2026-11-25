@@ -287,7 +287,7 @@ def test_app_without_startup_entry_gets_no_row(app_home, tmp_path):
 def _write_startup(code):
     ui = app_dir("ghost") / "ui"
     ui.mkdir(exist_ok=True)
-    (ui / "startup.mjs").write_text(code, encoding="utf-8")
+    (ui / "startup.mjs").write_bytes(code.encode("utf-8"))  # no CRLF on Windows
 
 
 def test_code_changed_after_approval_needs_approval_again(app_home, tmp_path, no_confinement):
