@@ -91,6 +91,43 @@ def test_a_failing_file_the_verdict_would_skip_is_a_diff_caused_miss(
     assert "| G | 4 | 1 | 0 |" in text and "Days of data: 0.0." in text
 
 
+def test_a_run_and_its_misses_carry_the_statuses_the_verdict_covered(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    covered = {"M": 2, "A": 1}
+    failed_run(gh, 1, 7, ["test/test_a.py"], verdict={**VERDICT, "covered": covered})
+    # A verdict written before the scorer had the field: it reads as none covered.
+    assert "covered" not in VERDICT
+    failed_run(gh, 2, 8, ["test/test_c.py"])
+    gh.add(3, 9, [[job(31, 1), job(32, 2)]])
+
+    assert run_main(tmp_path) == 0
+
+    by_run = {row["run"]: row["covered"] for row in rows(tmp_path, "run")}
+    assert by_run == {1: {"A": 1, "M": 2}, 2: {}, 3: {}}
+    assert all(ledger.valid_row(row) for row in rows(tmp_path))
+    text = summary(tmp_path)
+    assert "(a run counts under each status it has): none 2; A: 1; M: 1." in text
+    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_a.py | G |  | A1 M2 |" in text
+    assert "| #8 | aaaaaaaaaaaa | 2 | test/test_c.py | G |  |  |" in text
+
+
+@pytest.mark.parametrize(
+    "bad", [[], "M", {"m": 1}, {"MM": 1}, {"M": 0}, {"M": True}, {"M": "1"}, {"M": 1.0}]
+)
+def test_a_covered_table_of_another_shape_is_no_verdict_and_no_row(bad: object) -> None:
+    assert ledger.parse_verdict(json.dumps({**VERDICT, "covered": bad})) is None
+    good = ledger.parse_verdict(json.dumps({**VERDICT, "covered": {"R": 1, "A": 3}}))
+    assert good is not None and good["covered"] == {"A": 3, "R": 1}
+    absent = ledger.parse_verdict(json.dumps(VERDICT))
+    assert absent is not None and absent["covered"] == {}
+    row = {**SKIP, "kind": "run", "verdict": "select", "tiers": {"A": 1}}
+    del row["reason"]
+    # A row an earlier pass wrote has no `covered`; it still reads.
+    assert ledger.valid_row(row) and ledger.valid_row({**row, "covered": {"D": 1}})
+    assert not ledger.valid_row({**row, "covered": bad})
+
+
 def test_a_file_failing_on_another_pr_in_the_window_is_shared_and_reported_apart(
     gh: FakeGh, tmp_path: Path
 ) -> None:
@@ -725,7 +762,7 @@ def test_no_summary_cell_can_carry_markup(gh: FakeGh, tmp_path: Path) -> None:
     assert run_main(tmp_path) == 0
 
     line = next(text for text in summary(tmp_path).splitlines() if "test/test_a.py" in text)
-    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |"
+    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |  |"
 
 
 # -- WINDOWS ------------------------------------------------------------------
