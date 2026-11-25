@@ -296,6 +296,18 @@ def test_a_zh_answer_found_by_a_term_is_labelled_in_chinese() -> None:
                 ("怎么分屏", "zh-CN", "setting:chat.split-view-session-grid"),
                 ("hide a bot from the sidebar", "en", "members.bot-sessions-switch"),
                 ("在侧边栏隐藏这个 bot", "zh-CN", "members.bot-sessions-switch"),
+                (
+                    "How do I turn off the recurring 'Goal / Needs you / Doing' message?",
+                    "en",
+                    "setting:chat.since-you-left-briefs",
+                ),
+                ("关闭回来时的总结", "zh-CN", "setting:chat.since-you-left-briefs"),
+                # How a model rewrote that question on a real KAS turn.
+                (
+                    "turn off recurring Goal / Needs you / Doing message check-ins",
+                    "en",
+                    "setting:chat.since-you-left-briefs",
+                ),
             ],
         ),
         *named_cases(

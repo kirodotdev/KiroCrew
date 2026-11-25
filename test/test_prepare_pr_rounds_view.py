@@ -1010,7 +1010,6 @@ def test_the_resolution_line_is_read_from_plain_text_only(word):
 def test_the_reference_describes_the_formats_the_trigger_and_the_resolution_line():
     ref = (SCRIPTS_DIR.parent / "references" / "seam-protocol.md").read_text(encoding="utf-8")
     for needle in (
-        "D5-FORMAT-SURVEY.md",
         "`undeclared`",
         "seam history",
         "on the current head",

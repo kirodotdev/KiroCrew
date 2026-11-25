@@ -1,0 +1,31 @@
+{
+  "name": "guide_first",
+  "description": "A where-is question about Kiro Crew itself goes find_ui -> guide_start before the agent reads code. Built from a real miss: asked how to turn off the recurring 'Goal / Needs you / Doing' message, a bot grepped the repo and described the path in words, offering no guide until asked.\n",
+  "dimensions": [
+    "guide_first"
+  ],
+  "judge_criteria": "The agent should call find_ui first, then guide_start with the guide_ref it returned (Settings > Chat > Sessions > Since you left briefs), and not answer from reading Kiro Crew's source.",
+  "sessions": [
+    {
+      "name": "ask",
+      "turns": [
+        {
+          "user": "How do I turn off the recurring 'Goal / Needs you / Doing' message?",
+          "assertions": [
+            {
+              "type": "tool_called",
+              "value": "find_ui"
+            },
+            {
+              "type": "tool_order",
+              "tools": [
+                "find_ui",
+                "guide_start"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

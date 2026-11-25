@@ -303,7 +303,10 @@ function substantiveLength(text: string): number {
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
  * any length, else -1. System notice rows (a watchdog recycle, a compaction)
- * never qualify: they trail the answer and must not displace it. Shared by the
+ * never qualify: they trail the answer and must not displace it. Nor does any
+ * row after the turn's last stamped reply (`isTurnEnd`, the reply the runner
+ * recorded): a workflow result or another writer's row landing after it would
+ * otherwise fold the turn's final answer. Shared by the
  * auto-expand decision and the render split so the "what's the always-visible
  * conclusion vs collapsed reasoning" answer can't drift between them (a
  * mismatch wrongly expands reasoning above a visible match and pushes it down).
@@ -311,7 +314,8 @@ function substantiveLength(text: string): number {
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
+  const lastReply = items.findLastIndex(it => it.kind === 'single' && isTurnEnd(it.msg))
+  for (let i = lastReply >= 0 ? lastReply : items.length - 1; i >= 0; i--) {
     const it = items[i]
     if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i

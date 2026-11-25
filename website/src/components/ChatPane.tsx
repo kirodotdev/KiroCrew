@@ -62,6 +62,8 @@ import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useSessionPalette } from '../hooks/useSessionPalette'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from '../pages/chat/shared-crew/MessageByline'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
@@ -70,6 +72,7 @@ import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { useHeldWindowWarm } from './chat/useHeldWindowWarm'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -632,21 +635,33 @@ export default function ChatPane({
     if (pagesActiveSlot) loadOlder()
     else loadOlderPane()
   }, [crewmateQuietUnproven, canWalk, walkLoading, walkFailed, pagesActiveSlot, loadOlder, loadOlderPane])
-  const { data: slotDetail, isPending: slotDetailPending, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
-    queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
-    queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
-    staleTime: Infinity,
-  })
   // The hydrate is refused while this pane's slot is the active one, so it runs
   // again when the slot stops being active: a split pane left on an empty or
   // still-loading active slot has no page marker for the hold below to read,
   // and this re-run is what places its page and flags it.
   const paneIsActive = slotKey === activeSlot
+  // A held window is re-read by a warm instead of this pane's hydrate, which
+  // would discard its page (see useHeldWindowWarm).
+  const heldWarm = useHeldWindowWarm(slotKey, paneIsActive)
+  const { data: slotDetail, isLoading: slotDetailLoading, isError: slotDetailQueryFailed, refetch: refetchSlotDetailQuery } = useQuery({
+    queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
+    queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
+    staleTime: Infinity,
+    enabled: !heldWarm.warm,
+  })
+  // On the warm path the warm stands in for the hydrate read: its failure shows
+  // the same notice, and its Retry runs the warm again.
+  const slotDetailFailed = heldWarm.warm ? heldWarm.failed : slotDetailQueryFailed
+  const refetchSlotDetail = heldWarm.warm ? heldWarm.retry : refetchSlotDetailQuery
+  // ...and its landed page sets the hydrated latch the unread landing waits on.
+  useEffect(() => {
+    if (heldWarm.settled) setHydratedSlot(slotKey)
+  }, [heldWarm.settled, slotKey])
   // The transcript skeleton, on the same terms as the Sessions chat's slot
   // load: only while this slot's first page is in flight and nothing of it is
   // in the store yet. A cached revisit has its page at once, so it never shows
   // on a later refresh; a host that cannot vouch for history never sees it.
-  const firstPageSkeleton = historyKnown && slotDetailPending && allMessages.length === 0
+  const firstPageSkeleton = historyKnown && slotDetailLoading && allMessages.length === 0
   useEffect(() => {
     if (slotDetail?.messages) {
       dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
@@ -710,8 +725,21 @@ export default function ChatPane({
   } = useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError })
 
 
+  // Text for the transcript's one live region, the same decision ChatPage
+  // makes; a crewmate's replies are spoken under the crewmate's name.
+  const paneTail = messages[messages.length - 1]
+  const paneApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const paneUserSpeaker = useUserRowSpeaker(
+    paneTail?.meta ?? undefined,
+    slotKey,
+    paneTail?.content,
+    onSessionOpen ? sessions : undefined,
+  )
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    announcementTail(messages), paneTail?.role === 'streaming' || running, crewmate ? (crewmate.label || crewmate.name) : undefined, slotKey, paneApprovals, messages.length, paneUserSpeaker,
+  )
   const { messageQuote, paneHiddenCommands, slashError, setSlashError, doSend, doSteer, onDirectQuestionSend } = useChatPaneSend({
-    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent,
+    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent,
   })
   const { recoverInto: recoverQuoteInto } = messageQuote
 
@@ -1075,6 +1103,7 @@ export default function ChatPane({
             onArtifactOpen={onArtifactOpen}
             transcript={{
               sessionId: `pane:${slotKey}`,
+              announcement,
               scrollerRef,
               onScroll: onScrollPin,
               onAtBottomChange: setIsAtBottom,

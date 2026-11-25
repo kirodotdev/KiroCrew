@@ -278,8 +278,8 @@ any future import-graph work will meet the same ones:
 ### Rules this section leaves behind
 
 **Roots and paths are read, never transcribed, and every hardcoded path is
-asserted to exist.** `ALWAYS_ON` carried such an assertion from the start; the
-broad-impact prefixes did not, and one of them — `website/src/test/setup` —
+asserted to exist.** The broad-impact path prefixes once had no such assertion,
+and one of them — `website/src/test/setup` —
 resolved to nothing at all, so the real vitest setup graph (`integration/setup.ts`
 per `vite.config.ts`, plus the global MSW handlers in `integration/mocks/server.ts`
 that every integration spec inherits without naming) was never treated as

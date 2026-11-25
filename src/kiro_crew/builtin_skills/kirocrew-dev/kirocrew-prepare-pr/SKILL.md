@@ -297,7 +297,6 @@ the commands in `references/cancel-runs.md`.
 **Before you rerun a red test**, prove the red is not yours, record it in the
 flake ledger, and rerun at most once, only what failed; never re-push an
 identical tree. Read `references/rerun-red.md` first.
-  lands on top of it**, not rerun again.
 
 1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash guard (`single_commit` only): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** do NOT push (read each diff; name yours after `--`; it also checks `prepare-pr-sweep.md`, read stderr), **41** follow the remedy, **2** env.
 

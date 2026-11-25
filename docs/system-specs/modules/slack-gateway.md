@@ -1446,7 +1446,7 @@ Each channel can have its own activation mode controlling when the bot responds:
 **Owner commands** (`!channel`):
 - `!channel` — show current channel activation mode and agent
 - `!channel always|mention|observe|off` — set activation mode, persisted to `config.json`
-- `!channel agent <name>` — set per-channel agent override
+- `!channel agent <name>` — set per-channel agent override. The name is a kiro agent or a Crew Bot (a `config.agents` key, matched like `!bot`); an exact Bot key wins, and an unknown name lists both
 - `!channel agent off` — remove per-channel agent override
 
 **Implementation**: `events.py:_route_message()` checks `orch._cfg.channel_config(channel)` before dispatching. The `@mention` prefix is stripped from text before sending to the LLM. `_persist_channel_config()` (`slack/handler_runtime/inbound.py`, re-exported by `slack/handler.py`) writes to `config.json` atomically via tmp+rename.

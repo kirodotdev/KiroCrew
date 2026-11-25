@@ -589,6 +589,9 @@ export interface AssistantBubbleOptions {
   /** Draw link previews under the reply's links (Settings -> Chat -> Link
    *  Previews). Absent: off. */
   linkPreviews?: boolean
+  /** Who the reply's offscreen speaker heading names (a crewmate's chat: the
+   *  crewmate). Absent: the product name, as on the main chat. */
+  speakerName?: string
 }
 
 /**
@@ -675,6 +678,7 @@ export function renderAssistantBubble(
       // it. Only the card's Allow needs a local slot (`redactionSlot`).
       blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
+      speakerName={opts.speakerName}
       suppressSteerAck={suppressSteerAck}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}

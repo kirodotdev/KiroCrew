@@ -1340,18 +1340,27 @@ async def _bang_channel(
                 channel, "Usage: `!channel agent <name>` or `!channel agent off`", reply_ts
             )
             return ""
-        agent_name = parts[2]
+        # The name is the whole remainder, so a multi-word Bot display name stays whole.
+        agent_name = cmd_text.split(maxsplit=2)[2].strip()
         if agent_name.lower() == "off":
             agent_name = ""
         else:
-            resolved = await asyncio.to_thread(
-                _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-            )
+            project = _thread_projects.get(session_key)
+
+            def _channel_agent(typed: str) -> str | None:
+                # A Bot key runs the channel as that Bot (channel_crew), so an exact key
+                # wins; a Bot named only by case or display name is matched last.
+                if typed in crew_bots():
+                    return typed
+                return _resolve_agent_name(typed, project) or resolve_bot_name(typed)
+
+            resolved = await asyncio.to_thread(_channel_agent, agent_name)
             if not resolved:
                 names = await asyncio.to_thread(_list_all_agent_names)
+                bots = await asyncio.to_thread(bots_text)
                 await slack.post_message(
                     channel,
-                    f"Unknown agent `{agent_name}`. Available: {names}",
+                    f"Unknown agent `{agent_name}`. Available: {names}. Crew Bots: {bots}",
                     reply_ts,
                 )
                 return ""
