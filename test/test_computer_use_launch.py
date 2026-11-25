@@ -174,6 +174,30 @@ class TestLaunchResolutionTrust:
         launch = self._catalog(monkeypatch, [self._entry("notepad.exe", real)])
         assert launch.resolve_target("notepad") == (real, "notepad")
 
+    @pytest.mark.parametrize("failed", ["directory", "file", "root"])
+    def test_the_refusal_names_the_check_that_failed(self, monkeypatch, tmp_path, failed):
+        """Inside a root, the refusal names what this user can change, not "outside the roots".
+
+        A gateway with administrator rights can write every root, so it refuses every app
+        inside one by these checks; the outside text would send it after a reinstall.
+        """
+        root = tmp_path / "Program Files"
+        real = self._binary(root / "Vendor", "notepad.exe")
+        launch = self._protected(monkeypatch, tmp_path / "Other" if failed == "root" else root)
+        named = {"directory": str(root / "Vendor"), "file": real, "root": "'notepad'"}[failed]
+        if failed == "directory":
+            monkeypatch.setattr(launch, "_directory_is_writable", lambda d: d == named)
+        if failed == "file":
+            monkeypatch.setattr(launch, "_file_is_replaceable", lambda p: p == real)
+        self._catalog(monkeypatch, [self._entry("notepad.exe", real)])
+        with pytest.raises(ComputerUseError) as caught:
+            launch.resolve_target("notepad")
+        message = str(caught.value)
+        assert named in message
+        # The directory is a prefix of the file's path, so the file name tells them apart.
+        assert ("notepad.exe" in message) is (failed == "file")
+        assert ("outside the protected install directories" in message) is (failed == "root")
+
     def test_a_junction_cannot_borrow_a_protected_prefix(self, monkeypatch, tmp_path):
         # ``_under_protected`` realpaths BEFORE comparing, which is what stops a link
         # under a writable directory presenting a protected-looking path. Asserted

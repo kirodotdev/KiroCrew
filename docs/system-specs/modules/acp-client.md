@@ -3316,7 +3316,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   a project checkout is untrusted, and its relative ref must stay inside that
   checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`); a leading
   `$` counts as rooted there. A relative ref expands `$VAR` and `~` first
-  (`acp/kas_prompt.py` `prompt_file_path`), and `systemPrompt` is read when
+  (`acp/kas_prompt.py` `prompt_file_path`; on Windows a missing `HOME` is read
+  as `USERPROFILE`, `expand_ref_vars`), and `systemPrompt` is read when
   `prompt` is absent (`spec_prompt`), as on kiro-cli. A file that is missing,
   unreadable or empty (`KasPromptFileUnreadable`) is sent as `"prompt": ""` by
   `build_kas_custom_agents`, as kiro-cli runs it with no prompt, and the

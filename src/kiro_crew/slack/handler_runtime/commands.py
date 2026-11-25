@@ -1021,9 +1021,9 @@ async def _bang_conductor(
 ) -> str:
     """Turn this thread into a Conductor thread (``kiro_crew.slack.conductor_thread``).
 
-    Owner-only like every ``!`` command but ``!stop``, ``!title`` and ``!dashboard``:
-    the router refuses anyone else first, and the start asks ``is_owner`` again. The
-    rest of the message is the goal, the conductor's first turn.
+    Open to any allowed user (the sender gate's allowed-user list); the start asks
+    again, and a shared user who starts one is recorded as its opener. The rest of
+    the message is the goal, the conductor's first turn.
     """
     from kiro_crew.slack import conductor_thread
 
@@ -1061,8 +1061,8 @@ async def _bang_bot(
     The thread then runs as the Bot the way a channel pinned with
     ``slack.channels.<id>.agent`` does (``slack/channel_crew.py``): its mode, its
     identity, its workspace. It is stored as the thread's agent, as ``!ta`` does, so it
-    outlives a restart and beats the channel's pin. Owner-only like every ``!`` command
-    but ``!stop``, ``!title`` and ``!dashboard``: the router refuses anyone else first.
+    outlives a restart and beats the channel's pin. Open to any allowed user
+    (the sender gate's allowed-user list).
     """
     from kiro_crew.slack import conductor_thread
 
@@ -1834,10 +1834,12 @@ async def _route_bang_command(
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if _is_bang_command(cmd_text):
-        # !stop and !title are available to any allowed user; !dashboard mints a
-        # full-dashboard link, so it stays the owner's.
+        # !stop, !title, !bot and !conductor are available to any allowed user; a
+        # shared user who starts a Conductor thread is its opener, the one person
+        # besides the owner it admits. !dashboard mints a full-dashboard link, so it
+        # stays the owner's.
         _cmd_word = cmd_text.split()[0].lower()
-        if _cmd_word in ("!dashboard", "!stop", "!title"):
+        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor"):
             if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
                 _cmd_word == "!dashboard" and is_shared_listed(user_id)
             ):

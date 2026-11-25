@@ -122,6 +122,8 @@ class TestCommandSpec:
             "compact",
             "model",
             "agent",
+            "temporary",
+            "incognito",
             "status",
             "sessions",
             "bot",

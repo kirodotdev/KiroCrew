@@ -1263,6 +1263,18 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     )
   })
 
+  it('shows the stored triggers on General and saves changed ones', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, triggers: 'incidents, outages' }] })
+    const dialog = await openNew()
+    const input = within(dialog).getByRole('textbox', { name: 'Triggers' })
+    await waitFor(() => expect(input).toHaveValue('incidents, outages'))
+    fireEvent.change(input, { target: { value: 'incidents, pager escalations' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', expect.objectContaining({ triggers: 'incidents, pager escalations' })),
+    )
+  })
+
   it('clears the stored session colour and saves the empty value', async () => {
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, session_color: '#ef4444' }] })
     const dialog = await openNew()

@@ -1152,6 +1152,10 @@ async def _fetch_kiro_catalog() -> list[dict]:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_LIST_MODELS_BACKGROUND_TIMEOUT_SECS
             )
+        except asyncio.CancelledError:
+            # A gateway shutdown must not leave the call running with no owner.
+            await kill_and_reap(proc)
+            raise
         except asyncio.TimeoutError:
             # The whole group, while the supervisor still leads it: killing
             # only the leader would leave the command and its helpers running.

@@ -194,6 +194,8 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
     Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
     Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
+    On every platform a cwd that is not a directory (the scratch sweep removed or
+    quarantined its tree) is unreadable too, so it is never kept.
     """
     from kiro_crew import platform_compat
     from kiro_crew.agent_scratch import scratch_root
@@ -202,6 +204,8 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     path = Path(os.path.realpath(stored_cwd))
     if not path.is_relative_to(os.path.realpath(scratch_root())):
         return False
+    if not os.path.isdir(path):
+        return True
     if platform_compat.IS_WINDOWS:
         return False
     try:
@@ -915,8 +919,8 @@ async def _get_or_create_impl(
         nonlocal effective_cwd, skipped_hidden_cwd
         self._deps.logger.warning(
             "session %s: not starting in %s, an earlier process's scratch "
-            "directory the sandbox hides from this one; starting in the "
-            "default directory",
+            "directory this one cannot use (hidden by the sandbox, or since "
+            "removed); starting in the default directory",
             key,
             effective_cwd,
         )

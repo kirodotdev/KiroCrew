@@ -111,6 +111,11 @@ export interface MemberRosterRow {
   autocompact_pct?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
+  /** Workers can conduct (default off): each worker this Bot's thread opens may
+   *  split its task and open further workers of this Bot. Only the owner sets it,
+   *  on the Profile tab or through `PUT /api/agents/{name}`. Absent on an older
+   *  gateway: read it as off. */
+  worker_conducts?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
    *  identity every per-member route and binding is keyed on. */
   display_name?: string

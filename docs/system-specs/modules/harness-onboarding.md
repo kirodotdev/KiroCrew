@@ -1062,7 +1062,7 @@ and it IS selectable.
 | 3 spawn path | Done — `strands --acp-server --agent <crew home>/pi-gate/strands/agent.py [--model <id>] [--mcp-config <file>]` off the shared self-served ladder (`acp/harness/strands.py`). The Node under it is checked against the CLI's `engines.node` (22) with the same choice pi's launch makes. |
 | 4 handshake | Done — integer `1`. The CLI answers `agentInfo.version` `0.0.1` (a constant in its source), so the verified release is read from its `package.json` instead. |
 | 5 auth declaration | Done — `host_vault`, no leaf: the CLI stores no credential, and `agent.strands_env` carries provider settings from Crew's vault. |
-| 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it (for the `.venv`, `strands-harness` with `botocore[crt]`, which boto3 needs to read a `login` AWS profile). |
+| 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it (for the `.venv`, `strands-harness` with `botocore[crt]`, which boto3 needs to read a `login` AWS profile). The install requirement (`STRANDS_PYTHON_REQUIREMENT`) carries the `anthropic`, `gemini`, `litellm`, `ollama` and `openai` extras, because strands-harness installs a provider's SDK only through its extra and every `agent.strands_provider` but `bedrock` needs one. The probe checks for `strands_harness` alone, so an environment created without the extras reads as ready, and a non-Bedrock provider needs the install command run again there. |
 | 7 selectability | **Selectable**, on `Routing.VERIFIED_GATE_EXTENSION` with `Readback.LOAD_MARKER` — pi's and DeepSeek's member. |
 | 8 live spill | Reached for the turn classes (`test/fixtures/acp_frames/strands/`): a shell call denied then allowed, and an operator project's custom `@tool` and vended `file_editor` each asking. In a dashboard pod the session started and the read-back passed; the model call there needs a credential the sandbox lets the child read (see the provider table in agent-host-contract.md §3). |
 | verified range | Strands CLI **0.2.4** exactly (`STRANDS_VERIFIED_VERSION`); its published package differs from 0.2.3, the release the captures were taken on, only in its version. Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
@@ -1079,6 +1079,19 @@ process -- the bundled one, the operator's, a sub-agent -- raises one interrupt 
 tool call in Crew's gate envelope. A read-back boot of the same argv proves the module
 loaded from Crew's file under this session's nonce before the session's own process
 starts, and the completed-unasked tripwire watches the session itself.
+
+A read-back that sees no marker says why. The probe's stdout and stderr are drained
+on threads into buffers of at most 64 KiB each (`acp/harness/strands_readback.py`:
+the head of stdout, the tail of stderr), so the capture is bounded however much the
+child writes. A reader whose pipe a descendant still holds open is stopped once the
+probe is reaped and closes the pipe: it waits in bounded selects on POSIX, and on
+Windows it peeks the pipe rather than leave a read pending. The refusal says whether the CLI exited, with its code, or ran out the
+90 s wait. It then quotes the error the CLI answered `session/new` with, which is
+where Strands CLI 0.2.4 reports a project worker's exception while it stays up, and
+the last five stderr lines. A read-back that fails after the probe started, such as
+a CLI that died before taking the requests, quotes the same detail. Each quote passes
+the stderr-tail check (`acp/stderr_tail.py`), which withholds a quote whole when it
+carries a credential (`test/test_acp_strands_readback.py`).
 
 **The second is the operator's project.** `agent.strands_project` points the gate at
 the operator's own `agent.py`; the gate imports it with every `Agent` already gated,

@@ -26,6 +26,7 @@ failure returns. The fakes they share live in ``platform_compat_coverage_helpers
 from __future__ import annotations
 
 import ctypes
+import errno
 import io
 import logging
 import os
@@ -318,6 +319,40 @@ class TestWindowsLocking:
         lock.write_text("")
         with open(lock, "r+") as handle:
             assert pc._win_acquire_blocking(handle.fileno(), timeout=1.0) is False
+
+    @pytest.mark.parametrize(
+        ("code", "held"),
+        [
+            (errno.EACCES, True),
+            (getattr(errno, "EDEADLOCK", errno.EDEADLK), True),
+            (errno.EBADF, False),
+            (errno.EINVAL, False),
+        ],
+    )
+    def test_only_a_held_byte_is_waited_on(self, monkeypatch, tmp_path, code, held):
+        # A descriptor error polled to the ceiling reads as a stuck holder that
+        # does not exist, and the refusal carries no errno to diagnose it by.
+        class _Refusing(_FakeMsvcrt):
+            def locking(self, _fd: int, mode: int, _nbytes: int) -> None:
+                self.calls.append(mode)
+                raise OSError(code, os.strerror(code))
+
+        fake = _Refusing([])
+        _fake_windows(monkeypatch)
+        monkeypatch.setattr(pc, "msvcrt", fake, raising=False)
+        slept = _fake_clock(monkeypatch, [0.0, 0.0, 0.0, 999.0])
+        lock = tmp_path / "k.lock"
+        lock.write_text("")
+        with open(lock, "r+") as handle:
+            with pytest.raises(OSError) as excinfo:
+                with pc.file_lock(handle.fileno()):
+                    pytest.fail("body must not run without the lock")
+        if held:
+            assert "still held" in str(excinfo.value)
+            assert slept == [pc._WIN_LOCK_POLL_SECS]
+        else:
+            assert excinfo.value.errno == code
+            assert slept == [] and fake.calls == [_FakeMsvcrt.LK_NBLCK]
 
     @pytest.mark.asyncio
     async def test_acquire_is_single_shot_on_the_event_loop(self, monkeypatch, tmp_path):

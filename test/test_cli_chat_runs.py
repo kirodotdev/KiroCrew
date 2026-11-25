@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import cli_chat, cli_chat_runs
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import KiroCrewConfig
 
 #: ``_chat`` builds a ``SkillsLoader``, whose index and catalog worker outlive the test.
@@ -24,6 +26,7 @@ class _Provider:
     """
 
     is_kas_backend = True
+    capabilities = capabilities_for(ACP_BACKEND_KAS)
 
     def __init__(self, session_id: str, *, restores: bool = True) -> None:
         self.session_id = session_id

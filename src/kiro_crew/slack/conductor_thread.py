@@ -8,7 +8,8 @@ is the Slack side of it:
 
 * **The start** (:func:`start`): ``!conductor [goal]`` in a thread, or
   ``/kirocrew conductor <goal>`` in a channel or the app's DM, which posts a new parent
-  message first. Owner only (``is_owner``). Refused, with one fixed line and one SEL row
+  message first. The owner, or a shared user (``slack.shared_access``) Slack confirms,
+  who is then recorded as the thread's ``opener``. Refused, with one fixed line and one SEL row
   and nothing changed, while the feature is off
   (:func:`~kiro_crew.slack.code_channels.binding.thread_conductor_on`), outside a thread,
   in a code channel, in a thread already a Conductor thread, linked to a dashboard chat
@@ -21,7 +22,7 @@ is the Slack side of it:
   author, and routes the goal as the owner's message.
 * **The locks** (:func:`gate_message`), asked by ``route_linked_thread`` for every
   message in a bound thread before it reaches the session: only the owner's messages
-  reach it (anyone else's is dropped, audited, and told once); an ended thread, or one
+  reach it, and its opener's (anyone else's is dropped, audited, and told once); an ended thread, or one
   whose session is gone, answers a fixed notice and runs nothing (it never falls back to
   a plain agent); and ``!conductor``, ``!bot``, ``!ta``, ``!agent``, ``/agent`` and
   ``!link-to-dashboard`` are answered, never run, because the thread is one-way.
@@ -57,12 +58,17 @@ LINKED_TEXT = "This thread is linked to a dashboard chat. Start a Conductor in a
 BOT_THREAD_TEXT = "This thread runs a Bot. Start a Conductor in a new thread."
 LOCKED_TEXT = "This is a Conductor thread for good. Start a new thread for another agent or Bot."
 ENDED_TEXT = "This Conductor thread has ended. Start a new one."
-OWNER_ONLY_TEXT = "This thread is the owner's Conductor thread; only the owner's messages reach it."
+OWNER_ONLY_TEXT = (
+    "This thread is a Conductor thread; only its starter's and the owner's messages reach it."
+)
 NOT_HERE_TEXT = "Conductor threads are not available here: {why}."
 STARTED_TEXT = (
     "This thread is now a Conductor thread. It stays one, and only your messages reach it."
 )
 FAILED_TEXT = "The Conductor thread could not be started: {why}."
+GOAL_OWNER_ONLY_TEXT = (
+    "Only the owner can start one with a `/` command, `!temporary` or `!incognito` as its goal."
+)
 
 #: The SEL operation every start decision and every lock is audited under.
 OPERATION = "slack.conductor_thread"
@@ -167,7 +173,9 @@ async def gate_message(
     from kiro_crew.slack import handler
 
     resources = f"channel={channel} thread={reply_ts}"
-    if not handler.is_owner(user_id):
+    from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
+
+    if not (handler.is_owner(user_id) or opener_admitted(binding, user_id)):
         _audit(user_id, "denied", resources, "conductor thread is owner-only")
         if _first_telling(channel, reply_ts, user_id):
             try:
@@ -287,11 +295,14 @@ async def refusal(
     *,
     in_thread: bool,
     new_thread: bool = False,
+    goal: str = "",
 ) -> tuple[str, str]:
     """``(why, room)`` for a start here now: ``why`` is ``""`` when it may start.
 
     *new_thread*: the start will post its own parent message, so there is no thread
-    yet to judge; only the switch, the channel and the room are.
+    yet to judge; only the switch, the channel and the room are. *goal* is routed to
+    the conductor with commands on, so a shared starter's may not be one of the
+    owner's (``shared_command_refused``: a leading ``/``, a privacy modifier).
     """
     from kiro_crew.slack import handler
     from kiro_crew.slack.code_channels.binding import (
@@ -300,9 +311,12 @@ async def refusal(
         thread_conductor_on,
     )
     from kiro_crew.slack.features import conductor_mode_offered
+    from kiro_crew.slack.shared_access import shared_command_refused
 
-    if not handler.is_owner(user_id):
+    if not handler.is_owner(user_id) and not opener_for(user_id):
         return "Owner-only command.", ""
+    if shared_command_refused(user_id, goal):
+        return GOAL_OWNER_ONLY_TEXT, ""
     cfg = live_config()
     if not thread_conductor_on(cfg) or not conductor_mode_offered():
         return OFF_TEXT, ""
@@ -333,6 +347,17 @@ async def refusal(
     return "", room
 
 
+def opener_for(user_id: str) -> str:
+    """The ``opener`` a Conductor thread *user_id* starts records: ``""`` for the owner
+    and for anyone who may not start one, *user_id* for a shared user Slack confirms."""
+    from kiro_crew.slack import handler
+    from kiro_crew.slack.code_channels.shared_refusal import opener_of_request
+
+    if not user_id or handler.is_owner(user_id):
+        return ""
+    return opener_of_request(user_id) or ""
+
+
 async def _seed(slack: Any, channel: str, thread_ts: str, msg_ts: str, slot_key: str) -> str:
     """The framing the conductor's first turn reads, with the thread so far fenced."""
     from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
@@ -350,7 +375,8 @@ async def _seed(slack: Any, channel: str, thread_ts: str, msg_ts: str, slot_key:
     lines = [
         "[Slack Conductor thread]",
         f"This session is a Conductor thread in <#{channel}>. Your replies are posted "
-        "in the thread; only the owner's messages reach you. Workers' details stay out "
+        "in the thread; only the owner's and the thread starter's messages reach you. "
+        "Workers' details stay out "
         "of the thread: name a worker by its dashboard_link.",
         CONDUCTOR_GUIDANCE,
     ]
@@ -393,7 +419,9 @@ async def start(
     the thread before it is what the conductor is shown.
     """
     resources = f"channel={channel} thread={thread_ts}"
-    why, room = await refusal(slack, channel, thread_ts, user_id, session_key, in_thread=in_thread)
+    why, room = await refusal(
+        slack, channel, thread_ts, user_id, session_key, in_thread=in_thread, goal=goal
+    )
     if why:
         _audit(user_id, "denied", resources, why)
         return False, why
@@ -473,6 +501,7 @@ async def _bind(
         thread=True,
         room=room,
         title=title,
+        opener=opener_for(user_id),
     )
 
     async def _write_binding(slot: Any) -> None:
@@ -494,5 +523,5 @@ async def _bind(
     framing = await _seed(slack, channel, thread_ts, msg_ts, slot.key)
     if not _queue_seed(slot, framing):
         logger.warning("conductor thread %s: framing not queued", thread_ts)
-    note_thread_conductor_start(slot, user_id)
+    note_thread_conductor_start(slot, user_id, record)
     return slot

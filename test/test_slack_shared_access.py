@@ -715,7 +715,7 @@ async def test_a_linked_prompt_answered_during_the_trust_check_grants_nothing(
     fut = _trustable_linked_card(_floor_monkeypatch, requester=FRIEND)
     loop = asyncio.get_running_loop()
 
-    def answered_while_checked(slot_key: str, thread_ts: str) -> bool:
+    def answered_while_checked(slot_key: str, thread_ts: str, **_who: str) -> bool:
         if not slot_key:
             # Queue the dashboard's answer on the loop before to_thread completes.
             # The turn and card stay registered while only the prompt is settled.
@@ -1362,6 +1362,7 @@ _ADMISSION_SITES = {
     "slack/events.py",
     "slack/events_inbound.py",
     "slack/events_queue.py",
+    "slack/events_slash.py",  # `/kirocrew conductor` only
     "slack/handler_runtime/commands.py",
     "slack/handler_runtime/inbound.py",
     "slack/handler_runtime/permission_ladder.py",
