@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import type { useImeGuard } from '../../hooks/useImeGuard'
-import type { StopTurnOnEscape } from './stopKey'
+import type { ComposerEscapeKey } from './optimizeEscape'
 
 /**
  * The send key a non-editable rich composer still answers. A running-turn
@@ -11,7 +11,7 @@ import type { StopTurnOnEscape } from './stopKey'
  * Lexical drops key events once it is non-editable, so this listener accepts a
  * press aimed inside that editor, or at the page body while it last held focus.
  */
-export function useTypingLockKeys({ lockedRich, isRunning, allowIdleSend = false, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime }: {
+export function useTypingLockKeys({ lockedRich, isRunning, allowIdleSend = false, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, escapeKey, ime }: {
   lockedRich: boolean
   isRunning: boolean
   allowIdleSend?: boolean
@@ -21,7 +21,8 @@ export function useTypingLockKeys({ lockedRich, isRunning, allowIdleSend = false
   wrapperRef: React.RefObject<HTMLDivElement>
   ownsFocusRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
-  stopTurnOnEscape: StopTurnOnEscape
+  /** The composer's bare-Escape gate: it cancels an in-flight optimize, never the turn. */
+  escapeKey: ComposerEscapeKey
   ime: ReturnType<typeof useImeGuard>
 }): (e: React.KeyboardEvent<HTMLTextAreaElement>) => void {
   useEffect(() => {
@@ -48,9 +49,8 @@ export function useTypingLockKeys({ lockedRich, isRunning, allowIdleSend = false
   return (e) => {
     if (!isRunning) return
     const command = e.metaKey || e.ctrlKey
-    const bare = !command && !e.altKey && !e.shiftKey
-    if (e.key === 'Escape' && bare) {
-      stopTurnOnEscape(e, { native: e.nativeEvent, composing: ime.isComposing(e) })
+    if (e.key === 'Escape' && !command && !e.altKey && !e.shiftKey) {
+      escapeKey(e, { native: e.nativeEvent, composing: ime.isComposing(e) })
       return
     }
     const sendKey = sendOnEnter === 'ctrl-enter'

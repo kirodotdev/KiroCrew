@@ -199,7 +199,6 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.quick-send': ['fast send', 'enter to send', 'hotkey'],
   'chat.reasoning-starts-expanded': ['thinking expanded', 'expand reasoning', 'open thinking by default', 'thinking collapsed'],
   'chat.recall-sent-messages-with-arrow-keys': ['up arrow history', 'previous message', 'arrow up to edit', 'message history'],
-  'chat.require-a-second-escape-to-stop-the-turn': ['double escape', 'esc twice to stop', 'accidental stop', 'escape stops the agent'],
   'chat.response-verbosity': ['shorter answers', 'longer answers', 'concise replies', 'verbose replies', 'detailed answers', 'reply length', 'too wordy', 'brief answers'],
   'chat.restore-sessions': ['reopen chats on restart', 'restore open tabs', 'remember open sessions'],
   'chat.restore-window': ['remember window size', 'window position', 'reopen window where it was'],

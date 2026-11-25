@@ -88,8 +88,6 @@ export function groupShortcuts(group: string, macCtrl: boolean): ShortcutDef[] {
   const out: ShortcutDef[] = []
   for (const s of DEFAULT_SHORTCUTS.filter(s => s.group === group)) {
     if (!tabIndents && (s.id === 'list-indent' || s.id === 'list-outdent')) continue
-    // With a second Escape required, one Esc no longer stops the turn.
-    if (chatCfg.doubleEscapeToStop && s.id === 'stop-turn') continue
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
       out.push({ ...s, ctrl: false, alt: true })

@@ -86,7 +86,7 @@ import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-i
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
-import { useComposerStopKey } from './chat-input/stopKey'
+import { useComposerOptimizeEscape } from './chat-input/optimizeEscape'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
@@ -753,12 +753,13 @@ function ChatInput({
     () => (promptOptimizer ? () => { if (connected) optimizeUnlessLocked() } : undefined),
     [promptOptimizer, connected, optimizeUnlessLocked],
   )
-  // Escape stops the running turn when the prompt box is focused (issue #22315),
-  // yielding to a picker, dictation, an approval, a dialog, IME composition or
-  // an Escape that stopped voice read-back. Wired into BOTH editors: the textarea's keydown and the rich-text editor's
-  // Escape command, so the binding holds with "Style Markdown While Typing" on.
-  const { stopTurnOnEscape, escapeArmed } = useComposerStopKey({
-    slotKey: slotId, isRunning, stopState, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
+  // A bare Escape in the prompt box cancels an in-flight optimize, yielding to
+  // a picker, dictation, an approval, a dialog, IME composition or an Escape
+  // that stopped voice read-back. Wired into BOTH editors: the textarea's
+  // keydown and the rich-text editor's Escape command. Escape never stops a
+  // running turn; the Stop button does.
+  const composerEscape = useComposerOptimizeEscape({
+    anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
     optimizingRef, onCancelOptimize: cancelOptimize,
   })
   // While an optimize runs the rich-text editor is not editable, so Lexical
@@ -781,19 +782,17 @@ function ChatInput({
     const inside = !!target && !!wrapperRef.current?.contains(target)
     if (!inside && !(target === document.body && ownsFocusRef.current)) return 'pass'
     if (target?.tagName === 'TEXTAREA') return 'pass'
-    return stopTurnOnEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
+    return composerEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
   }, ESCAPE_PRIORITY.composer)
-  // A rich editor that is not editable drops every key, so Escape stops nothing there.
-  const richDropsKeys = lexicalComposer && !lexicalLoadFailed && (typingLocked || disabled || streamingDictationReadOnly)
   const lockedKeyDown = useTypingLockKeys({
     lockedRich: lexicalComposer && !lexicalLoadFailed && (typingLocked || streamingDictationReadOnly),
     isRunning,
     allowIdleSend: streamingDictationReadOnly,
-    sendOnEnter, connected, fireComposer: sendOrOptimize, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
+    sendOnEnter, connected, fireComposer: sendOrOptimize, wrapperRef, ownsFocusRef, optimizingRef, escapeKey: composerEscape, ime,
   })
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef,
-    fireComposer: sendOrOptimize, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
+    fireComposer: sendOrOptimize, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, escapeKey: composerEscape,
   })
   const { handleTextareaChange, handleLexicalChange, beforeInputRef } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef, mentionEditRange, inputRef })
   // Compose the textarea ref: the existing wiring (autosize + list continuation)
@@ -1540,7 +1539,7 @@ function ChatInput({
                 spellCheck={spellCheck}
                 inlineMarkdown={inlineMarkdown}
                 onMentionKey={onMentionKey}
-                onEscapeStop={stopTurnOnEscape}
+                onEscapeKey={composerEscape}
                 className={manualHeight !== null ? 'flex-1 min-h-0' : ''}
                 maxHeight={manualHeight !== null ? null : prefillHint ? INPUT_PREFILL_MAX_H : INPUT_DEFAULT_MAX_H}
               />
@@ -1757,14 +1756,14 @@ function ChatInput({
                   Steer and queue wait out an in-flight optimize, like the idle
                   Send: the draft is being rewritten under them. Enter already
                   waits (the keydown checks `optimizingRef`). Stop is not gated. */}
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled || optimizing} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} onBusyModePicked={focusComposerAfterPick} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} escapeStops={!richDropsKeys} />
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled || optimizing} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} onBusyModePicked={focusComposerAfterPick} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
             </>) : busyMode === 'responsive' && onStop && ((isRunning && !composerHasDraft) || stopState === 'soft_pending' || stopState === 'killing') ? (
               // Responsive (crewmate) mode keeps the Stop control: an empty
               // composer mid-turn is Stop, and a stop in progress keeps its
               // escalation states. Once the person types, the plain Send below
               // returns -- never the steer/queue split -- and the gateway
               // decides how that send reaches the running turn.
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={false} composerHasDraft={false} canSteer={false} steerOnly={false} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={false} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} escapeStops={!richDropsKeys} />
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={false} composerHasDraft={false} canSteer={false} steerOnly={false} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={false} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
             ) : !terminal.active && !typingLocked && (<>
               {optimizeButton}
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
@@ -1819,7 +1818,6 @@ function ChatInput({
               </button>
               )}
             </>)}
-            {escapeArmed && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="escape-stop-armed-hint">{i18nT('components.chatInput.esc_again_to_stop')}</span>}
           </div>
         </div>
 

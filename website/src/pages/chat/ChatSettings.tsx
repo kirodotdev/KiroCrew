@@ -151,10 +151,6 @@ export interface ChatConfig {
    *  than something a client with no stored config inherits. The pencil button
    *  is the edit path either way. */
   doubleClickToEdit: boolean
-  /** Opt in to Escape in the composer needing a second press to stop a running
-   *  turn (#23462): the first arms and shows "Esc again to stop". Default false,
-   *  so a client with no stored choice keeps the single-press stop (#22315). */
-  doubleEscapeToStop: boolean
   /** Move the transcript to the bottom when you send (#25754). Default true.
    *  When false a send leaves the view where it is; following a streaming reply
    *  while you are already at the bottom is unchanged. */
@@ -190,7 +186,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sidePanelSwipe: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sidePanelSwipe: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -266,7 +262,6 @@ export function loadChatConfig(): ChatConfig {
     // Coerced, not trusted: a stored non-boolean must not attach the
     // double-click gesture that replaces word selection on the bubble.
     if (typeof cfg.doubleClickToEdit !== 'boolean') cfg.doubleClickToEdit = false
-    if (typeof cfg.doubleEscapeToStop !== 'boolean') cfg.doubleEscapeToStop = false
     if (typeof cfg.scrollOnSend !== 'boolean') cfg.scrollOnSend = true
     if (typeof cfg.dimInactivePanes !== 'boolean') cfg.dimInactivePanes = true
     if (cfg.minimapSide !== 'left' && cfg.minimapSide !== 'right') cfg.minimapSide = 'left'
