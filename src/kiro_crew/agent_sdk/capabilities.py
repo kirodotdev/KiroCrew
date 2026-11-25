@@ -311,6 +311,14 @@ class SessionCapabilities:
     #: Crew keeps those files reachable itself.
     loads_steering_natively: bool
 
+    #: Whether the harness keeps the same native session across its ``/compact``
+    #: boundary, so Crew compacts in place: it waits for the turn permit, sends
+    #: ``/compact`` and leaves the durable session mapping untouched.
+    #:
+    #: True for claude. False everywhere else, an unknown backend included: there
+    #: the session takes the other compaction arms.
+    keeps_session_across_compaction: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -347,6 +355,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         honors_chat_steering_off=is_claude_backend_name(backend),
         crew_sends_persona_prompt=is_claude_backend_name(backend),
         loads_steering_natively=backend == ACP_BACKEND_KAS,
+        keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
 
@@ -386,6 +395,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     honors_chat_steering_off=False,
     crew_sends_persona_prompt=False,
     loads_steering_natively=False,
+    keeps_session_across_compaction=False,
 )
 
 
