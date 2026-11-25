@@ -43,7 +43,6 @@ import contextlib
 import hashlib
 import importlib as _importlib
 import importlib.metadata as _metadata
-import itertools
 import json
 import logging
 import os
@@ -59,6 +58,7 @@ from typing import TYPE_CHECKING, Callable
 from kiro_crew import asset_downloader  # noqa: F401 - re-export
 from kiro_crew import extras as _extras
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
+from kiro_crew.extras import dist_name as _dist_name
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     IS_POSIX,
@@ -798,12 +798,6 @@ def build_shadow_venv(
             + _carried_extra_hint(missing, extras)
             + f" (pip said: {exc})"
         ) from exc
-
-
-def _dist_name(requirement: str) -> str:
-    """The normalized distribution name a PEP 508 *requirement* starts with."""
-    name = "".join(itertools.takewhile(lambda c: c.isalnum() or c in "-_.", requirement))
-    return name.lower().replace("_", "-").replace(".", "-")
 
 
 def _carried_extras() -> tuple[str, ...]:

@@ -252,7 +252,15 @@ gateway's automatic update) build each new version as its own tree beside it,
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
 rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
-own venv), so a gateway that is running during the re-run keeps the old version
+own venv). A re-run and an update both install the new version with every
+optional extra the install being replaced has, and a re-run whose carried extra
+cannot be installed fails and keeps the previous install. Neither carries a
+package that is not a declared extra (such as `faiss-cpu`): each names, once,
+the packages the previous install had that the new one does not, with the
+`pip install` command that adds them back (a package installed from a local
+path or a URL is named without one: reinstall it from where it came from). The
+update that ships this note is still built by the older running version, so
+that first update prints none. A gateway that is running during the re-run keeps the old version
 loaded while it reads the new files. The installer never restarts it: when it
 finds one running (an active `kirocrew` systemd unit, the
 `dev.kirocrew.gateway` launchd agent, or a `kirocrew gateway` process holding
@@ -319,9 +327,9 @@ or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
 tree is still built) and to the update engine that builds the shadow venv on a
-managed-venv install, where an extra the update carries with no wheel for the
-host also fails the update; uninstall the package that has no wheel from the
-running install to stop carrying that extra.
+managed-venv install, where an extra an update or an installer re-run carries
+with no wheel for the host also fails it; uninstall the package that has no
+wheel from the existing install to stop carrying that extra.
 The opt-in is not remembered. To compile a dependency
 during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
 shell where the toolchain is on `PATH`: that command builds with the shell's own
@@ -547,8 +555,9 @@ would fetch the unrelated PyPI project of that name — install an extra's own
 distributions into the environment that runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
 "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter. On a
-`cli.sh` managed-venv install, an update keeps every extra the running install
-has.
+`cli.sh` managed-venv install, an update and an installer re-run keep every
+extra the existing install has, and name any other package they did not carry,
+with the command that adds it back.
 
 | Extra | Adds | For |
 |-------|------|-----|

@@ -2154,7 +2154,10 @@ install` in an environment the user manages is refused with exit 1 and the
 in-place upgrade command plus a gateway-restart command to run instead, or a note
 when no signed upgrade command can be named
 (`platform/update_layout.non_managed_pip_update_hint`), because re-running the
-installer would add a second copy.
+installer would add a second copy. Both rebuilds of a managed venv, this update
+and a `cli.sh` re-run (which moves `crew-venv` aside to `crew-venv.pre-rebuild.<pid>`
+and builds it fresh), carry the declared optional extras and name what else they
+did not carry: see step 1 below.
 
 On the managed venv, an update that finds the update lock held exits 1 and says
 to wait and run it again, unless the holder is this home's running gateway.
@@ -2192,7 +2195,19 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
    The shadow tree is installed with every optional extra the running tree has
    (each `kiro_crew.extras.REQUIREMENTS` entry whose distributions are all
    installed, as `<wheel>[extra,...]` in the one pip command); a carried extra
-   that cannot be installed fails the update.
+   that cannot be installed fails the update. Once the tree is promoted,
+   `release_apply._apply_wheel` names, as a `Note:` progress line and a log
+   warning, every top-level distribution of the running tree the new one lacks
+   (`kiro_crew.extras.uncarried_note`), with a `pip install` command for the
+   stable link's `crew-venv-current/bin/python`, and a distribution installed
+   from a local path or a URL without one; it installs nothing. A `cli.sh`
+   re-run over a managed venv does the same: it reads the carried extras with the
+   live tree's own interpreter (`crew-venv-current`'s target, else `crew-venv`)
+   before the move-aside, installs `<wheel>[extra,...]`, adds one line naming the
+   carried extras when that pip step fails (the previous install is restored),
+   and after the commit prints the same note with `crew-venv/bin/python` in the
+   command (`python -I -m kiro_crew.extras`). A pipx install reinstalls into its
+   own venv and keeps its packages.
 2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
    interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
    it installs is the new release's, never the one the updating process

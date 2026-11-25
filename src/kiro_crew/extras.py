@@ -19,13 +19,33 @@ was tried and dropped: the metadata is generated from this same ``setup.cfg``,
 so it can never carry a NEWER pin than this map -- only an older one, from a
 stale editable install's ``.dist-info``.
 
-The managed-venv update also reads :data:`REQUIREMENTS`: it installs the new
-release with every extra whose distributions are all installed in the running tree.
+Both rebuilds of a managed-venv install also read :data:`REQUIREMENTS`: the
+in-app update and a re-run of ``cli.sh`` build a FRESH tree and install the new
+release into it with every extra whose distributions are all installed in the
+tree being replaced (``cli.sh`` reads that with the old tree's own interpreter).
+
+Anything else the owner added to the old tree -- the ``faiss-cpu`` accelerator
+``kirocrew doctor`` suggests, an app installed from a local path -- is not
+carried: reinstalling it unasked could fail the rebuild over a package the release
+never needed. :func:`uncarried_note` names it instead, once, with the command that
+adds it back, and installs nothing. "It" is a distribution the old tree had at top
+level (installed, and required by no other distribution installed there) that the
+new tree lacks. Requirement markers are ignored, except that a requirement of Kiro
+Crew's own distribution carrying an ``extra`` marker does not count as required,
+so a dropped extra's packages are named too. A distribution installed from a local
+path, a VCS or a URL (a PEP 610 ``direct_url.json`` in its ``.dist-info``) is named
+without a command: its bare name could fetch a different package from the index.
+``cli.sh`` prints the note with the new tree's interpreter, as
+``python -I -m kiro_crew.extras --python <new python> <old tree> <new tree>``;
+``release_apply`` reports it after an in-app update.
 """
 
 from __future__ import annotations
 
+import argparse
+import importlib.metadata as _metadata
 import importlib.util
+import itertools
 import os
 import shlex
 import sys
@@ -143,7 +163,7 @@ def pip_install_command(extra: str) -> str:
     return pip_install_command_for(*requirements_for_extra(extra))
 
 
-def pip_install_command_for(*specs: str) -> str:
+def pip_install_command_for(*specs: str, python: str | None = None) -> str:
     """The command that installs *specs* into THIS python, ready to paste.
 
     :func:`pip_install_command` renders an extra declared in ``setup.cfg``. This
@@ -160,16 +180,20 @@ def pip_install_command_for(*specs: str) -> str:
     Prefer :func:`install_hint` where the environment is not in question, such as
     a log record. Use this wherever the reader copies the command blind.
 
+    *python* names another interpreter instead, quoted the same way, for a command
+    that installs into a tree this process does not run from.
+
     Returns ``""`` for no specs, so a caller never shows a command that installs
     nothing.
     """
     if not specs:
         return ""
     quoted = " ".join(quote_spec(s) for s in specs)
+    exe = sys.executable if python is None else python
     if os.name == "nt":
-        exe = sys.executable.replace("'", "''")
+        exe = exe.replace("'", "''")
         return f"& '{exe}' -m pip install {quoted}"
-    return f"{shlex.quote(sys.executable)} -m pip install {quoted}"
+    return f"{shlex.quote(exe)} -m pip install {quoted}"
 
 
 def pip_install_channel_available() -> bool:
@@ -208,3 +232,101 @@ def pip_install_channel_available() -> bool:
     if sys.prefix != sys.base_prefix:
         return True
     return not (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").exists()
+
+
+#: The distributions Kiro Crew itself installs as (``release_channel.distribution_name``).
+_OWN_DISTRIBUTIONS = frozenset({"kirocrew", "kirocrew-lts"})
+#: Never named: Kiro Crew itself and the packaging tools every venv carries.
+_NEVER_NAMED = _OWN_DISTRIBUTIONS | {"pip", "setuptools", "wheel"}
+
+
+def dist_name(requirement: str) -> str:
+    """The normalized distribution name a PEP 508 *requirement* starts with."""
+    name = "".join(itertools.takewhile(lambda c: c.isalnum() or c in "-_.", requirement))
+    return name.lower().replace("_", "-").replace(".", "-")
+
+
+def site_packages(tree: Path) -> list[Path]:
+    """The site-packages directories of the venv rooted at *tree*."""
+    found = sorted(tree.glob("lib/python*/site-packages"))
+    windows = tree / "Lib" / "site-packages"
+    if windows.is_dir():
+        found.append(windows)
+    return found
+
+
+def _installed(paths: list[Path]) -> dict[str, _metadata.Distribution]:
+    """Every distribution under *paths*, keyed by normalized name; the first one wins."""
+    found: dict[str, _metadata.Distribution] = {}
+    for dist in _metadata.distributions(path=[str(p) for p in paths]):
+        name = dist.metadata["Name"]
+        if name:
+            found.setdefault(dist_name(name), dist)
+    return found
+
+
+def uncarried(previous: list[Path], new: list[Path]) -> tuple[list[str], list[str]]:
+    """The previous tree's top-level distributions the new tree lacks.
+
+    *previous* and *new* are site-packages directories. Returns the names installed from an
+    index and the names installed from a local path, VCS or URL, each sorted.
+    """
+    old = _installed(previous)
+    required: set[str] = set()
+    for key, dist in old.items():
+        for requirement in dist.requires or []:
+            if key in _OWN_DISTRIBUTIONS and "extra" in requirement.partition(";")[2]:
+                continue
+            required.add(dist_name(requirement))
+    have = _installed(new)
+    from_index: list[str] = []
+    direct: list[str] = []
+    for key, dist in sorted(old.items()):
+        if key in required or key in _NEVER_NAMED or key in have:
+            continue
+        name = dist.metadata["Name"]
+        (direct if dist.read_text("direct_url.json") is not None else from_index).append(name)
+    return from_index, direct
+
+
+def uncarried_note(previous: list[Path], new: list[Path], python: str) -> str:
+    """The one-line note naming what the new tree did not carry, or ``""``.
+
+    *python* is the interpreter the add-back command names. No *new* site-packages
+    directory is a layout this cannot read, never proof that everything was dropped.
+    """
+    if not new:
+        return ""
+    from_index, direct = uncarried(previous, new)
+    if not from_index and not direct:
+        return ""
+    text = (
+        "Note: the previous install had packages the new one does not carry: "
+        f"{', '.join(from_index + direct)}."
+    )
+    if direct:
+        text += (
+            f" {', '.join(direct)} came from a local path or a URL, not the package index: "
+            "reinstall it from where it came from."
+        )
+    if from_index:
+        command = pip_install_command_for(*from_index, python=python)
+        text += f" Add {', '.join(from_index)} back with: {command}"
+    return text
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m kiro_crew.extras --python <python> <previous tree> <new tree>``: print the note."""
+    parser = argparse.ArgumentParser(prog="python -m kiro_crew.extras")
+    parser.add_argument("--python", required=True, help="the interpreter to name")
+    parser.add_argument("previous", type=Path, help="the tree that was replaced")
+    parser.add_argument("new", type=Path, help="the tree that replaced it")
+    args = parser.parse_args(argv)
+    text = uncarried_note(site_packages(args.previous), site_packages(args.new), args.python)
+    if text:
+        print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

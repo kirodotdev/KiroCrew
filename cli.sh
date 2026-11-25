@@ -1273,6 +1273,70 @@ else
       && err "another kirocrew update has been working on $VENV for 15 minutes (lock $_VENV_LOCK). Nothing was changed. Wait for it to finish, or stop it, then re-run this installer." \
       || err "could not take the update lock $_VENV_LOCK. Nothing was changed."
   fi
+  # The rebuild below installs the wheel into a FRESH venv, so it carries the
+  # declared optional extras the install being replaced has (every extra of
+  # that install's kiro_crew.extras.REQUIREMENTS whose distributions are all
+  # installed there, the rule the in-app update uses). Read with that tree's
+  # OWN interpreter, before the move-aside: after an in-app update the live
+  # tree is the versioned sibling ${VENV}-current names, not $VENV. The second
+  # line drops an extra whose packages are all base requirements of this
+  # wheel, which no uninstall stops carrying. Any failure of the read (no
+  # interpreter, a release without kiro_crew.extras) carries nothing.
+  _LIVE_TREE=""
+  _LIVE_IS_VENV=0
+  _CARRIED_EXTRAS=""
+  _CARRIED_NAMED=""
+  if [ -L "${VENV%/}-current" ] && [ -f "${VENV%/}-current/pyvenv.cfg" ] \
+     && [ -x "${VENV%/}-current/bin/python" ]; then
+    _LIVE_TREE="$(_canon_dir "${VENV%/}-current")"
+  elif [ -f "$VENV/pyvenv.cfg" ]; then
+    _LIVE_TREE="$(_canon_dir "$VENV")"
+  fi
+  if [ -n "$_LIVE_TREE" ]; then
+    [ "$_LIVE_TREE" = "$(_canon_dir "$VENV")" ] && _LIVE_IS_VENV=1
+    _carried_read="$("$_LIVE_TREE/bin/python" -I -c '
+import importlib.metadata as metadata
+import sys
+import zipfile
+from kiro_crew import extras
+def name(requirement):
+    out = ""
+    for c in requirement:
+        if not (c.isalnum() or c in "-_."):
+            break
+        out += c
+    return out.lower().replace("_", "-").replace(".", "-")
+base = set()
+try:
+    with zipfile.ZipFile(sys.argv[1]) as wheel:
+        for entry in wheel.namelist():
+            if entry.count("/") == 1 and entry.endswith(".dist-info/METADATA"):
+                for line in wheel.read(entry).decode("utf-8", "replace").splitlines():
+                    if line.startswith("Requires-Dist:"):
+                        requirement = line.split(":", 1)[1].strip()
+                        if "extra" not in requirement.partition(";")[2]:
+                            base.add(name(requirement))
+except (OSError, zipfile.BadZipFile):
+    pass
+carried, named = [], []
+for extra, requirements in sorted(extras.REQUIREMENTS.items()):
+    try:
+        for requirement in requirements:
+            metadata.distribution(name(requirement))
+    except metadata.PackageNotFoundError:
+        continue
+    carried.append(extra)
+    if not {name(r) for r in requirements} <= base:
+        named.append(extra)
+print(",".join(carried))
+print(",".join(named))
+' "$WHL" 2>/dev/null)" || _carried_read=""
+    _CARRIED_EXTRAS="$(printf '%s\n' "$_carried_read" | sed -n 1p)"
+    _CARRIED_NAMED="$(printf '%s\n' "$_carried_read" | sed -n 2p)"
+    case "$_CARRIED_EXTRAS$_CARRIED_NAMED" in
+      *[!a-z0-9,-]*) _CARRIED_EXTRAS=""; _CARRIED_NAMED="" ;;
+    esac
+  fi
   # Debian/Ubuntu ship the base `python3` WITHOUT the venv/ensurepip module (it
   # lives in the separate `python3-venv` / `python3.X-venv` package), so
   # `python3 -m venv` there dies with "ensurepip is not available" and, under
@@ -1361,10 +1425,16 @@ else
   # binary-only flag is unquoted on purpose: it is one word or nothing. Not
   # --quiet: pip's "Collecting"/"Downloading" lines are what _run_step shows
   # on the progress line, and they are the context _report_pip_failure needs.
+  # The carried extras ride on the wheel argument (`<wheel>[e1,e2]`), so they
+  # resolve in the same step and a carried extra that cannot be installed
+  # fails it like any other dependency.
   # shellcheck disable=SC2086
   if ! _run_step "$TMP/pip-install.log" "Installing kirocrew $VER and its dependencies" \
-      "$VENV/bin/pip" install --progress-bar off $PIP_BINARY_ONLY "$WHL"; then
+      "$VENV/bin/pip" install --progress-bar off $PIP_BINARY_ONLY "$WHL${_CARRIED_EXTRAS:+[$_CARRIED_EXTRAS]}"; then
     _report_pip_failure "$TMP/pip-install.log"
+    if [ -n "${_CARRIED_NAMED:-}" ]; then
+      echo "kirocrew-install: this install carries the optional extras $_CARRIED_NAMED because the existing install has them; uninstalling an extra's packages from the existing install (${_LIVE_TREE:-$VENV}) stops the installer carrying it." >&2
+    fi
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _venv_restore_after_failure \
         "installing the wheel into $VENV failed (see the pip output above). The previous install was restored and keeps working; re-run this installer to retry." \
@@ -1396,6 +1466,15 @@ else
   _VENV_MOVED=0
   trap 'rm -rf "$TMP"' EXIT INT TERM
   trap - HUP
+  # Name, once, what the previous tree had that the rebuild did not carry (a
+  # package that is not a declared extra), with the command that adds it
+  # back. A note only: it installs nothing and never fails the install.
+  _PREV_TREE="$_LIVE_TREE"
+  [ "$_LIVE_IS_VENV" = 1 ] && _PREV_TREE="$_VENV_BACKUP"
+  if [ -n "$_PREV_TREE" ] && [ -d "$_PREV_TREE" ]; then
+    "$VENV/bin/python" -I -m kiro_crew.extras --python "$VENV/bin/python" \
+      "$_PREV_TREE" "$VENV" 2>/dev/null || true
+  fi
   if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
     rm -rf "$_VENV_BACKUP" 2>/dev/null || true
   fi
