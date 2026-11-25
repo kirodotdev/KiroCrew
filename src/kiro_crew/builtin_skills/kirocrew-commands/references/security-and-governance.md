@@ -10,7 +10,7 @@ stacks (open in speedscope / flamegraph.pl). See `docs/architecture/design-notes
 | Command | Description |
 |---------|-------------|
 | `KIROCREW_DEBUG=1 kirocrew perf sample --call mod:fn` | Profile that callable in-process (no extra dependency) |
-| `KIROCREW_DEBUG=1 kirocrew perf sample` | Attach to the running gateway (needs `pip install "kirocrew[perf]"`) |
+| `KIROCREW_DEBUG=1 kirocrew perf sample` | Attach to the running gateway (needs py-spy: `pip install "py-spy>=0.3,<1"`) |
 | `KIROCREW_DEBUG=1 kirocrew perf sample --pid 1234 --seconds 30` | Attach to a specific PID for N seconds (1-300) |
 | `... --interval 0.002` | Seconds between samples (0.001-1.0, default 0.005) |
 | `... --output /tmp/p.folded` | Where to write the profile (default `./kirocrew-profile.folded`) |
