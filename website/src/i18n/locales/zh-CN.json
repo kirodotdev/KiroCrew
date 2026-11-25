@@ -24291,6 +24291,8 @@
     "capabilities_body": "此 Bot 使用的能力。在“审批”中授予自动运行权限。",
     "capabilities_headline": "{{name}} 能做什么",
     "open_capabilities": "查看能力",
+    "more_on_profile": "{{name}} 的会话、目标和权限在它的资料卡里。",
+    "open_profile": "打开资料卡",
     "section_capabilities": "能力",
     "band_directions": "行为指引",
     "band_resources": "资源",

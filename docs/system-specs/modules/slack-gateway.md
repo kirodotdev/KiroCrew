@@ -2814,7 +2814,15 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   message. The one message is posted with `thread_ts` set to the anchor and edited with
   `chat.update`; it is NOT pinned (`pins:write` is a code-channel scope and a pin on a
   thread reply would surface in the whole channel), and no permalink, live summary, tab
-  or `agents.*` call is made, so it needs no new scope. The look is `brief`: one row per
+  or `agents.*` call is made, so it needs no new scope. Unpinned, it would sink under
+  later replies, so when the board changes and one bounded `conversations.replies` read
+  (`publisher._buried`) shows a reply newer than it, the board is posted again at the
+  bottom, its new ts stored, and the old message deleted with `chat.delete`
+  (`publisher._retire`; already gone counts as deleted). An old board Slack will not
+  delete is edited to one pointer line (`publisher.MOVED_TEXT`), and a permanent refusal
+  puts the thread in `publisher._move_refused`, so its board is edited in place for the
+  rest of the process. A stamp-only refresh never moves the board, and a move waits out
+  the same edit gap as an edit. The look is `brief`: one row per
   worker with the title (linking the worker's dashboard chat), a one-word state, and its
   PR and CI; the plan look shows the same and an "Open in dashboard" link per task.
   `render.brief_snapshot` takes the summary, step, branch, approval wording and goal off
