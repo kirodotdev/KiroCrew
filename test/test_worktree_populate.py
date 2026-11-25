@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
 
-from kiro_crew import agent_scratch, worktree_populate
+from kiro_crew import agent_scratch, subprocess_utf8, worktree_populate
 from kiro_crew.apps.builtins.dev_fleet import release_worktree, repository, runtime
 from kiro_crew.dashboard.handlers import worktree as dash_worktree
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
@@ -461,9 +461,9 @@ def test_an_oid_that_is_not_an_object_id_is_refused_before_git_runs(bad):
 
 
 def test_a_directory_name_with_a_line_separator_is_kept_whole(tmp_path):
+    # Names only, never created: Windows refuses a carriage return in a file name, and the
+    # populate opens neither directory here (no sparse-checkout is set).
     git_dir, common = tmp_path / "wt\u2028gitdir", tmp_path / "common\rdir"
-    git_dir.mkdir()
-    common.mkdir()
     seen: list[str] = []
 
     def run_git(args, cwd, **kw):
@@ -478,6 +478,28 @@ def test_a_directory_name_with_a_line_separator_is_kept_whole(tmp_path):
 
     assert got.returncode == 0, got.stderr
     assert seen == [os.path.join(str(git_dir), "index")]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows path cannot hold a non-UTF-8 byte")
+def test_a_common_dir_with_a_non_utf8_byte_reaches_the_alternates_file_byte_exactly(tmp_path):
+    root = os.fsencode(str(tmp_path))
+    printed = root + b"/wt-gitdir\n" + root + b"/common\xffdir\n"
+    seen: list[bytes] = []
+
+    def run_git(args, cwd, **kw):
+        if args[0] == "rev-parse":
+            decode = kw.get("stdout_decoder", subprocess_utf8.utf8_stdout)
+            return subprocess.CompletedProcess(args, 0, decode(printed), "")
+        if args[0] == "config":
+            return subprocess.CompletedProcess(args, 1, "", "")
+        alternates = Path(kw["env"]["GIT_DIR"]) / "objects" / "info" / "alternates"
+        seen.append(alternates.read_bytes())
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    got = worktree_populate.populate_worktree(run_git, str(tmp_path), "a" * 40)
+
+    assert got.returncode == 0, got.stderr
+    assert seen == [root + b"/common\xffdir/objects\n"]
 
 
 def test_a_git_dir_git_does_not_name_absolutely_is_refused(tmp_path):

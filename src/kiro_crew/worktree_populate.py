@@ -53,7 +53,10 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
 
-#: ``run_git(args, cwd, env=...)`` as ``dashboard.handlers.worktree._run_git`` has it.
+from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+#: ``run_git(args, cwd, stdout_decoder=..., env=..., private_dir=...)`` as
+#: ``dashboard.handlers.worktree._run_git`` has it.
 RunGit = Callable[..., "subprocess.CompletedProcess[str]"]
 
 _OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -244,10 +247,10 @@ def _write_scratch_git_dir(
         handle.write("ref: refs/heads/kirocrew-populate\n")
     with open(os.path.join(scratch, "config"), "w", encoding="utf-8", newline="\n") as handle:
         handle.write(_config_text(settings, sha256=sha256))
-    with open(
-        os.path.join(scratch, "objects", "info", "alternates"), "w", encoding="utf-8", newline="\n"
-    ) as h:
-        h.write(objects + "\n")
+    # Bytes, not text: `os.fsencode` restores the bytes git printed for the object store,
+    # which strict UTF-8 cannot encode when the path holds a non-UTF-8 byte.
+    with open(os.path.join(scratch, "objects", "info", "alternates"), "wb") as h:
+        h.write(os.fsencode(objects) + b"\n")
 
 
 def populate_worktree(run_git: RunGit, dest: str, oid: str) -> "subprocess.CompletedProcess[str]":
@@ -261,7 +264,10 @@ def populate_worktree(run_git: RunGit, dest: str, oid: str) -> "subprocess.Compl
     if not _OID_RE.fullmatch(oid):
         return _failed(["read-tree"], f"not an object id: {oid!r}")
     where = ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
-    located = run_git(where, dest)
+    # Both answers become paths the populate opens and writes into the alternates file, so
+    # they must round-trip byte-exactly: a non-UTF-8 byte the display decode replaced with
+    # U+FFFD would name a directory that does not exist.
+    located = run_git(where, dest, stdout_decoder=utf8_path_stdout)
     if located.returncode != 0:
         return located
     # Split on the newline git ends each answer with and nothing else: a directory name may
