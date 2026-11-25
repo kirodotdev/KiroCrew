@@ -131,6 +131,10 @@ _NEW_CHAT_PER_RUN_TOO_OFTEN = (
     "or turn new_chat_per_run off."
 )
 
+_NOTIFY_ONLY_MESSAGE_ONLY = (
+    "A reminder (notify_only) delivers its message as written: it cannot also "
+    "run a script, a command or several agents."
+)
 _NEW_CHAT_PER_RUN_AGENT_ONLY = (
     "A new chat per run applies to a single-agent (message) job: a script, "
     "command or multi-agent job never opens a chat tab."
@@ -355,6 +359,7 @@ def build_job(
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
     new_chat_per_run: bool = False,
+    notify_only: bool = False,
     on_tab_close: str = "resume",
     folder_id: str = "",
     chat_folder_id: str = "",
@@ -445,6 +450,8 @@ def build_job(
         raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if project_path and (command or script):
         raise ValueError(_PROJECT_PATH_AGENT_ONLY)
+    if notify_only and (command or script or agent_sequence_dispatches(agent_sequence or [])):
+        raise ValueError(_NOTIFY_ONLY_MESSAGE_ONLY)
     project_path = resolve_project_path(project_path)
     validate_create_timeouts(timeout, timeout_secs, command=command, script=script)
     _auto_pause = (
@@ -501,6 +508,7 @@ def build_job(
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
         new_chat_per_run=bool(new_chat_per_run),
+        notify_only=bool(notify_only),
         on_tab_close=on_tab_close,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
