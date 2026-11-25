@@ -25347,5 +25347,45 @@
       "label": "Verbundene Computer",
       "shared_crew_off": "In einer geteilten Crew deaktiviert"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments sind entfernte Rechner, die Kiro für dich startet und betreibt. Erstelle einen und starte darauf eine neue Crew.",
+      "name_label": "Crew-Name",
+      "name_placeholder": "my-crew",
+      "name_rule": "Verwende 2 bis 32 Kleinbuchstaben, Ziffern oder einzelne Bindestriche, beginnend mit einem Buchstaben.",
+      "name_help": "Die Umgebung wird nach der Crew benannt.",
+      "ssh_config_note": "Damit kann dieser Computer deine Umgebungen erreichen. Fügt {{path}} ein paar Zeilen hinzu; du kannst sie jederzeit entfernen. Sonst ändert sich nichts an der Datei.",
+      "launch": "Starten",
+      "ssh_add": "Diesem Computer die Verbindung erlauben",
+      "ssh_ready": "{{path}} enthält die ssh-Einstellungen, mit denen Crew deine verwalteten Umgebungen erreicht.",
+      "ssh_failed": "Die ssh-Einstellungen konnten nicht hinzugefügt werden",
+      "launch_needs_name": "Gib einen Crew-Namen ein, um zu starten.",
+      "launch_needs_ssh": "Erlaube diesem Computer die Verbindung, dann starte.",
+      "ssh_failed_hint": "Prüfe, ob du {{path}} bearbeiten darfst.",
+      "launch_fix_name": "Korrigiere den Crew-Namen, um zu starten.",
+      "ssh_preview": "Die Zeilen ansehen, die hinzugefügt werden",
+      "ssh_preview_why": "Mit diesen Zeilen verbindet sich Crew über deine Kiro-Anmeldung mit deinen Kiro Managed Environments (Namen, die mit {{hosts}} beginnen), und deine anderen ssh-Hosts bleiben, wie sie sind."
+    },
+    "row": {
+      "stop": "Umgebung anhalten",
+      "resume": "Umgebung fortsetzen",
+      "delete": "Umgebung löschen",
+      "delete_title": "Umgebung von {{name}} löschen?",
+      "delete_body": "Die verwaltete Umgebung und alles darauf werden gelöscht. Das lässt sich nicht rückgängig machen. Die Crew bleibt in deiner Liste, bis du sie entfernst.",
+      "delete_confirm": "Umgebung löschen",
+      "list_failed": "Deine verwalteten Umgebungen konnten nicht gelesen werden.",
+      "gone": "Diese Umgebung ist nicht mehr unter deinen verwalteten Umgebungen. Entferne die Crew aus deiner Liste.",
+      "state_creating": "Umgebung startet",
+      "state_running": "Umgebung läuft",
+      "state_stopped": "Umgebung angehalten",
+      "state_deleting": "Umgebung wird gelöscht",
+      "state_error": "Fehler in der Umgebung",
+      "state_error_hint": "Der Dienst meldet diese Umgebung als {{status}}. Lösche sie und starte neu, oder bitte den Agenten, es sich anzusehen.",
+      "managed_by": "Kiro Managed Environments · Entfernen nimmt die Crew aus dieser Liste, die Umgebung bleibt aber bestehen. Zum Löschen nutze Umgebung löschen.",
+      "stop_failed": "Die Umgebung von {{name}} konnte nicht gestoppt werden",
+      "resume_failed": "Die Umgebung von {{name}} konnte nicht fortgesetzt werden",
+      "delete_failed": "Die Umgebung von {{name}} konnte nicht gelöscht werden"
+    }
   }
 }

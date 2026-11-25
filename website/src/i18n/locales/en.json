@@ -13008,5 +13008,45 @@
         "label_is_open_in_its_own_window_focus_it": "{{label}} is open in its own window — focus it"
       }
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments are remote machines that Kiro starts and keeps for you. Create one and run a new crew on it.",
+      "name_label": "Crew name",
+      "name_placeholder": "my-crew",
+      "name_rule": "Use 2 to 32 lowercase letters, digits or single hyphens, starting with a letter.",
+      "name_help": "The environment is named after the crew.",
+      "ssh_config_note": "Lets this computer connect to your environments. Adds a few lines to {{path}}; you can remove them any time. Nothing else in the file changes.",
+      "launch": "Launch",
+      "ssh_add": "Allow this computer to connect",
+      "ssh_ready": "{{path}} has the ssh settings Crew uses to reach your managed environments.",
+      "ssh_failed": "Couldn't add the ssh settings",
+      "launch_needs_name": "Enter a crew name to launch.",
+      "launch_needs_ssh": "Allow this computer to connect, then launch.",
+      "ssh_failed_hint": "Check that you can edit {{path}}.",
+      "launch_fix_name": "Fix the crew name to launch.",
+      "ssh_preview": "See the lines it adds",
+      "ssh_preview_why": "These lines let Crew connect to your Kiro Managed Environments (names starting with {{hosts}}) through your Kiro sign-in, and they leave your other ssh hosts as they are."
+    },
+    "row": {
+      "stop": "Stop environment",
+      "resume": "Resume environment",
+      "delete": "Delete environment",
+      "delete_title": "Delete the environment of {{name}}?",
+      "delete_body": "The managed environment and everything on it are deleted. This can't be undone. The crew stays on your list until you remove it.",
+      "delete_confirm": "Delete environment",
+      "list_failed": "Couldn't read your managed environments.",
+      "gone": "This environment is no longer in your managed environments. Remove the crew from your list.",
+      "state_creating": "Environment starting",
+      "state_running": "Environment running",
+      "state_stopped": "Environment stopped",
+      "state_deleting": "Environment being deleted",
+      "state_error": "Environment failed",
+      "state_error_hint": "The service reports this environment as {{status}}. Delete it and launch again, or ask the agent to look into it.",
+      "managed_by": "Kiro Managed Environments · Remove takes the crew off this list but keeps the environment. To delete it, use Delete environment.",
+      "stop_failed": "Couldn't stop the environment of {{name}}",
+      "resume_failed": "Couldn't resume the environment of {{name}}",
+      "delete_failed": "Couldn't delete the environment of {{name}}"
+    }
   }
 }

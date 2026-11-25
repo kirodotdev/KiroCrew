@@ -382,7 +382,8 @@ export function CrewRow({
       ? i18nT('pages.settings.remoteCrewPanel.fargate_task_note')
       : unverifiedCloud
         ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
-        : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`
+        : rowActions?.managedBy?.()
+          ?? `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`
   const targetText = inst.connection_method === 'fargate'
     // Two tasks in one cluster differ only at the far right of the ECS
     // target; the short form keeps that tail visible and the title carries
