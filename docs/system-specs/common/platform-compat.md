@@ -781,10 +781,13 @@ not lost: its pins stay in the pending state, and the maintenance sweep resumes 
 drain from the members already confirmed. A slow host meets this routinely,
 because each member's pass costs two identity reads and two Toolhelp snapshots.
 `AcpRuntime` therefore logs it as one WARNING line, not a traceback, and still
-raises. A failed kiro session setup logs its original failure at WARNING before the
-cleanup kill, redacted and folded to one bounded printable line, because that text
-can come from the backend. Without that line, the cleanup's own output would be
-the only trace of a repeating setup failure.
+raises. The supervisors' reaper kill (`process_identity.kill_verified_process`)
+logs it as one WARNING line too, not an ERROR, and still records the run's kill as
+failed; every other drain failure there stays an ERROR. A failed kiro session
+setup logs its original failure at WARNING before the cleanup kill, redacted and
+folded to one bounded printable line, because that text can come from the
+backend. Without that line, the cleanup's own output would be the only trace of a
+repeating setup failure.
 
 This does not reconstruct an intermediary that exited before any available
 handle observed it, and the completeness a successful drain asserts is therefore
