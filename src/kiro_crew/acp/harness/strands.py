@@ -283,6 +283,45 @@ def strands_python_env_issue(project_dir: str) -> str:
     return ""
 
 
+#: The SDK each provider's model imports, as ``(pip name, path under site-packages)``.
+#: strands-harness installs it only through that provider's extra, which
+#: ``STRANDS_PYTHON_REQUIREMENT`` carries; ``bedrock`` runs on boto3, which the harness
+#: itself needs, so it has no row.
+_STRANDS_PROVIDER_SDKS: dict[str, tuple[str, str]] = {
+    "bedrock-mantle": ("openai", "openai"),
+    "openai": ("openai", "openai"),
+    "anthropic": ("anthropic", "anthropic"),
+    "google": ("google-genai", "google/genai"),
+    "ollama": ("ollama", "ollama"),
+    "litellm": ("litellm", "litellm"),
+}
+
+
+def _strands_provider_sdk_issue(project_dir: str, model: str) -> str:
+    """Why the project environment cannot run *model*'s provider, or ``""``.
+
+    *model* is the ``--model`` value the launch passes (``<provider>/<id>``). File reads
+    only: the provider's SDK package is installed beside ``strands_harness``. An
+    environment created before the install requirement carried the provider extras has
+    the harness but not the SDK, and the CLI fails only once the session starts. No
+    ``--model`` (the CLI's own default runs) names no provider, so there is nothing to
+    check.
+    """
+    provider, sep, _ = model.partition("/")
+    sdk = _STRANDS_PROVIDER_SDKS.get(provider) if sep else None
+    if sdk is None:
+        return ""
+    package, directory = sdk
+    if any((site / directory).is_dir() for site in _site_packages(project_dir)):
+        return ""
+    return (
+        f"the Strands provider {provider!r} needs the {package!r} Python package, and "
+        f"the Python environment at {os.path.join(project_dir, '.venv')} does not have "
+        f"it. Install it in a terminal on the gateway host. {HOST_TERMINAL_NOTE} Run: "
+        f"{_pip_install_command(strands_python(project_dir))}"
+    )
+
+
 def strands_installed_version(strands_bin: str) -> str:
     """The release the npm install *strands_bin* runs, or ``""`` when unreadable.
 
@@ -983,6 +1022,13 @@ class StrandsLaunch(ProcessAdapter):
             )
         except ValueError as exc:
             raise AcpError(str(exc), transient=False, user_worded=True) from None
+        sdk_issue = await asyncio.to_thread(
+            _strands_provider_sdk_issue, project_dir, strands_launched_model(model_args)
+        )
+        if sdk_issue:
+            raise AcpError(
+                f"{sdk_issue}, then start a new chat.", transient=False, user_worded=True
+            )
         argv = [*argv, "--agent", sealed_module, *model_args, *strands_effort_args(session)]
         # What the session reports as its model is what it launched with: a pin
         # this harness left out (another harness's) never ran, so it is not kept.

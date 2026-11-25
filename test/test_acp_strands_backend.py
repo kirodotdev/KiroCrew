@@ -551,6 +551,109 @@ def test_a_ready_environment_has_no_issue(tmp_path) -> None:
     assert strands_mod.strands_python_env_issue(str(tmp_path)) == ""
 
 
+def _site(project: Path) -> Path:
+    if sys.platform == "win32":
+        return project / ".venv" / "Lib" / "site-packages"
+    return project / ".venv" / "lib" / "python3.12" / "site-packages"
+
+
+@pytest.mark.parametrize(
+    ("model", "package", "directory"),
+    [
+        ("bedrock-mantle/some-model", "openai", "openai"),
+        ("openai/some-model", "openai", "openai"),
+        ("google/some-model", "google-genai", "google/genai"),
+    ],
+)
+def test_a_harness_without_the_providers_sdk_is_refused_by_name(
+    tmp_path, model, package, directory
+) -> None:
+    """An environment created before the install carried the provider extras has
+    ``strands_harness`` but not the provider's SDK: the spawn names both and the
+    install command that adds it, then accepts the environment once it is there."""
+    _venv(tmp_path, with_harness=True)
+    assert strands_mod.strands_python_env_issue(str(tmp_path)) == ""
+    issue = strands_mod._strands_provider_sdk_issue(str(tmp_path), model)
+    provider = model.split("/", 1)[0]
+    assert f"provider {provider!r}" in issue and f"{package!r} Python package" in issue
+    python = strands_mod.strands_python(str(tmp_path))
+    assert issue.endswith(f"Run: {strands_mod._pip_install_command(python)}")
+    (_site(tmp_path) / directory).mkdir(parents=True)
+    assert strands_mod._strands_provider_sdk_issue(str(tmp_path), model) == ""
+
+
+@pytest.mark.parametrize("model", ["bedrock/some-model", "some-model", ""])
+def test_bedrock_or_no_named_provider_needs_no_extra_sdk(tmp_path, model) -> None:
+    _venv(tmp_path, with_harness=True)
+    assert strands_mod._strands_provider_sdk_issue(str(tmp_path), model) == ""
+
+
+def test_every_provider_but_bedrock_names_the_sdk_it_needs() -> None:
+    """A provider added to the setting without a row here would skip the check."""
+    from kiro_crew.config.sections_agent_env import STRANDS_PROVIDER_CHOICES
+
+    assert set(strands_mod._STRANDS_PROVIDER_SDKS) == set(STRANDS_PROVIDER_CHOICES) - {"bedrock"}
+
+
+@pytest.mark.parametrize(
+    ("model", "refused"),
+    [
+        ("bedrock-mantle/some-model", True),
+        ("openai/some-model", True),
+        ("bedrock/some-model", False),
+    ],
+)
+def test_the_spawn_refuses_a_provider_whose_sdk_is_missing(
+    monkeypatch, tmp_path, model, refused
+) -> None:
+    """The spawn runs the provider check on the model it launches with: a harness-only
+    environment is refused for an ``openai`` provider and launches for ``bedrock``."""
+    from kiro_crew.acp.harness.base import SpawnContext
+    from kiro_crew.acp.transport_errors import AcpError
+
+    project = tmp_path / "strands"
+    _venv(project, with_harness=True)
+
+    async def preflight(*_args):
+        return ()
+
+    async def cli(_backend):
+        return "/opt/strands", ["/opt/strands", "--acp-server"], "strands", "strands"
+
+    class _PastTheCheck(Exception):
+        pass
+
+    async def mcp() -> None:
+        raise _PastTheCheck
+
+    monkeypatch.setattr(strands_mod.launch_mod, "_run_preflight_bounded", preflight)
+    monkeypatch.setattr(strands_mod.launch_mod, "resolve_self_served_launch", cli)
+    monkeypatch.setattr(strands_mod, "_strands_version_issue", lambda _bin: "")
+    monkeypatch.setattr(strands_mod, "strands_project_dir", lambda: str(project))
+    monkeypatch.setattr(strands_mod, "_seal_strands_gate", lambda: str(project / "agent.py"))
+    monkeypatch.setattr(strands_mod, "_strands_user_project", lambda: ("", ""))
+    monkeypatch.setattr(strands_mod, "_strands_vault_env_names", lambda: ())
+    session = SimpleNamespace(_model=model, _prepare_session_mcp=mcp)
+    ctx = SpawnContext(
+        agent="",
+        work_dir=tmp_path,
+        model=model,
+        environ={},
+        home=tmp_path,
+        sandbox_mode="off",
+        session=session,
+    )
+
+    with pytest.raises((AcpError, _PastTheCheck)) as stopped:
+        asyncio.run(strands_mod.StrandsLaunch().resolve_spawn(ctx))
+    if refused:
+        assert isinstance(stopped.value, AcpError), "launched past the SDK check"
+        assert "'openai' Python package" in str(stopped.value)
+        assert str(stopped.value).endswith(", then start a new chat.")
+    else:
+        assert isinstance(stopped.value, _PastTheCheck), str(stopped.value)
+
+
 def test_a_host_the_sandbox_floor_refuses_gets_no_python_setup_steps(monkeypatch, tmp_path) -> None:
     """No ``.venv`` yet, on a tier that drops the credential mask: the floor sentence is
     the refusal, before even the CLI lookup, and the launch leaves no project folder or
