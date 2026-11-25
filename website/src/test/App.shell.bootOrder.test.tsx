@@ -66,7 +66,7 @@ vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 
 /** The reads the shell itself owns at boot; everything else is a child's. */
 const SHELL_READS = new Set([
-  'api.dashboardConfig', 'api.approvals', 'fetch:/api/terminal/sessions', 'api.mobileConnectMethods',
+  'api.dashboardConfig', 'api.approvals', 'api.terminalSessions', 'api.mobileConnectMethods',
   'api.listApps', 'api.listRegistry', 'api.crons', 'api.sessionsUsage', 'api.kirocrewConfig',
   'api.system', 'api.chatSlots', 'api.status', 'ws',
 ])
@@ -91,7 +91,7 @@ describe('shell boot order', () => {
     expect(order).toEqual([
       'api.dashboardConfig',
       'api.approvals',
-      'fetch:/api/terminal/sessions',
+      'api.terminalSessions',
       'api.mobileConnectMethods',
       // The shell's switch reads (the Command Bar's `dashboard.command_bar_enabled`,
       // a rail surface's `configSwitch`), one shared request.
@@ -106,7 +106,7 @@ describe('shell boot order', () => {
       'ws',
     ])
     // No restored terminal tab is suspect here, so the confirm look never runs.
-    expect(H.log.filter(e => e === 'fetch:/api/terminal/sessions')).toHaveLength(1)
+    expect(H.log.filter(e => e === 'api.terminalSessions')).toHaveLength(1)
     expect(H.log.filter(e => e === 'api.listApps')).toHaveLength(1)
     // The rail's config read and the credit readout share one ['kirocrewConfig'] request.
     expect(H.log.filter(e => e === 'api.kirocrewConfig')).toHaveLength(1)
