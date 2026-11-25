@@ -15380,6 +15380,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} attende la tua approvazione: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "Impossibile caricare il suggerimento. Controlla la connessione al gateway, poi riprova."
       }
     },
     "chatPage": {

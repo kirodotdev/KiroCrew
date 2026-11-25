@@ -15019,6 +15019,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} wartet auf deine Freigabe: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "Der Tipp konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut."
       }
     },
     "chatPage": {

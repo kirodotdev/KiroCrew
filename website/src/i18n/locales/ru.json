@@ -15741,6 +15741,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} ждёт твоего подтверждения: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "Не удалось загрузить подсказку. Проверь подключение к шлюзу и попробуй ещё раз."
       }
     },
     "chatPage": {

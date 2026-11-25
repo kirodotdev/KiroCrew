@@ -14658,6 +14658,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}：{{text}}",
         "approval": "{{speaker}}が承認を待っています：{{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "ヒントを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。"
       }
     },
     "chatPage": {

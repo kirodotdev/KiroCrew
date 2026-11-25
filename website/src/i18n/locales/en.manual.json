@@ -7090,6 +7090,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} is waiting for your approval: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "The tip couldn't load. Check the connection to the gateway, then try again."
       }
     },
     "chatPage": {

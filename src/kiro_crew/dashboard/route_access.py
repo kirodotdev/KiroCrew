@@ -108,6 +108,8 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(
         "tailnet.mobile.clear_overrides", UNSTABLE
     ),
+    # Gateway auth middleware: 403 without a token (tips.api_tips_exploratory); reads only.
+    ("GET", "/api/tips/exploratory"): RouteAccess("tips.exploratory.read", UNSTABLE),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),

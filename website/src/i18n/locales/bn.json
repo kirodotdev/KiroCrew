@@ -15019,6 +15019,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} তোমার অনুমোদনের অপেক্ষায়: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "টিপটি লোড হয়নি। গেটওয়ের সাথে সংযোগ পরীক্ষা করো, তারপর আবার চেষ্টা করো।"
       }
     },
     "chatPage": {

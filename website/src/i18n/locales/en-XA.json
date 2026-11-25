@@ -14628,6 +14628,9 @@
       "transcriptAnnouncement": {
         "spoken": "[{{speaker}}: {{text}} ···]",
         "approval": "[{{speaker}} ìş ẁàìţìñğ ƒøŕ ýøùŕ àþþŕøṽàĺ: {{operation}} ················]"
+      },
+      "thinkingTip": {
+        "load_failed": "[Ţĥè ţìþ çøùĺðñ'ţ ĺøàð. Çĥèçķ ţĥè çøññèçţìøñ ţø ţĥè ğàţèẁàý, ţĥèñ ţŕý àğàìñ. ·······················]"
       }
     },
     "chatPage": {
