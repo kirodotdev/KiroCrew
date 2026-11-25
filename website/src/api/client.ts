@@ -217,6 +217,7 @@ export type {
   CrewmateExportChoices,
   CrewmateExportPreview,
   MemberRosterRow,
+  MemberHeldLimit,
   MemberActivityEntry,
   MemberGoals,
   MemberGoal,
