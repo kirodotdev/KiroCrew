@@ -893,3 +893,23 @@ def test_a_live_pointer_package_names_no_binding_for_a_template_bot(homes, tmp_p
     archive = export_archive(tmp_path / "a.zip")
 
     assert _bot_artifacts(archive) == set()
+
+
+def test_a_package_of_another_kind_names_no_binding_for_a_template_bot(homes, tmp_path):
+    # scan_bound_dashboards lists only kind="dashboard" records, so a record of another
+    # kind whose page is a bound envelope binds no Bot there, and the export carries none.
+    from portability_bot_helpers import archive_members, export_archive
+
+    from kiro_crew.artifact_store.dashboard_package import scan_bound_dashboards
+    from kiro_crew.artifacts import ArtifactStore
+    from kiro_crew.config.paths import data_home
+
+    homes.use("a")
+    atlas, applied = _atlas_on_its_template()
+    _edit_meta(applied.package, {"kind": "widget"})
+    assert scan_bound_dashboards(ArtifactStore(data_home() / "artifacts")).bound == {}
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+    assert f"bot-members/{atlas.slug}/dashboard/instance.json" in archive_members(archive)

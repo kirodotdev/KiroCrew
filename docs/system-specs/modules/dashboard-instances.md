@@ -407,7 +407,9 @@ those newest ones, once the walk is done, from descriptors it duplicated off the
 ones (`portability_bot_export._hold_if_newest`). A template
 record's package is carried only while its live version is bound to `crewmate:<slug>` on
 the source (`dashboard_package.live_binding_of`): one since rebound to another Bot is that
-Bot's to carry, and a live pointer (`ArtifactStore._is_live_pointer`) is bound to no Bot.
+Bot's to carry, and a record whose `kind` is not `dashboard_package.DASHBOARD_KIND` (the
+only kind `scan_bound_dashboards` lists) or that is a live pointer
+(`ArtifactStore._is_live_pointer`) is bound to no Bot.
 That record is read by `artifacts.read_stored_artifact`, which writes nothing on the
 source, and one it cannot read (`artifacts.STORED_READ_FAILURES`) is not carried. The
 import (`portability_bot_stores.install_bot_stores`) installs the dashboard directory
