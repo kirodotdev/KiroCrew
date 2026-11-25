@@ -261,12 +261,14 @@ class SessionCapabilities:
     #: Whether a ``tool_call_update`` carries a call's real title after a first
     #: ``tool_call`` that named it before its input had streamed
     #: (:data:`ACP_BACKENDS_TOOL_TITLE_REFINEMENT`), so a Crew-spawned subagent's
-    #: Subagents card takes the refined title for that call's row.
+    #: Subagents card takes the refined title for that call's row, and a channel
+    #: turn's task card for that call (``messaging.driver``'s ``TOOL_TITLE``).
     #:
     #: True for claude, whose first frame of a call carries the tool's generic title
-    #: ("Terminal", "Read File"). False keeps the card on the titles of the call and
-    #: its permission request, which is right for kiro-cli: the update that ends its
-    #: failed call carries the bare tool name, a worse title than the first.
+    #: ("Terminal", "Read File"). False keeps each card on the titles its call (and,
+    #: on the Subagents card, its permission request) named, which is right for
+    #: kiro-cli: the update that ends its failed call carries the bare tool name, a
+    #: worse title than the first.
     refines_tool_call_titles: bool
 
     #: Whether a permission request raised while a native sub-agent's card is open

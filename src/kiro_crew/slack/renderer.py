@@ -644,6 +644,8 @@ class SlackRenderer(
         self._task_counter = 0
         self._active_task_id = ""
         self._active_task_title = ""
+        #: The purpose the open card is titled with, which a refined title keeps.
+        self._active_task_purpose = ""
         #: ACP tool_call_id of the task card ``_active_task_id`` is showing, so a
         #: ``tool_result`` can be matched to the card it finalizes. "" when no
         #: card is open or the transport sent no id.
@@ -1473,16 +1475,7 @@ class SlackRenderer(
         # start a new in-progress task + its 30s elapsed timer.
         await self._ensure_stream()
         tool_name = title.removeprefix("Running: ")
-        # What the thread shows of the step: the derived title and purpose
-        # without env assignments, absolute paths or this host's name. A raw
-        # command is scrubbed whole and then cut to a line, so the cut lands on
-        # what the reader sees rather than on the paths taken out.
-        if self.current_tool_raw_title:
-            label = format_raw_command(
-                slack_step_label(self.current_tool_raw_title, self._label_root)
-            ) or slack_step_label(tool_name, self._label_root)
-        else:
-            label = slack_step_label(tool_name, self._label_root)
+        label = self._step_label(title, self.current_tool_raw_title)
         purpose = slack_step_label(tool_purpose, self._label_root) if tool_purpose else ""
         # Best-effort: MUST NOT raise. Decoration only — a raise
         # escapes to the transport catch-all and fakes a terminal error on a
@@ -1504,6 +1497,7 @@ class SlackRenderer(
         self._active_task_id = f"tool_{self._task_counter}"
         self._active_tool_call_id = tool_call_id or ""
         self._active_task_title = purpose or label
+        self._active_task_purpose = purpose
         if narration is not None and self.tool_text_held:
             # Its last run is still held by the driver's redactor and arrives
             # with the first text after this call (``on_text_continuation``).
@@ -1561,6 +1555,30 @@ class SlackRenderer(
                     exc_info=True,
                 )
             self._stream_ts = None
+
+    def _step_label(self, title: str, raw_title: str) -> str:
+        """What the thread shows of a step: the derived title without env
+        assignments, absolute paths or this host's name. A raw command is
+        scrubbed whole and then cut to a line, so the cut lands on what the
+        reader sees rather than on the paths taken out."""
+        tool_name = title.removeprefix("Running: ")
+        if raw_title:
+            return format_raw_command(
+                slack_step_label(raw_title, self._label_root)
+            ) or slack_step_label(tool_name, self._label_root)
+        return slack_step_label(tool_name, self._label_root)
+
+    async def on_tool_title(self, tool_call_id: str, title: str, raw_title: str = "") -> None:
+        # The open step's card takes its call's real title in place (same
+        # task_id). A purpose the card is titled with stays, a closed card keeps
+        # its title, and the step's details keep the title it opened with.
+        if not self._active_task_id or tool_call_id != self._active_tool_call_id:
+            return
+        label = self._step_label(title, raw_title)
+        if self._active_task_purpose or label == self._active_task_title:
+            return
+        self._active_task_title = label
+        await self._append_task(self._active_task_id, label, "in_progress")
 
     async def on_prompt_choice(
         self,
