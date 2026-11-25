@@ -1,8 +1,11 @@
 // A Bot's own chat has no session menu, so its channel link needs a control
 // of its own on the Bot thread header (#34978): the session menu's channel
 // rows, under a chip that shows while the Bot's slot has a link or a channel
-// it can connect to (how an Unlink is undone).
+// it can connect to (how an Unlink is undone), and a link to the channel
+// settings while there is neither.
 import { act, screen, fireEvent, waitFor } from '@testing-library/react'
+import { Route, Routes } from 'react-router-dom'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
 import { createTestStore, renderWithProviders } from '../../test/helpers'
 import BotLinkedChannels from './BotLinkedChannels'
 import { sseSlots } from '../../store/dashboardSlice'
@@ -83,11 +86,57 @@ describe('BotLinkedChannels', () => {
     unlinkMirror.mockResolvedValue({ ok: true, was_linked: true } as never)
   })
 
-  it('renders nothing while the Bot chat has no link', () => {
-    const { container } = renderWithProviders(<BotLinkedChannels slotKey={BOT_SLOT} inBar={false} />, {
-      store: storeWith([]),
-    })
+  it('with no link and nothing to connect to, links to the channel settings once the read answers', async () => {
+    const { container } = renderWithProviders(
+      <Routes>
+        <Route path="/" element={<BotLinkedChannels slotKey={BOT_SLOT} inBar={false} />} />
+        <Route path="/settings/channels" element={<p>zzq-channel-settings</p>} />
+      </Routes>,
+      { store: storeWith([]) },
+    )
+    // Before the read answers nothing is shown, so a crew with a channel sees no flash.
     expect(container.firstChild).toBeNull()
+    const setUp = await screen.findByRole('button', { name: i18nT('pages.membersPage.open_messaging_channels') })
+    // The label is on the button as text, not only in a tooltip.
+    expect(setUp).toHaveTextContent(i18nT('pages.membersPage.open_messaging_channels'))
+    expect(screen.queryByTestId('member-linked-channels')).toBeNull()
+    expect(screen.queryByText('zzq-channel-settings')).toBeNull()
+    fireEvent.click(setUp)
+    expect(await screen.findByText('zzq-channel-settings')).toBeInTheDocument()
+  })
+
+  it('the settings button asks the leave guard, and stays put when it refuses', async () => {
+    const guard = vi.fn(() => false)
+    function Guarded() {
+      useRegisterNavigationLeaveGuard(guard)
+      return null
+    }
+    renderWithProviders(
+      <NavigationLeaveGuardProvider>
+        <Guarded />
+        <Routes>
+          <Route path="/" element={<BotLinkedChannels slotKey={BOT_SLOT} inBar={false} />} />
+          <Route path="/settings/channels" element={<p>zzq-channel-settings</p>} />
+        </Routes>
+      </NavigationLeaveGuardProvider>,
+      { store: storeWith([]) },
+    )
+    fireEvent.click(await screen.findByRole('button', { name: i18nT('pages.membersPage.open_messaging_channels') }))
+    expect(guard).toHaveBeenCalled()
+    expect(screen.queryByText('zzq-channel-settings')).toBeNull()
+  })
+
+  it('the phone top bar shows no settings button: it has no room beside the identity pill', async () => {
+    // The header copy beside it shares the read, so once it shows the read has answered.
+    renderWithProviders(
+      <>
+        <div data-testid="zzq-bar"><BotLinkedChannels slotKey={BOT_SLOT} inBar /></div>
+        <BotLinkedChannels slotKey={BOT_SLOT} inBar={false} />
+      </>,
+      { store: storeWith([]) },
+    )
+    expect(await screen.findAllByTestId('member-set-up-channel')).toHaveLength(1)
+    expect(screen.getByTestId('zzq-bar')).toBeEmptyDOMElement()
   })
 
   it('an unlinked Bot chat with a channel to connect to keeps the chip, and its menu offers the connect', async () => {

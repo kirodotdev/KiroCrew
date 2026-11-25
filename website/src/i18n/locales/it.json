@@ -6195,6 +6195,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "startupModules": {
+      "failed": "Impossibile avviare {{name}}.",
+      "dismiss": "Nascondi l’avviso di avvio di {{name}} fino al ricaricamento",
+      "open_app": "Apri {{name}}"
+    },
     "crewPrFacts": {
       "read": "letto alle {{time}}"
     },
@@ -7313,8 +7318,6 @@
       "agent_cycle_hint_mac": "Agente successivo: ⌥⇧A · Precedente: ⌥⇧Z",
       "compacting_context_stop_unavailable": "Compattazione del contesto — impossibile interrompere finché non termina",
       "click_again_to_force_stop_resets_session": "Fai di nuovo clic per forzare l’arresto (riavvia la sessione; i tuoi messaggi restano, l’agente conserva un estratto recente)",
-      "esc_again_to_stop": "Premi di nuovo Esc per fermare",
-      "stop_generation_esc": "Arresta la generazione (Esc)",
       "model_inherited_default": "Questa sessione usa il modello predefinito ({{name}}). Non ha un modello proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno.",
       "harness_mark": "Funziona su {{harness}}",
       "model_switch_applies_next_turn": "Il tuo prossimo messaggio userà il modello che scegli. Questa risposta si conclude con il modello con cui è iniziata.",
@@ -10365,7 +10368,28 @@
       "updating": "Aggiornamento…",
       "updating_and_restarting": "Aggiornamento e riavvio in corso…",
       "version_is_available": "{{productName}} <0>{{version}}</0> è disponibile.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_many": "altri {{n}}",
+      "work_holders_more_one": "{{n}} altro",
+      "work_holders_more_other": "altri {{n}}",
+      "work_kind_approval": "in attesa di approvazione",
+      "work_kind_callback": "messaggio in arrivo",
+      "work_kind_channel_handler": "messaggio del canale",
+      "work_kind_other": "altro lavoro",
+      "work_kind_queued": "messaggi in coda",
+      "work_kind_refusal_write": "risposta in invio",
+      "work_kind_script": "attività pianificata",
+      "work_kind_subagent": "subagente",
+      "work_kind_task_runner": "esecutore di attività",
+      "work_kind_turn": "turno della chat",
+      "work_kind_unreadable": "lavoro non verificabile",
+      "work_kind_update_build": "build dell’aggiornamento",
+      "work_kind_workflow": "workflow",
       "work_running_busy": "Riavviare ora interromperebbe il lavoro in esecuzione. Elementi attivi: {{active}}.",
+      "work_running_now": "In corso: {{holders}}.",
       "work_running_quiet": "Una chat è stata attiva di recente e riavviare ora potrebbe troncare un messaggio che stai scrivendo. Dopo {{minutes}} min senza attività è sicuro.",
       "work_running_title": "Il lavoro è ancora in corso",
       "you_can_update_anytime_from_settings_about": "Aggiorna in qualsiasi momento da Impostazioni → Informazioni."
@@ -10883,7 +10907,12 @@
       "automatic_https": "Dopo aver attivato HTTPS per questa tailnet, Tailscale crea e rinnova automaticamente il certificato privato.",
       "setting_up": "Configurazione dell’accesso dal telefono…",
       "setup_action": "Configura e mostra QR",
-      "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova."
+      "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova.",
+      "fix_overrides": "Correggi",
+      "fix_overrides_title": "Rimuovere queste sostituzioni?",
+      "fix_overrides_values": "config.local.json imposta <local/>; config.json applicherebbe <applies/>",
+      "fix_overrides_body": "Ogni chiave prende quindi il valore di config.json e la configurazione viene eseguita di nuovo. Nessun’altra chiave di config.local.json cambia.",
+      "fix_overrides_confirm": "Rimuovi e riprova"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Chiude questa scheda. La sessione resta nella barra laterale.",
@@ -15554,6 +15583,7 @@
       "jump_to_new_other": "{{count}} nuovi · Vai in fondo",
       "jump_to_new_many": "{{count}} nuovi · Vai in fondo",
       "could_not_repair_images": "Impossibile riparare le immagini",
+      "could_not_edit_and_resend": "Impossibile modificare e reinviare",
       "session_closed_elsewhere": "Questa chat è stata chiusa fuori da questa finestra."
     },
     "chatSidebar": {
@@ -20717,8 +20747,6 @@
         "display_time_on_each_message": "Mostra l'ora su ogni messaggio",
         "double_click_to_edit": "Doppio clic per modificare i tuoi messaggi",
         "double_click_to_edit_desc": "Se disattivato, un doppio clic sul tuo messaggio seleziona una parola come in qualsiasi testo.",
-        "double_escape_to_stop": "Richiedi un secondo Esc per fermare il turno",
-        "double_escape_to_stop_desc": "Se attivato, il primo Esc nel campo del messaggio mostra solo un suggerimento. Un secondo Esc mentre il suggerimento è visibile ferma il turno in corso.",
         "scroll_on_send": "Vai in fondo all’invio",
         "scroll_on_send_desc": "Se disattivato, l’invio di un messaggio lascia la conversazione dove si trova.",
         "followup_start_sends": "Invia i follow-up con un clic",
@@ -24148,6 +24176,7 @@
       "linked_to": "Collegato a {{label}}",
       "linked_to_paused": "Collegato a {{label}} · risposte in pausa",
       "connect_channel": "Collega a un canale",
+      "open_messaging_channels": "Apri Piattaforme di chat",
       "dashboard_kept_last_good": "Una versione più recente di questa dashboard non si è caricata, quindi questa è l'ultima che si è caricata.",
       "dashboard_none_yet": "Nessuna dashboard ancora configurata per questo Bot.",
       "dashboard_empty_region": "Dashboard di {{name}}: nessuna pagina ancora scelta",
@@ -25929,6 +25958,46 @@
       "hint": "Il tuo computer si collega a questo server e condivide solo la cartella che approvi. Disattivarlo interrompe la condivisione e non elimina mai file. Remote Crew fa il contrario: ti permette di usare questo server da un altro dispositivo.",
       "label": "Computer connessi",
       "shared_crew_off": "Disattivato in un Crew condiviso"
+    }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments sono macchine remote che Kiro avvia e mantiene per te. Creane una ed esegui una nuova crew al suo interno.",
+      "name_label": "Nome della crew",
+      "name_placeholder": "my-crew",
+      "name_rule": "Usa da 2 a 32 lettere minuscole, cifre o trattini singoli, iniziando con una lettera.",
+      "name_help": "L'ambiente prende il nome della crew.",
+      "ssh_config_note": "Permette a questo computer di collegarsi ai tuoi ambienti. Aggiunge alcune righe a {{path}}; puoi rimuoverle quando vuoi. Nient'altro nel file cambia.",
+      "launch": "Avvia",
+      "ssh_add": "Consenti a questo computer di collegarsi",
+      "ssh_ready": "{{path}} contiene le impostazioni ssh che Crew usa per raggiungere i tuoi ambienti gestiti.",
+      "ssh_failed": "Impossibile aggiungere le impostazioni ssh",
+      "launch_needs_name": "Inserisci un nome per la crew per avviare.",
+      "launch_needs_ssh": "Consenti a questo computer di collegarsi, poi avvia.",
+      "ssh_failed_hint": "Controlla di poter modificare {{path}}.",
+      "launch_fix_name": "Correggi il nome della crew per avviare.",
+      "ssh_preview": "Vedi le righe che aggiunge",
+      "ssh_preview_why": "Queste righe permettono a Crew di collegarsi ai tuoi Kiro Managed Environments (nomi che iniziano con {{hosts}}) tramite il tuo accesso Kiro, e lasciano gli altri host ssh come sono."
+    },
+    "row": {
+      "stop": "Arresta ambiente",
+      "resume": "Riprendi ambiente",
+      "delete": "Elimina ambiente",
+      "delete_title": "Eliminare l'ambiente di {{name}}?",
+      "delete_body": "L'ambiente gestito e tutto il suo contenuto vengono eliminati. Non si può annullare. La crew resta nel tuo elenco finché non la rimuovi.",
+      "delete_confirm": "Elimina ambiente",
+      "list_failed": "Impossibile leggere i tuoi ambienti gestiti.",
+      "gone": "Questo ambiente non è più tra i tuoi ambienti gestiti. Rimuovi la crew dal tuo elenco.",
+      "state_creating": "Ambiente in avvio",
+      "state_running": "Ambiente in esecuzione",
+      "state_stopped": "Ambiente arrestato",
+      "state_deleting": "Ambiente in eliminazione",
+      "state_error": "Errore dell'ambiente",
+      "state_error_hint": "Il servizio segnala questo ambiente come {{status}}. Eliminalo e avvialo di nuovo, oppure chiedi all'agente di controllare.",
+      "managed_by": "Kiro Managed Environments · Rimuovi toglie la crew da questo elenco, ma mantiene l'ambiente. Per eliminarlo, usa Elimina ambiente.",
+      "stop_failed": "Impossibile fermare l'ambiente di {{name}}",
+      "resume_failed": "Impossibile riprendere l'ambiente di {{name}}",
+      "delete_failed": "Impossibile eliminare l'ambiente di {{name}}"
     }
   }
 }

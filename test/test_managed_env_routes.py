@@ -27,6 +27,7 @@ ROUTES = [
     ("POST", "/api/managed-environments/env-001/resume"),
     ("POST", "/api/managed-environments/env-001/delete"),
     ("POST", "/api/managed-environments/env-001/ssh-session"),
+    ("GET", "/api/managed-environments/ssh-config"),
     ("POST", "/api/managed-environments/ssh-config"),
 ]
 
@@ -99,9 +100,11 @@ def test_a_real_teammate_is_refused_on_every_lane_route_and_the_owner_passes(
     routes = SandboxRoutes(
         lambda: pytest.fail("no engine for a teammate"), lane_enabled=lambda: True
     )
-    handler = {"list": routes.list_handler, "ssh-session": routes.ssh_session}.get(
-        path.rsplit("/", 1)[1], routes.act
-    )
+    handler = {
+        "list": routes.list_handler,
+        "ssh-session": routes.ssh_session,
+        "ssh-config": routes.ssh_config_handler,
+    }.get(path.rsplit("/", 1)[1], routes.act)
     teammate = _request("ssm", path, method)
     assert is_shared_crew_teammate(teammate)
     resp = asyncio.run(handler(teammate))
@@ -307,13 +310,20 @@ def test_an_expired_lane_sign_in_answers_the_one_sign_in_line(lane, svc):
     }
 
 
-def test_the_ssh_settings_are_written_with_the_gateways_python(lane, tmp_path, monkeypatch):
+def test_the_ssh_settings_are_read_and_written_with_the_gateways_python(
+    lane, tmp_path, monkeypatch
+):
     routes, _, _ = lane
     cfg = tmp_path / "ssh" / "config"
     monkeypatch.setattr("kiro_crew.managed_env.ssh_config.default_config", lambda: str(cfg))
     from kiro_crew.managed_env import ssh_config
 
     block = ssh_config.render_block(ssh_config.gateway_python())
+    assert call(routes, "GET", "/api/managed-environments/ssh-config") == (
+        200,
+        {"present": False, "path": str(cfg), "block": block},
+    )
+    assert not cfg.exists()  # a read writes nothing
     assert call(routes, "POST", "/api/managed-environments/ssh-config") == (
         200,
         {"present": True, "path": str(cfg), "block": block},
@@ -324,6 +334,24 @@ def test_the_ssh_settings_are_written_with_the_gateways_python(lane, tmp_path, m
     cfg.write_text(ssh_config.BEGIN + "\n", encoding="utf-8")  # a damaged block
     status, body = call(routes, "POST", "/api/managed-environments/ssh-config")
     assert status == 409 and body["code"] == "ssh_config_unwritable"
+
+
+def test_the_ssh_settings_read_returns_only_crews_block_and_changes_nothing(
+    lane, tmp_path, monkeypatch
+):
+    """The preview GET answers the block a write would add, never the person's own lines."""
+    from kiro_crew.managed_env import ssh_config
+
+    routes, _, _ = lane
+    cfg = tmp_path / "config"
+    mine = "Host work\n  HostName work.example\n  IdentityFile ~/.ssh/work_key\n"
+    cfg.write_text(mine, encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.managed_env.ssh_config.default_config", lambda: str(cfg))
+    status, body = call(routes, "GET", "/api/managed-environments/ssh-config")
+    assert status == 200 and set(body) == {"present", "path", "block"}
+    assert body["block"] == ssh_config.render_block(ssh_config.gateway_python())
+    assert "work.example" not in repr(body) and "work_key" not in repr(body)
+    assert cfg.read_text(encoding="utf-8") == mine
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")

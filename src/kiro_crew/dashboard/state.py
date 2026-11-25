@@ -150,6 +150,8 @@ import sys as _sys  # noqa: E402
 
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.dashboard.state_parts.bot_worker_cap import (  # noqa: E402,F401 -- re-exported; see state_parts
+    bot_max_workers,
+    bot_worker_cap_refusal,
     count_restored_workers,
     note_new_worker,
     own_worker_member,

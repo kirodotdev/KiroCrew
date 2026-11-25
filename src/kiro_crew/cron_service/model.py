@@ -332,6 +332,9 @@ class CronJob:
     # one run alone. The store refuses it with ``persistent_session=True``, whose
     # one tab already holds every run. ``hide_in_chat`` still wins.
     new_chat_per_run: bool = False
+    # True → a reminder: each run delivers ``message`` to the user as written and
+    # starts no agent turn, so no tool runs (``cron_reminder``).
+    notify_only: bool = False
     # ``fresh`` → the first run after the person closed the job's tab reopens it
     # empty: the rows stay in ``cron:<id>`` below the tab's display floor
     # (``cron_inject.start_fresh_cron_tab``). ``resume`` shows them again.

@@ -191,5 +191,5 @@ Errors. The response body is [Error](schemas.md#error); its `error.code` field h
 | 401 | `invalid_token`, `stale_session_reauth` | 401: invalid_token, stale_session_reauth. For the Owner tier: no quota headers. |
 | 403 | `owner_only` | 403: owner_only. A delegated credential, an embed credential, a local app token and a dashboard session that is not the owner's all get this on the Owner tier; /v1 does not hide routes behind 404. |
 | 404 | `not_found`, `model_not_found` | 404: not_found, model_not_found. For embed-credential endpoints: no quota headers. |
-| 409 |  | approval_already_resolved: the approval was already answered, has expired, or its request is gone |
+| 409 | `approval_already_resolved` | approval_already_resolved: the approval was already answered, has expired, or its request is gone |
 | 500 | `internal_error` | 500: internal_error. For embed-credential endpoints: no quota headers. |

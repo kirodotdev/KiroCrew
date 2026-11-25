@@ -93,14 +93,20 @@ def _reset_thread_board():
 
     ``kiro_crew.slack.code_channels.board.thread_board`` keeps them process-global,
     keyed by room, and tests reuse channel and anchor ids, so one left over would
-    coalesce the next test's refresh into a finished one. Looked up in
-    ``sys.modules`` so a run that never imported it pays nothing.
+    coalesce the next test's refresh into a finished one. The publisher's rooms whose
+    old board Slack would not delete (``_move_refused``) are keyed the same way, and
+    one left over would keep the next test's board from moving. Looked up in
+    ``sys.modules`` so a run that never imported them pays nothing.
     """
 
     def clear() -> None:
         module = sys.modules.get("kiro_crew.slack.code_channels.board.thread_board")
         if module is not None:
             module.reset_for_tests()
+        publisher = sys.modules.get("kiro_crew.slack.code_channels.board.publisher")
+        refused = getattr(publisher, "_move_refused", None)
+        if refused is not None:
+            refused.clear()
 
     clear()
     try:

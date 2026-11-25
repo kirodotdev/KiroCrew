@@ -393,6 +393,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
         new_chat_per_run=j.get("new_chat_per_run") is True,
+        notify_only=j.get("notify_only") is True,
         on_tab_close="fresh" if j.get("on_tab_close") == "fresh" else "resume",
         folder_id=_guard_str("folder_id"),
         chat_folder_id=_guard_str("chat_folder_id"),
@@ -628,6 +629,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
     # Written only when set, by the same rule.
     if j.new_chat_per_run:
         record["new_chat_per_run"] = True
+    if j.notify_only:
+        record["notify_only"] = True
     if j.secret_env_resurfaced_pin:
         record["secret_env_resurfaced_pin"] = j.secret_env_resurfaced_pin
     if j.on_tab_close == "fresh":
@@ -644,7 +647,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: (``user_pause_generation``, ``user_pause_requested``, ``managed_by``, ``app_manifest_digest``,
 #: ``person_owner_key``, ``owner_member_id`` with ``owner_approval_mode``,
 #: ``acked_item_ids`` with ``acked_item_ids_digest``,
-#: ``project_path``, ``new_chat_per_run``, ``secret_env_resurfaced_pin``,
+#: ``project_path``, ``new_chat_per_run``, ``notify_only``, ``secret_env_resurfaced_pin``,
 #: ``on_tab_close``, ``channel_type`` with ``target_id``, and a non-default
 #: ``auto_pause_after_failures`` and ``alert_after_failures``, which are omitted
 #: at the default). A record key outside this set came from a newer build. A key
@@ -665,6 +668,7 @@ _KNOWN_JOB_KEYS = frozenset(
             owner_member_id="-",
             project_path="-",
             new_chat_per_run=True,
+            notify_only=True,
             secret_env_resurfaced_pin="-",
             on_tab_close="fresh",
             channel_type="-",

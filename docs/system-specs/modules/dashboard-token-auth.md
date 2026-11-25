@@ -340,6 +340,14 @@ conflicting dotted field names instead of claiming the phone is update-proof.
 The safe base settings already written to `config.json` remain in place; the
 endpoint does not roll them back because the user-owned overlay is the only thing
 preventing them from becoming effective.
+The 409 also carries `overrides`: each listed field that `config.local.json`
+itself sets, with the value it holds there (`local`) and the `config.json` value
+that applies once it is gone (`applies`). The card's **Fix this** shows those in
+a confirm dialog; on confirm it calls `POST /api/tailnet/mobile/clear-overrides`
+with the field names and then retries setup. That route has the same owner-only
+guard as setup, accepts only the four fields setup can name, and deletes exactly
+those keys from `config.local.json` under the config write lock and changes no
+other key there.
 An explicit effective `qr_session_until_restart=false` remains the supported
 timed-session opt-out and is reported as a successful non-persistent setup. A
 retry after removing an override also compares the running gateway's immutable
@@ -417,7 +425,7 @@ def token_auth_middleware(local_only: bool = True) -> Callable[..., Any]:
 The `local_only` parameter is accepted for backward compatibility but does not control whether ordinary loopback requests authenticate. `token_auth_middleware()` requires a token on ordinary loopback routes (`test_loopback_requires_token`). An internal route can grant a loopback caller with a valid `X-Internal-Secret`; a mixed internal route without that secret follows its cookie-authentication branch.
 
 Request flow:
-1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`). A mixed internal path's cookie branch, on loopback and off it, sets `auth_from_query_token` from the credential `_extract_and_validate_token` validated, as the main path does: true for a `?token=` link, false for the session cookie, including a cookie adopted after a failed link.
+1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers. A loopback request to a strict path with no secret falls through to cookie auth, where a dashboard session (empty app claim) must also pass `require_owner_dashboard_request`, so only the owner's or a teammate's browser reaches it; an app token stays under its scope; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`). A mixed internal path's cookie branch, on loopback and off it, sets `auth_from_query_token` from the credential `_extract_and_validate_token` validated, as the main path does: true for a `?token=` link, false for the session cookie, including a cookie adopted after a failed link.
 2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, `/sandbox-doc/`, `/app-frame/`, and `/app-frame-fetch/` (an app frame and its fetch carry their own HMAC path token or capability header, see `apps/app_frame.py`); exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `GET /api/hooks/agent/status` (`AGENT_HOOK_STATUS_PATH`: the same webhook token, re-checked in `api_hooks_agent_status`), `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`), the four local authorization routes `GET /.well-known/oauth-authorization-server`, `GET /oauth/authorize`, `POST /oauth/token` and `POST /oauth/revoke` (`LOCAL_AUTH_*_PATH`: an app with no credential yet asks for a grant; each handler in `routes/local_authorization.py` admits only a direct loopback request and grants nothing until the owner answers on an Owner route), `GET /api/connections/oauth/callback` (`CREW_OAUTH_CALLBACK_PATH`: a vendor's redirect back to a DCR Connection sign-in, admitted in `crew_oauth_dcr.gateway_callback` only by a pending sign-in's `state`, single use, 600 s), and `POST /api/relay-viewer/token` (`RELAY_VIEWER_TOKEN_PATH`: the desktop app's relay access token mint, admitted in `api_relay_viewer_token` by loopback or the same-user unix socket, `X-Local-Secret` and a verified host process, like `/api/token/local`), and `GET /api/connected-computers/connect` (`CONNECTOR_CONNECT_PATH`, feature preview `connected_computers`: a connected computer's connector socket. Not in `_BYPASS_EXACT_METHODS`: `_exact_method_bypass` grants it only while the preview is on in the live configuration, so with it off, or before a configuration is loaded, the path meets this gate like any path, and an authenticated caller gets the router's 404 (`remote_routes.api_connector_connect`, registered for every method), exactly as on a gateway without the feature. With it on, `ws_route.api_connector_connect` refuses the upgrade while the Session Environments developer flag is off, when an `Origin` or an `Authorization` header is present, or when the named device is not active here; on the socket the gateway proves itself first, then the connector sends only the unsigned credential payload and a nonce-bound proof of possession, never the bearer signature. `connector_token.verify_auth` checks that proof in constant time against a locally reconstructed credential, then `connector_token.verify` checks the credential in full (signature, audience, gateway id, device record and its status, owner, credential generation, then expiry). Revocation is the device record's, never the dashboard's revocation generation or nonce denylist. Every subsequent frame in both directions, including ready and stop, has a session-key MAC and consecutive sequence number bound to both identities and nonces; tampering or replay closes the socket before dispatch. No dashboard cookie or token is read there, and the connector credential is accepted nowhere else: `validate_token` refuses a token whose `aud` is `CONNECTOR_AUDIENCE` (reason `connector credential`), so every cookie, link and app-token path and `POST /api/auth/logout` (`revoke_access_cookie`) refuse it, and a logout cannot revoke it or end sharing) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
 
    **App backends mint through the local secret.** A running app backend can
@@ -624,7 +632,7 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-A Public route served through the owner gate (`/v1/models`, `/v1/responses`) registers through
+A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each such path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. `GET /v1/models`
@@ -709,7 +717,15 @@ Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
 float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
 The startup output of `kirocrew gateway --headless` shows whether the entry port is
 off or gives its `127.0.0.1:<port>` address, the one a proxy on this machine dials;
-the output of `kirocrew restart` has no entry-port line.
+the output of `kirocrew restart` has no entry-port line. The port it prints is the
+one the gateway bound (`entry_gate.bound_port`, read from the gate `entry_gate.start`
+set), not the configured value. When the port is on, the next line says that the
+proxy must send a `Host` that names `127.0.0.1`, `[::1]` or `localhost`
+(`entry_gate.HOST_HINT`), and the log line `entry_gate.start` writes when the port
+opens says the same. Pinned by
+`test_the_printed_credential_command_names_the_bound_port`,
+`test_bound_port_reads_the_gate_the_start_set` and
+`test_a_headless_start_prints_the_bound_entry_port`.
 
 A request arrived on the entry port when its LOCAL socket is that port
 (`entry_gate.EntryGate.owns`), never because of a header. `entry_gate_middleware`

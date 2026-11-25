@@ -93,6 +93,8 @@ CAPABILITY_FIELDS = (
     "honors_chat_steering_off",
     "crew_sends_persona_prompt",
     "loads_steering_natively",
+    "keeps_prompt_on_unlanded_turn",
+    "keeps_session_across_compaction",
 )
 
 

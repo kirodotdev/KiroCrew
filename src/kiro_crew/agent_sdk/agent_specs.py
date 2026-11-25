@@ -97,15 +97,21 @@ def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
     return kas_agents.agent_spec_absent(agents_dir, agent_id)
 
 
-def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
+def session_mcp_server_is_disabled(
+    name: str, agent: str | None, *, work_dir: str | Path | None = None, session_key: str = ""
+) -> bool:
     """Whether MCP server *name* is switched off whole for a session as *agent*.
 
     ``acp.session_mcp.session_mcp_server_is_disabled``: blocking, and never
-    raises (an unreadable source switches nothing off).
+    raises (an unreadable source switches nothing off). *work_dir* is the checkout
+    the agent's spec is read from, and *session_key* the session, so a crewmate's
+    worker is read from the spec built for it, as that reader takes them.
     """
     from kiro_crew.acp import session_mcp
 
-    return session_mcp.session_mcp_server_is_disabled(name, agent)
+    return session_mcp.session_mcp_server_is_disabled(
+        name, agent, work_dir=work_dir, session_key=session_key
+    )
 
 
 def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]]:

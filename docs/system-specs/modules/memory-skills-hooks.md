@@ -1424,7 +1424,10 @@ answers the name of the named store whose vector file `path` is, or `""` — the
 hand the crew schema to each: the eval runner's `ws/"vector_memory.db"`, the bench ingest
 path, the onboarding importer's `destination/"memory.db"`, and every `tmp_path` in the
 suite. The predicate answers `""` for all of those, for the literal
-`memory_stores/default/`, and for a malformed store name. Its containment test is
+`memory_stores/default/`, and for a malformed store name. On Windows it also answers
+`""`, without resolving, for a UNC folder `hooks.unc_probe_allowed` does not admit,
+unless the folder is spelled exactly as the resolved root names it: resolving a UNC path
+opens SMB to its host. Its containment test is
 IDENTITY (`parent.resolve() == memory_stores_root().resolve() / name`) rather than a
 resolved-parent check, for the reason `_named_store_dir` already refuses aliasing: with
 `memory_stores/acme` symlinked at `memory_stores/finance`, a parent check still sees the
@@ -7941,7 +7944,9 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
   own case-sensitive lookup. The two compaction triggers, `PreCompact` and
   `PostCompact` (and their camelCase spellings), come from the same table in the
   pinned engine 0.66.117's published bundle, for fourteen in all. That blob and
-  that bundle are the ones to re-read when adding a name
+  that bundle are the ones to re-read when adding a name. The bundle's
+  `PermissionRequest` and `permissionRequest` rows are left out on purpose
+  (`docs/decisions/2026-11-24-a-spec-hook-may-not-use-the-permissionrequest-trigger.md`)
 - `action` is `{"type": "command", "command": ...}` or
   `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
   non-empty string within `_MAX_HOOK_PAYLOAD_LEN`

@@ -167,6 +167,7 @@ export type {
   TailnetMobileMutation,
   MobileConnectMethodsData,
   TailnetMobileConfigure,
+  TailnetMobileOverride,
   TailnetMobileQr,
 } from './client/remoteAccess'
 export type {

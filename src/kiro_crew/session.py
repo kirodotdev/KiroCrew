@@ -985,7 +985,6 @@ class SessionManager:
             self,
             CompactionDeps(
                 logger=logger,
-                is_claude_backend=lambda provider: _is_claude_backend(provider),
                 is_cc_managed=lambda provider: bool(
                     ClaudeCodeProvider is not None
                     and isinstance(provider, ClaudeCodeProvider)

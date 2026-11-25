@@ -1572,8 +1572,8 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         return web.json_response(
             {
                 "error": (
-                    f"Nothing was deleted: {tag} is a managed environment, deleted with "
-                    "POST /api/managed-environments/<id>/delete."
+                    f"Nothing was deleted: {tag} is a managed environment. Delete it with "
+                    "Delete environment on its Remote Crew row."
                 ),
                 "code": "lane_delete_elsewhere",
                 "provisioner_id": lane,

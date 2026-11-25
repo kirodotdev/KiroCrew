@@ -34,6 +34,7 @@ SRC = ROOT / "src" / "kiro_crew"
 ASSEMBLERS: tuple[str, ...] = (
     "context_assembly/member.py",
     "mate_worker.py",
+    "mate_worker_conducts.py",
     "dashboard/goal_reminder.py",
     "dashboard/goal_setup.py",
     "dashboard/mate_thread_wakes.py",

@@ -5851,6 +5851,11 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} 시작에 실패했습니다.",
+      "dismiss": "새로고침할 때까지 {{name}} 시작 알림 닫기",
+      "open_app": "{{name}} 열기"
+    },
     "crewPrFacts": {
       "read": "{{time}}에 확인"
     },
@@ -6935,8 +6940,6 @@
       "agent_cycle_hint_mac": "다음 에이전트: ⌥⇧A · 이전: ⌥⇧Z",
       "compacting_context_stop_unavailable": "컨텍스트 압축 중 — 완료될 때까지 중지할 수 없습니다",
       "click_again_to_force_stop_resets_session": "다시 클릭하면 강제 중지됩니다 (세션이 재시작됩니다. 메시지는 남고 에이전트는 최근 발췌를 유지합니다)",
-      "esc_again_to_stop": "중지하려면 Esc를 한 번 더 누르세요",
-      "stop_generation_esc": "생성 중지 (Esc)",
       "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
       "harness_mark": "{{harness}}에서 실행",
       "model_switch_applies_next_turn": "다음 메시지는 선택한 모델로 실행됩니다. 이 답변은 시작할 때의 모델로 마무리됩니다.",
@@ -9885,7 +9888,26 @@
       "updating": "업데이트 중…",
       "updating_and_restarting": "업데이트 및 다시 시작 중…",
       "version_is_available": "{{productName}} <0>{{version}}</0> 버전을 사용할 수 있습니다.",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_other": "{{n}}개 더",
+      "work_kind_approval": "승인 대기 중",
+      "work_kind_callback": "수신 메시지",
+      "work_kind_channel_handler": "채널 메시지",
+      "work_kind_other": "기타 작업",
+      "work_kind_queued": "대기 중인 메시지",
+      "work_kind_refusal_write": "전송 중인 답장",
+      "work_kind_script": "예약된 작업",
+      "work_kind_subagent": "서브에이전트",
+      "work_kind_task_runner": "작업 실행기",
+      "work_kind_turn": "채팅 턴",
+      "work_kind_unreadable": "확인할 수 없는 작업",
+      "work_kind_update_build": "업데이트 빌드",
+      "work_kind_workflow": "워크플로",
       "work_running_busy": "지금 재시작하면 실행 중인 작업이 중단됩니다. 활성 항목: {{active}}.",
+      "work_running_now": "실행 중: {{holders}}.",
       "work_running_quiet": "최근 채팅 활동이 있었고, 지금 재시작하면 작성 중인 메시지가 끊길 수 있습니다. {{minutes}}분 동안 활동이 없으면 안전합니다.",
       "work_running_title": "작업이 아직 실행 중입니다",
       "you_can_update_anytime_from_settings_about": "설정 → 정보에서 언제든지 업데이트할 수 있습니다."
@@ -10393,7 +10415,12 @@
       "automatic_https": "이 tailnet에 HTTPS가 활성화되면 Tailscale이 비공개 인증서를 자동으로 만들고 갱신합니다.",
       "setting_up": "휴대폰 액세스를 설정하는 중…",
       "setup_action": "설정하고 QR 표시",
-      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
+      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요.",
+      "fix_overrides": "수정하기",
+      "fix_overrides_title": "이 재정의를 제거하시겠습니까?",
+      "fix_overrides_values": "config.local.json 설정: <local/>, 적용될 config.json 값: <applies/>",
+      "fix_overrides_body": "제거하면 각 키에 config.json 값이 적용되고 설정이 다시 실행됩니다. config.local.json의 다른 키는 바뀌지 않습니다.",
+      "fix_overrides_confirm": "제거 후 다시 시도"
     },
     "sessionTabStrip": {
       "close_tab_hint": "이 탭을 닫습니다. 세션은 사이드바에 남습니다.",
@@ -14818,6 +14845,7 @@
       "your_crewmate": "Bot",
       "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로",
       "could_not_repair_images": "이미지를 복구하지 못했습니다",
+      "could_not_edit_and_resend": "편집 후 다시 보낼 수 없습니다",
       "session_closed_elsewhere": "이 채팅은 이 창 밖에서 닫혔습니다."
     },
     "chatSidebar": {
@@ -19625,8 +19653,6 @@
         "display_time_on_each_message": "각 메시지에 시각 표시",
         "double_click_to_edit": "두 번 클릭해서 내 메시지 편집",
         "double_click_to_edit_desc": "꺼져 있으면 메시지를 두 번 클릭할 때 일반 텍스트처럼 단어가 선택됩니다.",
-        "double_escape_to_stop": "턴을 중지하려면 Esc를 두 번 누르도록 요구",
-        "double_escape_to_stop_desc": "켜면 메시지 입력에서 처음 누른 Esc는 안내만 표시합니다. 안내가 보이는 동안 Esc를 한 번 더 누르면 실행 중인 턴이 중지됩니다.",
         "scroll_on_send": "보낼 때 맨 아래로 이동",
         "scroll_on_send_desc": "끄면 메시지를 보내도 대화 위치가 그대로 유지됩니다.",
         "followup_start_sends": "후속 작업을 한 번의 클릭으로 전송",
@@ -22950,6 +22976,7 @@
       "linked_to": "{{label}}에 연결됨",
       "linked_to_paused": "{{label}}에 연결됨 · 답장 일시 중지됨",
       "connect_channel": "채널에 연결",
+      "open_messaging_channels": "채팅 플랫폼 열기",
       "dashboard_kept_last_good": "이 대시보드의 최신 버전을 불러오지 못해, 마지막으로 불러온 버전을 표시합니다.",
       "dashboard_none_yet": "이 Bot의 대시보드가 아직 설정되지 않았습니다.",
       "dashboard_empty_region": "{{name}}의 대시보드: 아직 선택된 페이지가 없습니다",
@@ -24707,6 +24734,46 @@
       "hint": "내 컴퓨터가 이 서버에 연결되어 승인한 폴더만 공유합니다. 끄면 공유가 멈추며 파일은 절대 삭제되지 않습니다. Remote Crew는 반대로, 다른 기기에서 이 서버를 사용할 수 있게 합니다.",
       "label": "연결된 컴퓨터",
       "shared_crew_off": "공유 Crew에서는 꺼짐"
+    }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments는 Kiro가 대신 시작하고 유지하는 원격 머신입니다. 하나를 만들고 그 위에서 새 크루를 실행합니다.",
+      "name_label": "크루 이름",
+      "name_placeholder": "research",
+      "name_rule": "소문자, 숫자, 단일 하이픈으로 2~32자를 쓰고 문자로 시작하세요.",
+      "name_help": "환경 이름은 크루 이름을 따릅니다.",
+      "ssh_config_note": "이 컴퓨터가 환경에 연결할 수 있게 합니다. {{path}}에 몇 줄을 추가하며, 언제든 지울 수 있습니다. 파일의 다른 부분은 바뀌지 않습니다.",
+      "launch": "시작",
+      "ssh_add": "이 컴퓨터의 연결 허용",
+      "ssh_ready": "{{path}}에 Crew가 관리형 환경에 접속할 때 쓰는 ssh 설정이 있습니다.",
+      "ssh_failed": "ssh 설정을 추가할 수 없습니다",
+      "launch_needs_name": "시작하려면 크루 이름을 입력하세요.",
+      "launch_needs_ssh": "이 컴퓨터의 연결을 허용한 뒤 실행하세요.",
+      "ssh_failed_hint": "{{path}}을(를) 편집할 수 있는지 확인하세요.",
+      "launch_fix_name": "시작하려면 크루 이름을 고치세요.",
+      "ssh_preview": "추가되는 줄 보기",
+      "ssh_preview_why": "이 줄 덕분에 Crew가 Kiro 로그인을 통해 Kiro Managed Environments(이름이 {{hosts}}(으)로 시작)에 연결하며, 다른 ssh 호스트는 그대로 둡니다."
+    },
+    "row": {
+      "stop": "환경 중지",
+      "resume": "환경 다시 시작",
+      "delete": "환경 삭제",
+      "delete_title": "{{name}}의 환경을 삭제하시겠습니까?",
+      "delete_body": "관리형 환경과 그 안의 모든 것이 삭제됩니다. 되돌릴 수 없습니다. 크루는 직접 제거할 때까지 목록에 남습니다.",
+      "delete_confirm": "환경 삭제",
+      "list_failed": "관리형 환경을 읽을 수 없습니다.",
+      "gone": "이 환경은 더 이상 관리형 환경에 없습니다. 크루를 목록에서 제거하세요.",
+      "state_creating": "환경 시작 중",
+      "state_running": "환경 실행 중",
+      "state_stopped": "환경 중지됨",
+      "state_deleting": "환경 삭제 중",
+      "state_error": "환경 오류",
+      "state_error_hint": "서비스가 이 환경을 {{status}} 상태로 보고합니다. 삭제한 뒤 다시 실행하거나 에이전트에게 확인을 요청하세요.",
+      "managed_by": "Kiro Managed Environments · 제거를 누르면 크루가 이 목록에서 빠지지만 환경은 남습니다. 환경을 삭제하려면 환경 삭제를 쓰세요.",
+      "stop_failed": "{{name}}의 환경을 중지할 수 없습니다",
+      "resume_failed": "{{name}}의 환경을 다시 시작할 수 없습니다",
+      "delete_failed": "{{name}}의 환경을 삭제할 수 없습니다"
     }
   }
 }

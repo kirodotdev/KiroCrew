@@ -1039,9 +1039,12 @@ paths:
       x-crew-tier: public
       x-crew-scope: any
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
+      x-crew-stability: preview
       description: Call this first. The result is what the engine reports, filtered by the gateway for the current
         API version and the caller's grant; a capability the gateway cannot confirm is not reported as available.
         Using a feature reported as false returns 422 capability_unavailable.
@@ -1088,9 +1091,12 @@ paths:
       x-crew-tier: public
       x-crew-scope: any
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers_system.py:228 (api_status)
       x-crew-coverage: done
+      x-crew-stability: preview
   /v1/crew/events:
     get:
       operationId: get_v1_crew_events

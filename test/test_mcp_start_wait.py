@@ -912,3 +912,181 @@ class TestASharedServer:
             await _goes_out(hold, "untold first turn")
         finally:
             hold.cancel()
+
+
+# ── An app agent's own app server ──
+#: A built-in app whose agent is the app: its server is in the agent's own block,
+#: beside a user's server and another app's, where a person-waited start would
+#: otherwise leave it to the first turn.
+_APP_AGENT = "pet"
+_APP_SERVER = "pet:pet"
+_APP_PARAMS = {
+    "sessionId": _SID,
+    "mcpServers": [{"name": _CORE}],
+    "_meta": {
+        "kiro": {
+            "customAgents": [
+                {
+                    "id": _APP_AGENT,
+                    "mcpServers": {_APP_SERVER: {}, "users-fast": {}, "other:srv": {}},
+                },
+            ]
+        }
+    },
+}
+
+
+class TestAnAppAgentsOwnServer:
+    def test_its_app_servers_are_named_by_the_owning_apps_prefix(self):
+        from kiro_crew.acp.mcp_start_wait import own_app_servers
+
+        assert own_app_servers(_APP_PARAMS, _APP_AGENT, "pet") == (_APP_SERVER,)
+
+    def test_an_installed_apps_agent_keeps_its_declared_name(self):
+        """The agent ``helper`` of app ``shop``: ownership comes from the app, not the name."""
+        from kiro_crew.acp.mcp_start_wait import own_app_servers
+
+        agents = [{"id": "helper", "mcpServers": {"shop:catalog": {}, "pet:pet": {}}}]
+        params = {**_PARAMS, "_meta": {"kiro": {"customAgents": agents}}}
+
+        assert own_app_servers(params, "helper", "shop") == ("shop:catalog",)
+        # Another agent's block holds them: not this agent's.
+        assert own_app_servers(params, "other", "shop") == ()
+
+    def test_an_agent_no_app_declares_has_none(self):
+        from kiro_crew.acp.mcp_start_wait import own_app_servers, owning_app_for_start
+
+        assert own_app_servers(_APP_PARAMS, _APP_AGENT, "") == ()
+        assert owning_app_for_start("") == ""
+
+    def test_the_owner_comes_from_the_app_lookup(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.mcp_start_wait import owning_app_for_start
+        from kiro_crew.apps import manager
+
+        monkeypatch.setattr(
+            manager,
+            "owning_app_for_agent",
+            lambda agent: SimpleNamespace(app="shop") if agent == "helper" else None,
+        )
+
+        assert owning_app_for_start("helper") == "shop"
+        assert owning_app_for_start("worker") == ""
+
+    def test_an_unreadable_owner_loses_only_the_longer_wait(self, monkeypatch):
+        from kiro_crew.acp.mcp_start_wait import owning_app_for_start
+        from kiro_crew.apps import manager
+
+        def _boom(agent):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(manager, "owning_app_for_agent", _boom)
+
+        assert owning_app_for_start("helper") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_person_waiting_still_waits_for_the_agents_own_app_server(
+        self, runtime, monkeypatch
+    ):
+        monkeypatch.setattr(runtime_session_load, "APP_SERVER_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+        monkeypatch.setattr(runtime_session_load, "owning_app_for_start", lambda agent: "pet")
+        handle = _handle(_status(**{_CORE: "connected", _APP_SERVER: "connecting"}))
+        task = asyncio.ensure_future(
+            runtime._wait_managed_mcp(
+                handle, _APP_PARAMS, _APP_AGENT, FALLBACK_TIMEOUT_SECS, 0, FOREGROUND
+            )
+        )
+        try:
+            await async_wait_until(lambda: _parked(handle))
+            assert not task.done()
+            _deliver(handle, _status(**{_CORE: "connected", _APP_SERVER: "connected"}))
+            await finished(task, "foreground start")
+        finally:
+            task.cancel()
+        assert _APP_SERVER not in handle._mcp_report.not_ready().get("connecting", ())
+
+    @pytest.mark.asyncio
+    async def test_an_app_server_that_never_answers_costs_its_cap_and_is_named_late(
+        self, runtime, monkeypatch
+    ):
+        monkeypatch.setattr(runtime_session_load, "APP_SERVER_WAIT_SECS", 0)
+        monkeypatch.setattr(runtime_session_load, "owning_app_for_start", lambda agent: "pet")
+        handle = _handle(_status(**{_CORE: "connected", _APP_SERVER: "connecting"}))
+
+        await finished(
+            runtime._wait_managed_mcp(
+                handle, _APP_PARAMS, _APP_AGENT, FALLBACK_TIMEOUT_SECS, 0, FOREGROUND
+            ),
+            "foreground start",
+        )
+
+        assert _APP_SERVER in handle._mcp_report.not_ready()["connecting"]
+
+    @pytest.mark.asyncio
+    async def test_the_owner_is_looked_up_by_the_agents_own_id_not_its_wire_alias(
+        self, runtime, monkeypatch
+    ):
+        """A KAS alias (``plan-crewmate``) is not a name the app lookup knows."""
+        asked: list[str] = []
+        monkeypatch.setattr(runtime_session_load, "APP_SERVER_WAIT_SECS", 0)
+        monkeypatch.setattr(
+            runtime_session_load, "owning_app_for_start", lambda agent: asked.append(agent) or ""
+        )
+        agents = [{"id": "plan-crewmate", "mcpServers": {"planner:plan": {}}}]
+        params = {**_APP_PARAMS, "_meta": {"kiro": {"customAgents": agents}}}
+        handle = _handle(_status(**{_CORE: "connected"}))
+
+        await finished(
+            runtime._wait_managed_mcp(handle, params, "plan", FALLBACK_TIMEOUT_SECS, 0, FOREGROUND),
+            "foreground start",
+        )
+
+        assert asked == ["plan"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("how", ["host-disabled", "registry-dropped"])
+    async def test_a_settled_app_server_is_not_waited_for(self, runtime, monkeypatch, how):
+        """A server the host says will never start ends the wait at once, not at the cap."""
+        monkeypatch.setattr(runtime_session_load, "APP_SERVER_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+        monkeypatch.setattr(runtime_session_load, "owning_app_for_start", lambda agent: "pet")
+        frame = _status(**{_CORE: "connected"})
+        if how == "registry-dropped":
+            frame.params["accessModeFilteredServers"] = [{"name": _APP_SERVER}]
+        else:
+            frame.params["servers"].append({"name": _APP_SERVER, "status": "disabled"})
+        handle = _handle(frame)
+        task = asyncio.ensure_future(
+            runtime._wait_managed_mcp(
+                handle, _APP_PARAMS, _APP_AGENT, FALLBACK_TIMEOUT_SECS, 0, FOREGROUND
+            )
+        )
+        try:
+            # It must return before anything else arrives: a parked wait here is the bug.
+            await finished(
+                task,
+                "foreground start with a settled app server",
+                timeout=DEFAULT_PROGRESS_WINDOW_SECS,
+            )
+        finally:
+            task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_waited_app_server_is_not_left_to_the_first_turn_hold(
+        self, runtime, monkeypatch
+    ):
+        """Its own 10 s bound is the whole wait: the first turn does not hold for it again."""
+        monkeypatch.setattr(runtime_session_load, "APP_SERVER_WAIT_SECS", 0)
+        monkeypatch.setattr(runtime_session_load, "owning_app_for_start", lambda agent: "pet")
+        handle = _handle(_status(**{_CORE: "connected", _APP_SERVER: "connecting"}))
+
+        await finished(
+            runtime._wait_managed_mcp(
+                handle, _APP_PARAMS, _APP_AGENT, FALLBACK_TIMEOUT_SECS, 0, FOREGROUND
+            ),
+            "foreground start",
+        )
+
+        left = handle.mcp_session_report().left_to_turn
+        assert _APP_SERVER not in left
+        assert "users-fast" in left

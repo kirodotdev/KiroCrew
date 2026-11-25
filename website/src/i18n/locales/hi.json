@@ -6023,6 +6023,11 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} शुरू नहीं हो सका।",
+      "dismiss": "दोबारा लोड करने तक {{name}} के शुरू होने की सूचना हटाओ",
+      "open_app": "{{name}} खोलो"
+    },
     "crewPrFacts": {
       "read": "{{time}} पर पढ़ा"
     },
@@ -7124,8 +7129,6 @@
       "agent_cycle_hint_mac": "अगला एजेंट: ⌥⇧A · पिछला: ⌥⇧Z",
       "compacting_context_stop_unavailable": "संदर्भ संकुचित हो रहा है — पूरा होने तक रोकना उपलब्ध नहीं",
       "click_again_to_force_stop_resets_session": "ज़बरदस्ती रोकने के लिए फिर क्लिक करो (सेशन रीस्टार्ट होगा; तुम्हारे मैसेज रहेंगे, एजेंट हाल का हिस्सा रखेगा)",
-      "esc_again_to_stop": "रोकने के लिए फिर से Esc दबाओ",
-      "stop_generation_esc": "जेनरेशन रोकें (Esc)",
       "model_inherited_default": "यह सत्र डिफ़ॉल्ट मॉडल ({{name}}) पर चलता है। इसका अपना कोई मॉडल नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। एक पिन करने के लिए क्लिक करें।",
       "harness_mark": "{{harness}} पर चलता है",
       "model_switch_applies_next_turn": "तुम्हारा अगला संदेश तुम्हारे चुने हुए मॉडल पर चलेगा। यह जवाब उसी मॉडल पर पूरा होगा जिससे यह शुरू हुआ था।",
@@ -10125,7 +10128,27 @@
       "updating": "अपडेट हो रहा है…",
       "updating_and_restarting": "अपडेट और पुनःआरंभ हो रहा है…",
       "version_is_available": "{{productName}} <0>{{version}}</0> उपलब्ध है।",
+      "work_holder_age": "{{kind}} ({{age}})",
+      "work_holder_named": "{{name}} ({{kind}})",
+      "work_holder_named_age": "{{name}} ({{kind}}, {{age}})",
+      "work_holder_times": "{{kind}} ×{{n}}",
+      "work_holders_more_one": "{{n}} और",
+      "work_holders_more_other": "{{n}} और",
+      "work_kind_approval": "मंज़ूरी का इंतज़ार",
+      "work_kind_callback": "आने वाला संदेश",
+      "work_kind_channel_handler": "चैनल संदेश",
+      "work_kind_other": "दूसरा काम",
+      "work_kind_queued": "कतार में संदेश",
+      "work_kind_refusal_write": "भेजा जा रहा जवाब",
+      "work_kind_script": "शेड्यूल किया गया जॉब",
+      "work_kind_subagent": "सब-एजेंट",
+      "work_kind_task_runner": "टास्क रनर",
+      "work_kind_turn": "चैट टर्न",
+      "work_kind_unreadable": "ऐसा काम जिसकी जाँच नहीं हो सकी",
+      "work_kind_update_build": "अपडेट बिल्ड",
+      "work_kind_workflow": "वर्कफ़्लो",
       "work_running_busy": "अभी रीस्टार्ट करने से चल रहा काम बाधित होगा। सक्रिय आइटम: {{active}}।",
+      "work_running_now": "अभी चल रहा है: {{holders}}।",
       "work_running_quiet": "हाल ही में किसी चैट में गतिविधि थी, और अभी रीस्टार्ट करने से तुम जो संदेश लिख रहे हो वह कट सकता है। {{minutes}} मिनट बिना गतिविधि के यह सुरक्षित है।",
       "work_running_title": "काम अभी भी चल रहा है",
       "you_can_update_anytime_from_settings_about": "कभी भी सेटिंग्स → परिचय से अपडेट करें।"
@@ -10638,7 +10661,12 @@
       "automatic_https": "इस tailnet के लिए HTTPS सक्षम होने के बाद Tailscale निजी प्रमाणपत्र अपने-आप बनाता और नवीनीकृत करता है।",
       "setting_up": "फ़ोन एक्सेस सेट अप हो रहा है…",
       "setup_action": "सेट अप करें और QR दिखाएँ",
-      "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।"
+      "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।",
+      "fix_overrides": "इसे ठीक करो",
+      "fix_overrides_title": "क्या ये ओवरराइड हटाने हैं?",
+      "fix_overrides_values": "config.local.json में <local/> सेट है; config.json से <applies/> लागू होगा",
+      "fix_overrides_body": "इसके बाद हर कुंजी config.json का मान लेगी और सेटअप फिर से चलेगा। config.local.json की कोई और कुंजी नहीं बदलेगी।",
+      "fix_overrides_confirm": "हटाओ और फिर से कोशिश करो"
     },
     "sessionTabStrip": {
       "close_tab_hint": "यह टैब बंद करें. सत्र साइडबार में बना रहता है.",
@@ -15186,6 +15214,7 @@
       "jump_to_new_one": "{{count}} नया · नवीनतम पर जाओ",
       "jump_to_new_other": "{{count}} नए · नवीनतम पर जाओ",
       "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं",
+      "could_not_edit_and_resend": "संपादित करके फिर से नहीं भेज सके",
       "session_closed_elsewhere": "यह चैट इस विंडो के बाहर बंद की गई।"
     },
     "chatSidebar": {
@@ -20171,8 +20200,6 @@
         "display_time_on_each_message": "प्रत्येक संदेश पर समय दिखाएँ",
         "double_click_to_edit": "अपने संदेश संपादित करने के लिए डबल-क्लिक करो",
         "double_click_to_edit_desc": "बंद होने पर, तुम्हारे संदेश पर डबल-क्लिक किसी भी टेक्स्ट की तरह एक शब्द चुनता है।",
-        "double_escape_to_stop": "टर्न रोकने के लिए दूसरी बार Esc दबाना ज़रूरी करो",
-        "double_escape_to_stop_desc": "चालू होने पर, संदेश इनपुट में पहली बार Esc दबाने से सिर्फ़ एक संकेत दिखता है। संकेत दिखते समय दूसरी बार Esc दबाने पर चल रहा टर्न रुकता है।",
         "scroll_on_send": "भेजने पर नीचे जाओ",
         "scroll_on_send_desc": "बंद होने पर, संदेश भेजने से बातचीत अपनी जगह पर रहती है।",
         "followup_start_sends": "फ़ॉलो-अप एक क्लिक में भेजो",
@@ -23549,6 +23576,7 @@
       "linked_to": "{{label}} से जुड़ा",
       "linked_to_paused": "{{label}} से जुड़ा · जवाब रुके हुए",
       "connect_channel": "किसी चैनल से जोड़ें",
+      "open_messaging_channels": "चैट प्लेटफ़ॉर्म खोलो",
       "dashboard_kept_last_good": "इस डैशबोर्ड का नया संस्करण लोड नहीं हुआ, इसलिए यह अंतिम लोड हुआ संस्करण है।",
       "dashboard_none_yet": "इस Bot के लिए अभी कोई डैशबोर्ड सेट नहीं है।",
       "dashboard_empty_region": "{{name}} का डैशबोर्ड: अभी कोई पेज नहीं चुना गया",
@@ -25318,6 +25346,46 @@
       "hint": "तुम्हारा कंप्यूटर इस सर्वर से जुड़ता है और सिर्फ़ वही फ़ोल्डर शेयर करता है जिसे तुम मंज़ूरी देते हो। इसे बंद करने पर शेयरिंग रुक जाती है और कोई फ़ाइल कभी नहीं हटती। रिमोट क्रू इसका उल्टा है: उससे तुम किसी दूसरे डिवाइस से इस सर्वर का इस्तेमाल करते हो।",
       "label": "जुड़े हुए कंप्यूटर",
       "shared_crew_off": "साझा Crew में बंद"
+    }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments ऐसी remote मशीनें हैं जिन्हें Kiro तुम्हारे लिए शुरू करता और चालू रखता है। एक बनाओ और उस पर एक नई क्रू चलाओ।",
+      "name_label": "क्रू का नाम",
+      "name_placeholder": "research",
+      "name_rule": "2 से 32 छोटे अक्षर, अंक या एक-एक हाइफ़न इस्तेमाल करो, और शुरुआत अक्षर से करो।",
+      "name_help": "Environment का नाम क्रू के नाम पर रखा जाता है।",
+      "ssh_config_note": "इससे यह कंप्यूटर तुम्हारे environments से जुड़ पाता है। {{path}} में कुछ लाइनें जुड़ती हैं; तुम उन्हें कभी भी हटा सकते हो। फ़ाइल में और कुछ नहीं बदलता।",
+      "launch": "शुरू करो",
+      "ssh_add": "इस कंप्यूटर को जुड़ने दो",
+      "ssh_ready": "{{path}} में वे ssh सेटिंग हैं जिनसे Crew तुम्हारे managed environments तक पहुँचता है।",
+      "ssh_failed": "ssh सेटिंग जोड़ी नहीं जा सकीं",
+      "launch_needs_name": "शुरू करने के लिए क्रू का नाम लिखो।",
+      "launch_needs_ssh": "इस कंप्यूटर को जुड़ने दो, फिर लॉन्च करो।",
+      "ssh_failed_hint": "देखो कि तुम {{path}} बदल सकते हो।",
+      "launch_fix_name": "शुरू करने के लिए क्रू का नाम ठीक करो।",
+      "ssh_preview": "जोड़ी जाने वाली पंक्तियाँ देखो",
+      "ssh_preview_why": "ये लाइनें Crew को तुम्हारे Kiro साइन-इन से तुम्हारे Kiro Managed Environments ({{hosts}} से शुरू होने वाले नाम) से जोड़ती हैं, और तुम्हारे बाकी ssh होस्ट जैसे हैं वैसे रहते हैं।"
+    },
+    "row": {
+      "stop": "Environment रोको",
+      "resume": "Environment फिर से शुरू करो",
+      "delete": "Environment हटाओ",
+      "delete_title": "{{name}} का environment हटाना है?",
+      "delete_body": "Managed environment और उसमें मौजूद सब कुछ हटा दिया जाएगा। इसे वापस नहीं किया जा सकता। जब तक तुम क्रू को नहीं हटाते, वह तुम्हारी सूची में रहती है।",
+      "delete_confirm": "Environment हटाओ",
+      "list_failed": "तुम्हारे managed environments पढ़े नहीं जा सके।",
+      "gone": "यह environment अब तुम्हारे managed environments में नहीं है। क्रू को अपनी सूची से हटाओ।",
+      "state_creating": "Environment शुरू हो रहा है",
+      "state_running": "Environment चल रहा है",
+      "state_stopped": "Environment रुका हुआ है",
+      "state_deleting": "Environment हटाया जा रहा है",
+      "state_error": "Environment में गड़बड़ी",
+      "state_error_hint": "सर्विस इस environment को {{status}} बता रही है। इसे मिटाओ और फिर से लॉन्च करो, या एजेंट से जाँच करवाओ।",
+      "managed_by": "Kiro Managed Environments · हटाओ चुनने से क्रू इस सूची से निकल जाती है, पर environment बना रहता है। उसे मिटाने के लिए Environment हटाओ इस्तेमाल करो।",
+      "stop_failed": "{{name}} का environment रोका नहीं जा सका",
+      "resume_failed": "{{name}} का environment फिर से शुरू नहीं हो सका",
+      "delete_failed": "{{name}} का environment हटाया नहीं जा सका"
     }
   }
 }

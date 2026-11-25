@@ -1351,7 +1351,9 @@ the next create with no restart. An agent can only propose the change on a
 card that you apply.
 
 A Bot also has its own limit: how many of its own worker sessions may be open
-at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit).
+at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit,
+except while the Bot's workers can conduct, `worker_conducts` on its record:
+then 0 means at most 4).
 Its own worker sessions are the ones that run on its worker template. Its owner
 sets it on the Bot's settings page under **Workers at once**; no Bot tool can
 change it. A `session_create`, `session_revive` or `session_fork` that would

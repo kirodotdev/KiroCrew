@@ -350,26 +350,23 @@ def _apply_agent_mcp_policy(
         ref = f"@{name}"
         if ref not in tools:
             tools.append(ref)
-        # allowedTools is the auto-approve list. A granted server that is only in
-        # `tools` still prompts for every call, which for an unattended app agent
-        # resolves to "rejected" -- the user asked for this server explicitly, so
-        # granting it means granting its use.
-        #
-        # ...EXCEPT where the enterprise ceiling forbids it, OR the grant is
-        # mountOnly. Auto-approve is the one path that never reaches
-        # `hooks.on_tool_call`: kiro-cli only sends `session/request_permission`
-        # for tools it must ask about, and the gate (where the governance deny
-        # runs) hangs off that request. Writing a ceiling-denied — or mountOnly —
-        # server here would route around the ONE control the docs promise cannot
-        # be routed around. So the grant is intersected with the ceiling at write
-        # time AND skipped entirely when mountOnly: permitted & not mountOnly ->
-        # auto-approve as before; otherwise the grant stays in `tools` but NOT
-        # here, which forces every call through request_permission / the approval
-        # gate. A user may grant anything; whether it auto-runs remains the
-        # policy's (and the user's trust settings') call.
-        if ref not in allowed and not mount_only and _may_auto_approve(f"@{name}"):
-            allowed.append(ref)
-        elif ref not in allowed and mount_only:
+        # allowedTools is the auto-approve list, the one path that never reaches
+        # `hooks.on_tool_call`. A grant mounts the whole server but auto-approves
+        # only the tools its own `autoApprove` names, one literal `@server/tool`
+        # entry each: the registration's last pass strips an app map's server
+        # `autoApprove` (`honour_owner_written=False`), so this entry is the only
+        # carrier of the user's choice. Every other tool asks, as the app's
+        # per-tool approval setting promises: mounting is not consent to run every
+        # tool unasked. A glob verb is not expanded here, as the harness
+        # projections skip one; each entry meets the ceiling, and a mountOnly
+        # grant writes none.
+        if not mount_only:
+            from kiro_crew.platform.auto_approve_literals import literal_auto_approve_refs
+
+            for tool_ref in literal_auto_approve_refs({name: merged}):
+                if tool_ref not in allowed and _may_auto_approve(tool_ref):
+                    allowed.append(tool_ref)
+        elif ref not in allowed:
             # A mountOnly grant deliberately withholds auto-approve — the same
             # permission DECISION the ceiling filter makes, so it emits the same
             # SEL audit event rather than being the one withhold path with no

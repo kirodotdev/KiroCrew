@@ -352,8 +352,8 @@ export function MembersPageThreadHeader({
             (#18325): there a bare icon sat on scrolled text. Bare in the
             shell bar, like the bell beside it and the Sessions bar. */}
         {/* A Bot chat has no session menu, so its channel link's pause,
-            unlink and connect live here, beside the opener, while it has a
-            link or a channel it can connect to. Only on
+            unlink and connect live here, beside the opener (a link to the
+            channel settings while nothing can be connected). Only on
             the CONFIRMED slot: these rows write, and a cached or roster key
             can name a session the thread endpoint refused. */}
         {confirmedSlot && <BotLinkedChannels slotKey={confirmedSlot} inBar={headerInBar} />}

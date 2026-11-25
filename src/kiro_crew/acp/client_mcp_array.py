@@ -112,6 +112,30 @@ def _keyed_pi_worker(client: AcpClient) -> bool:
     return False
 
 
+def _predicted_dispatch_mount(client: AcpClient) -> bool | None:
+    """Whether *client*'s composition mounts session control, decided before the spec.
+
+    ``None`` for any session but a crewmate's worker, the only one whose projected
+    spec the answer changes (its conducting kit, ``mate_worker.worker_session_spec``'s
+    *mounted*). For a worker it is the start's own predicate
+    (``mate_worker_conducts.start_mounts_session_control``) on this client's last
+    composition: a worker it composed plain stays plain. It is that composition's one
+    mount decision: :meth:`_append_member_dispatch_server` mounts on it rather than
+    reading the switch again. The parse can still withhold the mount, and the composer
+    then projects the worker's spec again with no kit. Blocking, like the composition
+    it runs in.
+    """
+    if client._agent != MATE_WORKER_AGENT or not client._session_key:
+        return None
+    from kiro_crew.mate_worker_conducts import start_mounts_session_control
+
+    if getattr(client, "_member_dispatch_mounted", None) is False:
+        return False
+    return start_mounts_session_control(
+        client._session_key, client.backend, client._agent, client._work_dir
+    )
+
+
 def authored_agent_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     """True when the authored spec *agent* resolves to in *work_dir* is :func:`spec_is_toolless`.
 
@@ -397,34 +421,45 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     worker_stubbed: frozenset[str] | None = None
     if self._agent == MATE_WORKER_AGENT:
         stubbed = worker_stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
+
     # The STRUCTURED face rather than the wire one, for every mirror alike: two
     # things can come out of the one spec parse and only one of them is wire
     # data -- the array, and a per-tool deny set this client enforces at the
     # approval request. The wire dict must not carry the second, and a second
     # parse for it would be the consistency window the projection exists to
     # close. A mirror with nothing off-wire to say answers with an empty set.
-    projection = mirror.session_projection(
-        self._agent,
-        stub_server_names=stubbed,
-        # The broker stubs as ELEMENTS, for a mirror that must place them itself
-        # so one withhold rule covers both halves of the array (codex). A mirror
-        # that leaves them to the shared append ignores them.
-        stub_elements=stubs,
-        permission_surface_owned=self._permission_surface_governed,
-        work_dir=self._work_dir,
-        # A codex stdio child starts from env_clear() plus an allowlist, so
-        # Crew's own servers reach it with an identity only if the ELEMENT
-        # carries one. A mirror cannot discover either value; the client can.
-        session_key=self._session_key or "",
-        channel_id=self._channel_id or "",
-        # This session's own name, so its control-plane elements resolve
-        # identity through the signed mapping rather than through an env key
-        # a warm-pool rekey can leave stale.
-        session_token=self._stub_session_token,
-        # The deny rules this harness's read-back found in force (None before any
-        # were seeded), so a later re-parse withholds a server whose rule is not.
-        harness_denies_in_force=self._harness_read_back().denies_in_force,
-    )
+    def project(session_control_mounted: bool | None) -> Any:
+        # mypy checks the closure on its own and loses the ``mirror is None``
+        # narrowing above.
+        return mirror.session_projection(  # type: ignore[union-attr]
+            self._agent,
+            stub_server_names=stubbed,
+            # The broker stubs as ELEMENTS, for a mirror that must place them itself
+            # so one withhold rule covers both halves of the array (codex). A mirror
+            # that leaves them to the shared append ignores them.
+            stub_elements=stubs,
+            permission_surface_owned=self._permission_surface_governed,
+            work_dir=self._work_dir,
+            # A codex stdio child starts from env_clear() plus an allowlist, so
+            # Crew's own servers reach it with an identity only if the ELEMENT
+            # carries one. A mirror cannot discover either value; the client can.
+            session_key=self._session_key or "",
+            channel_id=self._channel_id or "",
+            # This session's own name, so its control-plane elements resolve
+            # identity through the signed mapping rather than through an env key
+            # a warm-pool rekey can leave stale.
+            session_token=self._stub_session_token,
+            # The deny rules this harness's read-back found in force (None before any
+            # were seeded), so a later re-parse withholds a server whose rule is not.
+            harness_denies_in_force=self._harness_read_back().denies_in_force,
+            # What this start mounts for a crewmate's worker, so its kit follows it.
+            session_control_mounted=session_control_mounted,
+        )
+
+    # Decided before the worker's spec is read, so the conducting kit the projection
+    # layers on follows the mount this composition makes.
+    mounted = _predicted_dispatch_mount(self)
+    projection = project(mounted)
     self._spec_denied_tools = projection.denied_tools
     if self.backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
         # The spec's `toolsSettings` shell and write allowlists, which this harness
@@ -486,22 +521,26 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
     # refused on a transport where the withhold is the whole of the enforcement.
-    final = _with_own_ipc_pickups(
+    composed = append_member_goal_server(
         self,
-        append_member_goal_server(
-            self,
-            self._append_member_panel_server(
-                self._append_member_dispatch_server(
-                    out, projection.restricted_servers, projection.disabled_servers
-                ),
-                projection.restricted_servers,
-                projection.disabled_servers,
+        self._append_member_panel_server(
+            self._append_member_dispatch_server(
+                out, projection.restricted_servers, projection.disabled_servers, mounts=mounted
             ),
-            projection.agent_spec,
             projection.restricted_servers,
             projection.disabled_servers,
         ),
+        projection.agent_spec,
+        projection.restricted_servers,
+        projection.disabled_servers,
     )
+    if mounted and not self._member_dispatch_mounted:
+        # A withhold above took away the mount this start decided on, so the spec this
+        # session consumes is projected again with no conducting kit. The kit changes
+        # only the spec's grants, prompt and skill mapping, none of which the array or
+        # the withholds above are built from.
+        self._session_agent_spec = project(False).agent_spec
+    final = _with_own_ipc_pickups(self, composed)
     _record_bot_chat_mounts(self, final)
     return final
 
@@ -646,22 +685,30 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         # leaves them withheld; a non-member's to no filter, its stubs unchanged.
         self._session_agent_spec = None
         self._member_stub_allowlist = _GRANTS_NOTHING if held_to_spec else None
+    # Decided before the worker's spec is read, so the conducting kit the projection
+    # layers on follows the mount this composition makes.
+    mounted = _predicted_dispatch_mount(self)
     try:
         from kiro_crew.acp.session_mcp import session_mcp_projection
         from kiro_crew.bot_chat_app_tools import carries_app_tools
         from kiro_crew.mate_spec_policy import applies_spec_policy
 
-        projection = session_mcp_projection(
-            self._agent,
-            stub_server_names=stubbed,
-            work_dir=self._work_dir,
-            session_key=self._session_key or "",
-            worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
-            spec_policy_honoured=applies_spec_policy(self.backend),
-            bot_app_tools_carried=carries_app_tools(
-                self._agent, self._session_key or "", self.backend
-            ),
-        )
+        def project(session_control_mounted: bool | None) -> SessionMcpProjection:
+            return session_mcp_projection(
+                self._agent,
+                stub_server_names=stubbed,
+                work_dir=self._work_dir,
+                session_key=self._session_key or "",
+                worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
+                spec_policy_honoured=applies_spec_policy(self.backend),
+                # What this start mounts for a crewmate's worker, so its kit follows it.
+                session_control_mounted=session_control_mounted,
+                bot_app_tools_carried=carries_app_tools(
+                    self._agent, self._session_key or "", self.backend
+                ),
+            )
+
+        projection = project(mounted)
     except Exception:
         if worker:
             # A worker never runs without its kit: an unreadable kit, or single-tool
@@ -705,7 +752,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     members = append_member_goal_server(
         self,
         self._append_member_panel_server(
-            self._append_member_dispatch_server([], narrowed, disabled),
+            self._append_member_dispatch_server([], narrowed, disabled, mounts=mounted),
             narrowed,
             disabled,
         ),
@@ -713,6 +760,11 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         narrowed,
         disabled,
     )
+    if mounted and not self._member_dispatch_mounted and records_zero_tools:
+        # A withhold above took away the mount this start decided on, so the spec this
+        # session consumes is projected again with no conducting kit; the kit changes
+        # nothing the mounts or the stub allowlist above are built from.
+        self._session_agent_spec = project(False).agent_spec
     # A BROKER_ONLY member host (pi) has no mirror to translate the agent spec's
     # OWN mcpServers, so without this a crewmate DM session carries only Crew's
     # member mounts above. ``projection.servers`` is that translation, from the
@@ -887,8 +939,14 @@ def _append_member_dispatch_server(
     servers: list[dict[str, Any]],
     restricted: Collection[str] = (),
     disabled: Collection[str] = (),
+    mounts: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Mount the dashboard session-control server into a member DM session.
+
+    *mounts* is a crewmate worker's own answer for this start
+    (:func:`_predicted_dispatch_mount`), the one its spec's kit was projected on, so
+    the composition decides that worker's mount once; the withholds below can only
+    take it away. ``None``, every other session, decides here.
 
     Session-level and additive: the on-disk agent spec is untouched, so every
     other session on the same agent keeps its ordinary tool set. The entry
@@ -944,9 +1002,11 @@ def _append_member_dispatch_server(
     joins that set and mounts the server on one path while this one withholds it would
     refuse every dispatch call as a drifted server rather than run a plain chat.
     """
-    # Every exit below answers whether THIS composition mounted session
-    # control, so the context builder can teach the session_* tools only to a
-    # session that holds them (see :attr:`member_dispatch_mounted`).
+    # What this client's previous composition answered (``None`` before its first),
+    # read before every exit below resets it to answer for THIS composition, so the
+    # context builder can teach the session_* tools only to a session that holds
+    # them (see :attr:`member_dispatch_mounted`).
+    started = getattr(self, "_member_dispatch_mounted", None)
     self._member_dispatch_mounted = False
     if self.backend not in ACP_BACKENDS_MEMBER_DISPATCH:
         return servers
@@ -955,9 +1015,21 @@ def _append_member_dispatch_server(
         MEMBER_DISPATCH_SERVER,
         is_member_session_key,
         member_dispatch_session_server,
+        mounts_session_control,
     )
 
-    if not is_member_session_key(self._session_key):
+    # A member DM, or a Bot worker that conducts: the one predicate the runtime's
+    # create and load paths key on too (``acp_runtime_start._member_session_key``).
+    # A worker this client already composed plain stays unmounted when it composes
+    # again (a respawn or relaunch inside a turn, after admission checked its approval
+    # mode against the Bot's Profile), so the session-control mount arrives only with a
+    # new client, at a start, as the KAS re-inject keeps it (``session_provider_mcp_reinject``).
+    # A crewmate's worker arrives with that answer already read (*mounts*).
+    if mounts is None:
+        mounts = is_member_session_key(self._session_key) or (
+            started is not False and mounts_session_control(self._session_key)
+        )
+    if not mounts:
         return servers
     session_key = self._session_key or ""
     if self._member_mount_withheld(MEMBER_DISPATCH_SERVER, "session control", restricted, disabled):

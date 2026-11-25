@@ -187,9 +187,16 @@ can still approve by hand.
 A permission request is auto-approved when all of these hold, and prompts
 otherwise:
 
-1. The calling slot's agent is `kirocrew-conductor` or `kirocrew-team-lead`.
-   Other conductor agents (`kirocrew-ledger-conductor`, pipeline, security,
-   folder) keep prompting until named.
+1. The calling slot's agent is `kirocrew-conductor` or `kirocrew-team-lead`,
+   or the calling slot is a Bot's conducting worker
+   (`mate_worker_conducts.holds_conducting_kit`: the Bot's own worker, created by
+   the Bot's thread, whose running session took the session-control mount at its
+   start, which the Bot's owner-set `worker_conducts` switch decides at that
+   start; [rfc-bot-workers-conduct](rfc-bot-workers-conduct.md) §5.2, §5.3). A
+   conducting worker is admitted by that kit, never by its template's name, so an
+   unmarked `kirocrew-mate-worker` keeps prompting. Other conductor agents
+   (`kirocrew-ledger-conductor`, pipeline, security, folder) keep prompting
+   until named.
 2. The tool is `session_send` or `session_close` on `kirocrew-dashboard`.
 3. The request carries a verified `kirocrew-dashboard` identity and verified
    raw arguments, and is not a subagent's call (the same checks

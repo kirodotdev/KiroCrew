@@ -65,6 +65,9 @@ IPV6_BIND_ADDRESS = "::1"
 PORT_MIN, PORT_MAX = 1024, 65535
 #: What ``Host`` may name on the entry port. ``[::1]`` splits to ``::1``.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+#: Said where the port is announced: many proxies pass the client's ``Host`` through,
+#: and the entry port answers 400 to a ``Host`` outside :data:`_LOOPBACK_HOSTS`.
+HOST_HINT = "the proxy must send a Host that names 127.0.0.1, [::1] or localhost"
 #: Errors from binding ``::1`` that mean this machine has no IPv6 loopback: the
 #: address is not configured (EADDRNOTAVAIL) or the kernel has no IPv6
 #: (EAFNOSUPPORT, EPROTONOSUPPORT). EADDRINUSE, another process holding
@@ -238,11 +241,23 @@ async def start(
         _release(sites, socks)
         raise
     logger.info(
-        "entry port %d on %s (Crew API only)",
+        "entry port %d on %s (Crew API only); %s",
         port,
         " and ".join(str(s.getsockname()[0]) for s in socks),
+        HOST_HINT,
     )
     return sites
+
+
+def bound_port(app: object) -> int:
+    """The entry port bound for *app*, ``0`` when none is.
+
+    Read from the gate :func:`start` set, so it names the port that listens whatever a
+    later read of the config says.
+    """
+    ref = app.get(ENTRY_GATE_APP_KEY) if isinstance(app, web.Application) else None
+    gate = ref.gate if isinstance(ref, GateRef) else None
+    return gate.port if isinstance(gate, EntryGate) else 0
 
 
 async def _refuse(request: web.Request, status: int, code: str, message: str) -> web.Response:

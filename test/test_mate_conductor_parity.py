@@ -35,8 +35,10 @@ Conductor mode runs ``kirocrew-conductor`` by default
 can still set ``agent.crew_mode_agent`` to a third agent, ``kirocrew-team-lead``.
 ``goal-conductor/SKILL.md`` points at the shared rules instead of restating them,
 so the team lead carries them in its prompt (``_SHARED_CONDUCTOR_RULES_BLOCK``);
-the last section holds that, the prompt -> ``team-lead`` -> ``goal-conductor``
-chain, and the skill's pointers (:data:`SKILL_POINTERS`).
+one section holds that, the prompt -> ``team-lead`` -> ``goal-conductor``
+chain, and the skill's pointers (:data:`SKILL_POINTERS`). A Bot's conducting
+worker (``worker.conducts``, rendered by ``mate_worker_conducts`` when the Bot's
+owner set ``worker_conducts``) is the fourth agent held to the same copy.
 """
 
 from __future__ import annotations
@@ -234,10 +236,18 @@ def _effective(agent_id: str, spec: dict, *, member: bool) -> dict:
     (``acp.kas_agents.to_client_custom_agent``). For a crewmate's DM thread that
     projection adds the session-level ``@kirocrew-dashboard`` with
     ``agent._MEMBER_DASHBOARD_GRANTS`` and ``@kirocrew-panel`` with its grants, which
-    the spec file never holds; the root conductor runs its spec as written."""
+    the spec file never holds, picked by the thread's key; the root conductor runs
+    its spec as written."""
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
-    return to_client_custom_agent(agent_id, spec, "", member_dispatch=member, crew_panel=member)
+    return to_client_custom_agent(
+        agent_id,
+        spec,
+        "",
+        member_dispatch=member,
+        crew_panel=member,
+        session_key="dashboard_member-pixel" if member else "",
+    )
 
 
 def _rules(projected: dict, effect: str) -> set[str]:
@@ -744,6 +754,89 @@ def test_a_team_lead_set_as_the_conductor_reaches_goal_conductor(
     service_agents._install_team_lead_agent()
     spec = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
     assert {"team-lead", "goal-conductor"} <= _skill_keys(spec)
+
+
+# -- A Bot's conducting worker ------------------------------------------------------ #
+
+#: The piece a Bot's worker is given when it conducts (rfc-bot-workers-conduct.md,
+#: section 5.3): rendered from the shared rules exactly as ``conductor.patrol`` is,
+#: by ``mate_worker_conducts.conducting_worker_kit``.
+_WORKER_PIECE = "worker.conducts"
+
+
+def _worker_conducts_text() -> str:
+    from kiro_crew.context_assembly import member
+
+    return member.ledger_rules_block(_WORKER_PIECE)
+
+
+def test_a_conducting_worker_carries_every_shared_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The piece renders every shared rule the team lead carries, so the three agents
+    that conduct from ``goal-conductor`` (the root conductor, a Bot's thread and a
+    Bot's conducting worker) are held to one copy of each rule."""
+    text = _worker_conducts_text()
+    missing = sorted(
+        name for name, rule in agent._LEDGER_CONDUCTOR_RULES.items() if rule.strip() not in text
+    )
+    assert missing == [], (
+        f"shared conductor rules a conducting worker is not told: {missing}. Add each as a "
+        f"{{placeholder}} to {_WORKER_PIECE} in src/kiro_crew/crewmate_prompts.json. {_WHERE}"
+    )
+    lead = _team_lead_prompt(tmp_path, monkeypatch)
+    assert all(rule.strip() in lead for rule in agent._LEDGER_CONDUCTOR_RULES.values())
+
+
+def test_the_conducting_worker_piece_names_only_shared_rules() -> None:
+    unknown = sorted(
+        crewmate_prompts.placeholders(_WORKER_PIECE) - set(agent._LEDGER_CONDUCTOR_RULES)
+    )
+    assert unknown == [], f"{_WORKER_PIECE} placeholders that name no shared rule: {unknown}"
+
+
+def test_the_conducting_worker_piece_copies_no_charter_sentence() -> None:
+    """The universal copy check above already scans every piece; pinned by name here
+    so the piece's own wording (the worker's reading of the skill, the forced
+    ``agent``, the quiet patrol wake) is known to be its own."""
+    assert _copies({_WORKER_PIECE: crewmate_prompts.text(_WORKER_PIECE)}) == []
+    assert _shared_rule_copies_outside_placeholders() == []
+
+
+def _shared_rule_copies_outside_placeholders() -> list[str]:
+    """Shared-rule sentences the piece restates in its own words, outside a placeholder."""
+    own = re.sub(r"\{[^{}]*\}", "", crewmate_prompts.text(_WORKER_PIECE))
+    return _shared_rule_copies(own)
+
+
+def test_the_conducting_worker_render_check_sees_a_lost_rule(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Positive control: a shared rule the worker piece stops naming is reported."""
+    from kiro_crew.context_assembly import member
+
+    real = member.ledger_rules_block
+
+    def dropped(key: str) -> str:
+        return real(key).replace(agent._LEDGER_CONDUCTOR_RULES["wake_check"].strip(), "")
+
+    monkeypatch.setattr(member, "ledger_rules_block", dropped)
+    with pytest.raises(AssertionError, match="wake_check"):
+        test_a_conducting_worker_carries_every_shared_rule(tmp_path, monkeypatch)
+
+
+def test_the_conducting_worker_piece_says_what_only_a_worker_needs() -> None:
+    """The worker's own wording: the forced ``agent``, the last-level refusal, the
+    unchanged report and the quiet wake, none of which is a shared rule."""
+    words = _words(crewmate_prompts.text(_WORKER_PIECE))
+    for phrase in (
+        "pass no agent: every child you open is your bot's own worker",
+        "a depth_exceeded on that first goal or create means you are at the last conducting level",
+        "your work_report to your bot is unchanged.",
+        "a patrol wake with no news ends with nothing_to_do and no text.",
+        "if session_create is not in your tool list",
+    ):
+        assert phrase in words, phrase
 
 
 # -- Worker reuse ---------------------------------------------------------------- #

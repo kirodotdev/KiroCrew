@@ -324,10 +324,12 @@ class TestKasMemberProjection:
     def test_member_grants_join_allowed_tools(self):
         """The member grant set (conductor's verbs plus the created_by-bounded
         write verbs), merged BEFORE the ceiling filter so it crosses the same
-        governance gate as every other grant."""
+        governance gate as every other grant. Picked by the member DM's key."""
         from kiro_crew.agent import _MEMBER_DASHBOARD_GRANTS
 
-        out = to_client_custom_agent("a", dict(self.SPEC), "p", member_dispatch=True)
+        out = to_client_custom_agent(
+            "a", dict(self.SPEC), "p", member_dispatch=True, session_key=MEMBER_KEY
+        )
         rendered = str(out.get("permissions") or {})
         for grant in _MEMBER_DASHBOARD_GRANTS:
             verb = grant.rsplit("/", 1)[-1]

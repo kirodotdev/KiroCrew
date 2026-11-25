@@ -31,7 +31,8 @@ CRON = (
     "Schedule recurring or one-shot jobs (reminders, polling, digests) and manage "
     "the jobs this session owns.\n"
     '- `cron_add`: recurring or one-shot jobs ("every", "daily", "remind me", '
-    '"check regularly"). Prefer no-LLM `script` or mutually exclusive `command` for '
+    '"check regularly"). A plain "remind me to X" sets `notify_only=true`: the text '
+    "reaches the user and no agent runs. Prefer no-LLM `script` or mutually exclusive `command` for "
     "deterministic polling. Register Python as "
     "`script='~/.kiro/crew/crons/file.py:function'`; read `ctx.message`, deliver "
     "with `ctx.notify()`, raise `Skip()` to retry, `Done(msg)` to deliver/remove, "

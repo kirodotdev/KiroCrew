@@ -8,7 +8,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import type { Artifact } from '../types'
 import { renderWithProviders } from './helpers'
-import { chooseMore, commentsShown, findMoreItem } from './artifactMoreMenu'
+import { chooseMore, findMoreItem } from './artifactMoreMenu'
 
 vi.mock('../api/client')
 vi.mock('../pages/ChatPage', () => ({ default: () => <div />, PREFILL_STORAGE_KEY: 'kirocrew_prefill' }))
@@ -124,33 +124,40 @@ describe('canvas session handoff', () => {
     expect(screen.queryByTestId('chat-target')).toBeNull()
   })
 
+  // The canvas page opens comments only from More > Show comments, and every comment there is
+  // on the whole artifact.
   it('asks once for a comment drafted during session creation, then navigates after recheck', async () => {
     const create = deferred<{ key: string }>()
     vi.mocked(api.createChatSlot).mockReturnValueOnce(create.promise)
     await renderPage()
-    if (!(await commentsShown())) await chooseMore(/Show comments/)
+    await chooseMore('Show comments')
+    const comments = await screen.findByTestId('canvas-page-comments')
     await startNewSession()
     expect(api.createChatSlot).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByRole('button', { name: /Add comment/ }))
-    fireEvent.change(screen.getByPlaceholderText('Add a comment on the whole artifact…'), { target: { value: 'unsent comment' } })
+    fireEvent.click(within(comments).getByRole('button', { name: 'Add comment' }))
+    fireEvent.change(within(comments).getByPlaceholderText('Add a comment on the whole artifact…'), { target: { value: 'unsent comment' } })
     await act(async () => { create.resolve({ key: 'chat-new' }); await vi.advanceTimersByTimeAsync(0) })
     expect(screen.queryByTestId('chat-target')).toBeNull()
-    const dialog = screen.getByRole('dialog')
-    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: /discard comment/i })); await vi.advanceTimersByTimeAsync(0) })
+    const dialogs = screen.getAllByRole('dialog')
+    expect(dialogs).toHaveLength(1)
+    await act(async () => { fireEvent.click(within(dialogs[0]).getByRole('button', { name: /discard comment/i })); await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByTestId('chat-target')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
-describe('canvas comparison navigation', () => {
-  async function compareWith(label = 'Compare with v1') {
-    fireEvent.click(screen.getByRole('combobox', { name: 'Compare with' }))
+
+// The canvas page has no Compare control; the version picker is the view switch the
+// waiting save must survive.
+describe('canvas version navigation', () => {
+  async function pickVersion(label: string) {
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Version' }), { key: 'Enter' })
     await act(async () => {
-      fireEvent.click(screen.getByRole('option', { name: label, exact: true }))
+      fireEvent.click(screen.getByRole('menuitemradio', { name: label, exact: true }))
       await vi.advanceTimersByTimeAsync(0)
     })
   }
 
-  it.each(['failed', 'conflict'] as const)('keeps the draft mounted when comparison is cancelled after a %s save', async state => {
+  it.each(['failed', 'conflict'] as const)('keeps the draft mounted when a version switch is cancelled after a %s save', async state => {
     vi.mocked(api.updateArtifact).mockRejectedValue(state === 'conflict' ? new ApiError(409, 'stale', '{}') : new Error('offline'))
     await renderPage()
     vi.useFakeTimers()
@@ -159,53 +166,46 @@ describe('canvas comparison navigation', () => {
     expect(api.updateArtifact).toHaveBeenCalledTimes(1)
     const editor = screen.getByTestId('canvas-editor')
 
-    await compareWith()
+    await pickVersion('v1')
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('Discard unsaved changes?')).toBeInTheDocument()
-    expect(screen.getByTestId('canvas-editor')).toBe(editor)
-    expect(screen.queryByTestId('artifact-version-compare')).toBeNull()
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(screen.getByTestId('canvas-editor')).toBe(editor)
     expect(screen.getAllByTestId('canvas-shape')).toHaveLength(1)
-    expect(screen.queryByTestId('artifact-version-compare')).toBeNull()
-    expect(screen.getByRole('combobox', { name: 'Compare with' })).toHaveTextContent(/^Compare with$/)
+    expect(screen.getByRole('button', { name: 'Version' })).toHaveTextContent('Live')
 
-    await compareWith()
+    await pickVersion('v1')
     await act(async () => {
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Discard changes' }))
       await vi.advanceTimersByTimeAsync(0)
     })
-    expect(screen.getByTestId('artifact-version-compare')).toBeInTheDocument()
-    expect(screen.queryByTestId('canvas-editor')).toBeNull()
-    await compareWith('Compare with')
-    expect(screen.getByTestId('canvas-editor')).toBeInTheDocument()
-    expect(screen.queryAllByTestId('canvas-shape')).toHaveLength(0)
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(api.artifactVersion).toHaveBeenCalledWith('board', 1)
+    expect(screen.getByRole('button', { name: 'Version' })).toHaveTextContent('v1')
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('waits for a successful flush before opening comparison without asking', async () => {
+  it('waits for a successful flush before switching version without asking', async () => {
     const save = deferred<Artifact>()
     vi.mocked(api.updateArtifact).mockReturnValueOnce(save.promise)
     await renderPage()
     vi.useFakeTimers()
     addSticky()
-    await compareWith()
+    await pickVersion('v1')
     expect(api.updateArtifact).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('canvas-save-status')).toHaveTextContent('Saving')
-    expect(screen.queryByTestId('artifact-version-compare')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Version' })).toHaveTextContent('Live')
     expect(screen.queryByRole('dialog')).toBeNull()
 
     const saved = { ...artifact, content: vi.mocked(api.updateArtifact).mock.calls[0][1].content!, content_token: 't2' }
     vi.mocked(api.artifact).mockResolvedValue(saved)
     await act(async () => { save.resolve(saved); await vi.advanceTimersByTimeAsync(0) })
-    expect(screen.getByTestId('artifact-version-compare')).toBeInTheDocument()
-    expect(screen.queryByTestId('canvas-editor')).toBeNull()
-    expect(screen.queryByRole('dialog')).toBeNull()
-    await compareWith('Compare with')
-    expect(screen.getAllByTestId('canvas-shape')).toHaveLength(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(api.artifactVersion).toHaveBeenCalledWith('board', 1)
+    expect(screen.getByRole('button', { name: 'Version' })).toHaveTextContent('v1')
     expect(api.updateArtifact).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('dialog')).toBeNull()
   })

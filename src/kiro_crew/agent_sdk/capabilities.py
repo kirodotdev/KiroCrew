@@ -311,6 +311,24 @@ class SessionCapabilities:
     #: Crew keeps those files reachable itself.
     loads_steering_natively: bool
 
+    #: Whether a prompt the harness accepted stays in its native session even
+    #: when the turn never lands (a Stop after a real ``end_turn``, an
+    #: empty-response give-up): the Kiro "kept the prompt" contract. A merge
+    #: card sent in such a prompt counts as delivered, so it is not sent again.
+    #:
+    #: True for kiro-cli and KAS (which runs the Kiro CLI pick). False
+    #: everywhere else, an unknown backend included: there a card counts only
+    #: on a landed turn, so a wrong guess repeats it instead of losing it.
+    keeps_prompt_on_unlanded_turn: bool
+
+    #: Whether the harness keeps the same native session across its ``/compact``
+    #: boundary, so Crew compacts in place: it waits for the turn permit, sends
+    #: ``/compact`` and leaves the durable session mapping untouched.
+    #:
+    #: True for claude. False everywhere else, an unknown backend included: there
+    #: the session takes the other compaction arms.
+    keeps_session_across_compaction: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -347,6 +365,8 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         honors_chat_steering_off=is_claude_backend_name(backend),
         crew_sends_persona_prompt=is_claude_backend_name(backend),
         loads_steering_natively=backend == ACP_BACKEND_KAS,
+        keeps_prompt_on_unlanded_turn=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
+        keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
 
@@ -386,6 +406,8 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     honors_chat_steering_off=False,
     crew_sends_persona_prompt=False,
     loads_steering_natively=False,
+    keeps_prompt_on_unlanded_turn=False,
+    keeps_session_across_compaction=False,
 )
 
 
