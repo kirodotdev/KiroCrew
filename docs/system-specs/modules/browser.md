@@ -292,7 +292,16 @@ own (`relay.request_browser_close`, to the URL in `DevToolsActivePort`) and wait
 to `_STOP_GRACE_SECS` for the process to exit, so Chromium writes its profile
 (`exit_type` `Normal`) and keeps recent cookies. A browser that ignores the request,
 or has no live port, gets the forced tree kill after that wait. macOS and Linux are
-unchanged. The gateway also
+unchanged. A gateway that exits without this teardown leaves Kiro's Chromium
+running on Windows, and Chromium hands a second browser on the same profile to
+the first one. So before a Windows launch (`earlier_chromium.prepare_profile`) the
+supervisor looks for a browser an earlier run left, and addresses it only when
+the profile's `lockfile` exists, `DevToolsActivePort` names a live port, and the
+endpoint at that file's browser path answers `Browser.getVersion` as Chromium. That
+browser gets `Browser.close`, and the launch waits for its port to close and its
+lock to go, then clears the session files so its tabs do not reopen. A browser that
+still holds its port or lock at the deadline fails the start with a message naming
+it, and its port file is removed. Nothing here signals a process. The gateway also
 reclaims a stray daemon from a previous life at startup, then runs the startup
 auto-install (see the driver section).
 
