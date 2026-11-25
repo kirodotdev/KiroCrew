@@ -730,7 +730,7 @@ async def test_a_call_refused_for_a_tab_move_takes_its_own_note(route):
     ("op", "args"),
     [
         ("cdp", {"method": "Storage.getCookies"}),
-        ("js", {"expression": "1"}),
+        ("js", {"expression": "1", "target_id": "F-other"}),
         ("http_get", {"url": "https://example.com/"}),
     ],
 )
@@ -743,6 +743,8 @@ def test_a_call_that_reaches_past_one_site_gets_no_site_key(op: str, args: dict)
     # tabs close names a tab whose host no grant names: it always asks too.
     assert op_classes.host_trust_class("tabs", {"action": "close", "target_id": "T"}) == ""
     assert op_classes.host_trust_class("tabs", {"action": "switch"}) == op_classes.CLASS_ACT
+    # js in the current tab acts on that one page: an act grant there covers it.
+    assert op_classes.host_trust_class("js", {"expression": "1"}) == op_classes.CLASS_ACT
 
 
 def test_a_full_session_refuses_a_new_note_and_keeps_the_old_ones(monkeypatch) -> None:

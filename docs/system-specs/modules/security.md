@@ -1864,12 +1864,15 @@ Security properties:
   The owner opened them
   (`docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`;
   see [browser](browser.md), "The tool" and Security). They are acting ops, approved
-  on a card every call (the owner's ruling "改成这三个每次都弹卡"). The op route opens
+  on a card every call (the owner's ruling "改成这三个每次都弹卡"), except `js` on a
+  person's chat that trusts all tools or that YOLO reaches, or in the current tab of
+  a site that chat holds an `act` grant for, never in a Dashboard card's turn (`docs/decisions/2026-11-25-browser-js-runs-with-no-card-under-yolo-trust-or-site-trust.md`). The op route opens
   that card itself, an Allow / Deny agent ask bound to the call's digest and spent
   by one run (`dashboard/handlers/browser_card_ask.py`), because the default spec's
   `@kirocrew-core` grant in `allowedTools` means the host raises no permission
-  request for a `browser` call. No site grant, "Trust all tools", trust-reads,
-  YOLO, trusted pattern or app `browserSites` grant answers it, since every call
+  request for a `browser` call. For `cdp` and `http_get` no site grant, "Trust all
+  tools", trust-reads, YOLO, trusted pattern or app `browserSites` grant answers it,
+  and for `js` only those exceptions do, since every call
   reaches that route whatever let the tool call through; the card shows the whole
   call, and a session with nobody to ask refuses it.
   Behind `capabilities.browse`; a
@@ -6378,10 +6381,10 @@ API instead of importing dashboard runner internals or fabricating a
 offers the `trust_command` tier as a grant on ONE site: the host of the page the
 call acts on, with its port when the URL names one, for one op class
 (`browser_harness/op_classes.py`). `read` covers opening and reading that host's
-pages; `act` covers clicking, typing, picking and uploading files there too, and is stored as the
+pages; `act` covers clicking, typing, picking, uploading files and a `js` in the current tab there too, and is stored as the
 host's key prefix plus `*`, so it also covers `read` on that host and nothing
-else. `ask`, `reflex` and every call of `op_classes.card_only` (`js`,
-`cdp`, `http_get` and `tabs close`, which reach past one host's pages) never get
+else. `ask`, `reflex`, a `js` that names a `target_id` and every call of
+`op_classes.card_only` (`cdp`, `http_get` and `tabs close`, which reach past one host's pages) never get
 a key, and neither does an op the
 classifier does not name. The host is the URL a `navigate` or `tabs new` opens
 and otherwise the chat's current page as the live hub last saw it; a Unicode
