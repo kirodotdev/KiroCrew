@@ -636,8 +636,11 @@ def update_app(
     # its import budget has no room (test_mcp_listing_import_budget).
     from kiro_crew.apps import protected_app_ui
 
-    source = Path(source).expanduser().resolve()
-    if not source.is_dir():
+    try:
+        source = Path(source).expanduser().resolve()
+        if not source.is_dir():
+            return AppResult(ok=False, error=f"source is not a directory: {source}")
+    except (OSError, RuntimeError, ValueError):  # NUL byte, unknown ~user, symlink loop, stat error
         return AppResult(ok=False, error=f"source is not a directory: {source}")
 
     errors = _validate_source_path(source)

@@ -580,8 +580,12 @@ async def handle_install_app(request: web.Request) -> web.Response:
         return web.json_response({"error": "source path required"}, status=400)
 
     # Check minKiroCrewVersion before installing
-    source_path = await asyncio.to_thread(Path(source).expanduser().resolve)
-    if not await asyncio.to_thread(source_path.is_dir):
+    try:
+        source_path = await asyncio.to_thread(Path(source).expanduser().resolve)
+        source_is_dir = await asyncio.to_thread(source_path.is_dir)
+    except (OSError, RuntimeError, ValueError):  # NUL byte, unknown ~user, symlink loop, stat error
+        source_path, source_is_dir = Path(source), False
+    if not source_is_dir:
         detail = f"source is not a directory: {source_path}"
         sel().log_api_access(
             caller="dashboard",

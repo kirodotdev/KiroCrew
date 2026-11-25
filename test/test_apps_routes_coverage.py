@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import errno
 import json
 import threading
 from pathlib import Path
@@ -844,6 +845,51 @@ class TestInstallValidation:
             resp = await client.post("/api/apps/install", json={"source": str(tmp_path / "nope")})
             assert resp.status == 400
             assert (await resp.json())["code"] == "source_not_directory"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "source",
+        ["a\x00b", "a\ud800b", "~no-such-user-42342/app"],
+        ids=["nul-byte", "lone-surrogate", "unknown-user-home"],
+    )
+    async def test_a_source_that_does_not_resolve_is_refused_like_a_missing_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        # pathlib raises ValueError (resolve) or RuntimeError (expanduser) on these,
+        # which answered 500.
+        _setup_env(tmp_path, monkeypatch)
+        log = MagicMock()
+        monkeypatch.setattr(routes_mod, "sel", lambda: log)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/install", json={"source": source})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "source_not_directory"
+        assert [c.kwargs["outcome"] for c in log.log_api_access.call_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_source_folder_it_cannot_stat_is_refused_like_a_missing_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On Python 3.12 is_dir() raises EACCES for a folder under one the gateway user
+        # cannot enter. Patched for this one path so it holds as root and on Windows.
+        _setup_env(tmp_path, monkeypatch)
+        src = tmp_path / "no-stat-app"
+        src.mkdir()
+        denied, real_is_dir = src.resolve(), Path.is_dir
+
+        def _is_dir(self: Path, *args: Any, **kwargs: Any) -> bool:
+            if self == denied:
+                raise PermissionError(errno.EACCES, "Permission denied", str(self))
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "is_dir", _is_dir)
+        log = MagicMock()
+        monkeypatch.setattr(routes_mod, "sel", lambda: log)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/install", json={"source": str(src)})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "source_not_directory"
+        assert [c.kwargs["outcome"] for c in log.log_api_access.call_args_list] == ["failed"]
 
     @pytest.mark.asyncio
     async def test_live_detached_startup_hook_refuses_fresh_reinstall(
