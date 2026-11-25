@@ -48,22 +48,22 @@ logger = logging.getLogger("kiro_crew.slack.interactions")
 APPROVAL_OWNER_ONLY_TEXT = (
     "Only {owner} can answer this approval. Ask them to answer it here or in the dashboard."
 )
-#: The same, when the prompt came from a shared user's own turn: they may answer it.
+#: The same, when the prompt came from a shared user's own turn: they may answer it,
+#: Trust included.
 APPROVAL_OWNER_OR_ASKER_TEXT = (
     "Only {owner} or <@{asker}>, whose message asked for it, can answer this approval."
 )
-APPROVAL_TRUST_OWNER_ONLY_TEXT = "Only {owner} can turn on Trust."
 APPROVAL_NOT_WAITING_TEXT = (
     "This approval isn't waiting for an answer any more, so nothing changed."
 )
 
 
-def _refused_press_text(key: str, action_id: str) -> str:
+def _refused_press_text(key: str) -> str:
     """Why a press ``handle_interaction`` answered with ``None`` changed nothing.
 
     Read after the refusal: a prompt still registered under *key* was live and
     refused to this clicker (the owner's press on a live prompt always resolves
-    it, and so does its requester's Approve or Reject); one that is gone was
+    it, and so does its requester's Approve, Trust or Reject); one that is gone was
     already answered, timed out or never belonged to this gateway process.
     """
     from kiro_crew.slack import handler
@@ -74,16 +74,14 @@ def _refused_press_text(key: str, action_id: str) -> str:
     if entry is None:
         return APPROVAL_NOT_WAITING_TEXT
     asker = live_card_requester(linked) if linked is not None else getattr(entry, "requester", "")
-    return _owner_only_text(action_id == "trust_tool", asker)
+    return _owner_only_text(asker)
 
 
-def _owner_only_text(trust: bool, asker: str = "") -> str:
-    """The refusal for a live approval card: who may answer it (Trust: the owner)."""
+def _owner_only_text(asker: str = "") -> str:
+    """The refusal for a live approval card: who may answer it, Trust included."""
     from kiro_crew.config.sections_slack import is_slack_user_id
     from kiro_crew.slack.code_channels.surface import owner_name
 
-    if trust:
-        return APPROVAL_TRUST_OWNER_ONLY_TEXT.format(owner=owner_name())
     # Only a well-formed member id becomes a mention, so it cannot inject markup.
     if isinstance(asker, str) and is_slack_user_id(asker):
         return APPROVAL_OWNER_OR_ASKER_TEXT.format(owner=owner_name(), asker=asker)
@@ -144,7 +142,7 @@ async def _handle_tool_approval(
                 await _orch.slack.post_ephemeral(
                     channel,
                     user_id,
-                    _refused_press_text(f"{channel}:{msg_ts}", action_id),
+                    _refused_press_text(f"{channel}:{msg_ts}"),
                     thread_ts=thread_ts or None,
                 )
             except Exception:

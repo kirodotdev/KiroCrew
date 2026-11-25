@@ -138,3 +138,17 @@ def contract_error(
     response.headers[REQUEST_ID_HEADER] = request_id
     response.headers[VERSION_HEADER] = CREW_API_VERSION
     return response
+
+
+def method_not_supported(request: web.Request, allowed: str) -> web.Response:
+    """The contract's answer to a method a routed Crew API path does not serve.
+
+    *allowed* is the router's own ``Allow`` value, which RFC 9110 requires on a 405.
+    """
+    return contract_error(
+        405,
+        "method_not_supported",
+        "A method this API does not support.",
+        request_id_for(request),
+        headers={"Allow": allowed},
+    )

@@ -13,5 +13,5 @@ def _is_this_local_instance(body: Any) -> None:
 
 CASES = [
     Case("the owner reads the instance", OWNER, 200, check=_is_this_local_instance),
-    Case("an app is refused while the route serves the owner", APP, 403, "owner_only"),
+    Case("an app reads the instance", APP, 200, check=_is_this_local_instance),
 ]

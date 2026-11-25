@@ -113,8 +113,15 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # prompt author's embedded $tokens from silently loading extra skills into
     # the context (expand-what-the-user-typed, principle of least surprise).
     # Skipped for slash commands; _prompt_depth<1 blocks the recursive _run_chat
-    # path. Token is left literal; resolved bodies are appended.
-    if "$" in message and not is_slash and not prompt_expanded and _prompt_depth < 1:
+    # path. Token is left literal; resolved bodies are appended. Skipped for a
+    # chat option tap too (`_expansions_off`): the model wrote that label.
+    if (
+        "$" in message
+        and not is_slash
+        and not prompt_expanded
+        and _prompt_depth < 1
+        and not turn._expansions_off
+    ):
         # Offloaded: expansion walks the skills tree(s) and reads skill
         # bodies, which is filesystem work that must not run on the event
         # loop — a large tree would stall the gateway heartbeat and every

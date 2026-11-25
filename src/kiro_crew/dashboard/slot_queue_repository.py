@@ -1044,6 +1044,7 @@ class SlotQueueRepository:
             # the same set: the server-written cards' pencil
             # (`isServerWrittenQueued`), a gateway prompt's whole card
             # (`isNonInteractiveQueued`).
+            from kiro_crew.dashboard.chat_delivery import EXPANSIONS_OFF_META_KEY
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
@@ -1093,6 +1094,8 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+                # They are typed, too, so their mentions expand.
+                item["meta"].pop(EXPANSIONS_OFF_META_KEY, None)
             item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True

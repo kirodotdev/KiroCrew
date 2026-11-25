@@ -19,10 +19,8 @@ the reader scan are `docs_only`'s, the frontend globs are read from ci.yml, and
 the must-run list is `ci-surface-tests.py`'s. A path neither covers has no
 readers here and keeps its fall-back in `ci_test_map.select`.
 
-One kind of prose doc is left uncovered: a doc under `src/`. Those ship in the
-package, product code reads them at run time (`mcp_guide.search_docs`, the tips
-catalog), and `docs_only.readers` scans test files only, so a test that reaches
-such a doc through product code is not in its answer.
+Markdown under `src/` is not a prose doc by that rule (it is package data,
+read by product code at run time), so it has no readers here.
 
 Each scan reads the whole test tree, so an instance keeps what it scanned: one
 diff is asked about more than once (the Linux verdict, then its Windows block).
@@ -47,8 +45,6 @@ SURFACE_TESTS = "scripts/ci-surface-tests.py"
 # must-run tests `ci-surface-tests.py` lists for a diff confined to it.
 FRONTEND_BUCKET = "frontend"
 BACKEND_SURFACE = "backend"
-# Package data: read by product code, which the reader scan does not follow.
-PACKAGE_TREE = "src/"
 
 
 def load_script(name: str, path: Path) -> ModuleType:
@@ -73,7 +69,7 @@ class DataRule:
         self._surface_tests: set[str] | None = None
 
     def is_doc(self, path: str) -> bool:
-        return bool(self.docs.is_prose_doc(path)) and not path.startswith(PACKAGE_TREE)
+        return bool(self.docs.is_prose_doc(path))
 
     def is_frontend(self, path: str) -> bool:
         if self._frontend is None:

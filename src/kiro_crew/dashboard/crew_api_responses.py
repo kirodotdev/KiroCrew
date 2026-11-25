@@ -60,6 +60,7 @@ from kiro_crew.dashboard.crew_api_response_records import (
     MAX_REQUEST_BYTES,
     NAMESPACE,
     STORE_KEY,
+    RecordNotDurable,
     ResponseStore,
     request_bytes,
 )
@@ -650,7 +651,6 @@ async def _audit(request: web.Request, response_id: str, slot_key: str, model: s
 
 async def _record(
     store: ResponseStore,
-    slot_key: str,
     response: dict[str, Any],
     items: list[dict[str, Any]],
     stream: dict[str, Any] | None,
@@ -666,13 +666,20 @@ async def _record(
         "response": response,
         "input": items,
         "stream": stream,
-        # The owner's turn: no grant made it.
+        # The owner's turn: no grant made it. Nothing reads these two yet; they are
+        # written so that a record can be told from another caller's later.
         "created_by_grant": None,
         "namespace": NAMESPACE,
-        "slot": slot_key,
     }
     try:
         await asyncio.to_thread(store.save, record)
+    except RecordNotDurable as exc:
+        logger.warning(
+            "Crew API response %s was recorded, and it is not confirmed that the record "
+            "survives a power loss: %s",
+            response["id"],
+            type(exc.__cause__ or exc).__name__,
+        )
     except Exception as exc:  # the record must never change the turn's answer
         logger.warning(
             "Crew API response %s was not recorded: %s", response["id"], type(exc).__name__
@@ -744,7 +751,7 @@ async def _run(request: web.Request) -> web.StreamResponse:
                         response_id,
                     )
                 else:
-                    await _record(store, slot.key, response, items, stream)
+                    await _record(store, response, items, stream)
 
             if items is not None:
                 # Readable as in_progress until its record is written.

@@ -88,7 +88,6 @@ def _record(response_id: str = ID, **changed: Any) -> dict[str, Any]:
         "stream": _stream(),
         "created_by_grant": None,
         "namespace": records.NAMESPACE,
-        "slot": "resp-" + "1" * 32,
     }
     return {**record, **changed}
 
@@ -170,7 +169,7 @@ async def test_a_directory_sync_failure_keeps_a_readable_record_and_does_not_esc
             raise OSError("directory sync failed")
 
     monkeypatch.setattr(records, "fsync_dir", fail)
-    with pytest.raises(OSError, match="directory sync failed"):
+    with pytest.raises(records.RecordNotDurable, match="directory sync failed"):
         store.save(_record())
     assert store.load(ID) == _record()
     assert store._swept_at is None
@@ -181,13 +180,67 @@ async def test_a_directory_sync_failure_keeps_a_readable_record_and_does_not_esc
 
     monkeypatch.setattr(records, "fsync_dir", fail_off_loop)
     response = _response()
-    await keep(store, _record()["slot"], response, [_input()], _stream())
+    with caplog.at_level("WARNING", logger="kiro_crew.dashboard.crew_api_responses"):
+        await keep(store, response, [_input()], _stream())
     expected = [path.parent, path.parent.parent] if parent else [path.parent]
     assert synced == expected * 2
     assert response == _response()
     assert store.load(ID) == _record()
     assert store._swept_at is None
-    assert f"Crew API response {ID} was not recorded: OSError" in caplog.text
+    # The log says what is true: the record is there, and only its durability is unknown.
+    assert [r.getMessage() for r in caplog.records] == [
+        f"Crew API response {ID} was recorded, and it is not confirmed that the record "
+        "survives a power loss: OSError"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_could_not_be_written_is_logged_as_not_recorded(
+    store: ResponseStore, monkeypatch, caplog
+) -> None:
+    from kiro_crew.dashboard.crew_api_responses import _record as keep
+
+    def refused(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(13, "the directory is read-only")
+
+    monkeypatch.setattr(records, "atomic_write", refused)
+    with caplog.at_level("WARNING", logger="kiro_crew.dashboard.crew_api_responses"):
+        await keep(store, _response(), [_input()], _stream())
+    assert store.load(ID) is None
+    assert [r.getMessage() for r in caplog.records] == [
+        f"Crew API response {ID} was not recorded: PermissionError"
+    ]
+
+
+def test_a_record_says_whose_turn_it_is_and_holds_no_session_key(store: ResponseStore) -> None:
+    """``created_by_grant`` and ``namespace`` have no reader yet and are written all the
+    same: a record without them could not be given an owner later."""
+    store.save({**_record(), "slot": "resp-" + "1" * 32})
+    written = json.loads(_path(store).read_text(encoding="utf-8"))
+    assert set(written) == set(records.FIELDS)
+    assert "slot" not in written
+    assert (written["created_by_grant"], written["namespace"]) == (None, "default")
+
+
+def test_a_file_an_earlier_build_wrote_with_a_session_key_still_reads(
+    store: ResponseStore,
+) -> None:
+    store.save(_record())
+    path = _path(store)
+    earlier = {**json.loads(path.read_text(encoding="utf-8")), "slot": "resp-" + "1" * 32}
+    path.write_text(json.dumps(earlier), encoding="utf-8")
+    assert store.load(ID) == _record()
+    assert path.exists()
+
+
+@pytest.mark.parametrize("value", [None, 7, ["resp-1"]], ids=["null", "a number", "a list"])
+def test_a_former_field_of_another_type_is_not_believed(store: ResponseStore, value: Any) -> None:
+    store.save(_record())
+    path = _path(store)
+    changed = {**json.loads(path.read_text(encoding="utf-8")), "slot": value}
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    assert store.load(ID) is None
+    assert not path.exists()
 
 
 @pytest.mark.parametrize(
@@ -529,3 +582,70 @@ def test_a_damaged_record_moves_through_the_approval_records_set_aside(
     clock.now = START + records.SWEEP_EVERY_SECS
     assert store.sweep() == 1
     assert not aside.exists()
+
+
+def test_a_damaged_record_that_cannot_be_moved_is_logged_as_staying(
+    store: ResponseStore, monkeypatch, caplog
+) -> None:
+    from kiro_crew.dashboard import crew_api_approval_records
+
+    def held(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(13, "another process holds the file")
+
+    store.save(_record())
+    _path(store).write_text("{", encoding="utf-8")
+    monkeypatch.setattr(crew_api_approval_records, "rename_with_retry", held)
+    with caplog.at_level("WARNING", logger=records.logger.name):
+        assert store.load(ID) is None
+    assert [p.name for p in _path(store).parent.iterdir()] == [f"{ID}.json"]
+    assert [r.getMessage() for r in caplog.records] == [
+        f"Crew API response record {ID}.json is unreadable and stays"
+    ]
+
+
+def test_a_damaged_record_that_is_gone_before_the_move_is_logged_as_gone(
+    store: ResponseStore, caplog
+) -> None:
+    """Two reads of one damaged record: the second finds nothing to move."""
+    with caplog.at_level("WARNING", logger=records.logger.name):
+        store.set_aside(ID)
+    assert not _path(store).parent.exists() or not list(_path(store).parent.iterdir())
+    assert [r.getMessage() for r in caplog.records] == [
+        f"Crew API response record {ID}.json is unreadable and already gone"
+    ]
+
+
+def test_a_record_whose_time_could_not_be_set_is_written_and_not_durable(
+    store: ResponseStore, monkeypatch
+) -> None:
+    def refused(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(1, "setting the time is not permitted")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(records.os, "utime", refused)
+        with pytest.raises(records.RecordNotDurable):
+            store.save(_record())
+    assert store.load(ID) == _record()
+
+
+def test_a_damaged_record_moved_and_not_synced_is_logged_as_moved(
+    store: ResponseStore, monkeypatch, caplog
+) -> None:
+    from kiro_crew.dashboard import crew_api_approval_records
+
+    def fail(_directory: Path) -> None:
+        raise OSError("directory sync failed")
+
+    store.save(_record())
+    _path(store).write_text("{", encoding="utf-8")
+    monkeypatch.setattr(crew_api_approval_records, "fsync_dir", fail)
+    with caplog.at_level("WARNING", logger=records.logger.name):
+        assert store.load(ID) is None
+    # The log says what is true: the file is gone from its name, under the copy's name.
+    assert [p.name for p in _path(store).parent.iterdir()] == [
+        f"{ID}.json.damaged-20270115T080000Z"
+    ]
+    assert [r.getMessage() for r in caplog.records] == [
+        f"Crew API response record {ID}.json is unreadable and was moved aside; "
+        "it is not confirmed that the move survives a power loss"
+    ]

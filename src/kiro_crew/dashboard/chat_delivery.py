@@ -1323,6 +1323,12 @@ TURN_ACTOR_META_KEY = "turnActor"
 #: provenance flags, which grant authority and are therefore never persisted.
 COMMANDS_OFF_META_KEY = "commands_off"
 
+#: Entry meta key keeping a queued payload's ``@prompt`` and ``$skill`` mentions as
+#: text: stamped beside ``COMMANDS_OFF_META_KEY`` on a chat option tap, whose
+#: label the model wrote. A separate key because a channel's typed text carries
+#: commands-off too and still expands. Like that key, it only REMOVES something.
+EXPANSIONS_OFF_META_KEY = "expansions_off"
+
 #: Entry meta key asking for a BACKGROUND cold start for the turn the entry runs as,
 #: whoever's provenance it carries. The bulk Resume stamps it on every entry it
 #: queues: its request answers at once, so no person waits on any one of those

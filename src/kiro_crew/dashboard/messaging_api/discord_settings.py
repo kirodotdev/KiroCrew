@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -119,9 +120,12 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
 async def api_discord_config_save(request: web.Request) -> web.Response:
     """PUT /api/discord/config — persist Discord secret (.env) + config (config.json).
 
-    Every Discord field is read once at gateway startup (token, enabled flag,
-    allowlist are consumed in the orchestrator's constructor), so any actual
-    change returns ``restart_required`` for the UI hint.
+    Every field applies without a gateway restart while the config watcher
+    runs: the allow-lists and render toggles live, a new token by reconnecting
+    the running client in place, the enable flag by restarting the channel.
+    ``restart_required`` says so, and ``reconnect_error`` carries what a
+    reconnect this save scheduled could not apply (a token Discord rejected,
+    server-thread intents it refused), never a token value.
 
     Serialized with every other config.json writer via the repository-wide
     ``_get_config_lock()`` (also used by the MCP, memory, and agent
@@ -136,7 +140,19 @@ async def api_discord_config_save(request: web.Request) -> web.Response:
         # A save is a config.json + credential transaction: a cancelled request
         # (client gone, gateway shutting down) must not abandon it between its
         # phases -- see ``run_to_completion``.
-        return await run_to_completion(_discord_config_save_locked(request))
+        resp = await run_to_completion(_discord_config_save_locked(request))
+    if resp.status != 200:
+        return resp
+    # Outside the config lock: a reconnect waits on Discord's handshake, and no
+    # other settings save should wait behind it.
+    from kiro_crew.discord.gateway import reconcile_for_save
+
+    error = await reconcile_for_save(request.app.get("state"))
+    if not error:
+        return resp
+    payload = json.loads(resp.body)  # type: ignore[arg-type]  # json_response holds bytes
+    payload["reconnect_error"] = error
+    return web.json_response(payload)
 
 
 async def _discord_config_save_locked(request: web.Request) -> web.Response:
@@ -423,9 +439,11 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # The restart hint is answered from the schema: the token is hoisted from the
-    # environment at connect time, so a credential write still needs a restart;
-    # the config fields are applied by the watcher above.
+    # The restart hint is answered from the schema for the config fields. A
+    # token write is applied by the running config watcher too: it reconnects
+    # the live client with the new token (``discord.gateway.reconnect_discord``),
+    # or restarts the channel when the token is for another bot or was cleared.
+    # Only a gateway with no watcher running still needs a restart for it.
     # Answer only once the watcher has applied the write: a narrowed allow-list
     # is in force before the caller sees "saved", not one poll interval later.
     await _hot_apply_after_write()
@@ -433,8 +451,11 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         {
             "ok": True,
             "restart_required": channel_restart_required(
-                "discord", staged.keys(), env_updates=env_updates
+                "discord",
+                staged.keys(),
+                env_updates=None if live.watch().started else env_updates,
             ),
             "verify_warning": verify_warning,
+            "reconnect_error": "",
         }
     )

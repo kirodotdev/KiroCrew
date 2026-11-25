@@ -28,8 +28,8 @@ Endpoints an app calls with a credential the user granted it.
 | [`DELETE /v1/conversations/{conversation_id}`](public-conversations.md#delete-v1conversationsconversation_id) | Delete a conversation opened under this grant | Planned | stable |
 | [`GET /v1/conversations/{conversation_id}/items`](public-conversations.md#get-v1conversationsconversation_iditems) | Read history, paged | Planned | stable |
 | [`GET /v1/models`](public-models.md#get-v1models) | List the agents and Bots the caller can use | Available now: owner and apps | stable |
-| [`GET /v1/crew/capabilities`](public-crew.md#get-v1crewcapabilities) | Capability negotiation | Available now: owner only | preview |
-| [`GET /v1/crew/info`](public-crew.md#get-v1crewinfo) | Instance information | Available now: owner only | preview |
+| [`GET /v1/crew/capabilities`](public-crew.md#get-v1crewcapabilities) | Capability negotiation | Available now: owner and apps | preview |
+| [`GET /v1/crew/info`](public-crew.md#get-v1crewinfo) | Instance information | Available now: owner and apps | preview |
 | [`GET /v1/crew/events`](public-events.md#get-v1crewevents) | In-instance event stream (conversation stream or instance stream) | Planned | stable |
 | [`GET /v1/crew/approvals`](public-approvals.md#get-v1crewapprovals) | List approvals (read only) | Planned | stable |
 | [`GET /v1/crew/approvals/{approval_id}`](public-approvals.md#get-v1crewapprovalsapproval_id) | Read one approval | Planned | stable |
@@ -63,7 +63,7 @@ Endpoints an app calls with a credential the user granted it.
 | [`POST /v1/crew/webhooks`](public-webhooks.md#post-v1crewwebhooks) | Subscribe to webhook events | Planned | stable |
 | [`DELETE /v1/crew/webhooks/{webhook_id}`](public-webhooks.md#delete-v1crewwebhookswebhook_id) | Delete a webhook subscription | Planned | stable |
 | [`DELETE /v1/files/{file_id}`](public-files.md#delete-v1filesfile_id) | Delete a file this grant uploaded | Planned | stable |
-| [`GET /v1/crew/grant`](public-crew.md#get-v1crewgrant) | Read the app's own grant | Planned | stable |
+| [`GET /v1/crew/grant`](public-crew.md#get-v1crewgrant) | Read the app's own grant | Available now: owner and apps | preview |
 
 ## Owner endpoints
 

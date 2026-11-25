@@ -1033,6 +1033,19 @@ def proc_cpu_seconds() -> float:
 _prev_win_sys_cpu: dict[str, float] = {"idle": 0.0, "total": 0.0}
 
 
+def _memory_status() -> "_MemoryStatusEx | None":
+    """One ``GlobalMemoryStatusEx`` reading; ``None`` off Windows or on any failure."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        stat = _MemoryStatusEx()
+        stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        return stat if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)) else None
+    except Exception:
+        return None
+
+
 def system_memory() -> "tuple[int, int] | None":
     """Return (total_bytes, available_bytes) of physical RAM on Windows.
 
@@ -1040,18 +1053,19 @@ def system_memory() -> "tuple[int, int] | None":
     callers read ``/proc/meminfo`` or ``sysctl hw.memsize`` themselves) or on
     any failure, so the caller can fall back.
     """
-    if not IS_WINDOWS:
-        return None
-    try:
+    stat = _memory_status()
+    return None if stat is None else (int(stat.ullTotalPhys), int(stat.ullAvailPhys))
 
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        stat = _MemoryStatusEx()
-        stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            return int(stat.ullTotalPhys), int(stat.ullAvailPhys)
-        return None
-    except Exception:
-        return None
+
+def system_commit() -> "tuple[int, int] | None":
+    """Return (commit_limit_bytes, commit_available_bytes) on Windows, ``None`` as above.
+
+    ``ullTotalPageFile`` and ``ullAvailPageFile``: the commit limit and what is left
+    before the commit charge reaches it. Windows bounds both by this process's own
+    limit when a Job object sets a lower one.
+    """
+    stat = _memory_status()
+    return None if stat is None else (int(stat.ullTotalPageFile), int(stat.ullAvailPageFile))
 
 
 def system_cpu_percent() -> "float | None":

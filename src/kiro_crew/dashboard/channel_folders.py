@@ -96,9 +96,10 @@ def channel_restart_required(
     hand-maintained lists that drift apart. There is deliberately no per-channel
     table here to fall back on: a second list is a second place to drift.
 
-    A credential write always requires a restart: credentials are hoisted at
-    connect time from the environment, and the config watcher does not watch
-    ``.env``.
+    A credential write in *env_updates* always requires a restart: credentials
+    are hoisted at connect time from the environment. A save whose channel the
+    config watcher reconnects in place (Discord) passes no *env_updates* while
+    the watcher runs.
     """
     if env_updates:
         return True

@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         bind_bot_memory,
         bots_text,
         build_timing_footer,
+        canonical_key,
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
@@ -129,6 +130,7 @@ async def _handle_slash_command(
         "!allowlist": _bang_allowlist,
         "!channel": _bang_channel,
         "!title": _bang_title,
+        "!trust": _bang_trust,
     }.get(cmd)
     if handler is not None:
         return await handler(
@@ -149,6 +151,40 @@ async def _handle_slash_command(
         f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
         reply_ts,
     )
+    return ""
+
+
+# ── !trust / !trust off / !trust status ──
+async def _bang_trust(
+    cmd_text: str,
+    slack: SlackClientOps,
+    sessions: SessionManager,
+    channel: str,
+    reply_ts: str,
+    msg_ts: str,
+    session_key: str,
+    user_id: str,
+    conversation_log: ConversationLog | None,
+) -> str:
+    """Put this thread's session on Trust, or take it off (owner-only)."""
+    from kiro_crew.slack import thread_trust
+
+    # The session the thread's turns run on: a thread a dashboard chat was sent
+    # to belongs to that chat's session, which the native path's key does not
+    # name (the transport path has already resolved it to the same owner).
+    owner = sessions.get_session_for_thread(reply_ts)
+    if isinstance(owner, str) and owner and owner != canonical_key(reply_ts):
+        session_key = owner
+    parts = cmd_text.split(maxsplit=1)
+    reply = await thread_trust.handle(
+        parts[1] if len(parts) > 1 else "",
+        state=_dashboard_state,
+        session_key=session_key,
+        channel=channel,
+        reply_ts=reply_ts,
+        user=user_id,
+    )
+    await slack.post_message(channel, reply, reply_ts)
     return ""
 
 
@@ -985,9 +1021,9 @@ async def _bang_conductor(
 ) -> str:
     """Turn this thread into a Conductor thread (``kiro_crew.slack.conductor_thread``).
 
-    Owner-only like every ``!`` command but ``!stop``, ``!title`` and ``!dashboard``:
-    the router refuses anyone else first, and the start asks ``is_owner`` again. The
-    rest of the message is the goal, the conductor's first turn.
+    Open to any allowed user (the sender gate's allowed-user list); the start asks
+    again, and a shared user who starts one is recorded as its opener. The rest of
+    the message is the goal, the conductor's first turn.
     """
     from kiro_crew.slack import conductor_thread
 
@@ -1025,8 +1061,8 @@ async def _bang_bot(
     The thread then runs as the Bot the way a channel pinned with
     ``slack.channels.<id>.agent`` does (``slack/channel_crew.py``): its mode, its
     identity, its workspace. It is stored as the thread's agent, as ``!ta`` does, so it
-    outlives a restart and beats the channel's pin. Owner-only like every ``!`` command
-    but ``!stop``, ``!title`` and ``!dashboard``: the router refuses anyone else first.
+    outlives a restart and beats the channel's pin. Open to any allowed user
+    (the sender gate's allowed-user list).
     """
     from kiro_crew.slack import conductor_thread
 
@@ -1798,10 +1834,12 @@ async def _route_bang_command(
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if _is_bang_command(cmd_text):
-        # !stop and !title are available to any allowed user; !dashboard mints a
-        # full-dashboard link, so it stays the owner's.
+        # !stop, !title, !bot and !conductor are available to any allowed user; a
+        # shared user who starts a Conductor thread is its opener, the one person
+        # besides the owner it admits. !dashboard mints a full-dashboard link, so it
+        # stays the owner's.
         _cmd_word = cmd_text.split()[0].lower()
-        if _cmd_word in ("!dashboard", "!stop", "!title"):
+        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor"):
             if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
                 _cmd_word == "!dashboard" and is_shared_listed(user_id)
             ):

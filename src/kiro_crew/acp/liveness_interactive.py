@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.liveness_command import _command_text, bounded_command_text
-from kiro_crew.acp.program_name import windows_program_name
+from kiro_crew.program_name import windows_program_name
 
 #: The facade's logger: a record from this module keeps the name ``kiro_crew.acp.liveness``.
 logger = logging.getLogger("kiro_crew.acp.liveness")

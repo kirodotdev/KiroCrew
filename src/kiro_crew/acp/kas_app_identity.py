@@ -133,8 +133,13 @@ def tokened_app_element(
     The command and args come from *launch* alone, so a spec that renames
     another program ``mochi:mochi`` cannot receive the token. The env is the
     gateway's port and session key, then the pinned launch env (``PYTHONPATH``,
-    ``KIROCREW_HOME``); nothing else from the projection survives.
+    ``KIROCREW_HOME``), then the gateway's cache-only policy markers on a centrally
+    governed host; nothing else from the projection survives. The markers go on
+    this launch, never on the registered entry, because under a ``cc`` or
+    ``strict`` agent tier the engine's own environment does not carry them.
     """
+    from kiro_crew.agent import policy_cache_only_env
+
     raw_env = element.get("env")
     pairs: list[Any] = raw_env if isinstance(raw_env, list) else []
     env = {
@@ -146,6 +151,7 @@ def tokened_app_element(
     if port:
         env.setdefault("KIROCREW_PORT", port)
     env.update({str(k): str(v) for k, v in (launch.get("env") or {}).items()})
+    env.update(policy_cache_only_env())
     relaunched = {
         "name": element["name"],
         "command": str(launch["command"]),

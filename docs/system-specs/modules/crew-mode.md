@@ -88,7 +88,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Bot teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Bots page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Bot roster, mounted as the **Bots** tab of `CapabilitiesPage` (Customize), and a host of the one Bot editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and mounts the binding fields every crew form shares (`components/crew/crewFields.tsx`; each consumer imports them from there, and the page re-exports each for its existing importers). Editing a Bot opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Bots page opens in place; that hook re-exports `INHERIT_MODEL` from `crewFields.tsx`. The editor's General section names what the Bot's Profile card holds instead (sessions, goals, permission) and opens that card on its Profile tab (`onOpenProfile`, through the editor's `leaveGate`): from here it navigates to `/members?member=<name>` with `OpenMateSessionsState`, and on the Bots page it closes the editor and opens the card in place |
-| `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
+| `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it; `triggers` is edited on the editor's General section (`TriggersField`), and an edit there marks the `routing` key dirty |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/CrewWebhookSection.tsx` | "Webhooks that wake this agent" — the tokens whose call runs as this crew. A token pins a template, never a crew, so it is listed for every crew that runs that template or is named like it (`webhookBoundToCrew` in `components/crew/wakesCrew.ts`; the name covers an older row that stores the template's file name), a crew with its own memory included: a hook it registers keeps its memory, so the pane may over-list but never hides a token with real access |
 | `website/src/components/chat/crewmateBubbles.ts` | A Bot's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
@@ -2061,7 +2061,11 @@ first `DOCK_MATES_LIMIT` (3, in `website/src/lib/dockMates.ts`) behind the same
 is draggable, so a Bot starred late (sorted to the bottom) can be dragged into
 the top three. As with the Apps list's active app, the open Bot's row stays on
 screen while the group is folded, as a row that cannot be dragged or dropped
-on. The group sits between the rail's primary rows and its Apps header and
+on. On the expanded rail the group's header is a disclosure that puts every
+Bot row and the "N more" row away and keeps the header, persisted in
+`mc-dock-mates-section-open` (absent reads as open); the icon rail draws no
+header, so its rows ignore that key and only the fold applies, and the phone
+rail's tiles ignore it. The group sits between the rail's primary rows and its Apps header and
 does not scroll on its own: everything above the rail's bottom block (Agent
 Capabilities, Settings, the community row) is ONE scroll region, so the menu
 row, the primary rows, this group and the Apps list scroll together and the
@@ -2097,7 +2101,8 @@ waiting on the person puts no dot on the row either.
 person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
 is not starred, so a re-star lands at the bottom. While a docked Bot's chat is
-open its dock row is the lit one, not the Bots page row.
+open its dock row is the lit one, not the Bots page row; while the group is put
+away, the Bots page row is the lit one.
 On the expanded desktop rail each docked Bot's row carries a "..." menu
 (`website/src/shell/nav/mateRowMenu.tsx`), the twin of an installed app's rail
 row menu, with exactly two items
@@ -2376,6 +2381,33 @@ thread open) are the same `CrewmateRowBody` read through the same `signalsOf`
 resolver, so the full roster, the folded switcher and the status filter never
 disagree about who is parked on a question, on watch, or holding a goal.
 
+A Bot whose agent file is gone is marked, never dropped. An uninstalled package
+or a deleted file leaves the Bot's row in the config, bound to an agent nothing
+declares, and that row still holds its memory, chats and schedules. `GET
+/api/members` ships `agent_missing: true` on such a row and omits the key on
+every other (`dashboard/members_roster_agent.members_missing_agent`, one thread
+hop for the roster). It rescans the agents directories first, then names a row
+when a complete user-level scan leaves the installed snapshot without the row's
+template and its own crewmate file is absent on disk. An existing crewmate file
+is never marked, even if it could not be parsed or its directory could not be
+listed; a stat error names nobody. That is absence, not the removal
+`reset_dangling_default_agent` waits for, so
+the mark still shows after a restart; it changes nothing, so absence is enough.
+A row on the managed `kirocrew` template or a kiro-cli built-in agent, and a row
+whose template the edition or its own workspace supplies, is never named; an
+empty snapshot or partial user-level scan names nobody. The roster row draws
+an **Agent missing** chip (`CrewmateRowBody`), and the Bot's thread says why it cannot
+reply, naming the row's `kiro_agent` as a value when it is non-empty (never a
+file path), and how to bring the agent back (for an app's agent, enable it or
+disable and re-enable it in Apps › Library, as `missing_agent_reason` says;
+otherwise reinstall what provided it, or put its file back). Beside that it
+offers **Delete bot…**, with a line that shows only alongside the button: it
+opens the delete step, and deleting removes the Bot with its picture and goal
+check-ins and keeps its memory and past chats. The button opens the Bot editor
+on its Danger zone (`useMembersPageCrewEditor.openCrewDangerZone`), for every
+Bot but the default one, which cannot be deleted. The delete is still
+the editor's own two-step confirm; nothing deletes a Bot for the person.
+
 Unread is also the one signal drawn OUTSIDE the closed chip. Under it,
 in the header's floating band, hangs one small Glass pill per Bot with an
 unread message who is not the open one (`crewmate-switcher-unread-pill`, roster
@@ -2529,8 +2561,9 @@ the opener always stays. The panel chord toggles only while a Bot is
 open.
 
 The Profile tab holds the Bot's own settings (`CrewProfileSettings`):
-permission (Normal / Reads / Trust), model and effort, the worker pair and the
-preview switches. They are changed there, never in the chat. The Profile tab
+permission (Normal / Reads / Trust), model and effort, the worker pair, the
+**Workers can conduct** switch and the preview switches. They are changed
+there, never in the chat. The Profile tab
 shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
 the model (permission · model; not the worker pick, which beside the Bot's own
 name read as a riddle); nothing else of the settings
@@ -4400,8 +4433,14 @@ author line — no avatar, no name, no time row — and no avatar gutter: the ch
 is a 1:1 thread with one speaker besides the user, and the DM header's identity
 chip already names that speaker, so a per-run author line would be redundant; for assistive tech each message row is a `group`
 labelled with the Bot's name, which draws nothing. Every message is its
-own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the full
-text column, left-aligned; the user's bubble opposite is filled with the theme
+own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-full`) in the full
+text column, left-aligned; in the transcript the bubble spans that column, which
+the transcript row clamps to `--mc-content-width`, so Settings → Chat → Content
+Width sets its maximum width as it sets the user's bubble's (#30200), and a
+Bot's change card or guide offer takes the same width (the reply-thread panel
+has no Content Width clamp, so its Bot column holds a 72ch reading measure at
+the bubble's 13px, and a long thread reply stops there); the user's bubble
+opposite is filled with the theme
 ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
 `UserMessage`), the iMessage pairing, so colour tells the two
 speakers apart before alignment does. The `user` entry that carries the tone is
@@ -5122,7 +5161,13 @@ its session array and the Bot's worker limit are what they are today
 The `worker.conducts` piece is rendered from `_LEDGER_CONDUCTOR_RULES` exactly
 as `conductor.patrol` is, so a rule every conductor carries is written once;
 `test_mate_conductor_parity.py` holds the root conductor, a Bot's thread and a
-Bot's conducting worker to that one copy.
+Bot's conducting worker to that one copy. The owner sets the switch on the
+Bot's Profile card (`pages/members/CrewProfileSettings.tsx`: a **Workers can
+conduct** switch in its own group under the one holding **Workers at once**, the
+RFC's §5.1 hint as its caption), which writes `PUT /api/agents/{name}`
+`{worker_conducts}` for that Bot alone; an absent field reads as off, and a
+refused write shows a notice under the group while the switch keeps the stored
+value (`CrewProfileSettings.test.tsx`).
 
 **A stale worker is released, not capped.** A Bot opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle

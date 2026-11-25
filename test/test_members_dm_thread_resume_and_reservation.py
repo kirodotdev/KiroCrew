@@ -86,7 +86,9 @@ class TestResumeGuards:
         # A transcript persisted by an ORDINARY session of another agent.
         log = state.conversation_log
         log.append("dashboard:chat-9-1", "user", "hello")
-        log.update_metadata("dashboard:chat-9-1", {"agent": OTHER, "mode": ""})
+        await asyncio.to_thread(
+            log.update_metadata, "dashboard:chat-9-1", {"agent": OTHER, "mode": ""}
+        )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 f"/api/chat/slots/{member_slot_key(CREW)}/resume",
@@ -106,7 +108,9 @@ class TestResumeGuards:
         state = _make_state(tmp_path)
         log = state.conversation_log
         log.append("dashboard:stolen", "user", "hello")
-        log.update_metadata("dashboard:stolen", {"agent": CREW, "mode": DM_SLOT_MODE})
+        await asyncio.to_thread(
+            log.update_metadata, "dashboard:stolen", {"agent": CREW, "mode": DM_SLOT_MODE}
+        )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/ordinary-1/resume", json={"key": "dashboard:stolen"}
@@ -131,7 +135,9 @@ class TestResumeGuards:
         log = state.conversation_log
         key = _history_key_for(member_slot_key(CREW))
         log.append(key, "user", "hello")
-        log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE, "closed": time.time()})
+        await asyncio.to_thread(
+            log.update_metadata, key, {"agent": CREW, "mode": DM_SLOT_MODE, "closed": time.time()}
+        )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 f"/api/chat/slots/{member_slot_key(CREW)}/resume", json={"key": key}
@@ -152,7 +158,7 @@ class TestResumeGuards:
         key = f"dashboard:{member_slot_key(CREW)}"
         log = state.conversation_log
         log.append(key, "user", "hello")
-        log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        await asyncio.to_thread(log.update_metadata, key, {"agent": CREW, "mode": DM_SLOT_MODE})
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 f"/api/chat/slots/{member_slot_key(CREW)}/resume", json={"key": key}
@@ -196,7 +202,7 @@ class TestResumeGuards:
         key = f"dashboard:{member_slot_key(CREW)}"
         log = state.conversation_log
         log.append(key, "user", "hello")
-        log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        await asyncio.to_thread(log.update_metadata, key, {"agent": CREW, "mode": DM_SLOT_MODE})
 
         loop = asyncio.get_running_loop()
         loop_thread = threading.get_ident()
@@ -307,7 +313,8 @@ class TestResumeGuards:
         key = f"dashboard:{member_slot_key(CREW)}"
         log = state.conversation_log
         log.append(key, "user", "hello")
-        log.update_metadata(
+        await asyncio.to_thread(
+            log.update_metadata,
             key,
             {"agent": CREW, "mode": DM_SLOT_MODE, "closed": True, "closed_at": time.time() - 60},
         )
@@ -372,7 +379,9 @@ class TestResumeGuards:
         key = f"dashboard:{member_slot_key(CREW)}"
         log = state.conversation_log
         log.append(key, "user", "old incarnation message")
-        log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE, "title": "old"})
+        await asyncio.to_thread(
+            log.update_metadata, key, {"agent": CREW, "mode": DM_SLOT_MODE, "title": "old"}
+        )
 
         real_agent = handlers._restored_agent_name
         real_read = handlers.members_mod.read_dm_binding_for_slot
@@ -1511,7 +1520,7 @@ class TestCentralReservation:
         log = state.conversation_log
         log.append(key, "user", "hello")
         # Tampered/degraded metadata: agent points elsewhere, mode is absent.
-        log.update_metadata(key, {"agent": OTHER})
+        await asyncio.to_thread(log.update_metadata, key, {"agent": OTHER})
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 f"/api/chat/slots/{member_slot_key(CREW)}/resume", json={"key": key}
@@ -1533,7 +1542,8 @@ class TestCentralReservation:
         write_dm_binding(slug, member=name, slot_key=slot_key)
         history_key = f"dashboard:{slot_key}"
         state.conversation_log.append(history_key, "user", "hello")
-        state.conversation_log.update_metadata(
+        await asyncio.to_thread(
+            state.conversation_log.update_metadata,
             history_key,
             {
                 "agent": name,
@@ -1586,8 +1596,10 @@ class TestCentralReservation:
         slot_key = member_slot_key("dr-eggbot")
         history_key = f"dashboard:{slot_key}"
         state.conversation_log.append(history_key, "user", "hello")
-        state.conversation_log.update_metadata(
-            history_key, {"agent": "dr. eggbot", "mode": DM_SLOT_MODE}
+        await asyncio.to_thread(
+            state.conversation_log.update_metadata,
+            history_key,
+            {"agent": "dr. eggbot", "mode": DM_SLOT_MODE},
         )
         binding_reads = iter(
             [
@@ -1623,7 +1635,9 @@ class TestOrphanedHistory:
         key = f"dashboard:{member_slot_key(CREW)}"
         log = state.conversation_log
         log.append(key, "user", "predecessor conversation")
-        log.update_metadata(key, {"agent": "Old_Crew", "mode": DM_SLOT_MODE})
+        await asyncio.to_thread(
+            log.update_metadata, key, {"agent": "Old_Crew", "mode": DM_SLOT_MODE}
+        )
         # No dm.json on disk — the binding is gone, only the history remains.
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:

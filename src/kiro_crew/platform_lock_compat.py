@@ -184,6 +184,11 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _LOCK_TIMEOUT_SECS) -> bo
     Off the loop (the common case) it polls up to ``timeout`` as a real
     blocking wait, so a legitimately long holder is waited out rather than
     raced.
+
+    Retries cover a held byte ONLY: ``EACCES``/``EDEADLOCK``, the same test
+    :func:`try_acquire_lock_or_raise` applies. Any other errno (``EBADF`` from a
+    closed fd, ``EINVAL`` from one the CRT cannot lock) is about this fd and
+    propagates at once, so it is not reported as a stuck holder at the ceiling.
     """
     from kiro_crew.platform_compat import time
 
@@ -194,8 +199,10 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _LOCK_TIMEOUT_SECS) -> bo
 
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
             return True
-        except OSError:
-            return False
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK)):
+                return False
+            raise
 
     if _on_event_loop():
         # Single attempt only — a spin-sleep here blocks the event loop.

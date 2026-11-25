@@ -26,6 +26,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | Command | Description |
 |---------|-------------|
 | `!yolo` / `!yolo on/off/renew` | Show, toggle, or renew auto-approve for all tool calls |
+| `!trust` / `!trust off` / `!trust status` | Put this thread's session on Trust (its tools run without asking), take it off, or show it. See "Trust one thread" below |
 | `!agent <name>` | Switch to a different agent globally |
 | `!agent off` | Switch back to default kirocrew agent |
 | `!ta <name>` | Set agent for this thread only |
@@ -88,7 +89,7 @@ Available to all allowed users (no `!` prefix needed):
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
 | `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
-| `/kirocrew conductor <goal>` | Owner only. Post the goal as a new message here and make its thread a Conductor thread: one way, only the owner's messages reach it, workers show as status. In an existing thread, send `!conductor [goal]` instead. Off until Conductor threads are turned on |
+| `/kirocrew conductor <goal>` | The owner, or a shared user (`slack.shared_access`). Post the goal as a new message here and make its thread a Conductor thread: one way, only the owner's and the starter's messages reach it, workers show as status. In an existing thread, send `!conductor [goal]` instead. Off until Conductor threads are turned on |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
 | `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
@@ -113,6 +114,27 @@ When Kiro Crew needs to run a tool (file write, bash command, etc.):
    channels that prompt at all wait five minutes, and four channels do not
    prompt. See [Channel capabilities](channel-capabilities.md).
 4. In interactive mode, "Trust session" approves all remaining tools for that session
+
+### Trust one thread
+
+`!trust` puts the thread you type it in on Trust before any tool asks. Its tools
+then run without a prompt; the deny list, sensitive paths and your organization's
+policy still refuse what they refuse. It is owner-only and works in DMs and channel threads.
+`!trust off` turns it off. `!trust status` shows it.
+
+The grant covers that one thread's session and lasts until `!trust off` or a gateway
+restart. In a channel thread it covers the turns of everyone on the allowlist, not
+only yours. A shared user's turn in a trusted thread still asks. Sent while the thread
+is working, `!trust` and `!trust off` wait for that turn to end; `!stop` ends it now.
+Helper agents the thread starts still ask.
+
+If the thread's dashboard tab is on Trust (from the card's "Trust session" button),
+`!trust off` leaves that tab's Trust alone and says so. Its tools and helper agents
+may still run without asking. Set that tab to Normal in its approval picker.
+
+A Slack Code channel or Conductor thread has its own setting: use
+`/kirocrew approval trust` there. A thread linked to a dashboard chat follows that
+chat: set Trust in the chat's approval picker.
 
 Approval buttons appear in both Slack and the dashboard. Approving in either
 place resolves both.
@@ -308,17 +330,22 @@ confirmed by Slack: remove them, or fix what their row says, first.
   `kirocrew config` gets the same check from the gateway before its first message
   counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
-  `!title`, `!compact`, answer question cards, answer the tool-approval
-  prompts their own turns post, and send or edit the review-mode draft of their
-  own turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  `!title`, `!compact`, `!bot`, `!conductor` and `/kirocrew conductor` (a Conductor
+  thread they start admits them and the owner only; its goal cannot be a `/`
+  command; `!stop`, Trust and worker cards there stay the owner's), answer
+  question cards, answer the tool-approval
+  prompts their own turns post (Approve, Reject, and **Trust session** where
+  the card offers it, which turns on the same per-session Trust the owner's
+  click does; the audit log names who clicked), and send or edit the review-mode draft of their own
+  turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
   call a background sub-agent makes, the approval prompt goes to the owner.
-- **What stays the owner's.** The access list and the switch; Trust, YOLO and
-  approval-mode changes (a shared user's Trust click is refused); approving a
-  prompt someone else's turn posted; `!dashboard` and other dashboard links; every
+- **What stays the owner's.** The access list and the switch; YOLO and
+  approval-mode changes; answering (Trust included) a prompt someone else's turn
+  posted, or one that is no longer waiting; `!dashboard` and other dashboard links; every
   other `!` command, including `!channel` and agent overrides, and the
   `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
-  agent's own commands such as `/agent`, `/model` or `/tools`); the `/kirocrew`
-  slash command; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
+  agent's own commands such as `/agent`, `/model` or `/tools`); the other `/kirocrew`
+  slash commands; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
   keywords (the agent's own schedule tools are not narrowed, see below); Slack
   settings and the manifest; and code channels (a shared
   user's messages and card answers in one are refused, quietly in a bound channel

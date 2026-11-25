@@ -371,13 +371,16 @@ function createManagedLane({
     // Same rule as managedInstallOnQuit: say so only when a quit would apply it.
     const pending = versionToApplyOnQuit();
     if (!pending || governed()) return;
+    // The next app start also tries an armed update (startup-apply.js); a found
+    // but unarmed one it does not.
+    const armed = !!updateArm.read();
+    const body = armed
+      ? `An update (version ${pending}) was not installed, because Windows was closing. Kiro Crew tries to install it when it next starts, or quit Kiro Crew from the tray to install it now.`
+      : `An update (version ${pending}) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.`;
     try {
-      new Notification({
-        title: "Kiro Crew update ready",
-        body: `An update (version ${pending}) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.`,
-      }).show();
+      new Notification({ title: "Kiro Crew update ready", body }).show();
     } catch { /* notifications optional */ }
-    log.info("[update] managed session-end — notified user of pending update (install on next quit)");
+    log.info(`[update] managed session-end — notified user of pending update (install on next ${armed ? "quit or start" : "quit"})`);
   }
 
   // ONE check at a time. The launch timer, the poll and the renderer's Check

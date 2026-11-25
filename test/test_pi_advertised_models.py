@@ -58,7 +58,9 @@ def test_pi_models_use_live_pi_advertisement_and_preserve_ids():
     assert _names(rows) == ["auto", "vendor/model-one", "other/model-two"]
     assert rows[1]["display_name"] == "Model One"
     assert rows[1]["description"] == "First"
-    assert all(row["context_window"] > 0 for row in rows)
+    assert all(
+        row.get("context_window") == model_registry.model_window(row["model_name"]) for row in rows
+    )
 
 
 def test_pi_models_use_cached_advertisement_after_restart():

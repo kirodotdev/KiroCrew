@@ -495,6 +495,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_source_channels",
         "_directive_owner_origin",
         "_commands_off",
+        "_expansions_off",
         "_recovery_echo_owed",
         "_card_origin",
         "_prompt_on_channel",

@@ -179,8 +179,9 @@ The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
 - No link can leave the frame. A page asks the host instead:
   `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
   (`useFrameLinkBridge`) opens it only from its own frame, only right after a click or
-  key press in that frame, in a new tab, for an `http(s)` URL or a dashboard path
-  such as `/artifacts/<slug>` or `/chat?sid=<key>`. A click it cannot tie to the
+  key press in that frame, for an `http(s)` URL or a dashboard path such as
+  `/artifacts/<slug>` or `/chat?sid=<key>`. A web URL opens in a new tab; a
+  dashboard page opens in place in the dashboard. A click it cannot tie to the
   frame gets an "Open <host>" button instead. Other schemes drop, and so does a
   post with no click, so post it from a click handler, never on a timer.
 

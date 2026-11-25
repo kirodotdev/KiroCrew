@@ -157,8 +157,8 @@ names the version and `packaging/kiro-cli-sha256` holds the sha256 of each
 artifact the build stages (the universal macOS DMG, the two Linux gnu zips, and
 the Windows x64 MSI) in
 `sha256sum` format keyed by the artifact's release path, `<version>/<file>`.
-Upstream hosts every release under that prefix but publishes a manifest — the
-only document naming sha256s — for `latest` alone, so a pinned build fetches the
+Upstream hosts every release under that prefix but publishes a manifest for
+`latest` alone, so a pinned build fetches the
 pinned version's own artifact URL and verifies it against the committed sha: it
 never reads the mutable manifest, a hotfix rebuild of an older tag keeps working
 after upstream releases, and a version bump without matching sha lines fails
@@ -173,8 +173,8 @@ build that wants the newest release (still sha256-verified). Bumping both files,
 after testing against the new release, is the whole procedure for
 shipping a newer kiro-cli in such a build ([release](release.md), step 1). On macOS the binary is
 extracted from the universal `Kiro CLI.dmg` (one Mach-O serves both arches; the
-DMG download is ~345 MB for kiro-cli 2.27); Linux uses the matching per-arch zip
-(~150 MB); Windows uses the x64 MSI (~250 MB). Downloads are cached per user
+DMG download is ~375 MB for kiro-cli 2.37.1); Linux uses the matching per-arch zip
+(~165 MB); Windows uses the x64 MSI (~385 MB). Downloads are cached per user
 under `~/.cache/kirocrew-build/kiro-cli`,
 so a rebuild against the same pin fetches nothing. A `BUNDLED-VERSION` file
 beside the payload records provenance; a clean-room smoke — empty `HOME`, minimal
@@ -396,7 +396,7 @@ Two properties are load-bearing and worth knowing before you touch that lane:
   than assuming it equals the runner's glibc. The AppImage links against
   it, which is why both Linux legs stay on 22.04 (glibc 2.35) rather than moving
   to 24.04 (2.39) — the newer floor would exclude AL2023, Debian 12 and RHEL 9.
-  A `BUNDLE_KIRO_CLI=1` build adds kiro-cli to that floor: at 2.27.1
+  A `BUNDLE_KIRO_CLI=1` build adds kiro-cli to that floor: at 2.37.1
   `kiro-cli-chat` requires `GLIBC_2.34` on x86_64 and `GLIBC_2.30` on aarch64, so
   it does not narrow the supported distro set. Re-measure both pinned zips when
   updating the CLI pin.
@@ -2170,7 +2170,8 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   `app.exit` is the only exit. The feed lane holds quits for its gateway stop
   the same way. Pinned by `website/electron/test/update-second-quit-keeps-apply.test.js`.
 - **An apply the quit left behind is finished at the next app start.** If the
-  quit-time apply was interrupted or failed, the arm stays. The next start runs
+  quit-time apply was interrupted or failed, or a Windows session end left the
+  update unapplied, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
   the main window opens, clears the arm, and relaunches once into the new bundle.
   While the update command runs, the boot splash shows in its own window
@@ -2235,8 +2236,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   `test/managed-apply-log.test.js`.
 
 Windows shutdown, restart and sign-out end the app without a quit, so on Windows
-the app shows a "Kiro Crew update ready" notice at session end instead, telling
-the user to quit from the tray to install. It never runs `updateCommand` then:
+the app shows a "Kiro Crew update ready" notice at session end instead. For an
+armed update (Install, or an arm adopted from the dashboard), it says Kiro Crew
+tries to install it when it next starts (the start-time apply above), or that a
+tray quit installs it now; for a found update that was not armed, it tells the
+user to quit from the tray to install. It never runs `updateCommand` then:
 Windows gives the app a few seconds, and an apply cut short can leave a
 half-installed app. The notice appears only while a quit would apply an update,
 and not once an install has started.

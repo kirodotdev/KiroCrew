@@ -39,11 +39,16 @@ WORK_LEDGER = "work-ledger"
 #: Terminal observation keys that mean the subject finished WELL, across every kind.
 #: A driver records success or blocked from the probe's own keys -- that is what
 #: ``irq.Verdict.keys`` is for -- so the vocabulary must be declared per kind rather
-#: than assumed to be the pull-request one. ``merged`` is the gh-pr probe's. The
-#: work-ledger probe has none: every item closed is a wake, not the end of the
-#: watch, so a work-ledger watch only reaches a terminal verdict when its subject
-#: cannot be named, and that is not a success.
-_TERMINAL_SUCCESS_KEYS = frozenset({"merged"})
+#: than assumed to be the pull-request one. ``merged`` is the gh-pr probe's.
+#: ``all-accepted`` is the work-ledger probe's: its watch ends once every item is
+#: closed and accepted and the conductor's turn is over.
+#: Literals, for :data:`WORK_LEDGER`'s reason; ``test_probe_work_ledger.py`` holds
+#: them equal to ``work_ledger.ACCEPTED_KEY`` / ``CLOSED_KEY``.
+_TERMINAL_SUCCESS_KEYS = frozenset({"merged", "all-accepted"})
+
+#: Terminal keys of a work ledger whose every item is closed. The conductor sent its
+#: final report in the turn that closed the last item.
+LEDGER_FINISHED_KEYS = frozenset({"all-accepted", "all-closed"})
 
 
 def terminal_succeeded(keys: object) -> bool:

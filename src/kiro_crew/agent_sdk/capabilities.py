@@ -261,12 +261,14 @@ class SessionCapabilities:
     #: Whether a ``tool_call_update`` carries a call's real title after a first
     #: ``tool_call`` that named it before its input had streamed
     #: (:data:`ACP_BACKENDS_TOOL_TITLE_REFINEMENT`), so a Crew-spawned subagent's
-    #: Subagents card takes the refined title for that call's row.
+    #: Subagents card takes the refined title for that call's row, and a channel
+    #: turn's task card for that call (``messaging.driver``'s ``TOOL_TITLE``).
     #:
     #: True for claude, whose first frame of a call carries the tool's generic title
-    #: ("Terminal", "Read File"). False keeps the card on the titles of the call and
-    #: its permission request, which is right for kiro-cli: the update that ends its
-    #: failed call carries the bare tool name, a worse title than the first.
+    #: ("Terminal", "Read File"). False keeps each card on the titles its call (and,
+    #: on the Subagents card, its permission request) named, which is right for
+    #: kiro-cli: the update that ends its failed call carries the bare tool name, a
+    #: worse title than the first.
     refines_tool_call_titles: bool
 
     #: Whether a permission request raised while a native sub-agent's card is open
@@ -351,6 +353,14 @@ class SessionCapabilities:
     #: ``auto`` keeps the same-value shortcut.
     model_auto_switches_in_place: bool
 
+    #: Whether the harness loads the session's agent itself (its persona,
+    #: steering, skills and resources), so ``kirocrew chat`` sends the typed text
+    #: as it is instead of building Crew's session context into the first message.
+    #:
+    #: True for kiro-cli and KAS. False everywhere else, an unknown backend
+    #: included: there the CLI builds that context itself.
+    harness_loads_agent_context: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -399,6 +409,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
         names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
         model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
+        harness_loads_agent_context=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -443,6 +454,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     ends_turn_on_permission_reject=False,
     names_crew_tools_by_fused_name=False,
     model_auto_switches_in_place=False,
+    harness_loads_agent_context=False,
     keeps_session_across_compaction=False,
 )
 

@@ -3316,7 +3316,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   a project checkout is untrusted, and its relative ref must stay inside that
   checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`); a leading
   `$` counts as rooted there. A relative ref expands `$VAR` and `~` first
-  (`acp/kas_prompt.py` `prompt_file_path`), and `systemPrompt` is read when
+  (`acp/kas_prompt.py` `prompt_file_path`; on Windows a missing `HOME` is read
+  as `USERPROFILE`, `expand_ref_vars`), and `systemPrompt` is read when
   `prompt` is absent (`spec_prompt`), as on kiro-cli. A file that is missing,
   unreadable or empty (`KasPromptFileUnreadable`) is sent as `"prompt": ""` by
   `build_kas_custom_agents`, as kiro-cli runs it with no prompt, and the
@@ -4374,7 +4375,7 @@ A pager is advisory only (under the tool, stdout is a pipe, so a pager degrades
 to `cat` on its own); the other four classes are `INTERACTIVE_NARROWING_RISKS`.
 
 On Windows each segment's program word is read the way Windows runs it
-(`acp.program_name.windows_program_name`, the fold the batch write guard also
+(`program_name.windows_program_name`, the fold the batch write guard also
 applies): `git.exe`, `GIT.EXE`, `Git` and `C:\tools\vim.exe` classify as `git`
 and `vim`. POSIX keeps the exact, case-sensitive `/` basename. The oracle's
 `first_program` and process-row match keep that basename on every platform: the
@@ -6948,8 +6949,8 @@ nothing and answers not done in these cases:
 
 A failed unlink, or a rollout that a second scan still finds, also answers not
 done. In each of these cases the prune keeps its retry record and `spawn_release`
-answers `not_disposed`. The cleanup removes no directory, and it never touches a
-persistent session's rollout.
+answers `not_disposed`. The cleanup removes no directory, and it never touches the
+rollout of a persistent session that can be resumed.
 
 Codex keeps text from the conversation in SQLite too, and this cleanup does not
 delete it. The thread's row in the state database (`state_5.sqlite`, with

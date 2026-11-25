@@ -110,6 +110,7 @@ def build_message(
     conversation_reset: bool = False,
     tab_notices: list[Callable[[bool], None]] | None = None,
     include_channel_history: bool = True,
+    quick_prompts: bool = True,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -171,6 +172,9 @@ def build_message(
     *thread_ts* still label the fenced thread blocks. A dashboard turn handed
     only a thread parent does this: the parent is the one Slack text it was
     given, and the channel buffer is a different, wider read.
+
+    *quick_prompts* off sends a leading quick-prompt token as written: the
+    dashboard passes it for a chat option tap, whose label the model wrote.
 
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
@@ -1162,7 +1166,9 @@ def build_message(
     # The current turn: a transform hook's output or the user's text, with quick
     # prompts expanded and forged boundaries scrubbed. Where the user's own text
     # lands is resolved there too, because only that step sees every transform.
-    _turn_neutralized, _user_bounds = _turn.user_turn(text, hook_result, user_text_range)
+    _turn_neutralized, _user_bounds = _turn.user_turn(
+        text, hook_result, user_text_range, quick_prompts=quick_prompts
+    )
     _turn_part_index = len(parts)
     if _user_bounds is not None:
         _user_part_index = len(parts)

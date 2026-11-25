@@ -39,12 +39,12 @@ export function openExternal(url: string): void {
 /**
  * Honour open messages from the given frames. `accept` is the URL rule
  * (`webUrlOf` in `useFrameLinkBridge`). `open` and `gesture` are injectable for
- * tests; `open` receives the asking frame as well.
+ * tests; `open` receives the asking frame and the message as well.
  */
 export function useFrameOpenLink(
   frames: ReadonlyArray<RefObject<HTMLIFrameElement | null>>,
   accept: (data: unknown) => string | null,
-  open: (url: string, frame?: HTMLIFrameElement) => void = openExternal,
+  open: (url: string, frame?: HTMLIFrameElement, data?: unknown) => void = openExternal,
   gesture: (frame: HTMLIFrameElement) => boolean = hasGesture,
 ): void {
   const framesRef = useRef(frames)
@@ -61,7 +61,7 @@ export function useFrameOpenLink(
       const mine = framesRef.current.find((f) => f.current?.contentWindow === event.source)?.current
       if (!mine) return
       const url = acceptRef.current(event.data)
-      if (url && gestureRef.current(mine)) openRef.current(url, mine)
+      if (url && gestureRef.current(mine)) openRef.current(url, mine, event.data)
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)

@@ -70,6 +70,10 @@ MAX_REQUEST_BYTES: Final = 1024 * 1024
 MAX_FILE_BYTES: Final = 32 * 1024 * 1024
 
 #: The fields of a record, and nothing else, reach the file.
+#: ``created_by_grant`` and ``namespace`` have no reader yet. They say whose turn a
+#: record is: the contract lets a grant with only ``responses:write`` read the
+#: responses that grant created, and a record written without them could not be
+#: given an owner afterwards.
 FIELDS: Final = (
     "id",
     "created_at",
@@ -78,10 +82,19 @@ FIELDS: Final = (
     "stream",
     "created_by_grant",
     "namespace",
-    "slot",
 )
+#: A field an earlier build wrote and nothing read. A file that carries it is still
+#: a record; the field is left out of what a read is given.
+_FORMER_FIELDS: Final = ("slot",)
 #: Every record's namespace, as on a grant of local authorization.
 NAMESPACE: Final = "default"
+
+
+class RecordNotDurable(OSError):
+    """The record file was written, and a step after it failed (setting the file's
+    time, or syncing its directory): a read finds the record, and it is not confirmed
+    that it survives a power loss."""
+
 
 _ID_RE: Final = re.compile(r"resp_[0-9a-f]{32}")
 _ITEM_ID_RE: Final = re.compile(r"msg_[0-9a-f]{32}")
@@ -115,8 +128,8 @@ def _is_item_id(value: Any) -> bool:
 #   text     ``text``, ``message`` and the stream's ``deltas``: free text, which a
 #            read redacts;
 #   as sent  ``metadata``, ``model`` and ``crew.ignored_parameters``: the owner's own.
-# ``namespace``, ``slot`` and ``created_by_grant`` are kept and never served. A field
-# of no kind does not exist: the key sets are exact.
+# ``namespace`` and ``created_by_grant`` are kept and never served. A field of no
+# kind does not exist: the key sets are exact.
 
 _ROLES_SENT: Final = ("user", "assistant", "developer", "system")
 _ITEM_STATUSES: Final = ("in_progress", "completed", "incomplete")
@@ -257,16 +270,17 @@ def _check_stream(stream: Any, response: dict[str, Any]) -> None:
 
 def _checked(raw: Any, response_id: str) -> dict[str, Any]:
     """A stored record, or ``ValueError``: a record is never half believed."""
-    if not isinstance(raw, dict) or set(raw) != set(FIELDS):
+    if not isinstance(raw, dict) or not set(FIELDS) <= set(raw) <= {*FIELDS, *_FORMER_FIELDS}:
         raise ValueError("response record has the wrong fields")
+    _need(all(isinstance(raw[name], str) for name in _FORMER_FIELDS if name in raw), "value")
+    raw = {name: raw[name] for name in FIELDS}
     grant = raw["created_by_grant"]
     _need(
         raw["id"] == response_id
         and _is_int(raw["created_at"])
         and isinstance(raw["input"], list)
         and (grant is None or isinstance(grant, str))
-        and isinstance(raw["namespace"], str)
-        and isinstance(raw["slot"], str),
+        and isinstance(raw["namespace"], str),
         "value",
     )
     _check_response(raw["response"], response_id)
@@ -333,7 +347,8 @@ class ResponseStore:
         return created_at + RETENTION_SECS <= self.clock()
 
     def save(self, record: dict[str, Any]) -> None:
-        """Write *record* durably. Raises when it cannot be written or is too large."""
+        """Write *record* durably. Raises when it cannot be written or is too large,
+        and :class:`RecordNotDurable` when it was written and a later step failed."""
         response_id = record["id"]
         if not is_response_id(response_id):
             raise ValueError("not a response id")
@@ -352,12 +367,16 @@ class ResponseStore:
         except OSError:
             pass
         atomic_write(path, serialized, fsync=True, restrict_to_owner=True)
-        # The sweep reads a record's age from its file, without opening it.
-        os.utime(path, (kept["created_at"], kept["created_at"]))
-        fsync_dir(path.parent)
-        # Every save: an earlier failed save may have made the directory without
-        # syncing its parent. An existing directory is not proof it is durable.
-        fsync_dir(path.parent.parent)
+        # From here the record reads back, so a failure is not "nothing was written".
+        try:
+            # The sweep reads a record's age from its file, without opening it.
+            os.utime(path, (kept["created_at"], kept["created_at"]))
+            fsync_dir(path.parent)
+            # Every save: an earlier failed save may have made the directory without
+            # syncing its parent. An existing directory is not proof it is durable.
+            fsync_dir(path.parent.parent)
+        except OSError as exc:
+            raise RecordNotDurable(*exc.args) from exc
         self.sweep()
 
     def load(self, response_id: str) -> dict[str, Any] | None:
@@ -397,8 +416,20 @@ class ResponseStore:
             # overwritten. Called off the event loop, with no lock held, so a retry
             # on Windows blocks no one.
             target = set_aside(path, self.clock())
+        except FileNotFoundError:
+            # Another read moved it first, or its time was up and it was removed.
+            logger.warning("Crew API response record %s is unreadable and already gone", path.name)
+            return
         except OSError:
-            logger.warning("Crew API response record %s is unreadable and stays", path.name)
+            # The move is a rename and then a sync of the directory: either can fail.
+            if os.path.lexists(path):
+                logger.warning("Crew API response record %s is unreadable and stays", path.name)
+            else:
+                logger.warning(
+                    "Crew API response record %s is unreadable and was moved aside; "
+                    "it is not confirmed that the move survives a power loss",
+                    path.name,
+                )
             return
         logger.warning("Crew API response record %s is unreadable; kept as %s", path.name, target)
 

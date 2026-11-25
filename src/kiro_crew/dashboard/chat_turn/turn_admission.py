@@ -1798,7 +1798,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._is_quick_prompt = _is_quick_prompt
     prompt_expanded = _is_quick_prompt
     turn.prompt_expanded = prompt_expanded
-    if message.startswith("@") and not is_slash and _prompt_depth < 1:
+    if message.startswith("@") and not is_slash and _prompt_depth < 1 and not turn._expansions_off:
         original = message
         # Off the loop, for the same reason the `$skill` expansion in _turn_dispatch_prep is:
         # this resolves and READS files — the project's prompt directory is

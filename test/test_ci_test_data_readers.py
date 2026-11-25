@@ -292,9 +292,7 @@ def _mapped(path: str) -> bool:
     return path.endswith(".py") and path.startswith(("src/", "test/"))
 
 
-def test_a_covered_path_is_a_prose_doc_outside_the_package_or_a_frontend_path(
-    rule: Any, tracked: list[str]
-) -> None:
+def test_a_covered_path_is_a_prose_doc_or_a_frontend_path(rule: Any, tracked: list[str]) -> None:
     globs = [win.glob_pattern(glob) for glob in _ci_frontend()]
     assert globs
 
@@ -302,11 +300,10 @@ def test_a_covered_path_is_a_prose_doc_outside_the_package_or_a_frontend_path(
         return any(glob.fullmatch(path) for glob in globs)
 
     docs = {p for p in tracked if rule.docs.is_prose_doc(p)}
-    shipped = {p for p in docs if p.startswith(readers.PACKAGE_TREE)}
     covered = {p for p in tracked if rule.covers(p)}
-    assert covered == (docs - shipped) | {p for p in tracked if frontend(p)}
-    # Each kind is in the tree, so none of the three statements above is empty.
-    assert shipped and docs - shipped and covered - docs and set(tracked) - covered - docs
+    assert covered == docs | {p for p in tracked if frontend(p)}
+    # Each kind is in the tree, so neither statement above is empty.
+    assert docs and covered - docs and set(tracked) - covered
 
 
 def test_every_uncovered_path_keeps_the_verdict_it_has_with_no_rule(
@@ -320,7 +317,7 @@ def test_every_uncovered_path_keeps_the_verdict_it_has_with_no_rule(
     # One path of each folder and suffix, every packaged doc, and every file
     # under a doc tree that is not prose.
     kinds = {(p.split("/")[0], Path(p).suffix): p for p in uncovered}
-    packaged = [p for p in uncovered if rule.docs.is_prose_doc(p)]
+    packaged = [p for p in uncovered if p.startswith("src/") and p.endswith(".md")]
     trees = tuple(tree for tree in rule.docs._DOC_TREES if not tree.startswith("website/"))
     not_prose = [p for p in uncovered if p.startswith(trees) and not rule.docs.is_prose_doc(p)]
     skills = [p for p in uncovered if p.startswith("src/") and p.endswith("/SKILL.md")]

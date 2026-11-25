@@ -1337,6 +1337,39 @@ test("managed session-end on win32 shows one pending-update notice and runs no u
   assert.strictEqual(win.listenerCount("session-end"), 0, "the listener fires once");
 });
 
+for (const autoDownload of [true, false]) {
+  test(`managed session-end with an armed update names the next start (auto-download ${autoDownload ? "on" : "off"})`, async (t) => {
+    const { deps, win, notices, commands, restore } = sessionEndRig({ pref: () => autoDownload });
+    t.after(restore);
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await u.install();
+    assert.strictEqual(win.listenerCount("session-end"), 1, "the arm keeps one session-end listener");
+    win.emit("session-end");
+    assert.deepStrictEqual(notices, [{
+      title: "Kiro Crew update ready",
+      body: "An update (version 9.9.9) was not installed, because Windows was closing. Kiro Crew tries to install it when it next starts, or quit Kiro Crew from the tray to install it now.",
+    }]);
+    assert.deepStrictEqual(commands, ["pkgtool check kirocrew"], "session-end must never run the updateCommand");
+    assert.strictEqual(win.listenerCount("session-end"), 0, "the listener fires once");
+  });
+}
+
+test("managed session-end: an armed update on a policy-governed install shows no notice", async (t) => {
+  const { deps, win, notices, commands, restore } = sessionEndRig();
+  t.after(restore);
+  let policyGoverned = false;
+  deps.isPolicyGoverned = () => policyGoverned;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed while ungoverned");
+  policyGoverned = true;
+  win.emit("session-end");
+  assert.deepStrictEqual(notices, [], "a governed install must show no session-end notice");
+  assert.deepStrictEqual(commands, ["pkgtool check kirocrew"], "session-end must never run the updateCommand");
+});
+
 test("managed session-end: a later check that finds nothing removes the window listener", async (t) => {
   const { deps, win, notices, result, restore } = sessionEndRig();
   t.after(restore);

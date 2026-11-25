@@ -124,6 +124,18 @@ A few situations make Kiro Crew refuse to open a thread rather than guess:
 | this thread's history exists but its binding is gone | The transcript is on disk with nothing claiming it. Handing it to whoever holds the name now would show one Bot another's conversation. |
 | shares its short name with … | Two Bots fold to the same short name and therefore the same thread. Renaming changes only the name a Bot shows, never its short name, so delete the Bot that shows this notice, not the one it names, and create it again under a name that folds differently. Deleting the named one leaves its thread bound to a Bot that is gone, and the other is refused instead. |
 
+A Bot whose agent file is gone shows **Agent missing** on its row, and its
+thread says it cannot reply and names the missing agent. This happens when the
+package or app that supplied the agent was uninstalled or turned off, or the
+file was deleted. Kiro Crew never deletes such a Bot for you, because it still
+holds its memory, chats and schedules. To fix it, bring the agent back: if an
+app provided it, enable that app in **Apps › Library**, or disable and re-enable
+it; otherwise reinstall what provided it, or put its file back. Or use **Delete
+bot…** on the notice, which opens the Bot's editor on its Danger zone; deleting
+removes the Bot with its picture and goal check-ins, and keeps its memory and
+past chats. The default Bot has no Delete bot button, because it cannot be
+deleted.
+
 ## Creating and editing
 
 **New Bot** — the hero button on an empty roster, or the **+** menu in the

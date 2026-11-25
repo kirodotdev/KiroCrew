@@ -59,6 +59,7 @@ class _CommandRuntime:
         self.send_notification = AsyncMock()
         self.supports_image_prompt = False
         self.acp_backend = acp_backend
+        self.recording_allowed = True
         self.requests: list[tuple[str, dict]] = []
         self.marks: list[tuple[str, bool]] = []
         self._queue = queue

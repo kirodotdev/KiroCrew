@@ -1990,7 +1990,11 @@ leaves the screen while it holds focus (an overlay, an inactive tab, a collapsed
 panel, close), the manager in `website/electron/browser-view.js` hands focus
 back to the dashboard view (`focusHost`), and on window focus `reclaimFocus`
 does the same for a hidden view that still holds it. Without this every
-dashboard text input would look alive and receive no keystrokes.
+dashboard text input would look alive and receive no keystrokes. A hand-back
+writes one `[browser-panel]` line naming its trigger, and nothing about the page:
+to the console every time, and to `gateway-launch.log` at most once a minute per
+trigger per panel (`website/electron/runtime/window/browser-panels.js`), so a
+hidden page that keeps taking focus cannot flood the file.
 
 ### Doctor
 

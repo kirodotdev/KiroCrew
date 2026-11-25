@@ -810,7 +810,9 @@ async def route_linked_thread(
     echo show only *text*; appended to the queued entry's text otherwise, where
     a pending entry would be taken by whichever turn starts first.
     *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
-    off, so the slot reads it as content, never as a ``/`` command.
+    off AND expansions off, so the slot reads it as content, never as a ``/``
+    command, and leaves its ``@prompt``, ``$skill`` and leading quick-prompt
+    tokens as written -- the label is the model's, not a person's typing.
     *admit* (the caller's live gate: a code channel's fences) is asked last,
     after every await here and right before the row is appended or the turn
     starts; False holds the message (:attr:`LinkedRoute.HELD`).
@@ -1194,8 +1196,10 @@ async def route_linked_thread(
                 # Admission judges the turn by this channel even if the thread
                 # is unlinked or relinked before the turn starts.
                 _directive_source_channels=(channel,),
-                # An OPTIONS answer is the slot's answer, never a ``/`` command.
+                # An OPTIONS answer is the slot's answer, never a ``/`` command,
+                # and its ``@prompt`` / ``$skill`` mentions stay text.
                 _commands_off=not interpret_commands,
+                _expansions_off=not interpret_commands,
                 _slack_voice=(
                     None if had_voice_input is None else (session_key, user_id, had_voice_input)
                 ),
@@ -1225,7 +1229,10 @@ async def route_linked_thread(
             _chat_task.add_done_callback(_drop_untaken)
     else:
         # circular import: both pull in dashboard modules at module level.
-        from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY
+        from kiro_crew.dashboard.chat_delivery import (
+            COMMANDS_OFF_META_KEY,
+            EXPANSIONS_OFF_META_KEY,
+        )
         from kiro_crew.dashboard.session_control import containment_meta
 
         # Stamp the admission-time containment. A linked slot records
@@ -1240,7 +1247,11 @@ async def route_linked_thread(
             meta={
                 **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
                 **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
-                **({} if interpret_commands else {COMMANDS_OFF_META_KEY: True}),
+                **(
+                    {}
+                    if interpret_commands
+                    else {COMMANDS_OFF_META_KEY: True, EXPANSIONS_OFF_META_KEY: True}
+                ),
             },
             directive_user_origin=True,
             directive_channel_origin=True,

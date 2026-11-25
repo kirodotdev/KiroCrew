@@ -1127,8 +1127,8 @@ esac
 # KIROCREW_KIRO_BIN operator override (kiro_cli.known_kiro_cli_dirs). Without
 # the payload the shell exports nothing and the app is detect-only.
 #
-# Payload budget: the macOS universal DMG download is ~360 MB and each Linux zip
-# ~160 MB. The Windows MSI is ~190 MB and expands to one executable. What is
+# Payload budget: the macOS universal DMG download is ~375 MB and each Linux zip
+# ~165 MB. The Windows MSI is ~385 MB and expands to one executable. What is
 # staged is one binary. On macOS that lands the signing zip near 1 GB;
 # packaging/signing/sign.sh's poll window and sign-and-notarize.yml's job timeout
 # are sized for that. A kiro-cli release that grows past it shows up as a signing
@@ -1143,9 +1143,9 @@ KIRO_CLI_MANIFEST_URL="$KIRO_CLI_RELEASE_BASE/latest/manifest.json"
 # sha256sum format, keyed
 # by the artifact's release path, <version>/<file> -- the manifest's own
 # download field. Upstream hosts every release under that prefix
-# (<base>/<version>/<file>) but publishes a manifest -- the only
-# document naming sha256s -- for "latest" alone, so a pinned build fetches the
-# pinned version's own artifact URL and verifies it against the committed sha:
+# (<base>/<version>/<file>) but publishes a manifest for "latest" alone, so a
+# pinned build fetches the pinned version's own artifact URL and verifies it
+# against the committed sha:
 # it never reads the mutable manifest, and a hotfix rebuild of an older tag
 # keeps working after upstream releases. A version bump without the matching
 # sha lines fails the sha check, closed. KIRO_CLI_VERSION overrides the file
@@ -1297,7 +1297,7 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
   elif [ "$OS" = "windows" ]; then
     # Administrative extraction lays out the MSI payload without installing it:
     # no PATH or registry writes, and no dependency on a pre-existing kiro-cli.
-    # The verified 2.27.1 MSI has no custom actions and carries one executable.
+    # The verified 2.37.1 MSI has no custom actions and carries one executable.
     local tmp archive_win tmp_win extracted
     tmp="$(mktemp -d)"
     archive_win="$(cygpath -w "$archive")"

@@ -11,4 +11,3 @@
 1 dashboard/session_transfer_layers.py
 1 platform/wheel_engine.py
 1 platform_owner_compat.py
-1 secrets/migrate.py

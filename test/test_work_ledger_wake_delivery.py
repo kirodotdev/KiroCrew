@@ -261,7 +261,7 @@ class TestAWakeOwedAfterTheTurnEnds:
                 patch.object(
                     service,
                     "_arm_from_deadline",
-                    lambda _loop: armed.append("deadline"),
+                    lambda _loop, after_turn=False: armed.append("deadline"),
                 ),
             ):
                 service._pending_monitor_wake[loop.id] = "[work-ledger wake] item=it_1 status=done"
@@ -285,7 +285,7 @@ class TestAWakeOwedAfterTheTurnEnds:
                 patch.object(
                     service,
                     "_arm_from_deadline",
-                    lambda _loop: armed.append("deadline"),
+                    lambda _loop, after_turn=False: armed.append("deadline"),
                 ),
             ):
                 service.notify_turn_complete(loop.slot_key)
@@ -311,7 +311,7 @@ class TestAWakeOwedAfterTheTurnEnds:
                 patch.object(
                     service,
                     "_arm_from_deadline",
-                    lambda _loop: armed.append("deadline"),
+                    lambda _loop, after_turn=False: armed.append("deadline"),
                 ),
             ):
                 service.notify_turn_complete(loop.slot_key)

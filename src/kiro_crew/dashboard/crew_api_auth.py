@@ -76,7 +76,14 @@ OWNER_ONLY_PUBLIC_ROUTES = {
 #: A route joins this set in the change that makes its handler call
 #: ``crew_api_scopes.require_scope``. On every other route a credential its row
 #: admits is still refused.
-APP_SERVED_ROUTES: Final = frozenset({("GET", "/v1/models")})
+APP_SERVED_ROUTES: Final = frozenset(
+    {
+        ("GET", "/v1/models"),
+        ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/capabilities"),
+        ("GET", "/v1/crew/info"),
+    }
+)
 
 
 class AppAdmitted:

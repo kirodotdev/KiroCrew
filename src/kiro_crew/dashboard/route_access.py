@@ -138,11 +138,17 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/connected-computers/local/off"): RouteAccess(
         "connected_computers.off", UNSTABLE
     ),
-    # Owner gate, then the machine owner alone; reads the model catalog, writes nothing.
+    # A verified app credential, or the owner gate and then the machine owner alone.
+    # The owner's answer reads the model catalog, an app's reads its grant; writes nothing.
     # Contract test: test_crew_api_instance.py.
     ("GET", "/v1/crew/capabilities"): RouteAccess("crew_api.capabilities.read", PREVIEW),
-    # Owner gate, then the machine owner alone. The first call on a data home makes
-    # and keeps the instance id (relay_client.lease.crew_instance_id), so the verb is
-    # not ``read``; it changes nothing after that.
+    # A verified app credential, or the owner gate and then the machine owner alone.
+    # The first call on a data home makes and keeps the instance id
+    # (relay_client.lease.crew_instance_id), so the verb is not ``read``; it changes
+    # nothing after that.
     ("GET", "/v1/crew/info"): RouteAccess("crew_api.info.resolve", PREVIEW),
+    # An app credential reads the grant it was issued for (crew_api_grant_self); a
+    # first-party session is answered 404. Reads only.
+    # Contract test: test_crew_api_grant_self.py.
+    ("GET", "/v1/crew/grant"): RouteAccess("crew_api.grant.read", PREVIEW),
 }

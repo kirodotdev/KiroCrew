@@ -627,7 +627,7 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
     removeSlackSharedUser: (userId: string) => del('/api/slack/shared-access/users/' + encodeURIComponent(userId)).then(j) as Promise<{ ok: boolean }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
-    saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string; reconnect_error?: string }>,
     // Telegram integration config
     getTelegramConfig: () => get('/api/telegram/config').then(j) as Promise<TelegramConfigData>,
     saveTelegramConfig: (body: Partial<TelegramConfigSave>) => put('/api/telegram/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

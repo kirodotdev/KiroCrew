@@ -30,7 +30,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-import struct  # noqa: F401 -- tests reach the struct module as vector_memory.struct
 import threading
 import time  # noqa: F401 -- patch seam: runtime modules read time through this module
 from collections import OrderedDict

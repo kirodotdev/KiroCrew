@@ -118,7 +118,7 @@ vocabulary.
 | `ACP_BACKENDS_SUMMARIZED_THINKING` | The claude launch sets `CLAUDE_CODE_THINKING_DISPLAY=summarized` when the spawn environment does not name it and no Claude Code settings file decides thinking, so `agent_thought_chunk` carries text. Off the wire; claude-agent-acp 0.94.0 ignores it. Claude only. |
 | `ACP_BACKENDS_NATIVE_CHILD_CANCEL` | A Stop on a running native child's card sends `session/cancel` naming that child (`AcpClient.cancel_native_child`) when its announce granted `capabilities.cancel`, never the parent (H16); the card closes on the reported end. Claude only, for Agent-tool children; a Workflow agent's card closes alone. |
 | `ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD` | While a native sub-agent's card is open, a permission request on the session is that sub-agent's, not the parent's (`SessionCapabilities.permission_requests_name_child`), so the dashboard's native-crew auto-approve rung may answer it. kiro-cli and KAS only. A non-member, an unknown backend included, skips the rung and shows the approval card: claude and opencode requests name no child. Not the `..._CHILD_CALLS_MARKED` sets, which mark one request for a deny-rule override. |
-| `ACP_BACKENDS_TOOL_TITLE_REFINEMENT` | A `tool_call_update` retitles a call first named generically ("Terminal"); a Crew-spawned subagent's card renames its row (`SessionCapabilities.refines_tool_call_titles`, `subagent_manager/card_tool_titles.py`). Claude only; kiro-cli titles a failed call with its bare tool name. |
+| `ACP_BACKENDS_TOOL_TITLE_REFINEMENT` | A `tool_call_update` retitles a call first named generically ("Terminal"); a Crew-spawned subagent's card renames its row (`SessionCapabilities.refines_tool_call_titles`, `subagent_manager/card_tool_titles.py`), and a channel turn's task card is renamed (`messaging/driver.py`, `TOOL_TITLE`). Claude only; kiro-cli titles a failed call with its bare tool name. |
 | `ACP_BACKENDS_COMPACTION_SUMMARY` | The compaction card shows the summary on the `completed` compaction event's title (`acp/compaction_summary.py`): the `compaction_update`'s `summary`, else the streamed `compaction_summary_chunk` text, redacted and bounded. Claude only; within `ACP_BACKENDS_INLINE_COMPACTION`. |
 | `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` | The adapter runs ANY leading-slash `session/prompt` as one of its own commands (`SessionCapabilities.runs_own_slash_commands`), so the dashboard forwards every leading-slash word raw, with no context prefix, except a quick-prompt macro and the commands the dashboard answers itself. Claude only today (`claude/compact-live.jsonl`). A non-member keeps the word as prompt text unless it is one of kiro-cli's command names, because a word forwarded raw loses the turn's context. |
 | `ACP_BACKENDS_EFFORT_OVERLAY` | Reads reasoning effort from the workspace `cli.json` overlay at spawn, so Crew writes, reads back and clears it there. The file is shared by every session in the work dir: a harness that takes effort elsewhere must not be started at a level another session left in it. |
@@ -176,7 +176,9 @@ channel none of them describes, add a set — do not widen an existing one.
 Every decision in this stage is READ BACK to the operator. Settings > Agent
 Harness is a LIST of harnesses — radio rows built from the same pieces as first-run
 setup's "Use other coding agents" picker (`website/src/components/agentHarness/`:
-row, status badge, install block, Use / Check again actions) — and a DETAIL that
+row, status badge, install block, Use / Check again actions; the ids, order and
+names come from `harnessList.ts` and the rows from `HarnessPickerList.tsx`, which
+the built-in engine's first-run harness step uses too) — and a DETAIL that
 opens directly under whichever row is checked, and the detail carries that
 harness's capability card — each line projected from these memberships by
 `agent_sdk/backend_cards.py`. So a membership is not only what the code branches
@@ -1062,7 +1064,7 @@ and it IS selectable.
 | 3 spawn path | Done — `strands --acp-server --agent <crew home>/pi-gate/strands/agent.py [--model <id>] [--mcp-config <file>]` off the shared self-served ladder (`acp/harness/strands.py`). The Node under it is checked against the CLI's `engines.node` (22) with the same choice pi's launch makes. |
 | 4 handshake | Done — integer `1`. The CLI answers `agentInfo.version` `0.0.1` (a constant in its source), so the verified release is read from its `package.json` instead. |
 | 5 auth declaration | Done — `host_vault`, no leaf: the CLI stores no credential, and `agent.strands_env` carries provider settings from Crew's vault. |
-| 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it (for the `.venv`, `strands-harness` with `botocore[crt]`, which boto3 needs to read a `login` AWS profile). |
+| 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it (for the `.venv`, `strands-harness` with `botocore[crt]`, which boto3 needs to read a `login` AWS profile). The install requirement (`STRANDS_PYTHON_REQUIREMENT`) carries the `anthropic`, `gemini`, `litellm`, `ollama` and `openai` extras, because strands-harness installs a provider's SDK only through its extra and every `agent.strands_provider` but `bedrock` needs one. The install probe checks for `strands_harness` alone, so an environment created without the extras reads as ready there. At spawn the provider is known from the `--model` value, so `_strands_provider_sdk_issue` also checks that provider's SDK directory in site-packages (`openai` for `openai` and `bedrock-mantle`, `anthropic`, `google/genai`, `ollama`, `litellm`; `bedrock` needs none), file reads only, and refuses a missing one by naming the provider, the package and the same install command. With no `--model` (the CLI's own default) there is no provider to check. |
 | 7 selectability | **Selectable**, on `Routing.VERIFIED_GATE_EXTENSION` with `Readback.LOAD_MARKER` — pi's and DeepSeek's member. |
 | 8 live spill | Reached for the turn classes (`test/fixtures/acp_frames/strands/`): a shell call denied then allowed, and an operator project's custom `@tool` and vended `file_editor` each asking. In a dashboard pod the session started and the read-back passed; the model call there needs a credential the sandbox lets the child read (see the provider table in agent-host-contract.md §3). |
 | verified range | Strands CLI **0.2.4** exactly (`STRANDS_VERIFIED_VERSION`); its published package differs from 0.2.3, the release the captures were taken on, only in its version. Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
@@ -1079,6 +1081,19 @@ process -- the bundled one, the operator's, a sub-agent -- raises one interrupt 
 tool call in Crew's gate envelope. A read-back boot of the same argv proves the module
 loaded from Crew's file under this session's nonce before the session's own process
 starts, and the completed-unasked tripwire watches the session itself.
+
+A read-back that sees no marker says why. The probe's stdout and stderr are drained
+on threads into buffers of at most 64 KiB each (`acp/harness/strands_readback.py`:
+the head of stdout, the tail of stderr), so the capture is bounded however much the
+child writes. A reader whose pipe a descendant still holds open is stopped once the
+probe is reaped and closes the pipe: it waits in bounded selects on POSIX, and on
+Windows it peeks the pipe rather than leave a read pending. The refusal says whether the CLI exited, with its code, or ran out the
+90 s wait. It then quotes the error the CLI answered `session/new` with, which is
+where Strands CLI 0.2.4 reports a project worker's exception while it stays up, and
+the last five stderr lines. A read-back that fails after the probe started, such as
+a CLI that died before taking the requests, quotes the same detail. Each quote passes
+the stderr-tail check (`acp/stderr_tail.py`), which withholds a quote whole when it
+carries a credential (`test/test_acp_strands_readback.py`).
 
 **The second is the operator's project.** `agent.strands_project` points the gate at
 the operator's own `agent.py`; the gate imports it with every `Agent` already gated,

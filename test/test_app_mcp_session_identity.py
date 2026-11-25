@@ -195,3 +195,141 @@ def test_shipped_mochi_manifest_is_a_host_cli_launch():
         mp.setattr(manager, "builtin_owns_installed", lambda name: True)
         launches = execution.builtin_app_host_cli_mcp_launches()
     assert launches.get("mochi:mochi") == ("mochi", ("app", "mcp", "mochi"))
+
+
+def _elements(monkeypatch, servers, launches):
+    from kiro_crew.acp import session_mcp
+
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: None)
+    monkeypatch.setattr(session_mcp, "builtin_app_identity_launches", lambda: launches)
+    spec = {"tools": [f"@{name}" for name in servers], "mcpServers": servers}
+    return spec, session_mcp.session_mcp_servers("mochi--mochi", spec=spec, muted=())
+
+
+def _array(monkeypatch, entry, launches):
+    _spec_unused, (element,) = _elements(monkeypatch, {"mochi:mochi": entry}, launches)
+    return {p["name"]: p["value"] for p in element["env"]}
+
+
+def _governed(monkeypatch, max_age=600):
+    from kiro_crew.platform import policy_distribution as pd
+
+    monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+    monkeypatch.setattr(pd, "effective_max_cache_age", lambda: max_age)
+    return pd
+
+
+def test_the_session_array_gives_the_app_server_the_gateway_policy_markers(monkeypatch):
+    """The array other ACP harnesses receive carries the markers on a governed host."""
+    from kiro_crew.platform import policy_distribution as pd
+
+    entry = {**PINNED, "env": {**PINNED["env"], pd.POLICY_MAX_AGE_ENV: "9"}}
+    assert _array(monkeypatch, entry, {"mochi:mochi": dict(PINNED)}) == entry["env"]
+
+    _governed(monkeypatch, max_age=0)
+    env = _array(monkeypatch, entry, {"mochi:mochi": dict(PINNED)})
+
+    assert env[pd.POLICY_CACHE_ONLY_ENV] == "1"
+    # The entry's own copy is the spec's, not the gateway's: it is dropped.
+    assert pd.POLICY_MAX_AGE_ENV not in env
+    assert env["KIROCREW_HOME"] == "/crew/home"
+    assert pd.POLICY_MAX_AGE_ENV in entry["env"]
+
+    _governed(monkeypatch, max_age=600)
+    env = _array(monkeypatch, entry, {"mochi:mochi": dict(PINNED)})
+    assert env[pd.POLICY_MAX_AGE_ENV] == "600"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"command": "/tmp/other", "args": PINNED["args"]},
+        {"command": PINNED["command"], "args": [*PINNED["args"], "--x"]},
+    ],
+    ids=["command", "args"],
+)
+def test_a_hand_edited_app_launch_gets_no_policy_markers_in_the_array(monkeypatch, entry):
+    pd = _governed(monkeypatch)
+    env = _array(monkeypatch, entry, {"mochi:mochi": PINNED})
+
+    assert pd.POLICY_CACHE_ONLY_ENV not in env
+
+
+def test_a_user_server_beside_the_app_entry_is_as_on_main(monkeypatch):
+    servers = {
+        "mochi:mochi": dict(PINNED),
+        "user-srv": {"command": "/opt/user", "args": ["serve"], "env": {"A": "1"}},
+    }
+    _spec_unused, before = _elements(monkeypatch, servers, {"mochi:mochi": dict(PINNED)})
+    _governed(monkeypatch)
+    _spec_unused, after = _elements(monkeypatch, servers, {"mochi:mochi": dict(PINNED)})
+
+    by_name = {e["name"]: e for e in after}
+    assert by_name["user-srv"] == next(e for e in before if e["name"] == "user-srv")
+    assert by_name["mochi:mochi"] != next(e for e in before if e["name"] == "mochi:mochi")
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {**PINNED, "env": None},
+        {**PINNED, "env": [{"name": "A", "value": "1"}]},
+        {**PINNED, "args": "-m kiro_crew"},
+    ],
+    ids=["env-none", "env-list", "args-string"],
+)
+def test_a_malformed_app_entry_is_left_as_is(monkeypatch, entry):
+    servers = {"mochi:mochi": entry}
+    _spec_unused, before = _elements(monkeypatch, servers, {"mochi:mochi": dict(PINNED)})
+    _governed(monkeypatch)
+    _spec_unused, after = _elements(monkeypatch, servers, {"mochi:mochi": dict(PINNED)})
+
+    assert after == before
+
+
+def test_goose_keeps_the_reference_and_the_markers_on_an_app_element(monkeypatch):
+    """goose writes the array to its sessions.db, so a resolved value must not ride it."""
+    from kiro_crew.acp.session_mcp_env_refs import keep_env_references
+
+    pd = _governed(monkeypatch)
+    monkeypatch.setenv("MOCHI_REGION", "eu-west-1")
+    entry = {**PINNED, "env": {**PINNED["env"], "REGION": "${MOCHI_REGION}"}}
+    spec, elements = _elements(monkeypatch, {"mochi:mochi": entry}, {"mochi:mochi": PINNED})
+    assert {"name": "REGION", "value": "eu-west-1"} in elements[0]["env"]
+
+    (kept,) = keep_env_references(elements, spec)
+    env = {p["name"]: p["value"] for p in kept["env"]}
+    assert env["REGION"] == "${MOCHI_REGION}"
+    assert env[pd.POLICY_CACHE_ONLY_ENV] == "1"
+    assert env[pd.POLICY_MAX_AGE_ENV] == "600"
+
+
+@pytest.mark.parametrize("later", ["new-bound", "no-ceiling", "launches-empty", "launches-fail"])
+def test_goose_keeps_the_reference_when_the_gateway_changes_after_the_array(monkeypatch, later):
+    """The match reads the element's own markers, not the gateway a second time."""
+    from kiro_crew.acp.session_mcp_env_refs import keep_env_references
+
+    pd = _governed(monkeypatch)
+    monkeypatch.setenv("MOCHI_REGION", "eu-west-1")
+    entry = {**PINNED, "env": {**PINNED["env"], "REGION": "${MOCHI_REGION}"}}
+    spec, elements = _elements(monkeypatch, {"mochi:mochi": entry}, {"mochi:mochi": PINNED})
+    if later == "new-bound":
+        monkeypatch.setattr(pd, "effective_max_cache_age", lambda: 30)
+    elif later == "no-ceiling":
+        monkeypatch.setattr(pd, "central_ceiling_installed", lambda: False)
+    else:
+        from kiro_crew.acp import session_mcp
+
+        def _gone():
+            if later == "launches-fail":
+                raise OSError("manifest unreadable")
+            return {}
+
+        monkeypatch.setattr(session_mcp, "builtin_app_identity_launches", _gone)
+
+    (kept,) = keep_env_references(elements, spec)
+    env = {p["name"]: p["value"] for p in kept["env"]}
+    assert env["REGION"] == "${MOCHI_REGION}"
+    assert env[pd.POLICY_CACHE_ONLY_ENV] == "1"
+    assert env[pd.POLICY_MAX_AGE_ENV] == "600"

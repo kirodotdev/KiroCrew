@@ -85,7 +85,7 @@ owner's:
 | Control | Why |
 |---|---|
 | The switch and the list (dashboard, loopback, never an app token or internal caller) | Only the owner grants access |
-| Trust, YOLO, approval-mode changes; answering another person's prompt, except Approve / Reject in a code channel the shared user opened (below) | Each widens what runs without the owner |
+| YOLO, approval-mode changes; answering (Trust included) another person's prompt, except Approve / Reject in a code channel the shared user opened (below) | Each widens what runs without the owner. Trust on a prompt their own turn posted is the shared user's (amended 2026-11-25, at the owner's request): it widens only the session they are already driving, the same per-session grant the owner's click makes |
 | `!dashboard` and other dashboard links | A link is full dashboard access |
 | Every other `!` command (`!channel`, `!agent`, `!ta`, ...), `/kirocrew` | Channel activation, agent overrides and settings |
 | A message starting with `/`; `!temporary` / `!incognito` | The agent harness's own commands (`/agent`, `/model`, `/tools trust-all`) and keeping a turn out of the owner's record |
