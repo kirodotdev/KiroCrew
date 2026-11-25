@@ -102,8 +102,10 @@ export function MessageByline({ meta, slotKey, continuesRun = false }: { meta?: 
   return <AuthoredBy author={author} slotKey={slotKey} />
 }
 
-function SpeakerHeadingText({ text }: { text: string }) {
-  return <h2 className="sr-only">{text}</h2>
+/** The positioned zero-height box keeps the `sr-only` heading's containing block inside the scroller, so a screen reader's
+ *  landing scroll moves the transcript; `visible` keeps it in the accessibility tree while the pinned banner hides its row. */
+export function SpeakerHeadingText({ text }: { text: string }) {
+  return <div className="relative self-stretch"><h2 className="sr-only in-[[data-pinned-standin]]:visible">{text}</h2></div>
 }
 
 function AuthorSpeakerHeading({ author, slotKey }: { author: PublicPrincipal; slotKey?: string }) {

@@ -26,6 +26,7 @@ import { readDecisionRecords, readMemoryRecallInStrip } from './decisionRecord'
 import MemoryRecallStrip from './MemoryRecallStrip'
 import SpeakMenuItem from './SpeakMenuItem'
 import ThinkingBlock from './ThinkingBlock'
+import { SpeakerHeadingText } from './shared-crew/MessageByline'
 import { extractInlineThinking } from '../../app-sdk/protocol/inlineThinking'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
@@ -799,7 +800,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         outline — see UserMessage for the reasoning. Level 2 matches the user
         side so the turns read as siblings rather than a nesting that implies a
         reply hierarchy the transcript does not have. */}
-    <h2 className="sr-only">{speakerName || i18nT('pages.chat.assistantMessage.speaker_heading')}</h2>
+    <SpeakerHeadingText text={speakerName || i18nT('pages.chat.assistantMessage.speaker_heading')} />
     {inlineThinking && !body && <div className="mb-1"><ThinkingBlock content={inlineThinking} disclosureKey={messageTs ? `inline-thinking:${messageTs}` : undefined} /></div>}
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <MessageContextMenu items={contextItems} onCopyFailed={() => setCopyFailed(true)} yieldToSelection={!quoteOffered}>
