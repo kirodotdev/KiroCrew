@@ -94,7 +94,7 @@ from kiro_crew.acp.session_mcp_crewmate import (
     _crewmate_worker_spec,
     crewmate_worker_switch_off_spec,
 )
-from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
+from kiro_crew.acp.session_mcp_env_refs import expand_entry_env, with_app_policy_markers
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
@@ -1227,9 +1227,9 @@ def session_mcp_servers(
         servers.pop(name)
 
     out: list[dict[str, Any]] = []
-    for name in sorted(servers):
+    for name, entry in sorted(with_app_policy_markers(servers).items()):
         # The harness starts the element as written; kiro-cli parity (session_mcp_env_refs).
-        element = acp_server_element(name, expand_entry_env(name, servers[name]))
+        element = acp_server_element(name, expand_entry_env(name, entry))
         if element is not None:
             out.append(element)
     return out
