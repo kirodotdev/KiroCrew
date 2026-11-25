@@ -1413,7 +1413,8 @@ export default function PullRequestPanel({
                 <Btn
                   type="button"
                   onClick={() => onAddToChat(mergeBlocker.handoff!)}
-                  className="text-[11px] shrink-0 px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                  // Filled, with the strong edge: the plain edge vanishes on the tint.
+                  className="text-[11px] shrink-0 px-2 py-1 rounded-md border border-border-strong bg-bg-elevated text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
                 >
                   {i18nT('components.pullRequestPanel.add_to_chat')}
                 </Btn>
