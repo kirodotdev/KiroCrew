@@ -89,6 +89,7 @@ import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
+import { holdChatTranscriptMount } from '../lib/mountedChatTranscript'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isComposerSendHeld, useComposerSendHeld } from '../utils/composerSendHolds'
 
@@ -158,6 +159,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useChatPageEnvironment({
     embedded, embedMode, popout,
   })
+  // The sessions-only embed renders no transcript, so its active slot stays off screen.
+  useEffect(() => (embedMode === 'sessions' ? undefined : holdChatTranscriptMount()), [embedMode])
   // Tool-call ids already routed to a tab, so re-renders of the same app don't
   // yank focus back to the panel on every streaming update.
   useEffect(() => {
