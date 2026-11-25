@@ -494,3 +494,50 @@ class TestNonAsciiCrashRecord:
         assert "bad path" in text
         assert "tail" in text
         assert text.rstrip().endswith("=" * 72)
+
+
+class TestRecordNamesItsBuild:
+    """A record names the version and install folder that wrote it."""
+
+    def test_record_carries_version_and_install_after_pid(self, tmp_path, monkeypatch):
+        import kiro_crew
+        from kiro_crew import install_liveness
+
+        crash_log = tmp_path / "crash.log"
+        crash_guard._CRASH_LOG = crash_log
+        monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", ("9.9.9", "/opt/kc/9.9.9"))
+
+        crash_guard._write_crash("UNHANDLED EXCEPTION: probe")
+
+        lines = crash_log.read_text(encoding="utf-8").splitlines()
+        assert lines[1:3] == ["=" * 72, "UNHANDLED EXCEPTION: probe"]
+        assert lines[3].startswith("Time: ")
+        assert lines[4].startswith("PID:  ")
+        assert lines[5:8] == ["Version: 9.9.9", "Install: /opt/kc/9.9.9", "-" * 72]
+        # The real identity is this package's own version and resolved folder.
+        version, install = install_liveness._read_build_identity()
+        assert version == kiro_crew.__version__
+        assert install == str(install_liveness._PACKAGE_ROOT)
+
+    def test_unreadable_version_writes_unknown(self, tmp_path, monkeypatch):
+        import kiro_crew
+        from kiro_crew import install_liveness
+
+        monkeypatch.delattr(kiro_crew, "__version__")
+        identity = install_liveness._read_build_identity()
+        assert identity[0] == "unknown"
+        monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", identity)
+        crash_log = tmp_path / "crash.log"
+        crash_guard._CRASH_LOG = crash_log
+
+        crash_guard._write_crash("UNHANDLED EXCEPTION: probe")
+
+        text = crash_log.read_text(encoding="utf-8")
+        assert "Version: unknown\n" in text
+        assert text.rstrip().endswith("=" * 72)
+
+    def test_line_break_in_a_value_stays_on_one_line(self):
+        from kiro_crew import install_liveness
+
+        assert install_liveness._one_line("/a\nb\r\nc") == "/a b c"
+        assert install_liveness._one_line("") == "unknown"

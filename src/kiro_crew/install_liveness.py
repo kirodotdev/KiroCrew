@@ -41,6 +41,36 @@ POOLED_RESPAWN_COMMAND_ENV = "KIROCREW_MCP_POOLED_RESPAWN_COMMAND"
 #: judged by the tree the modules were actually read from.
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 
+
+def _one_line(value: str) -> str:
+    """*value* with any line break turned into a space, so it fits one record line."""
+    return " ".join(value.splitlines()) or "unknown"
+
+
+def _read_build_identity() -> tuple[str, str]:
+    """``(version, install folder)`` of this process, ``"unknown"`` for either that cannot be read.
+
+    Never raises. Called once at import, so the last-resort crash writers
+    name the build that is running without any lookup while the process dies.
+    """
+    try:
+        from kiro_crew import __version__
+
+        version = _one_line(str(__version__))
+    except Exception:
+        version = "unknown"
+    try:
+        install = _one_line(str(_PACKAGE_ROOT))
+    except Exception:
+        install = "unknown"
+    return version, install
+
+
+#: ``(version, install folder)`` this process was imported from, fixed at
+#: import time. ``crash.log`` records and the loop-stall dump header carry it,
+#: so a record still names the build that wrote it after an update.
+BUILD_IDENTITY = _read_build_identity()
+
 #: Process exit status for "my install is gone, replace me". ``EX_TEMPFAIL``,
 #: the same status the gateway's stale-asset watchdog exits with, so a
 #: restart-on-failure supervisor relaunches it.
