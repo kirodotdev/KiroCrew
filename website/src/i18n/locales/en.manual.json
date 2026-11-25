@@ -11287,7 +11287,8 @@
         "section_label": "Release notes",
         "newer_title": "Newer than yours",
         "badge_installed": "Installed",
-        "read_all_notes": "Read all notes"
+        "read_all_notes": "Read all notes",
+        "lts_note": "This install is on the LTS line. LTS has its own version numbers and updates only from the LTS channel, so open-source releases with higher numbers are a separate line, not updates for it. This build carries no release notes for LTS versions."
       }
     },
     "worldsPage": {

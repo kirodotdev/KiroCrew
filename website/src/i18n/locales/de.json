@@ -21245,7 +21245,8 @@
         "section_label": "Versionshinweise",
         "newer_title": "Neuer als deine",
         "badge_installed": "Installiert",
-        "read_all_notes": "Alle Hinweise lesen"
+        "read_all_notes": "Alle Hinweise lesen",
+        "lts_note": "Diese Installation gehört zur LTS-Linie. LTS hat eigene Versionsnummern und wird nur über den LTS-Kanal aktualisiert. Open-Source-Releases mit höheren Nummern sind eine eigene Linie und keine Updates dafür. Dieser Build enthält keine Versionshinweise zu LTS-Versionen."
       },
       "reportProblemCard": {
         "blurb": "Etwas funktioniert nicht? Sende uns einen Diagnosebericht — Protokolle werden zuvor von Geheimnissen befreit.",

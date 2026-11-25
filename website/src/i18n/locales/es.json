@@ -21810,7 +21810,8 @@
         "section_label": "Notas de la versión",
         "newer_title": "Más nuevas que la tuya",
         "badge_installed": "Instalada",
-        "read_all_notes": "Leer todas las notas"
+        "read_all_notes": "Leer todas las notas",
+        "lts_note": "Esta instalación está en la línea LTS. LTS tiene sus propios números de versión y solo se actualiza desde el canal LTS, así que las versiones de código abierto con números más altos son otra línea, no actualizaciones para ella. Esta compilación no incluye notas de versión de LTS."
       },
       "reportProblemCard": {
         "blurb": "¿Algo no funciona? Envíanos un informe de diagnóstico — antes se eliminan los secretos de los registros.",

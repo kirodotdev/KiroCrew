@@ -20680,7 +20680,8 @@
         "section_label": "릴리스 노트",
         "newer_title": "내 버전보다 최신",
         "badge_installed": "설치됨",
-        "read_all_notes": "전체 노트 읽기"
+        "read_all_notes": "전체 노트 읽기",
+        "lts_note": "이 설치는 LTS 라인입니다. LTS는 자체 버전 번호를 쓰며 LTS 채널에서만 업데이트되므로, 번호가 더 높은 오픈 소스 릴리스는 별도의 라인이며 이 설치의 업데이트가 아닙니다. 이 빌드에는 LTS 버전의 릴리스 노트가 들어 있지 않습니다."
       },
       "reportProblemCard": {
         "blurb": "문제가 있나요? 진단 보고서를 보내 주세요 — 로그에서 비밀 정보를 먼저 제거합니다.",
