@@ -32,6 +32,7 @@ import { KiroAccountUnlocksList } from './KiroAccountUnlocks'
 import {
   SignInStoreUnreadableErrors,
   KiroSignInSourcesNotice,
+  noticeLeadsCard,
   SOURCES_QUERY_KEY,
   sourcesNotice,
   useKiroSignInSources,
@@ -111,6 +112,11 @@ function useKiroCliAccountName(sources: KasLoginSources | undefined): { name: st
     queryFn: () => api.sessionsUsage().then(parseKiroUsagePayload),
     enabled: false,
   })
+  // On Kiro CLI, an unnamed source may run on a key or another data home;
+  // the usage cache can still name the default store's unrelated login.
+  if (sources?.kiro_cli_harness && !(
+    sources.kiro_cli.email || sources.kiro_cli.account_type || sources.kiro_cli.portal_host
+  )) return { name: '', isEmail: false }
   if (data && typeof data === 'object' && !isAccountOnly(data)) {
     if (data.email) return { name: data.email, isEmail: true }
     if (data.account) return { name: data.account, isEmail: false }
@@ -144,8 +150,12 @@ function KiroCliSignedInHeader({ name, isEmail }: { name: string; isEmail: boole
  * with <provider>", then Switch account and Sign out, neither of them red. A
  * lapsed sign-in says so instead, with Sign in again as the one filled button.
  * Never a token.
+ *
+ * `secondary`: the Kiro CLI harness runs on kiro-cli's sign-in, which the
+ * notice above names, so the one stored here is not the account in use. It
+ * shows as one small line naming it as Kiro Agent's, with no avatar or title.
  */
-function SignedInSummary({ status, onReauth }: { status: KasLoginStatus; onReauth: () => void }) {
+function SignedInSummary({ status, onReauth, secondary = false }: { status: KasLoginStatus; onReauth: () => void; secondary?: boolean }) {
   const logout = useKiroSignOut(status.identity ?? '')
   const lapsed = signInLapsed(status)
   const provider = providerLabelFromWire(status.provider)
@@ -177,12 +187,22 @@ function SignedInSummary({ status, onReauth }: { status: KasLoginStatus; onReaut
   } else title = i18nT('pages.developer.kiroSignInCard.signed_in_with', { provider })
   return (
     <div data-testid="kiro-sign-in-summary" data-lapsed={lapsed ? 'true' : 'false'} className="flex flex-col items-center text-center">
-      <AccountAvatar lapsed={lapsed} name={account.name} pending={pending} />
-      <h2 className="mt-4 max-w-full text-2xl font-bold tracking-tight text-text-strong" data-testid="kiro-sign-in-state">
-        {title}
-      </h2>
+      {secondary ? (
+        <p className="mt-2 max-w-full text-[13px] text-muted" data-testid="kiro-sign-in-state">
+          {lapsed
+            ? i18nT('pages.developer.kiroSignInCard.kiro_agent_sign_in_expired')
+            : i18nT('pages.developer.kiroSignInCard.kiro_agent_sign_in', { provider })}
+        </p>
+      ) : (
+        <>
+          <AccountAvatar lapsed={lapsed} name={account.name} pending={pending} />
+          <h2 className="mt-4 max-w-full text-2xl font-bold tracking-tight text-text-strong" data-testid="kiro-sign-in-state">
+            {title}
+          </h2>
+        </>
+      )}
       {/* The provider has its own line only when the title names the account. */}
-      {!lapsed && (account.name || pending) ? (
+      {!secondary && !lapsed && (account.name || pending) ? (
         <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-2.5 py-1 text-[12px] text-muted" data-testid="kiro-sign-in-provider">
           <CheckCircle2 className="lucide-inline text-ok-text" aria-hidden="true" />
           {i18nT('app.signed_in_with', { provider })}
@@ -360,7 +380,7 @@ export function KiroSignInCard() {
   // account, and this app's own sign-in choices still show in place under it.
   // The code step keeps the normal header, which names the step.
   const cliAccount = useKiroCliAccountName(sources)
-  const cliHeader = signedOut && notice === 'using_kiro_cli' && !back
+  const cliHeader = signedOut && (notice === 'using_kiro_cli' || notice === 'kiro_cli_harness') && !back
   return (
     <section
       data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
@@ -382,7 +402,7 @@ export function KiroSignInCard() {
           </p>
         </div>
       ) : null}
-      {notice === 'using_kiro_cli' ? (
+      {noticeLeadsCard(notice) ? (
         // The header already says "Using your Kiro CLI sign-in" when it has no name.
         <KiroSignInSourcesNotice sources={sources} identity="" hideTitle={cliHeader && !cliAccount.name} />
       ) : null}
@@ -414,10 +434,10 @@ export function KiroSignInCard() {
           <SignInBody
             renderSignedIn={(status, reauth) => (
               <>
-                {notice !== 'using_kiro_cli' ? (
+                {!noticeLeadsCard(notice) ? (
                   <KiroSignInSourcesNotice sources={sources} identity={status.identity ?? ''} />
                 ) : null}
-                <SignedInSummary status={status} onReauth={reauth} />
+                <SignedInSummary status={status} onReauth={reauth} secondary={sources?.kiro_cli_harness === true} />
               </>
             )}
           />

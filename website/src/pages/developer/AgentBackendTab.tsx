@@ -393,6 +393,7 @@ export function AgentBackendTab() {
    */
   const applyBackendSwitchSideEffects = () => {
     qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    qc.invalidateQueries({ queryKey: ['kas-login-sources'] })
     // The model list is the NEW backend's now. `/api/models` re-reads
     // `agent.acp_backend` on every call, so the server side needs no restart;
     // only the frontend cache did, because `['available-models']` is refetched
