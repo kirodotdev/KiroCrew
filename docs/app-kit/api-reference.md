@@ -1855,8 +1855,9 @@ publish(result.text)          # only the scrubbed text may leave
 A credential is masked at its value, inside a URL too. A link the dashboard would
 draw as a Blocked link chip (its query carries data out, and its host is not one the
 owner allowed) is replaced whole with `[REDACTED: suspicious URL to <host>]` and
-counted in `urls_removed`, because your page has no chip to hold it back. Every
-other link leaves as written.
+counted in `urls_removed`, because your page has no chip to hold it back. A fixed
+reason for the rule that blocked it follows in parentheses, such as `(credential)`
+or `(long query)`; it never carries URL text. Every other link leaves as written.
 
 You get **counts, not descriptions**, and there is deliberately no way to learn
 which value was removed. That is not an omission to be filled in later: the
