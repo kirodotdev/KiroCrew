@@ -351,6 +351,14 @@ class SessionCapabilities:
     #: ``auto`` keeps the same-value shortcut.
     model_auto_switches_in_place: bool
 
+    #: Whether the harness loads the session's agent itself (its persona,
+    #: steering, skills and resources), so ``kirocrew chat`` sends the typed text
+    #: as it is instead of building Crew's session context into the first message.
+    #:
+    #: True for kiro-cli and KAS. False everywhere else, an unknown backend
+    #: included: there the CLI builds that context itself.
+    harness_loads_agent_context: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -399,6 +407,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
         names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
         model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
+        harness_loads_agent_context=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -443,6 +452,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     ends_turn_on_permission_reject=False,
     names_crew_tools_by_fused_name=False,
     model_auto_switches_in_place=False,
+    harness_loads_agent_context=False,
     keeps_session_across_compaction=False,
 )
 
