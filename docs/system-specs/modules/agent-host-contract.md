@@ -122,8 +122,13 @@ declared-name resolver (`agent_discovery.declared_spec_claim`, `agent.session_ag
 for a reader that needs a path, `agent_spec_pins.pick_spec_row` for first-match model and
 flag lookups): with no pin, differing claimants are refused with the pin command for each
 file; a pin naming none of them is refused and never falls back; identical claimants
-still pass; a pin on a name with one claimant is ignored. KAS takes the pinned file's
-projection over the wire. kiro-cli resolves a name it is handed itself, so for a contested
+still pass; a pin on a name with one claimant picks no file, but waives the held-file check
+that follows. The start check of a host that does not resolve the spec itself
+(`acp/session_mcp_spec_check.refuse_contested_agent_spec`) also refuses a start when, on
+Windows, a spec file stays held open past the read retry while a readable spec declares the
+name and no pin names it, since the held file may be a second claimant a later read sees:
+the error names each held file and the pin commands, and shows no chooser card. KAS takes
+the pinned file's projection over the wire. kiro-cli resolves a name it is handed itself, so for a contested
 name it is handed only a skill view built from the pinned file (`acp/skill_projection`);
 handing it the authored name of a contested agent is refused
 (`fork_refresh.require_launch_resolves_one_file`, run inside the over-ceiling start
