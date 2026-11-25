@@ -834,11 +834,17 @@ def recall_query(text: str, user_text_range: tuple[int, int]) -> str:
 
 
 def user_turn(
-    text: str, hook_result: HookResult, user_text_range: tuple[int, int] | None
+    text: str,
+    hook_result: HookResult,
+    user_text_range: tuple[int, int] | None,
+    *,
+    quick_prompts: bool = True,
 ) -> tuple[str, tuple[int, int] | None]:
     """``(the turn text as sent, the user's own bounds within it)``.
 
     The bounds are ``None`` when the caller gave no *user_text_range*.
+    *quick_prompts* off sends a leading ``/token`` as written: a chat option
+    tap's label, which the model wrote.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -869,11 +875,11 @@ def user_turn(
     # output is likewise the turn in full.
     _quick_prompt: str | None = None
     _quick_at = 0
-    if hook_result.action == ctx.HOOK_MODIFY or user_text_range is None:
+    if quick_prompts and (hook_result.action == ctx.HOOK_MODIFY or user_text_range is None):
         _quick_prompt = ctx.expand_quick_prompt(turn_text)
         if _quick_prompt is not None:
             turn_text = _quick_prompt
-    else:
+    elif quick_prompts and user_text_range is not None:
         _q0, _q1 = user_text_range
         _q0 = max(0, min(_q0, len(turn_text)))
         _q1 = max(_q0, min(_q1, len(turn_text)))

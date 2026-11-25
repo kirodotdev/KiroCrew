@@ -123,6 +123,24 @@ async def test_a_linked_slot_reads_a_slash_label_as_content(interpret_commands: 
     assert (COMMANDS_OFF_META_KEY in meta) is (not interpret_commands)
 
 
+@pytest.mark.parametrize("interpret_commands", [False, True])
+async def test_a_linked_slot_keeps_a_tapped_labels_mentions_as_text(
+    interpret_commands: bool,
+) -> None:
+    """The slot expands ``@prompt`` and ``$skill`` itself, so an answer reaches it
+    with expansions off, idle and busy, word for word; a typed message does not."""
+    label = "@release-notes then $deploy"
+    run = AsyncMock()
+    assert await _route_to_slot(label, run, interpret_commands=interpret_commands) is True
+    assert run.call_args.args[2] == label
+    assert run.call_args.kwargs.get("_expansions_off", False) is (not interpret_commands)
+    busy = _slot(running=True)
+    await _route_to_slot(label, AsyncMock(), interpret_commands=interpret_commands, slot=busy)
+    assert busy.queue_append.call_args.args[0] == label
+    meta = busy.queue_append.call_args.kwargs["meta"]
+    assert ("expansions_off" in meta) is (not interpret_commands)
+
+
 async def test_a_linked_slot_on_another_agent_refuses_an_agent_switch_label() -> None:
     """Unpinned: a typed ``/agent <the channel's agent>`` switches the slot, but an
     answer never runs as that switch, so it is refused like any other mismatch."""
