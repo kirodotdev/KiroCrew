@@ -361,6 +361,66 @@ def test_a_mapping_this_harness_would_not_honour_is_refused(key, value, fragment
     assert value not in str(caught.value) or value.startswith("secret://")
 
 
+def _assert_literal_url_guidance(message: str) -> None:
+    # A literal under agent.strands_env is often not a key at all, so every refusal
+    # of one says a URL needs a reference too and names the card that writes it.
+    assert "'LITELLM_BASE_URL'" in message
+    assert "holds a literal value" in message
+    assert "including a URL, region or host" in message
+    assert "Model provider card under Settings > Agent Harness" in message
+    assert "Settings > Secrets" in message
+    assert "proxy.example" not in message, "the refusal must never carry the value"
+
+
+def test_a_literal_url_refuses_the_session_with_how_to_map_it() -> None:
+    with pytest.raises(ValueError) as caught:
+        strands_mod._validate_strands_env_mapping({"LITELLM_BASE_URL": "http://proxy.example"})
+    _assert_literal_url_guidance(str(caught.value))
+
+
+def test_a_literal_url_never_reaches_disk_and_the_refusal_says_how_to_map_it(tmp_path) -> None:
+    from kiro_crew.config.loader import ConfigWriteRefused, update_config_locked
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"agent": {"yolo": True}}), encoding="utf-8")
+    before = path.read_bytes()
+
+    def plant(existing: dict) -> dict:
+        existing.setdefault("agent", {})["strands_env"] = {
+            "LITELLM_BASE_URL": "http://proxy.example"
+        }
+        return existing
+
+    with pytest.raises(ConfigWriteRefused) as refused:
+        update_config_locked(path, mutate=plant)
+
+    _assert_literal_url_guidance(str(refused.value))
+    assert path.read_bytes() == before
+
+
+def test_a_literal_url_left_on_disk_is_logged_with_how_to_map_it(tmp_path, caplog) -> None:
+    import logging
+
+    from kiro_crew.config.loader import update_config_locked
+
+    path = tmp_path / "config.json"
+    stale = {"LITELLM_BASE_URL": "http://proxy.example"}
+    path.write_text(json.dumps({"agent": {"strands_env": stale}}), encoding="utf-8")
+
+    def unrelated(existing: dict) -> dict:
+        existing.setdefault("agent", {})["yolo"] = True
+        return existing
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        update_config_locked(path, mutate=unrelated)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["agent"]["strands_env"] == stale
+    warned = [r.getMessage() for r in caplog.records if "strands_env" in r.getMessage()]
+    assert warned, "a literal left on disk must be named on the log"
+    _assert_literal_url_guidance(warned[0])
+    assert "a Strands session is refused while it stands" in warned[0]
+
+
 def test_no_mapped_name_is_one_the_agent_scrub_strips() -> None:
     from kiro_crew.sandbox import agent_env_scrub_prefixes
 
