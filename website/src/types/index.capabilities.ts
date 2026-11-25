@@ -144,6 +144,9 @@ export interface Skill {
    *  SKILL.md path.  Empty list means no agent loads it via kiro-cli's
    *  native ``skill://`` loader (it may still load via Kiro Crew text-injection). */
   loaded_by_agents?: string[]
+  /** Other keys the catalog resolves to this row (a qualified `kiro-user/` spelling, or
+   *  the key of a duplicate row folded into it). Absent when there are none. */
+  aliases?: string[]
 }
 
 /** Response shape for GET /api/skills/budget — the control-plane cost data. */
