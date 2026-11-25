@@ -485,10 +485,9 @@ def _close_entry_port(state: DashboardState, ref: Any, reason: str) -> None:
     told = ref.close([guard.site for guard in guards], reason)
     if told is None:
         return
-    title, body = told
-    logger.warning("%s (%s)", body, reason)
+    logger.warning("%s (%s)", told.body, reason)
     try:
-        state.notify("system", title, body)
+        state.notification_bus.push(told)
     except Exception:
         logger.debug("the entry-port-closed notification failed", exc_info=True)
 
