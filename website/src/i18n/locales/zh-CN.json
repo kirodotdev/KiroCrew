@@ -20234,6 +20234,8 @@
         "show_unread_dot_save_failed": "无法保存未读圆点设置。",
         "expand_linked_items": "在会话卡片上默认展开关联项",
         "expand_linked_items_save_failed": "无法保存关联项设置。",
+        "expand_linked_items_desc": "每张会话卡片一开始就在下方展开其关联的拉取请求和议题。点按卡片上的数字，仍可单独折叠或展开该卡片。",
+        "session_cards": "会话卡片",
         "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
         "font_family_option_custom": "自定义",
         "custom_font_family": "自定义字体",

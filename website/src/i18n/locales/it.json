@@ -21336,6 +21336,8 @@
         "show_unread_dot_save_failed": "Impossibile salvare l’impostazione del punto non letto.",
         "expand_linked_items": "Mostra espansi gli elementi collegati sulle schede delle sessioni",
         "expand_linked_items_save_failed": "Impossibile salvare l’impostazione degli elementi collegati.",
+        "expand_linked_items_desc": "Ogni scheda sessione parte mostrando sotto le pull request e le issue collegate. Premere il numero su una scheda continua a chiudere o aprire quella scheda.",
+        "session_cards": "Schede sessione",
         "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate.",
         "font_family_option_custom": "Personalizzato",
         "custom_font_family": "Carattere personalizzato",

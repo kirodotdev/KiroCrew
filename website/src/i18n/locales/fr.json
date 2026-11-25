@@ -21336,6 +21336,8 @@
         "show_unread_dot_save_failed": "Impossible d’enregistrer le réglage du point non lu.",
         "expand_linked_items": "Afficher les éléments liés dépliés sur les cartes de session",
         "expand_linked_items_save_failed": "Impossible d’enregistrer le réglage des éléments liés.",
+        "expand_linked_items_desc": "Chaque carte de session affiche dès le départ ses pull requests et tickets liés en dessous. Appuyer sur le nombre d’une carte replie ou déplie toujours cette carte.",
+        "session_cards": "Cartes de session",
         "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence.",
         "font_family_option_custom": "Personnalisée",
         "custom_font_family": "Police personnalisée",

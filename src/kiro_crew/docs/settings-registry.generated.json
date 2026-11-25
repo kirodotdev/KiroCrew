@@ -1902,6 +1902,7 @@
       "label": "Show linked items expanded on session cards",
       "tab": "display",
       "route": "/settings/display/sidebar?highlight=key%3Adashboard.expand_linked_items",
+      "hint": "Each session card starts with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
       "configKey": "dashboard.expand_linked_items"
     },
     {

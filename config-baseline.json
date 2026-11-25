@@ -12709,7 +12709,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Show Linked Items Expanded",
-      "help": "Start each sidebar session card with its linked items (pull requests, issues) shown under it. The count on the card still folds or opens each card's list on its own.",
+      "help": "Start each session card with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

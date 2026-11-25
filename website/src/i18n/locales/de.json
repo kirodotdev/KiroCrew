@@ -20785,6 +20785,8 @@
         "show_unread_dot_save_failed": "Die Einstellung für den Ungelesen-Punkt konnte nicht gespeichert werden.",
         "expand_linked_items": "Verknüpfte Elemente auf Sitzungskarten aufgeklappt anzeigen",
         "expand_linked_items_save_failed": "Die Einstellung für verknüpfte Elemente konnte nicht gespeichert werden.",
+        "expand_linked_items_desc": "Jede Sitzungskarte zeigt ihre verknüpften Pull Requests und Issues von Anfang an darunter. Ein Druck auf die Zahl einer Karte klappt diese Karte weiterhin zu oder auf.",
+        "session_cards": "Sitzungskarten",
         "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden.",
         "font_family_option_custom": "Benutzerdefiniert",
         "custom_font_family": "Benutzerdefinierte Schrift",

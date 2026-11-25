@@ -21336,6 +21336,8 @@
         "show_unread_dot_save_failed": "No se pudo guardar el ajuste del punto de no leído.",
         "expand_linked_items": "Mostrar desplegados los elementos vinculados en las tarjetas de sesión",
         "expand_linked_items_save_failed": "No se pudo guardar el ajuste de los elementos vinculados.",
+        "expand_linked_items_desc": "Cada tarjeta de sesión empieza mostrando debajo sus pull requests e incidencias vinculados. Pulsar el número de una tarjeta sigue plegando o desplegando esa tarjeta.",
+        "session_cards": "Tarjetas de sesión",
         "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas.",
         "font_family_option_custom": "Personalizada",
         "custom_font_family": "Fuente personalizada",
