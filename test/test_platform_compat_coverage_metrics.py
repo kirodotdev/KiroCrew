@@ -508,10 +508,13 @@ class TestSystemMetrics:
         assert pc.system_memory() is None
 
     @staticmethod
-    def _memory_status(total: int, avail: int, *, ok: bool = True) -> Any:
+    def _memory_status(
+        total: int, avail: int, *, ok: bool = True, page_file: tuple[int, int] = (0, 0)
+    ) -> Any:
         def _status(status: Any) -> int:
             status._obj.ullTotalPhys = total
             status._obj.ullAvailPhys = avail
+            status._obj.ullTotalPageFile, status._obj.ullAvailPageFile = page_file
             return 1 if ok else 0
 
         return types.SimpleNamespace(GlobalMemoryStatusEx=_Fn(_status))
@@ -528,6 +531,19 @@ class TestSystemMetrics:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc.ctypes, "windll", None, raising=False)
         assert pc.system_memory() is None
+
+    def test_commit_reports_limit_and_available(self, monkeypatch):
+        status = self._memory_status(1, 1, page_file=(72 << 30, 14 << 30))
+        _fake_windows(monkeypatch, kernel32=status)
+        assert pc.system_commit() == (72 << 30, 14 << 30)
+
+    def test_commit_failure_is_none(self, monkeypatch):
+        _fake_windows(monkeypatch, kernel32=self._memory_status(1, 1, ok=False))
+        assert pc.system_commit() is None
+
+    def test_commit_is_none_off_windows(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.system_commit() is None
 
     def test_cpu_percent_is_none_off_windows(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", False)

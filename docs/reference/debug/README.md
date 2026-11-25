@@ -121,6 +121,15 @@ to one sample every 60 s. Event rows use a closed set of kinds: `gateway_start`,
 `gateway_stop`, `loop_stall`, `adaptive_cap_lowered`, `memory_posture_change`,
 `config_rewritten`, `threshold_crossed`, `proc_burst` and `orphan_appeared`.
 
+On Windows, where `mem_available_mb`, `mem_total_mb` and the `swap_*` fields are null,
+each sample row also carries `commit_used_mb` and `commit_limit_mb`: the host's commit
+charge and commit limit from `GlobalMemoryStatusEx` (both null when that call fails). A
+Windows host can reach its commit limit with physical memory still free, and new threads
+and processes then fail to start. `kirocrew doctor` prints the same figures on a `commit:`
+line in its Memory Pressure section. Read from inside a Job object with a lower commit
+limit, such as an agent's shell, they are that job's. Rows on other platforms carry
+neither field.
+
 The `diag/` directory is masked inside the agent sandbox in every mode. Read it
 through the debug tools, which redact on the way out.
 

@@ -332,8 +332,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SUBTREE_MAX_PROCS
         proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb proc_subtree_sample
         proc_handle_count_for_pid
-        proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
-        system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
+        proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu _memory_status system_memory
+        system_commit system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
         _linux_available_mib host_total_mib _darwin_memsize_bytes host_available_mib MEMORY_PRESSURE_NORMAL
         _LINUX_MEMORY_PSI_PATH linux_memory_psi_full_avg10

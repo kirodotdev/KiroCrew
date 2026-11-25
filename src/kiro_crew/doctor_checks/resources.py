@@ -158,6 +158,29 @@ def _windows_inert_limit_lines() -> list[str]:
     ]
 
 
+def _windows_commit_lines() -> list[str]:
+    """The ``commit`` line: the host's commit charge against its commit limit.
+
+    Windows only; an empty list elsewhere. A Windows host can reach its commit
+    limit with physical memory still free, and new threads and processes then
+    fail to start; the swap/OOM-killer check reads Linux procfs and says nothing
+    about it. Inside a Job object with a lower commit limit (an agent's shell) the
+    figures are that job's. Advisory: never added to ``issues``.
+    """
+    if not cli_doctor.platform_compat.IS_WINDOWS:
+        return []
+    commit = cli_doctor.platform_compat.system_commit()
+    if not commit or not commit[0]:
+        return ["  commit:          ⚠️  could not read the commit charge (GlobalMemoryStatusEx)"]
+    limit, available = commit
+    used = max(0, limit - available)
+    mib = 1024 * 1024
+    return [
+        f"  commit:          {used // mib:,} of {limit // mib:,} MiB committed "
+        f"({used * 100 // limit}% of the commit limit)"
+    ]
+
+
 def _doctor_memory_pressure(issues: list[str]) -> None:
     """Report whether the host can degrade gracefully under memory pressure.
 
@@ -175,6 +198,8 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     for line in _gateway_memory_lines():
         print(line)
     for line in _windows_inert_limit_lines():
+        print(line)
+    for line in _windows_commit_lines():
         print(line)
     if not sys.platform.startswith("linux"):
         print(
