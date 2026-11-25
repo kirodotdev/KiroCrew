@@ -5,6 +5,7 @@ stats, failure summaries, metadata, and the frames it hands back.
 """
 
 import asyncio
+import logging
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -21,7 +22,7 @@ from acp_runtime_helpers import (
 from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.runtime import AcpSessionHandle
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 
 @pytest.mark.asyncio
@@ -349,6 +350,82 @@ async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary
     assert result["type"] == "failed"
     assert secret not in result["summary"]
     assert "[REDACTED: credential]" in result["summary"]
+
+
+_FAILED_BECAUSE = {"status": {"type": "failed", "error": "history too long"}}
+_NOT_LOGGED = "reason not logged outside persistent memory"
+
+
+def _compaction_warnings(caplog) -> list[tuple[str, str]]:
+    return [
+        (record.levelname, record.getMessage())
+        for record in caplog.records
+        if record.name == "kiro_crew.acp.session_handle"
+        and record.getMessage().startswith("Compaction failed")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ownerless", "recording_allowed", "expected"),
+    [
+        (False, True, [("WARNING", "Compaction failed on session sA: history too long")]),
+        (False, False, [("WARNING", f"Compaction failed on session sA: {_NOT_LOGGED}")]),
+        (True, True, []),
+    ],
+    ids=["owned", "owned-not-recording", "fanned-out-copy"],
+)
+async def test_a_failed_compaction_the_session_owns_is_one_warning(
+    caplog, ownerless, recording_allowed, expected
+):
+    """The dashboard hides repeated failure notices, so this line is their only record:
+    one per failure this session owns, the reason only while the runtime may log agent
+    text. A fanned-out copy is a co-tenant's frame, so one failure stays one line."""
+    from kiro_crew.acp.types import (
+        EVENT_COMPACTION_STATUS,
+        METHOD_COMPACTION_STATUS,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    rt.recording_allowed = recording_allowed
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    failed = JsonRpcMessage(method=METHOD_COMPACTION_STATUS, params=_FAILED_BECAUSE)
+    failed.fanout_no_owner = ownerless
+    q["sA"].put_nowait(failed)
+    q["sA"].put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+        events = [event async for event in handle._dispatch_events(1, 1.0)]
+
+    assert [(e.text, e.title) for e in events if e.kind == EVENT_COMPACTION_STATUS] == [
+        ("failed", "history too long")
+    ]
+    assert _compaction_warnings(caplog) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recording_allowed", [True, False], ids=["recording", "not-recording"])
+async def test_a_failed_compaction_the_wait_drains_is_the_same_warning(caplog, recording_allowed):
+    """A manual /compact reads its outcome in ``wait_for_compaction``, not in the
+    dispatch loop, so the drain writes the same record."""
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    rt.recording_allowed = recording_allowed
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(JsonRpcMessage(method=METHOD_COMPACTION_STATUS, params=_FAILED_BECAUSE))
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+        result = await handle.wait_for_compaction(timeout=FALLBACK_TIMEOUT_SECS)
+
+    assert result == {"type": "failed", "summary": "history too long"}
+    reason = "history too long" if recording_allowed else _NOT_LOGGED
+    assert _compaction_warnings(caplog) == [
+        ("WARNING", f"Compaction failed on session sA: {reason}")
+    ]
 
 
 @pytest.mark.asyncio

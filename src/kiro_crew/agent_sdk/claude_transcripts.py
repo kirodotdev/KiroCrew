@@ -140,18 +140,21 @@ def delete_claude_session_files(session_id: str, cwd: str) -> bool:
     *cwd* is empty or unspellable, no config directory resolves, a path is a
     symlink or escapes its root, or a delete failed. A false answer deletes
     nothing it was not sure of, so a caller that retries (the subagent prune)
-    keeps its retry record.
+    keeps its retry record. When none of the three paths existed it logs one
+    ``nothing to delete`` record, so a miss can be told from a real delete.
     """
     targets = _session_targets(session_id, cwd, "claude transcript cleanup")
     if targets is None:
         return False
     succeeded = True
+    deleted = False
     for target, _parent, label in targets:
         try:
             if target.is_dir():
                 shutil.rmtree(target)
             else:
-                target.unlink(missing_ok=True)
+                target.unlink()
+            deleted = True
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -159,6 +162,8 @@ def delete_claude_session_files(session_id: str, cwd: str) -> bool:
             logger.warning(
                 "claude transcript cleanup: failed to delete the %s (%s)", label, _reason(exc)
             )
+    if succeeded and not deleted:
+        logger.info("claude transcript cleanup: nothing to delete")
     return succeeded
 
 

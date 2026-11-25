@@ -1898,6 +1898,13 @@
       "hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library."
     },
     {
+      "id": "display.show-linked-items-expanded-on-session-cards",
+      "label": "Show linked items expanded on session cards",
+      "tab": "display",
+      "route": "/settings/display/sidebar?highlight=key%3Adashboard.expand_linked_items",
+      "configKey": "dashboard.expand_linked_items"
+    },
+    {
       "id": "display.show-search-in-the-top-bar",
       "label": "Show search in the top bar",
       "tab": "display",

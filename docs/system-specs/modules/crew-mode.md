@@ -88,7 +88,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Bot teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Bots page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Bot roster, mounted as the **Bots** tab of `CapabilitiesPage` (Customize), and a host of the one Bot editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and mounts the binding fields every crew form shares (`components/crew/crewFields.tsx`; each consumer imports them from there, and the page re-exports each for its existing importers). Editing a Bot opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Bots page opens in place; that hook re-exports `INHERIT_MODEL` from `crewFields.tsx`. The editor's General section names what the Bot's Profile card holds instead (sessions, goals, permission) and opens that card on its Profile tab (`onOpenProfile`, through the editor's `leaveGate`): from here it navigates to `/members?member=<name>` with `OpenMateSessionsState`, and on the Bots page it closes the editor and opens the card in place |
-| `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
+| `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it; `triggers` is edited on the editor's General section (`TriggersField`), and an edit there marks the `routing` key dirty |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/CrewWebhookSection.tsx` | "Webhooks that wake this agent" — the tokens whose call runs as this crew. A token pins a template, never a crew, so it is listed for every crew that runs that template or is named like it (`webhookBoundToCrew` in `components/crew/wakesCrew.ts`; the name covers an older row that stores the template's file name), a crew with its own memory included: a hook it registers keeps its memory, so the pane may over-list but never hides a token with real access |
 | `website/src/components/chat/crewmateBubbles.ts` | A Bot's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
@@ -2556,8 +2556,9 @@ the opener always stays. The panel chord toggles only while a Bot is
 open.
 
 The Profile tab holds the Bot's own settings (`CrewProfileSettings`):
-permission (Normal / Reads / Trust), model and effort, the worker pair and the
-preview switches. They are changed there, never in the chat. The Profile tab
+permission (Normal / Reads / Trust), model and effort, the worker pair, the
+**Workers can conduct** switch and the preview switches. They are changed
+there, never in the chat. The Profile tab
 shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
 the model (permission · model; not the worker pick, which beside the Bot's own
 name read as a riddle); nothing else of the settings
@@ -5149,7 +5150,13 @@ its session array and the Bot's worker limit are what they are today
 The `worker.conducts` piece is rendered from `_LEDGER_CONDUCTOR_RULES` exactly
 as `conductor.patrol` is, so a rule every conductor carries is written once;
 `test_mate_conductor_parity.py` holds the root conductor, a Bot's thread and a
-Bot's conducting worker to that one copy.
+Bot's conducting worker to that one copy. The owner sets the switch on the
+Bot's Profile card (`pages/members/CrewProfileSettings.tsx`: a **Workers can
+conduct** switch in its own group under the one holding **Workers at once**, the
+RFC's §5.1 hint as its caption), which writes `PUT /api/agents/{name}`
+`{worker_conducts}` for that Bot alone; an absent field reads as off, and a
+refused write shows a notice under the group while the switch keeps the stored
+value (`CrewProfileSettings.test.tsx`).
 
 **A stale worker is released, not capped.** A Bot opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle

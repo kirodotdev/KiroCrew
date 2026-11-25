@@ -460,9 +460,22 @@ def test_no_python_environment_names_the_command_that_creates_it(tmp_path) -> No
     from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
 
     issue = strands_mod.strands_python_env_issue(str(tmp_path))
-    assert "venv" in issue and "strands-harness==" in issue
+    assert "venv" in issue and "strands-harness[" in issue
     assert '"botocore[crt]"' in issue
     assert "terminal on the gateway host" in issue and HOST_TERMINAL_NOTE in issue
+
+
+@pytest.mark.parametrize("extra", ["anthropic", "gemini", "litellm", "ollama", "openai"])
+def test_the_install_command_carries_every_provider_sdk_extra(tmp_path, extra) -> None:
+    """strands-harness installs a provider's SDK only through its extra: without
+    ``openai``, ``bedrock-mantle`` and ``openai`` fail at ``session/new``."""
+    from kiro_crew.agent_sdk.backends_launch import STRANDS_PYTHON_REQUIREMENT
+
+    extras = STRANDS_PYTHON_REQUIREMENT.split("[", 1)[1].split("]", 1)[0].split(",")
+    assert extra in extras
+    assert STRANDS_PYTHON_REQUIREMENT in strands_mod.strands_python_setup_command(str(tmp_path))
+    _venv(tmp_path, with_harness=False)
+    assert STRANDS_PYTHON_REQUIREMENT in strands_mod.strands_python_env_issue(str(tmp_path))
 
 
 def test_an_environment_without_the_harness_names_the_install(tmp_path) -> None:
@@ -1115,6 +1128,8 @@ class _ReadbackProbe:
 
     def __init__(self, *args, **kwargs) -> None:
         self.stdin = io.BytesIO()
+        self.stdout = None
+        self.stderr = None
         self.killed = False
         self.tree_killed = False
         self.waited = False

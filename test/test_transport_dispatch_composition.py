@@ -280,6 +280,8 @@ MOVED_MEMBERS = {
         "_handle_status",
         "_handle_unlink",
         "_run_reply_command",
+        "_apply_privacy_mode",
+        "_recorded_mode_refusal",
     ),
     "interactions": (
         "_interaction_actionable",
@@ -299,6 +301,7 @@ MOVED_MEMBERS = {
         "_persist_turn",
         "_record_turn",
         "_session_restricted",
+        "_blocks_memory_reads",
         "_uploads_restricted",
     ),
 }
@@ -478,6 +481,21 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
             "(self, cmd: 'str', reply: \"'ReplyFn'\", *, user_id: 'str', thread_id: 'str', "
             "text: 'str') -> 'None'"
         ),
+    ),
+    # Added after the split, by the Discord !temporary / !incognito change.
+    "_apply_privacy_mode": (
+        "function",
+        True,
+        (
+            "(self, mode: 'str', session_key: 'str', user_id: 'str', say: \"'ReplyFn'\") "
+            "-> 'bool | None'"
+        ),
+    ),
+    "_blocks_memory_reads": ("function", True, "(self, session_key: 'str') -> 'bool'"),
+    "_recorded_mode_refusal": (
+        "function",
+        True,
+        "(self, mode: 'str', session_key: 'str') -> 'str | None'",
     ),
     "_scope_id": ("staticmethod", False, "(user_id: 'str', thread_id: 'str' = '') -> 'str'"),
     "_seed_gen": ("function", False, "(self, scope_id: 'str') -> 'int'"),

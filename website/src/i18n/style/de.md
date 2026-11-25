@@ -110,7 +110,7 @@ yet; they move to `Durchlauf` in a later pass over the catalog.
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
 | formal-address pattern debt does not exceed 12 | `deStyle.test.ts` |
 | changed values address the reader as du, never Sie | `deStyle.test.ts` (`I18N_BASE_REF`) |
-| the first-run blocks and the top bar address the reader as du | `deStyle.test.ts` |
+| the first-run blocks, the top bar and Settings address the reader as du | `deStyle.test.ts` |
 | umlauts, not `ae`/`oe`/`ue`, where the catalog spells the word with one | `deStyle.test.ts` |
 | `turn` is `Durchlauf`, never `Zug` | `deStyle.test.ts` |
 | selected foreign-compound spacing debt does not exceed 12 | `deStyle.test.ts` |

@@ -679,3 +679,89 @@ class TestTheEditionSnippet:
     def test_the_off_switch_snippet_refuses_every_model(self, monkeypatch):
         _install_policy(monkeypatch, {"enabled": False})
         assert not any(capability.permitted_providers().values())
+
+
+@pytest.fixture
+def bind_profiles(tmp_path, monkeypatch):
+    """Write ``profiles/<surface>.json`` binding each surface to its ``decisions`` row."""
+    from kiro_crew.platform import governance_profiles as gp
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+
+    def _bind(rows: dict[str, dict]) -> None:
+        for surface, decisions in rows.items():
+            (profiles / f"{surface}.json").write_text(
+                json.dumps(
+                    {
+                        "name": f"{surface}-profile",
+                        "bind": {"type": "surface", "id": surface},
+                        "capabilities": {"decisions": decisions},
+                    }
+                ),
+                encoding="utf-8",
+            )
+        gp.reset_store()
+
+    yield _bind
+    gp.reset_store()
+
+
+class TestStillSending:
+    """``still_sending`` names the surfaces a model the dashboard refuses still sends from."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("policy", "profiles", "consented", "expected"),
+        [
+            (None, {"dashboard": _deny("jev")}, True, {"surfaces": [], "unbound": True}),
+            (
+                None,
+                {"dashboard": _deny("jev"), "slack": {}},
+                True,
+                {"surfaces": ["slack"], "unbound": True},
+            ),
+            (
+                _deny("jev"),
+                {"dashboard": _deny("jev"), "slack": _deny("jev")},
+                True,
+                {"surfaces": [], "unbound": False},
+            ),
+            (None, {"dashboard": _deny("jev")}, False, None),
+            (None, {"slack": _deny("jev")}, True, None),
+        ],
+        ids=["unbound-only", "surface-permits", "policy-refuses", "no-consent", "no-refusal"],
+    )
+    async def test_the_reading(
+        self, audit, monkeypatch, keystone, bind_profiles, policy, profiles, consented, expected
+    ):
+        _install_policy(monkeypatch, policy)
+        bind_profiles(profiles)
+        keystone(True if consented else None)
+        assert (await _get()).get("still_sending", "absent") == expected
+
+    def test_the_per_surface_reads_write_no_sel_row(
+        self, monkeypatch, keystone, bind_profiles, sel_rows
+    ):
+        from kiro_crew.dashboard.handlers.decisions_offers import still_sending
+
+        _install_policy(monkeypatch, None)
+        bind_profiles({"dashboard": _deny("jev"), "slack": {}})
+        keystone(True)
+        assert still_sending(_config()) == {"surfaces": ["slack"], "unbound": True}
+        assert [r for r in sel_rows() if r.get("tool_name") == capability.AUDIT_TOOL] == []
+        capability.denied_sides()
+        assert sel_rows(), "the audited reads write through the seam this test watches"
+
+    def test_every_surface_key_classifies_to_its_surface(self):
+        from kiro_crew import sel
+
+        assert {s: sel._infer_source(k) for s, k in capability.SURFACE_KEYS.items()} == {
+            s: s for s in capability.SURFACE_KEYS
+        }
+        assert set(capability.SURFACE_KEYS) == set(sel.audit_sources()) - {
+            "unknown",
+            "host",
+            "dashboard",
+        }

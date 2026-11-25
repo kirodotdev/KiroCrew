@@ -315,7 +315,8 @@ Profile card and read per request. A config that still holds an old
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
 `agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
-bool the owner sets through `PUT /api/agents/{name}` (a non-bool is refused
+bool the owner sets on the Bot's Profile card (**Workers can conduct**) or
+through `PUT /api/agents/{name}` (a non-bool is refused
 with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
 on `GET /api/members`, and read from the Bot's record at each worker's session
 start, never cached on the worker; a save that changes it reloads the Bot's
@@ -4001,6 +4002,7 @@ class DashboardConfig:
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
+    expand_linked_items: bool = False  # sidebar session cards start with their linked-items strip open (Settings → Display → Sidebar); only a literal true opens it, and the count still folds each card on its own. PATCH-able via /api/config/kirocrew
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.

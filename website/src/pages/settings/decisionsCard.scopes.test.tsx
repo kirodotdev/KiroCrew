@@ -24,6 +24,7 @@ import {
   SCOPE_SWITCH,
   toolArgsSwitch,
   stubGateway,
+  stubHostedProvider,
 } from '../../test/decisionsCardTestUtils'
 import { namedCeiling } from '../../test/namedCeiling'
 // DecisionsCard loads these two panes with React.lazy. decisionsCard.test.tsx's main-switch
@@ -725,5 +726,106 @@ describe("the browser point's two switches", () => {
     await waitFor(() => {
       expect(scopeSave).toHaveBeenCalledWith('browser_images', false)
     })
+  })
+})
+
+describe('a refused configured model other surfaces still send to', () => {
+  const LAYA_URL = 'http://127.0.0.1:8104/v1/systemone'
+  const refusedLaya = (stillSending: unknown) => {
+    stubGateway(consentOf(true, { configured_endpoint: LAYA_URL, endpoint: LAYA_URL, permits: false, withdrawn: true }))
+    stubHostedProvider({
+      active: 'laya',
+      configured_endpoint: LAYA_URL,
+      loopback: true,
+      provider_permitted: { jev: true, laya: false },
+      still_sending: stillSending,
+    })
+    renderSection()
+  }
+
+  it('names them under the refusal', async () => {
+    cleanup()
+    refusedLaya({ surfaces: ['slack'], unbound: true })
+    const refusal = await screen.findByTestId('decisions-configured-refused', {}, MAIN_SWITCH_FREE)
+    const line = screen.getByTestId('decisions-still-sending')
+    expect(line.textContent).toBe(
+      'Your messages are still sent to this model from Slack and anywhere else your administrator set no separate rules for. Turn off Decisions to stop.',
+    )
+    expect(refusal.nextElementSibling).toBe(line)
+  })
+
+  it('names them when the dashboard refuses the model by its models list', async () => {
+    // The offers do not read the models list, so the model reads as allowed and no
+    // refusal line is drawn; the gateway still names where it is sent from.
+    cleanup()
+    stubGateway(consentOf(true))
+    stubHostedProvider({ provider_permitted: { jev: true }, still_sending: { surfaces: ['slack'], unbound: false } })
+    renderSection()
+    const line = await screen.findByTestId('decisions-still-sending', {}, MAIN_SWITCH_FREE)
+    expect(line.textContent).toBe('Your messages are still sent to this model from Slack. Turn off Decisions to stop.')
+    expect(screen.queryByTestId('decisions-configured-refused')).toBeNull()
+    expect(screen.getAllByTestId('decisions-still-sending')).toHaveLength(1)
+  })
+
+  it('leaves a refused hosted default to the picker', async () => {
+    cleanup()
+    stubGateway(consentOf(true))
+    stubHostedProvider({ active: 'none', hosted_permitted: false, still_sending: { surfaces: ['slack'], unbound: false } })
+    renderSection()
+    const block = await screen.findByTestId('decisions-saved-refused', {}, MAIN_SWITCH_FREE)
+    expect(screen.getAllByTestId('decisions-still-sending')).toHaveLength(1)
+    expect(block.contains(screen.getByTestId('decisions-still-sending'))).toBe(true)
+  })
+
+  it('says nothing more when none does', async () => {
+    cleanup()
+    refusedLaya(null)
+    await screen.findByTestId('decisions-configured-refused', {}, MAIN_SWITCH_FREE)
+    expect(screen.queryByTestId('decisions-still-sending')).toBeNull()
+  })
+
+  it('drops the sentence once the switch withdraws the agreement', async () => {
+    // The gateway computes still_sending only while consent permits the endpoint, so
+    // withdrawing it must refetch the provider read, not leave the old answer on screen.
+    cleanup()
+    let withdrawn = false
+    stubGateway(consentOf(true, { configured_endpoint: LAYA_URL, endpoint: LAYA_URL }))
+    vi.spyOn(api, 'getDecisionsConsent').mockImplementation(() =>
+      Promise.resolve(
+        withdrawn
+          ? consentOf(false, { configured_endpoint: LAYA_URL })
+          : consentOf(true, { configured_endpoint: LAYA_URL, endpoint: LAYA_URL }),
+      ),
+    )
+    const provider = stubHostedProvider()
+    provider.mockImplementation(() =>
+      Promise.resolve({
+        presets: [],
+        active: 'laya',
+        configured_endpoint: LAYA_URL,
+        loopback: true,
+        hosted_permitted: true,
+        local_permitted: true,
+        sagemaker_available: true,
+        sagemaker_permitted: true,
+        provider_permitted: { jev: true, laya: false },
+        still_sending: withdrawn ? null : { surfaces: ['slack'], unbound: true },
+      } as never),
+    )
+    vi.spyOn(api, 'saveDecisionsConsent').mockImplementation(() => {
+      withdrawn = true
+      return Promise.resolve(consentOf(false, { configured_endpoint: LAYA_URL }))
+    })
+    renderSection()
+    await screen.findByTestId('decisions-still-sending', {}, MAIN_SWITCH_FREE)
+    await waitFor(() => {
+      expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    }, MAIN_SWITCH_FREE)
+    const readsBefore = provider.mock.calls.length
+    decisionsSwitch().click()
+    await waitFor(() => {
+      expect(screen.queryByTestId('decisions-still-sending')).toBeNull()
+    }, MAIN_SWITCH_FREE)
+    expect(provider.mock.calls.length).toBeGreaterThan(readsBefore)
   })
 })

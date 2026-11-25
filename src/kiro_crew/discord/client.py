@@ -166,6 +166,9 @@ _THREAD_INTENTS = _INTENT_GUILD_MESSAGES | _INTENT_MESSAGE_CONTENT
 
 # Discord channel types: announcement thread, public thread, private thread.
 _THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})
+# Discord channel types that hold only threads (posts): forum, and media (a
+# forum variant whose posts are the same public threads).
+_FORUM_CHANNEL_TYPES = frozenset({15, 16})
 # Discord's error code for a thread create on a message that already has one.
 _THREAD_ALREADY_CREATED = 160004
 _CALLBACK_CHANNEL_MESSAGE_WITH_SOURCE = 4
@@ -977,6 +980,24 @@ class DiscordClient:
         channel_type = int(result["type"])
         self._channel_types[channel_id] = channel_type
         return channel_type in _THREAD_CHANNEL_TYPES
+
+    async def is_forum_channel(self, channel_id: str) -> bool:
+        """Confirm ``channel_id`` is a forum or media channel, failing closed.
+
+        The same reasoning as :meth:`is_thread_channel`: an id on
+        ``allowed_channel_ids`` does not prove its type, and only a forum's
+        posts may be admitted on their opener's authority. Discord cannot
+        convert a forum to another type, so the type is cached like a thread's.
+        """
+        cached = self._channel_types.get(channel_id)
+        if cached is not None:
+            return cached in _FORUM_CHANNEL_TYPES
+        result = await self._api("GET", f"/channels/{channel_id}", None)
+        if not isinstance(result, dict) or not isinstance(result.get("type"), int):
+            return False
+        channel_type = int(result["type"])
+        self._channel_types[channel_id] = channel_type
+        return channel_type in _FORUM_CHANNEL_TYPES
 
     async def thread_origin(self, channel_id: str) -> ThreadOrigin | None:
         """Who opened thread ``channel_id`` and under which channel, from Discord.

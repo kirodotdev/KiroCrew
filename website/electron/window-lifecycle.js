@@ -558,6 +558,7 @@ function createWindowLifecycle(options) {
       WebContentsView,
       shell,
       partition: BROWSER_PARTITION,
+      log: glog,
     });
 
     // The dashboard's own webContents, so the link block also gets the origin --

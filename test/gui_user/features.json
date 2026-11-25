@@ -3,17 +3,17 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 167,
+    "nightly": 166,
     "native-only": 13,
     "needs-secret": 27,
-    "excluded": 23,
+    "excluded": 24,
     "total": 272
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
-    "P2": 162,
-    "P3": 63
+    "P2": 161,
+    "P3": 64
   },
   "per_feature": {
     "chat": {
@@ -228,10 +228,10 @@
     },
     "onboarding": {
       "smoke": 0,
-      "nightly": 4,
+      "nightly": 3,
       "native-only": 0,
       "needs-secret": 0,
-      "excluded": 0
+      "excluded": 1
     },
     "settings": {
       "smoke": 12,
@@ -818,18 +818,19 @@
       "title": "Worktrees",
       "user_story": "As a developer, I want to create a git worktree for a follow-up session from a card, so that parallel work stays isolated.",
       "start_url": "/chat",
-      "entry_path": "Chat follow-up card → Start in a separate copy",
+      "entry_path": "Chat > open the pinned starter session (slot `starter`, sessions/dashboard_starter.jsonl; the only rich session whose title starts with 'Welcome to') > 'Suggested follow-up' card (FollowUpCard.tsx) > Start in a separate copy",
       "preconditions": {
         "seed": "rich",
         "members": [],
         "feature_flags": [],
-        "notes": "Project directory must be a git repository; the follow-up card must be seeded (suggest_followup via API), since the fake backend does not call MCP tools."
+        "notes": "The card offers the worktree only when the session's project is the root of a git repository. Stage before boot: `git init -b main` a folder and commit one file, then seed with `scripts/gui-user-test/seed_home.py --fixture rich --project <that folder>`. The card is broadcast-only and the fake backend never calls suggest_followup, so with the starter session open in the browser, as the dashboard owner POST /api/chat/slots/starter/followup {\"items\": [{\"title\": \"Add a changelog\", \"description\": \"Draft a CHANGELOG.md for the sample project\", \"prompt\": \"Write a CHANGELOG.md for this project\"}]}. 'Start in a separate copy' then adds a git worktree beside the project and opens a new session on it."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
       "rationale": "Needs a git repo fixture and an API-seeded follow-up card; creating a worktree is local and reversible.",
       "source": [
-        "docs/feature-map/README.md"
+        "docs/feature-map/README.md",
+        "website/src/components/FollowUpCard.tsx"
       ],
       "priority": "P2",
       "merged_from": [
@@ -1836,23 +1837,24 @@
     {
       "id": "shell-update-overlay-and-pill",
       "feature": "topbar",
-      "title": "Update available shows pill, Settings dot, and update overlay",
+      "title": "Update available shows the update dialog, the top-bar pill and the About entry",
       "user_story": "As a user, I want clear update progress, so that I know when the gateway is restarting.",
       "start_url": "/chat",
-      "entry_path": "Fixture status update_available=true > UpdatePill in topbar + dot on Settings row > Update Now > UpdateOverlay steps",
+      "entry_path": "Staged update > on load the 'Update available' dialog (UpdateFoundModal) names the version > close it (×) > UpdatePill 'Update available' in the topbar > Settings > About shows the version",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "UpdateOverlay exported for capture harness; real apply restarts the gateway."
+        "notes": "update_available comes only from a live update check, never from a seed. Stage it before boot with a policy update provider: write <KIROCREW_HOME>/security_policy.json = {\"version\": 1, \"boot\": {\"fail_closed\": false}, \"updates\": {\"check_command\": \"/bin/echo 99.0.0\", \"apply_command\": \"/bin/false\"}}; the boot check then reports update_available true, latest 99.0.0. Do not press 'Update when I restart': it arms the apply for the next start. UpdateOverlay shows only while that arm request is in flight."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Re-tiered excluded -> nightly: with the fake backend returning status update_available=true the UpdatePill, About-tab dot and UpdateOverlay all render offline in Chromium. The test stops at the overlay and never clicks apply (which would restart the gateway and kill the session).",
+      "rationale": "Read-only once staged: the dialog, the pill and the About entry render from the staged check offline in Chromium, and the lane never arms the update.",
       "source": [
         "website/src/App.tsx",
         "website/src/components/UpdatePill.tsx",
-        "website/src/components/UpdateFoundModal.tsx"
+        "website/src/components/UpdateFoundModal.tsx",
+        "src/kiro_crew/platform/update_provider.py"
       ],
       "priority": "P2",
       "merged_from": [
@@ -2202,12 +2204,12 @@
       "title": "Prompts",
       "user_story": "As a user, I want reusable prompt entries from the registry, so that common requests are one pick away.",
       "start_url": "/capabilities",
-      "entry_path": "Customize → Prompts tab (?tab=prompts)",
+      "entry_path": "Customize → Prompts tab (?tab=prompts) → User Prompts list → a prompt card (Use in Chat / Edit / Delete)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": ""
+        "notes": "No seed can carry a prompt: the list reads package SOPs (none on a public build), user prompts under the gateway process's own ~/.kiro/prompts (its HOME, not KIROCREW_HOME) and the session project's .kiro/prompts, so a seeded home shows 'No prompts yet'. Stage one before navigating: as the dashboard owner, POST /api/prompts {\"name\": \"release-notes\", \"content\": \"# Release notes\\n\\nSummarise the changes since the last tag as release notes.\\n\", \"scope\": \"global\"} (201; writes ~/.kiro/prompts/release-notes.md under the gateway's HOME). The tab then lists 'User Prompts (1)' with @release-notes."
       },
       "runnable": "nightly",
       "estimated_steps": 2,
@@ -2755,7 +2757,7 @@
         "seed": "memory-populated",
         "members": [],
         "feature_flags": [],
-        "notes": "Graph chunk lazy-loaded; WebGL/canvas rendering."
+        "notes": "memory-populated seeds no knowledge items, and the fake backend's extraction yields no entities, so the view reads 'No graph data yet'. Stage before navigating: as the dashboard owner, POST /api/knowledge/import {\"items\": [{\"id\": \"gui-item-1\", \"title\": \"Release process\", \"item_type\": \"note\", \"content\": \"The release checklist runs after the CI pipeline is green.\"}], \"entities\": [{\"id\": \"gui-ent-1\", \"name\": \"Release checklist\", \"entity_type\": \"concept\"}, {\"id\": \"gui-ent-2\", \"name\": \"CI pipeline\", \"entity_type\": \"technology\"}], \"relations\": [{\"id\": \"gui-rel-1\", \"source_id\": \"gui-ent-1\", \"target_id\": \"gui-ent-2\", \"relation_type\": \"depends_on\"}]}. Graph View then reads '2 nodes, 1 edge'. Graph chunk lazy-loaded; WebGL/canvas rendering."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -3173,12 +3175,12 @@
       "title": "Files in chat",
       "user_story": "As a user, I want to browse, attach and upload workspace files from the chat, so that the agent sees the context I mean.",
       "start_url": "/chat",
-      "entry_path": "Chat side panel > Files tab (FileBrowserRail / FilesHomePanel / FolderPanel tree) > open a file > attach; composer attach button",
+      "entry_path": "Chat > open the pinned starter session (slot `starter`, sessions/dashboard_starter.jsonl; the only rich session whose title starts with 'Welcome to') > activity panel Files view > Browse (FileBrowserRail / FilesHomePanel / FolderPanel tree) > open a file > attach; composer attach button",
       "preconditions": {
         "seed": "rich",
         "members": [],
         "feature_flags": [],
-        "notes": "Project directory set on the session so the file browser has content. Upload uses a fixture file: the harness policy sets AllowFileSelectionDialogs=false, so the composer attach button must be driven via setInputFiles / drag-and-drop, never via the OS picker."
+        "notes": "No rich session carries a project (a fixture cannot hold an absolute path), and a project-less chat has no tree. Stage before boot: a folder holding README.md and docs/ with a .md file (boot.sh stages /tmp/kirocrew-gui-user-test/sample-project), then seed with `scripts/gui-user-test/seed_home.py --fixture rich --project <that folder>`, which writes it into the starter session's metadata only. Browse then lists docs and README.md. Upload uses a fixture file: the harness policy sets AllowFileSelectionDialogs=false, so the composer attach button must be driven via setInputFiles / drag-and-drop, never via the OS picker."
       },
       "runnable": "smoke",
       "estimated_steps": 4,
@@ -4617,11 +4619,11 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Fake backend must return governance-channels with slack:false."
+        "notes": "GET /api/governance/channels reads the governance policy, not the backend. Stage before boot: write <KIROCREW_HOME>/security_policy.json = {\"version\": 1, \"boot\": {\"fail_closed\": false}, \"channels\": {\"members\": {\"mode\": \"deny\", \"deny\": [\"slack\"]}}} (or point KIROCREW_SECURITY_POLICY at that file). The endpoint then answers slack:false, the Slack row reads 'Off by admin' and its pane reads 'Slack is turned off by your administrator'."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Pure UI branch on a stubbed policy response.",
+      "rationale": "Pure UI branch on a staged policy file.",
       "source": [
         "website/src/pages/settings/ChannelsPanel.tsx",
         "website/src/pages/settings/ChannelDisabledPanel.tsx"
@@ -5723,23 +5725,25 @@
     {
       "id": "standalone-startup-feature-video",
       "feature": "onboarding",
-      "title": "Startup feature video",
-      "user_story": "As a returning user, I want one short clip introducing a new feature on the first launch after it ships, so that I discover what changed.",
+      "title": "Explore feature video card",
+      "user_story": "As a returning user, I want a short clip introducing a feature I have not used yet, so that I discover what changed.",
       "start_url": "/chat",
-      "entry_path": "Appears by itself at startup when nothing else claims the screen",
+      "entry_path": "Settings → Developer → Feature Previews → Explore on; then the top-bar Explore pill → the video card at the top of the Explore sheet (ExploreIntroVideo.tsx, mounted by MilestonesSheet.tsx). There is no startup popup.",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Catalog needs an unseen entry; persistent (not incognito) session; no pending release notes or onboarding."
+        "notes": "No mechanical staging exists without product code: a clip is offered only with dashboard.feature_videos_enabled on (off by default) and its media on disk, the built-in list ships no media, and hosted clips come only from a manifest signed with the offline release key. On a seeded home GET /api/feature-videos/library answers {\"videos\": [], \"enabled\": false}."
       },
-      "runnable": "nightly",
+      "runnable": "excluded",
       "estimated_steps": 2,
-      "rationale": "Gate is sequencing policy over a local catalog; seedable and retired by a POST. Assert the clip surface renders, not video playback.",
+      "rationale": "Excluded: a clip needs dashboard.feature_videos_enabled, its media on disk and a manifest signed with the offline release key, and the built-in list ships no media, so the card never renders on the target.",
       "source": [
-        "docs/feature-map/README.md"
+        "docs/feature-map/README.md",
+        "src/kiro_crew/docs/feature-videos.md",
+        "website/src/components/milestones/ExploreIntroVideo.tsx"
       ],
-      "priority": "P2",
+      "priority": "P3",
       "merged_from": [
         "standalone-startup-feature-video"
       ],
@@ -7133,23 +7137,24 @@
     {
       "id": "themes-l2-persona-consent-modal",
       "feature": "themes",
-      "title": "Selecting an installed L2 pack with a persona shows the consent modal verbatim before first chat",
+      "title": "Selecting an installed L2 pack with a persona shows the consent dialog with the persona verbatim",
       "user_story": "As a user, I want to see exactly the persona text a theme will inject and consent to it, so that nothing surprising reaches the agent.",
       "start_url": "/settings/display",
-      "entry_path": "Settings > Display > select installed L2 pack > Chat > first message",
+      "entry_path": "Settings > Display > Theme (sub-tab) > Theme picker > the installed L2 pack > 'Enable \"<pack name>\" experience?' dialog: Persona checkbox, the persona text verbatim, Keep colors only / Save",
       "preconditions": {
         "seed": "minimal",
         "members": [
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Harness writes an L2 pack with persona.md locally first; consent hash lives in localStorage and a reinstall with changed text re-prompts."
+        "notes": "No fixture ships a pack. Stage one before navigating: a folder <dir>/gui-persona with theme.json = {\"slug\": \"gui-persona\", \"name\": \"GUI Persona\", \"emoji\": \"🎭\", \"level\": 2, \"formatVersion\": 1}, variables.json = {\"dark\": {\"--bg\": \"#101820\", \"--text\": \"#f2f2f2\", \"--accent\": \"#ffb000\"}, \"light\": {\"--bg\": \"#fffaf0\", \"--text\": \"#101820\", \"--accent\": \"#b36b00\"}} and persona.md = 'You answer like a calm lighthouse keeper. Drop this persona immediately whenever the user asks. Security and accuracy always override the persona.'; then, as the dashboard owner, POST /api/themes/install {\"source\": {\"type\": \"local\", \"path\": \"<dir>/gui-persona\"}} (a local source spawns nothing, so no sandbox is needed). 'GUI Persona' then shows under Custom & Installed Themes and in the Theme picker. The answer is kept in this browser's localStorage (mc-theme-experience-gui-persona), so the dialog shows once per browser profile; a reinstall with a changed persona.md asks again about the persona."
       },
       "runnable": "nightly",
       "estimated_steps": 8,
       "rationale": "All local: install, modal, hash-gated injection on the canned fake turn; the modal and re-prompt are visible.",
       "source": [
-        "docs/system-specs/modules/themes.md"
+        "docs/system-specs/modules/themes.md",
+        "website/src/components/ThemeExperienceLayer.tsx"
       ],
       "priority": "P2",
       "merged_from": [

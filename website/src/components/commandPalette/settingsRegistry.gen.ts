@@ -3232,6 +3232,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.show-linked-items-expanded-on-session-cards",
+    "label": "Show linked items expanded on session cards",
+    "labelKey": "pages.settings.displayPanel.expand_linked_items",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    },
+    "configKey": "dashboard.expand_linked_items"
+  },
+  {
     "id": "display.show-search-in-the-top-bar",
     "label": "Show search in the top bar",
     "labelKey": "pages.settings.displayPanel.show_topbar_search",

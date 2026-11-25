@@ -254,12 +254,13 @@ def test_a_widget_reply_is_found_by_its_title_and_prose_never_its_body():
     assert [h["index"] for h in _search(log, query=shs.message_query("sales"))["hits"]] == [0]
 
 
-def test_a_bot_chat_does_not_search_its_file_cards():
+def test_a_sent_video_is_a_video_and_a_file():
     log = _PagedRows([_file_row(0, "clip.mp4", "/out/clip.mp4", "video/mp4")])
 
-    assert [h["index"] for h in _search(log, kind="videos")["hits"]] == [0]
-    assert _search(log, kind="videos", file_rows=False)["hits"] == []
-    assert _search(log, kind="files", file_rows=False)["counts"]["files"] == 0
+    body = _search(log, kind="videos")
+
+    assert [h["index"] for h in body["hits"]] == [0]
+    assert (body["counts"]["videos"], body["counts"]["files"]) == (1, 1)
 
 
 def test_a_credential_in_a_file_name_or_widget_title_is_redacted():
@@ -460,15 +461,17 @@ def test_a_bot_chat_preview_returns_only_what_its_chat_draws():
         {"role": "tool", "content": "ran ls", "ts": "2026-11-01T10:00:01+00:00"},
         _row(2, "\u200b", role="assistant"),
         _row(3, "hi there", role="assistant"),
+        _file_row(4, "clip.mp4", "/out/clip.mp4", "video/mp4"),
     ]
     log = _PagedRows(rows)
 
-    bot = shs.read_around(log, "k", start=0, end=4, speech_only=True)
-    session = shs.read_around(log, "k", start=0, end=4)
+    bot = shs.read_around(log, "k", start=0, end=5, speech_only=True)
+    session = shs.read_around(log, "k", start=0, end=5)
 
-    assert [r["content"] for r in bot["rows"]] == ["hello", "hi there"]
-    assert len(session["rows"]) == 4
-    assert (bot["start"], bot["end"]) == (0, 4)
+    assert [r["role"] for r in bot["rows"]] == ["user", "assistant", "file"]
+    assert [r["content"] for r in bot["rows"][:2]] == ["hello", "hi there"]
+    assert len(session["rows"]) == 5
+    assert (bot["start"], bot["end"]) == (0, 5)
 
 
 def test_around_says_when_nothing_earlier_can_be_read():
@@ -584,18 +587,22 @@ async def test_a_query_without_searchable_terms_does_not_become_filter_only(monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("member, expected", [(False, [0]), (True, [])])
-async def test_the_route_leaves_file_cards_out_of_a_bot_chat(monkeypatch, member, expected):
+@pytest.mark.parametrize("member", [False, True])
+async def test_the_route_finds_a_sent_video_in_either_chat(monkeypatch, member):
+    # A bot chat draws file_send cards too (crewmateBubbles.isCrewmateChatRow),
+    # so its search finds them, and its preview shows the card a hit opens.
     log = _PagedRows([_file_row(0, "clip.mp4", "/out/clip.mp4", "video/mp4")])
     monkeypatch.setattr(shs, "slot_history_key", lambda slot: slot.key)
     monkeypatch.setattr(shs, "is_member_thread", lambda slot: member)
     app = _app(log, {"chat-1": _slot("chat-1")})
 
     status, body = await _get(app, "/api/chat/slots/chat-1/history/search?kind=videos")
+    _, around = await _get(app, "/api/chat/slots/chat-1/history/around?start=0&end=1")
 
     assert status == 200
-    assert [hit["index"] for hit in body["hits"]] == expected
-    assert body["counts"]["videos"] == len(expected)
+    assert [hit["index"] for hit in body["hits"]] == [0]
+    assert body["counts"]["videos"] == 1
+    assert [m["role"] for m in around["messages"]] == ["file"]
 
 
 @pytest.mark.parametrize(

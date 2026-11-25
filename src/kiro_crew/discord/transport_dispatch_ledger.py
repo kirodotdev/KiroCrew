@@ -27,8 +27,13 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
+from kiro_crew.messaging import privacy_mode
 from kiro_crew.messaging.dispatch import TurnRecord
-from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
+from kiro_crew.messaging.upload_gate import (
+    session_blocks_reads,
+    session_is_restricted,
+    uploads_restricted,
+)
 from kiro_crew.security import redact, redact_local_paths
 
 if TYPE_CHECKING:
@@ -156,6 +161,25 @@ async def _session_restricted(self: DiscordDispatcher, session_key: str) -> bool
     )
 
 
+async def _blocks_memory_reads(self: DiscordDispatcher, session_key: str) -> bool:
+    """True when this session's prompt must take NO memory or lessons.
+
+    The read half of :meth:`_session_restricted` and the pipeline's
+    ``blocks_reads`` adapter: only ``temporary`` (``!temporary``, or a resumed
+    temporary dashboard session) blocks reads, while ``incognito`` still reads.
+    Same shared predicate Telegram asks
+    (:func:`kiro_crew.messaging.upload_gate.session_blocks_reads`); the probe is
+    injected and imported here for the reason given on :meth:`_session_restricted`.
+    """
+    from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+    return await session_blocks_reads(
+        getattr(self._session_resume, "dashboard_state", None),
+        session_key,
+        persisted_probe=_probe_persisted_session,
+    )
+
+
 async def _uploads_restricted(self: DiscordDispatcher, session_key: str) -> bool:
     """True when this session must not ship local file bytes to Discord.
 
@@ -220,8 +244,13 @@ def _persist_turn(
     is ``""``), and is tested for truth here exactly as
     ``project_channel_turn_live`` tests it, so the live window and the disk
     can never disagree about whether an assistant row exists.
+
+    A ``!temporary`` / ``!incognito`` conversation writes nothing here either:
+    ``_record_turn`` already asked the dashboard-aware ``_session_restricted``
+    (which restores the durable mode first), and this sync check is the second
+    gate, as on Telegram's ``_persist_turn``, so no new caller can skip it.
     """
-    if self.conv_log is None:
+    if self.conv_log is None or privacy_mode.is_restricted(session_key):
         return
     if mirror_mids is not None:
         user_mid, assistant_mid = mirror_mids
