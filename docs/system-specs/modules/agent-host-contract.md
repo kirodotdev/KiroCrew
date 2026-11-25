@@ -437,6 +437,19 @@ authentication failure on a Strands session names the Settings → Agent Harness
 Strands → Model provider card, which writes this map, as the remedy
 (`transport_errors._format_acp_error`) instead of the host-credential advice the other
 harnesses get. A Settings form that offers these providers writes exactly this map.
+Bedrock Mantle runs on the same two names. The pinned harness builds a
+`bedrock-mantle/` model whose SDK reads its region from `AWS_DEFAULT_REGION` only and
+always mints a SigV4 token, so under the sandbox it could use neither. The gate module
+replaces the harness's `bedrock-mantle` provider build with one that keeps the
+harness's model (reasoning effort, native web search, the web_fetch summarizer) and
+resolves each request's client arguments itself: the region in plain Bedrock's order
+(an explicit one, then boto3's, then `AWS_REGION`), checked with the SDK's
+`validate_region` before it goes into a URL, the SDK's own per-model base path, and
+`AWS_BEARER_TOKEN_BEDROCK` as the bearer key, with nothing minted. Without the key the
+SDK's own route runs. Nothing resolves at build time, because the read-back boot puts
+a canary under every mapped name. A Mantle request also needs the key's IAM identity
+to allow `bedrock-mantle:CallWithBearerToken`. An operator project that builds its own
+mantle model is not changed.
 The provider and model a session runs on are two plain settings beside it:
 `agent.strands_provider`, one of the prefixes in the table (default `bedrock`, the one
 list is `config/sections_agent_env.STRANDS_PROVIDER_CHOICES`), and
