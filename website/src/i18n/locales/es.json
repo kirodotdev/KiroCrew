@@ -14616,11 +14616,17 @@
         "earlier_step_many": "{{count}} pasos anteriores",
         "earlier_step_one": "{{count}} paso anterior",
         "earlier_step_other": "{{count}} pasos anteriores",
+        "folded_message_many": "{{count}} mensajes",
+        "folded_message_one": "{{count}} mensaje",
+        "folded_message_other": "{{count}} mensajes",
         "hide_earlier_steps": "Ocultar pasos anteriores",
         "hide_tool_calls": "Ocultar llamadas a herramientas",
         "worked_through_step_many": "Completó {{count}} pasos",
         "worked_through_step_one": "Completó {{count}} paso",
-        "worked_through_step_other": "Completó {{count}} pasos"
+        "worked_through_step_other": "Completó {{count}} pasos",
+        "worked_through_step_with_messages_many": "Completó {{count}} pasos, incluyendo {{messages}}",
+        "worked_through_step_with_messages_one": "Completó {{count}} paso, incluyendo {{messages}}",
+        "worked_through_step_with_messages_other": "Completó {{count}} pasos, incluyendo {{messages}}"
       },
       "userMessage": {
         "cancel": "Cancelar",

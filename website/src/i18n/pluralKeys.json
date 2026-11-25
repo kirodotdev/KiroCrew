@@ -240,6 +240,8 @@
   "pages.chat.subagentRunCard.chip_failed",
   "pages.chat.subagentRunCard.chip_stopped",
   "pages.chat.turnBlock.worked_through_step",
+  "pages.chat.turnBlock.worked_through_step_with_messages",
+  "pages.chat.turnBlock.folded_message",
   "pages.chat.turnBlock.earlier_step",
   "pages.chatPage.knowledge_item",
   "pages.chatPage.knowledge_tokens",

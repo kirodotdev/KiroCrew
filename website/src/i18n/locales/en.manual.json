@@ -6599,10 +6599,14 @@
       "turnBlock": {
         "earlier_step_one": "{{count}} earlier step",
         "earlier_step_other": "{{count}} earlier steps",
+        "folded_message_one": "{{count}} message",
+        "folded_message_other": "{{count}} messages",
         "hide_earlier_steps": "Hide earlier steps",
         "hide_tool_calls": "Hide tool calls",
         "worked_through_step_one": "Worked through {{count}} step",
-        "worked_through_step_other": "Worked through {{count}} steps"
+        "worked_through_step_other": "Worked through {{count}} steps",
+        "worked_through_step_with_messages_one": "Worked through {{count}} step, including {{messages}}",
+        "worked_through_step_with_messages_other": "Worked through {{count}} steps, including {{messages}}"
       },
       "deepLink": {
         "message_unavailable": "This message is no longer in this conversation."

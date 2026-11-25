@@ -14266,10 +14266,14 @@
       "turnBlock": {
         "earlier_step_one": "{{count}} früherer Schritt",
         "earlier_step_other": "{{count}} frühere Schritte",
+        "folded_message_one": "{{count}} Nachricht",
+        "folded_message_other": "{{count}} Nachrichten",
         "hide_earlier_steps": "Frühere Schritte ausblenden",
         "hide_tool_calls": "Werkzeugaufrufe ausblenden",
         "worked_through_step_one": "{{count}} Schritt durchgearbeitet",
-        "worked_through_step_other": "{{count}} Schritte durchgearbeitet"
+        "worked_through_step_other": "{{count}} Schritte durchgearbeitet",
+        "worked_through_step_with_messages_one": "{{count}} Schritt durchgearbeitet, darunter {{messages}}",
+        "worked_through_step_with_messages_other": "{{count}} Schritte durchgearbeitet, darunter {{messages}}"
       },
       "userMessage": {
         "cancel": "Abbrechen",

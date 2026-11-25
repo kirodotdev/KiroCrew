@@ -13916,9 +13916,11 @@
       },
       "turnBlock": {
         "earlier_step_other": "이전 단계 {{count}}개",
+        "folded_message_other": "메시지 {{count}}개",
         "hide_earlier_steps": "이전 단계 숨기기",
         "hide_tool_calls": "도구 호출 숨기기",
-        "worked_through_step_other": "{{count}}개 단계 수행"
+        "worked_through_step_other": "{{count}}개 단계 수행",
+        "worked_through_step_with_messages_other": "{{count}}개 단계 수행({{messages}} 포함)"
       },
       "userMessage": {
         "cancel": "취소",

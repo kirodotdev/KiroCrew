@@ -14232,10 +14232,14 @@
       "turnBlock": {
         "earlier_step_one": "[{{count}} èàŕĺìèŕ şţèþ ············]",
         "earlier_step_other": "[{{count}} èàŕĺìèŕ şţèþş ·············]",
+        "folded_message_one": "[{{count}} ɱèşşàğè ············]",
+        "folded_message_other": "[{{count}} ɱèşşàğèş ··············]",
         "hide_earlier_steps": "[Ĥìðè èàŕĺìèŕ şţèþş ················]",
         "hide_tool_calls": "[Ĥìðè ţøøĺ çàĺĺş ··············]",
         "worked_through_step_one": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþ ··················]",
-        "worked_through_step_other": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþş ···············]"
+        "worked_through_step_other": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþş ···············]",
+        "worked_through_step_with_messages_one": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþ, ìñçĺùðìñğ {{messages}} ················]",
+        "worked_through_step_with_messages_other": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþş, ìñçĺùðìñğ {{messages}} ·················]"
       },
       "deepLink": {
         "message_unavailable": "[Ţĥìş ɱèşşàğè ìş ñø ĺøñğèŕ ìñ ţĥìş çøñṽèŕşàţìøñ. ························]"

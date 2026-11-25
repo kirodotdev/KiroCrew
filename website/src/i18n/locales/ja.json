@@ -13916,9 +13916,11 @@
       },
       "turnBlock": {
         "earlier_step_other": "以前の {{count}} ステップ",
+        "folded_message_other": "{{count}} 件のメッセージ",
         "hide_earlier_steps": "以前のステップを非表示",
         "hide_tool_calls": "ツール呼び出しを非表示",
-        "worked_through_step_other": "{{count}} ステップを処理"
+        "worked_through_step_other": "{{count}} ステップを処理",
+        "worked_through_step_with_messages_other": "{{count}} ステップを処理（{{messages}}を含む）"
       },
       "userMessage": {
         "cancel": "キャンセル",

@@ -546,6 +546,62 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
   })
 })
 
+// A reader must be able to tell a fold of tool calls from a fold that hides
+// text the agent wrote for them, without opening it.
+describe('TurnBlock — the collapse-all pill names the messages it folds', () => {
+  const renderItem = (it: TurnItem, i: number) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+
+  it('says how many folded steps are messages while folded, and Hide reasoning once open', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Inspecting the config file before patching.', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: write', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Patched it; building once more to be sure.', ts: '4' }, idx: 3 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: build', ts: '5' }, idx: 4 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Patched the config and verified the build still passes cleanly.', ts: '6' }, idx: 5 },
+    ]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Worked through 5 steps, including 2 messages' }))
+    expect(screen.getByRole('button', { name: 'Hide reasoning' })).toBeInTheDocument()
+  })
+
+  it('does not count a reply with no text of its own, a bare zero-width space or a steering note, as a message', () => {
+    // The step count counts both text-less rows.
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: '\u200b', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Inspecting the config file before patching.', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: '[STEERING steer-ab12: Skipped the blocked command.]', ts: '4' }, idx: 3 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: write', ts: '5' }, idx: 4 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Patched the config and verified the build still passes cleanly.', ts: '6' }, idx: 5 },
+    ]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(screen.getByRole('button', { name: 'Worked through 5 steps, including 1 message' })).toBeInTheDocument()
+  })
+
+  it('keeps the plain step count when the fold holds no text the agent wrote', () => {
+    // Reasoning, tool calls and a system notice are not messages for the reader.
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'thinking', content: 'Read the config, then patch it.', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: '✅ Compacted the conversation.', ts: '3', kind: 'compaction' }, idx: 2 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: write', ts: '4' }, idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Patched the config and verified the build still passes cleanly.', ts: '5' }, idx: 4 },
+    ]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(screen.getByRole('button', { name: 'Worked through 4 steps' })).toBeInTheDocument()
+  })
+
+  it('leaves a sub-agent fan-out fold at the plain step count, its replies restated below it', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: 'Two of three agents are in; the third is still reading.', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'All three agents are in; their profiles follow in the synthesis.', ts: '2' }, idx: 1 },
+    ]
+    render(<TurnBlock turn={{ ...makeTurn(items), interim: true }} renderItem={renderItem} collapseAll={true} />)
+    expect(screen.getByRole('button', { name: 'Worked through 2 steps' })).toBeInTheDocument()
+  })
+})
+
 /**
  * A tool-refusal recovery is queued after the turn's dispatch ends, so it can land
  * after an answer the user already read, and the reply to it continues the same

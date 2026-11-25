@@ -14266,10 +14266,14 @@
       "turnBlock": {
         "earlier_step_one": "আগের {{count}}টি ধাপ",
         "earlier_step_other": "আগের {{count}}টি ধাপ",
+        "folded_message_one": "{{count}}টি বার্তা",
+        "folded_message_other": "{{count}}টি বার্তা",
         "hide_earlier_steps": "আগের ধাপগুলো লুকান",
         "hide_tool_calls": "টুল কলগুলো লুকান",
         "worked_through_step_one": "{{count}}টি ধাপ সম্পন্ন করেছে",
-        "worked_through_step_other": "{{count}}টি ধাপ সম্পন্ন করেছে"
+        "worked_through_step_other": "{{count}}টি ধাপ সম্পন্ন করেছে",
+        "worked_through_step_with_messages_one": "{{count}}টি ধাপ সম্পন্ন করেছে ({{messages}} সহ)",
+        "worked_through_step_with_messages_other": "{{count}}টি ধাপ সম্পন্ন করেছে ({{messages}} সহ)"
       },
       "userMessage": {
         "cancel": "বাতিল",

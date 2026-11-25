@@ -14966,12 +14966,20 @@
         "earlier_step_many": "{{count}} предыдущих шагов",
         "earlier_step_one": "{{count}} предыдущий шаг",
         "earlier_step_other": "{{count}} предыдущих шага",
+        "folded_message_few": "{{count}} сообщения",
+        "folded_message_many": "{{count}} сообщений",
+        "folded_message_one": "{{count}} сообщение",
+        "folded_message_other": "{{count}} сообщения",
         "hide_earlier_steps": "Скрыть предыдущие шаги",
         "hide_tool_calls": "Скрыть вызовы инструментов",
         "worked_through_step_few": "Проработано {{count}} шага",
         "worked_through_step_many": "Проработано {{count}} шагов",
         "worked_through_step_one": "Проработан {{count}} шаг",
-        "worked_through_step_other": "Проработано {{count}} шага"
+        "worked_through_step_other": "Проработано {{count}} шага",
+        "worked_through_step_with_messages_few": "Проработано {{count}} шага, включая {{messages}}",
+        "worked_through_step_with_messages_many": "Проработано {{count}} шагов, включая {{messages}}",
+        "worked_through_step_with_messages_one": "Проработан {{count}} шаг, включая {{messages}}",
+        "worked_through_step_with_messages_other": "Проработано {{count}} шага, включая {{messages}}"
       },
       "userMessage": {
         "cancel": "Отмена",

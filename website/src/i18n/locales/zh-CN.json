@@ -13916,9 +13916,11 @@
       },
       "turnBlock": {
         "earlier_step_other": "之前的 {{count}} 个步骤",
+        "folded_message_other": "{{count}} 条消息",
         "hide_earlier_steps": "隐藏之前的步骤",
         "hide_tool_calls": "隐藏工具调用",
-        "worked_through_step_other": "已完成 {{count}} 个步骤"
+        "worked_through_step_other": "已完成 {{count}} 个步骤",
+        "worked_through_step_with_messages_other": "已完成 {{count}} 个步骤，其中包括 {{messages}}"
       },
       "userMessage": {
         "cancel": "取消",
