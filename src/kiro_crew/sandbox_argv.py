@@ -54,9 +54,11 @@ from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
 from kiro_crew.sandbox_seals import (
     SandboxCeilingUnsealable,
     _materialize_kiro_mcp_registry,
+    _materialize_kiro_permission_rules,
     _materialize_sealable_ceilings,
     _refuse_linked_models_leaf,
     _resolved_kiro_mcp_registry_targets,
+    _resolved_kiro_permission_rule_targets,
 )
 from kiro_crew.sandbox_staging import (
     _materialize_declared_mask_dirs,
@@ -475,13 +477,18 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *(t for t in _relocated_crew_targets(app_readonly_leaves) if _sealed(t)),
         )
     )
-    # kiro-cli's own trusted files ride one host field: its agents tree and its user MCP
-    # registry, each sealed read-only with its parents guarded against rename. The spawn
+    # kiro-cli's own trusted files ride one host field: its agents tree, its user MCP
+    # registry and, while ``mcp.protect_kiro_permission_rules`` is on, its user permission
+    # rule files, each sealed read-only with its parents guarded against rename. The spawn
     # folder's project MCP files get their own field (``PlanHost.project_mcp_targets``).
     # Call-time import: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
     from kiro_crew.project_mcp_files import project_mcp_targets
 
-    kiro_cli_targets = (*_resolved_kiro_agents_targets(), *_resolved_kiro_mcp_registry_targets())
+    kiro_cli_targets = (
+        *_resolved_kiro_agents_targets(),
+        *_resolved_kiro_mcp_registry_targets(),
+        *_resolved_kiro_permission_rule_targets(),
+    )
     kiro_agents_targets = tuple(dict.fromkeys(kiro_cli_targets))
     project_targets = tuple(
         t for t in project_mcp_targets(request.project_folder) if t not in kiro_cli_targets
@@ -931,6 +938,9 @@ def namespace_argv(
     _materialize_sealable_ceilings(_required_targets)
     # kiro-cli's MCP registry the same way, but best-effort: never a refusal.
     _materialize_kiro_mcp_registry()
+    # And kiro-cli's permission rules while the owner's fence is on (after the registry,
+    # which creates ``settings``); best-effort too.
+    _materialize_kiro_permission_rules()
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)

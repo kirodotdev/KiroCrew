@@ -203,6 +203,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         require_unaliased_model_file _resolved_kiro_mcp_registry_targets
         _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry
         _MAX_REGISTRY_LINK_HOPS _registry_chain_end
+        _kiro_permission_rules_fenced _resolved_kiro_permission_rule_targets
+        _materialize_kiro_permission_rules _KIRO_PERMISSION_RULE_FILES
+        _EMPTY_KIRO_PERMISSION_RULES
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES

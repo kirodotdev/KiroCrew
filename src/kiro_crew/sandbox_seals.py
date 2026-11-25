@@ -273,6 +273,87 @@ def _materialize_kiro_mcp_registry() -> list[str]:
     return created
 
 
+#: kiro-cli's user permission rule files in ``settings``. An ``effect: allow`` rule in
+#: either one runs its tool with no permission request, so Kiro Crew's gate never sees it.
+_KIRO_PERMISSION_RULE_FILES: tuple[str, ...] = ("permissions.yaml", "permissions.json")
+
+#: What an absent ``permissions.yaml`` is created with while the fence is on: no rules,
+#: so every call asks, the same as no file. Never zero bytes: kiro-cli refuses every
+#: tool call when this file is empty.
+_EMPTY_KIRO_PERMISSION_RULES = b"rules: []\n"
+
+
+def _kiro_permission_rules_fenced() -> bool:
+    """Whether ``mcp.protect_kiro_permission_rules`` is in force, read like the file gate.
+
+    The same reader the file-edit gate uses (``security.paths._permission_rule_rows``), so
+    the shell seal and the file-tool fence are on and off together, and a degraded config
+    keeps both on. Never raises.
+    """
+    try:
+        from kiro_crew.security.paths import _permission_rule_rows
+
+        return bool(_permission_rule_rows())
+    except Exception:  # pragma: no cover - the reader already fails toward fenced
+        logger.warning("could not read mcp.protect_kiro_permission_rules; sealing", exc_info=True)
+        return True
+
+
+def _resolved_kiro_permission_rule_targets() -> list[str]:
+    """kiro-cli's user permission rule files, sealed read-only while the owner's fence is on.
+
+    ``mcp.protect_kiro_permission_rules`` already refuses the agent's file-edit tools on
+    these files; this is its OS half, so a sandboxed shell cannot write them either. Off
+    (the default) returns nothing and the sandbox is exactly as before. Same spellings as
+    the MCP registry (``$HOME/.kiro``, ``KIRO_HOME``, and each resolved path). Kiro Crew
+    never writes these files and its approvals never pick kiro-cli's "always" option, so
+    no in-sandbox writer loses anything. ``workspace-roots`` is not sealed here: kiro-cli
+    records a workspace's trust answer there. Never raises.
+    """
+    if not _kiro_permission_rules_fenced():
+        return []
+    targets: list[str] = []
+    for registry in _resolved_kiro_mcp_registry_targets():
+        settings = os.path.dirname(registry)
+        targets.extend(os.path.join(settings, name) for name in _KIRO_PERMISSION_RULE_FILES)
+    return list(dict.fromkeys(targets))
+
+
+def _materialize_kiro_permission_rules() -> list[str]:
+    """Create an absent ``permissions.yaml`` so the Linux seal has a file to bind.
+
+    Only while the fence is on, and only in a real ``settings`` folder that holds neither
+    rule file: a new ``permissions.yaml`` would be read instead of an existing
+    ``permissions.json``, so a folder with either file, or a link at either name, is left
+    alone. Published with ``rules: []`` through ``_publish_empty_ceiling`` (no clobber, no
+    half-written file). Never raises and never fails a spawn; an absent name stays
+    unsealed on Linux and the file-edit fence still holds.
+    """
+    created: list[str] = []
+    if not _kiro_permission_rules_fenced():
+        return created
+    settings_dirs: list[str] = []
+    for registry in _resolved_kiro_mcp_registry_targets():
+        settings = os.path.dirname(registry)
+        if settings not in settings_dirs:
+            settings_dirs.append(settings)
+    for settings in settings_dirs:
+        try:
+            if not stat.S_ISDIR(os.lstat(settings).st_mode):
+                continue
+        except OSError:
+            continue
+        names = [os.path.join(settings, name) for name in _KIRO_PERMISSION_RULE_FILES]
+        if any(os.path.lexists(name) for name in names):
+            continue
+        target = names[0]
+        if _publish_empty_ceiling(target, settings, _EMPTY_KIRO_PERMISSION_RULES):
+            created.append(target)
+        elif not os.path.lexists(target):
+            logger.warning("could not create %s to seal it read-only", safe_terminal_line(target))
+    return created
+
+
 class SandboxCeilingUnsealable(RuntimeError):
     """A governance ceiling could not be made sealable, so the sandbox refuses to launch.
 
