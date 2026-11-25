@@ -118,7 +118,7 @@ jobs:
           [ "${#PURE[@]}" -eq 1 ] && [ -f "${PURE[0]}" ] || { echo "::error::expected one pure wheel"; exit 1; }
           "$GATE_PYTHON" -m venv "$RUNNER_TEMP/gate"
           "$RUNNER_TEMP/gate/bin/pip" install --quiet "${PURE[0]}"
-          WANT="manylinux_2_28_x86_64 manylinux_2_28_aarch64 macosx_11_0_arm64 macosx_11_0_x86_64"
+          WANT="manylinux_2_26_x86_64 manylinux_2_28_x86_64 manylinux_2_28_aarch64 macosx_11_0_arm64 macosx_11_0_x86_64"
           for TAG in $WANT; do
             ls cli-platform/*-py3-none-"$TAG".whl >/dev/null 2>&1 \
               || { echo "::error::no platform wheel for $TAG; refusing to publish without it"; exit 1; }

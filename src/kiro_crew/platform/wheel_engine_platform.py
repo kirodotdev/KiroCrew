@@ -23,10 +23,15 @@ _HOST_TAGS = {
     ("Darwin", "arm64"): "macosx_11_0_arm64",
     ("Darwin", "x86_64"): "macosx_11_0_x86_64",
 }
-PLATFORM_WHEEL_TAGS = frozenset(_HOST_TAGS.values())
+#: The linux-x64 wheel for glibc 2.26 and 2.27 (Amazon Linux 2): it carries the
+#: Amazon Linux 2 KAS pin, the one ``kas_pin.host_pin_version`` picks there.
+_AL2_X64_TAG = "manylinux_2_26_x86_64"
+PLATFORM_WHEEL_TAGS = frozenset({*_HOST_TAGS.values(), _AL2_X64_TAG})
 _MACHINE_ALIASES = {"amd64": "x86_64", "x64": "x86_64", "arm64": "arm64", "aarch64": "aarch64"}
 #: The bundled Node's glibc floor, the ``manylinux_2_28`` in the Linux tags.
 _GLIBC_FLOOR = (2, 28)
+#: The Amazon Linux 2 pin's linux-x64 floor, the ``manylinux_2_26`` in its tag.
+_AL2_GLIBC_FLOOR = (2, 26)
 #: The bundled Node's macOS floor, the ``macosx_11_0`` in the Mac tags.
 _MACOS_FLOOR = 11
 
@@ -45,8 +50,10 @@ def host_wheel_tag(
 ) -> str | None:
     """The platform wheel tag this host installs, or ``None`` for the pure wheel.
 
-    A Linux host whose C library is not glibc 2.28 or newer (musl, an old glibc, or
-    one that cannot be read) gets ``None``, and so does a Mac below macOS 11 (or one
+    A linux-x64 host on glibc 2.26 or 2.27 gets the ``manylinux_2_26_x86_64`` wheel,
+    which carries the Amazon Linux 2 pin. Any other Linux host whose C library is
+    not glibc 2.28 or newer (musl, an older glibc, or one that cannot be read) gets
+    ``None``, and so does a Mac below macOS 11 (or one
     whose version cannot be read): pip would refuse the ``manylinux_2_28`` or
     ``macosx_11_0`` wheel there, and so must the update. *mac_version* is the
     ``platform.mac_ver()`` release string, read from this host when not given.
@@ -67,7 +74,13 @@ def host_wheel_tag(
     from kiro_crew import constants
 
     glibc = constants._host_glibc_version()
-    return tag if glibc is not None and glibc >= _GLIBC_FLOOR else None
+    if glibc is None:
+        return None
+    if glibc >= _GLIBC_FLOOR:
+        return tag
+    if tag == "manylinux_2_28_x86_64" and glibc >= _AL2_GLIBC_FLOOR:
+        return _AL2_X64_TAG
+    return None
 
 
 def platform_manifest_url(feed_base: str, channel: str, tag: str) -> str:

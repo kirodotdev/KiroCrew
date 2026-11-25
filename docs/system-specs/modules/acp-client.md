@@ -5942,8 +5942,11 @@ version runs is the host's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
 published `manifest.json`, which in turn pins every artifact), and
 `KAS_PIN_AL2_MANIFEST_SHA256` for the AL2 pin (`KAS_PIN_MANIFESTS` maps each pin to
-its digest). The desktop, Docker and platform-wheel builds stage `KAS_PIN_VERSION`:
-they target glibc 2.28+. The version is
+its digest). The desktop and Docker builds and every platform wheel but one stage
+`KAS_PIN_VERSION`: they target glibc 2.28+. The `manylinux_2_26_x86_64` platform
+wheel stages `KAS_PIN_AL2_VERSION` (`scripts/kas_platform_wheel.py` `TAG_PINS`,
+#42475), the pin `host_pin_version()` picks on the glibc 2.26 and 2.27 hosts it
+installs on. The version is
 an engine release, optionally followed by `-node<N>` when the same engine build
 is republished with a different bundled Node runtime (a Node security fix is
 never an overwrite of a published `kas/<version>/` key); `KAS_PIN_ENGINE_RELEASE`

@@ -33,6 +33,10 @@ jobs:
       max-parallel: 4
       matrix:
         include:
+          # glibc 2.26/2.27 (Amazon Linux 2): carries the AL2 KAS pin
+          # (kas_platform_wheel.TAG_PINS). Its Node runs on the newer runner too.
+          - tag: manylinux_2_26_x86_64
+            os: ubuntu-22.04
           - tag: manylinux_2_28_x86_64
             os: ubuntu-22.04
           - tag: manylinux_2_28_aarch64
@@ -75,21 +79,52 @@ jobs:
           "$RUNNER_TEMP/kc/bin/python" scripts/kas_platform_wheel.py verify platform-dist/*.whl
 
       - name: Gate - a clean install runs the engine inside the wheel
+        env:
+          TAG: ${{ matrix.tag }}
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/kc/bin/pip" install --quiet --no-deps --force-reinstall platform-dist/*.whl
           HOME_DIR="$(mktemp -d)"
+          # The pin this tag carries: the runner's own glibc would pick the normal
+          # pin, so the AL2 wheel's engine is asked for by its version.
+          PIN="$("$RUNNER_TEMP/kc/bin/python" scripts/kas_platform_wheel.py pin --tag "$TAG")"
           # Asked through the gateway's own reader, not `kirocrew kas status`: an LTS
           # build refuses that command until someone signs in, and this home has no one.
-          KIROCREW_HOME="$HOME_DIR" "$RUNNER_TEMP/kc/bin/python" -I -c '
+          PIN="$PIN" KIROCREW_HOME="$HOME_DIR" "$RUNNER_TEMP/kc/bin/python" -I -c '
+          import os
           from kiro_crew.acp import kas_bundle
-          found = kas_bundle.installed_bundle()
+          found = kas_bundle.installed_bundle(version=os.environ["PIN"])
           assert found is not None and found.packaged, f"no engine inside the wheel: {found}"
           print(f"engine built into the wheel: {found.version} at {found.root}")
           ' || { echo "::error::the installed platform wheel does not report its engine"; exit 1; }
           if [ -e "$HOME_DIR/engines/kas" ] && [ -n "$(ls -A "$HOME_DIR/engines/kas")" ]; then
             echo "::error::the platform wheel downloaded an engine into the data home"; exit 1
           fi
+
+      - name: Gate - the AL2 wheel's Node runs on Amazon Linux 2
+        # The runner is glibc 2.35, so the steps above cannot see a Node or addon
+        # that needs more than 2.26. Run them in the same pinned amazonlinux:2
+        # image packaging/kas-al2/ builds them in, with an empty environment.
+        if: matrix.tag == 'manylinux_2_26_x86_64'
+        env:
+          AL2_IMAGE: amazonlinux:2@sha256:7c78b2e1be42be4552d59e4b1590cc915836748b46050aff98b7dbb04a87db59
+        run: |
+          set -euo pipefail
+          ENGINE="$(mktemp -d)"
+          # unzip keeps the exec bits the wheel records; Python's zipfile drops them.
+          unzip -q platform-dist/*.whl 'kiro_crew/_kas_engine/*' -d "$ENGINE"
+          chmod -R a+rX "$ENGINE"
+          docker run --rm --network none -v "$ENGINE:/w:ro" "$AL2_IMAGE" /bin/sh -c '
+            set -eu
+            ldd --version | head -1
+            for node in /w/kiro_crew/_kas_engine/*/node/*/bin/node; do
+              env -i "$node" --version
+              find /w/kiro_crew/_kas_engine -path "*linux*x64*" -name "*.node" | while read -r addon; do
+                env -i "$node" -e "process.dlopen({exports: {}}, process.argv[1])" "$addon"
+                echo "loaded ${addon#/w/}"
+              done
+            done
+          ' || { echo "::error::the AL2 wheel's Node or a native addon does not load on Amazon Linux 2"; exit 1; }
 
       - name: Gate - pip check accepts the installed wheel
         # The update promotes a new venv only when `python -I -m pip check` passes

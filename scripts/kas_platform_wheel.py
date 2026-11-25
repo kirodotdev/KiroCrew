@@ -13,7 +13,9 @@ staged Node once, so a build that cannot run its own engine fails here.
 
 ``verify`` is the release gate: it opens a platform wheel and fails unless it holds
 the pinned engine and a Node for the right host, with the recorded digests equal to
-the pinned manifest's. With ``--pure`` it also fails unless every file outside the
+the pinned manifest's. Each tag carries one pin (:data:`TAG_PINS`): the
+``manylinux_2_26_x86_64`` wheel carries the Amazon Linux 2 pin, every other tag the
+normal pin. With ``--pure`` it also fails unless every file outside the
 engine is byte-identical to the pure wheel it was built from.
 
 Only the standard library and the backend under ``src/`` are used. Example::
@@ -42,18 +44,28 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kiro_crew.acp import kas_bundle  # noqa: E402
-from kiro_crew.acp.kas_pin import KAS_PIN_MANIFEST_SHA256, KAS_PIN_VERSION  # noqa: E402
+from kiro_crew.acp.kas_pin import (  # noqa: E402
+    KAS_PIN_AL2_VERSION,
+    KAS_PIN_MANIFESTS,
+    KAS_PIN_VERSION,
+)
 from kiro_crew.config.sections import KAS_BUNDLE_DEFAULT_URL  # noqa: E402
 
 #: Wheel platform tag -> (platform.system(), platform.machine()) the engine is staged for.
 #: glibc 2.28 is the bundled Node's own floor (``kas_bundle._require_loadable_glibc``);
-#: macOS 11 is Node 22's.
+#: macOS 11 is Node 22's. glibc 2.26 is the Amazon Linux 2 pin's linux-x64 floor
+#: (``kas_pin.KAS_PIN_GLIBC_FLOORS``).
 PLATFORM_TAGS: dict[str, tuple[str, str]] = {
+    "manylinux_2_26_x86_64": ("Linux", "x86_64"),
     "manylinux_2_28_x86_64": ("Linux", "x86_64"),
     "manylinux_2_28_aarch64": ("Linux", "aarch64"),
     "macosx_11_0_arm64": ("Darwin", "arm64"),
     "macosx_11_0_x86_64": ("Darwin", "x86_64"),
 }
+#: The KAS pin a tag's wheel carries when it is not :data:`KAS_PIN_VERSION`. A host
+#: on glibc 2.26 or 2.27 runs the Amazon Linux 2 pin (``kas_pin.host_pin_version``),
+#: so its wheel carries that pin; pip on glibc 2.28+ prefers the 2_28 wheel.
+TAG_PINS: dict[str, str] = {"manylinux_2_26_x86_64": KAS_PIN_AL2_VERSION}
 # shortcut: no win_amd64 wheel yet. Windows has no managed-venv update route and its
 # deep node_modules paths need long-path support in pip's target; it keeps the pure
 # wheel + `kirocrew kas install`. Add it once a Windows install updates from a feed.
@@ -100,12 +112,16 @@ def _flatten_links(root: Path) -> int:
     return count
 
 
+def tag_pin(tag: str) -> str:
+    """The KAS pin the *tag* wheel carries."""
+    return TAG_PINS.get(tag, KAS_PIN_VERSION)
+
+
 def stage_engine(dest: Path, tag: str, base_url: str) -> kas_bundle.InstalledKasBundle:
     """Stage and trim the pinned engine for *tag* under *dest*/<pin>/."""
     system, machine = PLATFORM_TAGS[tag]
-    manifest, url = kas_bundle.fetch_manifest(
-        base_url, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
-    )
+    pin = tag_pin(tag)
+    manifest, url = kas_bundle.fetch_manifest(base_url, version=pin, sha256=KAS_PIN_MANIFESTS[pin])
     installed = kas_bundle.install_bundle(
         manifest, source=url, root=dest, system=system, machine=machine
     )
@@ -184,24 +200,22 @@ def build(pure_wheel: Path, tag: str, out_dir: Path, base_url: str) -> Path:
     return out
 
 
-def _pinned_digests(base_url: str, system: str, machine: str) -> tuple[str, str, str]:
-    """``(engine_sha256, node_sha256, node_key)`` the pinned manifest names for a host."""
-    manifest, _url = kas_bundle.fetch_manifest(
-        base_url, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
-    )
+def _pinned_digests(
+    base_url: str, system: str, machine: str, pin: str = KAS_PIN_VERSION
+) -> tuple[str, str, str]:
+    """``(engine_sha256, node_sha256, node_key)`` the *pin* manifest names for a host."""
+    manifest, _url = kas_bundle.fetch_manifest(base_url, version=pin, sha256=KAS_PIN_MANIFESTS[pin])
     engine = manifest.engine_for(kas_bundle.host_platform_key(system, machine))
     node_key = kas_bundle.host_node_key(system, machine)
     return engine.sha256, manifest.node_for(node_key).sha256, node_key
 
 
 def _check_record(
-    record: dict, names: set[str], *, prefix: str, want: tuple[str, str, str]
+    record: dict, names: set[str], *, prefix: str, pin: str, want: tuple[str, str, str]
 ) -> None:
     engine_sha, node_sha, node_key = want
-    if record.get("version") != KAS_PIN_VERSION:
-        raise GateError(
-            f"engine is KAS {record.get('version')!r}, this release pins {KAS_PIN_VERSION}"
-        )
+    if record.get("version") != pin:
+        raise GateError(f"engine is KAS {record.get('version')!r}, this wheel pins {pin}")
     if record.get("engine_sha256") != engine_sha:
         raise GateError("engine_sha256 does not match the pinned manifest")
     if record.get("node_key") != node_key or record.get("node_sha256") != node_sha:
@@ -239,20 +253,22 @@ def verify_wheel(wheel: Path, base_url: str, *, pure: Path | None = None) -> str
     if not match or match["tag"] not in PLATFORM_TAGS:
         raise GateError(f"{wheel.name} is not a Kiro Crew platform wheel")
     system, machine = PLATFORM_TAGS[match["tag"]]
-    prefix = f"{_ENGINE_PREFIX}/{KAS_PIN_VERSION}"
+    pin = tag_pin(match["tag"])
+    prefix = f"{_ENGINE_PREFIX}/{pin}"
     with zipfile.ZipFile(wheel) as zf:
         names = set(zf.namelist())
         try:
             record = json.loads(zf.read(f"{prefix}/{kas_bundle.KAS_BUNDLE_INSTALL_RECORD_NAME}"))
         except KeyError:
-            raise GateError(f"{wheel.name} carries no KAS {KAS_PIN_VERSION} engine") from None
+            raise GateError(f"{wheel.name} carries no KAS {pin} engine") from None
         if not isinstance(record, dict):
             raise GateError("install.json is not an object")
         _check_record(
             record,
             names,
             prefix=prefix,
-            want=_pinned_digests(base_url, system, machine),
+            pin=pin,
+            want=_pinned_digests(base_url, system, machine, pin),
         )
         node = zf.getinfo(f"{prefix}/{record['node_bin']}")
         if system != "Windows" and not (node.external_attr >> 16) & stat.S_IXUSR:
@@ -265,7 +281,7 @@ def verify_wheel(wheel: Path, base_url: str, *, pure: Path | None = None) -> str
             raise GateError(f"WHEEL metadata tags are {tags!r}, expected {want_tags!r}")
         if pure is not None:
             _check_same_as_pure(zf, pure, f"{match['stem']}-{match['version']}.dist-info")
-    return f"{wheel.name}: KAS {KAS_PIN_VERSION} + Node {record.get('node_version')} ({record['node_key']})"
+    return f"{wheel.name}: KAS {pin} + Node {record.get('node_version')} ({record['node_key']})"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -276,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("pure_wheel", type=Path)
     b.add_argument("--tag", required=True, choices=sorted(PLATFORM_TAGS))
     b.add_argument("--out", type=Path, required=True)
+    pn = sub.add_parser("pin", help="Print the KAS pin a tag's wheel carries")
+    pn.add_argument("--tag", required=True, choices=sorted(PLATFORM_TAGS))
     v = sub.add_parser("verify", help="Fail unless each platform wheel carries the pinned engine")
     v.add_argument("wheels", type=Path, nargs="+")
     v.add_argument(
@@ -287,7 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        if args.cmd == "build":
+        if args.cmd == "pin":
+            print(tag_pin(args.tag))
+        elif args.cmd == "build":
             args.out.mkdir(parents=True, exist_ok=True)
             build(args.pure_wheel, args.tag, args.out, args.kas_base_url)
         else:

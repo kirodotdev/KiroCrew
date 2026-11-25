@@ -26,7 +26,7 @@ import pytest
 import yaml
 
 from kiro_crew.acp import kas_bundle, kas_engine_install, kas_engine_startup
-from kiro_crew.acp.kas_pin import KAS_PIN_VERSION
+from kiro_crew.acp.kas_pin import KAS_PIN_AL2_VERSION, KAS_PIN_VERSION
 from kiro_crew.platform import wheel_engine_platform
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX exec bits")
@@ -205,14 +205,14 @@ class TestBuilder:
         module = _load_builder()
 
         def stage(dest, tag, base_url):
-            home = _engine_tree(dest, node_key="linux-x64")
+            home = _engine_tree(dest, module.tag_pin(tag), node_key="linux-x64")
             return kas_bundle.installed_bundle(root=dest, version=home.name)
 
         monkeypatch.setattr(module, "stage_engine", stage)
         monkeypatch.setattr(
             module,
             "_pinned_digests",
-            lambda base, system, machine: ("e" * 64, "f" * 64, "linux-x64"),
+            lambda base, system, machine, pin: ("e" * 64, "f" * 64, "linux-x64"),
         )
         return module
 
@@ -238,6 +238,37 @@ class TestBuilder:
             assert node.startswith(f"kiro_crew/_kas_engine/{KAS_PIN_VERSION}/")
             assert (zf.getinfo(node).external_attr >> 16) & stat.S_IXUSR
         assert "KAS" in builder.verify_wheel(out, "https://k")
+
+    def test_the_al2_wheel_carries_the_al2_pin_and_is_checked_against_it(
+        self, builder, tmp_path, monkeypatch
+    ):
+        asked = []
+
+        def digests(base, system, machine, pin):
+            asked.append(pin)
+            return ("e" * 64, "f" * 64, "linux-x64")
+
+        monkeypatch.setattr(builder, "_pinned_digests", digests)
+        out = builder.build(_pure_wheel(tmp_path), "manylinux_2_26_x86_64", tmp_path, "https://k")
+        assert out.name == "kirocrew-9.9.9-py3-none-manylinux_2_26_x86_64.whl"
+        with zipfile.ZipFile(out) as zf:
+            node = next(n for n in zf.namelist() if n.endswith("/bin/node"))
+            assert node.startswith(f"kiro_crew/_kas_engine/{KAS_PIN_AL2_VERSION}/")
+        assert KAS_PIN_AL2_VERSION in builder.verify_wheel(out, "https://k")
+        assert asked == [KAS_PIN_AL2_VERSION]
+        # A normal-pin engine under the AL2 wheel's name is refused: the pin is the tag's.
+        normal = tmp_path / "normal"
+        normal.mkdir()
+        wrong = builder.build(_pure_wheel(normal), "manylinux_2_28_x86_64", normal, "https://k")
+        renamed = normal / out.name
+        with zipfile.ZipFile(wrong) as src, zipfile.ZipFile(renamed, "w") as dst:
+            for info in src.infolist():
+                data = src.read(info)
+                if info.filename.endswith(".dist-info/WHEEL"):
+                    data = data.replace(b"manylinux_2_28", b"manylinux_2_26")
+                dst.writestr(info, data)
+        with pytest.raises(builder.GateError, match="carries no KAS"):
+            builder.verify_wheel(renamed, "https://k")
 
     def test_the_gate_checks_every_other_file_against_the_pure_wheel(self, builder, tmp_path):
         pure = _pure_wheel(tmp_path)
@@ -303,7 +334,11 @@ class TestHostTag:
         [
             ("Linux", "x86_64", (2, 35), "", "manylinux_2_28_x86_64"),
             ("Linux", "aarch64", (2, 28), "", "manylinux_2_28_aarch64"),
-            ("Linux", "x86_64", (2, 26), "", None),
+            ("Linux", "x86_64", (2, 28), "", "manylinux_2_28_x86_64"),
+            ("Linux", "x86_64", (2, 27), "", "manylinux_2_26_x86_64"),
+            ("Linux", "x86_64", (2, 26), "", "manylinux_2_26_x86_64"),
+            ("Linux", "x86_64", (2, 25), "", None),
+            ("Linux", "aarch64", (2, 26), "", None),
             ("Linux", "x86_64", None, "", None),
             ("Darwin", "arm64", None, "14.5", "macosx_11_0_arm64"),
             ("Darwin", "x86_64", None, "11.0", "macosx_11_0_x86_64"),
