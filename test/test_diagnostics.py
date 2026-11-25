@@ -81,6 +81,8 @@ def _isolate(monkeypatch, home: Path) -> None:
     # data-home resolve to this temp dir, so the test controls the full prefix.
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
@@ -396,6 +398,8 @@ def test_nested_data_home_keeps_relative_tail(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.diagnostics.config_dir", lambda: data_home)
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
