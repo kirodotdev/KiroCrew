@@ -1491,7 +1491,9 @@ every field; the field itself is written on at most `SAMPLES_PER_DAY` lines a da
 `SAMPLES_TOTAL` lines and `SAMPLE_BYTES_CAP` bytes in all, and only for
 `SHADOW_SAMPLE_WINDOW_SECS` after the stage first wrote one. A new policy version
 restarts the window and the sample budget. Past a cap, or when the log cannot be
-read or replaced, the line is written without the field.
+read or replaced, the line is written without the field; the second case logs one
+warning naming the fields dropped. A shard append that fails logs one warning naming
+the line's `phase` (`receipt` when it has none).
 
 A stage field may also carry `control`: up to 20 ids of the block the stage keeps
 (`lessons` for `rule_authority_order` and `lesson_fold`; `findings` plus the
@@ -1510,7 +1512,11 @@ rendered, named through a private collection, then its facts), and `phase:
 SHA-256 over the session key; never the query, the rule or the session key. They
 take the stage-field per-day, total and byte caps, each kind its own budget,
 counted over a rolling 14 days rather than a window that closes, so a stage turned
-on later still sees outcomes; a capped outcome line is not written. Incognito and temporary sessions write none.
+on later still sees outcomes; a capped outcome line is not written, and neither is one
+the stage log cannot bound. A config load that could not read `config.json`,
+`config.local.json` or the `memory` section whole (that read's own flags, not the
+process-lifetime `degraded_sections`), and whose readable flags are all off, logs one
+INFO line that no receipt was recorded. Incognito and temporary sessions write none.
 
 **Current-request recency boundary.** Injected blocks are not the only proof that a
 turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
