@@ -77,7 +77,6 @@ from kiro_crew.acp.types import (
     model_registry_namespace,
 )
 from kiro_crew.agent import DerivedSpecSnapshot
-from kiro_crew.agent_sdk.backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.paths import KEYLESS_WORK_DIR_NAME, config_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
@@ -1174,15 +1173,6 @@ class AcpClient:
         class forks nothing, so the caller starts a fresh session."""
         return None
 
-    async def new_conversation(self) -> None:
-        """Replace this session with a fresh one on the same process. This class has
-        no such reset: its sessions are reset by kill and respawn."""
-        backend = POLICY_ID_BY_BACKEND.get(self.backend, self.backend)
-        raise NotImplementedError(
-            f"the {backend!r} backend has no fresh-conversation reset on its live "
-            "process; it is reset by kill and respawn"
-        )
-
     async def confirm_member_projection(self) -> None:
         """Confirm the projection this session consumed. Blocking.
 
@@ -1456,6 +1446,7 @@ class AcpClient:
     ensure_ready = _client_start.ensure_ready
     _harness_read_back = _client_start._harness_read_back
     _adapter_session_mcp_servers = _client_start._adapter_session_mcp_servers
+    new_conversation = _client_start.new_conversation
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission

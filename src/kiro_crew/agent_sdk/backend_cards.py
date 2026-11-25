@@ -640,10 +640,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "Invisible when right, a memory leak when wrong, which is a defect"
     ),
     "ACP_BACKENDS_CLIENT_NEW_CONVERSATION": (
-        "whether a reused workflow worker or a consolidation pass starts its fresh "
-        "conversation on the live process or by kill and respawn. Both give the same "
-        "empty conversation, so a reader choosing a harness loses nothing; a wrong "
-        "membership leaves an old session resident, which is a defect"
+        "whether a reused workflow worker, a consolidation pass or a knowledge pool "
+        "worker starts its fresh conversation on the live process or by kill and "
+        "respawn. Both give the same empty conversation, so a reader choosing a harness "
+        "loses nothing; a wrong membership leaves an old session resident, which is a "
+        "defect"
     ),
     "ACP_BACKENDS_MEMBER_TOOL_LIMITS": (
         "whether a saved member spec's per-tool tool switch-off is honoured. A "

@@ -14,8 +14,8 @@ of WARM workflow sessions alive and reuse them across calls:
   * **Warm reuse** — a *sequential* task reuses an idle worker after a cheap
     clean-slate reset (``provider.new_conversation()`` — fresh ``session/new`` on
     the same live process, skipping spawn + ``initialize``). No cold start on a
-    backend on the shared runtime or in ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``
-    (claude); any other backend on its own ``AcpClient`` is reset by kill and respawn.
+    backend on the shared runtime or in ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``;
+    any other backend on its own ``AcpClient`` is reset by kill and respawn.
   * **Self-healing** — a worker whose process died is retired and replaced.
   * **Bounded** — at most ``max_workers`` live sessions; startup throttled to
     ``max_starting`` concurrent spawns (matches the workflow concurrency cap).

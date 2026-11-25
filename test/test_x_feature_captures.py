@@ -542,6 +542,18 @@ def test_session_eviction_captures_show_the_id_dying_on_teardown() -> None:
         assert "not found" in text.lower(), f"{rel}: {text}"
 
 
+def test_new_conversation_captures_keep_the_second_session_when_the_first_ends() -> None:
+    """Each ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` member: two sessions on one process,
+    and after the first is ended only the second still answers."""
+    for rel in ("claude/new-conversation-live.jsonl", "kiro/new-conversation-live.jsonl"):
+        r = _responses(rel)
+        assert r[1]["result"]["sessionId"] != r[2]["result"]["sessionId"], rel
+        assert "error" not in r[3], f"{rel}: the first session was not live before teardown"
+        assert "error" not in r[4], f"{rel}: the teardown verb was refused"
+        assert "not found" in json.dumps(r[5].get("error")).lower(), f"{rel}: first id answered"
+        assert "error" not in r[6], f"{rel}: the second session did not survive"
+
+
 def test_client_meta_settings_capture_shows_tool_origin_from_the_client() -> None:
     """KAS read settings.toolSearch.neverDefer: the probe tool_call is toolOrigin client."""
     rel = "kas/client-meta-settings-live.jsonl"

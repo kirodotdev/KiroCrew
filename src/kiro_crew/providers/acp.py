@@ -1266,7 +1266,7 @@ class AcpProvider(LLMProvider):
         across independent tasks without leaking context between them. A member of
         ``ACP_BACKENDS_ACP_RUNTIME`` gets ``AcpSessionProvider`` as ``self._client``
         from ``start()``; any other backend keeps its own ``AcpClient``, whose reset
-        runs only for a member of ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` (claude).
+        runs only for a member of ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``.
         On that arm the steps ``start()`` runs after the client is ready follow: the
         resolved effort, and, for a session that keeps no transcript, the deletion of
         the replaced session's files, as ``shutdown`` deletes them.
