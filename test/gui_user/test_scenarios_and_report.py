@@ -626,6 +626,34 @@ class TestShippedScenarios:
         for retired in ("intro line", "six", "6 security layers"):
             assert retired not in layers, retired
 
+    def test_show_timestamps_scenario_reads_the_time_under_an_answer(self) -> None:
+        """The switch is found on the Transcript pane and read under the first answer.
+
+        Its description is the label's info tip, and once the transcript
+        scrolls the question above that answer is the pinned prompt, a card
+        whose "Jump to this turn" tooltip covers the row under it, so a
+        scenario that hovers that question fails a full run whatever the
+        product does.
+        """
+        root = Path(__file__).resolve().parents[2]
+        en = json.loads((root / "website/src/i18n/locales/en.json").read_text(encoding="utf-8"))
+        chat = en["pages"]["settings"]["chatPanel"]
+        fixture = root / "src/kiro_crew/tests_fixtures/rich/sessions/dashboard_starter.jsonl"
+        rows = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
+        answer = next(r["content"] for r in rows if r.get("role") == "assistant")
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "settings-chat-toggle-show-timestamps.yaml")
+        steps = " ".join(sc.steps)
+        for key in ("transcript", "show_timestamps"):
+            assert f'"{chat[key]}"' in steps, key
+        assert chat["display_time_on_each_message"] not in steps
+        hovers = [s for s in sc.steps if "Move the mouse" in s]
+        assert len(hovers) == 2
+        for step in hovers:
+            assert "last sentence" in step, step
+            ending = step.split('it ends "', 1)[1].split('"', 1)[0]
+            assert answer.endswith(ending), step
+            assert "first message" not in step, step
+
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.
 
