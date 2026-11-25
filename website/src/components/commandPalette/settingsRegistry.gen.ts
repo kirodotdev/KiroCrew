@@ -1924,6 +1924,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "session.max_per_creator"
   },
   {
+    "id": "chat.shimmer-running-tool-labels",
+    "label": "Shimmer running tool labels",
+    "labelKey": "pages.settings.chatPanel.tool_label_shimmer",
+    "hint": "Sweep a color highlight across the label of a tool call while it runs. When off, the label stays still; the spinner still shows it is running.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.show-all-bots-in-my-sessions",
     "label": "Show all bots in my Sessions",
     "labelKey": "pages.membersPage.bot_sessions_all_switch",

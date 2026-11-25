@@ -20408,6 +20408,8 @@
         "simplified_tool_call_names": "Vereinfachte Werkzeugaufrufnamen",
         "tool_calls_start_expanded": "Tool-Aufrufe ausgeklappt anzeigen",
         "tool_calls_start_expanded_desc": "Zeilen von Tool-Aufrufen mit sichtbarer Eingabe und Ausgabe öffnen statt eingeklappt. Zeilen, die du von Hand öffnest oder schließt, behalten deine Wahl.",
+        "tool_label_shimmer": "Laufende Tool-Labels schimmern lassen",
+        "tool_label_shimmer_desc": "Lässt einen farbigen Schimmer über das Label eines laufenden Tool-Aufrufs gleiten. Wenn aus, bleibt das Label ruhig; das Drehsymbol zeigt weiter, dass er läuft.",
         "reasoning_starts_expanded": "Denkprozess ausgeklappt anzeigen",
         "reasoning_starts_expanded_desc": "Zeilen mit dem Denkprozess mit sichtbarem Text öffnen statt eingeklappt. Zeilen, die du von Hand öffnest oder schließt, behalten deine Wahl.",
         "single_line": "Einzeilig",

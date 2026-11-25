@@ -1041,6 +1041,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} hint={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} hint={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tool_calls_start_expanded')} hint={i18nT('pages.settings.chatPanel.tool_calls_start_expanded_desc')} checked={chatCfg.toolCallsStartExpanded} onChange={v => setChat('toolCallsStartExpanded', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.tool_label_shimmer')} hint={i18nT('pages.settings.chatPanel.tool_label_shimmer_desc')} checked={chatCfg.toolLabelShimmer} onChange={v => setChat('toolLabelShimmer', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.reasoning_starts_expanded')} hint={i18nT('pages.settings.chatPanel.reasoning_starts_expanded_desc')} checked={chatCfg.reasoningStartsExpanded} onChange={v => setChat('reasoningStartsExpanded', v)} />
         </SettingsCard>
         </SettingsSection>

@@ -141,6 +141,10 @@ export interface ChatConfig {
    *  toggled keeps that choice. Default false, so a client with no stored
    *  choice keeps today's collapsed rows (#18254). */
   toolCallsStartExpanded: boolean
+  /** Sweep a color shimmer across the label of a running or pending-approval
+   *  tool call row. Default true, today's look. When false the label stays a
+   *  static muted color; the row's spinner still shows the call is running. */
+  toolLabelShimmer: boolean
   /** Open the "Thought process" reasoning rows expanded instead of collapsed.
    *  Initial state only: a row the user toggled keeps that choice. Default
    *  false, so a client with no stored choice keeps today's collapsed rows. */
@@ -186,7 +190,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sidePanelSwipe: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, toolLabelShimmer: true, reasoningStartsExpanded: false, doubleClickToEdit: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sidePanelSwipe: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -258,6 +262,7 @@ export function loadChatConfig(): ChatConfig {
     // very large paste.
     if (typeof cfg.showFullPastes !== 'boolean') cfg.showFullPastes = false
     if (typeof cfg.toolCallsStartExpanded !== 'boolean') cfg.toolCallsStartExpanded = false
+    if (typeof cfg.toolLabelShimmer !== 'boolean') cfg.toolLabelShimmer = true
     if (typeof cfg.reasoningStartsExpanded !== 'boolean') cfg.reasoningStartsExpanded = false
     // Coerced, not trusted: a stored non-boolean must not attach the
     // double-click gesture that replaces word selection on the bubble.

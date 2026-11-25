@@ -3,6 +3,7 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
+import { useChatSetting } from '../../hooks/useChatSetting'
 import ToolRiskBadge from './ToolRiskBadge'
 import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { useLanguage } from '../../i18n/LanguageProvider'
@@ -1070,7 +1071,8 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // Both running and pending-approval pills shimmer — the highlight color
   // tracks the status so pending shimmers warn-yellow (matching the approval
   // bar) and running shimmers accent.
-  const isShimmering = !isDone
+  const toolLabelShimmer = useChatSetting('toolLabelShimmer')
+  const isShimmering = !isDone && toolLabelShimmer
   const shimmerHighlight = hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
   const shimmerBase = 'var(--muted)'
 

@@ -20955,6 +20955,8 @@
         "simplified_tool_call_names": "Nomi semplificati delle chiamate agli strumenti",
         "tool_calls_start_expanded": "Mostra le chiamate agli strumenti espanse",
         "tool_calls_start_expanded_desc": "Apri le righe delle chiamate agli strumenti con input e output visibili, invece che compresse. Le righe che apri o chiudi a mano mantengono la tua scelta.",
+        "tool_label_shimmer": "Fai brillare le etichette degli strumenti in esecuzione",
+        "tool_label_shimmer_desc": "Fa scorrere un riflesso colorato sull’etichetta di una chiamata a uno strumento mentre è in esecuzione. Se disattivato, l’etichetta resta ferma; l’indicatore rotante mostra comunque che è in esecuzione.",
         "reasoning_starts_expanded": "Mostra il ragionamento espanso",
         "reasoning_starts_expanded_desc": "Apri le righe del ragionamento con il testo visibile, invece che compresse. Le righe che apri o chiudi a mano mantengono la tua scelta.",
         "single_line": "Riga singola",

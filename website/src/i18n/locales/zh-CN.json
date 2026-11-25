@@ -19861,6 +19861,8 @@
         "simplified_tool_call_names": "简化工具调用名称",
         "tool_calls_start_expanded": "工具调用默认展开",
         "tool_calls_start_expanded_desc": "工具调用行打开时直接显示输入和输出，而不是折叠。你手动展开或折叠的行会保留你的选择。",
+        "tool_label_shimmer": "运行中的工具标签闪光效果",
+        "tool_label_shimmer_desc": "工具调用运行时，在其标签上划过一道彩色闪光。关闭后标签保持静止，旋转图标仍会显示它正在运行。",
         "reasoning_starts_expanded": "思考过程默认展开",
         "reasoning_starts_expanded_desc": "思考过程行打开时直接显示推理内容，而不是折叠。你手动展开或折叠的行会保留你的选择。",
         "single_line": "单行",

@@ -241,6 +241,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.text-streaming-style': ['typing animation', 'streaming animation', 'text appears word by word', 'smooth streaming'],
   'chat.title-lines-on-session-cards': ['title wrap', 'two line titles', 'session card title lines'],
   'chat.tool-calls-start-expanded': ['expand tool calls', 'tool call details', 'collapse tool calls'],
+  'chat.shimmer-running-tool-labels': ['shimmer', 'tool label animation', 'reduce motion', 'stop animation'],
   'chat.topic-tags': ['auto tags', 'topic labels', 'tag sessions by topic'],
   'chat.turn-time-limit-seconds': ['turn timeout', 'stops after 4 hours', 'long running turn', 'max turn duration', 'agent stopped after a while', 'time limit'],
   'chat.what-enter-does-while-the-agent-is-working': ['steer', 'queue message', 'interrupt the agent', 'send while running', 'steer or queue'],

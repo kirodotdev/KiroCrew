@@ -11283,6 +11283,8 @@
         "simplified_tool_call_names": "Simplified Tool Call Names",
         "tool_calls_start_expanded": "Tool calls start expanded",
         "tool_calls_start_expanded_desc": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice.",
+        "tool_label_shimmer": "Shimmer running tool labels",
+        "tool_label_shimmer_desc": "Sweep a color highlight across the label of a tool call while it runs. When off, the label stays still; the spinner still shows it is running.",
         "reasoning_starts_expanded": "Reasoning starts expanded",
         "reasoning_starts_expanded_desc": "Open reasoning rows with their text showing, instead of collapsed. Rows you open or close by hand keep your choice.",
         "soft_stop_budget_seconds": "Soft-stop budget (seconds)",
