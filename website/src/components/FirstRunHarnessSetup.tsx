@@ -5,7 +5,13 @@ import { ArrowLeft, Boxes, CheckCircle2, ChevronDown, CircleDashed, RefreshCw } 
 
 import { api, type AcpBackendProbe, type KasBundleStatus } from '../api/client'
 import type { KiroPrerequisiteStatus } from '../api/client/onboarding'
-import { ACP_BACKEND_KAS, configuredAcpBackend, DEFAULT_ACP_BACKEND, type AcpBackendConfig } from '../api/acpBackend'
+import {
+  ACP_BACKEND_KAS,
+  agentChoiceSaved,
+  configuredAcpBackend,
+  DEFAULT_ACP_BACKEND,
+  type AcpBackendConfig,
+} from '../api/acpBackend'
 import { useKasLoginStatus } from '../hooks/useKasLogin'
 import { clearCachedModels } from '../providers/adapters/acp'
 import { KIRO_PREREQUISITE_KEY } from '../hooks/useKiroPrerequisite'
@@ -32,6 +38,13 @@ const BUILT_IN = 'built-in'
 const KIRO_CLI = 'kiro'
 type Screen = 'choose' | 'sign-in' | 'kiro-cli-sign-in' | 'ready'
 
+/** The save wrote `agent.acp_backend` but not `agent.kas_bundle`. */
+class PartlySaved extends Error {
+  constructor(cause: unknown) {
+    super(undefined, { cause })
+  }
+}
+
 /**
  * First-run setup: pick the harness, sign in once, then "ready".
  *
@@ -42,7 +55,10 @@ type Screen = 'choose' | 'sign-in' | 'kiro-cli-sign-in' | 'ready'
  * a second copy of those.
  *
  * - Built-in harness is first and picked by default, unless this machine cannot
- *   run it (`host_unsupported`).
+ *   run it (`host_unsupported`) or another harness this step lists was saved
+ *   before the first chat: that one is picked. A saved `kiro` is picked only
+ *   while kiro-cli is installed, and Continue saves it the way this step saves
+ *   Kiro CLI (`kas` with `agent.kas_bundle: false` where KAS is allowed).
  * - Kiro CLI is always listed; when it is missing its row shows how to install
  *   it, and Continue stays off while it is picked.
  * - Every other harness sits behind one "Other harnesses" row, with the state
@@ -88,12 +104,24 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
     .map(list.probe)
     .filter((b): b is AcpBackendProbe => !!b && b.independent_setup === true)
 
-  const defaultPick = builtInUsable ? BUILT_IN : cliInstalled && kiroCliAllowed ? KIRO_CLI : ''
+  // A harness saved before the first chat (`kirocrew config set agent.acp_backend
+  // claude`, a pre-seeded config.json) is the owner's own choice, so it is the pick.
+  // A saved `kas`, a harness this step lists no row for, or a `kiro` whose CLI is
+  // missing keeps the default.
+  const saved = cfgQ.data?.agent?.acp_backend
+  const savedOther = !!saved && saved !== ACP_BACKEND_KAS
+  const savedPick = !savedOther
+    ? ''
+    : saved === KIRO_CLI
+      ? (cliInstalled && kiroCliAllowed ? KIRO_CLI : '')
+      : others.some(b => b.id === saved) ? saved : ''
+  const defaultPick = savedPick || (builtInUsable ? BUILT_IN : cliInstalled && kiroCliAllowed ? KIRO_CLI : '')
   const [picked, setPicked] = useState<string | null>(null)
   const pick = picked ?? defaultPick
-  // Opened on its own only when neither Kiro harness can be used here.
+  // Opened on its own when the saved pick lives there, or when neither Kiro harness can be used here.
   const [othersOpen, setOthersOpen] = useState<boolean | null>(null)
-  const showOthers = othersOpen ?? (!builtInUsable && !(cliInstalled && kiroCliAllowed))
+  const showOthers = othersOpen
+    ?? ((savedPick !== '' && savedPick !== KIRO_CLI) || (!builtInUsable && !(cliInstalled && kiroCliAllowed)))
   const [screen, setScreen] = useState<Screen>('choose')
 
   const otherProbe: AcpBackendProbe | undefined = others.find(b => b.id === pick)
@@ -108,18 +136,35 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
       ? i18nT('pages.developer.kasBundleCard.engine_kiro_cli')
       : otherProbe ? list.nameOf(otherProbe.id) : ''
 
-  // The same two config keys Settings > Agent Harness writes.
+  // The same two config keys Settings > Agent Harness writes. As there, a 503
+  // `setup_marker_write_failed` with `config_saved: true` is a save: the key is on
+  // disk and only the first-run marker is not. The gateway sends it only on the
+  // `agent.acp_backend` write.
+  const saveBackend = async (value: string) => {
+    try {
+      await api.patchConfig('agent.acp_backend', value)
+    } catch (error) {
+      if (!agentChoiceSaved(error)) throw error
+    }
+  }
   const saveMut = useMutation({
     mutationFn: async () => {
       if (pick === BUILT_IN || (pick === KIRO_CLI && kasAllowed)) {
-        await api.patchConfig('agent.acp_backend', ACP_BACKEND_KAS)
-        await api.patchConfig('agent.kas_bundle', pick === BUILT_IN)
+        await saveBackend(ACP_BACKEND_KAS)
+        try {
+          await api.patchConfig('agent.kas_bundle', pick === BUILT_IN)
+        } catch (error) {
+          // `agent.acp_backend` is on disk already, so the error must not say nothing was saved.
+          throw new PartlySaved(error)
+        }
       } else {
-        await api.patchConfig('agent.acp_backend', pick)
+        await saveBackend(pick)
       }
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      // The probe reads the stored pick (`kiro_selection_runs_on_kas`), as Settings re-asks after a save.
+      void qc.invalidateQueries({ queryKey: ['acpBackends'] })
       void qc.invalidateQueries({ queryKey: ['kas-bundle'] })
       // The model list belongs to the harness just saved, as on the Settings switch:
       // drop the last-good list first, then the query, so no old harness's ids remain.
@@ -160,6 +205,10 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
 
   // Advances only once both keys are saved; a failed save stays on this screen with its error.
   const next = async () => {
+    // Fixed before the save: its config refetch (a saved `kiro` comes back as `kas`)
+    // or a config event must not move a pick read from the saved config.
+    setPicked(pick)
+    setOthersOpen(showOthers)
     try {
       await saveMut.mutateAsync()
     } catch {
@@ -197,7 +246,7 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
         aria-label={i18nT('components.firstRunHarnessSetup.back')}
         disabled={screen === 'sign-in' && innerBack?.disabled}
         onClick={() => (screen === 'sign-in' && innerBack ? innerBack.onBack() : setScreen('choose'))}
-        className="absolute -left-2 top-0"
+        className="mc-touch-hit absolute -left-2 top-0"
         data-testid="harness-setup-back"
       >
         <ArrowLeft size={18} aria-hidden="true" />
@@ -327,10 +376,17 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
       {...aside}
       footer={
         <div className="flex items-center justify-between gap-3">
-          <Btn type="button" onClick={onDone} data-testid="harness-setup-later">
+          <Btn type="button" disabled={saveMut.isPending} onClick={onDone} data-testid="harness-setup-later">
             {i18nT('components.firstRunHarnessSetup.set_up_later')}
           </Btn>
-          <SendBtn type="button" disabled={!usable || saveMut.isPending} onClick={() => void next()} data-testid="harness-setup-continue">
+          <SendBtn
+            type="button"
+            // The saved config, and the list a saved harness's row comes from, are read
+            // first, so that row cannot appear under the cursor. Both fail open.
+            disabled={!usable || saveMut.isPending || cfgQ.isPending || (savedOther && backendsQ.isPending)}
+            onClick={() => void next()}
+            data-testid="harness-setup-continue"
+          >
             {i18nT('components.firstRunHarnessSetup.continue')}
           </SendBtn>
         </div>
@@ -461,7 +517,11 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
       <ErrorNotice
         testId="harness-setup-save-error"
         className="mt-4"
-        message={saveMut.error ? i18nT('components.firstRunHarnessSetup.save_failed', { name: pickName }) : null}
+        message={saveMut.error
+          ? saveMut.error instanceof PartlySaved
+            ? i18nT('components.firstRunHarnessSetup.save_partly_failed', { name: pickName })
+            : i18nT('components.firstRunHarnessSetup.save_failed', { name: pickName })
+          : null}
       />
       {/* No hand-off: the harness pick on this screen is unsaved; Check again retries the re-read. */}
       <ErrorNotice

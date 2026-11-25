@@ -11827,6 +11827,7 @@
       "open_settings": "打开设置",
       "start_chatting": "开始聊天",
       "save_failed": "无法将 {{name}} 保存为运行框架。点“继续”重试。",
+      "save_partly_failed": "{{name}} 作为运行框架只保存了一部分。点“继续”重试。",
       "recheck_failed": "无法重新检查 {{name}}。点“重新检查”重试。",
       "setup_read_failed": "无法读取当前设置的一部分，因此某些选项可能缺失。"
     }

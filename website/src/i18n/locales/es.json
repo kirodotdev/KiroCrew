@@ -12379,6 +12379,7 @@
       "open_settings": "Abrir Ajustes",
       "start_chatting": "Empezar a chatear",
       "save_failed": "No se pudo guardar {{name}} como tu harness. Pulsa «Continuar» para intentarlo de nuevo.",
+      "save_partly_failed": "{{name}} solo se guardó en parte como tu harness. Pulsa «Continuar» para intentarlo de nuevo.",
       "recheck_failed": "No se pudo comprobar {{name}} de nuevo. Pulsa «Comprobar de nuevo» para reintentarlo.",
       "setup_read_failed": "No se pudo leer parte de tu configuración actual, así que puede que falten algunas opciones."
     }

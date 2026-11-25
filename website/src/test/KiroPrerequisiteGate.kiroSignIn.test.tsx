@@ -82,6 +82,12 @@ async function settledBundle(reads: number) {
   })
 }
 
+// The harness step's Continue is off until its saved-config read has answered, and
+// a click on it before then is dropped.
+async function continueReady() {
+  await waitFor(() => expect(screen.getByTestId('harness-setup-continue')).toBeEnabled(), CHAIN)
+}
+
 async function refetch(queryClient: ReturnType<typeof renderGate>['queryClient'], key: string) {
   await act(async () => {
     await queryClient.refetchQueries({ queryKey: [key] })
@@ -257,11 +263,34 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     const app = screen.getByText('Dashboard loaded')
     expect(app).not.toBeVisible()
     expect(app).toHaveAttribute('data-held', 'true')
+    // A spinner, not a blank page, for that wait.
+    expect(await screen.findByTestId('first-run-paint-wait', {}, CHAIN)).toBeInTheDocument()
     await act(async () => {
       answer({ chat_needs_sign_in: false })
     })
     await waitFor(() => expect(app).toBeVisible(), CHAIN)
     expect(app).toHaveAttribute('data-held', 'false')
+    expect(screen.queryByTestId('first-run-paint-wait')).not.toBeInTheDocument()
+  })
+
+  it('with the built-in engine off, paints the app at once while the first-run answer is still being read', async () => {
+    nextStatus(firstRun)
+    let answer!: (value: { chat_needs_sign_in: boolean }) => void
+    vi.mocked(api.kasBundleStatus).mockReturnValue(new Promise(resolve => { answer = resolve }) as never)
+    vi.mocked(api.kasBundleStatus).mockResolvedValueOnce({ engine_choice: 'kiro_cli', chat_needs_sign_in: false } as never)
+    renderGate()
+    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalledTimes(2), CHAIN)
+    await act(async () => {
+      await vi.mocked(api.kasBundleStatus).mock.results[0].value
+    })
+    // Read with no wait: a hidden app would only paint after the 4 s bound.
+    const app = screen.getByText('Dashboard loaded')
+    expect(app).toBeVisible()
+    expect(app).toHaveAttribute('data-held', 'false')
+    expect(screen.queryByTestId('first-run-paint-wait')).not.toBeInTheDocument()
+    await act(async () => {
+      answer({ chat_needs_sign_in: false })
+    })
   })
 
   it('with the built-in engine on, shows the harness setup instead, and Set up later admits', async () => {
@@ -287,6 +316,7 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     vi.mocked(api.patchConfig).mockRejectedValue(new Error('failed to write config file'))
     renderGate()
     await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)
+    await continueReady()
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
     expect(await screen.findByTestId('harness-setup-save-error', {}, CHAIN)).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Choose a harness' })).toBeInTheDocument()
@@ -303,6 +333,7 @@ describe('KiroPrerequisiteGate first-run Kiro sign-in hold', () => {
     const { clearCachedModels } = await import('../providers/adapters/acp')
     renderGate()
     await screen.findByRole('heading', { name: 'Choose a harness' }, CHAIN)
+    await continueReady()
     fireEvent.click(screen.getByTestId('harness-setup-continue'))
     await waitFor(() => expect(clearCachedModels).toHaveBeenCalled(), CHAIN)
     expect(api.patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true)

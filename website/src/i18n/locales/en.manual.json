@@ -5113,6 +5113,7 @@
       "open_settings": "Open Settings",
       "start_chatting": "Start chatting",
       "save_failed": "Couldn't save {{name}} as your harness. Press Continue to try again.",
+      "save_partly_failed": "{{name}} was only partly saved as your harness. Press Continue to try again.",
       "recheck_failed": "Couldn't check {{name}} again. Press Check again to retry.",
       "setup_read_failed": "Couldn't read part of your current setup, so some choices may be missing."
     },
