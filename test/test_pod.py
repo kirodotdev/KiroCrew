@@ -14,6 +14,7 @@ fence, the platform guard and the user bus) and ``test_pod_boot_settings.py``.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -288,7 +289,10 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
 
         anchored = ntpath.abspath("/tmp/sub/../pods")
 
-        assert ntpath.isabs(anchored)
+        # A rooted path with no drive is absolute to ``ntpath.isabs`` up to CPython 3.12
+        # and relative to the current drive from 3.13; rooted is what holds on both.
+        assert ntpath.isabs(anchored) is (sys.version_info < (3, 13))
+        assert ntpath.splitroot(anchored)[1] == "\\"
         assert anchored.endswith(r"\tmp\pods"), f"not normalised under Windows rules: {anchored!r}"
 
     @pytest.mark.skipif(

@@ -545,15 +545,25 @@ class TestLegitimateUpdatesStillHappen:
         vanished = base / "aaa-helper" / "SKILL.md"
         seen = [0]
 
+        def _count(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+            seen[0] += self == vanished
+            return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        # How many ``Path.stat`` calls one exists() probe makes: one up to CPython 3.13,
+        # none from 3.14, where exists() asks ``os.path`` instead.
+        with monkeypatch.context() as probe:
+            probe.setattr(Path, "stat", _count)
+            assert vanished.exists()
+        probe_stats, seen[0] = seen[0], 0
+
         def _vanish(self: Path, *args: object, **kwargs: object) -> os.stat_result:
-            # The FIRST stat of the destination is the sync's own exists()
-            # probe, which must succeed -- otherwise the manifest comparison is
-            # never reached and this test proves nothing. Every stat after it
-            # raises, which is the real race: the destination was claimed while
-            # the tree walks ran in between.
+            # The sync's own exists() probe of the destination must succeed --
+            # otherwise the manifest comparison is never reached and this test
+            # proves nothing. Every stat after it raises, which is the real race:
+            # the destination was claimed while the tree walks ran in between.
             if self == vanished:
                 seen[0] += 1
-                if seen[0] > 1:
+                if seen[0] > probe_stats:
                     raise FileNotFoundError(2, "No such file or directory", str(self))
             return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
 
@@ -567,7 +577,9 @@ class TestLegitimateUpdatesStillHappen:
         monkeypatch.undo()
 
         # The comparison past the exists() probe was actually reached.
-        assert seen[0] > 1, f"manifest comparison never stat'd the destination ({seen[0]})"
+        assert (
+            seen[0] > probe_stats
+        ), f"manifest comparison never stat'd the destination ({seen[0]})"
         # The skill queued after the vanished one was still processed.
         assert "v2" in (base / "zzz-later" / "SKILL.md").read_text(encoding="utf-8")
 

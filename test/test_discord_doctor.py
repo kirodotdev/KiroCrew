@@ -18,6 +18,7 @@ Three things here are worth more than the line-by-line rendering:
 
 from __future__ import annotations
 
+import sys
 import urllib.error
 from types import SimpleNamespace
 from typing import Any
@@ -373,7 +374,8 @@ class TestDoctorIntentGrantsWrapper:
         grants = cli_doctor._discord_intent_grants(_TOKEN)
 
         assert grants.known is False
-        assert grants.error == "ValueError"
+        # ``asyncio.run`` refuses a non-awaitable with TypeError from CPython 3.14.
+        assert grants.error == ("TypeError" if sys.version_info >= (3, 14) else "ValueError")
 
 
 # ── The doctor section ────────────────────────────────────────────────────────

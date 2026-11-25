@@ -408,7 +408,18 @@ def test_a_swallowed_stat_fault_is_unknown_not_absent(
             raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
         return real_stat(self, *args, **kwargs)
 
+    real_os_stat = os.stat
+
+    def flaky_os_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        # ``Path.is_file`` asks ``os.path.isfile`` from CPython 3.14, which stats here.
+        if fail["on"] and isinstance(path, (str, os.PathLike)):
+            target = Path(path)
+            if target.name == "mcp.json" and "settings" in target.parts:
+                raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
+        return real_os_stat(path, *args, **kwargs)
+
     monkeypatch.setattr(Path, "stat", flaky_stat)
+    monkeypatch.setattr(os, "stat", flaky_os_stat)
     # Confirm first: this errno really is swallowed, so the pass sees "absent".
     assert (src.parent / "settings" / "mcp.json").is_file() is False
     _rewrite(tmp_path)
