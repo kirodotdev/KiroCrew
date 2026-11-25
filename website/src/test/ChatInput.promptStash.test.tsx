@@ -635,16 +635,17 @@ describe('ChatInput prompt stash', () => {
     expect(request.mock.calls.every(([name]) => name === 'mc-prompt-stash')).toBe(true)
   })
 
-  it('disables the + menu items that would do nothing', async () => {
+  it('disables Stash and hides Restore and Discard on an empty stash', async () => {
     renderWithProviders(<Host withPlusMenu />)
     await openPlusMenu()
     const stash = screen.getByTestId('prompt-stash-menu-stash')
     expect(stash).toBeDisabled()
-    expect(stash).toHaveTextContent('Type something to stash it.')
-    const restore = screen.getByTestId('prompt-stash-menu-restore')
-    expect(restore).toBeDisabled()
-    expect(restore).toHaveTextContent('Nothing is stashed yet.')
-    expect(screen.getByTestId('prompt-stash-menu-discard')).toBeDisabled()
+    // An empty box says why on its own: one line, no note, no tooltip.
+    expect(stash).toHaveTextContent(/^Stash draft$/)
+    expect(stash).not.toHaveAttribute('title')
+    // With nothing stashed, Restore and Discard are not shown at all.
+    expect(screen.queryByTestId('prompt-stash-menu-restore')).toBeNull()
+    expect(screen.queryByTestId('prompt-stash-menu-discard')).toBeNull()
   })
 
   it('disables the stash item at the cap', async () => {

@@ -220,7 +220,7 @@ describe.each([
     await waitFor(() => expect(sendButton()).not.toBeDisabled())
   })
 
-  it('keeps the cancel control up while a sibling upload still holds Send', async () => {
+  it('keeps the earlier upload\'s chip up while it still holds Send', async () => {
     const uploads = manualUploads()
     const { container } = renderHost(node(slot), slot)
     await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
@@ -228,19 +228,85 @@ describe.each([
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), 'second.png') })
     await waitFor(() => expect(uploads).toHaveLength(2))
     await act(async () => { fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'both' } }) })
-    // Two live, and one press aborts both: the label names the count (#13071).
-    expect(screen.getByRole('button', { name: 'Cancel 2 uploads' })).toBeInTheDocument()
+    // Two live, one chip each.
+    expect(screen.getByRole('button', { name: 'Cancel uploading first.txt' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel uploading second.png' })).toBeInTheDocument()
 
     // The LATER request settles first. Send is still held for the first one,
-    // so the user must still be able to see and abort it: a host feeding
-    // ChatInput's `uploading` from a single shared flag drops both here.
+    // so the user must still be able to see and abort it.
     await act(async () => { uploads[1]({ paths: ['/up/second.png'] }) })
     expect(sendButton()).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Cancel upload' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel uploading first.txt' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel uploading second.png' })).toBeNull()
 
     await act(async () => { uploads[0]({ paths: ['/up/first.txt'] }) })
     await waitFor(() => expect(sendButton()).not.toBeDisabled())
-    expect(screen.queryByRole('button', { name: /^Cancel (\d+ uploads|upload)$/ })).toBeNull()
+    expect(screen.queryByTestId('composer-upload-chip')).toBeNull()
+  })
+
+  it('sends a picked set as one request per file and holds Send until the last settles', async () => {
+    const uploads = manualUploads()
+    const { container } = renderHost(node(slot), slot)
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(input, 'files', {
+      value: [new File(['a'], 'one.txt', { type: 'text/plain' }), new File(['b'], 'two.txt', { type: 'text/plain' })],
+      configurable: true,
+    })
+    await act(async () => { fireEvent.change(input) })
+    await waitFor(() => expect(uploads).toHaveLength(2))
+    expect(vi.mocked(api.uploadFiles).mock.calls.map(c => (c[0] as File[]).map(f => f.name))).toEqual([['one.txt'], ['two.txt']])
+    expect(screen.getAllByTestId('composer-upload-chip').map(c => c.getAttribute('aria-label'))).toEqual(['one.txt', 'two.txt'])
+    await act(async () => { fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'both' } }) })
+
+    await act(async () => { uploads[0]({ paths: ['/up/one.txt'] }) })
+    expect(sendButton()).toBeDisabled()
+    await act(async () => { uploads[1]({ paths: ['/up/two.txt'] }) })
+    await waitFor(() => expect(sendButton()).not.toBeDisabled())
+  })
+
+  it('cancels one file of a set and lands the other', async () => {
+    const signals: AbortSignal[] = []
+    const resolvers: Array<(r: UploadResult) => void> = []
+    vi.mocked(api.uploadFiles).mockImplementation(
+      ((_files: File[], signal?: AbortSignal) => new Promise<UploadResult>((resolve, reject) => {
+        if (signal) signals.push(signal)
+        resolvers.push(resolve)
+        signal?.addEventListener('abort', () => reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })))
+      })) as unknown as typeof api.uploadFiles,
+    )
+    const { container } = renderHost(node(slot), slot)
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(input, 'files', {
+      value: [new File(['a'], 'keep.txt', { type: 'text/plain' }), new File(['b'], 'drop.txt', { type: 'text/plain' })],
+      configurable: true,
+    })
+    await act(async () => { fireEvent.change(input) })
+    await waitFor(() => expect(signals).toHaveLength(2))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel uploading drop.txt' })) })
+    expect(signals.map(sig => sig.aborted)).toEqual([false, true])
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel uploading drop.txt' })).toBeNull())
+    expect(screen.getByRole('button', { name: 'Cancel uploading keep.txt' })).toBeInTheDocument()
+
+    await act(async () => { resolvers[0]({ paths: ['/up/keep.txt'] }) })
+    await waitFor(() => expect(screen.getByRole('group', { name: '/up/keep.txt' })).toBeInTheDocument())
+    expect(screen.queryByTestId('composer-upload-chip')).toBeNull()
+    expect(screen.queryByText(/Upload failed/i)).toBeNull()
+  })
+
+  it('keeps the "+" menu and its Optimize prompt row reachable during an upload', async () => {
+    manualUploads()
+    const { container } = renderHost(node(slot), slot)
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    await act(async () => { pickFile(container, 'slow.txt') })
+    await act(async () => { fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'tidy this up' } }) })
+    expect(screen.getByRole('button', { name: 'Cancel uploading slow.txt' })).toBeInTheDocument()
+    const plus = screen.getByTitle('Add files & options')
+    expect(plus).toBeEnabled()
+    await act(async () => { fireEvent.click(plus) })
+    expect(screen.getByTestId('composer-menu-optimize')).toBeInTheDocument()
   })
 })
 
@@ -563,13 +629,13 @@ describe('ChatPane composer: upload hold survives a remount', () => {
     await act(async () => { fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'after reopen' } }) })
     expect(sendButton()).toBeDisabled()
     // The reopened pane did not start the request, but it is where the user is.
-    const cancel = screen.getByRole('button', { name: 'Cancel upload' })
+    const cancel = screen.getByRole('button', { name: 'Cancel uploading stuck.txt' })
 
     await act(async () => { fireEvent.click(cancel) })
 
     expect(signal!.aborted).toBe(true)
     await waitFor(() => expect(sendButton()).not.toBeDisabled())
-    expect(screen.queryByRole('button', { name: 'Cancel upload' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Cancel uploading stuck.txt' })).toBeNull()
     expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('after reopen')
     // A cancel the user asked for is not a failure.
     expect(screen.queryByText(/Upload failed/i)).toBeNull()

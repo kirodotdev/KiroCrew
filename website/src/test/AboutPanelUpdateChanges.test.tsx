@@ -261,6 +261,23 @@ describe('AboutPanelUpdateChanges', () => {
       .toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/releases/tag/v0.13.0')
   })
 
+  it('links an LTS update to its lts-v tag, not the open-source release of the same number', () => {
+    render(<AboutPanelUpdateChanges notes="" version="0.3.0" />, { releases: [], edition: 'lts' })
+    expect(screen.getByRole('link', { name: /Read them on GitHub/ }))
+      .toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/commits/lts-v0.3.0')
+  })
+
+  it('links a desktop update by the desktop\u2019s own line, not the gateway\u2019s edition', () => {
+    // An open-source app on an LTS gateway: its update is an open-source release.
+    render(<AboutPanelUpdateChanges notes="" version="0.14.0" runningVersion="0.13.0" />, { releases: [], edition: 'lts' })
+    expect(screen.getByRole('link', { name: /Read them on GitHub/ }))
+      .toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/releases/tag/v0.14.0')
+    cleanup()
+    render(<AboutPanelUpdateChanges notes="" version="0.3.0" runningVersion="0.2.0" desktopLts />, { releases: [] })
+    expect(screen.getByRole('link', { name: /Read them on GitHub/ }))
+      .toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/commits/lts-v0.3.0')
+  })
+
   it('links the release list for a version with no tag of its own', () => {
     render(<AboutPanelUpdateChanges notes="" version="0.13.0-nightly.20261120t010101" />)
     expect(screen.getByRole('link', { name: /Read them on GitHub/ }))

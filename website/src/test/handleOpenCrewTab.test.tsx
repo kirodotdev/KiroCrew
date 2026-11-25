@@ -63,7 +63,7 @@ vi.mock('../utils/composerSendHolds', () => ({
   registerComposerUpload: vi.fn(),
   releaseComposerSend: vi.fn(),
   unregisterComposerUpload: vi.fn(),
-  useComposerUploadCount: () => 0,
+  useComposerUploads: () => [],
 }))
 // The single shared reveal `handleOpenCrewTab` reuses — mock it so the test
 // asserts delegation rather than re-spelling switchSlot+openPanelView+open.

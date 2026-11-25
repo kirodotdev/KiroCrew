@@ -28,6 +28,7 @@ import StatusNotice from '../../components/StatusNotice'
 import { Btn } from '../../components/ui'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { mintSendId, sendTurn } from '../../chat-core/transport/sendTurn'
+import { announceSentIn } from '../../hooks/useTranscriptAnnouncement'
 import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempotencyKey } from '../../api/sendRace'
 import { baseRevisionForPress } from '../../hooks/sharedCrew/sendRevisionSeed'
 import { ROW_META_CLS, ROW_STATUS_CLS } from '../../components/listShell'
@@ -517,6 +518,8 @@ function QuickReply({ slotKey, title, replyRef, draftRef, drafts, inFlight, iden
     // First submit wins, as in the composer: the revision is read at the press.
     const baseAtPress = baseRevisionFor(slotKey)
     const baseRevision = await baseRevisionForPress(slotKey, baseAtPress)
+    // Spoken at the send, as the composer's own send is.
+    announceSentIn(slotKey, message)
     const receipt = await sendTurn({ message, slot: slotKey, race: { baseRevision, idempotencyKey: sendIdempotencyKey(mintSendId()) } })
       .then(r => {
         // An accepted send clears its own text from the shared draft before a

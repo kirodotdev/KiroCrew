@@ -605,11 +605,12 @@ def _rule_sensitive_path(facts: GateFacts, target: str) -> str | None:
     tool, not a file, so resolving it as a path is a category error that under a
     resolver stall refused the call fail-closed with a "Path:" wording naming no
     path. Only an exact verified-identity match is spared; any other title, and
-    every argument, stays gated.
+    every argument, stays gated. A proven fetch's URL title is spared too (``names_fetch_url``).
     """
     return (
         sensitive_path_refusal(target)
         if target not in (facts.exempt_command, facts.exempt_identity)
+        and not (target == facts.judged_normalized and facts.call.names_fetch_url(target))
         else None
     )
 

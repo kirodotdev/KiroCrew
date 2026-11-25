@@ -426,6 +426,9 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         PID_ALIVE,
         PID_DEAD,
         PID_UNSIGNALABLE,
+        SUPERVISION_NOT_POSIX,
+        SUPERVISION_OWN_GROUP,
+        SUPERVISION_TERMINAL,
         is_thread_group_leader,
         live_thread_group_leaders,
         pgroup_of,
@@ -434,6 +437,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         pid_is_zombie,
         pid_liveness,
         process_thread_count,
+        supervision_shape_failure,
     )
     from kiro_crew.platform_compat_metrics import (  # noqa: F401
         _EXTERNAL_PAGE_COUNT_ELEMENTS,

@@ -99,6 +99,7 @@ CAPABILITY_FIELDS = (
     "names_crew_tools_by_fused_name",
     "model_auto_switches_in_place",
     "harness_loads_agent_context",
+    "reports_mcp_sign_in_suspects",
     "keeps_session_across_compaction",
 )
 

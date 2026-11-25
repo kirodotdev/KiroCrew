@@ -6,6 +6,7 @@ import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { renderWithProviders } from './helpers'
 import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
+import { clickOptimize } from './optimizeRow'
 
 const paste: PasteBlock = {
   id: 'lexical-seam-paste',
@@ -148,7 +149,7 @@ describe('ChatInput Lexical migration seam', () => {
       )
       const root = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
       await waitFor(() => expect(root.getAttribute('contenteditable')).toBe('false'))
-      fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+      clickOptimize()
       const cancel = await screen.findByRole('button', { name: 'Cancel optimizing' })
       await act(async () => { fireEvent.click(cancel) })
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel optimizing' })).toBeNull())

@@ -1,6 +1,6 @@
-"""``dashboard.expand_linked_items``: the Settings → Display → Sidebar toggle.
+"""``dashboard.expand_linked_items``: the Settings → Display → Session Cards toggle.
 
-Off by default, so every sidebar card keeps its linked-items strip folded. A
+Off by default, so every session card keeps its linked-items strip folded. A
 PATCH stores a real boolean and the loader reads it back; a non-boolean is
 refused.
 """

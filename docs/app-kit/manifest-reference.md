@@ -1427,8 +1427,9 @@ until the user picks the app.
 |-------|------|-------------|
 | `id` | string | Storage-safe slug, unique within the app |
 | `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `page` | object | Instead of `entry`: `{ "param": "<name>" }` opens the link on the app's own page (below). `param` is a slug like `id`. Declare exactly one of `entry` and `page` |
 | `hosts` | string[] | 1-64 hostnames, each checked like a `linkPreviews.hosts` entry. Only `https:` links on the default port and without a user name match |
-| `fullUrl` | boolean | Optional. `open` gets the URL without its query and fragment unless this is `true` and the owner approved it |
+| `fullUrl` | boolean | Optional. `open` (or the page) gets the URL without its query and fragment unless this is `true` and the owner approved it |
 
 At most **one** entry per app; a click goes to the first enabled app whose `hosts`
 claim the link.
@@ -1492,6 +1493,30 @@ Closing the dialog first calls `cancel(id, 'closed')`. `offerCopy` and `offerOpe
 put a **Copy** or **Open &lt;host&gt;** item in that menu: nothing is
 copied or opened until the user picks it. Links inside the frame open through the
 dashboard's link bridge.
+
+**On the app's own page (`page`).** With `"page": { "param": "url" }` instead of
+`entry`, opening the link in the app shows no dialog and loads no frame: the host
+opens the app's page, where the sidebar opens it (`/apps/<name>`), at
+`?url=<the link>`, with the same URL rule (no query or fragment unless `fullUrl` was
+approved). The page reads the parameter when it mounts. The question, **Always** and
+the approvals are the same as for `entry`.
+
+- When the app's page is popped out, that window loads the new address, which
+  replaces what the page held, and is asked to come to the front; the main window
+  stays where it is. A page that keeps unsaved work guards it with `beforeunload`,
+  the one leave check a load runs. A browser can refuse the focus when the window
+  was not opened from this tab (after a reload, or from another tab), as it can for
+  **Pop out** itself.
+- Otherwise the current window navigates to the page, after the page on screen
+  agrees to be left (an unsent draft asks first; cancelling opens nothing). On an
+  app's page, or on Projects or Channels, which cannot be asked, the click is an
+  ordinary link.
+- A `page` entry needs `ui.entry` and a `ui.pages` entry. `token` is not a usable
+  `param`: the dashboard reads it as its own sign-in link. An older Kiro Crew
+  refuses an entry without `entry`, so set `minKiroCrewVersion` when you use `page`.
+- "Always" is remembered per entry, so switching an existing entry from `entry` to
+  `page` changes what a remembered "app" answer does: it opens the page instead of
+  the dialog.
 
 ### `contributes.botChatServers` — Tools in a Bot's Own Chat
 

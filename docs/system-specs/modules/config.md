@@ -4005,7 +4005,7 @@ class DashboardConfig:
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
-    expand_linked_items: bool = False  # sidebar session cards start with their linked-items strip open (Settings → Display → Sidebar); only a literal true opens it, and the count still folds each card on its own. PATCH-able via /api/config/kirocrew
+    expand_linked_items: bool = False  # session cards start with their linked pull requests and issues open (Settings → Display, Session Cards section); only a literal true opens it, and pressing a card's count still folds that card. PATCH-able via /api/config/kirocrew
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
@@ -5302,12 +5302,11 @@ Returns the effective config for a channel:
 
 `dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
 proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
-bind address is not configurable. It is for Linux and macOS only for now: on
-Windows a non-zero value stops the start of the regular or the headless
-`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+bind address is not configurable. On Windows each entry listener has a listener
+guard. An integer that is neither `0` nor 1024 to 65535, or that
 equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
-while the SSM listener is configured to run, stops that start too
-(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+while the SSM listener is configured to run, stops the start of the regular or
+the headless `kirocrew gateway` (`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
 nor opens the port: it logs a warning and starts.
 The shared config validation replaces a wrong-typed value (for example `8443.5`,
 `"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It

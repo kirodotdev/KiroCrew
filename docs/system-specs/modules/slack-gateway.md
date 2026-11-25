@@ -780,6 +780,83 @@ take the hold in `cli.main` after argument parsing.
   or releases; the CLI sends `{"release": true}` when its restart fails, which reopens
   only a hold this route armed. The Remote Crew Update and Restart
   actions run that command on the remote ([instances](instances.md)).
+- **The idle check route also restarts in place, for the CLI.** `kirocrew restart`
+  on a foreground POSIX gateway sends `{"restart": true}` to the same route
+  (`cli_restart_in_place.py`, see [cli](cli.md) → Restart Command), so a
+  supervised gateway runs the exec the dashboard Restart button ends in
+  (`updates_apply._start_gateway_restart`, shared with `POST /api/restart`, then
+  `_restart_gateway`) and keeps its pid: a supervisor that started it keeps its
+  child. The CLI cannot use `POST /api/restart`, whose owner gate needs an empty
+  `app` claim a secret-authenticated caller never carries, and widening that gate
+  would let every agent tool call, which holds the same secret, restart the
+  gateway. `restart` must be the only true flag (with `commit`, `release` or
+  `service_managed_only` it is `400 invalid_body`). On top of the route's own
+  `internal_auth` and loopback checks (`403 restart_gate_not_local`), restart
+  mode checks two things, both required (`restart_gate._restart_in_place`), on
+  POSIX only.
+  First the caller's shape, the same predicate that decides who reads names
+  (`restart_gate._is_host_cli_caller`: no `X-Session-Key`, no `app` claim, and
+  `is_dashboard_user` not `False`), else `403 restart_caller_not_cli`. Off POSIX
+  restart mode then refuses with `403 restart_in_place_unsupported` before any
+  provenance lookup: an exec there starts a new process, and the host-owner
+  check below admits every peer unverified there (`win32-unverified`); the CLI
+  never asks it there. The caller's
+  shape is only headers and claims, and the local secret is readable inside the
+  agent sandbox, so second the kernel-identified peer: the check
+  `/api/token/local` mints an owner token on
+  (`member_memory_auth.local_owner_bootstrap_provenance`, run on
+  `executors.local_auth_executor()`) must return a provenance with no `app`,
+  meaning an ordinary host process of the owner and not an app backend, else
+  `403 restart_caller_not_host_owner`. The peer pid comes from the socket, never
+  from a header. Only then, for a verified caller, the gateway itself: only a
+  supervised gateway restarts in place, else
+  `403 restart_in_place_unsupervised`, read before the orchestrator check, the
+  commit hold and the join (`restart_gate._unsupervised_reason`). Supervised
+  means no generated unit or plist launched it (`launched_as_managed_service()`
+  false, else `why=service`), stdin is not its controlling terminal
+  (`os.tcgetpgrp(0)` raises, else `why=terminal`), and it does not lead its
+  process group while its parent is in that group (else `why=own_group`;
+  `platform_compat.supervision_shape_failure`). A gateway in a terminal, a
+  detached one, a job-control job, a service's main process and an orphan
+  fail; a shell-script loop and a runit-style supervisor pass. The refusal
+  touches neither the commit hold nor a running restart, which is not joined.
+  The rule, its known misses and its false positive are in [cli](cli.md) →
+  Restart Command. A CLI this refuses (another user, another namespace, an
+  unsupervised gateway) falls back to its stop-and-spawn, as it does on any
+  403. Every restart-mode
+  decision writes one SEL record (`operation=gateway_restart_in_place`): each
+  refusal with `reason=<code>` (an app backend adds `app=<name>`, an
+  unsupervised gateway `why=service`, `why=terminal` or `why=own_group`), an accepted
+  restart with `status=started` or `status=joined` and the provenance `basis`.
+  No record carries the secret, and none carries the session header's text: a
+  refused caller is named by the middleware's `app` claim, else as `session` or
+  `unknown`. The records are best-effort (not `critical=True`), as
+  `POST /api/shutdown`'s are: refusing the restart over a record that could not be
+  written would not stop it, because the CLI answers any refusal with the stop and
+  spawn through `/api/shutdown`; it would only cost the supervisor. A committed
+  hold (`_restart_commit_hold`, from `--when-idle`) is taken over: the restart
+  calls `_restart_gateway(admission_held=True)`, which does not ask
+  `admit_restart` again (that would refuse `pause_held_elsewhere`), is not
+  forced, and reopens the admission if the restart stops before it commits; the
+  preflight's `pause_held_elsewhere` is that very pause and does not refuse it,
+  while `shutting_down` still does. The hold is read after the last await, and its timer is
+  cancelled only once the restart task exists, so a refused ask leaves the hold
+  and its timer as they were. Without a hold the restart is forced, like the
+  dashboard Restart button's default. Refusals that need no side effect answer
+  before the 200 as `409 {"ok": false, "error", "code"}`: the restart target
+  (`restart_launcher_invalid`, `restart_interpreter_missing`) and, without a
+  hold, the preflight (`shutting_down`, `pause_held_elsewhere`; with a hold,
+  `shutting_down` only). Accepted:
+  `200 {"ok": true, "status": "restarting"}`. A restart already running (its
+  task is live, or any route holds `_gateway_restart_in_progress`, the update
+  apply included) is joined with `"already_in_progress": true` right after the
+  target check and BEFORE the preflight: that restart took the pause the
+  preflight reads as `pause_held_elsewhere`, and a CLI told 409 there would fall
+  back to stop-and-spawn beside a gateway about to exec. A joined ask leaves a
+  committed hold and its timer as they were. `POST /api/restart` does not join
+  first: it keeps its order (target, preflight, then its own task latch). A
+  gateway with no orchestrator answers `503 restart_gate_unavailable` as the
+  other asks do.
 - **One quiescence predicate.** `kiro_crew.quiescence.is_quiescent(orchestrator)`
   (`assess` returns the counts) is the single answer to "may an update restart
   this gateway now?", and the edition imports it rather than keep a second
@@ -839,7 +916,7 @@ take the hold in `cli.main` after argument parsing.
     secret's `internal_auth` mark and a loopback peer), on its busy answer. The secret proves the call came from
     inside, not who made it, so the handler adds them only for a caller that
     declares no session and carries no app claim
-    (`restart_gate._may_read_names`): the CLI on the host. A caller acting for a
+    (`restart_gate._is_host_cli_caller`): the CLI on the host. A caller acting for a
     session (an app's or the person's script cron, an agent's or sub-agent's
     tool call, with `X-Session-Key`) gets the counts alone. This is the caller
     `GET /api/crons` and `GET /api/chat/slots` already answer in full; a

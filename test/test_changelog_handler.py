@@ -111,6 +111,56 @@ async def test_api_releases_returns_per_version_entries(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lts_build_lists_no_open_source_releases(tmp_path, monkeypatch):
+    """An LTS build ships the open-source CHANGELOG.md, whose numbers are another line.
+
+    LTS 0.2.0 listed open-source 0.13.0 ... 0.3.0 under "Newer than yours" and
+    showed open-source 0.2.0's notes as its own. Only the running build's row is
+    left, with no notes, and the payload names the edition so the page can say
+    which line the install is on.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [0.13.0] - 2026-11-13\n\nOpen-source notes.\n\n"
+        "## [0.2.0] - 2026-08-09\n\nOpen-source 0.2.0 notes.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+    monkeypatch.setattr(updates, "_changelog_cache", None)
+    monkeypatch.setattr(updates, "_local_version", "0.2.0")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+
+    releases = json.loads((await updates.api_releases(_request())).body)
+    changelog = json.loads((await updates.api_changelog(_request())).body)
+
+    assert releases["edition"] == "lts"
+    assert [(r["version"], r["body"], r["is_current"]) for r in releases["releases"]] == [("0.2.0", "", True)]
+    # The post-update "What's new" dialog reads this; empty keeps it closed.
+    assert changelog["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_oss_build_still_lists_its_changelog(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [0.13.0] - 2026-11-13\n\nNewer.\n\n## [0.2.0] - 2026-08-09\n\nOld.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+    monkeypatch.setattr(updates, "_changelog_cache", None)
+    monkeypatch.setattr(updates, "_local_version", "0.2.0")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "oss")
+
+    releases = json.loads((await updates.api_releases(_request())).body)
+
+    assert releases["edition"] == "oss"
+    assert [r["version"] for r in releases["releases"]] == ["0.13.0", "0.2.0"]
+    assert "Newer." in json.loads((await updates.api_changelog(_request())).body)["content"]
+
+
+@pytest.mark.asyncio
 async def test_api_changelog_does_not_freeze_the_event_loop(monkeypatch):
     """The changelog read must run off the gateway's event-loop thread.
 

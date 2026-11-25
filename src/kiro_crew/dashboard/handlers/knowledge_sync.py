@@ -3,7 +3,8 @@
 ``POST /api/knowledge/sources/{id}/sync`` and the work it hands off -- a connector's
 sync, a local file's re-ingest, the artifact source's reconcile, an agent source's
 URL fetch -- with the status writes that must land even when the task is cancelled.
-Also the source-row read and the unique source insert the add and ingest routes share.
+Also the source-row read and the unique source insert the add and ingest routes share,
+and the staged-file removal the ingest routes and the URL fetch share.
 
 Served through :mod:`kiro_crew.dashboard.handlers.knowledge`, which callers and tests import
 and patch; this module never imports it.
@@ -97,6 +98,22 @@ def _source_row(store, source_id: str):
     ``store.db`` is thread-local, so the thread gets its own connection.
     """
     return store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+
+
+def _remove_staged_file(path: str | Path) -> None:
+    """Remove a staged temp file, best effort.
+
+    A missing file is silent. Any other ``OSError`` (on Windows, a scanner or
+    indexer holding the file) is logged and the file left, so a cleanup never
+    replaces the answer or sync status its caller already reached, or a cancel
+    in flight.
+    """
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not remove staged knowledge file %s: %s", path, exc)
 
 
 def _set_sync_status(store, source_id: str, status: str) -> None:
@@ -632,7 +649,7 @@ async def _background_url_sync(  # type: ignore[no-untyped-def]
             await drained_to_thread(_write_tmp)
             await pipeline.ingest_file(str(staged), original_name=name, source_id=source_id)
         finally:
-            await asyncio.to_thread(staged.unlink, missing_ok=True)
+            await asyncio.to_thread(_remove_staged_file, staged)
         await asyncio.to_thread(_set_sync_status, store, source_id, "synced")
         logger.info("URL sync complete: source=%s url=%s", source_id, url)
     except ImportChunkBudgetError as exc:

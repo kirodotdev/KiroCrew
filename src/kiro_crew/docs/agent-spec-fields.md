@@ -667,7 +667,13 @@ itself:
   rooted and is refused);
 - a missing, unreadable or empty file does not refuse the session: the agent
   runs on KAS's default prompt, as kiro-cli runs it with no prompt, and a
-  session-start notice names the file (`kas_prompt.prompt_unread_notice`);
+  session-start notice names the file (`kas_prompt.prompt_unread_notice`).
+  Every backend that gets the prompt only from the `[AGENT SYSTEM PROMPT]` block
+  (antigravity, claude, codex, opencode, goose, copilot, deepseek, strands, mimocode, pi)
+  shows the same notice when a new dashboard chat starts (a resumed chat gets
+  none; wherever the block is read, the WARNING still names the file) for a file
+  that block's reader cannot use, a file it skips for its location included;
+  kiro-cli reads the file itself;
 - a missing or blank prompt is sent as `"prompt": ""`, so the agent runs on
   KAS's own default prompt alone, as it runs on kiro-cli's. KAS needs
   the key present, not non-empty: an entry without it is not registered and the

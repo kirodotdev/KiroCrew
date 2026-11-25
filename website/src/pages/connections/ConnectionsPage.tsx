@@ -970,6 +970,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       </div>
 
       <div id="connections-services-panel">
+          {/* A Connect adds an MCP server, and a Bot's worker gets a server only
+              from that Bot's own abilities: the MCP Servers page's note, so a
+              Connected card is not read as reaching Bots. */}
+          {servicesEnabled && <p className="mb-3 text-[11.5px] leading-snug text-muted">{t('pages.mcpPage.bot_workers_note')}</p>}
           {servicesEnabled && <div className="mb-4 flex items-center gap-3">
             <SearchInput
               value={search}

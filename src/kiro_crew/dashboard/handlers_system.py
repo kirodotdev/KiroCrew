@@ -28,7 +28,7 @@ import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir, data_home
-from kiro_crew.dashboard import system_windows_probes
+from kiro_crew.dashboard import entry_gate, system_windows_probes
 from kiro_crew.dashboard.state import (
     DashboardState,
 )
@@ -287,6 +287,8 @@ async def api_status(request: web.Request) -> web.Response:
             "gateway_rss_mb": gateway_rss_mb,
             "watchdog_rss_max_mb": watchdog_rss_max_mb,
             "data_home_access": data_home_access,
+            # Why the entry port was closed while the gateway runs; "" when it was not.
+            "entry_port_closed": entry_gate.closed_reason(request.app),
             # Why session-map writes fail after an unreadable startup read, and the fix.
             "session_map_writes_refused": map_writes_refused,
             "session_map_remedy": (

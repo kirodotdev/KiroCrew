@@ -2191,7 +2191,9 @@ is: resolved (symlinks followed), read only when it stays inside that root, and
 otherwise skipped. A user or global spec keeps the absolute-path rule above. A
 file it cannot use
 (missing, refused, unreadable or empty) leaves the block empty and is named in one
-WARNING. An absolute declared
+WARNING and, on a new dashboard chat that is not a resume, on a backend that gets
+the prompt from this block alone (`agent_specs.prompt_only_in_context_block`), in
+the session-start notice KAS shows (`dashboard/chat_turn/prompt_file_notice.py`). An absolute declared
 resource is accepted in either spelling of its declared root: the root is
 compared lexically first and then in the resolved spelling the reader already
 walks and reads under, so a resource recorded in its real path
@@ -4897,7 +4899,7 @@ comment header per owner. The module-level code these owners hold is re-imported
 |---|---|
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
 | `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md` or packaged built-in skill file (`kiro_crew/builtin_skills/`), screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
-| `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), and the deployed cron-script source verdicts |
+| `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), the shipped table of the app each packaged copy names, kept after the copy leaves the package (`_recorded_skill_apps`, `data/packaged_skill_apps.json`), and the deployed cron-script source verdicts |
 | `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
 | `skills_selection` | `get_always_skills`, `get_triggered_skills` with its `trigger_score` call and the live per-message cap, the `repo_scope` gate, `scoped_skills`, and the user-first order of the startup index and the bounds it is rendered under |
@@ -5057,7 +5059,10 @@ time. A failed read is never remembered, so it fails closed again on the next as
 against the catalog list `_iter` served (the same object until a rebuild) and the
 disabled and released sets (`_hidden_by_app`: a disabled app's skills, and a flat
 packaged copy whose `app:` line names a former built-in released onto its own
-repository, app-kit-platform.md § Former built-in adoption): `_owning_app` resolves real paths per skill, and the memo is dropped by
+repository, app-kit-platform.md § Former built-in adoption; the copy is recognised by
+its key, claimed by `builtin_skills/` while it ships there and by the recorded
+`data/packaged_skill_apps.json` after it is deleted, so an installed copy stays
+hidden): `_owning_app` resolves real paths per skill, and the memo is dropped by
 `_invalidate_iter_cache` with the rest of the catalog state. It keeps only lists `_iter`
 still serves (a superseded generation is dropped on the next store), at most 16 of
 them and `_VISIBLE_MEMO_MAX_ROWS` (32,768) catalog rows in total; a larger catalog is

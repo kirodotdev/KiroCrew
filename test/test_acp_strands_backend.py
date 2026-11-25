@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 from spawn_test_helpers import await_gone, await_pids, kill_leftovers
 
+from conftest import requires_symlinks
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event, gate_envelope
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import strands as strands_mod
@@ -502,6 +503,42 @@ def test_an_unreadable_release_is_not_a_wrong_one(tmp_path) -> None:
     lone = tmp_path / "strands"
     lone.write_text("", encoding="utf-8")
     assert strands_mod._strands_version_issue(str(lone)) == ""
+
+
+@pytest.mark.parametrize(
+    ("prefix_dirs", "posix_shim"),
+    [((), False), pytest.param(("lib",), True, marks=requires_symlinks)],
+    ids=["windows-layout", "posix-layout"],
+)
+def test_a_volta_install_is_read_from_its_package_image(tmp_path, prefix_dirs, posix_shim) -> None:
+    volta = tmp_path / "volta"
+    image = volta / "tools" / "image" / "packages" / "@strands-agents" / "cli"
+    package = image.joinpath(*prefix_dirs, "node_modules", "@strands-agents", "cli")
+    package.mkdir(parents=True)
+    manifest = package / "package.json"
+    shim = volta / "bin" / ("strands" if posix_shim else "strands.cmd")
+    shim.parent.mkdir()
+    if posix_shim:
+        # A POSIX shim links to Volta's own executable, here outside the Volta home.
+        volta_shim = tmp_path / "volta-install" / "volta-shim"
+        volta_shim.parent.mkdir()
+        volta_shim.write_text("", encoding="utf-8")
+        shim.symlink_to(volta_shim)
+    else:
+        shim.write_text("", encoding="utf-8")
+
+    manifest.write_text(
+        json.dumps({"name": "@strands-agents/cli", "version": "9.9.9"}), encoding="utf-8"
+    )
+    assert strands_mod.strands_installed_version(str(shim)) == "9.9.9"
+    issue = strands_mod._strands_version_issue(str(shim))
+    assert "9.9.9" in issue and f"@strands-agents/cli@{STRANDS_VERIFIED_VERSION}" in issue
+
+    manifest.write_text(
+        json.dumps({"name": "@strands-agents/cli", "version": STRANDS_VERIFIED_VERSION}),
+        encoding="utf-8",
+    )
+    assert strands_mod._strands_version_issue(str(shim)) == ""
 
 
 def _venv(project: Path, *, with_harness: bool) -> None:

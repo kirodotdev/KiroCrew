@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { clickOptimize } from './optimizeRow'
 
 /**
  * The optimizer's write-back (`setTextUndoable`) is the sibling of the paste
@@ -35,9 +36,6 @@ const stubOptimizer = (optimized: string | null = OPTIMIZED) =>
 const setExecCommand = (impl: (...a: unknown[]) => boolean) => {
   ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = impl
 }
-
-const clickOptimize = () =>
-  fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
 
 describe('ChatInput optimize: the write-back is verified against the DOM', () => {
   beforeEach(() => {

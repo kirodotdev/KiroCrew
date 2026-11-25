@@ -5727,7 +5727,8 @@ Writers: `apps/app_frame.py` (the point), `apps/message_action_grants.py`,
 ## 18d. A claimed link opens in the app only after the user chooses it
 
 `contributes.linkOpen[]` (`{ id, entry, hosts, fullUrl? }`, one entry per app) lets
-an app open a clicked link in its own frame. It is a point on §18b's shared frame:
+an app open a clicked link in its own frame, or, with `page: { param }` instead of
+`entry`, on its own dashboard page. It is a point on §18b's shared frame:
 `register_frame_point("linkOpen", resolve_link_open, LINK_OPEN_POINT_SCRIPT)` and
 `register_point_grants(LINK_OPEN_GRANT_FAMILIES, link_open_grant_entries)`; nothing of
 the frame, the capability, the fetch or the invocation contract is its own. The rules:
@@ -5776,11 +5777,34 @@ the frame, the capability, the fetch or the invocation contract is its own. The 
   refuses (403) a host the live grant no longer covers, or a whole URL the owner has
   not approved, so a tab holding an older app list cannot hand the app what the
   owner took back.
+- **Page entry.** `page: { param }` (a slug, the same rule as `id`) replaces `entry`;
+  declaring both, or neither, is refused, and the app must declare `ui.entry` and a
+  `ui.pages` entry (AppHost mounts `ui.entry`; without it the page is a placeholder).
+  Choosing the app opens no dialog and no frame (`resolve_link_open` serves nothing
+  for an entry without `entry`, so nothing is minted): the host builds
+  `<route>?<param>=<url>` with the same stripped or whole URL, where `<route>` is
+  `appNavTarget(app).route` (`appNav.ts`), the one destination the rail and the
+  palette use and the app pop-out id; an app with no target, or an orphaned one, is
+  not held. A live pop-out of that route gets the path over the `kirocrew-app-popout`
+  channel (`navigatePopout`, message `navigate`) and loads it in its own window
+  (`AppPopoutFrame`): a document load, because an installed page gets no router and
+  a push that changes only the query would not reach it, so the page's in-page state
+  is replaced and `beforeunload` is its one guard. Then the pop-out is focused
+  (`focusPopout`, which the browser may refuse without a handle). Otherwise the
+  window navigates in-app through `useGuardedLeave`, so a host page holding work is
+  asked first and a refusal opens nothing. An app's page, and a core pop-out page
+  (Projects, Channels), registers no such guard, so while one is on screen
+  (`appRouteOf` with `hasPopoutPage`) a page entry's click is not held unless its
+  destination is popped out, and a pop-out that closed while the question was open
+  sends the choice to the browser. The mint admission above applies to frame entries
+  only: an app page is an ordinary component in the dashboard's tree with the
+  owner's session, so it has no mint to admit.
 - **Manifest.** `hosts` 1 to 64; `entry` contained in the app root; the block is
   serialized, so it is covered by the signing payload.
 
 Writers: `apps/manifest_contributes.py` (`LinkOpenConfig`), `apps/link_open_grants.py`,
-`apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`.
+`apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`,
+`website/src/utils/popoutController.ts` (`navigate`), `website/src/pages/AppPopoutFrame.tsx`.
 
 ## 18e. A composer action inserts only into an empty composer, only text with nothing to resolve; the app sees nothing and sends nothing
 
@@ -8501,7 +8525,15 @@ only remove first-party status, never grant it. It gates:
   adoption state is read only when the catalog lists a key a packaged skill
   claims for an app, and then once per catalog TTL),
   so an adopted app shows only its repository's `skills/<name>/<skill>` copies and
-  an uninstalled one none. A copy already installed stays on disk, hidden;
+  an uninstalled one none. A copy already installed stays on disk, hidden. The
+  claim outlives the packaged copy: a key's app comes from `builtin_skills/` while
+  the copy ships there, else from the shipped table `data/packaged_skill_apps.json`
+  (`skills_builtin_provenance._recorded_skill_apps`, data like the pin table). So
+  removing a former built-in deletes its `builtin_skills/` copies outright: a host
+  that installed one keeps it hidden, and a host that never had it gets none, where
+  a kept copy would be installed on every fresh host as a skill naming an app it
+  does not have. `test_released_builtin_skill_copies.py` holds the table to every
+  packaged skill naming an app and every app it names to a pin row;
 - `register_builtin_apps`: a released name with no record, or an adopted record,
   gets no directory, record, snapshot or secret. A shadowing user app is not
   released and keeps the stand-down warning. A pinned name with no record while
@@ -9721,7 +9753,10 @@ or record that is there but does not read cleanly (`_read_declaration`: not a re
 file under the size cap, unparseable, another app's `name`, an invalid entry) fences its
 app's whole `data/` and move-aside directory and what is beneath them
 (`ToolGateLeaves.unreadable`, which gets no artifact rule), and an `apps/` that exists
-but cannot be listed fences `apps/`. Only a declared leaf's own directory gets the
+but cannot be listed fences `apps/`. `tool_gate_home_rows` reads the shipped built-ins'
+manifests again the same way, so a built-in whose `app.json` did not read at import
+fences its app's data until it reads, then its declared rows; a manifest read that
+fails is not cached. Only a declared leaf's own directory gets the
 `.tmp` / `.lock` rule, so for a directory entry that is `data/` itself, as for a
 built-in's. No listed row can name anything outside `apps/<name>/data/` or
 `apps/.<name>-data-tmp/`, and `security.sensitive_home_dirs()` keeps only the static
