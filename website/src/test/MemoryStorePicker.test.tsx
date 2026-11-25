@@ -16,14 +16,21 @@
  * add rows a query has to be disambiguated against.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import type { MemoryBackup, MemoryStoreSummary } from '../types'
 import MemoryTab from '../pages/overview/MemoryTab'
 import MemoryCarveCard from '../pages/overview/MemoryCarveCard'
 import MemoryBackupsCard from '../pages/overview/MemoryBackupsCard'
 import MemoryRetiredCard from '../pages/overview/MemoryRetiredCard'
-import MemoryStoreCard from '../pages/overview/MemoryStoreCard'
+import { MemoryStoreStats, MemoryStoreSwitcher, useMemoryStores } from '../pages/overview/MemoryStoreCard'
+
+/** The header switcher plus the store card that Settings > Store shows for `store`. */
+function StoreHeader({ store, onStoreChange }: { store: string; onStoreChange: (store: string) => void }) {
+  const stores = useMemoryStores()
+  const row = stores.data?.stores.find(item => item.name === store)
+  return <><MemoryStoreSwitcher store={store} onStoreChange={onStoreChange} />{row && <MemoryStoreStats selected={row} />}</>
+}
 
 const { api } = vi.hoisted(() => ({
   api: {
@@ -156,7 +163,9 @@ async function pickerSeeded(): Promise<HTMLElement> {
   // active store before asserting anything about the reads. Displaying it is not
   // the same as naming it on the wire: the active store is sent as no parameter at
   // all, so the reads below assert `undefined`.
-  await waitFor(() => expect(picker).toHaveTextContent('Shared · Global Memory V1'))
+  // The trigger shows the short name; its title keeps the list's full label.
+  await waitFor(() => expect(picker).toHaveAttribute('title', 'Shared · Global Memory V1'))
+  expect(picker).toHaveTextContent('Global memory')
   return picker
 }
 
@@ -169,7 +178,7 @@ async function pickStore(picker: HTMLElement, name: string): Promise<void> {
 describe('memory store picker — the listing', () => {
   it('selects existing stores without offering detached store creation', async () => {
     const onStoreChange = vi.fn()
-    renderWithProviders(<MemoryStoreCard store="default" onStoreChange={onStoreChange} />)
+    renderWithProviders(<StoreHeader store="default" onStoreChange={onStoreChange} />)
     const picker = await pickerSeeded()
     expect(screen.getByText('Semantic', { exact: true })).toHaveTextContent('Semantic 41')
     expect(screen.getByText('Episodic', { exact: true })).toHaveTextContent('Episodic 7')
@@ -190,7 +199,7 @@ describe('memory store picker — the listing', () => {
       stores: STORES.map(row => row.name === CREW_STORE ? { ...row, memory_version: version } : row),
       active: 'default',
     })
-    renderWithProviders(<MemoryStoreCard store={CREW_STORE} onStoreChange={vi.fn()} />)
+    renderWithProviders(<StoreHeader store={CREW_STORE} onStoreChange={vi.fn()} />)
     expect(await screen.findByText(semantic, { exact: true })).toHaveTextContent(`${semantic} 5`)
     expect(screen.getByText(episodic, { exact: true })).toHaveTextContent(`${episodic} 1`)
     expect(screen.queryByText(version === 1 ? 'Facts and lessons:' : 'Semantic', { exact: true })).toBeNull()
@@ -201,7 +210,7 @@ describe('memory store picker — the listing', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     const picker = await pickerSeeded()
 
-    expect(picker).toHaveTextContent('Shared · Global Memory V1')
+    expect(picker).toHaveAttribute('title', 'Shared · Global Memory V1')
     expect(screen.queryByText('Shared default store')).toBeNull()
 
     fireEvent.click(picker)
@@ -227,7 +236,7 @@ describe('memory store picker — the listing', () => {
     vi.clearAllMocks()
 
     await pickStore(picker, 'finance-reviewer · Member memory (V2)')
-    await waitFor(() => expect(picker).toHaveAttribute('title', 'finance-reviewer · Member memory (V2)'))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: PICKER_LABEL })).toHaveAttribute('title', 'finance-reviewer · Member memory (V2)'))
     fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Profile' }), { button: 0, ctrlKey: false })
 
     // Every store-scoped read on the page, re-issued under the new name. The
@@ -235,7 +244,7 @@ describe('memory store picker — the listing', () => {
     // serve the previous store's cached rows and never appear here.
     await waitFor(() => expect(api.memoryPreferences).toHaveBeenCalledWith(CREW_STORE))
     expect(api.memoryProjects).toHaveBeenCalledWith(CREW_STORE)
-    expect(api.memoryRecords).toHaveBeenCalledWith(CREW_STORE, { q: '', kind: 'all' }, 0, 50)
+    expect(api.memoryRecords).toHaveBeenCalledWith(CREW_STORE, { q: '', kind: 'all' }, 0, 50, { sort: 'updated', order: 'desc', facets: true })
     expect(api.memoryHistory).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     expect(api.lessons).not.toHaveBeenCalled()
@@ -243,12 +252,9 @@ describe('memory store picker — the listing', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Recovery' }), { button: 0, ctrlKey: false })
     await waitFor(() => expect(api.memoryRetired).toHaveBeenCalledWith(CREW_STORE, expect.any(Number)))
     expect(api.memoryBackups).toHaveBeenCalledWith(CREW_STORE)
-    const advanced = screen.getByText('Advanced memory analysis').closest('details')!
-    // Setting `open` makes happy-dom dispatch its own `toggle`, so the assignment needs the act scope too.
-    act(() => {
-      advanced.open = true
-      fireEvent(advanced, new Event('toggle'))
-    })
+    // Explore memory sits on the bot's Settings tab and reads only once that tab opens.
+    expect(api.memoryCarve).not.toHaveBeenCalled()
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0, ctrlKey: false })
     await waitFor(() => expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: CREW_STORE })))
     // Nothing was re-read under the store the user just left, which for the active
     // store means no storeless read either.
@@ -257,7 +263,7 @@ describe('memory store picker — the listing', () => {
 
     // The catalog's owner supplies the heading, while the distinct store name
     // scopes every request above. Neither identity comes from the other.
-    expect(await screen.findByRole('heading', { name: 'Memory for finance-reviewer' })).toBeInTheDocument()
+    expect(await screen.findByRole('tablist', { name: 'Memory for finance-reviewer' })).toBeInTheDocument()
     expect(screen.queryByText('Shared default store')).toBeNull()
   })
 

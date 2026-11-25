@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
+import { isOverviewDrillView, type OverviewDrillView } from './overviewDrillViews'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { Uptime } from '../components/Uptime'
@@ -47,8 +48,7 @@ const MemoryTab = lazy(() => import('./overview/MemoryTab'))
  * on the Import tab.
  */
 
-const DRILL_VIEWS = ['memory', 'usage', 'wakatime'] as const
-type DrillView = (typeof DRILL_VIEWS)[number]
+type DrillView = OverviewDrillView
 
 /** A Today-line count: `amount` is the locale's compact number, and `count`, the
  *  quantity it shows, picks the plural form that agrees with it. */
@@ -329,7 +329,7 @@ export default function OverviewPage() {
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
-  const view: DrillView | null = DRILL_VIEWS.includes(rawView as DrillView) ? (rawView as DrillView) : null
+  const view: DrillView | null = isOverviewDrillView(rawView) ? rawView : null
   const setView = (v: DrillView | null) => setParams(prev => {
     const next = new URLSearchParams(prev)
     if (v) next.set('view', v)

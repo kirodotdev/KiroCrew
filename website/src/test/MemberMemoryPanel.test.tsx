@@ -19,6 +19,8 @@ const { api } = vi.hoisted(() => ({ api: {
   saveMemoryPreferences: vi.fn(), saveMemoryProjects: vi.fn(),
   memoryCarve: vi.fn(), memoryRetired: vi.fn(), memoryRestoreRetired: vi.fn(), memoryBackups: vi.fn(), memoryBackupNow: vi.fn(), memoryRestoreBackup: vi.fn(), cancelMemberMemoryRestore: vi.fn(), memorySettings: vi.fn(), lessons: vi.fn(),
   themes: vi.fn(), themeDetail: vi.fn(), themeBoot: vi.fn(),
+  // The header's embedded-count line: no provider, so it stays hidden.
+  vectorEmbeddingStatus: vi.fn(), vectorStats: vi.fn(),
 } }))
 vi.mock('../api/client', () => ({ api }))
 vi.mock('../pages/overview/VectorMemoryCard', async importOriginal => ({
@@ -49,7 +51,9 @@ function writerAvatarSource() {
 }
 
 function headerAvatar(member: string) {
-  return screen.getByRole('heading', { name: `Memory for ${member}` }).parentElement!.parentElement!.querySelector('img')
+  // The header's switcher shows the store's face; the tab list is named for its bot.
+  expect(screen.getByRole('tablist', { name: `Memory for ${member}` })).toBeInTheDocument()
+  return screen.getByTestId('memory-store-switcher').querySelector('img')
 }
 
 function RouteLocation() {
@@ -67,6 +71,8 @@ beforeEach(() => {
   sessionStorage.clear()
   window.history.replaceState({}, '', `/settings/overview?view=memory&store=${MEMBER_STORE}`)
   api.memoryStores.mockResolvedValue({ stores, active: 'default' })
+  api.vectorEmbeddingStatus.mockResolvedValue({ provider: 'none' })
+  api.vectorStats.mockResolvedValue({})
   api.memberMemoryPage.mockImplementation(async (store: string, table: string, offset: number) => ({ entries: offset ? [] : store === 'default' ? table === 'semantic' ? [
     { key: 'global.selected', value_json: 'Selected source knowledge' },
     { key: 'global.unselected', value_json: 'Unselected source knowledge' },
@@ -105,14 +111,23 @@ beforeEach(() => {
 afterEach(() => window.history.replaceState({}, '', '/'))
 
 async function loaded() {
-  await screen.findByText('Memory for reviewer')
+  await screen.findByRole('tablist', { name: 'Memory for reviewer' })
   await screen.findByText(FACT.value_json)
-  expect(screen.getByText('Member memory · V2')).toBeVisible()
 }
 
 async function openProfile() {
   fireEvent.mouseDown(screen.getByRole('tab', { name: 'Profile' }), { button: 0, ctrlKey: false })
   await screen.findByDisplayValue(`Preferences for ${MEMBER_STORE}`)
+}
+
+/** The view the memory page's list asks for: newest first, with facet counts. */
+const VIEW = { sort: 'updated', order: 'desc', facets: true }
+
+/** Pick one action from a record row's actions menu. */
+async function rowAction(text: string, action: 'Edit' | 'Forget' | 'View details') {
+  const row = screen.getByText(text).closest('li')!
+  fireEvent.pointerDown(within(row).getByRole('button', { name: 'Memory actions' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+  fireEvent.click(await screen.findByRole('menuitem', { name: action }))
 }
 
 async function chooseWriter() {
@@ -123,8 +138,8 @@ async function chooseWriter() {
 describe('private member memory lifecycle', () => {
   it('lands on a saved lesson in its own store without replacing the saved filter', async () => {
     const key = 'lesson.0123456789ab'
-    const savedFilter = JSON.stringify({ q: 'previous search', kind: 'episode' })
-    sessionStorage.setItem(`kirocrew:memory-records-filter:${MEMBER_STORE}`, savedFilter)
+    const savedFilter = JSON.stringify({ q: 'previous search', kind: 'episode', sort: 'updated', order: 'desc', filters: {} })
+    sessionStorage.setItem(`kirocrew:memory-page-view:${MEMBER_STORE}`, savedFilter)
     const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
     const target = { kind: 'directive', id: key, key, value_json: JSON.stringify({ rule: 'The saved member lesson' }), text: 'The saved member lesson', revision: 'a'.repeat(64) }
     api.memoryRecords.mockImplementation(async (store: string, query: { q: string; kind: string }) => {
@@ -135,17 +150,17 @@ describe('private member memory lifecycle', () => {
       const { unmount } = renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" focusLessonKey={key} />)
       expect(await screen.findByText(target.text)).toBeVisible()
       expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue(key)
-      expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: key, kind: 'directive' }, 0, 50)
+      expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: key, kind: 'directive' }, 0, 50, VIEW)
       expect(api.memoryRecords.mock.calls.every(([store]) => store === MEMBER_STORE)).toBe(true)
       const focused = screen.getByText(target.text).closest('[data-memory-focus="true"]')!
       expect(focused).not.toBeNull()
       expect(focused.className).toContain('ring-accent')
       await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
       expect(scroll.mock.instances[0]).toBe(focused)
-      expect(sessionStorage.getItem(`kirocrew:memory-records-filter:${MEMBER_STORE}`)).toBe(savedFilter)
+      expect(sessionStorage.getItem(`kirocrew:memory-page-view:${MEMBER_STORE}`)).toBe(savedFilter)
       unmount()
       renderWithProviders(<MemoryTab refreshTrigger={0} focusLessonKey={key} />)
-      await waitFor(() => expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: 'previous search', kind: 'episode' }, 0, 50))
+      await waitFor(() => expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: 'previous search', kind: 'episode' }, 0, 50, VIEW))
       expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue('previous search')
       expect(document.querySelector('[data-memory-focus]')).toBeNull()
     } finally { scroll.mockRestore() }
@@ -157,19 +172,19 @@ describe('private member memory lifecycle', () => {
     window.history.replaceState({}, '', route)
     renderWithProviders(<><OverviewPage /><RouteLocation /></>, { route })
 
-    await screen.findByRole('heading', { name: 'Memory for reviewer' })
+    await screen.findByRole('tablist', { name: 'Memory for reviewer' })
     expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue(key)
-    await waitFor(() => expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: key, kind: 'directive' }, 0, 50))
+    await waitFor(() => expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: key, kind: 'directive' }, 0, 50, VIEW))
     await chooseWriter()
 
-    await screen.findByRole('heading', { name: 'Memory for writer' })
+    await screen.findByRole('tablist', { name: 'Memory for writer' })
     const destination = new URL(screen.getByTestId('route-location').textContent!, window.location.origin)
     expect(destination.searchParams.get('store')).toBe(OTHER_STORE)
     expect(destination.searchParams.has('lesson')).toBe(false)
     expect(destination.searchParams.get('focus')).toBe('lessons')
     expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue('')
     expect(await screen.findByText(FACT.value_json)).toBeVisible()
-    expect(api.memoryRecords).toHaveBeenCalledWith(OTHER_STORE, { q: '', kind: 'all' }, 0, 50)
+    expect(api.memoryRecords).toHaveBeenCalledWith(OTHER_STORE, { q: '', kind: 'all' }, 0, 50, VIEW)
     expect(api.memoryRecords.mock.calls.filter(([store]) => store === OTHER_STORE).every(([, query]) => query.q !== key)).toBe(true)
   })
 
@@ -177,7 +192,9 @@ describe('private member memory lifecycle', () => {
     window.history.replaceState({}, '', `/settings/overview?view=memory&store=${LEGACY_STORE}`)
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
 
-    await screen.findByRole('heading', { name: `Memory for ${LEGACY_STORE}` })
+    await screen.findByRole('tablist', { name: `Memory for ${LEGACY_STORE}` })
+    // The memory version moved from the old header card to Settings > Store.
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0, ctrlKey: false })
     expect(screen.getByText('Memory V1', { exact: true })).toBeVisible()
     const guidance = screen.getByText(/This bot keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new bot\./)
     expect(guidance).toHaveTextContent(/^This bot keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new bot\.$/)
@@ -192,7 +209,7 @@ describe('private member memory lifecycle', () => {
     api.memoryStores.mockImplementation(() => new Promise(resolve => { resolveIdentity = resolve }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     expect(screen.getByRole('status')).toHaveTextContent('Loading member identity')
-    expect(screen.queryByRole('heading', { name: `Memory for ${MEMBER_STORE}` })).toBeNull()
+    expect(screen.queryByRole('tablist', { name: `Memory for ${MEMBER_STORE}` })).toBeNull()
     expect(screen.queryByText(MEMBER_STORE, { exact: true })).toBeNull()
     expect(screen.queryByRole('combobox', { name: 'Memory store' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
@@ -229,7 +246,7 @@ describe('private member memory lifecycle', () => {
     api.memoryStores.mockResolvedValue({ stores: catalog, active: 'default' })
     renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
     await screen.findByRole('heading', { name: 'This memory store’s member identity is unavailable.' })
-    expect(screen.queryByRole('heading', { name: `Memory for ${MEMBER_STORE}` })).toBeNull()
+    expect(screen.queryByRole('tablist', { name: `Memory for ${MEMBER_STORE}` })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
@@ -276,7 +293,7 @@ describe('private member memory lifecycle', () => {
     api.memoryStores.mockRejectedValue(Object.assign(new Error('Member catalog is temporarily unavailable'), { status: 409 }))
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ['memory-stores'] }) })
     expect(await screen.findByText('Member catalog is temporarily unavailable')).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Memory for reviewer' })).toBeVisible()
+    expect(screen.getByRole('tablist', { name: 'Memory for reviewer' })).toBeVisible()
     expect(screen.getByDisplayValue('Keep this unsaved member preference')).toBe(preferences)
     api.memoryStores.mockResolvedValue({ stores: avatarStores(), active: 'default' })
     fireEvent.click(screen.getByRole('button', { name: 'Retry member identity' }))
@@ -298,7 +315,8 @@ describe('private member memory lifecycle', () => {
       ])
     })
     await screen.findByText('A fresh start for this member')
-    expect(screen.getByRole('button', { name: 'Copy memories', exact: true })).toBe(copy)
+    // The empty list offers Copy memories too; the header keeps its own button.
+    expect(screen.getAllByRole('button', { name: 'Copy memories', exact: true })[0]).toBe(copy)
     expect(copy).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Open member conversation' })).toBeVisible()
     expect(api.memorySeed).not.toHaveBeenCalled()
@@ -323,7 +341,7 @@ describe('private member memory lifecycle', () => {
     await screen.findByText('Private database is missing; restore this member backup')
     expect(screen.queryByText('A fresh start for this member')).toBeNull()
     expect(screen.queryByText(FACT.value_json)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Recovery', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Recovery', exact: true }))
     await waitFor(() => expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE))
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Memories' }), { button: 0, ctrlKey: false })
     api.memberMemoryPage.mockImplementation(healthy)
@@ -337,7 +355,7 @@ describe('private member memory lifecycle', () => {
     api.memoryEditPreview.mockRejectedValueOnce(new Error('Experience changed while editing'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
+    await rowAction(EPISODE.text, 'Edit')
     const dialog = screen.getByRole('dialog', { name: 'Edit memory' })
     const text = 'The scheduled restart correctly preserved this member’s identity'
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Memory text' }), { target: { value: text } })
@@ -448,15 +466,15 @@ describe('private member memory lifecycle', () => {
     await loaded()
     expect(headerAvatar('reviewer')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=17')
     const picker = screen.getByRole('combobox', { name: 'Memory store' })
-    expect(picker.querySelector('img')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=17')
+    expect(screen.getByTestId('memory-store-switcher').querySelector('img')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=17')
     fireEvent.click(picker)
     const writer = await screen.findByRole('option', { name: 'writer · Member memory (V2)' })
     expect(writer.querySelector('img')).toHaveAttribute('src', writerSrc)
     expect(screen.getByRole('option', { name: 'Shared · Global Memory V1' }).querySelector('img')).toBeNull()
     fireEvent.click(writer)
-    await screen.findByRole('heading', { name: 'Memory for writer' })
+    await screen.findByRole('tablist', { name: 'Memory for writer' })
     expect(headerAvatar('writer')).toHaveAttribute('src', writerSrc)
-    expect(screen.getByRole('combobox', { name: 'Memory store' }).querySelector('img')).toHaveAttribute('src', writerSrc)
+    expect(screen.getByTestId('memory-store-switcher').querySelector('img')).toHaveAttribute('src', writerSrc)
   })
 
   it('shows the source member avatar while copying without replacing the target identity', async () => {
@@ -487,7 +505,7 @@ describe('private member memory lifecycle', () => {
     api.memoryStores.mockResolvedValue({ stores: avatarStores().map(s => s.name === MEMBER_STORE ? { ...s, owner_avatar: { kind: 'image', v: 18 } } : s), active: 'default' })
     view.rerender(<MemoryTab refreshTrigger={0} />)
     await waitFor(() => expect(headerAvatar('reviewer')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=18'))
-    expect(screen.getByRole('combobox', { name: 'Memory store' }).querySelector('img')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=18')
+    expect(screen.getByTestId('memory-store-switcher').querySelector('img')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=18')
   })
 
   it('opens the deep-linked member with scoped reads and no global memory surface', async () => {
@@ -503,10 +521,9 @@ describe('private member memory lifecycle', () => {
     await waitFor(() => expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE))
     expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE)
     expect(api.memoryRetired).toHaveBeenCalledWith(MEMBER_STORE, expect.any(Number))
-    const advanced = screen.getByText('Advanced memory analysis').closest('details')!
-    // happy-dom fires `toggle` synchronously from the `open` setter, into onToggle's setAdvanced.
-    act(() => { advanced.open = true })
-    fireEvent(advanced, new Event('toggle'))
+    // Explore memory sits on the Settings tab and reads once that tab opens.
+    expect(api.memoryCarve).not.toHaveBeenCalled()
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0, ctrlKey: false })
     await waitFor(() => expect(api.memoryCarve).toHaveBeenCalled())
     expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: MEMBER_STORE }))
     expect(api.memorySettings).not.toHaveBeenCalled()
@@ -520,7 +537,7 @@ describe('private member memory lifecycle', () => {
   it('corrects and forgets the selected member items after explicit confirmation', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
+    await rowAction(FACT.value_json, 'Edit')
     let dialog = screen.getByRole('dialog', { name: 'Edit memory' })
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Memory text' }), { target: { value: 'Review every changed boundary' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Preview changes' }))
@@ -528,7 +545,7 @@ describe('private member memory lifecycle', () => {
     fireEvent.click(await within(dialog).findByRole('button', { name: 'Apply changes (1)' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[0])
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Memory details' })).getByRole('button', { name: 'Forget' }))
+    fireEvent.click(within(screen.getByTestId('memory-record-detail')).getByRole('button', { name: 'Forget' }))
     dialog = screen.getByRole('dialog', { name: 'Forget' })
     expect(api.vectorSemanticDelete).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Preview changes' }))
@@ -536,7 +553,7 @@ describe('private member memory lifecycle', () => {
     fireEvent.click(await within(dialog).findByRole('button', { name: 'Forget selected memories: 1' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[1])
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Memory details' })).getByRole('button', { name: 'Forget' }))
+    fireEvent.click(within(screen.getByTestId('memory-record-detail')).getByRole('button', { name: 'Forget' }))
     dialog = screen.getByRole('dialog', { name: 'Forget' })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Preview changes' }))
     await waitFor(() => expect(api.memoryEditPreview).toHaveBeenCalledWith(MEMBER_STORE, { items: [{ kind: 'episode', id: EPISODE.id, revision: 'a'.repeat(64) }] }, { type: 'forget' }))
@@ -595,7 +612,7 @@ describe('private member memory lifecycle', () => {
     api.memberMemoryPage.mockImplementation(async (_store: string, table: string) => ({ entries: table === 'semantic' ? [{ key: 'lesson.review', value_json: JSON.stringify(original) }] : [] }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await screen.findByText('Old review rule')
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await rowAction('Old review rule', 'Edit')
     const dialog = screen.getByRole('dialog', { name: 'Edit memory' })
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Memory text' }), { target: { value: 'New review rule' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Preview changes' }))
@@ -605,8 +622,8 @@ describe('private member memory lifecycle', () => {
   it('validates a structured fact correction before sending a parsed object', async () => {
     api.memberMemoryPage.mockImplementation(async (_store: string, table: string) => ({ entries: table === 'semantic' ? [{ key: 'project.settings', value_json: '{"language":"en"}' }] : [] }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
-    await screen.findByRole('button', { name: 'Edit' })
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByText('language: en')
+    await rowAction('language: en', 'Edit')
     const dialog = screen.getByRole('dialog', { name: 'Edit memory' })
     const editor = within(dialog).getByRole('textbox', { name: 'Memory text' })
     fireEvent.change(editor, { target: { value: '{broken JSON' } })
@@ -637,7 +654,7 @@ describe('private member memory lifecycle', () => {
     await chooseWriter()
     dialog = screen.getByRole('dialog', { name: 'Discard changes' })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
-    expect(await screen.findByText('Memory for writer')).toBeInTheDocument()
+    expect(await screen.findByRole('tablist', { name: 'Memory for writer' })).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Profile' }), { button: 0, ctrlKey: false })
     expect(await screen.findByDisplayValue(`Preferences for ${OTHER_STORE}`)).toBeInTheDocument()
     expect(screen.queryByDisplayValue('Unsaved member draft')).toBeNull()
@@ -688,7 +705,7 @@ describe('private member memory lifecycle', () => {
     await waitFor(() => expect(api.saveMemoryPreferences).toHaveBeenCalledWith('Keep reviews concise', MEMBER_STORE))
     await within(card).findByRole('button', { name: 'Saved' })
     await chooseWriter()
-    expect(await screen.findByText('Memory for writer')).toBeInTheDocument()
+    expect(await screen.findByRole('tablist', { name: 'Memory for writer' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Discard changes' })).toBeNull()
   })
 
@@ -706,17 +723,16 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'review' } })
-    // The Recall button draws its searching state as `busy` (aria-disabled),
-    // not native `disabled`, so toBeEnabled() no longer gates on it: wait for
-    // the busy signal to clear, or a press lands while busy and is swallowed.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Recall for this task' })).not.toHaveAttribute('aria-disabled'))
-    fireEvent.click(screen.getByRole('button', { name: 'Recall for this task' }))
-    expect(await screen.findByText('Selected member evidence')).toBeVisible()
+    // Test recall takes the search box's words as the task and recalls at once.
+    fireEvent.click(screen.getByRole('button', { name: 'Test recall' }))
+    const dialog = screen.getByRole('dialog', { name: 'Test recall' })
+    expect(within(dialog).getByRole('textbox', { name: 'Task' })).toHaveValue('review')
+    expect(await within(dialog).findByText('Selected member evidence')).toBeVisible()
     expect(api.memoryRecall).toHaveBeenCalledWith('review', MEMBER_STORE)
-    expect(screen.getByText(/Matching terms: review/)).not.toBeVisible()
-    fireEvent.click(screen.getByText('Source and retrieval details'))
-    expect(screen.getByText(/Matching terms: review/)).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+    expect(within(dialog).getByText(/Matching terms: review/)).not.toBeVisible()
+    fireEvent.click(within(dialog).getByText('Source and retrieval details'))
+    expect(within(dialog).getByText(/Matching terms: review/)).toBeVisible()
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!)
     expect(screen.queryByText('Selected member evidence')).toBeNull()
   })
 
@@ -830,7 +846,7 @@ describe('private member memory lifecycle', () => {
   it('filters experiences without mixing in facts and returns to all memories', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    expect(screen.getByText('Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.', { exact: true })).toBeVisible()
+    expect(screen.getByRole('radiogroup', { name: 'Memory type' })).toHaveAttribute('title', 'Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.')
     fireEvent.click(screen.getByRole('radio', { name: /^Experiences/ }))
     expect(await screen.findByText(EPISODE.text)).toBeInTheDocument()
     expect(screen.queryByText(FACT.value_json)).toBeNull()
@@ -871,14 +887,25 @@ describe('private member memory lifecycle', () => {
     expect(api.memorySettings).not.toHaveBeenCalled()
   })
 
+  it('sends a bot page’s Failures tab to Global memory instead of saving lessons there', async () => {
+    renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
+    await loaded()
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Failures' }), { button: 0, ctrlKey: false })
+    expect(screen.getByText(/lessons drafted from them are saved to Global memory/)).toBeVisible()
+    // No Repeated failures card, so no Draft lesson that would write Global memory from here.
+    expect(screen.queryByRole('button', { name: 'Draft lesson' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open failures in Global memory' }))
+    expect(screen.getByTestId('route-location')).toHaveTextContent('/settings/overview?view=memory&focus=failures')
+  })
+
   it('opens the full experience and source from a three-line card preview', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     expect(screen.getByText(EPISODE.text)).toHaveClass('line-clamp-3')
     fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[1])
-    const detail = screen.getByRole('dialog', { name: 'Memory details' })
+    const detail = screen.getByTestId('memory-record-detail')
     expect(within(detail).getByText(EPISODE.text)).not.toHaveClass('line-clamp-3')
-    await waitFor(() => expect(within(detail).getByText(EPISODE.source, { exact: true })).toBeVisible())
+    await waitFor(() => expect(within(detail).getAllByText(EPISODE.source, { exact: true })[0]).toBeVisible())
     expect(within(detail).getByRole('button', { name: 'Forget' })).toBeEnabled()
     expect(api.vectorEpisodicDelete).not.toHaveBeenCalled()
   })

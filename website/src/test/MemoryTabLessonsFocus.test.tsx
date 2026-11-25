@@ -5,7 +5,7 @@
  * scrolls to a Lessons card that is about to disappear.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import { renderWithProviders } from './helpers'
 
@@ -49,7 +49,11 @@ const embed = vi.hoisted(() => ({ onDirtyChange: undefined as ((d: boolean) => v
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({
   default: ({ onDirtyChange }: { onDirtyChange?: (d: boolean) => void }) => { embed.onDirtyChange = onDirtyChange; return <div /> },
 }))
-vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div /> }))
+/** The props the stub record list was last given. */
+const list = vi.hoisted(() => ({ focusLessons: undefined as boolean | undefined, focusKey: undefined as string | undefined }))
+vi.mock('../pages/overview/memoryPage/MemoryList', () => ({
+  default: ({ focusLessons, focusKey }: { focusLessons?: boolean; focusKey?: string }) => { list.focusLessons = focusLessons; list.focusKey = focusKey; return <div data-testid="memory-list" /> },
+}))
 const { default: MemoryTab, LESSONS_CARD_ID } = await import('../pages/overview/MemoryTab')
 
 let scrolled: string[]
@@ -63,6 +67,8 @@ beforeEach(() => {
   vector.settled = true
   vector.filter = undefined
   vector.onDirtyChange = undefined
+  list.focusLessons = undefined
+  list.focusKey = undefined
   embed.onDirtyChange = undefined
   api.lessons.mockResolvedValue({ lessons: [] })
   api.memoryPreferences.mockResolvedValue({ content: '' })
@@ -93,10 +99,14 @@ describe('?focus=lessons', () => {
     expect(vector.filter).toBe('lesson.')
   })
 
-  it('lands on the Semantic browser when vector memory keeps the lessons', async () => {
+  it('opens the Memories list on its Lessons pill when vector memory keeps the lessons', async () => {
     vector.active = true
-    renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" />)
-    await waitFor(() => expect(scrolled).toEqual(['memory-semantic-card']))
+    renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" focusLessonKey="lesson.0123456789ab" />)
+    await waitFor(() => expect(list.focusLessons).toBe(true))
+    expect(list.focusKey).toBe('lesson.0123456789ab')
+    expect(screen.getByTestId('memory-list')).toBeVisible()
+    // The list lands on the lesson itself; nothing scrolls to a card.
+    expect(scrolled).toEqual([])
     expect(document.getElementById(LESSONS_CARD_ID)).toBeNull()
   })
 
@@ -115,6 +125,18 @@ describe('?focus=lessons', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" />)
     await waitFor(() => expect(document.getElementById(LESSONS_CARD_ID)).not.toBeNull())
     expect(scrolled).toEqual([])
+  })
+
+  it('counts a New memory draft as unsaved work until the dialog closes', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'New memory' }))
+    const dialog = screen.getByRole('dialog', { name: 'New memory' })
+    expect(leave()).toBe(false)
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Memory key' }), { target: { value: 'pref.editor' } })
+    await waitFor(() => expect(leave()).toBe(true))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New memory' })).toBeNull())
+    await waitFor(() => expect(leave()).toBe(false))
   })
 
   it('counts a typed lesson that was not added yet as unsaved work', async () => {

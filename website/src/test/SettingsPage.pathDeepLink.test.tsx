@@ -140,3 +140,35 @@ describe('path deep link /settings/channels/slack — cold open', () => {
     expect(screen.getByRole('option', { name: /Discord/ })).toHaveAttribute('aria-selected', 'false')
   })
 })
+
+// An Overview drill-in (Memory, Usage, WakaTime) draws its own "‹ Overview" back
+// row and title, so the tab's "Overview" title, its subtitle and the mobile
+// "‹ Account & Settings" bar must not stack above it.
+describe('Overview drill-in owns the header', () => {
+  for (const view of ['memory', 'usage', 'wakatime']) {
+    it(`mobile: ?view=${view} shows no Overview title or second back bar`, async () => {
+      mobile = true
+      mockWidth = 390
+      renderAt(`/settings/overview?view=${view}`)
+      expect(await screen.findByTestId('overview-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('mobile-detail-header')).toBeNull()
+      expect(screen.queryByRole('button', { name: /Account & Settings/ })).toBeNull()
+    })
+  }
+
+  it('wide: ?view=memory shows no Overview title above the drill-in', async () => {
+    mobile = false
+    mockWidth = 1000
+    renderAt('/settings/overview?view=memory')
+    expect(await screen.findByTestId('overview-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('side-panel-header')).toBeNull()
+  })
+
+  it('the Overview root keeps its title', async () => {
+    mobile = true
+    mockWidth = 390
+    renderAt('/settings/overview')
+    expect(await screen.findByTestId('overview-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('mobile-detail-header')).toBeInTheDocument()
+  })
+})

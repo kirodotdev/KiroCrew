@@ -9,8 +9,24 @@
  */
 
 import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup } from '../../types'
-import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
+import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision, MemoryRecordFacets, MemoryRecordSort } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
+
+/** How the memory page orders a record list and whether it asks for facet counts. */
+export type MemoryRecordView = { sort?: MemoryRecordSort; order?: 'asc' | 'desc'; facets?: boolean }
+
+/** `GET /api/memory/records`'s query string: each facet value is a repeated parameter. */
+export function memoryRecordParams(store: string, query: MemoryRecordQuery, offset: number, limit: number, view: MemoryRecordView = {}): URLSearchParams {
+  const params = new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })
+  if (view.sort) params.set('sort', view.sort)
+  if (view.sort && view.order) params.set('order', view.order)
+  if (view.facets) params.set('facets', '1')
+  const filters = query.filters || {}
+  for (const group of ['category', 'applies', 'scope', 'source', 'tag'] as const) for (const value of filters[group] || []) params.append(group, value)
+  if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
+  if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
+  return params
+}
 
 /**
  * The optional `store=` parameter on memory content routes.
@@ -179,8 +195,8 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       fetch('/api/memory/carve' + memoryQuery(q)).then(j) as Promise<MemoryCarveResult>,
     memoryRecall: (query: string, store: string) =>
       fetch('/api/memory/recall?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&')).then(j),
-    memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50) =>
-      fetch('/api/memory/records?' + new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean }>,
+    memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50, view: MemoryRecordView = {}) =>
+      fetch('/api/memory/records?' + memoryRecordParams(store, query, offset, limit, view)).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean; facets?: MemoryRecordFacets }>,
     memoryEditPreview: (store: string, selection: MemoryRecordSelection, operation: MemoryEditOperation) =>
       post('/api/memory/bulk/preview', { store: store || 'default', selection, operation }).then(j) as Promise<MemoryEditPreview>,
     memoryEditPreviewPage: (store: string, previewId: string, offset: number) =>

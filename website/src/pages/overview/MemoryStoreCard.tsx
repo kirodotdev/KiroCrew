@@ -4,7 +4,7 @@ import { Database } from 'lucide-react'
 import { api } from '../../api/client'
 import { retryPolicy } from '../../api/queryClient'
 import { parseErrorCode } from '../../utils/errorReport'
-import { Card, CardTitle, Btn } from '../../components/ui'
+import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import CrewAvatar from '../../components/CrewAvatar'
@@ -125,18 +125,57 @@ function CountValue({ value }: { value: number | null | undefined }) {
   return <>{fmtNumber(value)}</>
 }
 
-export default function MemoryStoreCard({
-  store,
-  onStoreChange,
-  compact = false,
-}: {
-  /** The store every card on the page is reading. `''` means no store has been
-   *  named, so the requests carry no `store=` and the gateway serves the global
-   *  store. */
-  store: string
-  onStoreChange: (store: string) => void
-  compact?: boolean
-}) {
+/** The store's format, counts and backups: the store picker's summary line,
+ *  and the Settings tab's store card on a bot's page. */
+export function MemoryStoreStats({ selected }: { selected: MemoryStoreSummary }) {
+  return (
+    <div className="flex gap-4 items-center flex-wrap text-[13px]">
+      <span className="text-muted">
+        <Trans
+          i18nKey="memoryV2.store_format"
+          components={{ v: <span className="text-text">{selected.lineage}</span> }}
+        />
+      </span>
+      <span className="text-muted">
+        {selected.memory_version === 2 ? <Trans
+          i18nKey="memoryV2.store_facts_rules"
+          components={{ v: <span className="text-text"><CountValue value={selected.semantic_count} /></span> }}
+        /> : <>{i18nT('pages.overview.vectorMemoryCard.semantic')} <span className="text-text"><CountValue value={selected.semantic_count} /></span></>}
+      </span>
+      <span className="text-muted">
+        {selected.memory_version === 2 ? <Trans
+          i18nKey="memoryV2.store_experiences"
+          components={{ v: <span className="text-text"><CountValue value={selected.episodic_count} /></span> }}
+        /> : <>{i18nT('pages.overview.vectorMemoryCard.episodic')} <span className="text-text"><CountValue value={selected.episodic_count} /></span></>}
+      </span>
+      <span className="text-muted">
+        <Trans
+          i18nKey="pages.overview.memoryStoreCard.backups"
+          components={{ v: <span className="text-text"><CountValue value={selected.backup_count} /></span> }}
+        />
+      </span>
+      {selected.newest_backup && (
+        <span className="text-muted">
+          <Trans
+            i18nKey="pages.overview.memoryStoreCard.newest_backup"
+            components={{ v: <span className="text-text">{fmtDateTimeNumeric(selected.newest_backup)}</span> }}
+          />
+        </span>
+      )}
+    </div>
+  )
+}
+
+const storeLabel = (summary: MemoryStoreSummary) => summary.is_default
+  ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
+  : summary.owner_member
+    ? i18nT('memoryV2.member_store_label', { member: summary.owner_member, version: PRIVATE_MEMORY_VERSION })
+    : summary.name
+
+/** The store listing and what a pick sends on the wire, shared by the switcher and its notices.
+ *  `store` is the store every card on the page is reading; `''` means none is named, so the
+ *  requests carry no `store=` and the gateway serves the global store. */
+function useStorePicker(store: string, onStoreChange: (store: string) => void) {
   const stores = useMemoryStores(true)
   const rows = stores.data?.stores ?? NO_MEMORY_STORES
   // The store the caller ALREADY reads with no `store=` on the wire, named by the
@@ -147,12 +186,6 @@ export default function MemoryStoreCard({
   // otherwise. The two are deliberately not the same value; see `pick` below.
   const shown = store || active
   const selected = rows.find(s => s.name === shown)
-  const storeLabel = (summary: MemoryStoreSummary) => summary.is_default
-    ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
-    : summary.owner_member
-      ? i18nT('memoryV2.member_store_label', { member: summary.owner_member, version: PRIVATE_MEMORY_VERSION })
-      : summary.name
-
   /** Translate a picked store into what goes ON THE WIRE.
    *
    * Picking the store the caller already reads sends NOTHING, and that is the
@@ -167,81 +200,53 @@ export default function MemoryStoreCard({
    * Naming a different store still sends it and takes the owner gate.
    */
   const pick = (name: string) => onStoreChange(name === active ? '' : name)
+  return { stores, rows, shown, selected, pick }
+}
 
-  // The named-memory page owns its identity skeleton/error. Keep this query
-  // mounted for refresh-on-return, but do not render a raw directory fallback
-  // (or a duplicate catalog error) before that owner can be displayed.
-  if (compact && (!selected || (selected.memory_version === 2 && !selected.owner_member))) return null
-
+/** The memory page header's store switcher: the store's face, its short name
+ *  (which opens the store picker) and whose memory it is. */
+export function MemoryStoreSwitcher({ store, onStoreChange }: { store: string; onStoreChange: (store: string) => void }) {
+  const { rows, shown, selected, pick } = useStorePicker(store, onStoreChange)
+  // Never show a private directory name as the bot: a V2 store waits for its owner.
+  const pending = !selected || (selected.memory_version === 2 && !selected.owner_member)
+  const name = pending ? i18nT('pages.overview.memoryTab.loading') : selected.is_default ? i18nT('memoryPage.global_memory') : selected.owner_member || selected.name
   return (
-    <Card className={compact ? '!px-3 !py-2' : undefined}>
-      {!compact && <CardTitle>
-        <Database className="lucide-inline" aria-hidden="true" /> {i18nT('pages.overview.memoryStoreCard.memory_store')}
-      </CardTitle>}
-      <div className="flex gap-2 items-center flex-wrap">
+    <div data-testid="memory-store-switcher" className="flex min-h-12 min-w-0 max-w-full items-center gap-1.5 rounded-xl border border-border bg-card py-1 pl-1.5 pr-0.5 sm:gap-2.5 sm:pl-2.5 sm:pr-1">
+      <MemoryStoreAvatar summary={pending ? undefined : selected} size={28} />
+      <div className="min-w-0">
         <SimpleSelect
           aria-label={i18nT('pages.overview.memoryStoreCard.memory_store')}
           title={selected ? storeLabel(selected) : undefined}
-          style={{ flex: '0 1 320px', minWidth: 0, maxWidth: '100%' }}
+          className="h-auto min-h-0 gap-1 border-none bg-transparent px-1 py-0 text-[15px] font-semibold leading-5 shadow-none"
           options={rows.map(s => s.name)}
           optionLabels={rows.map(storeLabel)}
           optionIcons={rows.map(s => <MemoryStoreAvatar key={s.name} summary={s} />)}
+          triggerContent={<span className="block truncate">{name}</span>}
+          triggerFallback={name}
           value={shown}
           onChange={pick}
           disabled={rows.length === 0}
         />
+        {/* B2: what the two kinds of store are, on the line that names this one's kind. */}
+        {!pending && <span className="block truncate px-1 text-[11px] leading-4 text-muted" title={i18nT('memoryV2.picker_explanation')}>{i18nT(selected.is_default ? 'memoryPage.every_chat' : 'memoryPage.bot_memory')}</span>}
       </div>
+    </div>
+  )
+}
+
+/** What the switcher's row cannot say: a refused or failed store list (with
+ *  Retry), and a store whose database file cannot be read. */
+export function MemoryStoreNotices({ store }: { store: string }) {
+  const { stores, selected } = useStorePicker(store, () => {})
+  return (
+    <>
       <MemoryScopeNotice error={stores.error} />
-      {queryReadFailed(stores) && compact && selected && <Btn className="mt-2 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={stores.isFetching || undefined} onClick={() => { if (!stores.isFetching) void stores.refetch() }}>{i18nT('memoryV2.retry_identity')}</Btn>}
-      {/* The scope this picker actually reaches. Said here rather than left to the
-          reader, because the cards below it are split: some take the store name on
-          the wire and some have no parameter for it at all. */}
-      {!compact && <p className="mt-2 text-[12px] leading-relaxed text-muted">
-        {i18nT('memoryV2.picker_explanation')}
-      </p>}
-      {/* V1 counters reuse the diagnostic tiles' labels. V2 count sentences
-          keep their `<v/>` slots so each language controls the word order. */}
-      {!compact && selected && (
-        <div className="flex gap-4 items-center flex-wrap text-[13px] mt-2">
-          <span className="text-muted">
-            <Trans
-              i18nKey="memoryV2.store_format"
-              components={{ v: <span className="text-text">{selected.lineage}</span> }}
-            />
-          </span>
-          <span className="text-muted">
-            {selected.memory_version === 2 ? <Trans
-              i18nKey="memoryV2.store_facts_rules"
-              components={{ v: <span className="text-text"><CountValue value={selected.semantic_count} /></span> }}
-            /> : <>{i18nT('pages.overview.vectorMemoryCard.semantic')} <span className="text-text"><CountValue value={selected.semantic_count} /></span></>}
-          </span>
-          <span className="text-muted">
-            {selected.memory_version === 2 ? <Trans
-              i18nKey="memoryV2.store_experiences"
-              components={{ v: <span className="text-text"><CountValue value={selected.episodic_count} /></span> }}
-            /> : <>{i18nT('pages.overview.vectorMemoryCard.episodic')} <span className="text-text"><CountValue value={selected.episodic_count} /></span></>}
-          </span>
-          <span className="text-muted">
-            <Trans
-              i18nKey="pages.overview.memoryStoreCard.backups"
-              components={{ v: <span className="text-text"><CountValue value={selected.backup_count} /></span> }}
-            />
-          </span>
-          {selected.newest_backup && (
-            <span className="text-muted">
-              <Trans
-                i18nKey="pages.overview.memoryStoreCard.newest_backup"
-                components={{ v: <span className="text-text">{fmtDateTimeNumeric(selected.newest_backup)}</span> }}
-              />
-            </span>
-          )}
-        </div>
-      )}
+      {queryReadFailed(stores) && selected && <Btn className="min-h-11 w-fit aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={stores.isFetching || undefined} onClick={() => { if (!stores.isFetching) void stores.refetch() }}>{i18nT('memoryV2.retry_identity')}</Btn>}
       {selected && !selected.exists && (
-        <p className="text-[12px] leading-relaxed text-warn mt-1">
+        <p className="text-[12px] leading-relaxed text-warn">
           {i18nT('pages.overview.memoryStoreCard.this_store_has_no_database_file_that_can_be_read')}
         </p>
       )}
-    </Card>
+    </>
   )
 }

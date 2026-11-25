@@ -4,6 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import MemoryTab from '../src/pages/overview/MemoryTab'
 
+/** Open one of the memory page's tabs. Radix selects a tab on a primary-button mousedown. */
+function openTab(name: 'Profile' | 'Settings') {
+  fireEvent.mouseDown(screen.getByRole('tab', { name }), { button: 0, ctrlKey: false })
+}
+
 describe('MemoryTab Integration Tests', () => {
   beforeEach(() => {
     // Each test gets a fresh store
@@ -11,6 +16,7 @@ describe('MemoryTab Integration Tests', () => {
 
   it('loads and displays memory settings on mount', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
 
     // Wait for settings to load - check for actual label text
     await waitFor(() => {
@@ -23,6 +29,7 @@ describe('MemoryTab Integration Tests', () => {
 
   it('loads and displays preferences content', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
 
     // Wait for preferences to load
     await waitFor(() => {
@@ -32,6 +39,7 @@ describe('MemoryTab Integration Tests', () => {
 
   it('loads and displays projects content', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
 
     // Wait for projects to load
     await waitFor(() => {
@@ -43,6 +51,7 @@ describe('MemoryTab Integration Tests', () => {
 
   it('loads and displays history content', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
 
     // Wait for history to load
     await waitFor(() => {
@@ -52,6 +61,7 @@ describe('MemoryTab Integration Tests', () => {
 
   it('updates idle hours setting', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
 
     await waitFor(() => {
       expect(screen.getByText(/summarize after idle/i)).toBeInTheDocument()
@@ -70,6 +80,7 @@ describe('MemoryTab Integration Tests', () => {
 
   it('updates max days setting', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
 
     await waitFor(() => {
       expect(screen.getByText(/history retention/i)).toBeInTheDocument()
@@ -89,6 +100,7 @@ describe('MemoryTab Integration Tests', () => {
   it('saves memory settings', async () => {
     const user = userEvent.setup()
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
 
     await waitFor(() => {
       expect(screen.getByText(/summarize after idle/i)).toBeInTheDocument()
@@ -109,6 +121,7 @@ describe('MemoryTab Integration Tests', () => {
   it('triggers manual consolidation', async () => {
     const user = userEvent.setup()
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
 
     await waitFor(() => {
       // By role: the helper line under the button starts with the same words.
@@ -129,6 +142,7 @@ describe('MemoryTab Integration Tests', () => {
   it('saves preferences content', async () => {
     const user = userEvent.setup()
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
 
     await waitFor(() => {
       expect(screen.getByText(/typescript/i)).toBeInTheDocument()

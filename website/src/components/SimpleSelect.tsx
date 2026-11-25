@@ -3,6 +3,7 @@ import { NativeSelect, NativeSelectOption } from './ui/native-select'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { SourceBadge } from './ui'
 import { forwardRef, type ForwardedRef } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { forwardUiLocation } from '../uiLocations/uiLocation'
 
 /**
@@ -62,6 +63,10 @@ export interface SimpleSelectProps {
    *  Honoured on the Radix path only: on touch the trigger IS the selected
    *  `<option>`, so the label is unavoidably visible there. */
   labelsInListOnly?: boolean
+  /** What the closed trigger shows for the selected option, in place of its list
+   *  label (a short name where the list row spells out more). Pointer path only:
+   *  a native select always shows its option text. */
+  triggerContent?: React.ReactNode
   /** Keep every plain-text row of the open list on one line: a label that does
    *  not fit is cut with an ellipsis and shows in full on hover (`title`). The
    *  full text stays in the DOM, so a screen reader still reads all of it. Radix
@@ -124,7 +129,7 @@ export interface SimpleSelectProps {
   'data-ui-location'?: string
 }
 
-const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, truncateLabels, optionBadges, disabled, busy, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
+const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, triggerContent, truncateLabels, optionBadges, disabled, busy, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
   const isTouch = useIsTouchDevice()
   // While busy the control refuses picks but stays focusable, so native
   // `disabled` is dropped; the refusal is carried by the `aria-*` attributes and
@@ -203,6 +208,14 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
         ))}
       </NativeSelect>
     )
+    // A native select can only show its option text, so the caller's trigger content
+    // is drawn under a transparent select that still takes the tap and opens the OS list.
+    if (triggerContent !== undefined && value !== '' && selectable(value)) {
+      return <div style={style} className="relative min-w-0">
+        <div aria-hidden="true" className="pointer-events-none flex min-w-0 items-center gap-1 px-1 text-[15px] font-semibold leading-5">{triggerContent}<ChevronDown className="lucide-inline shrink-0 text-muted" /></div>
+        <div className="absolute inset-0 opacity-0">{control}</div>
+      </div>
+    }
     return selectedIcon ? <div style={style} className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="shrink-0">{selectedIcon}</span>{control}</div> : control
   }
 
@@ -222,7 +235,7 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls
                 through to the placeholder. */}
-            {labelsInListOnly && value !== '' && selectable(value) ? value : undefined}
+            {value !== '' && selectable(value) ? triggerContent ?? (labelsInListOnly ? value : undefined) : undefined}
           </SelectValue>
         </SelectTrigger>
         {/* eslint-disable-next-line shadcn/require-static-classes -- forwards the caller's

@@ -85,6 +85,7 @@ import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
 import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
+import { isOverviewDrillView } from './overviewDrillViews'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
 // which runs per render — rather than at module load. Translating them at module
@@ -304,10 +305,11 @@ export default function SettingsPage() {
         : t
   ))
 
+  // An Overview drill-in (Memory, Usage, WakaTime) draws its own back row and
+  // title, so the tab's "Overview" title and the mobile back bar step aside.
   const memorySelection = new URLSearchParams(search)
-  const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
-    && memorySelection.get('view') === 'memory' && !!memorySelection.get('store')
-    && memorySelection.get('store') !== 'default'
+  const overviewDrillIn = pathname.replace(/\/$/, '') === '/settings/overview'
+    && isOverviewDrillView(memorySelection.get('view'))
 
   // The release notes used to be a Releases tab of their own and now sit at the
   // foot of About, so its old addresses (`/settings/releases`,
@@ -343,7 +345,7 @@ export default function SettingsPage() {
     <SidePanelLayout
       title={i18nT('nav.account_and_settings')}
       tabs={tabs}
-      paneOwnsHeader={memberMemoryView}
+      paneOwnsHeader={overviewDrillIn}
       basePath={SETTINGS_BASE_PATH}
       headerRightDock="bottom-float"
       // Keyed apart from the main window: a pane and the window that holds it

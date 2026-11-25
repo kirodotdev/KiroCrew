@@ -1,0 +1,204 @@
+/**
+ * The memory list's controls and rows: the kind pills, the sort menu, the
+ * filter panel with live counts, the active-filter chips and one record row.
+ */
+import { useTranslation } from 'react-i18next'
+import { AlertTriangle, ArrowDownUp, ChevronDown, Folder, History, Mail, MoreHorizontal, X } from 'lucide-react'
+import { Btn, IconButton, PanelSectionHeader, Slider } from '../../../components/ui'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
+import { fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
+import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRecordFilters, MemoryRecordSort } from '../../../types/memoryEditing'
+import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
+import { FACET_GROUPS, SCOPE_UNUSABLE, effectiveSort, facetLabel, lessonFacts, recordTags, recordTitle, type KindTab, type ListView } from './memoryListView'
+
+const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
+const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
+const ORDER_KEYS: Record<MemoryRecordSort, [string, string]> = {
+  updated: ['memoryPage.order_newest', 'memoryPage.order_oldest'], created: ['memoryPage.order_newest', 'memoryPage.order_oldest'],
+  confidence: ['memoryPage.order_highest', 'memoryPage.order_lowest'], importance: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
+  key: ['memoryPage.order_z_a', 'memoryPage.order_a_z'], match: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
+}
+const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = { category: 'pages.overview.memoryTab.category', applies: 'memoryPage.facet_applies', scope: 'pages.overview.memoryTab.scope', tag: 'memoryPage.facet_tags', source: 'pages.overview.memoryTab.source' }
+// A group heading names the kind it filters while the All pill shows every kind.
+const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences' }
+const CHIP = 'inline-flex h-[22px] max-w-full items-center gap-1 whitespace-nowrap rounded-full text-[12px] leading-none'
+// Red only below the review line; every other score is a plain number.
+const REVIEW_LINE = 0.5
+/** A 0–1 score with two decimals, in the reader's locale. */
+export const fmtScore = (value: number) => fmtNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'memoryPage.importance_value', match: 'memoryPage.match_value' } as const
+
+/** The kind pills, one row with live counts; a phone scrolls the row sideways. */
+export function KindPills({ kind, counts, onChange, disabled }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean }) {
+  const { t } = useTranslation()
+  const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
+  return <div role="radiogroup" aria-label={t('memoryV2.group_kind')} title={t('memoryV2.memory_kinds_explanation')} className="-mx-1 flex min-w-0 gap-2 overflow-x-auto px-1 [scrollbar-width:none]">
+    {KINDS.map(([key, label]) => {
+      const on = key === kind
+      const count = key === 'all' ? total : counts ? counts[key] || 0 : undefined
+      return <button key={key} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(key)} className="flex min-h-11 shrink-0 items-center disabled:opacity-40 sm:min-h-8">
+        <span className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] ${on ? 'border-border-strong bg-bg-hover font-medium text-text' : 'border-border text-text'}`}>{t(label)}{count !== undefined && <span className="tabular-nums text-muted">{fmtNumber(count)}</span>}</span>
+      </button>
+    })}
+  </div>
+}
+
+/** The sort menu with its direction, and a one-press Reverse beside it. */
+export function SortControl({ view, onChange }: { view: ListView; onChange: (sort: MemoryRecordSort, order: 'asc' | 'desc') => void }) {
+  const { t } = useTranslation()
+  const sort = effectiveSort(view)
+  const sorts: [MemoryRecordSort, string?][] = [
+    ...(view.q ? [['match'] as [MemoryRecordSort]] : []),
+    ['updated'], ['created'],
+    ...(view.kind !== 'episode' ? [['confidence', view.kind === 'all' ? 'memoryPage.sort_hint_confidence' : undefined] as [MemoryRecordSort, string?]] : []),
+    ...(view.kind === 'all' || view.kind === 'episode' ? [['importance', view.kind === 'all' ? 'memoryPage.sort_hint_importance' : undefined] as [MemoryRecordSort, string?]] : []),
+    ['key'],
+  ]
+  const [desc, asc] = ORDER_KEYS[sort]
+  const label = sort === 'match' ? t(SORT_KEYS.match) : `${t(SORT_KEYS[sort])} · ${t(view.order === 'desc' ? desc : asc)}`
+  return <div className="flex min-h-11 shrink-0 overflow-hidden rounded-lg border border-border sm:min-h-10">
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap px-3 text-[13px] text-text focus-ring">
+          <span className="truncate">{t('memoryPage.sort_by_value', { value: label })}</span><ChevronDown className="lucide-inline ml-auto text-muted" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuRadioGroup value={sort} onValueChange={value => onChange(value as MemoryRecordSort, value === 'key' ? 'asc' : view.order)}>
+          {sorts.map(([key, hint]) => <DropdownMenuRadioItem key={key} value={key}><span className="flex-1">{t(SORT_KEYS[key])}</span>{hint && <span className="text-[12px] text-muted">{t(hint)}</span>}</DropdownMenuRadioItem>)}
+        </DropdownMenuRadioGroup>
+        {sort !== 'match' && <><DropdownMenuSeparator /><DropdownMenuRadioGroup value={view.order} onValueChange={value => onChange(sort, value as 'asc' | 'desc')}>
+          <DropdownMenuRadioItem value="desc">{t(desc)}</DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="asc">{t(asc)}</DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup></>}
+      </DropdownMenuContent>
+    </DropdownMenu>
+    {sort !== 'match' && <button type="button" aria-label={t('memoryPage.reverse_order')} title={t('memoryPage.reverse_order')} onClick={() => onChange(sort, view.order === 'desc' ? 'asc' : 'desc')} className="flex w-11 items-center justify-center border-l border-border text-muted focus-ring sm:w-9"><ArrowDownUp className="lucide-inline" aria-hidden="true" /></button>}
+  </div>
+}
+
+function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; onToggle: () => void }) {
+  return <label className="grid min-h-11 cursor-pointer items-center gap-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: '16px minmax(0,1fr) 48px' }}>
+    <input type="checkbox" aria-label={label} className="h-4 w-4 accent-accent" checked={on} onChange={onToggle} />
+    <span className={`truncate ${warn ? 'text-warn-text' : ''}`} title={label}>{label}</span>
+    <span className="text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</span>
+  </label>
+}
+
+/** The filter groups with live counts from `facets=1`, and the confidence range. */
+export function FilterPanel({ view, facets, onToggle, onRange }: {
+  view: ListView; facets?: MemoryRecordFacets
+  onToggle: (group: MemoryRecordFacetGroup, value: string) => void
+  onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
+}) {
+  const { t } = useTranslation()
+  const groups = FACET_GROUPS.filter(group => view.kind === 'all' || group === 'source' || (view.kind === 'directive' ? group !== 'tag' : view.kind === 'episode' && group === 'tag'))
+  const low = view.filters.conf_min ?? 0
+  const high = view.filters.conf_max ?? 1
+  return <div className="space-y-5">
+    {groups.map(group => {
+      const counts = facets?.[group] || {}
+      const ticked = view.filters[group] || []
+      // A ticked value stays listed even when the other filters leave it no rows.
+      const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
+        .sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || a.localeCompare(b))
+      if (!values.length) return null
+      const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
+      return <section key={group} aria-label={heading}>
+        <PanelSectionHeader label={heading} />
+        {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
+      </section>
+    })}
+    {view.kind !== 'episode' && <section aria-label={t('memoryPage.facet_confidence')}>
+      <PanelSectionHeader label={view.kind === 'all' ? t('memoryPage.for_facts_lessons', { group: t('memoryPage.facet_confidence') }) : t('memoryPage.facet_confidence')} />
+      <div className="space-y-3 pt-1">
+        <Slider label={t('memoryPage.conf_lowest')} showValue min={0} max={1} step={0.05} value={low} formatValue={fmtScore} onChange={value => onRange('conf_min', value > 0 ? Math.min(value, high) : undefined)} />
+        <Slider label={t('memoryPage.conf_highest')} showValue min={0} max={1} step={0.05} value={high} formatValue={fmtScore} onChange={value => onRange('conf_max', value < 1 ? Math.max(value, low) : undefined)} />
+      </div>
+    </section>}
+  </div>
+}
+
+/** One removable chip per ticked filter value, and Clear all. */
+export function ActiveFilters({ filters, onToggle, onRange, onClear }: { filters: MemoryRecordFilters; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void }) {
+  const { t } = useTranslation()
+  const chips = FACET_GROUPS.flatMap(group => (filters[group] || []).map(value => ({ key: `${group}:${value}`, label: facetLabel(group, value), remove: () => onToggle(group, value) })))
+  if (filters.conf_min !== undefined || filters.conf_max !== undefined) chips.push({ key: 'conf', label: t('memoryPage.confidence_range', { low: fmtScore(filters.conf_min ?? 0), high: fmtScore(filters.conf_max ?? 1) }), remove: () => { onRange('conf_min', undefined); onRange('conf_max', undefined) } })
+  if (!chips.length) return null
+  return <div className="flex flex-wrap items-center gap-x-1 gap-y-0">
+    {chips.map(chip => <button key={chip.key} type="button" aria-label={t('memoryPage.remove_filter', { value: chip.label })} onClick={chip.remove} className="flex min-h-11 items-center sm:min-h-8">
+      <span className="inline-flex h-8 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-card pl-3 pr-2 text-[13px] text-text"><span className="truncate">{chip.label}</span><X className="lucide-inline shrink-0 text-muted" aria-hidden="true" /></span>
+    </button>)}
+    <Btn className="min-h-11 border-transparent sm:min-h-8" onClick={onClear}>{t('memoryPage.clear_all')}</Btn>
+  </div>
+}
+
+export function ScoreChip({ value, label }: { value: number; label: 'confidence' | 'importance' | 'match' }) {
+  const { t } = useTranslation()
+  const low = label === 'confidence' && value < REVIEW_LINE
+  const text = t(SCORE_KEYS[label], { value: fmtScore(value) })
+  return <span className={`${CHIP} px-2 ${low ? 'bg-danger-subtle text-danger-text' : 'bg-bg-hover text-muted'}`}>{low && <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />}<span className="tabular-nums">{text}</span></span>
+}
+
+/** The kind, and for a lesson its category: "Lesson · Tool". */
+export function KindLabel({ row }: { row: MemoryRecord }) {
+  const { t } = useTranslation()
+  const Icon = MEMORY_RECORD_ICONS[row.kind]
+  const kind = t(MEMORY_RECORD_LABELS[row.kind])
+  return <span className={`${CHIP} text-muted`}><Icon className="lucide-inline" aria-hidden="true" />{row.kind === 'directive' ? t('memoryPage.lesson_category', { kind, category: facetLabel('category', lessonFacts(row).category) }) : kind}</span>
+}
+
+/** The chips under a row's text: what it is, how sure, where from, when. */
+export function RecordMeta({ row, sort }: { row: MemoryRecord; sort: MemoryRecordSort }) {
+  const { t } = useTranslation()
+  const lesson = row.kind === 'directive' ? lessonFacts(row) : null
+  const score = typeof row.importance === 'number' ? row.importance : null
+  const created = sort === 'created'
+  const when = created ? row.created_at : row.updated_at
+  return <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+    <KindLabel row={row} />
+    {lesson && lesson.applies !== 'unstated' && <span className={`${CHIP} px-2 ${lesson.applies === 'always' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>{facetLabel('applies', lesson.applies)}</span>}
+    {lesson?.scope === SCOPE_UNUSABLE && <span className={`${CHIP} bg-warn-subtle px-2 text-warn-text`} title={t('pages.overview.memoryTab.scope_unusable_hint')}><AlertTriangle className="lucide-inline" aria-hidden="true" />{facetLabel('scope', SCOPE_UNUSABLE)}</span>}
+    {lesson && lesson.scope && lesson.scope !== SCOPE_UNUSABLE && <span className={`${CHIP} bg-bg-hover px-2 text-muted`}><Folder className="lucide-inline" aria-hidden="true" /><span className="truncate font-mono">{lesson.scope}</span></span>}
+    {typeof row.match === 'number' && <span className={`${CHIP} bg-bg-hover px-2 text-muted`} title={t('memoryPage.match_hint')}><span className="tabular-nums">{t('memoryPage.match_value', { value: fmtScore(row.match) })}</span></span>}
+    {row.kind === 'episode' && recordTags(row).map(tag => <span key={tag} className={`${CHIP} bg-bg-hover px-2 text-muted`}>#{tag}</span>)}
+    {score !== null && <ScoreChip value={score} label={row.kind === 'episode' ? 'importance' : 'confidence'} />}
+    <span className={`${CHIP} text-muted`}><span className="truncate">{facetLabel('source', row.source || '')}</span></span>
+    {when && <span className={`${CHIP} text-muted`} title={fmtDateTimeNumeric(when)}><time dateTime={when} className="tabular-nums" data-i18n-opaque>{t(created ? 'memoryPage.created_on' : 'memoryPage.updated_on', { date: fmtDate(when) })}</time></span>}
+  </div>
+}
+
+/** One record in the list: text, chips, key, and its actions menu. */
+export function RecordRow({ row, sort, selecting, selected, selectDisabled, open, focus, onSelect, onOpen, onEdit, onForget, focusRef }: {
+  row: MemoryRecord; sort: MemoryRecordSort; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean
+  onSelect: () => void; onOpen: () => void; onEdit: () => void; onForget: () => void
+  focusRef?: React.Ref<HTMLLIElement>
+}) {
+  const { t } = useTranslation()
+  const body = memoryRecordBody(row)
+  const title = recordTitle(row, body)
+  const negative = row.kind === 'directive' ? lessonFacts(row).negative : undefined
+  const pending = row.metadata?.pending_conflicts || 0
+  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b border-border px-4 py-3.5 last:border-b-0 ${open || selected ? 'bg-accent-subtle' : ''} ${focus ? 'ring-2 ring-inset ring-accent' : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
+    {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
+    <div className="min-w-0 space-y-1.5">
+      <button type="button" onClick={onOpen} className="block w-full text-left focus-ring" aria-label={t('memoryV2.view_details')} aria-expanded={open}>
+        <p className="line-clamp-3 whitespace-pre-wrap break-words text-[15px] leading-[22px] text-text [overflow-wrap:anywhere]">{title}</p>
+      </button>
+      {negative && <p className="line-clamp-2 text-[13px] leading-5 text-muted">{t('memoryPage.lesson_dont', { text: negative })}</p>}
+      {!!row.metadata?.email_addresses?.length && <p className="flex flex-wrap gap-x-3 text-[13px] leading-5 text-muted">{row.metadata.email_addresses.slice(0, 3).map(email => <span key={email} className="inline-flex min-w-0 items-start gap-1 break-all"><Mail className="lucide-inline shrink-0" aria-hidden="true" />{email}</span>)}</p>}
+      <RecordMeta row={row} sort={sort} />
+      {row.key && <p className="truncate font-mono text-[11px] text-muted" title={row.key}>{row.key}</p>}
+      {pending > 0 && <Btn className="mt-1 min-h-11" onClick={onOpen}><History className="lucide-inline" />{t('memoryEditing.review_proposals', { count: fmtNumber(pending) })}</Btn>}
+    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild><IconButton aria-label={t('memoryPage.record_actions')} className="flex h-11 w-11 items-center justify-center self-start sm:h-8 sm:w-8"><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton></DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onOpen}>{t('memoryV2.view_details')}</DropdownMenuItem>
+        <DropdownMenuItem disabled={!row.revision} onSelect={onEdit}>{t('memoryV2.edit_action')}</DropdownMenuItem>
+        <DropdownMenuItem disabled={!row.revision} onSelect={onForget}>{t('memoryV2.forget')}</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  </li>
+}
+
