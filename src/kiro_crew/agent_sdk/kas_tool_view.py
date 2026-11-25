@@ -11,6 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.acp.kas_policy_bundle import (  # noqa: F401 - read through here above the boundary
+    allows_beside_bundle,
+    bundle_ids,
+    is_allow_rule,
+    without_policy_bundle,
+)
+
 
 def clean_names(values: Any) -> list[str]:
     """The non-empty, stripped strings of *values*, in order, without repeats."""
@@ -103,7 +110,7 @@ def kas_tool_view(provider: object) -> dict[str, Any] | None:
 def permissions_block_readable(raw: Any) -> bool:
     """Whether KAS's projection would read the ``permissions`` block *raw* whole.
 
-    A block it refuses (a named bundle, an unknown key, a rule it cannot parse)
+    A block it refuses (an unknown key, a rule it cannot parse)
     travels as no rule at all, its denies included. Read without auditing: this
     asks, it projects nothing.
     """

@@ -1610,10 +1610,12 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         noun = "server" if len(servers) == 1 else "servers"
         notice += f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this backend yet."
     if "permissions" in keys:
+        notice += " A permissions block is not sent at all when it is malformed or too large."
+    if "permissions.policies" in keys:
         notice += (
-            " A permissions block is not sent at all when it names a policies bundle "
-            "or is malformed or too large. With a policies bundle, the agent's shell "
-            "and file tools also ask for approval even where allowedTools grants them."
+            " Allow rules beside a policies bundle aren't used, so those tools ask first. "
+            "To skip the ask, write the rules out without the bundle, or list the tools "
+            "in allowedTools."
         )
     if any(key.startswith("permissions.rules[") for key in keys):
         notice += (
