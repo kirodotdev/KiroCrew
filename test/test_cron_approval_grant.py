@@ -541,26 +541,38 @@ def test_turning_auto_off_and_on_again_signs_with_a_new_nonce(tmp_path) -> None:
     assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
 
 
-@pytest.mark.parametrize("damage", ["malformed", "link", "directory"])
-def test_an_unreadable_nonces_file_fires_interactive_and_keeps_the_job(tmp_path, damage) -> None:
+def _signed_auto_job_and_nonces_path(tmp_path) -> tuple[str, Path]:
     job = CronService(base_dir=tmp_path).add_job(
         name="a", message="go", every_secs=3600, approval_mode="auto"
     )
     assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
-    path = tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.NONCES_FILE
+    return job.id, tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.NONCES_FILE
+
+
+@pytest.mark.parametrize("damage", ["malformed", "directory"])
+def test_an_unreadable_nonces_file_fires_interactive_and_keeps_the_job(tmp_path, damage) -> None:
+    job_id, path = _signed_auto_job_and_nonces_path(tmp_path)
     if damage == "malformed":
         path.write_text("{not json")
-    elif damage == "link":
-        # The link names a copy of the real file: a link is never followed.
-        copy = tmp_path / "nonces-copy.json"
-        copy.write_bytes(path.read_bytes())
-        path.unlink()
-        path.symlink_to(copy)
     else:
         path.unlink()
         path.mkdir()
 
-    reloaded = _reload(tmp_path, job.id)
+    reloaded = _reload(tmp_path, job_id)
+    assert reloaded.approval_mode == "auto"
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+def test_a_linked_nonces_file_is_not_followed(tmp_path) -> None:
+    """Listed in ``test/requires-real-symlinks.txt``: it needs a real file link."""
+    job_id, path = _signed_auto_job_and_nonces_path(tmp_path)
+    # The link names a copy of the real file: a link is never followed.
+    copy = tmp_path / "nonces-copy.json"
+    copy.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(copy)
+
+    reloaded = _reload(tmp_path, job_id)
     assert reloaded.approval_mode == "auto"
     assert job_fire_approval_mode(reloaded) == ""
 
@@ -577,3 +589,65 @@ def test_a_failed_nonce_write_fails_the_save_and_publishes_no_mac(tmp_path, monk
 
     assert (tmp_path / "crons.json").read_bytes() == before
     assert job_fire_approval_mode(_reload(tmp_path, job.id)) == ""
+
+
+def test_an_earlier_mac_on_a_bot_job_written_back_after_auto_was_turned_off_fires_interactive(
+    tmp_path,
+) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600, owner_grant=(_MEMBER, "normal"))
+    assert svc.update_job(job.id, approval_mode="auto") is not None
+    earlier = _row(tmp_path, job.id)["approval_grant"]
+    assert earlier
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+
+    assert svc.update_job(job.id, approval_mode="") is not None
+    # The Bot fields still carry a grant, so the job keeps a nonce, but a new one.
+    assert _row(tmp_path, job.id)["owner_approval_mode"] == "normal"
+    assert job.id in approval_grant.read_nonces(tmp_path)
+    _rewrite(tmp_path, job.id, approval_mode="auto", approval_grant=earlier)
+
+    reloaded = _reload(tmp_path, job.id)
+    assert (reloaded.approval_mode, reloaded.approval_grant) == ("auto", earlier)
+    assert job_fire_approval_mode(reloaded) == ""
+
+
+def test_a_save_that_changes_nothing_signed_keeps_the_nonce(tmp_path, monkeypatch) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+    nonce = approval_grant.read_nonces(tmp_path)[job.id]
+    grant = _row(tmp_path, job.id)["approval_grant"]
+    writes: list[object] = []
+
+    with monkeypatch.context() as mp:
+        mp.setattr(approval_grant, "write_nonces", lambda *args: writes.append(args))
+        assert svc.update_job(job.id, name="renamed") is not None
+
+    assert writes == []
+    assert approval_grant.read_nonces(tmp_path)[job.id] == nonce
+    assert _row(tmp_path, job.id)["approval_grant"] == grant
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+
+
+def test_a_failed_store_write_puts_the_previous_nonces_back(tmp_path, monkeypatch) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+    path = tmp_path / approval_grant.MIGRATION_DIR_LEAF / approval_grant.NONCES_FILE
+    before = path.read_bytes()
+    real_write_nonces = approval_grant.write_nonces
+    written: list[dict[str, str]] = []
+
+    def _write_nonces(store_dir, nonces) -> None:
+        written.append(dict(nonces))
+        real_write_nonces(store_dir, nonces)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(approval_grant, "write_nonces", _write_nonces)
+        mp.setattr("kiro_crew.atomic_write.atomic_write", _failing_for("crons.json"))
+        with pytest.raises(OSError):
+            svc.update_job(job.id, agent_id="kirocrew")
+
+    # The new nonce was written, then the previous mapping was put back.
+    assert len(written) == 2 and written[0] != written[1]
+    assert path.read_bytes() == before
+    assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"

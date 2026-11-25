@@ -447,9 +447,10 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
             records = data.get("jobs") if isinstance(data, dict) else None
             if not isinstance(records, list):
                 return []
-            # A held record already has its stored nonce, which signing it again
-            # reuses, so these passes never write the nonces file.
+            # Re-signing a held record over its changed fields gives it a new nonce,
+            # stored before the store write (approval_grant.publish_with_nonces).
             nonces = approval_grant.read_nonces(store_dir)
+            stored = dict(nonces)
             migrated: list[str] = []
             for record in records:
                 # The old build wrote no execution_context key at all.
@@ -485,7 +486,12 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
                     approval_grant.sign_record(record, nonces)
                 migrated.append(job.id)
             if migrated:
-                atomic_write(path, json.dumps(data, indent=2))
+                approval_grant.publish_with_nonces(
+                    store_dir,
+                    nonces,
+                    stored,
+                    lambda: atomic_write(path, json.dumps(data, indent=2)),
+                )
         return migrated
     except Exception:
         logger.warning("pre-identity member schedules were not upgraded", exc_info=True)
@@ -720,9 +726,10 @@ def migrate_member_named_template_schedules(store_dir: Path) -> list[str]:
             records = data.get("jobs") if isinstance(data, dict) else None
             if not isinstance(records, list):
                 return []
-            # A held record already has its stored nonce, which signing it again
-            # reuses, so these passes never write the nonces file.
+            # Re-signing a held record over its changed fields gives it a new nonce,
+            # stored before the store write (approval_grant.publish_with_nonces).
             nonces = approval_grant.read_nonces(store_dir)
+            stored = dict(nonces)
             moved: list[str] = []
             for record in records:
                 if (
@@ -767,7 +774,12 @@ def migrate_member_named_template_schedules(store_dir: Path) -> list[str]:
                     approval_grant.sign_record(record, nonces)
                 moved.append(job.id)
             if moved:
-                atomic_write(path, json.dumps(data, indent=2))
+                approval_grant.publish_with_nonces(
+                    store_dir,
+                    nonces,
+                    stored,
+                    lambda: atomic_write(path, json.dumps(data, indent=2)),
+                )
         return moved
     except Exception:
         logger.warning("schedules naming a crew member as a template were not moved", exc_info=True)

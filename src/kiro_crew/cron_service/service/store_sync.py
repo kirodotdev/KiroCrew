@@ -524,9 +524,11 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     try:
         # The nonces are read once and written at most once, before the store, so
         # a MAC this save publishes always has its nonce stored; a nonce write
-        # that fails fails the save. Only a process holding the key keeps them. A
-        # nonce is dropped once its job is gone or stores no grant, so a grant the
-        # owner turned off or removed cannot be written back with its earlier MAC.
+        # that fails fails the save, and a store write that fails puts the
+        # previous nonces back (approval_grant.publish_with_nonces). Only a
+        # process holding the key keeps them. A nonce is dropped once its job is
+        # gone or stores no grant, and a grant whose signed fields changed gets a
+        # new one, so an earlier MAC written back matches nothing.
         keyed = approval_grant._key() is not None
         nonces = approval_grant.read_nonces(self._dir) if keyed else {}
         stored = dict(nonces)
@@ -536,8 +538,6 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
             carrying = {job.id for job in written if approval_grant.carries_grant(job)}
             for job_id in [job_id for job_id in nonces if job_id not in carrying]:
                 del nonces[job_id]
-            if nonces != stored:
-                approval_grant.write_nonces(self._dir, nonces)
         document = encode_store(
             written,
             version=self._store_version,
@@ -553,7 +553,12 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
         # Atomic write: unique tmp → fsync → rename, then sync the directory so
         # the rename itself survives a sudden host restart. Without both syncs a
         # save that returned can come back as an empty or missing crons.json.
-        atomic_write(self._path, document, fsync=True)
+        approval_grant.publish_with_nonces(
+            self._dir,
+            nonces,
+            stored,
+            lambda: atomic_write(self._path, document, fsync=True),
+        )
     except BaseException:
         for job, grant, nonce in previous:
             job.approval_grant = grant

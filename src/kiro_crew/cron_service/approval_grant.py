@@ -10,9 +10,11 @@ a fire runs as (:data:`_SIGNED_FIELDS`: ``id``, ``approval_mode``,
 ``member_id``, ``memory_store``, ``execution_context``, ``agent_sequence``),
 read the same way from a raw store record and from the job decoded from it.
 The MAC also covers the job's nonce: a random value the gateway keeps per job in
-:data:`NONCES_FILE`, under the sandbox-hidden :data:`MIGRATION_DIR_LEAF`. Turning
-the grant off deletes the nonce and turning it on again mints a new one, so an
-earlier or copied signature written back into the store matches nothing. A job
+:data:`NONCES_FILE`, under the sandbox-hidden :data:`MIGRATION_DIR_LEAF`. A signing
+keeps the nonce only while nothing signed changed; any change (auto turned off on
+a job that keeps its Bot fields, a new capture) mints a new one, and a grant
+turned off or removed loses its nonce, so an earlier or copied signature written
+back into the store matches nothing. A job
 with no stored nonce never holds. At fire time the grant counts only while that
 MAC matches (:func:`holds`).
 
@@ -43,7 +45,7 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Iterable, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +191,38 @@ def write_nonces(store_dir: Path, nonces: Mapping[str, str]) -> None:
     fsync_dir(directory, best_effort=True)
 
 
+def publish_with_nonces(
+    store_dir: Path,
+    nonces: Mapping[str, str],
+    stored: Mapping[str, str],
+    write_store: Callable[[], None],
+) -> None:
+    """Write *nonces* (when they differ from *stored*), then call *write_store*.
+
+    A MAC the store write publishes therefore always has its nonce on disk. A nonce
+    write that fails raises before the store is touched. When *write_store* raises,
+    *stored* is written back first, so the old store keeps the nonces its grants
+    were signed with; a restore that also fails logs a warning, and the store
+    write's own error is the one raised.
+    """
+    if nonces == stored:
+        write_store()
+        return
+    write_nonces(store_dir, nonces)
+    try:
+        write_store()
+    except BaseException:
+        try:
+            write_nonces(store_dir, stored)
+        except Exception:
+            logger.warning(
+                "cron approval grant: the nonces were not put back after a failed store "
+                "write; grants signed before it ask for each tool call until re-signed",
+                exc_info=True,
+            )
+        raise
+
+
 def attach_nonces(jobs: Iterable[Any], store_dir: Path) -> None:
     """Give each job in *jobs* that stores a grant its stored nonce, and mark it held
     (``CronJob.grant_held``) when its MAC matches. Reads the nonces file at most once."""
@@ -242,10 +276,22 @@ def holds(obj: Any, nonces: Mapping[str, str] | None = None) -> bool:
     return hmac.compare_digest(stored, expected)
 
 
-def _signing_nonce(job_id: str, nonces: MutableMapping[str, str], held: str = "") -> str:
-    """The nonce *job_id* is signed with, stored in *nonces*: the one stored for it,
-    else *held* (the job's own), else a new one."""
-    nonce = nonces.get(job_id) or held or secrets.token_hex(16)
+def _signing_nonce(obj: Any, nonces: MutableMapping[str, str], held: str = "") -> str:
+    """The nonce *obj* is signed with, stored in *nonces*.
+
+    The nonce stored for it (else *held*, the job's own) is kept only while *obj*'s
+    stored MAC already matches its fields under it, so nothing signed changed;
+    any other change gets a new nonce, and every earlier MAC stops matching.
+    """
+    job_id = _value(obj, "id")
+    nonce = nonces.get(job_id) or held
+    stored = _value(obj, "approval_grant")
+    if not (
+        _NONCE_SHAPE.fullmatch(nonce)
+        and _MAC_SHAPE.fullmatch(stored)
+        and hmac.compare_digest(stored, mac(obj, {job_id: nonce}) or "")
+    ):
+        nonce = secrets.token_hex(16)
     nonces[job_id] = nonce
     return nonce
 
@@ -254,10 +300,11 @@ def sign(job: Any, nonces: MutableMapping[str, str]) -> None:
     """Store the gateway's MAC on *job* (or clear it when it carries no grant).
 
     *nonces* is the stored nonces (:func:`read_nonces`), updated here: a grant
-    keeps its nonce or gets a new one, and a job with no grant loses its nonce.
-    The caller writes *nonces* before the store. A process with no persisted key
-    writes "" here and leaves *nonces* as they are, so the job fires interactive.
-    Marks *job* as held by this process (``CronJob.grant_held``).
+    whose signed fields did not change keeps its nonce, any other grant gets a new
+    one, and a job with no grant loses its nonce. The caller writes *nonces*
+    before the store. A process with no persisted key writes "" here and leaves
+    *nonces* as they are, so the job fires interactive. Marks *job* as held by
+    this process (``CronJob.grant_held``).
     """
     if not carries_grant(job):
         nonces.pop(job.id, None)
@@ -266,7 +313,7 @@ def sign(job: Any, nonces: MutableMapping[str, str]) -> None:
     elif _key() is None:
         job.approval_grant = ""
     else:
-        job.grant_nonce = _signing_nonce(job.id, nonces, job.grant_nonce)
+        job.grant_nonce = _signing_nonce(job, nonces, job.grant_nonce)
         job.approval_grant = mac(job) or ""
     job.grant_held = True
 
@@ -284,7 +331,7 @@ def sign_record(record: dict[str, Any], nonces: MutableMapping[str, str]) -> boo
     if not job_id or _key() is None:
         record["approval_grant"] = ""
         return False
-    _signing_nonce(job_id, nonces)
+    _signing_nonce(record, nonces)
     signed = mac(record, nonces)
     record["approval_grant"] = signed or ""
     return bool(signed)
@@ -360,11 +407,12 @@ def sign_existing_grants(store_dir: Path) -> list[str]:
                 if sign_record(record, nonces):
                     signed.append(str(record.get("id") or ""))
             _consume_marker()
-            # Each new nonce is stored before a signature that uses it.
-            if nonces != stored:
-                write_nonces(store_dir, nonces)
-            if signed:
-                atomic_write(path, json.dumps(data, indent=2))
+
+            def _write_store() -> None:
+                if signed:
+                    atomic_write(path, json.dumps(data, indent=2))
+
+            publish_with_nonces(store_dir, nonces, stored, _write_store)
         return signed
     except Exception:
         logger.warning("Stored cron approval grants were not signed", exc_info=True)
