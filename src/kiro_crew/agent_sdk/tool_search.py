@@ -78,6 +78,7 @@ __all__ = [
     "clamp_min_pct",
     "clamp_min_tokens",
     "custom_agent_never_defer_ids",
+    "loaderless_never_defer_ids",
     "job_tool_ids",
     "kas_client_meta_settings",
     "kas_never_defer_ids",
@@ -388,6 +389,21 @@ def custom_agent_never_defer_ids(
     """
     ids = set(kas_never_defer_ids(spec, server_tools, added_servers=added_servers))
     ids.update(_declared_ids(CUSTOM_AGENT_JOB_TOOLS, spec))
+    return sorted(ids)
+
+
+def loaderless_never_defer_ids(
+    spec: dict[str, Any] | None,
+    server_tools: Callable[[str], Iterable[str] | None],
+) -> list[str]:
+    """``neverDefer`` for any other spec that grants no loader.
+
+    Everything :func:`kas_never_defer_ids` lists, plus the still-starting wait
+    (:data:`_MCP_LOADING`) the spec mounts: the note tells the turn to call it, and
+    a server Crew holds no tool list for would otherwise leave it deferred.
+    """
+    ids = set(kas_never_defer_ids(spec, server_tools))
+    ids.update(_declared_ids(_MCP_LOADING, spec))
     return sorted(ids)
 
 

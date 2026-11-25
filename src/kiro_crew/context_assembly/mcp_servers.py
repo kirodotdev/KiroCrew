@@ -69,7 +69,8 @@ _TOLD_SESSIONS = 512
 _CONNECTING_RULE = (
     "If this request needs a server that is still starting: tell the user so in "
     "one short natural sentence, in their language; call "
-    f"{MCP_SERVER_WAIT_TOOL} with its name, once; then load its tool, use it and "
+    f"{MCP_SERVER_WAIT_TOOL} with its name, once, before any other tool, and do "
+    "not use a different tool in its place; then load its tool, use it and "
     "finish the task in this turn. If the wait says it is still not ready, say "
     "so, do what you can without it, and say they can ask again shortly. "
 )
