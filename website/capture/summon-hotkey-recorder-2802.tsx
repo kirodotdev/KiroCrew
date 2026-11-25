@@ -13,7 +13,7 @@
  * the payload shape `global-hotkey:get` and `global-hotkey:set` resolve
  * (electron/ipc-registrar.js).
  *
- * Query string: ?surface=settings|modal&scene=off|bound|fallback|remote&theme=dark|light
+ * Query string: ?surface=settings|modal&scene=off|bound|fallback|remote|refused&theme=dark|light
  */
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'

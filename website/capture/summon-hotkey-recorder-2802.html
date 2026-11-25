@@ -24,12 +24,19 @@
           fallback: info(DEFAULT_CHORD, 'Ctrl+Alt+J'),
           // A window on a remote host: the reader, no setter.
           remote: info('', ''),
+          // Bound, with a setter that refuses the next change.
+          refused: info('Alt+Shift+J', 'Alt+Shift+J'),
         }[scene] || info('', '')
         window.kirocrew = { isElectron: true, platform: 'linux' }
         window.electronAPI = {
           getGlobalHotkey: function () { return Promise.resolve(initial) },
         }
-        if (scene !== 'remote') {
+        if (scene === 'refused') {
+          // The shell refuses the change, as its sender gate does.
+          window.electronAPI.setGlobalHotkey = function () {
+            return Promise.reject(new Error('global-hotkey:set is restricted to the local dashboard'))
+          }
+        } else if (scene !== 'remote') {
           // Stands in for `global-hotkey:set`: store the chord and report it bound.
           window.electronAPI.setGlobalHotkey = function (accelerator) {
             return Promise.resolve(info(accelerator, accelerator))

@@ -11,6 +11,7 @@
  *   settings-fallback-dark.png     — a stored chord the shell could not bind
  *   settings-remote-dark.png       — a window on a remote host: read-only row
  *                                    and the config-file hint
+ *   settings-save-failed-dark.png  — the shell refused a Clear: the error line
  *   modal-bound-dark.png           — reference dialog, bound and tagged
  *   modal-off-dark.png             — reference dialog, off, pointing at Settings
  *
@@ -69,6 +70,14 @@ try {
   for (const scene of ['fallback', 'remote']) {
     const page = await open('settings', scene, 'dark')
     await shot(page, `settings-${scene}-dark`)
+    await page.close()
+  }
+  {
+    // The shell refuses a Clear: the error shows and the hotkey stays bound.
+    const page = await open('settings', 'refused', 'dark')
+    await page.getByRole('button', { name: 'Clear' }).last().click()
+    await page.getByTestId('global-hotkey-save-error').waitFor({ state: 'visible', timeout: 8_000 })
+    await shot(page, 'settings-save-failed-dark')
     await page.close()
   }
   for (const scene of ['bound', 'off']) {

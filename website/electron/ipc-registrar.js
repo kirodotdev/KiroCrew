@@ -894,23 +894,26 @@ function createIpcRegistrar({
     });
     ipcMain.handle("global-hotkey:get", globalHotkeyInfo);
 
-    // The Settings recorder stores a new summon shortcut ("" turns it off) and
-    // binds it at once, so no restart is needed. The shortcut is grabbed from
-    // every program on THIS machine, so only the local dashboard may set it
-    // (assertLocalDashboard); a window on a remote host keeps the config file.
-    // The value is bounded to what the recorder can produce: a renderer must
-    // not be able to claim a bare key system-wide (parseRecordedHotkey).
-    // Resolves to the same shape as `global-hotkey:get`, read after the bind,
-    // so the row shows a fallback or a failed bind the way a restart would.
-    ipcMain.handle("global-hotkey:set", async (event, value) => {
-      await assertLocalDashboard(event, "global-hotkey:set");
-      const accelerator = parseRecordedHotkey(value);
-      if (accelerator === null) {
-        throw new Error("global-hotkey:set: not a shortcut the recorder can produce");
-      }
-      store.set("globalHotkey", accelerator);
-      bindGlobalHotkey();
-      return globalHotkeyInfo();
+    // The Settings recorder stores a summon shortcut ("" turns it off) and binds
+    // it at once. It is grabbed from every program on THIS machine, so only the
+    // local dashboard may set it, and only a chord the recorder can produce
+    // (parseRecordedHotkey): never a bare key. Requests run one at a time in
+    // arrival order, gate probe included, so a Clear is never overtaken by the
+    // recording sent before it. Resolves like `global-hotkey:get`, after the bind.
+    let hotkeySetQueue = Promise.resolve();
+    ipcMain.handle("global-hotkey:set", (event, value) => {
+      const result = hotkeySetQueue.then(async () => {
+        await assertLocalDashboard(event, "global-hotkey:set");
+        const accelerator = parseRecordedHotkey(value);
+        if (accelerator === null) {
+          throw new Error("global-hotkey:set: not a shortcut the recorder can produce");
+        }
+        store.set("globalHotkey", accelerator);
+        bindGlobalHotkey();
+        return globalHotkeyInfo();
+      });
+      hotkeySetQueue = result.catch(() => {});
+      return result;
     });
 
     // The theme accent and splash art are written under userData for the next

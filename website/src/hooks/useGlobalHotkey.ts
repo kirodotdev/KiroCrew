@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isElectron } from '../lib/electron'
 import { isMac } from '../utils/platform'
 import { acceleratorFromEvent, type GlobalHotkeyInfo } from '../lib/globalHotkey'
+import { announceShortcutRecording, useCancelWhenAnotherRecorderStarts } from './useExclusiveShortcutRecording'
 
 const GLOBAL_HOTKEY_QUERY_KEY = ['global-hotkey']
 
@@ -85,9 +86,13 @@ export function useGlobalHotkeyRecorder(): UseGlobalHotkeyRecorder {
     )
   }, [queryClient])
 
-  const startRecording = useCallback(() => setRecording(true), [])
+  const startRecording = useCallback(() => {
+    announceShortcutRecording()
+    setRecording(true)
+  }, [])
   const cancelRecording = useCallback(() => setRecording(false), [])
   const clear = useCallback(() => apply(''), [apply])
+  useCancelWhenAnotherRecorderStarts(recording, cancelRecording)
 
   useEffect(() => {
     if (!recording) return

@@ -146,6 +146,8 @@ function SummonHotkeyConfig({ hotkey }: { hotkey: GlobalHotkeyInfo }) {
   const { accelerator, requested } = hotkey
   return (
     <>
+      {/* One card row for the controls and their notices, so the card draws no divider between them. */}
+      <div>
       <div className="flex items-center justify-between gap-2">
         {/* Block elements for the label and the tag: separate catalog units, as in PanelToggleConfig. */}
         <div className="text-[13px] text-text">{i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}</div>
@@ -163,10 +165,11 @@ function SummonHotkeyConfig({ hotkey }: { hotkey: GlobalHotkeyInfo }) {
           )}
         </span>
       </div>
-      <GlobalHotkeyNotice hotkey={hotkey} />
+      <GlobalHotkeyNotice hotkey={hotkey} className="pt-1" />
       {failed && (
-        <ErrorNotice variant="inline" message={i18nT('components.shortcutsModal.global_hotkey_save_failed')} askAgent testId="global-hotkey-save-error" />
+        <ErrorNotice variant="inline" message={i18nT('components.shortcutsModal.global_hotkey_save_failed')} askAgent testId="global-hotkey-save-error" className="pt-1" />
       )}
+      </div>
       <div className="text-[12px] text-muted">{i18nT(recording ? 'pages.settings.shortcutsPanel.custom_hint' : 'components.shortcutsModal.global_hotkey_hint_record')}</div>
     </>
   )

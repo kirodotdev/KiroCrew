@@ -1176,6 +1176,40 @@ test("global-hotkey:set rejects a sender that is not the local dashboard", async
   }
 });
 
+test("global-hotkey:set applies requests in arrival order, whichever gate probe ends first", async () => {
+  const h = harness({ storeValues: { globalHotkey: "Alt+Shift+K" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+  // The first request's port probe is held open; the second one's is instant.
+  let releaseFirstProbe;
+  const firstProbe = new Promise((resolve) => { releaseFirstProbe = () => resolve("kirocrew"); });
+  let probes = 0;
+  h.gateway.probePrimaryPortOwner = () => {
+    probes += 1;
+    return probes === 1 ? firstProbe : Promise.resolve("kirocrew");
+  };
+
+  const recorded = set(wslEvent(), "Alt+Shift+J");
+  const cleared = set(wslEvent(), "");
+  // Give the later request every chance to overtake before the first is let go.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.store.writes, [], "the Clear waits behind the recording sent before it");
+  releaseFirstProbe();
+
+  assert.equal((await recorded).accelerator, "Alt+Shift+J");
+  assert.equal((await cleared).accelerator, "");
+  assert.deepEqual(h.store.writes, [["globalHotkey", "Alt+Shift+J"], ["globalHotkey", ""]]);
+  assert.strictEqual(h.store.data.globalHotkey, "", "the user's last action wins");
+});
+
+test("a refused global-hotkey:set does not block the requests after it", async () => {
+  const h = harness({ storeValues: { globalHotkey: "" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+  await assert.rejects(() => set(wslEvent(), "K"));
+  assert.equal((await set(wslEvent(), "Alt+Shift+J")).accelerator, "Alt+Shift+J");
+});
+
 test("the preload withholds the hotkey setter from a window on a remote gateway", () => {
   const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
   assert.match(
