@@ -3186,7 +3186,10 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   Trust are owner-only by identity (`approval_picker.authorize`), so a shared user or another
   member changes nothing, and the Trust mutation is the same `set_channel_mode` on the
   conductor's slot (its lock and intent are keyed by room id), so a worker never runs above
-  the thread. `!stop` in the thread is decided in `routing._inbound_gate` before the
+  the thread. The conductor's own card in its thread (`thread_runtime.conductor_thread_of`
+  names the binding) carries the same "Trust this thread" (`TRUST_THREAD_CONFIRM`);
+  `approval_picker.handle_trust_call` finds the binding from the card's `thread_ts` and runs
+  the same gates and mutation as a code channel's card. `!stop` in the thread is decided in `routing._inbound_gate` before the
   code-channel gate (`thread_stop_gate`), whatever the channel's activation: the owner's pure `!stop`
   in a live thread passes `_route_message`'s activation-off and mention drops
   (`thread_stop_gate.is_owner_stop`), since Stop only removes work. The owner stops the conductor, its recorded workers and their sub-agents
