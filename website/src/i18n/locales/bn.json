@@ -24896,6 +24896,8 @@
     "capabilities_body": "এই Bot যে ক্ষমতাগুলো নিয়ে কাজ করে। \"অনুমোদন\"-এ স্বয়ংক্রিয়ভাবে চালানোর অনুমতি দাও।",
     "capabilities_headline": "{{name}} কী করতে পারে",
     "open_capabilities": "ক্ষমতা দেখো",
+    "more_on_profile": "{{name}}-এর সেশন, লক্ষ্য আর অনুমতি তার প্রোফাইলে আছে।",
+    "open_profile": "প্রোফাইল খোলো",
     "section_capabilities": "ক্ষমতা",
     "band_directions": "আচরণ-নির্দেশনা",
     "band_resources": "রিসোর্স",
