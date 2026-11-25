@@ -124,10 +124,13 @@ async def test_valid_link_beside_a_live_cookie_completes_and_logs_no_refusal(mon
 
 @pytest.mark.asyncio
 async def test_internal_path_cookie_fallback_logs_the_refused_link(monkeypatch) -> None:
-    """The internal-path helper adopts the cookie the same way, so it records the same row."""
+    """The internal-path helper adopts the cookie the same way, so it records the same row.
+
+    ``/api/spawn`` is a mixed internal path, as in the gateway: a strict path also
+    asks the owner gate of a cookie caller."""
     calls = _capture_sel(monkeypatch)
     link = _expired_challenge_link("intuser")
-    mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
+    mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
     req = _make_request(
         path="/api/spawn", query={"token": link}, cookies={_COOKIE: _live_cookie("intuser")}
     )
