@@ -57,13 +57,13 @@ from kiro_crew.snapshot_components import (
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
-    COMPONENT_TREES,
     COMPONENTS,
     CORE_FILES,
     CORE_FILES_FLAT,
     UnsafeComponentRoot,
     _facade,
     _want,
+    component_trees,
     is_product_tree_database,
     safe_tree_root,
 )
@@ -588,7 +588,7 @@ def _refuse_unsafe_destination_roots(mc: Path, components: list[str] | None) -> 
     for comp in COMPONENTS:
         if not _want(components, comp):
             continue
-        for tree in COMPONENTS[comp].trees:
+        for tree in component_trees(comp):
             d = mc / tree
             if safe_tree_root(d, what="destination root", home=mc) is None:
                 offenders.append(f"{comp}:{tree}")
@@ -708,10 +708,12 @@ def _refuse_corrupt_source_databases(
     # Component TREES carry databases too (`workspace/knowledge/knowledge.db`). Strictness
     # is per PATH: a database this product owns is strict wherever it lives, while an
     # incidental `.db` in a tree (a Windows `Thumbs.db`) may legitimately not be SQLite.
-    for component, trees in COMPONENT_TREES.items():
+    for component in COMPONENTS:
         if not _want(components, component):
             continue
-        for tree in trees:
+        # Read from the bundle only, never a live root.
+        bundle_trees = component_trees(component)
+        for tree in bundle_trees:
             root = snap / tree
             if not root.exists() and not platform_compat.is_link_or_junction(root):
                 continue  # absent from a selective bundle; nothing to validate
@@ -1047,7 +1049,7 @@ def _do_replace(
         for comp in _WHOLE_TREE_COMPONENTS:
             if not _want(components, comp):
                 continue
-            for dirname in COMPONENTS[comp].trees:
+            for dirname in component_trees(comp):
                 d = mc / dirname
                 if dirname in _LOCKED_DOCUMENT_TREES:
                     # Saved in phase two instead, inside the lock hold that replaces it
@@ -1071,7 +1073,7 @@ def _do_replace(
         for comp in _WHOLE_TREE_COMPONENTS:
             if _want(components, comp):
                 targets.extend(
-                    _LOCKED_DOCUMENT_TREES.get(tree, tree) for tree in COMPONENTS[comp].trees
+                    _LOCKED_DOCUMENT_TREES.get(tree, tree) for tree in component_trees(comp)
                 )
         targets.extend(tree for tree, _ in mem_roots)
 
@@ -1147,7 +1149,9 @@ def _component_payload_absent(snap: Path, component: str) -> bool:
             continue
         if (snap / rel).exists():
             return False
-    for rel in getattr(spec, "trees", ()) or ():
+    # The BUNDLE's trees: nothing here reaches a live root, so no chokepoint is needed.
+    bundle_trees = component_trees(component)
+    for rel in bundle_trees:
         root = snap / rel
         if root.is_dir() and any(p.is_file() for p in root.rglob("*")):
             return False
@@ -1258,10 +1262,12 @@ def _do_replace_mutations(
         _drop_derived_indexes_absent_from_bundle(snap, mc, backup, installed)
 
     for comp in _WHOLE_TREE_COMPONENTS:
-        if not _want(components, comp):
+        # A component with no trees this run (`named-workspaces` in a bundle without it)
+        # has nothing to replace and reports nothing.
+        if not _want(components, comp) or not component_trees(comp):
             continue
         kept_live = False
-        for dirname in COMPONENTS[comp].trees:
+        for dirname in component_trees(comp):
             d = mc / dirname
             # Required by `test_each_trees_loop_is_guarded`: the pre-flight runs in the
             # CALLER, a whole backup phase earlier, so this loop calls the chokepoint itself.
