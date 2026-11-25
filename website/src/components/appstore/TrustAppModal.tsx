@@ -224,6 +224,12 @@ export function isTrustDeniedError(e: unknown): boolean {
   return errorCode(e) === APP_EXECUTION_DENIED
 }
 
+/** True when an update was refused because the new version's app.json does not
+ *  pass validation (`app_update_invalid`): only the app's maker can fix that. */
+export function isInvalidUpdateError(e: unknown): boolean {
+  return errorCode(e) === 'app_update_invalid'
+}
+
 /**
  * The repository an `app_trust_local_only` refusal names, or `''` for any other
  * failure. Read like `errorCode`: a direct property on a resolved stream result,

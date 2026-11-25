@@ -363,7 +363,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           its own loading dialog until the fresh roster read resolves the
           record. The fallback covers only the first download of its chunk. */}
       <Suspense fallback={editingCrew ? <CrewEditorChunkLoading /> : null}>
-        <CrewEditorModal ctl={crewEditor} initialSection={landingSection} onSectionChange={setShownSection} />
+        <CrewEditorModal ctl={crewEditor} initialSection={landingSection} onSectionChange={setShownSection} onOpenProfile={crewEditor.openProfilePage} />
       </Suspense>
       {/* The create door. Config mode: `handleCapCreated` closes it and
           refetches the roster — the new crew appears here, and nothing

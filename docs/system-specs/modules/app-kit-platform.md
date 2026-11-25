@@ -5426,7 +5426,9 @@ The boundary:
   `linkPreviewHosts` and `linkPreviewTextPatterns`, in the app's
   `approved-grants.json` beside `api` and `events` (`apps/link_preview_grants.py`).
   Hosts are stored normalized (lowercase, IDNA, no trailing dot) and a public suffix
-  or bare TLD is refused at manifest validation; a pattern's entry is
+  or bare TLD is refused at manifest validation. A provider may list any number of
+  hosts: `claimsHost` matches a link in one set
+  lookup per label of its host, whatever the list's length. A pattern's entry is
   `<id>:<flags without g>:<source>`, so any change to it is a widening. An update
   that widens either family is held back until the owner approves it on the App
   Detail page; narrowing applies at once. A third family, `linkPreviewFullUrl`
@@ -7607,6 +7609,15 @@ would swap the `market:` source and zip SHA-256 for the folder path, so a
 folder update would silently drop the app's listing provenance. A marketplace
 app has no update path until one resolves, verifies and re-confirms a new
 version.
+
+`update_app` refuses a new version whose `app.json` fails validation with
+`app_update_invalid`, the validator's errors as `error`, before anything is
+replaced; `install_from_registry` passes a failed result's code through. A new
+version whose only refusal is a `minKiroCrewVersion` above this build gets
+`kirocrew_version_too_old` instead, since updating Kiro Crew clears it. The
+App Store's row update and Update All key off that code to name the app and say
+that only its maker can fix it, with the validator's words on the next line
+(`pages/apps/useAppUpdates.ts`).
 
 Two owner-only routes in `apps/routes_market_install.py` drive those calls.
 `POST /api/apps/market/install` (`{ref, version?, account?, registry?}`) runs `prepare_market_install`

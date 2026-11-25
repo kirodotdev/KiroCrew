@@ -58,6 +58,11 @@ FIXTURES = {
     "arn": "role arn:aws:iam::123456789012:role/" + synth(20, seed=13) + " ok",
     "git object name": "commit " + synth(40, "0123456789abcdef", 14) + " merged",
     "prose": "Nothing secret here, just words: on a line.\nAnd another one.",
+    "key glued after cjk": "密钥aws_secret_access_key=" + aws_secret(seed=21) + "好",
+    "full-width separator": "password：" + synth(14, seed=22) + "，下一个",
+    "full-width label": "ｐａｓｓｗｏｒｄ＝" + synth(14, seed=23) + "。完",
+    "full-width before a flag": "Options: \uff3f--password=" + synth(14, seed=24) + "，abc",
+    "full-width quoted value past a comma": "password=\uff02Zq8vLm2,Kd9pRt4\uff02 end",
 }
 
 
