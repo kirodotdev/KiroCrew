@@ -80,9 +80,14 @@ def _make_id() -> str:
 # ``context._STRUCTURAL_MARKER_RES``: ``ContextBuilder.build_message`` neutralizes
 # the whole turn with that global set, so a global entry would strip the fences
 # added below and collapse the separation it is meant to create.
+#
+# A match starts only at the first dash of a run (``(?<!-)``). Any match that
+# starts inside a run is the tail of the one that starts at the run's first
+# dash, which the left-to-right scan takes first, so the scrubbed text is the same;
+# without the guard every start inside a long run rescans the rest of it.
 _CALLER_FENCE_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
-    re.compile(r"[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
 )
 _FENCE_NEUTRALIZED = "[marker-removed]"
 
