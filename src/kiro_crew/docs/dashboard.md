@@ -148,6 +148,7 @@ reattaches to it. Once it has been detached for `dashboard.terminal.orphan_timeo
 seconds (default `43200`, 12 hours; values below `60` count as `60`), the gateway
 ends the shell and every process it started, logs a warning, records a
 `terminal.session.reap` security event and posts a "Terminal closed" bell note.
+Shells that expire in the same sweep share one note that counts them.
 When a new terminal would exceed `dashboard.terminal.max_sessions`, the shell
 that has had no browser attached the longest (at least a minute) is ended the
 same way to make room, so shells left behind on another device cannot block new

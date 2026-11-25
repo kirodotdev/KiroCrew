@@ -406,7 +406,6 @@ def _format_idle(seconds: float) -> str:
 
 
 def _record_orphan_reap(
-    app: web.Application,
     sid: str,
     pid: int | None,
     idle_s: float,
@@ -414,34 +413,22 @@ def _record_orphan_reap(
     timeout_s: float | None = None,
     max_sessions: int | None = None,
 ) -> None:
-    """Say that a detached live shell was ended: a warning, an audit event and a
-    bell note. ``timeout_s`` names the sweep's timeout; ``max_sessions`` names the
-    cap a new terminal needed room under.
+    """Say that a detached live shell was ended: a warning and an audit event, one
+    per shell. ``timeout_s`` names the sweep's timeout; ``max_sessions`` names the
+    cap a new terminal needed room under. The bell note is the caller's, through
+    ``_push_reap_note``: one per sweep, however many shells it ended.
 
     The shell and everything it ran are gone, and the tab that held it is dropped
-    silently on the next load, so these are the only places the reason survives.
-    The bell note carries no session id or path, because the feed reaches every
-    dashboard session. Each step is best-effort: the caller must go on regardless.
+    silently on the next load, so these and the note are the only places the
+    reason survives. Each step is best-effort: the caller must go on regardless.
     """
     if max_sessions is not None:
         why = f"to make room for a new terminal (dashboard.terminal.max_sessions={max_sessions})"
         detail = f"max_sessions={max_sessions}"
-        body = (
-            f"A terminal shell, and everything running in it, was ended to make room for "
-            f"a new terminal: {max_sessions} were open, and this one had had no browser "
-            f"attached the longest ({_format_idle(idle_s)}). Raise "
-            f"dashboard.terminal.max_sessions to keep more shells open."
-        )
     else:
         timeout_s = _ORPHAN_TIMEOUT_S if timeout_s is None else timeout_s
         why = f"(dashboard.terminal.orphan_timeout_s={int(timeout_s)})"
         detail = f"timeout_s={int(timeout_s)}"
-        body = (
-            f"A terminal shell, and everything running in it, was ended after "
-            f"{_format_idle(timeout_s)} with no browser attached. Raise "
-            f"dashboard.terminal.orphan_timeout_s to keep detached shells longer, "
-            f"or run long jobs inside tmux."
-        )
     logger.warning(
         "terminal %s: ended its shell (pid %s) after %s with no browser attached %s",
         sid,
@@ -459,6 +446,12 @@ def _record_orphan_reap(
         )
     except Exception:  # noqa: BLE001 -- teardown must not depend on the audit sink
         logger.warning("terminal %s: could not record the reap audit event", sid, exc_info=True)
+
+
+def _push_reap_note(app: web.Application, body: str, meta: dict[str, int]) -> None:
+    """Post a "Terminal closed" bell note. It carries no session id or path,
+    because the feed reaches every dashboard session. Best-effort: the caller
+    must go on regardless."""
     bus: NotificationBus | None = getattr(app.get("state"), "notification_bus", None)
     if bus is None:
         return
@@ -470,11 +463,24 @@ def _record_orphan_reap(
                 title="Terminal closed",
                 body=body,
                 group_key="terminal-reaped",
-                meta={"idle_s": int(idle_s)},
+                meta=meta,
             )
         )
     except Exception:  # noqa: BLE001 -- teardown must not depend on the feed
-        logger.warning("terminal %s: could not publish the reap notification", sid, exc_info=True)
+        logger.warning("terminal: could not publish the reap notification", exc_info=True)
+
+
+def _timed_out_note_body(count: int, timeout_s: float) -> str:
+    """The body of the one note a sweep posts for the ``count`` shells it ended."""
+    if count == 1:
+        ended = "A terminal shell, and everything running in it, was ended"
+    else:
+        ended = f"{count} terminal shells, and everything running in them, were ended"
+    return (
+        f"{ended} after {_format_idle(timeout_s)} with no browser attached. Raise "
+        f"dashboard.terminal.orphan_timeout_s to keep detached shells longer, "
+        f"or run long jobs inside tmux."
+    )
 
 
 def _shell_to_evict(
@@ -553,7 +559,15 @@ async def _end_evicted_shell(
     sid, sess, idle_s = evicted
     pid = _sess_pid(sess)
     await _kill_session(sess)
-    _record_orphan_reap(app, sid, pid, idle_s, max_sessions=max_sessions)
+    _record_orphan_reap(sid, pid, idle_s, max_sessions=max_sessions)
+    _push_reap_note(
+        app,
+        f"A terminal shell, and everything running in it, was ended to make room for "
+        f"a new terminal: {max_sessions} were open, and this one had had no browser "
+        f"attached the longest ({_format_idle(idle_s)}). Raise "
+        f"dashboard.terminal.max_sessions to keep more shells open.",
+        {"idle_s": int(idle_s)},
+    )
 
 
 async def _sweep_terminals(app: web.Application, now: float) -> None:
@@ -573,23 +587,36 @@ async def _sweep_terminals(app: web.Application, now: float) -> None:
         maintenance_executor(), _read_terminal_config
     )
     timeout_s = _orphan_timeout_s(cfg)
-    for sid, sess in list(registry.items()):
-        # Earlier teardown can yield to DELETE, a new opener, or reconnect.
-        if sess is None or registry.get(sid) is not sess:
-            continue
-        alive = _sess_alive(sess)
-        detached_at = sess.last_ws_disconnect
-        idle_s = now - detached_at if detached_at is not None else 0.0
-        orphaned = alive and detached_at is not None and idle_s > timeout_s
-        if alive and not orphaned:
-            continue
-        registry.pop(sid)
-        pid = _sess_pid(sess)
-        await _kill_session(sess)
-        if orphaned:
-            _record_orphan_reap(app, sid, pid, idle_s, timeout_s=timeout_s)
-        else:
-            logger.info("Reaped exited terminal session %s", sid)
+    reaped_idle_s: list[float] = []
+    try:
+        for sid, sess in list(registry.items()):
+            # Earlier teardown can yield to DELETE, a new opener, or reconnect.
+            if sess is None or registry.get(sid) is not sess:
+                continue
+            alive = _sess_alive(sess)
+            detached_at = sess.last_ws_disconnect
+            idle_s = now - detached_at if detached_at is not None else 0.0
+            orphaned = alive and detached_at is not None and idle_s > timeout_s
+            if alive and not orphaned:
+                continue
+            registry.pop(sid)
+            pid = _sess_pid(sess)
+            await _kill_session(sess)
+            if orphaned:
+                _record_orphan_reap(sid, pid, idle_s, timeout_s=timeout_s)
+                reaped_idle_s.append(idle_s)
+            else:
+                logger.info("Reaped exited terminal session %s", sid)
+    finally:
+        # One note for the whole sweep: shells left detached together expire
+        # together, and a note each would bury the bell. Posted even when a later
+        # teardown raises, so the shells already ended are still announced.
+        if reaped_idle_s:
+            _push_reap_note(
+                app,
+                _timed_out_note_body(len(reaped_idle_s), timeout_s),
+                {"count": len(reaped_idle_s), "idle_s": int(max(reaped_idle_s))},
+            )
 
 
 async def reap_orphaned_terminals(app: web.Application) -> None:
