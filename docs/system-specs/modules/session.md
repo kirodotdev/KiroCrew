@@ -854,7 +854,9 @@ runs in (`chat_turn.turn_spec_hooks._fallback_turn_project`).
 With `agent.sandbox` off after the governance floor nothing is hidden and the cwd is
 kept, and so it is on native Windows, where a Kiro spawn is delegated to Kiro's own
 sandbox and no scratch-root mask is applied
-(`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
+(`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). A scratch
+cwd that no longer exists (the scratch sweep removed or quarantined its tree) is
+dropped as above on every platform, sandbox on or off, with the same notice. The
 cwd may name a different project than the one the capabilities were saved in
 (a folder's project directory, for example). Startup is refused with
 `project_identity_changed` only when that project resolves a different Parent:
